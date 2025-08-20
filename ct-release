@@ -3,37 +3,77 @@ set -euo pipefail
 
 scriptdir=$(readlink -f "$(dirname "$0")")
 
+# Ensure required tools exist
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || { echo "Error: required tool not found: $1" >&2; exit 1; };
+}
+require_cmd git
+require_cmd bump-my-version
+require_cmd uv
+
 #
 # Bump the version of the vanilla compiletools repo and git push the tags
-# This can be elided by specifying --nobump on the command line
+# Usage: ct-release {major|minor|patch}
 #
 
 # If ctdevdir is not set in the environment then assume its in the home directory
 ctdd=${ctdevdir:=$HOME/compiletools}
 
+# Verify repo directory exists
+if [[ ! -d "$ctdd" ]]; then
+    echo "Error: repo directory not found: $ctdd" >&2
+    exit 1
+fi
+
 # Increase the version number in all files and push to github
 pushd "$ctdd" >/dev/null
 
-# If any command line parameter is given then don't bump the version
-zeromeansbump=${1:-}
-
-if [[ -z "$zeromeansbump" ]]; then
-    # If the last commit bumped the version then refuse to bump it again for no reason
-    bumpcount=$(git log --pretty=oneline -1 | grep -c Bump || true)
-    if [[ "$bumpcount" -eq 1 ]]; then
-        zeromeansbump="--nobump"
-    fi
+# Ensure working tree is clean
+if ! git diff-index --quiet HEAD --; then
+    echo "Error: working tree has uncommitted changes. Commit or stash before releasing." >&2
+    popd >/dev/null
+    exit 1
 fi
 
-# Bump the version of the vanilla compiletools
-if [[ -z "$zeromeansbump" ]]; then
-    bump-my-version bump minor
+# Enforce releasing only from master
+branch=$(git rev-parse --abbrev-ref HEAD)
+if [[ "$branch" != "master" ]]; then
+    echo "Error: releases must be made from 'master' (current: $branch)" >&2
+    popd >/dev/null
+    exit 1
+fi
+
+# Parse and validate bump level
+bump_level=${1:-}
+if [[ -z "$bump_level" ]]; then
+    echo "Usage: $0 {major|minor|patch}" >&2
+    popd >/dev/null
+    exit 1
+fi
+case "$bump_level" in
+    major|minor|patch) ;;
+    *)
+        echo "Error: invalid bump level: $bump_level. Use major|minor|patch." >&2
+        popd >/dev/null
+        exit 1
+        ;;
+esac
+
+# Refuse consecutive bump commits but continue with publish
+bumpcount=$(git log --pretty=oneline -1 | grep -c Bump || true)
+if [[ "$bumpcount" -eq 1 ]]; then
+    echo "Warning: last commit was a version bump; skipping version bump." >&2
+else
+    # Perform the bump
+    bump-my-version bump "$bump_level"
     git push
     git push --tags
     echo Pausing to give github time to generate the archive
     sleep 20
 fi
-tag=$(git describe --tags --exact)
+
+# Use exact-match to ensure HEAD is tagged
+tag=$(git describe --tags --exact-match)
 popd >/dev/null
 
 #Strip the v off the tag to get the numeric version
@@ -47,7 +87,7 @@ version=${tag#*v}
 #pushd "$rpmhome" >/dev/null
 #tarball=${tag}.tar.gz
 #while [[ ! -s "SOURCES/${tarball}" ]]; do
-#    curl -L "https://github.com/Zomojo/compiletools/archive/${tarball}" -o "SOURCES/${tarball}"
+#    curl -L "https://github.com/DrGeoff/compiletools/archive/${tarball}" -o "SOURCES/${tarball}"
 #done
 
 # Create rpms of python-compiletools
@@ -55,6 +95,10 @@ version=${tag#*v}
 
 #popd >/dev/null
 
-# Build and push to PyPI using UV
+# Build and push to PyPI using UV from the repo directory
+pushd "$ctdd" >/dev/null
+rm -rf dist build *.egg-info || true
 uv build
-twine upload dist/* -r pypi
+# Publish to PyPI using uv
+uv publish --skip-existing
+popd >/dev/null
