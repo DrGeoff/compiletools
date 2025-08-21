@@ -440,82 +440,84 @@ class SQLiteCache(FileAnalyzerCache):
         else:
             self._db_path = Path(db_path)
         
-        # Initialize database
+        # Initialize database and connection
+        self._conn = None
         self._init_db()
+
+    def __del__(self):
+        """Close database connection on object destruction."""
+        self.close()
+
+    def close(self):
+        """Explicitly close the database connection."""
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+    def _get_conn(self) -> sqlite3.Connection:
+        """Get database connection, creating if it doesn't exist."""
+        if self._conn is None:
+            self._conn = sqlite3.connect(self._db_path)
+        return self._conn
     
     def _init_db(self):
         """Initialize SQLite database schema."""
-        conn = sqlite3.connect(self._db_path)
-        try:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS cache (
-                    filepath TEXT,
-                    content_hash TEXT,
-                    result BLOB,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (filepath, content_hash)
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_filepath ON cache(filepath)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_hash ON cache(content_hash)")
-            conn.commit()
-        finally:
-            conn.close()
+        conn = self._get_conn()
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS cache (
+                filepath TEXT,
+                content_hash TEXT,
+                result BLOB,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (filepath, content_hash)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_filepath ON cache(filepath)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_hash ON cache(content_hash)")
+        conn.commit()
     
     def get(self, filepath: str, content_hash: str) -> Optional[FileAnalysisResult]:
         """Retrieve from SQLite cache."""
-        conn = sqlite3.connect(self._db_path)
-        try:
-            cursor = conn.execute(
-                "SELECT result FROM cache WHERE filepath = ? AND content_hash = ?",
-                (filepath, content_hash)
-            )
-            row = cursor.fetchone()
-            
-            if row:
-                result = self._deserialize_result(row[0])
-                if result is None:
-                    # Incompatible/corrupted entry, delete it
-                    conn.execute(
-                        "DELETE FROM cache WHERE filepath = ? AND content_hash = ?",
-                        (filepath, content_hash)
-                    )
-                    conn.commit()
-                return result
-                    
-        finally:
-            conn.close()
-            
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "SELECT result FROM cache WHERE filepath = ? AND content_hash = ?",
+            (filepath, content_hash)
+        )
+        row = cursor.fetchone()
+        
+        if row:
+            result = self._deserialize_result(row[0])
+            if result is None:
+                # Incompatible/corrupted entry, delete it
+                conn.execute(
+                    "DELETE FROM cache WHERE filepath = ? AND content_hash = ?",
+                    (filepath, content_hash)
+                )
+                conn.commit()
+            return result
+                
         return None
     
     def put(self, filepath: str, content_hash: str, result: FileAnalysisResult) -> None:
         """Store in SQLite cache."""
-        conn = sqlite3.connect(self._db_path)
-        try:
-            # Serialize with version info
-            data = self._serialize_result(result)
-            
-            conn.execute(
-                "INSERT OR REPLACE INTO cache (filepath, content_hash, result) VALUES (?, ?, ?)",
-                (filepath, content_hash, data)
-            )
-            conn.commit()
-            
-        finally:
-            conn.close()
+        conn = self._get_conn()
+        # Serialize with version info
+        data = self._serialize_result(result)
+        
+        conn.execute(
+            "INSERT OR REPLACE INTO cache (filepath, content_hash, result) VALUES (?, ?, ?)",
+            (filepath, content_hash, data)
+        )
+        conn.commit()
     
     def clear(self, filepath: Optional[str] = None) -> None:
         """Clear SQLite cache."""
-        conn = sqlite3.connect(self._db_path)
-        try:
-            if filepath:
-                conn.execute("DELETE FROM cache WHERE filepath = ?", (filepath,))
-            else:
-                conn.execute("DELETE FROM cache")
-            conn.commit()
-            
-        finally:
-            conn.close()
+        conn = self._get_conn()
+        if filepath:
+            conn.execute("DELETE FROM cache WHERE filepath = ?", (filepath,))
+        else:
+            conn.execute("DELETE FROM cache")
+        conn.commit()
 
 
 class RedisCache(FileAnalyzerCache):
