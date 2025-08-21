@@ -3,8 +3,10 @@
 """
 import sys
 import os
+import shutil
 import appdirs
 import compiletools.configutils
+import compiletools.apptools
 
 user_data_dir = appdirs.user_data_dir
 user_config_dir = appdirs.user_config_dir
@@ -154,7 +156,54 @@ def get_cache_type(args=None, argv=None, exedir=None):
 
 
 def main(argv=None):
-    cap = compiletools.apptools.create_parser("Cache directory naming tool", argv=argv, include_config=False)
+    cap = compiletools.apptools.create_parser("Cache directory and type management tool", argv=argv, include_config=False)
     add_arguments(cap)
+    cap.add_argument(
+        "--type",
+        action="store_true",
+        help="Report the CTCACHE_TYPE setting instead of cache directory"
+    )
+    cap.add_argument(
+        "--clean",
+        action="store_true",
+        help="Remove the cache directory"
+    )
+    cap.add_argument(
+        "--all",
+        action="store_true",
+        help="Report both cache directory and CTCACHE_TYPE setting"
+    )
     args = cap.parse_args(args=argv)
-    print(compiletools.dirnamer.user_cache_dir(args=args))
+    
+    # If --clean was requested, remove the cache directory
+    if args.clean:
+        cachedir = compiletools.dirnamer.user_cache_dir(args=args)
+        if args.verbose >= 1:
+            print(" ".join(["Removing cache directory =", cachedir]))
+        
+        if os.path.isdir(cachedir):
+            shutil.rmtree(cachedir)
+    elif args.all:
+        # If --all was requested, print both cache directory and type
+        print(compiletools.dirnamer.user_cache_dir(args=args))
+        cache_type = get_cache_type(args=args, argv=argv)
+        cache_type_display = cache_type if cache_type is not None else "None"
+        print(f"CTCACHE_TYPE={cache_type_display}")
+    elif args.type:
+        # If --type was requested, print the cache type
+        cache_type = get_cache_type(args=args, argv=argv)
+        cache_type_display = cache_type if cache_type is not None else "None"
+        print(f"CTCACHE_TYPE={cache_type_display}")
+    else:
+        # Otherwise print the cache directory
+        print(compiletools.dirnamer.user_cache_dir(args=args))
+
+
+def main_clean(argv=None):
+    """Entry point for ct-cache-clean command (synonym for ct-cache --clean)."""
+    if argv is None:
+        argv = sys.argv[1:]
+    # Add --clean to the arguments if not already present
+    if '--clean' not in argv:
+        argv = ['--clean'] + argv
+    return main(argv)

@@ -47,7 +47,7 @@ Download = "https://github.com/Zomojo/compiletools/archive/v{version}.tar.gz"
 # Python-based scripts (entry points to Python modules)
 ct-cake = "compiletools.cake:main"
 ct-cache = "compiletools.dirnamer:main"
-ct-cache-clean = "compiletools.cache_clean:main"
+ct-cache-clean = "compiletools.dirnamer:main_clean"
 ct-config = "compiletools.config:main"
 ct-cppdeps = "compiletools.cppdeps:main"
 ct-create-cmakelists = "compiletools.create_cmakelists:main"
