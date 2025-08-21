@@ -1,10 +1,7 @@
 import signal
 import sys
-import configargparse
 import subprocess
 import os
-from io import open
-import shutil
 import compiletools.utils
 import compiletools.apptools
 import compiletools.headerdeps

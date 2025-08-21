@@ -1,6 +1,5 @@
 import os
 import subprocess
-import configargparse
 
 import functools
 import compiletools.utils
@@ -34,7 +33,7 @@ def _find_git_root(directory):
             stderr=subprocess.STDOUT,
             universal_newlines=True,
         ).strip("\n")
-    except (subprocess.CalledProcessError, OSError) as err:
+    except (subprocess.CalledProcessError, OSError):
         # A CalledProcessError exception means we aren't in a real git repository.
         # An OSError probably means git isn't installed on this machine.
         # But are we in a fake git repository? (i.e., there exists a dummy .git

@@ -1,4 +1,3 @@
-import sys
 import os
 import configargparse
 import compiletools.testhelper as uth

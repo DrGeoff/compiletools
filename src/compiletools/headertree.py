@@ -3,11 +3,8 @@ import sys
 from collections import defaultdict
 from collections import Counter
 import math
-import configargparse
 import compiletools.wrappedos
 import compiletools.headerdeps
-import compiletools.git_utils as git_utils
-import compiletools.utils as utils
 import compiletools.tree as tree
 import compiletools.configutils
 import compiletools.apptools

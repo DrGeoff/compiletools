@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import sys
-import configargparse
 import compiletools.utils
 import compiletools.cake
 import compiletools.apptools

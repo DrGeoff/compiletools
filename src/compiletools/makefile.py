@@ -3,7 +3,6 @@ import os
 import sys
 from io import open
 
-import configargparse
 
 import compiletools.utils
 import compiletools.wrappedos

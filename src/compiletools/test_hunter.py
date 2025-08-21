@@ -1,8 +1,4 @@
-import filecmp
 import os
-import shutil
-import sys
-import tempfile
 import configargparse
 import compiletools.testhelper
 

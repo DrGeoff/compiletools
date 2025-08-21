@@ -1,7 +1,4 @@
 import os
-import sys
-import shutil
-import tempfile
 import io
 from contextlib import redirect_stdout
 

@@ -1,4 +1,3 @@
-import configargparse
 import sys
 import compiletools.apptools
 

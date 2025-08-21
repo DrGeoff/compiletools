@@ -4,7 +4,6 @@
 import sys
 import os
 import appdirs
-import configargparse
 import compiletools.configutils
 
 user_data_dir = appdirs.user_data_dir
@@ -17,6 +16,12 @@ def add_arguments(cap):
         "--CTCACHE",
         default="None",
         help="Location to cache the magicflags and deps. None means no caching.",
+    )
+    cap.add_argument(
+        "--CTCACHE_TYPE",
+        default="None",
+        choices=["None", "null", "memory", "disk", "sqlite", "redis"],
+        help="Type of cache for FileAnalyzer results. None means no caching, disk is recommended for persistence.",
     )
 
 
@@ -95,6 +100,57 @@ def user_cache_dir(
     cachedir = appdirs.user_cache_dir(appname, appauthor, version, opinion)
     _verbose_write_found(cachedir, verbose=verbose)
     return cachedir
+
+
+def get_cache_type(args=None, argv=None, exedir=None):
+    """Get the cache type for FileAnalyzer following config priority.
+    
+    Priority: command line > environment variables > config file > default
+    """
+    if args is None:
+        verbose = 0
+    else:
+        verbose = args.verbose if hasattr(args, 'verbose') else 0
+    
+    # Check command line first
+    cache_type = compiletools.configutils.extract_value_from_argv(key="CTCACHE_TYPE", argv=argv)
+    if cache_type:
+        _verbose_write(
+            "CTCACHE_TYPE from command line: " + cache_type,
+            verbose=verbose,
+            newline=True,
+        )
+        return None if cache_type == "None" else cache_type
+    
+    # Check environment variables
+    _verbose_write(
+        "CTCACHE_TYPE not on commandline. Checking environment variables.",
+        verbose=verbose,
+        newline=True,
+    )
+    try:
+        cache_type = os.environ["CTCACHE_TYPE"]
+        _verbose_write("CTCACHE_TYPE from environment: " + cache_type, verbose=verbose, newline=True)
+        return None if cache_type == "None" else cache_type
+    except KeyError:
+        pass
+    
+    # Check config files
+    _verbose_write(
+        "CTCACHE_TYPE not in environment. Checking config files.",
+        verbose=verbose,
+        newline=True,
+    )
+    cache_type = compiletools.configutils.extract_item_from_ct_conf(
+        "CTCACHE_TYPE", exedir=exedir, verbose=verbose
+    )
+    if cache_type:
+        _verbose_write("CTCACHE_TYPE from config: " + cache_type, verbose=verbose, newline=True)
+        return None if cache_type == "None" else cache_type
+    
+    # Default to None (no caching)
+    _verbose_write("CTCACHE_TYPE not found, defaulting to None", verbose=verbose, newline=True)
+    return None
 
 
 def main(argv=None):

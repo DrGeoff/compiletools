@@ -1,5 +1,4 @@
 import sys
-import configargparse
 import compiletools.wrappedos
 import compiletools.utils
 import compiletools.headerdeps

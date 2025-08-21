@@ -1,6 +1,5 @@
 """Test demonstrating the header dependency macro state dependency fix"""
 
-import os
 from pathlib import Path
 import configargparse
 

@@ -9,7 +9,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional
 from io import open
 
 import compiletools.wrappedos
@@ -402,22 +402,90 @@ class StringZillaFileAnalyzer(FileAnalyzer):
         return directive_positions
 
 
-def create_file_analyzer(filepath: str, max_read_size: int = 0, verbose: int = 0) -> FileAnalyzer:
+class CachedFileAnalyzer(FileAnalyzer):
+    """Wrapper that adds caching to any FileAnalyzer implementation.
+    
+    This wrapper adds content-based caching on top of the existing
+    mtime-based caching in the underlying analyzers.
+    """
+    
+    def __init__(self, analyzer: FileAnalyzer, cache=None):
+        """Initialize cached analyzer wrapper.
+        
+        Args:
+            analyzer: The underlying FileAnalyzer to wrap
+            cache: FileAnalyzerCache instance. If None, uses default disk cache.
+        """
+        self._analyzer = analyzer
+        self.filepath = analyzer.filepath
+        self.max_read_size = analyzer.max_read_size
+        self.verbose = analyzer.verbose
+        
+        if cache is None:
+            # Default to disk cache
+            from compiletools.file_analyzer_cache import create_cache
+            self._cache = create_cache('disk')
+        else:
+            self._cache = cache
+    
+    def analyze(self) -> FileAnalysisResult:
+        """Analyze file with caching based on content hash."""
+        # Compute content hash for cache key
+        content_hash = self._cache.compute_content_hash(self.filepath)
+        
+        if not content_hash:
+            # File doesn't exist or can't be read, delegate to analyzer
+            return self._analyzer.analyze()
+        
+        # Try to get from cache
+        cached_result = self._cache.get(self.filepath, content_hash)
+        
+        if cached_result is not None:
+            if self.verbose >= 3:
+                print(f"Cache hit for {os.path.basename(self.filepath)}")
+            return cached_result
+        
+        # Cache miss, perform analysis
+        if self.verbose >= 3:
+            print(f"Cache miss for {os.path.basename(self.filepath)}")
+        
+        result = self._analyzer.analyze()
+        
+        # Store in cache if analysis succeeded
+        if result.bytes_analyzed > 0:
+            self._cache.put(self.filepath, content_hash, result)
+        
+        return result
+
+
+def create_file_analyzer(filepath: str, max_read_size: int = 0, verbose: int = 0, 
+                        cache_type: Optional[str] = None) -> FileAnalyzer:
     """Factory function to create appropriate FileAnalyzer implementation.
     
     Args:
         filepath: Path to file to analyze
         max_read_size: Maximum bytes to read (0 = entire file)
         verbose: Verbosity level for debugging
+        cache_type: Type of cache to use ('null', 'memory', 'disk', 'sqlite', 'redis').
+                   If None, no external caching is added (uses only internal mtime cache).
         
     Returns:
-        StringZillaFileAnalyzer if available, otherwise LegacyFileAnalyzer
+        FileAnalyzer instance, optionally wrapped with caching
     """
+    # Create base analyzer
     try:
-        return StringZillaFileAnalyzer(filepath, max_read_size, verbose)
+        analyzer = StringZillaFileAnalyzer(filepath, max_read_size, verbose)
     except ImportError:
         if verbose >= 3:
             print("StringZilla not available, using legacy file analyzer")
-        return LegacyFileAnalyzer(filepath, max_read_size, verbose)
+        analyzer = LegacyFileAnalyzer(filepath, max_read_size, verbose)
+    
+    # Add caching if requested
+    if cache_type is not None:
+        from compiletools.file_analyzer_cache import create_cache
+        cache = create_cache(cache_type)
+        analyzer = CachedFileAnalyzer(analyzer, cache)
+    
+    return analyzer
 
 

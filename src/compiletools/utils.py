@@ -1,6 +1,4 @@
-import collections
 import os
-import sys
 import inspect
 import functools
 import compiletools.wrappedos

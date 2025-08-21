@@ -1,4 +1,3 @@
-import configargparse
 import compiletools.apptools
 import os
 import platform

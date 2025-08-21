@@ -1,6 +1,5 @@
 import compiletools.apptools
 import compiletools.testhelper as uth
-import compiletools.uth_reload as uthr
 import os
 import argparse  # Used for the parse_args test
 import configargparse

@@ -2,8 +2,6 @@
 
 import os
 import tempfile
-import pytest
-from textwrap import dedent
 from unittest.mock import patch, MagicMock
 
 from compiletools.file_analyzer import (
