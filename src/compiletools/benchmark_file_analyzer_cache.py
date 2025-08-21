@@ -92,7 +92,7 @@ def find_test_files(directory: str = ".", max_files: int = 50) -> List[str]:
     files = []
     for root, _, filenames in os.walk(directory):
         for filename in filenames:
-            if filename.endswith(('.c', '.cpp', '.cc', '.cxx', '.h', '.hpp')):
+            if filename.endswith(('.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.C', '.H')):
                 filepath = os.path.join(root, filename)
                 if os.path.getsize(filepath) > 0:  # Skip empty files
                     files.append(filepath)
