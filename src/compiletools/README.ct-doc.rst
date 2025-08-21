@@ -1,5 +1,5 @@
-.. image:: https://travis-ci.org/Zomojo/compiletools.svg?branch=master
-    :target: https://travis-ci.org/Zomojo/compiletools
+.. image:: https://github.com/DrGeoff/compiletools/actions/workflows/main.yml/badge.svg
+    :target: https://github.com/DrGeoff/compiletools/actions
 
 ============
 compiletools

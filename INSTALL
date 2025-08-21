@@ -11,7 +11,7 @@ A variety of installation methods are possible.
 Use your system tools (yum, dnf, apt-get, pip) to install the python dependencies: psutil, appdirs, configargparse.
 For example, on recent Fedora use: sudo dnf install python3-setuptools python3-configargparse python3-appdirs python3-psutil
 
-git clone git://github.com/Zomojo/compiletools
+git clone git://github.com/DrGeoff/compiletools
 
 Add the compiletools directory to your PATH
 export PATH=$PATH:path_to_compiletools_repo
@@ -58,7 +58,7 @@ rpmhome=$(rpm --eval %_topdir)
 pushd "$rpmhome"
 tag="v4.1.73"
 tarball=${tag}.tar.gz
-curl -L "https://github.com/Zomojo/compiletools/archive/${tarball}" -o "SOURCES/${tarball}"
+curl -L "https://github.com/DrGeoff/compiletools/archive/${tarball}" -o "SOURCES/${tarball}"
 rpmbuild -tb "SOURCES/${tarball}"
 popd
 dnf install ${rpmhome}/RPMS/noarch/python-compiletools-*.noarch.rpm

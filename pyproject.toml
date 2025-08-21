@@ -7,7 +7,7 @@ requires-python = ">=3.9"
 license = "GPL-3.0-or-later"
 keywords = ["c++", "make", "development"]
 authors = [
-    {name = "Zomojo Pty Ltd", email = "drgeoffathome@gmail.com"},
+    {name = "DrGeoff", email = "drgeoffathome@gmail.com"},
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -40,8 +40,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "http://zomojo.github.io/compiletools/"
-Download = "https://github.com/Zomojo/compiletools/archive/v{version}.tar.gz"
+Homepage = "http://drgeoff.github.io/compiletools/"
+Download = "https://github.com/DrGeoff/compiletools/archive/v{version}.tar.gz"
 
 [project.scripts]
 # Python-based scripts (entry points to Python modules)
