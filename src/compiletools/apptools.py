@@ -494,7 +494,7 @@ def _strip_quotes(args):
                 try:
                     # Otherwise assume its a string
                     setattr(args, name, value.strip("\"'").strip())
-                except:
+                except (AttributeError, ValueError, TypeError):
                     pass
 
 

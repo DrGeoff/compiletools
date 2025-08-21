@@ -88,7 +88,7 @@ def create_magic_parser(extraargs=None, cache_home="None", tempdir=None):
 
 def compare_direct_cpp_magic(test_case, relativepath, tempdir=None):
     """Utility to test that DirectMagicFlags and CppMagicFlags produce identical results"""
-    with uth.TempDirContext() as temp_ctx:
+    with uth.TempDirContext() as _:
         if tempdir is not None:
             # If specific tempdir provided, copy current working dir content there
             os.chdir(tempdir)

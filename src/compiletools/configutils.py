@@ -6,7 +6,7 @@ import appdirs
 # Work around an incompatibility between configargparse 0.10 and 0.11
 try:
     from configargparse import DefaultConfigFileParser as CfgFileParser
-except:
+except ImportError:
     from configargparse import ConfigFileParser as CfgFileParser
 
 import compiletools.wrappedos
@@ -156,7 +156,7 @@ def extract_variant(
     )
     try:
         variant = os.environ["variant"]
-    except:
+    except KeyError:
         pass
     variant = extract_value_from_argv(key="variant", argv=argv, default=variant)
 

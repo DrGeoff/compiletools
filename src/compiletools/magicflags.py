@@ -82,7 +82,7 @@ class MagicFlagsBase:
         with compiletools.timing.time_operation(f"magic_flags_analysis_{os.path.basename(filename)}"):
             return self.parse(filename)
 
-    def _handle_source(self, flag, text):
+    def _handle_source(self, flag, text, filename, magic):
         # Find the include before the //#SOURCE=
         result = re.search(
             r'# \d.* "(/\S*?)".*?//#SOURCE\s*=\s*' + flag, text, re.DOTALL
@@ -178,7 +178,7 @@ class MagicFlagsBase:
 
                 # If the magic was SOURCE then fix up the path in the flag
                 if magic == "SOURCE":
-                    flag = self._handle_source(flag, text)
+                    flag = self._handle_source(flag, text, filename, magic)
 
                 # If the magic was INCLUDE then modify that into the equivalent CPPFLAGS, CFLAGS, and CXXFLAGS
                 if magic == "INCLUDE":
@@ -467,7 +467,7 @@ class CppMagicFlags(MagicFlagsBase):
         """Preprocess the given filename but leave comments"""
         extraargs = "-C -E"
         return self.preprocessor.process(
-            realpath=filename, extraargs="-C -E", redirect_stderr_to_stdout=True
+            realpath=filename, extraargs=extraargs, redirect_stderr_to_stdout=True
         )
 
     def parse(self, filename):

@@ -260,7 +260,7 @@ int main() { return 0; }'''
             int main() { return 0; }
         ''').strip()
         
-        header_path = self.create_test_file("test.h", header_content)
+        self.create_test_file("test.h", header_content)
         main_path = self.create_test_file("main.c", main_content)
         
         magicflags = self.create_magicflags_instance()
