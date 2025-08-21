@@ -157,7 +157,7 @@ class Cake(object):
     def _callmakefile(self):
         with compiletools.timing.time_operation("makefile_creation"):
             makefile_creator = compiletools.makefile.MakefileCreator(self.args, self.hunter)
-            makefilename = makefile_creator.create()
+            makefile_creator.create()
             os.makedirs(self.namer.executable_dir(), exist_ok=True)
         with compiletools.timing.time_operation("makefile_execution"):
             cmd = ["make"]

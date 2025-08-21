@@ -190,8 +190,12 @@ class StringZillaFileAnalyzer(FileAnalyzer):
     def __init__(self, filepath: str, max_read_size: int = 0, verbose: int = 0):
         super().__init__(filepath, max_read_size, verbose)
         try:
-            from stringzilla import Str, File
-            self._stringzilla_available = True
+            import importlib.util
+            if importlib.util.find_spec("stringzilla") is not None:
+                self._stringzilla_available = True
+            else:
+                self._stringzilla_available = False
+                raise ImportError("StringZilla not available, use LegacyFileAnalyzer")
         except ImportError:
             self._stringzilla_available = False
             raise ImportError("StringZilla not available, use LegacyFileAnalyzer")

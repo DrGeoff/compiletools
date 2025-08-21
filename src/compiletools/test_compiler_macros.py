@@ -113,7 +113,7 @@ class TestCompilerMacros:
             assert macros1 == macros2
             
             # Different compiler should trigger new query
-            macros3 = cm.get_compiler_macros('clang', verbose=0)
+            cm.get_compiler_macros('clang', verbose=0)
             assert call_count == 2
     
     def test_clear_cache(self):

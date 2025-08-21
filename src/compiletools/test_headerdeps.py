@@ -346,6 +346,6 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
             args = compiletools.apptools.parseargs(cap, argv)
             
             # This should not raise an exception - the isystem parsing should work
-            deps = compiletools.headerdeps.DirectHeaderDeps(args)
+            compiletools.headerdeps.DirectHeaderDeps(args)
 
 

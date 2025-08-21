@@ -15,6 +15,8 @@ def add_to_parser_in_func(recursion_depth=0):
             default=0,
         )
         parsed_args = cap.parse_known_args(args=["-v"])
+        assert parsed_args is not None
+        assert parsed_args[0].verbose == 1
 
         # Note that is_config_file is False
         # The unit test fails if it is set to True
@@ -27,7 +29,7 @@ def add_to_parser_in_func(recursion_depth=0):
             help="Manually specify the config file path if you want to override the variant default",
         )
         add_to_parser_in_func(recursion_depth + 1)
-        parsed_args = cap.parse_known_args(args=["-v"])
+        cap.parse_known_args(args=["-v"])
 
 
 def test_multiple_parse_known_args():
@@ -49,6 +51,8 @@ def test_multiple_parse_known_args():
             default="debug",
         )
         parsed_args = cap.parse_known_args()
+        assert parsed_args is not None
+        assert parsed_args[0].variant == "debug"
 
         add_to_parser_in_func()
 
@@ -58,7 +62,7 @@ def test_multiple_parse_known_args():
             is_config_file=True,
             help="Manually specify the config file path if you want to override the variant default",
         )
-        parsed_args = cap.parse_known_args(args=["--variant", "release"])
+        cap.parse_known_args(args=["--variant", "release"])
     finally:
         uth.reset()
 

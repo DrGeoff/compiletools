@@ -33,7 +33,7 @@ def _reload_ct_with_cache(cache_home):
 class TestHunterModule:
     def setup_method(self):
         uth.reset()
-        cap = configargparse.getArgumentParser(
+        configargparse.getArgumentParser(
             description="Configargparser in test code",
             formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
             args_for_setting_config_path=["-c", "--config"],
@@ -94,7 +94,7 @@ class TestHunterModule:
             return result
         else:
             for filename in bulkpaths:
-                discard = hntr.required_source_files(filename)
+                hntr.required_source_files(filename)
             result = hntr.required_source_files(realpath)
             return result
 

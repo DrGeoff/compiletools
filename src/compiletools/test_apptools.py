@@ -67,7 +67,7 @@ class TestConfig:
                 print(ff.read())
             argv = ["--config=foo.dbg.conf", "-v"]
             variant = compiletools.configutils.extract_variant(argv=argv, gitroot=os.getcwd())
-            config_files = compiletools.configutils.config_files_from_variant(variant=variant, argv=argv, gitroot=os.getcwd())
+            assert variant == "foo.dbg"
 
             cap = configargparse.getArgumentParser(
                 description="Test environment overrides config",
@@ -112,7 +112,7 @@ class TestConfig:
                 print(ff.read())
             argv = ["--config=" + cfgfile, "-v"]
             variant = compiletools.configutils.extract_variant(argv=argv, gitroot=os.getcwd())
-            config_files = compiletools.configutils.config_files_from_variant(variant=variant, argv=argv, gitroot=os.getcwd())
+            assert variant == "foo.dbg"
 
             cap = configargparse.getArgumentParser(
                 description="Test reading and overriding configs",

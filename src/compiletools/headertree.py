@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import sys
+import codecs
 from collections import defaultdict
 from collections import Counter
 import math
@@ -242,7 +243,7 @@ def main(argv=None):
     # Construct an instance of the style class which will print the header
     # tree as a side effect
     try:
-        styleobject = styleclass(inctree, args)
+        styleclass(inctree, args)
     except IOError:
         pass
 

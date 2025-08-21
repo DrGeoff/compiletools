@@ -214,7 +214,7 @@ class TestCake:
         self, files_to_edit, expected_changes, deeper_is_included=False
     ):
         """ Test that the compile, edit, compile cycle works as you expect """
-        with uth.TempDirContext() as ctx:
+        with uth.TempDirContext() as _:
             self._tmpdir = os.getcwd()
             self._create_recompile_test_files(deeper_is_included)
 

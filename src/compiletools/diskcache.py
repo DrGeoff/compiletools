@@ -193,7 +193,7 @@ class diskcache:
             self.cache[cachefile] = result
         else:
             # Prepopulate the in memory cache
-            dummy = self.cached_cachefile(cachefile)
+            self.cached_cachefile(cachefile)
 
         if self.deps_mode:
             for dep in self.cached_cachefile(cachefile):
