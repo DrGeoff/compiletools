@@ -1,8 +1,6 @@
 #!/usr/bin/bash
 set -euo pipefail
 
-scriptdir=$(readlink -f "$(dirname "$0")")
-
 # Ensure required tools exist
 require_cmd() {
     command -v "$1" >/dev/null 2>&1 || { echo "Error: required tool not found: $1" >&2; exit 1; };
