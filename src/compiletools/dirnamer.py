@@ -28,7 +28,7 @@ def add_arguments(cap):
 
 
 def _verbose_write(output, verbose=0, newline=False):
-    if verbose > 0:
+    if verbose > 2:
         sys.stdout.write(output)
         if newline:
             sys.stdout.write("\n")

@@ -7,7 +7,6 @@ This script measures:
 3. Simulated cache lookup time
 4. Potential time savings from caching
 """
-
 import argparse
 import hashlib
 import os
@@ -15,7 +14,11 @@ import pickle
 import time
 from typing import List, Tuple
 
+import tempfile
+from pathlib import Path
+
 from compiletools.file_analyzer import create_file_analyzer, FileAnalysisResult
+from compiletools.file_analyzer_cache import create_cache, NullCache, CACHE_FORMAT_VERSION
 from compiletools.testhelper import samplesdir
 
 
@@ -57,6 +60,9 @@ def measure_hash_time(filepath: str, repetitions: int = 10) -> float:
 
 def measure_serialization_time(result: FileAnalysisResult, repetitions: int = 10) -> Tuple[float, float, int]:
     """Measure time to serialize/deserialize FileAnalysisResult."""
+    # Use a dummy cache instance to access serialization methods
+    dummy_cache = NullCache()
+    
     serialize_times = []
     deserialize_times = []
     serialized_data = None
@@ -64,13 +70,13 @@ def measure_serialization_time(result: FileAnalysisResult, repetitions: int = 10
     for _ in range(repetitions):
         # Measure serialization
         start = time.perf_counter()
-        serialized_data = pickle.dumps(result)
+        serialized_data = dummy_cache._serialize_result(result)
         end = time.perf_counter()
         serialize_times.append(end - start)
         
         # Measure deserialization
         start = time.perf_counter()
-        pickle.loads(serialized_data)
+        dummy_cache._deserialize_result(serialized_data)
         end = time.perf_counter()
         deserialize_times.append(end - start)
     
@@ -97,7 +103,7 @@ def find_test_files(directory: str = ".", max_files: int = 50) -> List[str]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Benchmark FileAnalyzer cache performance",
+        description="Benchmark FileAnalyzer cache performance for different cache types.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
@@ -112,124 +118,137 @@ def main():
         default=20,
         help="Maximum number of files to test"
     )
+    parser.add_argument(
+        "--repetitions",
+        type=int,
+        default=5,
+        help="Number of repetitions for each measurement"
+    )
     args = parser.parse_args()
     
-    # Use provided directory or default to samples
     test_dir = args.test_directory if args.test_directory else samplesdir()
     
     print("FileAnalyzer Cache Performance Benchmark")
-    print("=" * 60)
+    print(f"Test directory: {test_dir}")
+    print(f"Max files: {args.max_files}, Repetitions: {args.repetitions}")
+    print(f"Cache format version: {CACHE_FORMAT_VERSION}")
+    print("=" * 70)
     
-    print(f"\nSearching for test files in {test_dir}...")
-    test_files = find_test_files(test_dir)
+    print(f"\nSearching for test files...")
+    test_files = find_test_files(test_dir, args.max_files)
     
     if not test_files:
-        print("No C/C++ files found for testing")
+        print("No C/C++ files found for testing.")
         return
+        
+    print(f"Found {len(test_files)} test files. Starting benchmarks...")
     
-    print(f"Found {len(test_files)} test files")
+    # Create a temporary directory for cache files
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        cache_configs = {
+            'null': {},
+            'memory': {},
+            'disk': {'cache_dir': str(temp_path / 'disk_cache')},
+            'sqlite': {'db_path': str(temp_path / 'file_analyzer_cache.db')}
+        }
+
+        results = {}
+
+        for cache_type, config in cache_configs.items():
+            print(f"\n--- Benchmarking {cache_type.upper()} Cache ---")
+            
+            # Create cache and clear it before test
+            cache = create_cache(cache_type, **config)
+            cache.clear()
+
+            total_analysis_time = 0
+            total_cache_put_time = 0
+            total_cache_get_time = 0
+            file_count = 0
+
+            for filepath in test_files:
+                file_size = os.path.getsize(filepath)
+                
+                # 1. Full analysis (cache miss)
+                analysis_time, result = measure_analysis_time(filepath, args.repetitions)
+                content_hash = hash_file_content(filepath)
+                
+                # 2. Cache put
+                put_times = []
+                for _ in range(args.repetitions):
+                    start = time.perf_counter()
+                    cache.put(filepath, content_hash, result)
+                    end = time.perf_counter()
+                    put_times.append(end - start)
+                cache_put_time = sum(put_times) / len(put_times)
+
+                # 3. Cache get (cache hit)
+                get_times = []
+                for _ in range(args.repetitions):
+                    start = time.perf_counter()
+                    cache.get(filepath, content_hash)
+                    end = time.perf_counter()
+                    get_times.append(end - start)
+                cache_get_time = sum(get_times) / len(get_times)
+                
+                print(f"  {os.path.basename(filepath):<25} ({file_size:>7,} bytes) - "
+                      f"Analysis: {analysis_time*1000:>6.2f}ms, "
+                      f"Put: {cache_put_time*1000:>6.2f}ms, "
+                      f"Get: {cache_get_time*1000:>6.2f}ms")
+
+                total_analysis_time += analysis_time
+                total_cache_put_time += cache_put_time
+                total_cache_get_time += cache_get_time
+                file_count += 1
+                
+            # Close connection if it exists (for SQLite)
+            if hasattr(cache, 'close'):
+                cache.close()
+
+            if file_count > 0:
+                results[cache_type] = {
+                    'avg_analysis': total_analysis_time / file_count,
+                    'avg_put': total_cache_put_time / file_count,
+                    'avg_get': total_cache_get_time / file_count,
+                }
+
+    # --- Summary ---
+    print("\n" + "=" * 70)
+    print("Benchmark Summary (average times in ms)")
+    print("-" * 70)
+    print(f"{'Cache Type':<15} | {'Analysis (Miss)':>20} | {'Cache Put':>15} | {'Cache Get (Hit)':>18}")
+    print("-" * 70)
+
+    if 'null' in results:
+        baseline_miss = results['null']['avg_analysis']
+        
+        for cache_type, data in results.items():
+            analysis_ms = data['avg_analysis'] * 1000
+            put_ms = data['avg_put'] * 1000
+            get_ms = data['avg_get'] * 1000
+            
+            # Savings calculation
+            savings_ms = (baseline_miss - data['avg_get']) * 1000
+            savings_percent = (savings_ms / analysis_ms) * 100 if analysis_ms > 0 else 0
+            
+            print(f"{cache_type:<15} | {analysis_ms:>20.3f} | {put_ms:>15.3f} | {get_ms:>18.3f} | {savings_percent:>6.1f}%")
+
+    print("-" * 70)
+    print("\nRECOMMENDATION:")
     
-    # Benchmark results
-    total_analysis_time = 0
-    total_hash_time = 0
-    total_serialize_time = 0
-    total_deserialize_time = 0
-    total_cache_hit_time = 0
-    total_size = 0
-    file_count = 0
-    
-    print("\nAnalyzing files...")
-    print("-" * 60)
-    
-    for filepath in test_files[:args.max_files]:  # Test specified number of files
-        file_size = os.path.getsize(filepath)
-        print(f"\nFile: {os.path.basename(filepath)} ({file_size:,} bytes)")
+    if 'sqlite' in results and 'disk' in results:
+        sqlite_get = results['sqlite']['avg_get']
+        disk_get = results['disk']['avg_get']
         
-        # Measure analysis time
-        analysis_time, result = measure_analysis_time(filepath, 5)
-        print(f"  Analysis time: {analysis_time*1000:.3f} ms")
-        
-        # Measure hash computation time
-        hash_time = measure_hash_time(filepath, 5)
-        print(f"  Hash time: {hash_time*1000:.3f} ms")
-        
-        # Measure serialization time
-        serialize_time, deserialize_time, serialized_size = measure_serialization_time(result, 5)
-        print(f"  Serialize time: {serialize_time*1000:.3f} ms")
-        print(f"  Deserialize time: {deserialize_time*1000:.3f} ms")
-        print(f"  Serialized size: {serialized_size:,} bytes")
-        
-        # Simulate cache hit time (hash + deserialize)
-        cache_hit_time = hash_time + deserialize_time
-        print(f"  Cache hit time: {cache_hit_time*1000:.3f} ms")
-        
-        # Calculate savings
-        savings = analysis_time - cache_hit_time
-        savings_percent = (savings / analysis_time) * 100 if analysis_time > 0 else 0
-        print(f"  Potential savings: {savings*1000:.3f} ms ({savings_percent:.1f}%)")
-        
-        # Accumulate totals
-        total_analysis_time += analysis_time
-        total_hash_time += hash_time
-        total_serialize_time += serialize_time
-        total_deserialize_time += deserialize_time
-        total_cache_hit_time += cache_hit_time
-        total_size += serialized_size
-        file_count += 1
-    
-    print("\n" + "=" * 60)
-    print("SUMMARY")
-    print("=" * 60)
-    
-    if file_count > 0:
-        avg_analysis = (total_analysis_time / file_count) * 1000
-        avg_cache_hit = (total_cache_hit_time / file_count) * 1000
-        avg_savings = avg_analysis - avg_cache_hit
-        avg_savings_percent = (avg_savings / avg_analysis) * 100 if avg_analysis > 0 else 0
-        
-        print(f"\nFiles analyzed: {file_count}")
-        print(f"Average analysis time: {avg_analysis:.3f} ms")
-        print(f"Average cache hit time: {avg_cache_hit:.3f} ms")
-        print(f"Average savings per file: {avg_savings:.3f} ms ({avg_savings_percent:.1f}%)")
-        print(f"Average serialized size: {total_size/file_count:,.0f} bytes")
-        
-        print(f"\nTotal time for {file_count} files:")
-        print(f"  Without cache: {total_analysis_time:.3f} seconds")
-        print(f"  With cache (all hits): {total_cache_hit_time:.3f} seconds")
-        print(f"  Time saved: {total_analysis_time - total_cache_hit_time:.3f} seconds")
-        
-        # Estimate for larger build
-        estimated_files = 100
-        estimated_no_cache = avg_analysis * estimated_files / 1000
-        estimated_with_cache = avg_cache_hit * estimated_files / 1000
-        print(f"\nEstimated for {estimated_files} files:")
-        print(f"  Without cache: {estimated_no_cache:.2f} seconds")
-        print(f"  With cache: {estimated_with_cache:.2f} seconds")
-        print(f"  Time saved: {estimated_no_cache - estimated_with_cache:.2f} seconds")
-        
-        # Cache hit rate simulation
-        print("\nCache effectiveness depends on hit rate:")
-        for hit_rate in [0.5, 0.7, 0.9, 0.95]:
-            effective_time = (hit_rate * avg_cache_hit + (1-hit_rate) * avg_analysis) * estimated_files / 1000
-            saved = estimated_no_cache - effective_time
-            print(f"  {hit_rate*100:.0f}% hit rate: {saved:.2f} seconds saved")
-    
-    print("\n" + "=" * 60)
-    print("RECOMMENDATION")
-    print("=" * 60)
-    
-    if file_count > 0 and avg_savings_percent > 50:
-        print("\n✓ Caching is HIGHLY RECOMMENDED")
-        print(f"  - Average savings of {avg_savings_percent:.1f}% per file")
-        print("  - Significant time savings for repeated builds")
-    elif file_count > 0 and avg_savings_percent > 20:
-        print("\n✓ Caching is RECOMMENDED")
-        print(f"  - Average savings of {avg_savings_percent:.1f}% per file")
-        print("  - Moderate time savings for repeated builds")
-    else:
-        print("\n⚠ Caching may not provide significant benefits")
-        print(f"  - Only {avg_savings_percent:.1f}% average savings per file")
-        print("  - Consider the complexity vs benefit trade-off")
+        if sqlite_get < disk_get:
+            print("✓ SQLite cache is recommended for best performance.")
+        else:
+            print("✓ Disk cache is recommended for best performance.")
+            
+    print("  - Consider using 'memory' for single runs where persistence is not needed.")
+    print("  - 'null' cache is useful for forcing re-analysis, but offers no speed advantage.")
+
 
 
 if __name__ == "__main__":
