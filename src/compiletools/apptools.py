@@ -318,7 +318,7 @@ def _extend_includes_using_git_root(args):
                 print(f"Extended includes to have the gitroots {git_roots}")
         else:
             raise ValueError(
-                f"args.git_root is True but no git roots found. :( .  If this is expected then specify --no-git-root."
+                "args.git_root is True but no git roots found. :( .  If this is expected then specify --no-git-root."
             )
 
 

@@ -1,8 +1,4 @@
-import sys
 import os
-import shutil
-import tempfile
-import configargparse
 
 import compiletools.testhelper as uth
 import compiletools.configutils

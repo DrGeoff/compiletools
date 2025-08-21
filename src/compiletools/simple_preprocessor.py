@@ -1,7 +1,5 @@
 """Simple C preprocessor for handling conditional compilation directives."""
 
-import sys
-import compiletools.compiler_macros
 
 
 class SimplePreprocessor:

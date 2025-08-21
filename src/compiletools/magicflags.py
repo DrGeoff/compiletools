@@ -2,9 +2,7 @@ import sys
 import os
 import subprocess
 import re
-import configargparse
 from collections import defaultdict
-from io import open
 import compiletools.utils
 import compiletools.git_utils
 import compiletools.headerdeps
@@ -12,6 +10,7 @@ import compiletools.wrappedos
 import compiletools.configutils
 import compiletools.apptools
 import compiletools.compiler_macros
+import compiletools.dirnamer
 from compiletools.file_analyzer import create_file_analyzer
 import compiletools.timing
 
@@ -77,7 +76,7 @@ class MagicFlagsBase:
 
     def readfile(self, filename):
         """Derived classes implement this method"""
-        raise NotImplemented
+        raise NotImplementedError
 
     def __call__(self, filename):
         with compiletools.timing.time_operation(f"magic_flags_analysis_{os.path.basename(filename)}"):
@@ -439,7 +438,8 @@ class DirectMagicFlags(MagicFlagsBase):
                 
                 # Use FileAnalyzer for efficient file reading
                 # Note: create_file_analyzer() handles StringZilla/Legacy fallback internally
-                analyzer = create_file_analyzer(fname, max_read_size, self._args.verbose)
+                cache_type = compiletools.dirnamer.get_cache_type(args=self._args)
+                analyzer = create_file_analyzer(fname, max_read_size, self._args.verbose, cache_type=cache_type)
                 analysis_result = analyzer.analyze()
                 file_content = analysis_result.text
                 

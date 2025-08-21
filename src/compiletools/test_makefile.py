@@ -1,9 +1,6 @@
 import os
-import shutil
 import subprocess
-import tempfile
 import filecmp
-import configargparse
 
 import compiletools.utils
 import compiletools.makefile

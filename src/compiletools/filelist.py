@@ -1,12 +1,10 @@
 import sys
 import os
-import configargparse
 
 import compiletools.utils
 import compiletools.git_utils
 import compiletools.wrappedos
 import compiletools.apptools
-from compiletools.hunter import Hunter
 
 
 class FlatStyle(compiletools.git_utils.NameAdjuster):

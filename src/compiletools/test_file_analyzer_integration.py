@@ -8,12 +8,11 @@ import os
 import tempfile
 import configargparse
 from textwrap import dedent
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import compiletools.test_base as tb
 import compiletools.headerdeps
 import compiletools.magicflags
-import compiletools.testhelper as uth
 
 
 class TestHeaderDepsIntegration(tb.BaseCompileToolsTestCase):

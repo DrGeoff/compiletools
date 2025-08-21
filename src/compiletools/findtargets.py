@@ -1,7 +1,6 @@
 import sys
 import os
 from io import open
-import configargparse
 import compiletools.utils
 import compiletools.namer
 import compiletools.configutils
@@ -131,7 +130,7 @@ class FindTargets(object):
             variant = getattr(self._args, 'variant', 'unknown')
             config_file = getattr(self._args, 'config', None)
             
-            print(f"Error: No exemarkers configured.", file=sys.stderr)
+            print("Error: No exemarkers configured.", file=sys.stderr)
             print(f"  Variant: {variant}", file=sys.stderr)
             if config_file:
                 print(f"  Config file: {config_file}", file=sys.stderr)

@@ -1,6 +1,4 @@
-import sys
 import os
-import configargparse
 
 import compiletools.testhelper as uth
 import compiletools.utils as utils

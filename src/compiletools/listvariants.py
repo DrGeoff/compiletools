@@ -1,10 +1,7 @@
-import sys
-import configargparse
 import fnmatch
 import os
 import compiletools.configutils
 import compiletools.utils
-from compiletools.version import __version__
 
 
 def add_arguments(parser):

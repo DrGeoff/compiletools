@@ -1,6 +1,5 @@
 """Tests for the compiler_macros module."""
 
-import pytest
 import subprocess
 from unittest.mock import patch, MagicMock
 import compiletools.compiler_macros as cm

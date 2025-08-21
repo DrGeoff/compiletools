@@ -1,6 +1,5 @@
 import os
 import re
-from io import open
 import functools
 
 # At deep verbose levels pprint is used
@@ -55,7 +54,7 @@ class HeaderDepsBase(object):
 
     def _process_impl(self, realpath):
         """Derived classes implement this function"""
-        raise NotImplemented
+        raise NotImplementedError
 
     def process(self, filename):
         """Return the set of dependencies for a given filename"""
@@ -176,14 +175,20 @@ class DirectHeaderDeps(HeaderDepsBase):
 
     def _create_include_list(self, realpath):
         """Internal use. Create the list of includes for the given file"""
+        # Import modules outside timing block
+        import compiletools.dirnamer
+        
         with compiletools.timing.time_operation(f"include_analysis_{os.path.basename(realpath)}"):
             max_read_size = getattr(self.args, 'max_file_read_size', 0)
             
             # Use FileAnalyzer for efficient file reading and pattern detection  
             # Note: create_file_analyzer() handles StringZilla/Legacy fallback internally
-            from compiletools.file_analyzer import create_file_analyzer
+            
+            # Get cache type from configuration
+            cache_type = compiletools.dirnamer.get_cache_type(args=self.args)
+            
             with compiletools.timing.time_operation(f"file_read_{os.path.basename(realpath)}"):
-                analyzer = create_file_analyzer(realpath, max_read_size, self.args.verbose)
+                analyzer = create_file_analyzer(realpath, max_read_size, self.args.verbose, cache_type=cache_type)
                 analysis_result = analyzer.analyze()
                 text = analysis_result.text
 
