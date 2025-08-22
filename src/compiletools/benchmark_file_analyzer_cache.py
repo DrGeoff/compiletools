@@ -193,9 +193,9 @@ def main():
                 cache_get_time = sum(get_times) / len(get_times)
                 
                 print(f"  {os.path.basename(filepath):<25} ({file_size:>7,} bytes) - "
-                      f"Analysis: {analysis_time*1000:>6.2f}ms, "
-                      f"Put: {cache_put_time*1000:>6.2f}ms, "
-                      f"Get: {cache_get_time*1000:>6.2f}ms")
+                      f"Analysis: {analysis_time*1000000:>8.1f}μs, "
+                      f"Put: {cache_put_time*1000000:>8.1f}μs, "
+                      f"Get: {cache_get_time*1000000:>8.1f}μs")
 
                 total_analysis_time += analysis_time
                 total_cache_put_time += cache_put_time
@@ -215,7 +215,7 @@ def main():
 
     # --- Summary ---
     print("\n" + "=" * 70)
-    print("Benchmark Summary (average times in ms)")
+    print("Benchmark Summary (average times in μs)")
     print("-" * 70)
     print(f"{'Cache Type':<15} | {'Analysis (Miss)':>20} | {'Cache Put':>15} | {'Cache Get (Hit)':>18}")
     print("-" * 70)
@@ -224,15 +224,15 @@ def main():
         baseline_miss = results['null']['avg_analysis']
         
         for cache_type, data in results.items():
-            analysis_ms = data['avg_analysis'] * 1000
-            put_ms = data['avg_put'] * 1000
-            get_ms = data['avg_get'] * 1000
+            analysis_us = data['avg_analysis'] * 1000000
+            put_us = data['avg_put'] * 1000000
+            get_us = data['avg_get'] * 1000000
             
             # Savings calculation
-            savings_ms = (baseline_miss - data['avg_get']) * 1000
-            savings_percent = (savings_ms / analysis_ms) * 100 if analysis_ms > 0 else 0
+            savings_us = (baseline_miss - data['avg_get']) * 1000000
+            savings_percent = (savings_us / analysis_us) * 100 if analysis_us > 0 else 0
             
-            print(f"{cache_type:<15} | {analysis_ms:>20.3f} | {put_ms:>15.3f} | {get_ms:>18.3f} | {savings_percent:>6.1f}%")
+            print(f"{cache_type:<15} | {analysis_us:>20.1f} | {put_us:>15.1f} | {get_us:>18.1f} | {savings_percent:>6.1f}%")
 
     print("-" * 70)
     print("\nRECOMMENDATION:")

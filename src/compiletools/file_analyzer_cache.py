@@ -456,9 +456,25 @@ class SQLiteCache(FileAnalyzerCache):
 
     def _get_conn(self) -> sqlite3.Connection:
         """Get database connection, creating if it doesn't exist."""
-        if self._conn is None:
+        if self._conn is None or self._is_connection_closed():
+            if self._conn:
+                try:
+                    self._conn.close()
+                except sqlite3.Error:
+                    pass
             self._conn = sqlite3.connect(self._db_path)
         return self._conn
+    
+    def _is_connection_closed(self) -> bool:
+        """Check if the current connection is closed or invalid."""
+        if self._conn is None:
+            return True
+        try:
+            # Try a simple query to check if connection is valid
+            self._conn.execute("SELECT 1")
+            return False
+        except sqlite3.Error:
+            return True
     
     def _init_db(self):
         """Initialize SQLite database schema."""
