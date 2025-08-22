@@ -115,16 +115,40 @@ def get_complete_working_directory_hashes() -> Dict[Path, str]:
     - Untracked files (excluding ignored files)
     
     Returns complete working directory content fingerprint.
+    Uses only ONE batch_hash_objects call for optimal performance.
     """
-    # Get hashes for all tracked files
-    tracked_hashes = get_current_blob_hashes()
-    
-    # Get all untracked files and hash them
+    # Get index metadata for tracked files
+    index_metadata = get_index_metadata()
+    unchanged_tracked = {}
+    changed_tracked_paths = []
+
+    # Process tracked files, separating unchanged from changed
+    for path, (blob_sha_index, size_index, mtime_index) in index_metadata.items():
+        try:
+            size_fs, mtime_fs = get_file_stat(path)
+        except FileNotFoundError:
+            # If the file is missing, skip it
+            continue
+
+        if size_fs == size_index and mtime_fs == mtime_index:
+            # File unchanged, use cached hash from index
+            unchanged_tracked[path] = blob_sha_index
+        else:
+            # File changed, needs to be hashed
+            changed_tracked_paths.append(path)
+
+    # Get all untracked files
     untracked_files = get_untracked_files()
-    untracked_hashes = batch_hash_objects(untracked_files)
     
-    # Merge tracked and untracked results
-    return {**tracked_hashes, **untracked_hashes}
+    # SINGLE batch hash call for all files that need hashing
+    all_files_to_hash = changed_tracked_paths + untracked_files
+    if all_files_to_hash:
+        new_hashes = batch_hash_objects(all_files_to_hash)
+    else:
+        new_hashes = {}
+    
+    # Combine results: unchanged tracked + newly hashed tracked + untracked
+    return {**unchanged_tracked, **new_hashes}
 
 def main():
     """Main entry point for ct-git-sha-report command."""

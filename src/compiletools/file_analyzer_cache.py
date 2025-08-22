@@ -213,6 +213,9 @@ class FileAnalyzerCache(ABC):
     def compute_content_hash(self, filepath: str) -> str:
         """Compute hash of file content for cache key.
         
+        Uses Git blob hashing for consistency with git_sha_report.
+        For batch operations, use compute_content_hashes() for better performance.
+        
         Args:
             filepath: Path to file
             
