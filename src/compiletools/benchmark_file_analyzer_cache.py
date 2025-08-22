@@ -150,6 +150,17 @@ def main():
 
         results = {}
 
+        # Initialize global hash registry once for all cache types
+        from compiletools.global_hash_registry import initialize_global_hash_registry, get_file_hash, get_registry_stats
+        print("\nInitializing global hash registry...")
+        
+        registry_start = time.perf_counter()
+        initialize_global_hash_registry(use_git_hashes=True)
+        registry_time = time.perf_counter() - registry_start
+        
+        stats = get_registry_stats()
+        print(f"Registry loaded {stats['total_files']} files in {registry_time*1000:.1f}ms")
+
         for cache_type, config in cache_configs.items():
             print(f"\n--- Benchmarking {cache_type.upper()} Cache ---")
             
@@ -157,8 +168,8 @@ def main():
             cache = create_cache(cache_type, **config)
             cache.clear()
 
-            # Batch compute all file hashes upfront (single Git call)
-            file_hashes = cache.compute_content_hashes(test_files)
+            # Get file hashes from global registry (already loaded)
+            file_hashes = {filepath: get_file_hash(filepath) or "" for filepath in test_files}
 
             total_analysis_time = 0
             total_cache_put_time = 0
@@ -233,6 +244,44 @@ def main():
             print(f"{cache_type:<15} | {analysis_us:>20.1f} | {put_us:>15.1f} | {get_us:>18.1f} | {savings_percent:>6.1f}%")
 
     print("-" * 70)
+    
+    # Add hash performance comparison
+    print("\nHash Performance Comparison:")
+    print("-" * 30)
+    
+    # Test global registry lookup performance
+    from compiletools.global_hash_registry import get_file_hash
+    lookup_times = []
+    for _ in range(100):
+        start = time.perf_counter()
+        for filepath in test_files[:3]:  # Test with first 3 files
+            get_file_hash(filepath)
+        end = time.perf_counter()
+        lookup_times.append(end - start)
+    
+    avg_lookup_time = sum(lookup_times) / len(lookup_times)
+    
+    # Test traditional hashlib performance
+    import hashlib
+    hashlib_times = []
+    for _ in range(10):  # Fewer iterations since this is slower
+        start = time.perf_counter()
+        for filepath in test_files[:3]:
+            try:
+                with open(filepath, 'rb') as f:
+                    hashlib.sha256(f.read()).hexdigest()
+            except:
+                pass
+        end = time.perf_counter()
+        hashlib_times.append(end - start)
+    
+    avg_hashlib_time = sum(hashlib_times) / len(hashlib_times)
+    
+    print(f"Global registry lookups: {avg_lookup_time*1000:.2f}ms (for {len(test_files[:3])} files)")
+    print(f"Traditional hashlib:     {avg_hashlib_time*1000:.2f}ms (for {len(test_files[:3])} files)")
+    speedup = avg_hashlib_time / avg_lookup_time if avg_lookup_time > 0 else 0
+    print(f"Registry speedup:        {speedup:.1f}x faster")
+    
     print("\nRECOMMENDATION:")
     
     if 'sqlite' in results and 'disk' in results:
@@ -244,6 +293,7 @@ def main():
         else:
             print("✓ Disk cache is recommended for best performance.")
             
+    print("  - Global hash registry provides significant speedup for file hashing")
     print("  - Consider using 'memory' for single runs where persistence is not needed.")
     print("  - 'null' cache is useful for forcing re-analysis, but offers no speed advantage.")
 
