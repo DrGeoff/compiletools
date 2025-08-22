@@ -15,7 +15,6 @@ while SQLiteCache stores everything in a single database file.
 """
 
 import hashlib
-from compiletools.git_sha_report import batch_hash_objects
 import os
 import pickle
 import sqlite3
@@ -213,35 +212,37 @@ class FileAnalyzerCache(ABC):
     def compute_content_hash(self, filepath: str) -> str:
         """Compute hash of file content for cache key.
         
-        Uses Git blob hashing for consistency with git_sha_report.
-        For batch operations, use compute_content_hashes() for better performance.
+        Uses fast SHA256 hashing for cache performance.
+        For Git-based working directory fingerprinting, use git_sha_report module.
         
         Args:
             filepath: Path to file
             
         Returns:
-            Git blob hash of file content
+            SHA256 hash of file content
         """
-        hashes = batch_hash_objects([Path(filepath)])
-        return hashes.get(Path(filepath), "")
+        try:
+            with open(filepath, 'rb') as f:
+                return hashlib.sha256(f.read()).hexdigest()
+        except (IOError, OSError):
+            return ""
     
     def compute_content_hashes(self, filepaths: list[str]) -> dict[str, str]:
-        """Compute hashes for multiple files efficiently in a single Git call.
+        """Compute hashes for multiple files efficiently.
         
         Args:
             filepaths: List of file paths to hash
             
         Returns:
-            Dictionary mapping filepath to Git blob hash
+            Dictionary mapping filepath to SHA256 hash
         """
         if not filepaths:
             return {}
         
-        path_objects = [Path(fp) for fp in filepaths]
-        hashes = batch_hash_objects(path_objects)
-        
-        # Convert back to string keys
-        return {str(path): hashes.get(path, "") for path in path_objects}
+        result = {}
+        for filepath in filepaths:
+            result[filepath] = self.compute_content_hash(filepath)
+        return result
 
 
 class NullCache(FileAnalyzerCache):

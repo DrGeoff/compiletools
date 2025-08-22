@@ -88,6 +88,15 @@ class DirectHeaderDeps(HeaderDepsBase):
         # Keep track of ancestor paths so that we can do header cycle detection
         self.ancestor_paths = []
 
+        # Create shared cache for all file analyzers in this header dependency session
+        import compiletools.dirnamer
+        cache_type = compiletools.dirnamer.get_cache_type(args=args)
+        if cache_type:
+            from compiletools.file_analyzer_cache import create_cache
+            self.shared_cache = create_cache(cache_type)
+        else:
+            self.shared_cache = None
+
         # Grab the include paths from the CPPFLAGS
         # By default, exclude system paths
         # TODO: include system paths if the user sets (the currently nonexistent) "use-system" flag
@@ -184,11 +193,8 @@ class DirectHeaderDeps(HeaderDepsBase):
             # Use FileAnalyzer for efficient file reading and pattern detection  
             # Note: create_file_analyzer() handles StringZilla/Legacy fallback internally
             
-            # Get cache type from configuration
-            cache_type = compiletools.dirnamer.get_cache_type(args=self.args)
-            
             with compiletools.timing.time_operation(f"file_read_{os.path.basename(realpath)}"):
-                analyzer = create_file_analyzer(realpath, max_read_size, self.args.verbose, cache_type=cache_type)
+                analyzer = create_file_analyzer(realpath, max_read_size, self.args.verbose, cache=self.shared_cache)
                 analysis_result = analyzer.analyze()
                 text = analysis_result.text
 
