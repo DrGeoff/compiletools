@@ -166,22 +166,27 @@ class TestCacheBackends:
     def test_disk_cache_persistence(self, simple_cpp_file):
         """Test that disk cache persists between instances."""
         from compiletools.file_analyzer import FileAnalysisResult
+        import tempfile
         
         # Use existing sample file instead of creating temporary file
         test_file = simple_cpp_file
         
-        # Create first cache instance and store data
-        cache1 = DiskCache()
-        result = FileAnalysisResult("test content", [0], [], {"include": [0]}, 16, False)
-        cache1.put(test_file, "test_hash", result)
-        
-        # Create second cache instance - should retrieve same data
-        cache2 = DiskCache() 
-        retrieved = cache2.get(test_file, "test_hash")
-        
-        assert retrieved is not None
-        assert retrieved.text == "test content"
-        assert retrieved.include_positions == [0]
+        # Use a shared cache directory for this test
+        with tempfile.TemporaryDirectory() as temp_dir:
+            shared_cache_dir = temp_dir + "/shared_persistence_test"
+            
+            # Create first cache instance and store data
+            cache1 = DiskCache(cache_dir=shared_cache_dir)
+            result = FileAnalysisResult("test content", [0], [], {"include": [0]}, 16, False)
+            cache1.put(test_file, "test_hash", result)
+            
+            # Create second cache instance - should retrieve same data
+            cache2 = DiskCache(cache_dir=shared_cache_dir) 
+            retrieved = cache2.get(test_file, "test_hash")
+            
+            assert retrieved is not None
+            assert retrieved.text == "test content"
+            assert retrieved.include_positions == [0]
     
     @pytest.mark.skipif(
         True, # Skip by default as it requires Redis server
