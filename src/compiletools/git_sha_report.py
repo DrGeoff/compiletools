@@ -1,19 +1,27 @@
 import subprocess
 import shlex
+import os
 from pathlib import Path
 from typing import Dict, Tuple
 from compiletools import wrappedos
+from compiletools.git_utils import find_git_root
 
 def run_git(cmd: str, input_data: str = None) -> str:
-    """Run a git command, optionally with stdin, and return stdout."""
-    result = subprocess.run(
-        shlex.split(cmd),
-        input=input_data,
-        capture_output=True,
-        text=True,
-        check=True
-    )
-    return result.stdout.strip()
+    """Run a git command from the repository root, optionally with stdin, and return stdout."""
+    git_root = find_git_root()
+    original_cwd = os.getcwd()
+    try:
+        os.chdir(git_root)
+        result = subprocess.run(
+            shlex.split(cmd),
+            input=input_data,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return result.stdout.strip()
+    finally:
+        os.chdir(original_cwd)
 
 def get_index_metadata() -> Dict[Path, Tuple[str, int, int]]:
     """
