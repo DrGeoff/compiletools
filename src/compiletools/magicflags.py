@@ -407,6 +407,14 @@ class DirectMagicFlags(MagicFlagsBase):
         
         headers = self._headerdeps.process(filename)
         
+        # Create shared cache for all file analyzers in this session
+        cache_type = compiletools.dirnamer.get_cache_type(args=self._args)
+        if cache_type:
+            from compiletools.file_analyzer_cache import create_cache
+            shared_cache = create_cache(cache_type)
+        else:
+            shared_cache = None
+        
         # Process files iteratively until no new macros are discovered
         # This handles cases where macros defined in one file affect conditional
         # compilation in other files
@@ -436,10 +444,9 @@ class DirectMagicFlags(MagicFlagsBase):
                 # Read file content using FileAnalyzer respecting max_file_read_size configuration
                 max_read_size = getattr(self._args, 'max_file_read_size', 0)
                 
-                # Use FileAnalyzer for efficient file reading
+                # Use FileAnalyzer for efficient file reading with shared cache
                 # Note: create_file_analyzer() handles StringZilla/Legacy fallback internally
-                cache_type = compiletools.dirnamer.get_cache_type(args=self._args)
-                analyzer = create_file_analyzer(fname, max_read_size, self._args.verbose, cache_type=cache_type)
+                analyzer = create_file_analyzer(fname, max_read_size, self._args.verbose, cache=shared_cache)
                 analysis_result = analyzer.analyze()
                 file_content = analysis_result.text
                 

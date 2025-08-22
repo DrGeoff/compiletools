@@ -463,7 +463,7 @@ class CachedFileAnalyzer(FileAnalyzer):
 
 
 def create_file_analyzer(filepath: str, max_read_size: int = 0, verbose: int = 0, 
-                        cache_type: Optional[str] = None) -> FileAnalyzer:
+                        cache_type: Optional[str] = None, cache: Optional['FileAnalyzerCache'] = None) -> FileAnalyzer:
     """Factory function to create appropriate FileAnalyzer implementation.
     
     Args:
@@ -472,6 +472,7 @@ def create_file_analyzer(filepath: str, max_read_size: int = 0, verbose: int = 0
         verbose: Verbosity level for debugging
         cache_type: Type of cache to use ('null', 'memory', 'disk', 'sqlite', 'redis').
                    If None, no external caching is added (uses only internal mtime cache).
+        cache: Existing cache instance to reuse. If provided, cache_type is ignored.
         
     Returns:
         FileAnalyzer instance, optionally wrapped with caching
@@ -485,7 +486,11 @@ def create_file_analyzer(filepath: str, max_read_size: int = 0, verbose: int = 0
         analyzer = LegacyFileAnalyzer(filepath, max_read_size, verbose)
     
     # Add caching if requested
-    if cache_type is not None:
+    if cache is not None:
+        # Use provided cache instance
+        analyzer = CachedFileAnalyzer(analyzer, cache)
+    elif cache_type is not None:
+        # Create new cache instance
         from compiletools.file_analyzer_cache import create_cache
         cache = create_cache(cache_type)
         analyzer = CachedFileAnalyzer(analyzer, cache)
