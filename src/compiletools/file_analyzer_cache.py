@@ -15,6 +15,7 @@ while SQLiteCache stores everything in a single database file.
 """
 
 import hashlib
+from compiletools.git_sha_report import batch_hash_objects
 import os
 import pickle
 import sqlite3
@@ -216,13 +217,28 @@ class FileAnalyzerCache(ABC):
             filepath: Path to file
             
         Returns:
-            SHA256 hash of file content
+            Git blob hash of file content
         """
-        try:
-            with open(filepath, 'rb') as f:
-                return hashlib.sha256(f.read()).hexdigest()
-        except (IOError, OSError):
-            return ""
+        hashes = batch_hash_objects([Path(filepath)])
+        return hashes.get(Path(filepath), "")
+    
+    def compute_content_hashes(self, filepaths: list[str]) -> dict[str, str]:
+        """Compute hashes for multiple files efficiently in a single Git call.
+        
+        Args:
+            filepaths: List of file paths to hash
+            
+        Returns:
+            Dictionary mapping filepath to Git blob hash
+        """
+        if not filepaths:
+            return {}
+        
+        path_objects = [Path(fp) for fp in filepaths]
+        hashes = batch_hash_objects(path_objects)
+        
+        # Convert back to string keys
+        return {str(path): hashes.get(path, "") for path in path_objects}
 
 
 class NullCache(FileAnalyzerCache):
@@ -647,3 +663,54 @@ def create_cache(cache_type: str = 'disk', **kwargs) -> FileAnalyzerCache:
         raise ValueError(f"Unknown cache type: {cache_type}")
     
     return cache_class(**kwargs)
+
+
+def batch_analyze_files(filepaths: list[str], cache_type: str = 'disk', **cache_kwargs) -> dict[str, 'FileAnalysisResult']:
+    """Efficiently analyze multiple files with optimal batching.
+    
+    This function optimizes performance by computing all file hashes in a single
+    Git call, then analyzing only files that aren't cached.
+    
+    Args:
+        filepaths: List of file paths to analyze
+        cache_type: Type of cache to use ('null', 'memory', 'disk', 'sqlite', 'redis')
+        **cache_kwargs: Additional arguments for cache constructor
+        
+    Returns:
+        Dictionary mapping filepath to FileAnalysisResult
+    """
+    from compiletools.file_analyzer import create_file_analyzer
+    
+    if not filepaths:
+        return {}
+    
+    # Create cache
+    cache = create_cache(cache_type, **cache_kwargs)
+    
+    # Batch compute all file hashes (single Git call)
+    file_hashes = cache.compute_content_hashes(filepaths)
+    
+    results = {}
+    files_to_analyze = []
+    
+    # Check cache for each file
+    for filepath in filepaths:
+        content_hash = file_hashes.get(filepath, "")
+        if content_hash:
+            cached_result = cache.get(filepath, content_hash)
+            if cached_result is not None:
+                results[filepath] = cached_result
+            else:
+                files_to_analyze.append((filepath, content_hash))
+    
+    # Analyze uncached files
+    for filepath, content_hash in files_to_analyze:
+        analyzer = create_file_analyzer(filepath)
+        result = analyzer.analyze()
+        results[filepath] = result
+        
+        # Cache the result
+        if content_hash:
+            cache.put(filepath, content_hash, result)
+    
+    return results

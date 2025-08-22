@@ -8,7 +8,8 @@ This script measures:
 4. Potential time savings from caching
 """
 import argparse
-import hashlib
+from compiletools.git_sha_report import batch_hash_objects
+from pathlib import Path
 import os
 import pickle
 import time
@@ -20,12 +21,6 @@ from pathlib import Path
 from compiletools.file_analyzer import create_file_analyzer, FileAnalysisResult
 from compiletools.file_analyzer_cache import create_cache, NullCache, CACHE_FORMAT_VERSION
 from compiletools.testhelper import samplesdir
-
-
-def hash_file_content(filepath: str) -> str:
-    """Compute hash of file content for cache key."""
-    with open(filepath, 'rb') as f:
-        return hashlib.sha256(f.read()).hexdigest()
 
 
 def measure_analysis_time(filepath: str, repetitions: int = 10) -> Tuple[float, FileAnalysisResult]:
@@ -162,6 +157,9 @@ def main():
             cache = create_cache(cache_type, **config)
             cache.clear()
 
+            # Batch compute all file hashes upfront (single Git call)
+            file_hashes = cache.compute_content_hashes(test_files)
+
             total_analysis_time = 0
             total_cache_put_time = 0
             total_cache_get_time = 0
@@ -172,7 +170,7 @@ def main():
                 
                 # 1. Full analysis (cache miss)
                 analysis_time, result = measure_analysis_time(filepath, args.repetitions)
-                content_hash = hash_file_content(filepath)
+                content_hash = file_hashes.get(filepath, "")
                 
                 # 2. Cache put
                 put_times = []
