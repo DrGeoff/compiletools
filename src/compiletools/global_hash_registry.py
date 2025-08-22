@@ -6,7 +6,6 @@ This eliminates the need for individual hashlib calls and leverages the
 git-sha-report functionality efficiently.
 """
 
-import os
 from typing import Dict, Optional
 import threading
 from compiletools import wrappedos
