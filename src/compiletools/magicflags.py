@@ -132,15 +132,15 @@ class MagicFlagsBase:
         for pkg in flag.split():
             # TODO: when we move to python 3.7, use text=True rather than universal_newlines=True and capture_output=True,
             with compiletools.timing.time_operation(f"pkg_config_cflags_{pkg}"):
-                cflags = (
-                    subprocess.run(
-                        ["pkg-config", "--cflags", pkg],
-                        stdout=subprocess.PIPE,
-                        universal_newlines=True,
-                    )
-                    .stdout.rstrip()
-                    .replace("-I", "-isystem ")
-                )  # This helps the CppHeaderDeps avoid searching packages
+                cflags_raw = subprocess.run(
+                    ["pkg-config", "--cflags", pkg],
+                    stdout=subprocess.PIPE,
+                    universal_newlines=True,
+                ).stdout.rstrip()
+                
+                # Replace -I flags with -isystem, but only when -I is a standalone flag
+                # This helps the CppHeaderDeps avoid searching packages
+                cflags = re.sub(r'-I(?=\s|/|$)', '-isystem', cflags_raw)
             
             with compiletools.timing.time_operation(f"pkg_config_libs_{pkg}"):
                 libs = subprocess.run(
