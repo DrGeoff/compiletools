@@ -694,7 +694,12 @@ def main(argv=None):
     from compiletools.global_hash_registry import initialize_global_hash_registry
     initialize_global_hash_registry(use_git_hashes=True)
     
-    headerdeps = compiletools.headerdeps.create(args)
+    # Create shared cache for all file analysis components (pythonic dependency injection)
+    from compiletools.file_analyzer import create_shared_analysis_cache
+    shared_file_analyzer_cache = create_shared_analysis_cache(args)
+    
+    # Inject shared cache into HeaderDeps, MagicFlags will automatically use HeaderDeps cache
+    headerdeps = compiletools.headerdeps.create(args, file_analyzer_cache=shared_file_analyzer_cache)
     magicparser = compiletools.magicflags.create(args, headerdeps)
     hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser)
     makefile_creator = MakefileCreator(args, hunter)

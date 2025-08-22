@@ -16,13 +16,13 @@ import compiletools.timing
 
 
 
-def create(args):
+def create(args, file_analyzer_cache=None):
     """HeaderDeps Factory"""
     classname = args.headerdeps.title() + "HeaderDeps"
     if args.verbose >= 4:
         print("Creating " + classname + " to process header dependencies.")
     depsclass = globals()[classname]
-    depsobject = depsclass(args)
+    depsobject = depsclass(args, file_analyzer_cache=file_analyzer_cache)
     return depsobject
 
 
@@ -82,21 +82,34 @@ class HeaderDepsBase(object):
 class DirectHeaderDeps(HeaderDepsBase):
     """Create a tree structure that shows the header include tree"""
 
-    def __init__(self, args):
+    def __init__(self, args, file_analyzer_cache=None):
         HeaderDepsBase.__init__(self, args)
 
         # Keep track of ancestor paths so that we can do header cycle detection
         self.ancestor_paths = []
 
-        # Create shared cache for all file analyzers in this header dependency session
-        import compiletools.dirnamer
-        cache_type = compiletools.dirnamer.get_cache_type(args=args)
-        if cache_type:
-            from compiletools.file_analyzer_cache import create_cache
-            self.shared_cache = create_cache(cache_type)
+        # Use provided file analyzer cache or create one if none provided (for backward compatibility)
+        if file_analyzer_cache is not None:
+            self.file_analyzer_cache = file_analyzer_cache
         else:
-            self.shared_cache = None
-
+            # Fallback for backward compatibility - create cache internally
+            import compiletools.dirnamer
+            cache_type = compiletools.dirnamer.get_cache_type(args=args)
+            if cache_type:
+                from compiletools.file_analyzer_cache import create_cache
+                self.file_analyzer_cache = create_cache(cache_type)
+            else:
+                self.file_analyzer_cache = None
+        
+        # Initialize includes and macros
+        self._initialize_includes_and_macros()
+    
+    def get_file_analyzer_cache(self):
+        """Get the shared FileAnalyzer cache for reuse by other components."""
+        return self.file_analyzer_cache
+    
+    def _initialize_includes_and_macros(self):
+        """Initialize include paths and macro definitions from compile flags."""
         # Grab the include paths from the CPPFLAGS
         # By default, exclude system paths
         # TODO: include system paths if the user sets (the currently nonexistent) "use-system" flag
@@ -194,7 +207,7 @@ class DirectHeaderDeps(HeaderDepsBase):
             # Note: create_file_analyzer() handles StringZilla/Legacy fallback internally
             
             with compiletools.timing.time_operation(f"file_read_{os.path.basename(realpath)}"):
-                analyzer = create_file_analyzer(realpath, max_read_size, self.args.verbose, cache=self.shared_cache)
+                analyzer = create_file_analyzer(realpath, max_read_size, self.args.verbose, cache=self.file_analyzer_cache)
                 analysis_result = analyzer.analyze()
                 text = analysis_result.text
 
@@ -296,9 +309,17 @@ class DirectHeaderDeps(HeaderDepsBase):
 class CppHeaderDeps(HeaderDepsBase):
     """Using the C Pre Processor, create the list of headers that the given file depends upon."""
 
-    def __init__(self, args):
+    def __init__(self, args, file_analyzer_cache=None):
         HeaderDepsBase.__init__(self, args)
         self.preprocessor = compiletools.preprocessor.PreProcessor(args)
+        
+        # CppHeaderDeps doesn't use file analyzers directly, so cache is not needed
+        # But we store it for API consistency
+        self.file_analyzer_cache = file_analyzer_cache
+    
+    def get_file_analyzer_cache(self):
+        """Get the shared FileAnalyzer cache for reuse by other components."""
+        return self.file_analyzer_cache
 
     def _process_impl(self, realpath):
         """Use the -MM option to the compiler to generate the list of dependencies

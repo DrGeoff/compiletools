@@ -413,33 +413,30 @@ class CachedFileAnalyzer(FileAnalyzer):
     mtime-based caching in the underlying analyzers.
     """
     
-    def __init__(self, analyzer: FileAnalyzer, cache=None):
+    def __init__(self, analyzer: FileAnalyzer, cache):
         """Initialize cached analyzer wrapper.
         
         Args:
             analyzer: The underlying FileAnalyzer to wrap
-            cache: FileAnalyzerCache instance. If None, uses default disk cache.
+            cache: FileAnalyzerCache instance (required).
         """
         self._analyzer = analyzer
         self.filepath = analyzer.filepath
         self.max_read_size = analyzer.max_read_size
         self.verbose = analyzer.verbose
-        
-        if cache is None:
-            # Default to disk cache
-            from compiletools.file_analyzer_cache import create_cache
-            self._cache = create_cache('disk')
-        else:
-            self._cache = cache
+        self._cache = cache
     
     def analyze(self) -> FileAnalysisResult:
         """Analyze file with caching based on content hash."""
-        # Compute content hash for cache key
-        content_hash = self._cache.compute_content_hash(self.filepath)
+        # Get content hash from global registry
+        from compiletools.global_hash_registry import get_file_hash_from_registry
+        content_hash = get_file_hash_from_registry(self.filepath)
         
         if not content_hash:
-            # File doesn't exist or can't be read, delegate to analyzer
-            return self._analyzer.analyze()
+            # File not in registry - this is an error condition
+            raise RuntimeError(f"File not found in global hash registry: {self.filepath}. "
+                              "This indicates the file was not present during startup or "
+                              "the global hash registry was not properly initialized.")
         
         # Try to get from cache
         cached_result = self._cache.get(self.filepath, content_hash)
@@ -462,8 +459,29 @@ class CachedFileAnalyzer(FileAnalyzer):
         return result
 
 
+def create_shared_analysis_cache(args=None, cache_type: Optional[str] = None):
+    """Factory function to create a shared cache for file analysis across multiple components.
+    
+    Args:
+        args: Arguments object with cache configuration
+        cache_type: Override cache type (if not using args)
+        
+    Returns:
+        FileAnalyzerCache instance or None if caching disabled
+    """
+    if cache_type is None and args is not None:
+        import compiletools.dirnamer
+        cache_type = compiletools.dirnamer.get_cache_type(args=args)
+    
+    if cache_type:
+        from compiletools.file_analyzer_cache import create_cache
+        return create_cache(cache_type)
+    else:
+        return None
+
+
 def create_file_analyzer(filepath: str, max_read_size: int = 0, verbose: int = 0, 
-                        cache_type: Optional[str] = None, cache: Optional['FileAnalyzerCache'] = None) -> FileAnalyzer:
+                        cache_type: Optional[str] = None, cache: Optional['compiletools.file_analyzer_cache.FileAnalyzerCache'] = None) -> FileAnalyzer:
     """Factory function to create appropriate FileAnalyzer implementation.
     
     Args:

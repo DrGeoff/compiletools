@@ -209,67 +209,6 @@ class FileAnalyzerCache(ABC):
         """
         pass
     
-    def compute_content_hash(self, filepath: str) -> str:
-        """Compute hash of file content for cache key.
-        
-        First tries global hash registry (git-based), then falls back to hashlib.
-        
-        Args:
-            filepath: Path to file
-            
-        Returns:
-            Git blob hash or SHA256 hash of file content
-        """
-        # Try global hash registry first (git-based, computed once at startup)
-        from compiletools.global_hash_registry import get_file_hash_from_registry
-        
-        git_hash = get_file_hash_from_registry(filepath)
-        if git_hash:
-            return git_hash
-        
-        # Fallback to hashlib for files not in registry (e.g., newly created files)
-        try:
-            with open(filepath, 'rb') as f:
-                return hashlib.sha256(f.read()).hexdigest()
-        except (IOError, OSError):
-            return ""
-    
-    def compute_content_hashes(self, filepaths: list[str]) -> dict[str, str]:
-        """Compute hashes for multiple files efficiently.
-        
-        Uses global hash registry when possible, falls back to individual hashing.
-        
-        Args:
-            filepaths: List of file paths to hash
-            
-        Returns:
-            Dictionary mapping filepath to hash
-        """
-        if not filepaths:
-            return {}
-        
-        from compiletools.global_hash_registry import get_file_hash_from_registry
-        
-        result = {}
-        missing_files = []
-        
-        # First pass: try to get hashes from registry
-        for filepath in filepaths:
-            git_hash = get_file_hash_from_registry(filepath)
-            if git_hash:
-                result[filepath] = git_hash
-            else:
-                missing_files.append(filepath)
-        
-        # Second pass: compute hashes for files not in registry
-        for filepath in missing_files:
-            try:
-                with open(filepath, 'rb') as f:
-                    result[filepath] = hashlib.sha256(f.read()).hexdigest()
-            except (IOError, OSError):
-                result[filepath] = ""
-        
-        return result
 
 
 class NullCache(FileAnalyzerCache):
@@ -718,21 +657,26 @@ def batch_analyze_files(filepaths: list[str], cache_type: str = 'disk', **cache_
     # Create cache
     cache = create_cache(cache_type, **cache_kwargs)
     
-    # Batch compute all file hashes (single Git call)
-    file_hashes = cache.compute_content_hashes(filepaths)
+    # Get all file hashes from global registry
+    from compiletools.global_hash_registry import get_file_hash_from_registry
     
     results = {}
     files_to_analyze = []
     
     # Check cache for each file
     for filepath in filepaths:
-        content_hash = file_hashes.get(filepath, "")
-        if content_hash:
-            cached_result = cache.get(filepath, content_hash)
-            if cached_result is not None:
-                results[filepath] = cached_result
-            else:
-                files_to_analyze.append((filepath, content_hash))
+        content_hash = get_file_hash_from_registry(filepath)
+        if not content_hash:
+            # File not in registry - this is an error condition
+            raise RuntimeError(f"File not found in global hash registry: {filepath}. "
+                              "This indicates the file was not present during startup or "
+                              "the global hash registry was not properly initialized.")
+        
+        cached_result = cache.get(filepath, content_hash)
+        if cached_result is not None:
+            results[filepath] = cached_result
+        else:
+            files_to_analyze.append((filepath, content_hash))
     
     # Analyze uncached files
     for filepath, content_hash in files_to_analyze:
@@ -740,8 +684,7 @@ def batch_analyze_files(filepaths: list[str], cache_type: str = 'disk', **cache_
         result = analyzer.analyze()
         results[filepath] = result
         
-        # Cache the result
-        if content_hash:
-            cache.put(filepath, content_hash, result)
+        # Cache the result (content_hash is guaranteed to exist)
+        cache.put(filepath, content_hash, result)
     
     return results
