@@ -71,7 +71,9 @@ class TestCTCacheConfigurationConflicts:
         # Verify database path is in temp area (not "None")
         temp_dir = Path(tempfile.gettempdir())
         assert cache._db_path.parent == temp_dir
-        assert cache._db_path.name == "file_analyzer_cache.db"
+        # Should have process ID suffix to avoid parallel test conflicts
+        assert cache._db_path.name.startswith("file_analyzer_cache_")
+        assert cache._db_path.name.endswith(".db")
         
         # Verify cache operations work
         analyzer = create_file_analyzer(simple_cpp_file, cache_type='sqlite')
