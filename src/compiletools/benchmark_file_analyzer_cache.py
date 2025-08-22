@@ -8,15 +8,12 @@ This script measures:
 4. Potential time savings from caching
 """
 import argparse
-from compiletools.git_sha_report import batch_hash_objects
 from pathlib import Path
 import os
-import pickle
 import time
 from typing import List, Tuple
 
 import tempfile
-from pathlib import Path
 
 from compiletools.file_analyzer import create_file_analyzer, FileAnalysisResult
 from compiletools.file_analyzer_cache import create_cache, NullCache, CACHE_FORMAT_VERSION
@@ -41,12 +38,13 @@ def measure_analysis_time(filepath: str, repetitions: int = 10) -> Tuple[float, 
 
 
 def measure_hash_time(filepath: str, repetitions: int = 10) -> float:
-    """Measure time to compute file hash."""
+    """Measure time to compute file hash using global hash registry."""
+    from compiletools.global_hash_registry import get_file_hash
     times = []
     
     for _ in range(repetitions):
         start = time.perf_counter()
-        hash_file_content(filepath)
+        get_file_hash(filepath)
         end = time.perf_counter()
         times.append(end - start)
     
@@ -129,7 +127,7 @@ def main():
     print(f"Cache format version: {CACHE_FORMAT_VERSION}")
     print("=" * 70)
     
-    print(f"\nSearching for test files...")
+    print("\nSearching for test files...")
     test_files = find_test_files(test_dir, args.max_files)
     
     if not test_files:
@@ -245,43 +243,6 @@ def main():
 
     print("-" * 70)
     
-    # Add hash performance comparison
-    print("\nHash Performance Comparison:")
-    print("-" * 30)
-    
-    # Test global registry lookup performance
-    from compiletools.global_hash_registry import get_file_hash
-    lookup_times = []
-    for _ in range(100):
-        start = time.perf_counter()
-        for filepath in test_files[:3]:  # Test with first 3 files
-            get_file_hash(filepath)
-        end = time.perf_counter()
-        lookup_times.append(end - start)
-    
-    avg_lookup_time = sum(lookup_times) / len(lookup_times)
-    
-    # Test traditional hashlib performance
-    import hashlib
-    hashlib_times = []
-    for _ in range(10):  # Fewer iterations since this is slower
-        start = time.perf_counter()
-        for filepath in test_files[:3]:
-            try:
-                with open(filepath, 'rb') as f:
-                    hashlib.sha256(f.read()).hexdigest()
-            except:
-                pass
-        end = time.perf_counter()
-        hashlib_times.append(end - start)
-    
-    avg_hashlib_time = sum(hashlib_times) / len(hashlib_times)
-    
-    print(f"Global registry lookups: {avg_lookup_time*1000:.2f}ms (for {len(test_files[:3])} files)")
-    print(f"Traditional hashlib:     {avg_hashlib_time*1000:.2f}ms (for {len(test_files[:3])} files)")
-    speedup = avg_hashlib_time / avg_lookup_time if avg_lookup_time > 0 else 0
-    print(f"Registry speedup:        {speedup:.1f}x faster")
-    
     print("\nRECOMMENDATION:")
     
     if 'sqlite' in results and 'disk' in results:
@@ -293,7 +254,6 @@ def main():
         else:
             print("✓ Disk cache is recommended for best performance.")
             
-    print("  - Global hash registry provides significant speedup for file hashing")
     print("  - Consider using 'memory' for single runs where persistence is not needed.")
     print("  - 'null' cache is useful for forcing re-analysis, but offers no speed advantage.")
 
