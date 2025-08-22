@@ -43,7 +43,10 @@ def get_index_metadata() -> Dict[Path, Tuple[str, int, int]]:
             continue
             
         mode, blob_sha, stage, path_str = parts
-        path = Path(wrappedos.realpath(path_str))
+        # Since we run git commands from git root, paths are relative to git root
+        git_root = find_git_root()
+        abs_path_str = os.path.join(git_root, path_str)
+        path = Path(wrappedos.realpath(abs_path_str))
         i += 1
 
         size = None
@@ -77,7 +80,9 @@ def get_untracked_files() -> list[Path]:
     output = run_git(cmd)
     if not output:
         return []
-    return [Path(wrappedos.realpath(line)) for line in output.splitlines()]
+    # Since we run git commands from git root, paths are relative to git root
+    git_root = find_git_root()
+    return [Path(wrappedos.realpath(os.path.join(git_root, line))) for line in output.splitlines()]
 
 def batch_hash_objects(paths) -> Dict[Path, str]:
     """
