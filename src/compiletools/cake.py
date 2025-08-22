@@ -296,6 +296,10 @@ def main(argv=None):
     # Initialize timing if enabled
     timing_enabled = hasattr(args, 'time') and args.time
     compiletools.timing.initialize_timer(timing_enabled)
+    
+    # Initialize global hash registry for efficient file hashing
+    from compiletools.global_hash_registry import initialize_global_hash_registry
+    initialize_global_hash_registry(use_git_hashes=True)
 
     if not any([args.filename, args.static, args.dynamic, args.tests, args.auto]):
         print(

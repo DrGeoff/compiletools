@@ -212,15 +212,22 @@ class FileAnalyzerCache(ABC):
     def compute_content_hash(self, filepath: str) -> str:
         """Compute hash of file content for cache key.
         
-        Uses fast SHA256 hashing for cache performance.
-        For Git-based working directory fingerprinting, use git_sha_report module.
+        First tries global hash registry (git-based), then falls back to hashlib.
         
         Args:
             filepath: Path to file
             
         Returns:
-            SHA256 hash of file content
+            Git blob hash or SHA256 hash of file content
         """
+        # Try global hash registry first (git-based, computed once at startup)
+        from compiletools.global_hash_registry import get_file_hash_from_registry
+        
+        git_hash = get_file_hash_from_registry(filepath)
+        if git_hash:
+            return git_hash
+        
+        # Fallback to hashlib for files not in registry (e.g., newly created files)
         try:
             with open(filepath, 'rb') as f:
                 return hashlib.sha256(f.read()).hexdigest()
@@ -230,18 +237,38 @@ class FileAnalyzerCache(ABC):
     def compute_content_hashes(self, filepaths: list[str]) -> dict[str, str]:
         """Compute hashes for multiple files efficiently.
         
+        Uses global hash registry when possible, falls back to individual hashing.
+        
         Args:
             filepaths: List of file paths to hash
             
         Returns:
-            Dictionary mapping filepath to SHA256 hash
+            Dictionary mapping filepath to hash
         """
         if not filepaths:
             return {}
         
+        from compiletools.global_hash_registry import get_file_hash_from_registry
+        
         result = {}
+        missing_files = []
+        
+        # First pass: try to get hashes from registry
         for filepath in filepaths:
-            result[filepath] = self.compute_content_hash(filepath)
+            git_hash = get_file_hash_from_registry(filepath)
+            if git_hash:
+                result[filepath] = git_hash
+            else:
+                missing_files.append(filepath)
+        
+        # Second pass: compute hashes for files not in registry
+        for filepath in missing_files:
+            try:
+                with open(filepath, 'rb') as f:
+                    result[filepath] = hashlib.sha256(f.read()).hexdigest()
+            except (IOError, OSError):
+                result[filepath] = ""
+        
         return result
 
 

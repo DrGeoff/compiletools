@@ -689,6 +689,11 @@ def main(argv=None):
     MakefileCreator.add_arguments(cap)
     compiletools.hunter.add_arguments(cap)
     args = compiletools.apptools.parseargs(cap, argv)
+    
+    # Initialize global hash registry for efficient file hashing
+    from compiletools.global_hash_registry import initialize_global_hash_registry
+    initialize_global_hash_registry(use_git_hashes=True)
+    
     headerdeps = compiletools.headerdeps.create(args)
     magicparser = compiletools.magicflags.create(args, headerdeps)
     hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser)
