@@ -9,6 +9,7 @@ git-sha-report functionality efficiently.
 import os
 from typing import Dict, Optional
 import threading
+from compiletools import wrappedos
 
 # Module-level cache: None = not loaded, Dict = loaded hashes
 _HASHES: Optional[Dict[str, str]] = None
@@ -57,25 +58,10 @@ def get_file_hash(filepath: str) -> Optional[str]:
         load_hashes()
     
     assert _HASHES is not None  # Should be loaded by now
-        
-    # Try exact path first
-    if filepath in _HASHES:
-        return _HASHES[filepath]
     
-    # Try absolute path
-    abs_path = os.path.abspath(filepath)
-    if abs_path in _HASHES:
-        return _HASHES[abs_path]
-    
-    # Try relative to current directory
-    try:
-        rel_path = os.path.relpath(filepath)
-        if rel_path in _HASHES:
-            return _HASHES[rel_path]
-    except ValueError:
-        pass  # Can happen with different drives on Windows
-    
-    return None
+    # Convert to absolute path for consistent lookup
+    abs_path = wrappedos.realpath(filepath)
+    return _HASHES.get(abs_path)
 
 
 # Public API functions for compatibility
