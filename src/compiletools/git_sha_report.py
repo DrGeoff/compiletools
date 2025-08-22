@@ -2,6 +2,7 @@ import subprocess
 import shlex
 from pathlib import Path
 from typing import Dict, Tuple
+from compiletools import wrappedos
 
 def run_git(cmd: str, input_data: str = None) -> str:
     """Run a git command, optionally with stdin, and return stdout."""
@@ -34,7 +35,7 @@ def get_index_metadata() -> Dict[Path, Tuple[str, int, int]]:
             continue
             
         mode, blob_sha, stage, path_str = parts
-        path = Path(path_str)
+        path = Path(wrappedos.realpath(path_str))
         i += 1
 
         size = None
@@ -68,7 +69,7 @@ def get_untracked_files() -> list[Path]:
     output = run_git(cmd)
     if not output:
         return []
-    return [Path(line) for line in output.splitlines()]
+    return [Path(wrappedos.realpath(line)) for line in output.splitlines()]
 
 def batch_hash_objects(paths) -> Dict[Path, str]:
     """
