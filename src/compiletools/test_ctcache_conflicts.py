@@ -49,7 +49,9 @@ class TestCTCacheConfigurationConflicts:
         # Verify cache directory is in temp area (not "None")
         temp_dir = Path(tempfile.gettempdir())
         assert cache._cache_dir.parent == temp_dir
-        assert cache._cache_dir.name == "file_analyzer_cache"
+        # With multiuser default, should have unique name with multiuser prefix
+        assert cache._cache_dir.name.startswith("file_analyzer_cache_multiuser_")
+        assert "None" not in str(cache._cache_dir)
         
         # Verify cache operations work
         analyzer = create_file_analyzer(simple_cpp_file, cache_type='disk')
