@@ -479,6 +479,8 @@ class SQLiteCache(FileAnalyzerCache):
     def _init_db(self):
         """Initialize SQLite database schema."""
         conn = self._get_conn()
+        # Enable WAL mode to reduce journal file operations
+        conn.execute('PRAGMA journal_mode=WAL;')
         conn.execute("""
             CREATE TABLE IF NOT EXISTS cache (
                 filepath TEXT,
