@@ -417,12 +417,17 @@ class SQLiteCache(FileAnalyzerCache):
             import compiletools.dirnamer
             cache_base = compiletools.dirnamer.user_cache_dir()
             if cache_base == "None":
-                # Caching disabled, use temp directory
+                # Caching disabled, use temp directory with unique name for parallel tests
                 import tempfile
+                import os
                 cache_base = tempfile.gettempdir()
+                # Use process ID to avoid conflicts in parallel test execution
+                db_name = f"file_analyzer_cache_{os.getpid()}.db"
+            else:
+                db_name = "file_analyzer_cache.db"
             db_dir = Path(cache_base)
             db_dir.mkdir(parents=True, exist_ok=True)
-            self._db_path = db_dir / "file_analyzer_cache.db"
+            self._db_path = db_dir / db_name
         else:
             self._db_path = Path(db_path)
         
