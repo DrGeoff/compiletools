@@ -20,18 +20,15 @@ def find_git_root(filename=None):
 @functools.lru_cache(maxsize=None)
 def _find_git_root(directory):
     """ Internal function to find the git root but cache it against the given directory """
-    original_cwd = os.getcwd()
-    os.chdir(directory)
-
-    # Define the git root of a project that isn't under version control to be be cwd
-    gitroot = original_cwd
+    # Define the git root of a project that isn't under version control to be the directory
+    gitroot = directory
     try:
-        # Redirect stderr to stdout (which is captured) rather than
-        # have it spew over the console
+        # Use cwd parameter instead of os.chdir() to avoid concurrent access issues
         gitroot = subprocess.check_output(
             ["git", "rev-parse", "--show-toplevel"],
             stderr=subprocess.STDOUT,
             universal_newlines=True,
+            cwd=directory  # Run git command from the specified directory
         ).strip("\n")
     except (subprocess.CalledProcessError, OSError):
         # A CalledProcessError exception means we aren't in a real git repository.
@@ -45,8 +42,7 @@ def _find_git_root(directory):
                 gitroot = trialgitroot
                 break
             trialgitroot = os.path.dirname(trialgitroot)
-    finally:
-        os.chdir(original_cwd)
+    
     return gitroot
 
 

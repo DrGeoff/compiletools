@@ -881,14 +881,14 @@ def batch_analyze_files(filepaths: list[str], cache_type: str = 'disk', **cache_
     cache = create_cache(cache_type, **cache_kwargs)
     
     # Get all file hashes from global registry
-    from compiletools.global_hash_registry import get_file_hash_from_registry
+    from compiletools.global_hash_registry import get_file_hash
     
     results = {}
     files_to_analyze = []
     
     # Check cache for each file
     for filepath in filepaths:
-        content_hash = get_file_hash_from_registry(filepath)
+        content_hash = get_file_hash(filepath)
         if not content_hash:
             # File not in registry - this is an error condition
             raise RuntimeError(f"File not found in global hash registry: {filepath}. "

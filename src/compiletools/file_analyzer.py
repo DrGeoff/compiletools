@@ -429,8 +429,8 @@ class CachedFileAnalyzer(FileAnalyzer):
     def analyze(self) -> FileAnalysisResult:
         """Analyze file with caching based on content hash."""
         # Get content hash from global registry
-        from compiletools.global_hash_registry import get_file_hash_from_registry
-        content_hash = get_file_hash_from_registry(self.filepath)
+        from compiletools.global_hash_registry import get_file_hash
+        content_hash = get_file_hash(self.filepath)
         
         if not content_hash:
             # File not in registry - this is an error condition

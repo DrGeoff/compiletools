@@ -8,6 +8,7 @@ git-sha-report functionality efficiently.
 
 from typing import Dict, Optional
 import threading
+import os
 from compiletools import wrappedos
 
 # Module-level cache: None = not loaded, Dict = loaded hashes
@@ -16,7 +17,7 @@ _lock = threading.Lock()
 
 
 def load_hashes() -> None:
-    """Load all file hashes once with re-entrancy guard."""
+    """Load all file hashes once with thread safety."""
     global _HASHES
     
     if _HASHES is not None:
@@ -38,9 +39,7 @@ def load_hashes() -> None:
             print(f"GlobalHashRegistry: Loaded {len(_HASHES)} file hashes from git")
             
         except Exception as e:
-            print(f"GlobalHashRegistry: Failed to load git hashes: {e}")
-            print("GlobalHashRegistry: Will fall back to hashlib for individual files")
-            _HASHES = {}
+            raise RuntimeError(f"GlobalHashRegistry: Failed to load git hashes: {e}") from e
 
 
 def get_file_hash(filepath: str) -> Optional[str]:
@@ -56,37 +55,27 @@ def get_file_hash(filepath: str) -> Optional[str]:
     if _HASHES is None:
         load_hashes()
     
-    assert _HASHES is not None  # Should be loaded by now
-    
     # Convert to absolute path for consistent lookup
+    # If path is relative, first try relative to current directory
     abs_path = wrappedos.realpath(filepath)
-    return _HASHES.get(abs_path)
+    result = _HASHES.get(abs_path)
+    
+    # If not found and path was relative, try relative to git root
+    if result is None and not os.path.isabs(filepath):
+        try:
+            from compiletools.git_utils import find_git_root
+            git_root = find_git_root()
+            git_relative_path = os.path.join(git_root, filepath)
+            abs_git_path = wrappedos.realpath(git_relative_path)
+            result = _HASHES.get(abs_git_path)
+        except Exception:
+            pass  # Git root not available, stick with original result
+    
+    return result
 
 
 # Public API functions for compatibility
-def initialize_global_hash_registry(use_git_hashes: bool = True) -> None:
-    """Initialize the global hash registry.
-    
-    This is now optional - hashes will be loaded lazily on first use.
-    Provided for explicit initialization at program startup if desired.
-    
-    Args:
-        use_git_hashes: Currently ignored - always uses git hashes
-    """
-    if use_git_hashes:
-        load_hashes()
 
-
-def get_file_hash_from_registry(filepath: str) -> Optional[str]:
-    """Get file hash from global registry.
-    
-    Args:
-        filepath: Path to file
-        
-    Returns:
-        Git blob hash if available, None if not in registry
-    """
-    return get_file_hash(filepath)
 
 
 def get_registry_stats() -> Dict[str, int]:

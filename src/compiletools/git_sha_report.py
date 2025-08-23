@@ -9,19 +9,15 @@ from compiletools.git_utils import find_git_root
 def run_git(cmd: str, input_data: str = None) -> str:
     """Run a git command from the repository root, optionally with stdin, and return stdout."""
     git_root = find_git_root()
-    original_cwd = os.getcwd()
-    try:
-        os.chdir(git_root)
-        result = subprocess.run(
-            shlex.split(cmd),
-            input=input_data,
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        return result.stdout.strip()
-    finally:
-        os.chdir(original_cwd)
+    result = subprocess.run(
+        shlex.split(cmd),
+        input=input_data,
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=git_root  # Use cwd parameter instead of os.chdir()
+    )
+    return result.stdout.strip()
 
 def get_index_metadata() -> Dict[Path, Tuple[str, int, int]]:
     """
