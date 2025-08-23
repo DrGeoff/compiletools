@@ -690,9 +690,6 @@ def main(argv=None):
     compiletools.hunter.add_arguments(cap)
     args = compiletools.apptools.parseargs(cap, argv)
     
-    # Initialize global hash registry for efficient file hashing
-    from compiletools.global_hash_registry import initialize_global_hash_registry
-    initialize_global_hash_registry(use_git_hashes=True)
     
     # Create shared cache for all file analysis components (pythonic dependency injection)
     from compiletools.file_analyzer import create_shared_analysis_cache

@@ -83,7 +83,7 @@ class TestFileAnalyzerCache:
         # Mock different content hashes to simulate file change
         from unittest.mock import patch
         
-        with patch('compiletools.global_hash_registry.get_file_hash_from_registry') as mock_hash:
+        with patch('compiletools.global_hash_registry.get_file_hash') as mock_hash:
             # First analysis with hash 'abc123'
             mock_hash.return_value = 'abc123'
             analyzer1 = create_file_analyzer(test_file, cache_type='memory')

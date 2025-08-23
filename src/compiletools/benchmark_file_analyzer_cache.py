@@ -148,16 +148,11 @@ def main():
 
         results = {}
 
-        # Initialize global hash registry once for all cache types
-        from compiletools.global_hash_registry import initialize_global_hash_registry, get_file_hash, get_registry_stats
-        print("\nInitializing global hash registry...")
-        
-        registry_start = time.perf_counter()
-        initialize_global_hash_registry(use_git_hashes=True)
-        registry_time = time.perf_counter() - registry_start
+        # Global hash registry will initialize lazily on first use
+        from compiletools.global_hash_registry import get_file_hash, get_registry_stats
         
         stats = get_registry_stats()
-        print(f"Registry loaded {stats['total_files']} files in {registry_time*1000:.1f}ms")
+        print(f"Global hash registry: {stats['total_files']} files available")
 
         for cache_type, config in cache_configs.items():
             print(f"\n--- Benchmarking {cache_type.upper()} Cache ---")
