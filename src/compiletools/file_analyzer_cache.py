@@ -126,113 +126,6 @@ class MultiUserFileLock:
 class FileAnalyzerCache(ABC):
     """Abstract base class for FileAnalyzer result caching."""
     
-    def _serialize_result(self, result: FileAnalysisResult) -> bytes:
-        """Serialize FileAnalysisResult with version info for cache storage.
-        
-        Args:
-            result: FileAnalysisResult to serialize
-            
-        Returns:
-            Pickled bytes containing versioned cache data
-        """
-        cache_data = {
-            "version": CACHE_FORMAT_VERSION,
-            "data": asdict(result)
-        }
-        return pickle.dumps(cache_data)
-    
-    def _deserialize_result(self, data: bytes) -> Optional[FileAnalysisResult]:
-        """Deserialize cached data with version compatibility checking.
-        
-        Args:
-            data: Pickled bytes from cache
-            
-        Returns:
-            FileAnalysisResult if compatible, None if incompatible/corrupted
-        """
-        try:
-            cache_data = pickle.loads(data)
-            
-            # Handle legacy format (direct FileAnalysisResult dict)
-            if isinstance(cache_data, dict) and "version" not in cache_data:
-                # Try to reconstruct from legacy format
-                return self._try_legacy_format(cache_data)
-            
-            # Handle versioned format
-            if not isinstance(cache_data, dict) or "version" not in cache_data:
-                return None
-                
-            version = cache_data.get("version")
-            if version != CACHE_FORMAT_VERSION:
-                # Version mismatch - could add migration logic here in future
-                return None
-                
-            result_data = cache_data.get("data")
-            if not isinstance(result_data, dict):
-                return None
-                
-            # Validate required fields exist and have correct types
-            return self._validate_and_construct(result_data)
-            
-        except (pickle.UnpicklingError, TypeError, ValueError, KeyError):
-            # Any deserialization error -> treat as cache miss
-            return None
-    
-    def _try_legacy_format(self, data: dict) -> Optional[FileAnalysisResult]:
-        """Try to reconstruct FileAnalysisResult from legacy cache format.
-        
-        Args:
-            data: Dictionary that might be legacy FileAnalysisResult
-            
-        Returns:
-            FileAnalysisResult if valid legacy format, None otherwise
-        """
-        try:
-            return self._validate_and_construct(data)
-        except (TypeError, ValueError, KeyError):
-            return None
-    
-    def _validate_and_construct(self, data: dict) -> Optional[FileAnalysisResult]:
-        """Validate data structure and construct FileAnalysisResult.
-        
-        Args:
-            data: Dictionary with FileAnalysisResult fields
-            
-        Returns:
-            FileAnalysisResult if data is valid, None otherwise
-        """
-        try:
-            # Check required fields exist
-            required_fields = {
-                "text": str,
-                "include_positions": list, 
-                "magic_positions": list,
-                "directive_positions": dict,
-                "bytes_analyzed": int,
-                "was_truncated": bool
-            }
-            
-            for field, expected_type in required_fields.items():
-                if field not in data:
-                    return None
-                if not isinstance(data[field], expected_type):
-                    return None
-            
-            # Validate list contents
-            if not all(isinstance(pos, int) for pos in data["include_positions"]):
-                return None
-            if not all(isinstance(pos, int) for pos in data["magic_positions"]):
-                return None
-            if not all(isinstance(v, list) and all(isinstance(p, int) for p in v) 
-                      for v in data["directive_positions"].values()):
-                return None
-                
-            # Construct FileAnalysisResult
-            return FileAnalysisResult(**data)
-            
-        except (TypeError, ValueError):
-            return None
-    
     @abstractmethod
     def get(self, filepath: str, content_hash: str) -> Optional[FileAnalysisResult]:
         """Retrieve cached analysis result.
@@ -346,11 +239,12 @@ class MemoryCache(FileAnalyzerCache):
 
 
 class DiskCache(FileAnalyzerCache):
-    """Disk-based cache using pickle files in a directory structure.
+    """Disk-based cache using pickle files in a versioned directory structure.
     
-    Storage pattern: <cache_base>/file_analyzer_cache_shared/<shard>/<filename>.pkl (multiuser)
-    Uses first 2 chars of content hash for shard subdirectory to avoid
-    too many files in a single directory.
+    Storage pattern: <cache_base>/file_analyzer_cache_shared_v{VERSION}/<shard>/<filename>.pkl
+    Uses CACHE_FORMAT_VERSION in directory path for explicit version compatibility.
+    Files are direct pickle dumps with no version wrapper for faster I/O.
+    Read operations are lockless since files are write-once, immutable.
     """
     
     def __init__(self, cache_dir: Optional[str] = None, multiuser: bool = True, lock_timeout: float = 30.0):
@@ -358,13 +252,13 @@ class DiskCache(FileAnalyzerCache):
         
         Args:
             cache_dir: Directory for cache files. If None, uses dirnamer-style location.
-            multiuser: Enable multiuser file locking for team cache sharing (default True)
+            multiuser: Enable multiuser file locking for write operations (default True)
             lock_timeout: Maximum time to wait for file lock acquisition (seconds)
         """
         self._multiuser = multiuser
         self._lock_timeout = lock_timeout
         if cache_dir is None:
-            # Use dirnamer-style cache directory
+            # Use dirnamer-style cache directory with version suffix
             import compiletools.dirnamer
             cache_base = compiletools.dirnamer.user_cache_dir()
             if cache_base == "None":
@@ -376,19 +270,19 @@ class DiskCache(FileAnalyzerCache):
                 # to prevent conflicts between parallel test runs
                 unique_id = f"{os.getpid()}_{threading.get_ident()}_{int(time.time()*1000000)}"
                 if multiuser:
-                    cache_name = f"file_analyzer_cache_multiuser_{unique_id}"
+                    cache_name = f"file_analyzer_cache_multiuser_v{CACHE_FORMAT_VERSION}_{unique_id}"
                 else:
-                    cache_name = f"file_analyzer_cache_{unique_id}"
+                    cache_name = f"file_analyzer_cache_v{CACHE_FORMAT_VERSION}_{unique_id}"
             else:
                 if multiuser:
-                    cache_name = "file_analyzer_cache_shared"
+                    cache_name = f"file_analyzer_cache_shared_v{CACHE_FORMAT_VERSION}"
                 else:
-                    cache_name = "file_analyzer_cache"
+                    cache_name = f"file_analyzer_cache_v{CACHE_FORMAT_VERSION}"
             self._cache_dir = Path(cache_base) / cache_name
         else:
             self._cache_dir = Path(cache_dir)
         
-        # Set up lock directory for multiuser mode
+        # Set up lock directory for multiuser write operations only
         if self._multiuser:
             self._lock_dir = self._cache_dir / ".locks"
         else:
@@ -414,8 +308,8 @@ class DiskCache(FileAnalyzerCache):
         filename = f"{hashlib.md5(filepath.encode()).hexdigest()}_{content_hash}.lock"
         return self._lock_dir / subdir / filename
     
-    def _with_lock(self, filepath: str, content_hash: str):
-        """Context manager for cache operations with optional multiuser locking."""
+    def _with_write_lock(self, filepath: str, content_hash: str):
+        """Context manager for write operations with optional multiuser locking."""
         if self._multiuser and self._lock_dir:
             lock_path = self._get_lock_path(filepath, content_hash)
             return MultiUserFileLock(lock_path, self._lock_timeout)
@@ -425,44 +319,44 @@ class DiskCache(FileAnalyzerCache):
             return nullcontext()
     
     def get(self, filepath: str, content_hash: str) -> Optional[FileAnalysisResult]:
-        """Retrieve from disk cache with multiuser support."""
-        with self._with_lock(filepath, content_hash):
-            cache_path = self._get_cache_path(filepath, content_hash)
-            
-            if cache_path.exists():
+        """Retrieve from disk cache (lockless read since files are immutable)."""
+        cache_path = self._get_cache_path(filepath, content_hash)
+        
+        if cache_path.exists():
+            try:
+                with cache_path.open('rb') as f:
+                    data = f.read()
+                    # Direct pickle load - version compatibility guaranteed by directory path
+                    result = pickle.loads(data)
+                    return result
+            except (IOError, OSError, pickle.UnpicklingError, TypeError, ValueError):
+                # Cache file read/corruption error, remove it
                 try:
-                    with cache_path.open('rb') as f:
-                        data = f.read()
-                        result = self._deserialize_result(data)
-                        
-                        if result is None:
-                            # Incompatible/corrupted data, remove cache file
-                            try:
-                                cache_path.unlink()
-                            except OSError:
-                                pass
-                        
-                        return result
-                except (IOError, OSError):
-                    # Cache file read error, remove it
-                    try:
-                        cache_path.unlink()
-                    except OSError:
-                        pass
-                        
-            return None
+                    cache_path.unlink()
+                except OSError:
+                    pass
+                    
+        return None
     
     def put(self, filepath: str, content_hash: str, result: FileAnalysisResult) -> None:
-        """Store in disk cache with multiuser support."""
-        with self._with_lock(filepath, content_hash):
-            cache_path = self._get_cache_path(filepath, content_hash)
+        """Store in disk cache with write-only locking for concurrent creation safety."""
+        cache_path = self._get_cache_path(filepath, content_hash)
+        
+        # Skip if file already exists (write-once semantics)
+        if cache_path.exists():
+            return
             
+        with self._with_write_lock(filepath, content_hash):
+            # Double-check after acquiring lock
+            if cache_path.exists():
+                return
+                
             # Create subdirectory if needed
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             
             try:
-                # Serialize with version info
-                serialized_data = self._serialize_result(result)
+                # Direct pickle serialization - no version wrapper needed
+                serialized_data = pickle.dumps(result)
                 
                 # Write to temp file first then rename for atomicity
                 with tempfile.NamedTemporaryFile(mode='wb', dir=cache_path.parent, delete=False) as f:
@@ -481,7 +375,7 @@ class DiskCache(FileAnalyzerCache):
                     pass
     
     def clear(self, filepath: Optional[str] = None) -> None:
-        """Clear disk cache with multiuser support."""
+        """Clear current version cache with write locking support."""
         # Use a global cache lock for clear operations
         global_lock_path = None
         if self._multiuser and self._lock_dir:
@@ -523,14 +417,48 @@ class DiskCache(FileAnalyzerCache):
                     self._cache_dir.mkdir(parents=True, exist_ok=True)
             except OSError:
                 pass
+    
+    def cleanup_old_versions(self) -> None:
+        """Remove cache directories from previous CACHE_FORMAT_VERSION values.
+        
+        This method identifies old version directories and removes them to free up disk space.
+        Should be called periodically or after version changes.
+        """
+        if not self._cache_dir.parent.exists():
+            return
+            
+        current_version_suffix = f"_v{CACHE_FORMAT_VERSION}"
+        
+        try:
+            # Look for old cache directories in the same parent
+            for item in self._cache_dir.parent.iterdir():
+                if not item.is_dir():
+                    continue
+                    
+                # Check if this looks like an old version cache directory
+                item_name = item.name
+                if (item_name.startswith("file_analyzer_cache") and 
+                    "_v" in item_name and 
+                    not item_name.endswith(current_version_suffix) and
+                    item != self._cache_dir):
+                    
+                    # Remove old version directory
+                    import shutil
+                    try:
+                        shutil.rmtree(item)
+                    except OSError:
+                        pass  # Ignore errors, best effort cleanup
+                        
+        except OSError:
+            pass  # Ignore errors during cleanup
 
 
 class SQLiteCache(FileAnalyzerCache):
     """SQLite-based cache for persistent storage with efficient queries.
     
-    Storage pattern: <cache_base>/file_analyzer_cache.db
-    Stores all cache entries in a single SQLite database file with
-    indexed queries for efficient lookup.
+    Storage pattern: <cache_base>/file_analyzer_cache_v{VERSION}.db
+    Uses CACHE_FORMAT_VERSION in database filename for explicit version compatibility.
+    Stores direct pickle dumps with no version wrapper for faster serialization.
     """
     
     def __init__(self, db_path: Optional[str] = None, batch_size: int = 1000, 
@@ -560,14 +488,14 @@ class SQLiteCache(FileAnalyzerCache):
                 # to prevent conflicts between parallel test runs
                 unique_id = f"{os.getpid()}_{threading.get_ident()}_{int(time.time()*1000000)}"
                 if multiuser:
-                    db_name = f"file_analyzer_cache_multiuser_{unique_id}.db"
+                    db_name = f"file_analyzer_cache_multiuser_v{CACHE_FORMAT_VERSION}_{unique_id}.db"
                 else:
-                    db_name = f"file_analyzer_cache_{unique_id}.db"
+                    db_name = f"file_analyzer_cache_v{CACHE_FORMAT_VERSION}_{unique_id}.db"
             else:
                 if multiuser:
-                    db_name = "file_analyzer_cache_shared.db"
+                    db_name = f"file_analyzer_cache_shared_v{CACHE_FORMAT_VERSION}.db"
                 else:
-                    db_name = "file_analyzer_cache.db"
+                    db_name = f"file_analyzer_cache_v{CACHE_FORMAT_VERSION}.db"
             db_dir = Path(cache_base)
             db_dir.mkdir(parents=True, exist_ok=True)
             self._db_path = db_dir / db_name
@@ -685,16 +613,19 @@ class SQLiteCache(FileAnalyzerCache):
             row = cursor.fetchone()
             
             if row:
-                result = self._deserialize_result(row[0])
-                if result is None:
-                    # Incompatible/corrupted entry, delete it
+                try:
+                    # Direct pickle load - version compatibility guaranteed by database filename
+                    result = pickle.loads(row[0])
+                    return result
+                except (pickle.UnpicklingError, TypeError, ValueError):
+                    # Corrupted entry, delete it
                     self._execute_with_retry(
                         conn,
                         "DELETE FROM cache WHERE filepath = ? AND content_hash = ?",
                         (filepath, content_hash)
                     )
                     conn.commit()
-                return result
+                    return None
                     
             return None
     
@@ -705,8 +636,8 @@ class SQLiteCache(FileAnalyzerCache):
         
         with self._with_lock():
             conn = self._get_conn()
-            # Serialize with version info
-            data = self._serialize_result(result)
+            # Direct pickle serialization - no version wrapper needed
+            data = pickle.dumps(result)
             
             self._execute_with_retry(
                 conn,
@@ -759,7 +690,7 @@ class RedisCache(FileAnalyzerCache):
             port: Redis server port
             db: Redis database number
             ttl: Time-to-live for cache entries in seconds
-            key_prefix: Prefix for cache keys
+            key_prefix: Prefix for cache keys (version will be appended)
         """
         try:
             import redis
@@ -770,7 +701,8 @@ class RedisCache(FileAnalyzerCache):
         try:
             self._redis = redis.Redis(host=host, port=port, db=db, decode_responses=False)
             self._ttl = ttl
-            self._key_prefix = key_prefix
+            # Include version in key prefix for cache isolation
+            self._key_prefix = f"{key_prefix}v{CACHE_FORMAT_VERSION}:"
             # Test connection
             self._redis.ping()
             self._available = True
@@ -791,7 +723,8 @@ class RedisCache(FileAnalyzerCache):
         try:
             data = self._redis.get(key)
             if data:
-                return self._deserialize_result(data)
+                # Direct pickle load - version compatibility handled by key versioning
+                return pickle.loads(data)
         except Exception:
             # Redis error or deserialization error
             pass
@@ -806,7 +739,8 @@ class RedisCache(FileAnalyzerCache):
         key = self._make_key(filepath, content_hash)
         
         try:
-            data = self._serialize_result(result)
+            # Direct pickle serialization - no version wrapper needed
+            data = pickle.dumps(result)
             self._redis.setex(key, self._ttl, data)
         except Exception:
             # Redis error
