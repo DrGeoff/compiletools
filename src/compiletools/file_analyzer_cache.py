@@ -70,9 +70,11 @@ result. This transforms a traditionally complex concurrency problem into a
 simple, fast, lock-free design.
 """
 
+import functools
 import hashlib
 import os
 import pickle
+import random
 import sqlite3
 import tempfile
 import time
@@ -160,6 +162,8 @@ class FileAnalyzerCache(ABC):
                      Otherwise clear entire cache.
         """
         pass
+
+
     
 
 
@@ -288,7 +292,7 @@ class DiskCache(FileAnalyzerCache):
     """
     
     def __init__(self, cache_dir: Optional[str] = None):
-        """Initialize disk cache.
+        """Initialize disk cache with integrated LRU memory cache.
         
         Args:
             cache_dir: Directory for cache files. If None, uses dirnamer-style location.
@@ -321,16 +325,13 @@ class DiskCache(FileAnalyzerCache):
         filename = f"{hashlib.md5(filepath.encode()).hexdigest()}_{content_hash}.pkl"
         return self._cache_dir / subdir / filename
     
-    
-    def get(self, filepath: str, content_hash: str) -> Optional[FileAnalysisResult]:
-        """Retrieve from disk cache without locking (safe due to atomic writes).
+    @functools.lru_cache(maxsize=None)
+    def _load_from_disk(self, filepath: str, content_hash: str) -> Optional[FileAnalysisResult]:
+        """Load result from disk cache with infinite LRU caching for performance.
         
-        LOCKLESS READ SAFETY:
-        Reading without locks is safe because:
-        1. Files are written atomically (temp file + atomic rename)
-        2. We see either complete file or no file (never partial)
-        3. Cache files are immutable (write-once semantics)
-        4. Concurrent reads of same file are naturally safe
+        This method is decorated with @lru_cache to provide fast memory caching
+        of deserialized results, eliminating repeated disk I/O and pickle.loads()
+        for the same (filepath, content_hash) combinations.
         """
         cache_path = self._get_cache_path(filepath, content_hash)
         
@@ -343,7 +344,6 @@ class DiskCache(FileAnalyzerCache):
                     return result
             except (IOError, OSError, pickle.UnpicklingError, TypeError, ValueError):
                 # Cache file read/corruption error, remove it and regenerate
-                # This is rare but can happen due to disk errors, partial disk full, etc.
                 try:
                     cache_path.unlink()
                 except OSError:
@@ -351,8 +351,18 @@ class DiskCache(FileAnalyzerCache):
                     
         return None
     
+    
+    def get(self, filepath: str, content_hash: str) -> Optional[FileAnalysisResult]:
+        """Retrieve from disk cache with LRU memory caching for performance.
+        
+        Uses @lru_cache decorated _load_from_disk() method to provide fast
+        memory access for repeated queries while maintaining lockless disk
+        cache safety guarantees.
+        """
+        return self._load_from_disk(filepath, content_hash)
+    
     def put(self, filepath: str, content_hash: str, result: FileAnalysisResult) -> None:
-        """Store in disk cache using atomic rename for safe concurrent access.
+        """Store in disk cache and populate LRU memory cache.
         
         LOCKLESS SAFETY EXPLANATION:
         This method is safe for concurrent execution because:
@@ -373,6 +383,8 @@ class DiskCache(FileAnalyzerCache):
         # Multiple processes may check this simultaneously - that's fine,
         # they'll all write identical content if they proceed
         if cache_path.exists():
+            # File exists - populate LRU cache for future fast access
+            self._load_from_disk(filepath, content_hash)
             return
             
         # Create subdirectory if needed
@@ -397,6 +409,9 @@ class DiskCache(FileAnalyzerCache):
             # If multiple processes rename to same target, last writer wins with identical data
             os.replace(temp_path, cache_path)
             
+            # Populate LRU cache after successful write
+            self._load_from_disk(filepath, content_hash)
+            
         except (IOError, OSError):
             # Clean up temp file if rename failed
             # This is best-effort cleanup - temp files will be cleaned up by OS eventually
@@ -407,7 +422,10 @@ class DiskCache(FileAnalyzerCache):
                 pass  # Ignore cleanup failures
     
     def clear(self, filepath: Optional[str] = None) -> None:
-        """Clear current version cache entries."""
+        """Clear disk cache entries and LRU memory cache."""
+        # Clear LRU memory cache
+        self._load_from_disk.cache_clear()
+        
         if filepath:
             # Clear only entries for specific file
             filepath_hash = hashlib.md5(filepath.encode()).hexdigest()
@@ -609,8 +627,14 @@ class SQLiteCache(FileAnalyzerCache):
         self._execute_with_retry(conn, "CREATE INDEX IF NOT EXISTS idx_hash ON cache(content_hash)")
         conn.commit()
     
-    def get(self, filepath: str, content_hash: str) -> Optional[FileAnalysisResult]:
-        """Retrieve from SQLite cache using built-in concurrency control."""
+    @functools.lru_cache(maxsize=None)
+    def _load_from_db(self, filepath: str, content_hash: str) -> Optional[FileAnalysisResult]:
+        """Load result from SQLite database with infinite LRU caching for performance.
+        
+        This method is decorated with @lru_cache to provide fast memory caching
+        of deserialized results, eliminating repeated SQL queries and pickle.loads()
+        for the same (filepath, content_hash) combinations.
+        """
         conn = self._get_conn()
         cursor = self._execute_with_retry(
             conn,
@@ -636,8 +660,17 @@ class SQLiteCache(FileAnalyzerCache):
                 
         return None
     
+    def get(self, filepath: str, content_hash: str) -> Optional[FileAnalysisResult]:
+        """Retrieve from SQLite cache with LRU memory caching for performance.
+        
+        Uses @lru_cache decorated _load_from_db() method to provide fast
+        memory access for repeated queries while maintaining SQLite
+        concurrency safety guarantees.
+        """
+        return self._load_from_db(filepath, content_hash)
+    
     def put(self, filepath: str, content_hash: str, result: FileAnalysisResult) -> None:
-        """Store in SQLite cache with batched commits using built-in concurrency control."""
+        """Store in SQLite cache and populate LRU memory cache."""
         conn = self._get_conn()
         # Direct pickle serialization - no version wrapper needed
         data = pickle.dumps(result)
@@ -653,6 +686,9 @@ class SQLiteCache(FileAnalyzerCache):
         # Commit when batch is full
         if self._pending_operations >= self._batch_size:
             self._flush_internal(conn)
+        
+        # Populate LRU cache for future fast access
+        self._load_from_db(filepath, content_hash)
     
     def _flush_internal(self, conn) -> None:
         """Internal flush method for batched operations."""
@@ -666,7 +702,10 @@ class SQLiteCache(FileAnalyzerCache):
             self._flush_internal(self._conn)
     
     def clear(self, filepath: Optional[str] = None) -> None:
-        """Clear SQLite cache using built-in concurrency control."""
+        """Clear SQLite cache and LRU memory cache."""
+        # Clear LRU memory cache
+        self._load_from_db.cache_clear()
+        
         # Flush any pending operations first
         if self._conn and self._pending_operations > 0:
             self._flush_internal(self._conn)
@@ -714,8 +753,14 @@ class RedisCache(FileAnalyzerCache):
         """Create Redis key from filepath and content hash."""
         return f"{self._key_prefix}{filepath}:{content_hash}"
     
-    def get(self, filepath: str, content_hash: str) -> Optional[FileAnalysisResult]:
-        """Retrieve from Redis cache."""
+    @functools.lru_cache(maxsize=None)
+    def _load_from_redis(self, filepath: str, content_hash: str) -> Optional[FileAnalysisResult]:
+        """Load result from Redis cache with infinite LRU caching for performance.
+        
+        This method is decorated with @lru_cache to provide fast memory caching
+        of deserialized results, eliminating repeated Redis queries and pickle.loads()
+        for the same (filepath, content_hash) combinations.
+        """
         if not self._available:
             return None
             
@@ -732,8 +777,16 @@ class RedisCache(FileAnalyzerCache):
             
         return None
     
+    def get(self, filepath: str, content_hash: str) -> Optional[FileAnalysisResult]:
+        """Retrieve from Redis cache with LRU memory caching for performance.
+        
+        Uses @lru_cache decorated _load_from_redis() method to provide fast
+        memory access for repeated queries while maintaining Redis functionality.
+        """
+        return self._load_from_redis(filepath, content_hash)
+    
     def put(self, filepath: str, content_hash: str, result: FileAnalysisResult) -> None:
-        """Store in Redis cache with TTL."""
+        """Store in Redis cache and populate LRU memory cache."""
         if not self._available:
             return
             
@@ -743,12 +796,18 @@ class RedisCache(FileAnalyzerCache):
             # Direct pickle serialization - no version wrapper needed
             data = pickle.dumps(result)
             self._redis.setex(key, self._ttl, data)
+            
+            # Populate LRU cache for future fast access
+            self._load_from_redis(filepath, content_hash)
         except Exception:
             # Redis error
             pass
     
     def clear(self, filepath: Optional[str] = None) -> None:
-        """Clear Redis cache."""
+        """Clear Redis cache and LRU memory cache."""
+        # Clear LRU memory cache
+        self._load_from_redis.cache_clear()
+        
         if not self._available:
             return
             
@@ -771,12 +830,15 @@ class RedisCache(FileAnalyzerCache):
 def create_cache(cache_type: str = 'disk', **kwargs) -> FileAnalyzerCache:
     """Factory function to create cache instance.
     
+    All persistent cache types (disk, sqlite, redis) now have integrated
+    infinite LRU memory caching for optimal performance.
+    
     Args:
         cache_type: Type of cache ('null', 'memory', 'disk', 'sqlite', 'redis')
         **kwargs: Additional arguments for cache constructor
         
     Returns:
-        FileAnalyzerCache instance
+        FileAnalyzerCache instance with LRU caching built-in for persistent types
     """
     cache_types = {
         'null': NullCache,
