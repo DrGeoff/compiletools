@@ -4,15 +4,70 @@ This module provides multiple cache backends for FileAnalysisResult objects,
 allowing efficient reuse of analysis results based on file content hashes.
 
 Cache Location Patterns:
-- DiskCache: <cache_base>/file_analyzer_cache_shared/<shard>/<filename>.pkl (multiuser default)
-- SQLiteCache: <cache_base>/file_analyzer_cache_shared.db (multiuser default)
+- DiskCache: <cache_base>/file_analyzer_cache_shared_v{VERSION}/<shard>/<filename>.pkl
+- SQLiteCache: <cache_base>/file_analyzer_cache_shared_v{VERSION}.db  
 - MemoryCache: In-memory only (no persistent storage)
-- RedisCache: Redis server (external storage)
+- RedisCache: Redis server with versioned keys (external storage)
 - NullCache: No storage (always miss)
 
-Note: Both DiskCache and SQLiteCache use multiuser mode by default with file locking 
-for team cache sharing. DiskCache uses a subdirectory structure with sharding for 
-performance, plus a .locks directory for coordination.
+LOCKLESS ARCHITECTURE:
+====================
+
+The persistent caches (DiskCache, SQLiteCache) use a lockless design that achieves
+safe concurrent access without explicit file locking. This works because:
+
+1. CONTENT-ADDRESSED FILENAMES:
+   Cache files are named using both filepath hash AND content hash:
+   {md5(filepath)}_{content_hash}.pkl
+   
+   Same input file + same content = identical filename = identical cache data
+   Different content = different filename = separate cache files
+
+2. ATOMIC RENAME OPERATION:
+   Files are written to temporary names, then atomically renamed to final names.
+   os.replace() provides POSIX atomic rename on all major filesystems:
+   - XFS: Fully atomic, journaled
+   - GPFS: Atomic within directory (safe for cache use)  
+   - ext4, btrfs, APFS: Full atomic support
+   
+   Readers see either: no file (cache miss) OR complete file (cache hit)
+   Never: partial/corrupted file
+
+3. IDENTICAL CONTENT PROPERTY:
+   Multiple processes analyzing the same file content produce bit-identical
+   pickle data. Race conditions become harmless:
+   - Multiple writers: All write identical data, last writer "wins" safely
+   - Reader during write: Atomic rename ensures consistency
+   - Cleanup during write: File gets recreated immediately if needed
+
+4. WRITE-ONCE SEMANTICS:
+   Cache files never change after creation. Content hash guarantees that
+   file content + analysis code version = deterministic result.
+   No update races, no corruption from partial writes.
+
+5. VERSION ISOLATION:
+   Cache format version is embedded in directory/database names, not individual
+   files. Version incompatibility is handled at the path level:
+   - /cache_v123/ vs /cache_v456/ are completely separate
+   - No runtime version checking needed
+   - Automatic cleanup of old versions possible
+
+PERFORMANCE BENEFITS:
+- Zero locking overhead on reads (most common operation)
+- Zero lock contention delays
+- True parallel access scales linearly
+- Simplified code paths reduce CPU usage
+- Works efficiently on network filesystems (GPFS, NFS)
+
+SAFETY ANALYSIS:
+This approach is safe because the combination of content-addressed naming,
+atomic operations, and identical content eliminates all traditional race
+conditions that require locking to resolve.
+
+KEY INSIGHT: When multiple processes would write identical data to identical
+filenames, race conditions become harmless - any winner produces the correct
+result. This transforms a traditionally complex concurrency problem into a
+simple, fast, lock-free design.
 """
 
 import hashlib
@@ -20,9 +75,7 @@ import os
 import pickle
 import sqlite3
 import tempfile
-import fcntl
 import time
-import random
 from abc import ABC, abstractmethod
 from dataclasses import asdict, fields, is_dataclass, MISSING
 from pathlib import Path
@@ -69,58 +122,6 @@ def _compute_dataclass_hash(cls) -> str:
 CACHE_FORMAT_VERSION = _compute_dataclass_hash(FileAnalysisResult)
 
 
-class MultiUserFileLock:
-    """File-based locking for multiuser cache access.
-    
-    Uses fcntl.flock() on Unix systems to coordinate access to shared cache files.
-    Implements retry logic with exponential backoff for robust concurrent access.
-    """
-    
-    def __init__(self, lock_path: Path, timeout: float = 30.0):
-        """Initialize file lock.
-        
-        Args:
-            lock_path: Path to the lock file
-            timeout: Maximum time to wait for lock acquisition (seconds)
-        """
-        self._lock_path = lock_path
-        self._timeout = timeout
-        self._lock_file = None
-    
-    def __enter__(self):
-        """Acquire the file lock with retry logic."""
-        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock_file = self._lock_path.open('w')
-        
-        start_time = time.time()
-        retry_delay = 0.001  # Start with 1ms delay
-        max_delay = 0.1      # Cap at 100ms
-        
-        while time.time() - start_time < self._timeout:
-            try:
-                # Try to acquire exclusive lock (non-blocking)
-                fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return self
-            except (IOError, OSError):
-                # Lock is held by another process, wait and retry
-                time.sleep(retry_delay + random.uniform(0, retry_delay * 0.1))  # Add jitter
-                retry_delay = min(retry_delay * 1.5, max_delay)  # Exponential backoff
-        
-        # Timeout reached
-        self._lock_file.close()
-        self._lock_file = None
-        raise TimeoutError(f"Could not acquire lock on {self._lock_path} within {self._timeout}s")
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Release the file lock."""
-        if self._lock_file:
-            try:
-                fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
-                self._lock_file.close()
-            except (IOError, OSError):
-                pass  # Lock file may have been deleted
-            finally:
-                self._lock_file = None
 
 
 class FileAnalyzerCache(ABC):
@@ -244,19 +245,54 @@ class DiskCache(FileAnalyzerCache):
     Storage pattern: <cache_base>/file_analyzer_cache_shared_v{VERSION}/<shard>/<filename>.pkl
     Uses CACHE_FORMAT_VERSION in directory path for explicit version compatibility.
     Files are direct pickle dumps with no version wrapper for faster I/O.
-    Read operations are lockless since files are write-once, immutable.
+    
+    LOCKLESS CONCURRENT SAFETY:
+    ===========================
+    
+    This implementation safely handles concurrent access from multiple processes
+    without any file locking, using the following design principles:
+    
+    1. Content-Addressed Naming:
+       Filename = md5(filepath) + "_" + content_hash + ".pkl"
+       • Same file content always maps to same cache filename
+       • Different content maps to different filenames (no conflicts)
+       • Cache key includes both source file identity AND content hash
+    
+    2. Write-Once Semantics:
+       • Cache files are never modified after creation
+       • Content hash ensures same input → same output always
+       • No need to handle update races or partial writes
+    
+    3. Atomic Write Pattern:
+       • Write to temporary file: tempfile.NamedTemporaryFile()
+       • Atomic rename: os.replace(temp_file, final_file)
+       • POSIX guarantees: readers see complete file or no file
+       • No locks needed because operation is atomic at OS level
+    
+    4. Identical Content Property:
+       • Multiple processes analyzing same content produce identical pickle data
+       • Race condition outcomes:
+         * Process A writes file → Process B reads complete file ✓
+         * Process A and B write simultaneously → Last writer wins, both contain identical data ✓
+         * Process A reads while B writes → A sees old state or new state, never partial ✓
+    
+    5. Graceful Degradation:
+       • File corruption/deletion: Regenerate cache entry automatically
+       • Version mismatch: Handled by directory-level isolation
+       • Disk full: Fails safely, falls back to direct analysis
+    
+    Performance characteristics:
+    • Read operations: No locking overhead, scales linearly with CPU cores
+    • Write operations: Only filesystem atomic rename cost
+    • Concurrent safety: Zero contention, works on network filesystems
     """
     
-    def __init__(self, cache_dir: Optional[str] = None, multiuser: bool = True, lock_timeout: float = 30.0):
+    def __init__(self, cache_dir: Optional[str] = None):
         """Initialize disk cache.
         
         Args:
             cache_dir: Directory for cache files. If None, uses dirnamer-style location.
-            multiuser: Enable multiuser file locking for write operations (default True)
-            lock_timeout: Maximum time to wait for file lock acquisition (seconds)
         """
-        self._multiuser = multiuser
-        self._lock_timeout = lock_timeout
         if cache_dir is None:
             # Use dirnamer-style cache directory with version suffix
             import compiletools.dirnamer
@@ -266,32 +302,17 @@ class DiskCache(FileAnalyzerCache):
                 import tempfile
                 import threading
                 cache_base = tempfile.gettempdir()
-                # Always use unique names in temp directory for tests, even in multiuser mode
-                # to prevent conflicts between parallel test runs
+                # Use unique names in temp directory for tests to prevent conflicts between parallel test runs
                 unique_id = f"{os.getpid()}_{threading.get_ident()}_{int(time.time()*1000000)}"
-                if multiuser:
-                    cache_name = f"file_analyzer_cache_multiuser_v{CACHE_FORMAT_VERSION}_{unique_id}"
-                else:
-                    cache_name = f"file_analyzer_cache_v{CACHE_FORMAT_VERSION}_{unique_id}"
+                cache_name = f"file_analyzer_cache_shared_v{CACHE_FORMAT_VERSION}_{unique_id}"
             else:
-                if multiuser:
-                    cache_name = f"file_analyzer_cache_shared_v{CACHE_FORMAT_VERSION}"
-                else:
-                    cache_name = f"file_analyzer_cache_v{CACHE_FORMAT_VERSION}"
+                cache_name = f"file_analyzer_cache_shared_v{CACHE_FORMAT_VERSION}"
             self._cache_dir = Path(cache_base) / cache_name
         else:
             self._cache_dir = Path(cache_dir)
         
-        # Set up lock directory for multiuser write operations only
-        if self._multiuser:
-            self._lock_dir = self._cache_dir / ".locks"
-        else:
-            self._lock_dir = None
-        
         # Create cache directory if needed
         self._cache_dir.mkdir(parents=True, exist_ok=True)
-        if self._lock_dir:
-            self._lock_dir.mkdir(parents=True, exist_ok=True)
     
     def _get_cache_path(self, filepath: str, content_hash: str) -> Path:
         """Get cache file path for given file and hash."""
@@ -300,26 +321,17 @@ class DiskCache(FileAnalyzerCache):
         filename = f"{hashlib.md5(filepath.encode()).hexdigest()}_{content_hash}.pkl"
         return self._cache_dir / subdir / filename
     
-    def _get_lock_path(self, filepath: str, content_hash: str) -> Path:
-        """Get lock file path for given file and hash."""
-        if not self._lock_dir:
-            raise RuntimeError("Lock directory not initialized for multiuser mode")
-        subdir = content_hash[:2] if content_hash else "00"
-        filename = f"{hashlib.md5(filepath.encode()).hexdigest()}_{content_hash}.lock"
-        return self._lock_dir / subdir / filename
-    
-    def _with_write_lock(self, filepath: str, content_hash: str):
-        """Context manager for write operations with optional multiuser locking."""
-        if self._multiuser and self._lock_dir:
-            lock_path = self._get_lock_path(filepath, content_hash)
-            return MultiUserFileLock(lock_path, self._lock_timeout)
-        else:
-            # Return a no-op context manager for single-user mode
-            from contextlib import nullcontext
-            return nullcontext()
     
     def get(self, filepath: str, content_hash: str) -> Optional[FileAnalysisResult]:
-        """Retrieve from disk cache (lockless read since files are immutable)."""
+        """Retrieve from disk cache without locking (safe due to atomic writes).
+        
+        LOCKLESS READ SAFETY:
+        Reading without locks is safe because:
+        1. Files are written atomically (temp file + atomic rename)
+        2. We see either complete file or no file (never partial)
+        3. Cache files are immutable (write-once semantics)
+        4. Concurrent reads of same file are naturally safe
+        """
         cache_path = self._get_cache_path(filepath, content_hash)
         
         if cache_path.exists():
@@ -330,91 +342,88 @@ class DiskCache(FileAnalyzerCache):
                     result = pickle.loads(data)
                     return result
             except (IOError, OSError, pickle.UnpicklingError, TypeError, ValueError):
-                # Cache file read/corruption error, remove it
+                # Cache file read/corruption error, remove it and regenerate
+                # This is rare but can happen due to disk errors, partial disk full, etc.
                 try:
                     cache_path.unlink()
                 except OSError:
-                    pass
+                    pass  # Best effort cleanup
                     
         return None
     
     def put(self, filepath: str, content_hash: str, result: FileAnalysisResult) -> None:
-        """Store in disk cache with write-only locking for concurrent creation safety."""
+        """Store in disk cache using atomic rename for safe concurrent access.
+        
+        LOCKLESS SAFETY EXPLANATION:
+        This method is safe for concurrent execution because:
+        
+        1. Content-addressed filename ensures identical input → identical filename
+        2. Identical input always produces identical pickle data  
+        3. Atomic rename ensures readers never see partial files
+        4. Race conditions have safe outcomes:
+           • Multiple writers: All write identical data, any winner is correct
+           • Reader during write: Sees old state or new state, never corrupted
+           • Concurrent directory creation: mkdir(exist_ok=True) handles this
+        
+        No locking needed because filesystem atomicity + identical content = safety.
+        """
         cache_path = self._get_cache_path(filepath, content_hash)
         
         # Skip if file already exists (write-once semantics)
+        # Multiple processes may check this simultaneously - that's fine,
+        # they'll all write identical content if they proceed
         if cache_path.exists():
             return
             
-        with self._with_write_lock(filepath, content_hash):
-            # Double-check after acquiring lock
-            if cache_path.exists():
-                return
-                
-            # Create subdirectory if needed
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
+        # Create subdirectory if needed
+        # Multiple processes may create same directory - exist_ok=True handles this
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            # Direct pickle serialization - no version wrapper needed
+            # Same input always produces bit-identical pickle data
+            serialized_data = pickle.dumps(result)
             
+            # ATOMIC WRITE PATTERN:
+            # 1. Write to temporary file in same directory (same filesystem)
+            # 2. Use atomic rename to final filename
+            # This ensures readers see either: no file OR complete file (never partial)
+            with tempfile.NamedTemporaryFile(mode='wb', dir=cache_path.parent, delete=False) as f:
+                temp_path = f.name
+                f.write(serialized_data)
+            
+            # ATOMIC RENAME: This is the critical operation that ensures safety
+            # os.replace() is atomic on POSIX systems - readers will never see partial writes
+            # If multiple processes rename to same target, last writer wins with identical data
+            os.replace(temp_path, cache_path)
+            
+        except (IOError, OSError):
+            # Clean up temp file if rename failed
+            # This is best-effort cleanup - temp files will be cleaned up by OS eventually
             try:
-                # Direct pickle serialization - no version wrapper needed
-                serialized_data = pickle.dumps(result)
-                
-                # Write to temp file first then rename for atomicity
-                with tempfile.NamedTemporaryFile(mode='wb', dir=cache_path.parent, delete=False) as f:
-                    temp_path = f.name
-                    f.write(serialized_data)
-                
-                # Atomic rename
-                os.replace(temp_path, cache_path)
-                
-            except (IOError, OSError):
-                # Clean up temp file if it exists
-                try:
-                    if 'temp_path' in locals():
-                        os.unlink(temp_path)
-                except OSError:
-                    pass
+                if 'temp_path' in locals():
+                    os.unlink(temp_path)
+            except OSError:
+                pass  # Ignore cleanup failures
     
     def clear(self, filepath: Optional[str] = None) -> None:
-        """Clear current version cache with write locking support."""
-        # Use a global cache lock for clear operations
-        global_lock_path = None
-        if self._multiuser and self._lock_dir:
-            global_lock_path = self._lock_dir / "global.lock"
-        
-        if global_lock_path:
-            with MultiUserFileLock(global_lock_path, self._lock_timeout):
-                self._clear_unlocked(filepath)
-        else:
-            self._clear_unlocked(filepath)
-    
-    def _clear_unlocked(self, filepath: Optional[str] = None) -> None:
-        """Internal clear method that assumes lock is already held."""
+        """Clear current version cache entries."""
         if filepath:
             # Clear only entries for specific file
             filepath_hash = hashlib.md5(filepath.encode()).hexdigest()
             for subdir in self._cache_dir.iterdir():
-                if subdir.is_dir() and not subdir.name.startswith('.'):  # Skip .locks directory
+                if subdir.is_dir():
                     for cache_file in subdir.glob(f"{filepath_hash}_*.pkl"):
                         try:
                             cache_file.unlink()
                         except OSError:
                             pass
         else:
-            # Clear entire cache directory (but preserve lock directory structure)
+            # Clear entire cache directory and recreate
             import shutil
             try:
-                if self._multiuser and self._lock_dir:
-                    # Clear cache files but keep lock directory
-                    for item in self._cache_dir.iterdir():
-                        if item != self._lock_dir:
-                            if item.is_dir():
-                                shutil.rmtree(item)
-                            else:
-                                item.unlink()
-                else:
-                    # Single-user mode - clear everything and recreate
-                    shutil.rmtree(self._cache_dir)
-                    self._cache_dir.mkdir(parents=True, exist_ok=True)
+                shutil.rmtree(self._cache_dir)
+                self._cache_dir.mkdir(parents=True, exist_ok=True)
             except OSError:
                 pass
     
@@ -459,22 +468,46 @@ class SQLiteCache(FileAnalyzerCache):
     Storage pattern: <cache_base>/file_analyzer_cache_v{VERSION}.db
     Uses CACHE_FORMAT_VERSION in database filename for explicit version compatibility.
     Stores direct pickle dumps with no version wrapper for faster serialization.
+    
+    CONCURRENCY SAFETY:
+    ==================
+    
+    This implementation relies on SQLite's built-in concurrency control rather than
+    explicit file locking:
+    
+    1. SQLite WAL Mode:
+       • Enables concurrent readers with single writer
+       • Writers don't block readers
+       • Built-in busy timeout handles contention
+    
+    2. Content Deduplication:
+       • Same (filepath, content_hash) always produces identical data
+       • INSERT OR REPLACE is idempotent for identical content
+       • Race conditions result in same final state
+    
+    3. Database-Level Atomicity:
+       • SQLite provides ACID guarantees
+       • Transactions are atomic and isolated
+       • No partial reads/writes at database level
+    
+    4. Version Isolation:
+       • Different cache versions use different database files
+       • No cross-version compatibility issues
+       • Clean upgrade path by database replacement
+    
+    Performance: SQLite handles multi-process access efficiently with minimal
+    overhead compared to file-level locking approaches.
     """
     
-    def __init__(self, db_path: Optional[str] = None, batch_size: int = 1000, 
-                 multiuser: bool = True, lock_timeout: float = 30.0):
+    def __init__(self, db_path: Optional[str] = None, batch_size: int = 1000):
         """Initialize SQLite cache.
         
         Args:
             db_path: Path to SQLite database. If None, uses dirnamer-style location.
             batch_size: Number of operations to batch before committing (1-10000)
-            multiuser: Enable multiuser file locking for team cache sharing (default True)
-            lock_timeout: Maximum time to wait for file lock acquisition (seconds)
         """
         # Clamp batch size to reasonable range
         self._batch_size = max(1, min(batch_size, 10000))
-        self._multiuser = multiuser  
-        self._lock_timeout = lock_timeout
         
         if db_path is None:
             import compiletools.dirnamer
@@ -484,29 +517,16 @@ class SQLiteCache(FileAnalyzerCache):
                 import tempfile
                 import threading
                 cache_base = tempfile.gettempdir()
-                # Always use unique names in temp directory for tests, even in multiuser mode
-                # to prevent conflicts between parallel test runs
+                # Use unique names in temp directory for tests to prevent conflicts between parallel test runs
                 unique_id = f"{os.getpid()}_{threading.get_ident()}_{int(time.time()*1000000)}"
-                if multiuser:
-                    db_name = f"file_analyzer_cache_multiuser_v{CACHE_FORMAT_VERSION}_{unique_id}.db"
-                else:
-                    db_name = f"file_analyzer_cache_v{CACHE_FORMAT_VERSION}_{unique_id}.db"
+                db_name = f"file_analyzer_cache_shared_v{CACHE_FORMAT_VERSION}_{unique_id}.db"
             else:
-                if multiuser:
-                    db_name = f"file_analyzer_cache_shared_v{CACHE_FORMAT_VERSION}.db"
-                else:
-                    db_name = f"file_analyzer_cache_v{CACHE_FORMAT_VERSION}.db"
+                db_name = f"file_analyzer_cache_shared_v{CACHE_FORMAT_VERSION}.db"
             db_dir = Path(cache_base)
             db_dir.mkdir(parents=True, exist_ok=True)
             self._db_path = db_dir / db_name
         else:
             self._db_path = Path(db_path)
-        
-        # Set up lock file path for multiuser mode
-        if self._multiuser:
-            self._lock_path = self._db_path.with_suffix('.lock')
-        else:
-            self._lock_path = None
         
         # Initialize database and connection
         self._conn = None
@@ -548,14 +568,6 @@ class SQLiteCache(FileAnalyzerCache):
         except sqlite3.Error:
             return True
     
-    def _with_lock(self):
-        """Context manager for database operations with optional multiuser locking."""
-        if self._multiuser and self._lock_path:
-            return MultiUserFileLock(self._lock_path, self._lock_timeout)
-        else:
-            # Return a no-op context manager for single-user mode
-            from contextlib import nullcontext
-            return nullcontext()
     
     def _execute_with_retry(self, conn, sql: str, params=None, max_retries: int = 3):
         """Execute SQL with retry logic for database busy errors."""
@@ -575,107 +587,96 @@ class SQLiteCache(FileAnalyzerCache):
                 raise
     
     def _init_db(self):
-        """Initialize SQLite database schema with multiuser support."""
-        with self._with_lock():
-            conn = self._get_conn()
-            # Use WAL mode for better concurrent access, but optimize for speed
-            self._execute_with_retry(conn, 'PRAGMA journal_mode=WAL;')     # Better for concurrent access
-            self._execute_with_retry(conn, 'PRAGMA synchronous=NORMAL;')   # Balance durability and speed
-            self._execute_with_retry(conn, 'PRAGMA temp_store=MEMORY;')    # Keep temp tables in memory
-            self._execute_with_retry(conn, 'PRAGMA cache_size=10000;')     # Larger cache for performance
-            
-            # Enable busy timeout for better concurrency
-            if self._multiuser:
-                self._execute_with_retry(conn, 'PRAGMA busy_timeout=5000;')  # 5 second timeout
-            
-            self._execute_with_retry(conn, """
-                CREATE TABLE IF NOT EXISTS cache (
-                    filepath TEXT,
-                    content_hash TEXT,
-                    result BLOB,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (filepath, content_hash)
-                )
-            """)
-            self._execute_with_retry(conn, "CREATE INDEX IF NOT EXISTS idx_filepath ON cache(filepath)")
-            self._execute_with_retry(conn, "CREATE INDEX IF NOT EXISTS idx_hash ON cache(content_hash)")
-            conn.commit()
+        """Initialize SQLite database schema for concurrent access."""
+        conn = self._get_conn()
+        # Use WAL mode for better concurrent access, but optimize for speed
+        self._execute_with_retry(conn, 'PRAGMA journal_mode=WAL;')     # Better for concurrent access
+        self._execute_with_retry(conn, 'PRAGMA synchronous=NORMAL;')   # Balance durability and speed
+        self._execute_with_retry(conn, 'PRAGMA temp_store=MEMORY;')    # Keep temp tables in memory
+        self._execute_with_retry(conn, 'PRAGMA cache_size=10000;')     # Larger cache for performance
+        self._execute_with_retry(conn, 'PRAGMA busy_timeout=5000;')    # 5 second timeout for concurrent access
+        
+        self._execute_with_retry(conn, """
+            CREATE TABLE IF NOT EXISTS cache (
+                filepath TEXT,
+                content_hash TEXT,
+                result BLOB,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (filepath, content_hash)
+            )
+        """)
+        self._execute_with_retry(conn, "CREATE INDEX IF NOT EXISTS idx_filepath ON cache(filepath)")
+        self._execute_with_retry(conn, "CREATE INDEX IF NOT EXISTS idx_hash ON cache(content_hash)")
+        conn.commit()
     
     def get(self, filepath: str, content_hash: str) -> Optional[FileAnalysisResult]:
-        """Retrieve from SQLite cache with multiuser support."""
-        with self._with_lock():
-            conn = self._get_conn()
-            cursor = self._execute_with_retry(
-                conn,
-                "SELECT result FROM cache WHERE filepath = ? AND content_hash = ?",
-                (filepath, content_hash)
-            )
-            row = cursor.fetchone()
-            
-            if row:
-                try:
-                    # Direct pickle load - version compatibility guaranteed by database filename
-                    result = pickle.loads(row[0])
-                    return result
-                except (pickle.UnpicklingError, TypeError, ValueError):
-                    # Corrupted entry, delete it
-                    self._execute_with_retry(
-                        conn,
-                        "DELETE FROM cache WHERE filepath = ? AND content_hash = ?",
-                        (filepath, content_hash)
-                    )
-                    conn.commit()
-                    return None
-                    
-            return None
+        """Retrieve from SQLite cache using built-in concurrency control."""
+        conn = self._get_conn()
+        cursor = self._execute_with_retry(
+            conn,
+            "SELECT result FROM cache WHERE filepath = ? AND content_hash = ?",
+            (filepath, content_hash)
+        )
+        row = cursor.fetchone()
+        
+        if row:
+            try:
+                # Direct pickle load - version compatibility guaranteed by database filename
+                result = pickle.loads(row[0])
+                return result
+            except (pickle.UnpicklingError, TypeError, ValueError):
+                # Corrupted entry, delete it
+                self._execute_with_retry(
+                    conn,
+                    "DELETE FROM cache WHERE filepath = ? AND content_hash = ?",
+                    (filepath, content_hash)
+                )
+                conn.commit()
+                return None
+                
+        return None
     
     def put(self, filepath: str, content_hash: str, result: FileAnalysisResult) -> None:
-        """Store in SQLite cache with batched commits and multiuser support."""
-        # In multiuser mode, use smaller batches and immediate locking for consistency
-        effective_batch_size = self._batch_size // 10 if self._multiuser else self._batch_size
+        """Store in SQLite cache with batched commits using built-in concurrency control."""
+        conn = self._get_conn()
+        # Direct pickle serialization - no version wrapper needed
+        data = pickle.dumps(result)
         
-        with self._with_lock():
-            conn = self._get_conn()
-            # Direct pickle serialization - no version wrapper needed
-            data = pickle.dumps(result)
-            
-            self._execute_with_retry(
-                conn,
-                "INSERT OR REPLACE INTO cache (filepath, content_hash, result) VALUES (?, ?, ?)",
-                (filepath, content_hash, data)
-            )
-            
-            self._pending_operations += 1
-            
-            # In multiuser mode, commit more frequently to avoid holding locks too long
-            if self._pending_operations >= effective_batch_size:
-                self._flush_unlocked(conn)
+        self._execute_with_retry(
+            conn,
+            "INSERT OR REPLACE INTO cache (filepath, content_hash, result) VALUES (?, ?, ?)",
+            (filepath, content_hash, data)
+        )
+        
+        self._pending_operations += 1
+        
+        # Commit when batch is full
+        if self._pending_operations >= self._batch_size:
+            self._flush_internal(conn)
     
-    def _flush_unlocked(self, conn) -> None:
-        """Internal flush method that assumes lock is already held."""
+    def _flush_internal(self, conn) -> None:
+        """Internal flush method for batched operations."""
         if self._pending_operations > 0:
             conn.commit()
             self._pending_operations = 0
     
     def flush(self) -> None:
-        """Commit any pending operations to database with multiuser support."""
+        """Commit any pending operations to database."""
         if self._conn and self._pending_operations > 0:
-            with self._with_lock():
-                self._flush_unlocked(self._conn)
+            self._flush_internal(self._conn)
     
     def clear(self, filepath: Optional[str] = None) -> None:
-        """Clear SQLite cache with multiuser support."""
-        with self._with_lock():
-            # Flush any pending operations first
-            if self._conn and self._pending_operations > 0:
-                self._flush_unlocked(self._conn)
-            
-            conn = self._get_conn()
-            if filepath:
-                self._execute_with_retry(conn, "DELETE FROM cache WHERE filepath = ?", (filepath,))
-            else:
-                self._execute_with_retry(conn, "DELETE FROM cache")
-            conn.commit()
+        """Clear SQLite cache using built-in concurrency control."""
+        # Flush any pending operations first
+        if self._conn and self._pending_operations > 0:
+            self._flush_internal(self._conn)
+        
+        conn = self._get_conn()
+        if filepath:
+            self._execute_with_retry(conn, "DELETE FROM cache WHERE filepath = ?", (filepath,))
+        else:
+            self._execute_with_retry(conn, "DELETE FROM cache")
+        conn.commit()
 
 
 class RedisCache(FileAnalyzerCache):

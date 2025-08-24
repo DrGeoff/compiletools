@@ -49,8 +49,8 @@ class TestCTCacheConfigurationConflicts:
         # Verify cache directory is in temp area (not "None")
         temp_dir = Path(tempfile.gettempdir())
         assert cache._cache_dir.parent == temp_dir
-        # With multiuser default, should have unique name with multiuser prefix
-        assert cache._cache_dir.name.startswith("file_analyzer_cache_multiuser_")
+        # Should have unique name with shared prefix and version
+        assert cache._cache_dir.name.startswith("file_analyzer_cache_shared_v")
         assert "None" not in str(cache._cache_dir)
         
         # Verify cache operations work
@@ -73,8 +73,8 @@ class TestCTCacheConfigurationConflicts:
         # Verify database path is in temp area (not "None")
         temp_dir = Path(tempfile.gettempdir())
         assert cache._db_path.parent == temp_dir
-        # Should have process ID suffix to avoid parallel test conflicts
-        assert cache._db_path.name.startswith("file_analyzer_cache_")
+        # Should have shared prefix with version and unique ID to avoid parallel test conflicts
+        assert cache._db_path.name.startswith("file_analyzer_cache_shared_v")
         assert cache._db_path.name.endswith(".db")
         
         # Verify cache operations work
