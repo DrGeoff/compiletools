@@ -226,10 +226,8 @@ class MagicFlagsBase:
 class DirectMagicFlags(MagicFlagsBase):
     def __init__(self, args, headerdeps):
         MagicFlagsBase.__init__(self, args, headerdeps)
-        # Track defined macros during processing
-        self.defined_macros = set()
-        # Track macro values for expression evaluation
-        self.macro_values = {}
+        # Track defined macros with values during processing (unified storage)
+        self.defined_macros = {}
 
     def _add_macros_from_command_line_flags(self):
         """Extract -D macros from command-line CPPFLAGS and CXXFLAGS and add them to defined_macros"""
@@ -243,35 +241,29 @@ class DirectMagicFlags(MagicFlagsBase):
             verbose=self._args.verbose
         )
         
-        # Update both storage mechanisms to maintain compatibility
-        for macro_name, macro_value in macros.items():
-            self.defined_macros.add(macro_name)
-            self.macro_values[macro_name] = macro_value
+        # Direct assignment - no copying overhead
+        self.defined_macros.update(macros)
 
     def _process_conditional_compilation(self, text):
         """Process conditional compilation directives and return only active sections"""
         from compiletools.simple_preprocessor import SimplePreprocessor
         
         # Use our macro state directly for SimplePreprocessor
-        preprocessor = SimplePreprocessor(self.macro_values, verbose=self._args.verbose)
+        preprocessor = SimplePreprocessor(self.defined_macros, verbose=self._args.verbose)
         
         # Process the text with full preprocessor functionality
         processed_text = preprocessor.process(text)
         
         # Update our internal state from preprocessor results
         self.defined_macros.clear()
-        self.macro_values.clear()
-        for name, value in preprocessor.macros.items():
-            self.defined_macros.add(name)
-            self.macro_values[name] = value
+        self.defined_macros.update(preprocessor.macros)
         
         return processed_text
 
     def readfile(self, filename):
         """Read the first chunk of the file and all the headers it includes"""
         # Reset defined macros for each new parse
-        self.defined_macros = set()
-        self.macro_values = {}
+        self.defined_macros = {}
         
         # Add macros from command-line CPPFLAGS and CXXFLAGS (e.g., from --append-CPPFLAGS/--append-CXXFLAGS)
         self._add_macros_from_command_line_flags()
@@ -279,25 +271,23 @@ class DirectMagicFlags(MagicFlagsBase):
         # Get compiler, platform, and architecture macros dynamically
         compiler = getattr(self._args, 'CXX', 'g++')
         macros = compiletools.compiler_macros.get_compiler_macros(compiler, self._args.verbose)
-        for macro_name, macro_value in macros.items():
-            self.defined_macros.add(macro_name)
-            self.macro_values[macro_name] = macro_value
+        self.defined_macros.update(macros)
         
         headers = self._headerdeps.process(filename)
         
         # Process files iteratively until no new macros are discovered
         # This handles cases where macros defined in one file affect conditional
         # compilation in other files
-        previous_macros = set()
+        previous_macros = {}
         max_iterations = 5  # Prevent infinite loops
         iteration = 0
         
-        while previous_macros != self.defined_macros and iteration < max_iterations:
+        while set(previous_macros.keys()) != set(self.defined_macros.keys()) and iteration < max_iterations:
             previous_macros = self.defined_macros.copy()
             iteration += 1
             
             if self._args.verbose >= 9:
-                print(f"DirectMagicFlags::readfile iteration {iteration}, known macros: {self.defined_macros}")
+                print(f"DirectMagicFlags::readfile iteration {iteration}, known macros: {set(self.defined_macros.keys())}")
             
             text = ""
             # Process files in dependency order
