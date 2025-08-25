@@ -288,8 +288,8 @@ class SimplePreprocessor:
         # Handle defined(MACRO) and defined MACRO
         expr = self._expand_defined(expr)
         
-        # Replace macro names with their values
-        expr = self._expand_macros(expr)
+        # Replace macro names with their values (recursively)
+        expr = self._recursive_expand_macros(expr)
         
         # Evaluate the expression safely
         return self._safe_eval(expr)
