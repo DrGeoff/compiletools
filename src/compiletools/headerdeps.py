@@ -75,6 +75,8 @@ class HeaderDepsBase(object):
     @staticmethod
     def clear_cache():
         # print("HeaderDepsBase::clear_cache")
+        import compiletools.apptools
+        compiletools.apptools.clear_cache()
         DirectHeaderDeps.clear_cache()
         CppHeaderDeps.clear_cache()
 
@@ -121,41 +123,14 @@ class DirectHeaderDeps(HeaderDepsBase):
         if self.args.verbose >= 3:
             print("Includes=" + str(self.includes))
             
-        # Track defined macros during processing - use dict to store name-value pairs
-        self.defined_macros = {}
-        
-        # Extract -D macro definitions from CPPFLAGS, CFLAGS, and CXXFLAGS
-        define_pat = re.compile(r"-D([\S]+)")
-        flag_sources = [
-            ('CPPFLAGS', getattr(self.args, 'CPPFLAGS', '')),
-            ('CFLAGS', getattr(self.args, 'CFLAGS', '')), 
-            ('CXXFLAGS', getattr(self.args, 'CXXFLAGS', ''))
-        ]
-        
-        for flag_name, flag_value in flag_sources:
-            if flag_value:  # Only process if flag_value is not empty
-                # Handle both string and list types for flag_value
-                if isinstance(flag_value, list):
-                    flag_string = ' '.join(flag_value)
-                else:
-                    flag_string = flag_value
-                    
-                flag_macros = define_pat.findall(flag_string)
-                for macro in flag_macros:
-                    # Handle -DMACRO=value by splitting on first = to get name and value
-                    if '=' in macro:
-                        macro_name, macro_value = macro.split('=', 1)
-                    else:
-                        macro_name = macro
-                        macro_value = "1"  # Default value for macros without explicit values
-                    self.defined_macros[macro_name] = macro_value
-                    if self.args.verbose >= 3:
-                        print(f"Added macro from {flag_name}: {macro_name} = {macro_value}")
-        
-        # Get compiler, platform, and architecture macros dynamically
-        compiler = getattr(self.args, 'CXX', 'g++')
-        macros = compiletools.compiler_macros.get_compiler_macros(compiler, self.args.verbose)
-        self.defined_macros.update(macros)
+        # Extract macro definitions from command line flags and compiler
+        import compiletools.apptools
+        self.defined_macros = compiletools.apptools.extract_command_line_macros(
+            self.args, 
+            flag_sources=['CPPFLAGS', 'CFLAGS', 'CXXFLAGS'],
+            include_compiler_macros=True,
+            verbose=self.args.verbose
+        )
 
     @functools.lru_cache(maxsize=None)
     def _search_project_includes(self, include):

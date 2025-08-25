@@ -2,6 +2,7 @@ import sys
 import os
 import subprocess
 import argparse
+import shlex
 
 # Only used for the verbose print.
 import configargparse
@@ -338,6 +339,75 @@ def _add_include_paths_to_flags(args):
         print("\tCPPFLAGS=" + args.CPPFLAGS)
         print("\tCFLAGS=" + args.CFLAGS)
         print("\tCXXFLAGS=" + args.CXXFLAGS)
+
+
+def extract_command_line_macros(args, flag_sources=None, include_compiler_macros=True, verbose=0):
+    """Extract -D macro definitions from command line flags.
+    
+    Args:
+        args: Parsed arguments object with flag attributes (CPPFLAGS, CFLAGS, CXXFLAGS)
+        flag_sources: List of flag names to extract from (default: ['CPPFLAGS', 'CFLAGS', 'CXXFLAGS']) 
+        include_compiler_macros: Whether to include compiler/platform macros
+        verbose: Verbosity level (uses args.verbose if 0)
+        
+    Returns:
+        Dict[str, str]: macro_name -> macro_value mapping
+    """
+    if verbose == 0 and hasattr(args, 'verbose'):
+        verbose = args.verbose
+    
+    if flag_sources is None:
+        flag_sources = ['CPPFLAGS', 'CFLAGS', 'CXXFLAGS']
+    
+    macros = {}
+    
+    # Extract -D macros from specified flag sources
+    for flag_name in flag_sources:
+        flag_value = getattr(args, flag_name, None)
+        if not flag_value:
+            continue
+            
+        # Handle both string and list types for flag_value
+        if isinstance(flag_value, list):
+            flag_string = ' '.join(flag_value)
+        else:
+            flag_string = flag_value
+            
+        # Use shlex.split for robust parsing
+        try:
+            flags = shlex.split(flag_string)
+        except ValueError:
+            # Fallback to simple split if shlex fails on malformed input
+            flags = flag_string.split()
+            
+        for flag in flags:
+            if flag.startswith('-D'):
+                # Extract macro name and value (handle both -DMACRO and -DMACRO=value)
+                macro_def = flag[2:]  # Remove the -D
+                if '=' in macro_def:
+                    macro_name, macro_value = macro_def.split('=', 1)
+                else:
+                    macro_name = macro_def
+                    macro_value = "1"  # Default value for macros without explicit values
+                
+                if macro_name:
+                    macros[macro_name] = macro_value
+                    if verbose >= 9:
+                        print(f"extract_command_line_macros: added macro {macro_name} = {macro_value} from {flag_name}")
+    
+    # Add compiler, platform, and architecture macros if requested
+    if include_compiler_macros:
+        import compiletools.compiler_macros
+        compiler = getattr(args, 'CXX', 'g++')
+        compiler_macros = compiletools.compiler_macros.get_compiler_macros(compiler, verbose)
+        macros.update(compiler_macros)
+    
+    return macros
+
+
+def clear_cache():
+    """Clear any caches for macro extraction (currently no-op)."""
+    pass
 
 
 def _add_flags_from_pkg_config(args):
