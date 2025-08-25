@@ -342,7 +342,7 @@ class DiskCache(FileAnalyzerCache):
                     # Direct pickle load - version compatibility guaranteed by directory path
                     result = pickle.loads(data)
                     return result
-            except (IOError, OSError, pickle.UnpicklingError, TypeError, ValueError):
+            except (IOError, OSError, pickle.UnpicklingError, TypeError, ValueError, ModuleNotFoundError):
                 # Cache file read/corruption error, remove it and regenerate
                 try:
                     cache_path.unlink()
