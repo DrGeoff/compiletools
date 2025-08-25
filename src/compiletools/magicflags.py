@@ -218,6 +218,7 @@ class MagicFlagsBase:
         compiletools.utils.clear_cache()
         compiletools.git_utils.clear_cache()
         compiletools.wrappedos.clear_cache()
+        compiletools.apptools.clear_cache()
         DirectMagicFlags.clear_cache()
         CppMagicFlags.clear_cache()
 
@@ -232,52 +233,27 @@ class DirectMagicFlags(MagicFlagsBase):
 
     def _add_macros_from_command_line_flags(self):
         """Extract -D macros from command-line CPPFLAGS and CXXFLAGS and add them to defined_macros"""
-        import shlex
+        import compiletools.apptools
         
-        # Check both CPPFLAGS and CXXFLAGS for macro definitions
-        flag_sources = []
-        if hasattr(self._args, 'CPPFLAGS') and self._args.CPPFLAGS:
-            flag_sources.append(('CPPFLAGS', self._args.CPPFLAGS))
-        if hasattr(self._args, 'CXXFLAGS') and self._args.CXXFLAGS:
-            flag_sources.append(('CXXFLAGS', self._args.CXXFLAGS))
-            
-        for source_name, flag_value in flag_sources:
-            # Handle both string and list types for flag_value
-            if isinstance(flag_value, list):
-                flag_string = ' '.join(flag_value)
-            else:
-                flag_string = flag_value
-                
-            flags = shlex.split(flag_string)
-            for flag in flags:
-                if flag.startswith('-D'):
-                    # Extract macro name and value (handle both -DMACRO and -DMACRO=value)
-                    macro_def = flag[2:]  # Remove the -D
-                    if '=' in macro_def:
-                        macro_name, macro_value = macro_def.split('=', 1)
-                    else:
-                        macro_name = macro_def
-                        macro_value = "1"
-                    
-                    if macro_name:
-                        self.defined_macros.add(macro_name)
-                        self.macro_values[macro_name] = macro_value
-                        if self._args.verbose >= 9:
-                            print(f"DirectMagicFlags: added command-line macro {macro_name} = {macro_value} from {source_name}")
-
-    def _create_macro_dict(self):
-        """Convert defined_macros and macro_values to a dict for SimplePreprocessor"""
-        # Return a copy of our macro_values dict
-        return self.macro_values.copy()
-
+        # Extract macros from CPPFLAGS and CXXFLAGS only (excluding CFLAGS to match original behavior)
+        macros = compiletools.apptools.extract_command_line_macros(
+            self._args,
+            flag_sources=['CPPFLAGS', 'CXXFLAGS'],
+            include_compiler_macros=False,  # Don't include compiler macros here, done separately
+            verbose=self._args.verbose
+        )
+        
+        # Update both storage mechanisms to maintain compatibility
+        for macro_name, macro_value in macros.items():
+            self.defined_macros.add(macro_name)
+            self.macro_values[macro_name] = macro_value
 
     def _process_conditional_compilation(self, text):
         """Process conditional compilation directives and return only active sections"""
         from compiletools.simple_preprocessor import SimplePreprocessor
         
-        # Convert our macro state to dict format for SimplePreprocessor
-        macro_dict = self._create_macro_dict()
-        preprocessor = SimplePreprocessor(macro_dict, verbose=self._args.verbose)
+        # Use our macro state directly for SimplePreprocessor
+        preprocessor = SimplePreprocessor(self.macro_values, verbose=self._args.verbose)
         
         # Process the text with full preprocessor functionality
         processed_text = preprocessor.process(text)
