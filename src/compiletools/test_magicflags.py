@@ -164,3 +164,36 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert self._check_flags(result_direct, "LDFLAGS", new_api_flags, old_api_flags), \
             "DirectMagicFlags must have feature parity with CppMagicFlags for complex #if expressions"
 
+    def test_myapp_version_dependent_api_regression(self):
+        """Test that external header version macros work correctly for MYAPP API selection"""
+        
+        # Test MYAPP 1.27.8 (< 1.27.13) - should get legacy API
+        legacy_api_flags = ["USE_LEGACY_API", "DLEGACY_HANDLER=myapp::LegacyProcessor"]
+        modern_api_flags = ["MYAPP_ENABLE_V2_SYSTEM", "DV2_PROCESSOR_CLASS=myapp::ModernProcessor"] 
+        common_flags = ["MYAPP_CORE_ENABLED", "DMYAPP_CONFIG_NAMESPACE=MYAPP_CORE"]
+        
+        # Test old version (1.27.8) with both magic types
+        result_cpp_old = self._parse_with_magic("cpp", "version_dependent_api/api_config.h")
+        result_direct_old = self._parse_with_magic("direct", "version_dependent_api/api_config.h")
+        
+        # Both should extract legacy API flags for version 1.27.8
+        assert self._check_flags(result_cpp_old, "CPPFLAGS", legacy_api_flags, modern_api_flags), \
+            "CPP magic should extract legacy API for MYAPP 1.27.8"
+        assert self._check_flags(result_direct_old, "CPPFLAGS", legacy_api_flags, modern_api_flags), \
+            "Direct magic should extract legacy API for MYAPP 1.27.8"
+            
+        # Test new version (1.27.13) with both magic types  
+        result_cpp_new = self._parse_with_magic("cpp", "version_dependent_api/api_config_new.h")
+        result_direct_new = self._parse_with_magic("direct", "version_dependent_api/api_config_new.h")
+        
+        # Both should extract modern API flags for version 1.27.13
+        assert self._check_flags(result_cpp_new, "CPPFLAGS", modern_api_flags, legacy_api_flags), \
+            "CPP magic should extract modern API for MYAPP 1.27.13"
+        assert self._check_flags(result_direct_new, "CPPFLAGS", modern_api_flags, legacy_api_flags), \
+            "Direct magic should extract modern API for MYAPP 1.27.13"
+            
+        # Both versions should have common flags
+        for result in [result_cpp_old, result_direct_old, result_cpp_new, result_direct_new]:
+            assert self._check_flags(result, "CPPFLAGS", common_flags, []), \
+                "All versions should have common MYAPP flags"
+

@@ -315,6 +315,10 @@ class DirectMagicFlags(MagicFlagsBase):
         for line in lines:
             stripped = line.strip()
             
+            # Skip lines that were processed as part of line continuation
+            if stripped == "# PROCESSED_CONTINUATION_LINE":
+                continue
+            
             # Track #define statements
             if stripped.startswith('#define ') and condition_stack[-1][0]:
                 parts = stripped.split(' ', 2)
@@ -345,7 +349,19 @@ class DirectMagicFlags(MagicFlagsBase):
             
             elif stripped.startswith('#if '):
                 expr = stripped[4:].strip()
-                # Strip C++ style comments from the expression
+                
+                # Handle line continuation for multi-line #if expressions
+                line_idx = lines.index(line)
+                while expr.endswith('\\') and line_idx + 1 < len(lines):
+                    # Remove the trailing backslash and add the next line
+                    expr = expr[:-1].strip()
+                    line_idx += 1
+                    next_line = lines[line_idx].strip()
+                    # Skip the line in the main loop by marking it as processed
+                    lines[line_idx] = "# PROCESSED_CONTINUATION_LINE"
+                    expr += " " + next_line
+                
+                # Strip C++ style comments from the complete expression
                 if '//' in expr:
                     expr = expr[:expr.find('//')].strip()
                     
