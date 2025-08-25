@@ -45,6 +45,8 @@ class TestFindTargetsModule:
             "simple/test_cflags.c",
             "serialise_tests/test_flock_1.cpp",
             "serialise_tests/test_flock_2.cpp",
+            "version_dependent_api/test_main.cpp",
+            "version_dependent_api/test_main_new.cpp",
         }
 
         expectedexes = set()
