@@ -270,143 +270,26 @@ class DirectMagicFlags(MagicFlagsBase):
         # Return a copy of our macro_values dict
         return self.macro_values.copy()
 
-    def _recursive_expand_macros(self, expr, macros, max_iterations=10):
-        """Recursively expand macros until no more changes occur"""
-        import re
-        
-        def replace_macro(match):
-            macro_name = match.group(0)
-            if macro_name in macros:
-                value = macros[macro_name]
-                # Try to convert to int if possible
-                try:
-                    return str(int(value))
-                except ValueError:
-                    return value
-            else:
-                # Undefined macro defaults to 0
-                return "0"
-        
-        previous_expr = None
-        iteration = 0
-        
-        while expr != previous_expr and iteration < max_iterations:
-            previous_expr = expr
-            # Replace macro names (identifiers) with their values
-            expr = re.sub(r'(?<![0-9])\b[A-Za-z_][A-Za-z0-9_]*\b(?![0-9])', replace_macro, expr)
-            iteration += 1
-            
-        return expr
 
     def _process_conditional_compilation(self, text):
         """Process conditional compilation directives and return only active sections"""
-        lines = text.split('\n')
-        result_lines = []
-        
-        # Stack to track conditional compilation state
-        # Each entry is (is_active, seen_else)
-        condition_stack = [(True, False)]  # Start with active context
-        
-        # Create SimplePreprocessor for expression evaluation
         from compiletools.simple_preprocessor import SimplePreprocessor
+        
+        # Convert our macro state to dict format for SimplePreprocessor
         macro_dict = self._create_macro_dict()
         preprocessor = SimplePreprocessor(macro_dict, verbose=self._args.verbose)
         
-        for line in lines:
-            stripped = line.strip()
-            
-            # Skip lines that were processed as part of line continuation
-            if stripped == "# PROCESSED_CONTINUATION_LINE":
-                continue
-            
-            # Track #define statements
-            if stripped.startswith('#define ') and condition_stack[-1][0]:
-                parts = stripped.split(' ', 2)
-                if len(parts) >= 2:
-                    macro_name = parts[1]
-                    macro_value = parts[2] if len(parts) > 2 else "1"
-                    self.defined_macros.add(macro_name)
-                    self.macro_values[macro_name] = macro_value
-                    # Also update the preprocessor's macro dict
-                    preprocessor.macros[macro_name] = macro_value
-                    if self._args.verbose >= 9:
-                        print(f"DirectMagicFlags: defined macro {macro_name} = {macro_value}")
-            
-            # Handle conditional compilation directives
-            elif stripped.startswith('#ifdef '):
-                macro = stripped[7:].strip()
-                is_defined = macro in self.defined_macros
-                condition_stack.append((is_defined and condition_stack[-1][0], False))
-                if self._args.verbose >= 9:
-                    print(f"DirectMagicFlags: #ifdef {macro} -> {is_defined}")
-                    
-            elif stripped.startswith('#ifndef '):
-                macro = stripped[8:].strip()
-                is_defined = macro in self.defined_macros
-                condition_stack.append((not is_defined and condition_stack[-1][0], False))
-                if self._args.verbose >= 9:
-                    print(f"DirectMagicFlags: #ifndef {macro} -> {not is_defined}")
-            
-            elif stripped.startswith('#if '):
-                expr = stripped[4:].strip()
-                
-                # Handle line continuation for multi-line #if expressions
-                line_idx = lines.index(line)
-                while expr.endswith('\\') and line_idx + 1 < len(lines):
-                    # Remove the trailing backslash and add the next line
-                    expr = expr[:-1].strip()
-                    line_idx += 1
-                    next_line = lines[line_idx].strip()
-                    # Skip the line in the main loop by marking it as processed
-                    lines[line_idx] = "# PROCESSED_CONTINUATION_LINE"
-                    expr += " " + next_line
-                
-                # Strip C++ style comments from the complete expression
-                if '//' in expr:
-                    expr = expr[:expr.find('//')].strip()
-                    
-                try:
-                    # Use our recursive macro expansion
-                    expanded_expr = self._recursive_expand_macros(expr, self.macro_values)
-                    if self._args.verbose >= 9:
-                        print(f"DirectMagicFlags: expanding #if '{expr}' -> '{expanded_expr}'")
-                    
-                    # Now evaluate with SimplePreprocessor's safe evaluator
-                    result = preprocessor._safe_eval(expanded_expr)
-                    is_true = bool(result)
-                    is_active = is_true and condition_stack[-1][0]
-                    condition_stack.append((is_active, False))
-                    if self._args.verbose >= 9:
-                        print(f"DirectMagicFlags: #if {expr} -> {result} ({is_active})")
-                except Exception as e:
-                    # If evaluation fails, assume false
-                    if self._args.verbose >= 8:
-                        print(f"DirectMagicFlags: #if evaluation failed for '{expr}': {e}")
-                    condition_stack.append((False, False))
-                    
-            elif stripped.startswith('#else'):
-                if len(condition_stack) > 1:
-                    current_active, seen_else = condition_stack.pop()
-                    if not seen_else:
-                        parent_active = condition_stack[-1][0] if condition_stack else True
-                        new_active = not current_active and parent_active
-                        condition_stack.append((new_active, True))
-                        if self._args.verbose >= 9:
-                            print(f"DirectMagicFlags: #else -> {new_active}")
-                    else:
-                        condition_stack.append((False, True))
-                        
-            elif stripped.startswith('#endif'):
-                if len(condition_stack) > 1:
-                    condition_stack.pop()
-                    if self._args.verbose >= 9:
-                        print("DirectMagicFlags: #endif")
-            else:
-                # Only include this line if we're in an active context
-                if condition_stack[-1][0]:
-                    result_lines.append(line)
+        # Process the text with full preprocessor functionality
+        processed_text = preprocessor.process(text)
         
-        return '\n'.join(result_lines)
+        # Update our internal state from preprocessor results
+        self.defined_macros.clear()
+        self.macro_values.clear()
+        for name, value in preprocessor.macros.items():
+            self.defined_macros.add(name)
+            self.macro_values[name] = value
+        
+        return processed_text
 
     def readfile(self, filename):
         """Read the first chunk of the file and all the headers it includes"""
