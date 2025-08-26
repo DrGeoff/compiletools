@@ -30,7 +30,7 @@ class PreProcessor(object):
             if redirect_stderr_to_stdout:
                 kwargs["stderr"] = subprocess.STDOUT
 
-            with compiletools.timing.time_operation(f"preprocessor_{cmd[0]}"):
+            with compiletools.timing.time_file_operation("preprocessor", realpath):
                 output = subprocess.check_output(cmd, **kwargs)
             if self.args.verbose >= 5:
                 print(output)

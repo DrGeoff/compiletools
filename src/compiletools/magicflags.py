@@ -83,7 +83,7 @@ class MagicFlagsBase:
         raise NotImplementedError
 
     def __call__(self, filename):
-        with compiletools.timing.time_operation(f"magic_flags_analysis_{os.path.basename(filename)}"):
+        with compiletools.timing.time_file_operation("magic_flags_analysis", filename):
             return self.parse(filename)
 
     def _handle_source(self, flag, text, filename, magic):
@@ -168,13 +168,13 @@ class MagicFlagsBase:
         # When used in the "usual" fashion this is true.
         # However, it is possible to call directly so we must
         # ensure that the headerdeps exist manually.
-        with compiletools.timing.time_operation(f"magic_flags_headerdeps_{os.path.basename(filename)}"):
+        with compiletools.timing.time_file_operation("magic_flags_headerdeps", filename):
             self._headerdeps.process(filename)
 
-        with compiletools.timing.time_operation(f"magic_flags_readfile_{os.path.basename(filename)}"):
+        with compiletools.timing.time_file_operation("magic_flags_readfile", filename):
             text = self.readfile(filename)
         
-        with compiletools.timing.time_operation(f"magic_flags_parsing_{os.path.basename(filename)}"):
+        with compiletools.timing.time_file_operation("magic_flags_parsing", filename):
             flagsforfilename = defaultdict(list)
 
             for match in self.magicpattern.finditer(text):

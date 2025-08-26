@@ -179,7 +179,7 @@ class ExeLinkRuleCreator(LinkRuleCreator):
                     "ExeLinkRuleCreator. Asking hunter for required_source_files for source=",
                     source,
                 )
-            with compiletools.timing.time_operation(f"exe_link_required_sources_{os.path.basename(source)}"):
+            with compiletools.timing.time_file_operation("exe_link_required_sources", source):
                 completesources = self.hunter.required_source_files(source)
             if self.args.verbose >= 6:
                 print(
@@ -189,7 +189,7 @@ class ExeLinkRuleCreator(LinkRuleCreator):
                     + " ".join(cs for cs in completesources)
                 )
             exename = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
-            with compiletools.timing.time_operation(f"exe_link_rule_creation_{os.path.basename(source)}"):
+            with compiletools.timing.time_file_operation("exe_link_rule_creation", source):
                 rule = self._create_link_rule(
                     outputname=exename,
                     completesources=completesources,
@@ -583,7 +583,7 @@ class MakefileCreator:
         if compiletools.utils.isheader(filename):
             sys.stderr.write("Error.  Trying to create a compile rule for a header file: ", filename)
 
-        with compiletools.timing.time_operation(f"makefile_header_deps_{os.path.basename(filename)}"):
+        with compiletools.timing.time_file_operation("makefile_header_deps", filename):
             deplist = self.hunter.header_dependencies(filename)
             prerequisites = [filename] + sorted([str(dep) for dep in deplist])
 
@@ -591,7 +591,7 @@ class MakefileCreator:
         obj_name = self.namer.object_pathname(filename)
         self.objects.add(obj_name)
 
-        with compiletools.timing.time_operation(f"makefile_magic_flags_{os.path.basename(filename)}"):
+        with compiletools.timing.time_file_operation("makefile_magic_flags", filename):
             magicflags = self.hunter.magicflags(filename)
         recipe = ""
         
@@ -669,13 +669,13 @@ class MakefileCreator:
 
         # Output all the compile rules
         for source in sources:
-            with compiletools.timing.time_operation(f"makefile_required_sources_{os.path.basename(source)}"):
+            with compiletools.timing.time_file_operation("makefile_required_sources", source):
                 # Reset the cycle detection because we are starting a new source
                 # file
                 cycle_detection = set()
                 completesources = self.hunter.required_source_files(source)
             
-            with compiletools.timing.time_operation(f"makefile_compile_rules_{os.path.basename(source)}"):
+            with compiletools.timing.time_file_operation("makefile_compile_rules", source):
                 for item in completesources:
                     if item not in cycle_detection:
                         cycle_detection.add(item)
