@@ -159,6 +159,36 @@ class MagicFlagsBase:
                 print(f"\tadded {libs} to LDFLAGS")
         return flagsforfilename
 
+    def _handle_readmacros(self, flag, source_filename):
+        """Handle READMACROS magic flag by adding file to explicit macro processing list"""
+        # Resolve the file path relative to the source file's directory if needed
+        if not os.path.isabs(flag):
+            source_dir = compiletools.wrappedos.dirname(source_filename)
+            resolved_flag = compiletools.wrappedos.realpath(os.path.join(source_dir, flag))
+        else:
+            resolved_flag = compiletools.wrappedos.realpath(flag)
+        
+        # Check if file exists
+        if not compiletools.wrappedos.isfile(resolved_flag):
+            raise IOError(
+                f"{source_filename} specified READMACROS='{flag}' but resolved file '{resolved_flag}' does not exist"
+            )
+        
+        # Add to explicit macro files set
+        self._explicit_macro_files.add(resolved_flag)
+        
+        if self._args.verbose >= 5:
+            print(f"READMACROS: Will process '{resolved_flag}' for macro extraction (from {source_filename})")
+
+    def _process_magic_flag(self, magic, flag, flagsforfilename, text, filename):
+        """Override to handle READMACROS in DirectMagicFlags only"""
+        # Call parent implementation first
+        super()._process_magic_flag(magic, flag, flagsforfilename, text, filename)
+        
+        # Handle READMACROS specifically for DirectMagicFlags
+        if magic == "READMACROS":
+            self._handle_readmacros(flag, filename)
+
     def _parse(self, filename):
         if self._args.verbose >= 4:
             print("Parsing magic flags for " + filename)
@@ -236,6 +266,8 @@ class DirectMagicFlags(MagicFlagsBase):
         self._file_analyzer_results = {}
         # Cache for system include paths
         self._system_include_paths = None
+        # Track files specified by PARSEMACROS magic flags
+        self._explicit_macro_files = set()
 
     def _add_macros_from_command_line_flags(self):
         """Extract -D macros from command-line CPPFLAGS and CXXFLAGS and add them to defined_macros"""
@@ -426,6 +458,8 @@ class DirectMagicFlags(MagicFlagsBase):
             print(f"DEBUG: DirectMagicFlags.readfile called with {filename}")
         # Reset defined macros for each new parse
         self.defined_macros = {}
+        # Reset explicit macro files for each new parse
+        self._explicit_macro_files = set()
         
         # Add macros from command-line CPPFLAGS and CXXFLAGS (e.g., from --append-CPPFLAGS/--append-CXXFLAGS)
         self._add_macros_from_command_line_flags()
@@ -437,28 +471,34 @@ class DirectMagicFlags(MagicFlagsBase):
         
         headers = self._headerdeps.process(filename)
         
-        # Find system headers from -I/-isystem paths that need to be processed
-        # Process these first to match real preprocessor behavior
-        if self._args.verbose >= 9:
-            print(f"DEBUG: Looking for system headers in {len(headers)+1} source files")
-        system_headers_to_process = set()
+        # First pass: scan all files for READMACROS flags to collect explicit macro files
         all_source_files = [filename] + headers
-        
         for source_file in all_source_files:
             if self._args.verbose >= 9:
-                print(f"DEBUG: Scanning {source_file} for system headers")
-            for include_name, resolved_path in self._get_system_headers_from_source(source_file):
-                system_headers_to_process.add(resolved_path)
+                print(f"DEBUG: First pass - scanning {source_file} for READMACROS flags")
+            try:
+                max_read_size = getattr(self._args, 'max_file_read_size', 0)
+                analyzer = create_file_analyzer(source_file, max_read_size, self._args.verbose, cache=self.file_analyzer_cache)
+                analysis_result = analyzer.analyze()
+                
+                # Look for READMACROS magic flags
+                for match in self.magicpattern.finditer(analysis_result.text):
+                    magic, flag = match.groups()
+                    if magic == "READMACROS":
+                        self._handle_readmacros(flag, source_file)
+            except Exception as e:
+                if self._args.verbose >= 5:
+                    print(f"DirectMagicFlags warning: could not scan {source_file} for READMACROS: {e}")
         
-        if self._args.verbose >= 9 and system_headers_to_process:
-            print(f"DirectMagicFlags will process {len(system_headers_to_process)} system headers: {system_headers_to_process}")
+        if self._args.verbose >= 5 and self._explicit_macro_files:
+            print(f"DirectMagicFlags will process {len(self._explicit_macro_files)} files specified by READMACROS: {self._explicit_macro_files}")
         
-        # CRITICAL: Extract macros from system headers BEFORE processing conditional compilation
-        # This ensures macros like MYAPP_VERSION_MAJOR are available for #if evaluation
-        for system_header in system_headers_to_process:
+        # CRITICAL: Extract macros from explicitly specified files BEFORE processing conditional compilation
+        # This ensures macros are available for #if evaluation
+        for macro_file in self._explicit_macro_files:
             if self._args.verbose >= 9:
-                print(f"DirectMagicFlags: extracting macros from system header {system_header}")
-            self._extract_macros_from_file(system_header)
+                print(f"DirectMagicFlags: extracting macros from READMACROS file {macro_file}")
+            self._extract_macros_from_file(macro_file)
         
         # Process files iteratively until no new macros are discovered
         # This handles cases where macros defined in one file affect conditional
@@ -476,9 +516,9 @@ class DirectMagicFlags(MagicFlagsBase):
             
             text = ""
             # Process files in preprocessor order to match CppMagicFlags:
-            # 1. System headers first (from -I/-isystem paths)  
+            # 1. Explicit macro files first (from PARSEMACROS flags)
             # 2. Main file, then project headers (matching cpp -E behavior)
-            all_files = list(system_headers_to_process) + [filename] + [h for h in headers if h != filename]
+            all_files = list(self._explicit_macro_files) + [filename] + [h for h in headers if h != filename]
             for fname in all_files:
                 if self._args.verbose >= 9:
                     print("DirectMagicFlags::readfile is processing " + fname)
