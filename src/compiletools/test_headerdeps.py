@@ -328,6 +328,41 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
             deps = compiletools.headerdeps.DirectHeaderDeps(args)
             assert deps.includes == expected_includes, f"CPPFLAGS: {cppflags}, Expected: {expected_includes}, Got: {deps.includes}"
 
+    def test_quoted_include_paths_shell_parsing_bug(self):
+        """Test that exposes the shell parsing bug in HeaderDeps with quoted include paths.
+        
+        This test demonstrates that the current regex-based approach fails to handle
+        quoted paths with spaces correctly, just like the MagicFlags bug that was fixed.
+        
+        The regex pattern r"-(?:I)(?:\\s+|)([^\\s]+)" stops at the first whitespace,
+        breaking quoted paths that should be treated as single arguments.
+        """
+        
+        # This is the critical test case that exposes the bug  
+        expected_includes = ["/path with spaces/include"]
+        
+        cap = configargparse.getArgumentParser()
+        compiletools.headerdeps.add_arguments(cap)
+        compiletools.apptools.add_common_arguments(cap)
+        
+        # Bypass command line parsing issues by setting CPPFLAGS directly
+        argv = ["-q"]
+        args = compiletools.apptools.parseargs(cap, argv)
+        
+        # Set the CPPFLAGS with properly quoted string directly
+        args.CPPFLAGS = '-I "/path with spaces/include"'
+        
+        deps = compiletools.headerdeps.DirectHeaderDeps(args)
+        actual_includes = deps.includes
+        
+        # This assertion should now PASS after the shlex.split() fix
+        assert actual_includes == expected_includes, \
+            f"SHELL PARSING BUG STILL EXISTS in HeaderDeps!\n" \
+            f"CPPFLAGS: {args.CPPFLAGS}\n" \
+            f"Expected: {expected_includes} (quoted path treated as single argument)\n" \
+            f"Got:      {actual_includes} (shlex parsing should handle this correctly)\n" \
+            f"The shlex.split() fix should handle quoted paths with spaces correctly!"
+
     def test_isystem_flag_parsing(self):
         """Test that -isystem flags are parsed correctly with and without spaces"""
         test_cases = [

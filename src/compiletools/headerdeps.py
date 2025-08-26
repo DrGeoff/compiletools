@@ -80,6 +80,90 @@ class HeaderDepsBase(object):
 
         return result
 
+    def _extract_isystem_paths_from_flags(self, flag_value):
+        """Extract -isystem paths from command-line flags using proper shell parsing.
+        
+        This replaces the regex-based approach to properly handle quoted paths with spaces.
+        Shared utility method for both DirectHeaderDeps and CppHeaderDeps.
+        """
+        if not flag_value:
+            return []
+            
+        isystem_paths = []
+        
+        # Split the flag string into individual tokens using shell parsing
+        import shlex
+        try:
+            tokens = shlex.split(flag_value)
+        except ValueError:
+            # Fall back to simple split if shlex fails
+            tokens = flag_value.split()
+        
+        # Process tokens to find -isystem flags
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            
+            if token == '-isystem':
+                # Next token should be the path
+                if i + 1 < len(tokens):
+                    isystem_paths.append(tokens[i + 1])
+                    i += 2
+                else:
+                    i += 1
+            elif token.startswith('-isystem'):
+                # -isystempath format (though this is unusual)
+                path = token[8:]
+                if path:  # Make sure it's not just "-isystem"
+                    isystem_paths.append(path)
+                i += 1
+            else:
+                i += 1
+                
+        return isystem_paths
+
+    def _extract_include_paths_from_flags(self, flag_value):
+        """Extract -I include paths from command-line flags using proper shell parsing.
+        
+        This replaces the regex-based approach to properly handle quoted paths with spaces.
+        Shared utility method for both DirectHeaderDeps and CppHeaderDeps.
+        """
+        if not flag_value:
+            return []
+            
+        include_paths = []
+        
+        # Split the flag string into individual tokens using shell parsing
+        import shlex
+        try:
+            tokens = shlex.split(flag_value)
+        except ValueError:
+            # Fall back to simple split if shlex fails
+            tokens = flag_value.split()
+        
+        # Process tokens to find -I flags
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            
+            if token == '-I':
+                # Next token should be the path
+                if i + 1 < len(tokens):
+                    include_paths.append(tokens[i + 1])
+                    i += 2
+                else:
+                    i += 1
+            elif token.startswith('-I'):
+                # -Ipath format
+                path = token[2:]
+                if path:  # Make sure it's not just "-I"
+                    include_paths.append(path)
+                i += 1
+            else:
+                i += 1
+                
+        return include_paths
+
     @staticmethod
     def clear_cache():
         # print("HeaderDepsBase::clear_cache")
@@ -123,10 +207,9 @@ class DirectHeaderDeps(HeaderDepsBase):
         # Grab the include paths from the CPPFLAGS
         # By default, exclude system paths
         # TODO: include system paths if the user sets (the currently nonexistent) "use-system" flag
-        #pat = re.compile(r"-(?:I|isystem)\s+([\S]+)")
-        # Handle both -I src and -Isrc formats
-        pat = re.compile(r"-(?:I)(?:\s+|)([^\s]+)")
-        self.includes = pat.findall(self.args.CPPFLAGS)
+        
+        # Use proper shell parsing instead of regex to handle quoted paths with spaces
+        self.includes = self._extract_include_paths_from_flags(self.args.CPPFLAGS)
 
         if self.args.verbose >= 3:
             print("Includes=" + str(self.includes))
@@ -360,10 +443,10 @@ class CppHeaderDeps(HeaderDepsBase):
         """
         # By default, exclude system paths
         # TODO: include system paths if the user sets (the currently nonexistent) "use-system" flag
-        # Handle both -isystem path and -isystempath formats
-        regex = r"-isystem(?:\s+|)([^\s]+)"  # Regex to find paths following -isystem
-        system_paths = re.findall(regex, self.args.CPPFLAGS)
-        system_paths = tuple(item for pth in system_paths for item in (pth, compiletools.wrappedos.realpath(pth)))
+        
+        # Use proper shell parsing instead of regex to handle quoted paths with spaces
+        isystem_paths = self._extract_isystem_paths_from_flags(self.args.CPPFLAGS)
+        system_paths = tuple(item for pth in isystem_paths for item in (pth, compiletools.wrappedos.realpath(pth)))
         if realpath.startswith(system_paths):
             return []
 
