@@ -159,10 +159,12 @@ class DirectHeaderDeps(HeaderDepsBase):
         else:
             return self._search_project_includes(include)
 
-    def _process_conditional_compilation(self, text):
+    def _process_conditional_compilation(self, text, directive_positions):
         """Process conditional compilation directives and return only active sections"""
         preprocessor = SimplePreprocessor(self.defined_macros, self.args.verbose)
-        processed_text = preprocessor.process(text)
+        
+        # Always pass FileAnalyzer's pre-computed directive positions for maximum performance
+        processed_text = preprocessor.process(text, directive_positions)
         
         # Update our defined_macros dict with any changes from the preprocessor
         self.defined_macros.clear()
@@ -185,19 +187,49 @@ class DirectHeaderDeps(HeaderDepsBase):
                 analyzer = create_file_analyzer(realpath, max_read_size, self.args.verbose, cache=self.file_analyzer_cache)
                 analysis_result = analyzer.analyze()
                 text = analysis_result.text
+                
+                # Potential optimization: FileAnalyzer already found include_positions  
+                # We could potentially use these to optimize regex processing later
+                if self.args.verbose >= 9 and analysis_result.include_positions:
+                    print(f"DirectHeaderDeps::analyze - FileAnalyzer pre-found {len(analysis_result.include_positions)} includes in {realpath}")
 
             # Process conditional compilation - this updates self.defined_macros as it encounters #define
             with compiletools.timing.time_operation(f"conditional_compilation_{os.path.basename(realpath)}"):
-                processed_text = self._process_conditional_compilation(text)
+                # Pass FileAnalyzer's pre-computed directive positions for optimization
+                processed_text = self._process_conditional_compilation(
+                    text, 
+                    analysis_result.directive_positions
+                )
 
             # The pattern is intended to match all include statements but
             # not the ones with either C or C++ commented out.
             with compiletools.timing.time_operation(f"pattern_matching_{os.path.basename(realpath)}"):
-                pat = re.compile(
-                    r'/\*.*?\*/|//.*?$|^[\s]*#include[\s]*["<][\s]*([\S]*)[\s]*[">]',
-                    re.MULTILINE | re.DOTALL,
-                )
-                return [group for group in pat.findall(processed_text) if group]
+                import re
+                # Optimization: Use FileAnalyzer's pre-computed include positions when available
+                includes = []
+                if analysis_result.include_positions:
+                    # Extract include filenames from positions that survived conditional compilation
+                    original_lines = text.split('\n')
+                    for pos in analysis_result.include_positions:
+                        line_num = text[:pos].count('\n')
+                        if line_num < len(original_lines):
+                            include_line = original_lines[line_num]
+                            # Check if this include line survived preprocessing
+                            if include_line.strip() in processed_text:
+                                # Extract filename using simpler regex on single line
+                                match = re.search(r'#include[\s]*["<][\s]*([\S]*)[\s]*[">]', include_line)
+                                if match:
+                                    includes.append(match.group(1))
+                
+                # Fallback to full text search if no includes found or no position data
+                if not includes:
+                    pat = re.compile(
+                        r'/\*.*?\*/|//.*?$|^[\s]*#include[\s]*["<][\s]*([\S]*)[\s]*[">]',
+                        re.MULTILINE | re.DOTALL,
+                    )
+                    includes = [group for group in pat.findall(processed_text) if group]
+                
+                return includes
 
     def _generate_tree_impl(self, realpath, node=None):
         """Return a tree that describes the header includes

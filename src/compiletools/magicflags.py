@@ -178,40 +178,43 @@ class MagicFlagsBase:
 
             for match in self.magicpattern.finditer(text):
                 magic, flag = match.groups()
+                self._process_magic_flag(magic, flag, flagsforfilename, text, filename)
 
-                # If the magic was SOURCE then fix up the path in the flag
-                if magic == "SOURCE":
-                    flag = self._handle_source(flag, text, filename, magic)
-
-                # If the magic was INCLUDE then modify that into the equivalent CPPFLAGS, CFLAGS, and CXXFLAGS
-                if magic == "INCLUDE":
-                    with compiletools.timing.time_operation(f"magic_flags_include_handling_{flag}"):
-                        extrafff = self._handle_include(flag)
-                        for key, values in extrafff.items():
-                            for value in values:
-                                flagsforfilename[key].append(value)
-
-                # If the magic was PKG-CONFIG then call pkg-config
-                if magic == "PKG-CONFIG":
-                    with compiletools.timing.time_operation(f"magic_flags_pkgconfig_{flag}"):
-                        extrafff = self._handle_pkg_config(flag)
-                        for key, values in extrafff.items():
-                            for value in values:
-                                flagsforfilename[key].append(value)
-
-                flagsforfilename[magic].append(flag)
-                if self._args.verbose >= 5:
-                    print(
-                        "Using magic flag {0}={1} extracted from {2}".format(
-                            magic, flag, filename
-                        )
-                    )
-            
-            # Deduplicate all flags while preserving order
-            for key in flagsforfilename:
-                flagsforfilename[key] = compiletools.utils.ordered_unique(flagsforfilename[key])
+        # Deduplicate all flags while preserving order
+        for key in flagsforfilename:
+            flagsforfilename[key] = compiletools.utils.ordered_unique(flagsforfilename[key])
 
         return flagsforfilename
+
+    def _process_magic_flag(self, magic, flag, flagsforfilename, text, filename):
+        """Process a single magic flag entry"""
+        # If the magic was SOURCE then fix up the path in the flag
+        if magic == "SOURCE":
+            flag = self._handle_source(flag, text, filename, magic)
+
+        # If the magic was INCLUDE then modify that into the equivalent CPPFLAGS, CFLAGS, and CXXFLAGS
+        if magic == "INCLUDE":
+            with compiletools.timing.time_operation(f"magic_flags_include_handling_{flag}"):
+                extrafff = self._handle_include(flag)
+                for key, values in extrafff.items():
+                    for value in values:
+                        flagsforfilename[key].append(value)
+
+        # If the magic was PKG-CONFIG then call pkg-config
+        if magic == "PKG-CONFIG":
+            with compiletools.timing.time_operation(f"magic_flags_pkgconfig_{flag}"):
+                extrafff = self._handle_pkg_config(flag)
+                for key, values in extrafff.items():
+                    for value in values:
+                        flagsforfilename[key].append(value)
+
+        flagsforfilename[magic].append(flag)
+        if self._args.verbose >= 5:
+            print(
+                "Using magic flag {0}={1} extracted from {2}".format(
+                    magic, flag, filename
+                )
+            )
 
     @staticmethod
     def clear_cache():
@@ -228,6 +231,8 @@ class DirectMagicFlags(MagicFlagsBase):
         MagicFlagsBase.__init__(self, args, headerdeps)
         # Track defined macros with values during processing (unified storage)
         self.defined_macros = {}
+        # Store FileAnalyzer results for potential optimization in parsing
+        self._file_analyzer_results = {}
 
     def _add_macros_from_command_line_flags(self):
         """Extract -D macros from command-line CPPFLAGS and CXXFLAGS and add them to defined_macros"""
@@ -244,15 +249,15 @@ class DirectMagicFlags(MagicFlagsBase):
         # Direct assignment - no copying overhead
         self.defined_macros.update(macros)
 
-    def _process_conditional_compilation(self, text):
+    def _process_conditional_compilation(self, text, directive_positions):
         """Process conditional compilation directives and return only active sections"""
         from compiletools.simple_preprocessor import SimplePreprocessor
         
         # Use our macro state directly for SimplePreprocessor
         preprocessor = SimplePreprocessor(self.defined_macros, verbose=self._args.verbose)
         
-        # Process the text with full preprocessor functionality
-        processed_text = preprocessor.process(text)
+        # Always pass FileAnalyzer's pre-computed directive positions for maximum performance
+        processed_text = preprocessor.process(text, directive_positions)
         
         # Update our internal state from preprocessor results
         self.defined_macros.clear()
@@ -304,21 +309,45 @@ class DirectMagicFlags(MagicFlagsBase):
                 # Read file content using FileAnalyzer respecting max_file_read_size configuration
                 max_read_size = getattr(self._args, 'max_file_read_size', 0)
                 
-                # Use FileAnalyzer for efficient file reading with shared cache
-                # Note: create_file_analyzer() handles StringZilla/Legacy fallback internally
+                # Use FileAnalyzer with shared cache from DirectHeaderDeps
+                # The cache automatically handles deduplication if DirectHeaderDeps already analyzed this file
                 analyzer = create_file_analyzer(fname, max_read_size, self._args.verbose, cache=self.file_analyzer_cache)
                 analysis_result = analyzer.analyze()
                 file_content = analysis_result.text
                 
+                # Store FileAnalyzer results for potential optimization during parsing
+                self._file_analyzer_results[fname] = analysis_result
+                
+                # Potential optimization: FileAnalyzer already found magic_positions
+                # We could potentially use these to optimize regex processing later
+                if self._args.verbose >= 9 and analysis_result.magic_positions:
+                    print(f"DirectMagicFlags::readfile - FileAnalyzer pre-found {len(analysis_result.magic_positions)} magic flags in {fname}")
+                
                 # Process conditional compilation for this file
-                processed_content = self._process_conditional_compilation(file_content)
+                # Pass FileAnalyzer's pre-computed directive positions for optimization
+                processed_content = self._process_conditional_compilation(
+                    file_content, 
+                    analysis_result.directive_positions
+                )
                 
                 text += file_header + processed_content + "\n"
 
         return text
 
     def parse(self, filename):
-        return self._parse(filename)
+        # Leverage FileAnalyzer data for optimization and validation
+        result = self._parse(filename)
+        
+        # Optimization: Validate results using FileAnalyzer pre-computed data
+        if self._args.verbose >= 9:
+            total_original_magic_flags = sum(len(analysis.magic_positions) 
+                                           for analysis in self._file_analyzer_results.values())
+            total_found_flags = sum(len(flags) for flags in result.values())
+            if total_original_magic_flags > 0:
+                print(f"DirectMagicFlags::parse - FileAnalyzer found {total_original_magic_flags} raw magic flags, "
+                      f"after conditional compilation: {total_found_flags} active flags")
+        
+        return result
 
     @staticmethod
     def clear_cache():
