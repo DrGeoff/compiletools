@@ -663,17 +663,36 @@ def _fix_variable_handling_method(cap, argv, verbose):
 
 
 def create_parser(description, argv=None, include_config=True, include_write_config=False):
-    """Create a standardized configargparse parser with common settings
-    
-    Args:
-        description: Parser description string
-        argv: Command line arguments (default: None)
-        include_config: If True, use full config setup with variant extraction.
-                       If False, use simple setup with base arguments only.
-        include_write_config: If True, add config file writing options.
-    
+    """Create a standardized parser with consistent compiletools behavior.
+
+    Parameters:
+            description (str): Human-readable parser description shown in --help.
+            argv (list[str] | None): The command-line argv (excluding argv[0]) to use
+                    when extracting the variant/config file set. If None, the current
+                    process args are used by helper utilities where applicable.
+            include_config (bool):
+                    - True (default): Build a full config-aware parser using
+                        compiletools.configutils to:
+                            * extract the active variant (respecting argv), and
+                            * compute default_config_files for that variant.
+                        The returned parser supports -c/--config and loads defaults from
+                        those config files (env vars still apply via configargparse).
+                    - False: Create a simple parser and only add the base/common
+                        arguments via add_base_arguments(); no variant/config file
+                        plumbing is wired up.
+            include_write_config (bool): If True, expose -w/--write-out-config-file
+                    on the returned parser (only meaningful when include_config=True).
+
     Returns:
-        Configured configargparse.ArgumentParser instance
+            configargparse.ArgumentParser: A configured parser ready for use with
+            parseargs().
+
+    Notes:
+            - The config-aware branch sets formatter_class to
+                ArgumentDefaultsHelpFormatter, provides --config, and ignores unknown
+                keys in config files to keep tools resilient across versions.
+            - Call add_common_arguments()/add_link_arguments()/etc. on the parser as
+                needed by each tool after creation when include_config=False.
     """
     if include_config:
         variant = compiletools.configutils.extract_variant(argv=argv)

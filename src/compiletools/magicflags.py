@@ -295,9 +295,9 @@ class DirectMagicFlags(MagicFlagsBase):
                 print(f"DirectMagicFlags::readfile iteration {iteration}, known macros: {set(self.defined_macros.keys())}")
             
             text = ""
-            # Process files in dependency order
-            # Combine headers with filename, handling both list and set types
-            all_files = list(headers) + [filename] if filename not in headers else list(headers)
+            # Process files in preprocessor order to match CppMagicFlags
+            # Main file first, then headers (matching cpp -E behavior)
+            all_files = [filename] + [h for h in headers if h != filename]
             for fname in all_files:
                 if self._args.verbose >= 9:
                     print("DirectMagicFlags::readfile is processing " + fname)
