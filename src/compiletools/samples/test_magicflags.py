@@ -347,3 +347,59 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         
         # If we reach here, both parsers produce identical results (bug is fixed)
         print("✓ Both parsers process -isystem include paths identically - bug is fixed!")
+
+    def test_shlex_parsing_fix_for_quoted_include_paths(self):
+        """Test that DirectMagicFlags correctly parses quoted include paths with spaces.
+        
+        This test validates the shlex.split() fix that replaced the original regex-based
+        approach. The regex approach would fail to handle shell quoting correctly.
+        """
+        
+        # Create a mock args object with quoted include paths containing spaces
+        class MockArgs:
+            def __init__(self):
+                # Test case that would break with regex but works with shlex
+                self.CPPFLAGS = '-DSOME_MACRO -isystem "/path with spaces/include" -DANOTHER_MACRO'
+                self.CXXFLAGS = '-I "/another path/headers" -std=c++17'
+                self.verbose = 9  # Enable debug output
+                self.headerdeps = 'direct'  # Required by headerdeps.create
+                self.max_file_read_size = 0
+                
+        # Create a DirectMagicFlags instance with mock dependencies
+        import compiletools.headerdeps
+        import compiletools.magicflags
+        mock_headerdeps = compiletools.headerdeps.create(MockArgs())
+        
+        # Create DirectMagicFlags instance 
+        direct_magic = compiletools.magicflags.DirectMagicFlags(MockArgs(), mock_headerdeps)
+        
+        # Test the _get_system_include_paths method directly
+        extracted_paths = direct_magic._get_system_include_paths()
+        
+        print(f"\nShlex parsing test results:")
+        print(f"CPPFLAGS: {MockArgs().CPPFLAGS}")
+        print(f"CXXFLAGS: {MockArgs().CXXFLAGS}")
+        print(f"Extracted paths: {extracted_paths}")
+        
+        # The shlex approach should correctly extract both quoted paths
+        expected_paths = ["/path with spaces/include", "/another path/headers"]
+        
+        # This test would FAIL with the original regex approach but PASSES with shlex
+        assert "/path with spaces/include" in extracted_paths, \
+            f"SHLEX PARSING BUG: Failed to extract quoted path with spaces!\n" \
+            f"Expected '/path with spaces/include' in extracted paths: {extracted_paths}\n" \
+            f"The regex approach would split on spaces and break quoted paths."
+            
+        assert "/another path/headers" in extracted_paths, \
+            f"SHLEX PARSING BUG: Failed to extract second quoted path with spaces!\n" \
+            f"Expected '/another path/headers' in extracted paths: {extracted_paths}\n" \
+            f"The regex approach couldn't handle multiple quoted paths correctly."
+            
+        # Verify we got exactly the expected paths
+        assert set(extracted_paths) == set(expected_paths), \
+            f"SHELL QUOTING BUG: Extracted paths don't match expected!\n" \
+            f"Expected: {expected_paths}\n" \
+            f"Got: {extracted_paths}\n" \
+            f"DirectMagicFlags must handle shell quoting like a real shell!"
+            
+        print("✓ DirectMagicFlags correctly handles quoted include paths with spaces!")

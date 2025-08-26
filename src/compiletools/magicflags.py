@@ -4,6 +4,7 @@ import subprocess
 import re
 from collections import defaultdict
 import compiletools.utils
+
 import compiletools.git_utils
 import compiletools.headerdeps
 import compiletools.wrappedos
@@ -253,6 +254,8 @@ class DirectMagicFlags(MagicFlagsBase):
 
     def _get_system_include_paths(self):
         """Extract -I/-isystem include paths from command-line flags"""
+        if self._args.verbose >= 9:
+            print(f"DEBUG: _get_system_include_paths called")
         if self._system_include_paths is not None:
             return self._system_include_paths
             
@@ -264,13 +267,40 @@ class DirectMagicFlags(MagicFlagsBase):
             if not flag_value:
                 continue
                 
-            # Handle both -I path and -Ipath formats
-            include_pattern = re.compile(r'-I(?:\s+|)([^\s]+)')
-            include_paths.extend(include_pattern.findall(flag_value))
+            # Split the flag string into individual tokens
+            import shlex
+            try:
+                tokens = shlex.split(flag_value)
+            except ValueError:
+                # Fall back to simple split if shlex fails
+                tokens = flag_value.split()
             
-            # Handle both -isystem path and -isystempath formats  
-            isystem_pattern = re.compile(r'-isystem(?:\s+|)([^\s]+)')
-            include_paths.extend(isystem_pattern.findall(flag_value))
+            # Process tokens to find -I and -isystem flags
+            i = 0
+            while i < len(tokens):
+                token = tokens[i]
+                
+                if token == '-I' or token == '-isystem':
+                    # Next token should be the path
+                    if i + 1 < len(tokens):
+                        include_paths.append(tokens[i + 1])
+                        i += 2
+                    else:
+                        i += 1
+                elif token.startswith('-I'):
+                    # -Ipath format
+                    path = token[2:]
+                    if path:  # Make sure it's not just "-I"
+                        include_paths.append(path)
+                    i += 1
+                elif token.startswith('-isystem'):
+                    # -isystempath format (though this is unusual)
+                    path = token[8:]
+                    if path:  # Make sure it's not just "-isystem"
+                        include_paths.append(path)
+                    i += 1
+                else:
+                    i += 1
             
         # Remove duplicates while preserving order
         seen = set()
@@ -343,6 +373,8 @@ class DirectMagicFlags(MagicFlagsBase):
 
     def readfile(self, filename):
         """Read the first chunk of the file and all the headers it includes"""
+        if self._args.verbose >= 9:
+            print(f"DEBUG: DirectMagicFlags.readfile called with {filename}")
         # Reset defined macros for each new parse
         self.defined_macros = {}
         
@@ -358,10 +390,14 @@ class DirectMagicFlags(MagicFlagsBase):
         
         # Find system headers from -I/-isystem paths that need to be processed
         # Process these first to match real preprocessor behavior
+        if self._args.verbose >= 9:
+            print(f"DEBUG: Looking for system headers in {len(headers)+1} source files")
         system_headers_to_process = set()
         all_source_files = [filename] + headers
         
         for source_file in all_source_files:
+            if self._args.verbose >= 9:
+                print(f"DEBUG: Scanning {source_file} for system headers")
             for include_name, resolved_path in self._get_system_headers_from_source(source_file):
                 system_headers_to_process.add(resolved_path)
         
