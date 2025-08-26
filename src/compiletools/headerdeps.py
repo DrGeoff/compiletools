@@ -167,6 +167,7 @@ class DirectHeaderDeps(HeaderDepsBase):
         processed_text = preprocessor.process(text, directive_positions)
         
         # Update our defined_macros dict with any changes from the preprocessor
+        # This allows macro accumulation within a single dependency analysis
         self.defined_macros.clear()
         self.defined_macros.update(preprocessor.macros)
         
@@ -299,6 +300,11 @@ class DirectHeaderDeps(HeaderDepsBase):
     def _process_impl(self, realpath):
         if self.args.verbose >= 9:
             print("DirectHeaderDeps::_process_impl: " + realpath)
+
+        # Reset macro state at the beginning of each top-level dependency analysis
+        # This ensures consistent results across multiple calls while allowing
+        # macro accumulation within a single analysis
+        self._initialize_includes_and_macros()
 
         results = set()
         self._process_impl_recursive(realpath, results)
