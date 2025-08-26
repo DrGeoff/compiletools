@@ -16,6 +16,7 @@ class Timer:
         self.nested_timings = defaultdict(list)  # Parent -> list of child timings
         self.start_times = {}  # Operation name -> start time
         self.operation_stack = []  # Stack for nested operations
+        self.operation_filenames = {}  # Operation name -> filename for operations with files
         
     def start(self, operation_name):
         """Start timing an operation."""
@@ -31,6 +32,11 @@ class Timer:
             self.nested_timings[parent].append(operation_name)
         
         self.operation_stack.append(operation_name)
+    
+    def register_file_operation(self, operation_name, filename):
+        """Register that an operation name contains a specific filename."""
+        if self.enabled:
+            self.operation_filenames[operation_name] = filename
     
     def stop(self, operation_name):
         """Stop timing an operation and record elapsed time."""
@@ -55,6 +61,20 @@ class Timer:
     @contextmanager
     def time_operation(self, operation_name):
         """Context manager for timing operations."""
+        self.start(operation_name)
+        try:
+            yield
+        finally:
+            self.stop(operation_name)
+    
+    @contextmanager
+    def time_file_operation(self, operation_prefix, filename):
+        """Context manager for timing operations that involve a specific file."""
+        import compiletools.wrappedos
+        basename = compiletools.wrappedos.basename(filename)
+        operation_name = f"{operation_prefix}_{basename}"
+        
+        self.register_file_operation(operation_name, basename)
         self.start(operation_name)
         try:
             yield
@@ -98,7 +118,7 @@ class Timer:
         if verbose_level >= 0:
             print(f"Total build time: {self.format_time(total_time)}", file=file)
         
-        if verbose_level >= 1:
+        if verbose_level == 1:
             print("\nOperations by category:", file=file)
             self._report_operation_groups(file=file, verbose_level=verbose_level)
         
@@ -112,44 +132,6 @@ class Timer:
                 self._report_hierarchy_recursive(hierarchy, file=file, indent=0, 
                                                verbose_level=verbose_level + 10)  # High level to prevent aggregation
     
-    def _report_detailed(self, file=None, indent=0, shown_operations=None, max_depth=None):
-        """Generate detailed hierarchical timing report."""
-        if file is None:
-            file = sys.stderr
-        
-        if shown_operations is None:
-            shown_operations = set()
-        
-        # Find top-level operations (not nested under others)
-        top_level = []
-        all_nested = set()
-        for parent, children in self.nested_timings.items():
-            all_nested.update(children)
-        
-        for op_name in self.timings:
-            if op_name not in all_nested:
-                top_level.append(op_name)
-        
-        # Report top-level operations recursively
-        for op_name in top_level:
-            if op_name not in shown_operations:
-                self._report_operation_recursive(op_name, file, indent, shown_operations, max_depth)
-    
-    def _report_operation_recursive(self, op_name, file, indent, shown_operations, max_depth):
-        """Recursively report an operation and all its nested operations."""
-        if op_name in shown_operations:
-            return
-        
-        shown_operations.add(op_name)
-        elapsed = self.timings.get(op_name, 0.0)
-        print(f"{'  ' * indent}{op_name}: {self.format_time(elapsed)}", file=file)
-        
-        # Report nested operations recursively, respecting max_depth
-        if op_name in self.nested_timings and (max_depth is None or indent < max_depth):
-            for child_name in self.nested_timings[op_name]:
-                if child_name in self.timings:
-                    self._report_operation_recursive(child_name, file, indent + 1, shown_operations, max_depth)
-    
     def get_summary(self):
         """Get a summary dictionary of timing information."""
         if not self.enabled:
@@ -162,39 +144,6 @@ class Timer:
             'operations': dict(self.timings)
         }
 
-    def get_operation_groups(self):
-        """Group operations by category and provide statistics."""
-        if not self.enabled:
-            return {}
-        
-        groups = defaultdict(list)
-        for op_name, elapsed in self.timings.items():
-            # Extract operation category from name pattern
-            if '_' in op_name:
-                parts = op_name.split('_')
-                if len(parts) >= 3:
-                    # e.g. "magic_flags_readfile_file.C" -> "magic_flags_readfile"
-                    category = '_'.join(parts[:-1])
-                else:
-                    category = parts[0]
-            else:
-                category = op_name
-            
-            groups[category].append(elapsed)
-        
-        # Calculate statistics for each group
-        group_stats = {}
-        for category, times in groups.items():
-            group_stats[category] = {
-                'count': len(times),
-                'total_time': sum(times),
-                'avg_time': sum(times) / len(times),
-                'min_time': min(times),
-                'max_time': max(times),
-                'times': times
-            }
-        
-        return group_stats
 
     def _report_operation_groups(self, file=None, verbose_level=1):
         """Report aggregated statistics by operation category in hierarchical tree format."""
@@ -287,13 +236,14 @@ class Timer:
                 self._report_hierarchy_recursive(node['children'], file, indent + 1, threshold_ms, verbose_level)
 
     def _aggregate_per_file_operations(self, hierarchy):
-        """Aggregate per-file operations into summary operations."""
+        """Aggregate per-file operations into summary operations using stored filename data."""
         aggregated = {}
         
-        # Group operations by their base name (without filename)
+        # Group operations by their base name using stored filename information
         operation_groups = defaultdict(list)
         
         for operation_name, node in hierarchy.items():
+            # Use stored filename data for precise base name extraction
             base_name = self._extract_operation_base_name(operation_name)
             operation_groups[base_name].append((operation_name, node))
         
@@ -304,74 +254,57 @@ class Timer:
                 operation_name, node = operations[0]
                 aggregated[operation_name] = node
             else:
-                # Multiple operations, aggregate them
+                # Multiple operations with same base - aggregate them
                 total_time = sum(node['time'] for _, node in operations)
                 aggregated_children = {}
+                filenames = []
                 
-                # Merge children from all operations
-                for _, node in operations:
+                # Collect filenames and merge children from all operations
+                for operation_name, node in operations:
+                    if operation_name in self.operation_filenames:
+                        filenames.append(self.operation_filenames[operation_name])
+                    
+                    # Merge children - for file operations, children should be aggregated too
                     for child_name, child_node in node['children'].items():
                         if child_name in aggregated_children:
-                            # If child exists, we need to aggregate or keep separate
-                            # For now, keep them separate with operation prefix
-                            orig_op_name = next(op_name for op_name, n in operations if n is node)
-                            prefixed_child_name = f"{self._get_filename_from_operation(orig_op_name)}_{child_name}"
-                            aggregated_children[prefixed_child_name] = child_node
+                            # Aggregate child times
+                            aggregated_children[child_name]['time'] += child_node['time']
+                            # Merge grandchildren if any
+                            for grandchild_name, grandchild_node in child_node['children'].items():
+                                if grandchild_name in aggregated_children[child_name]['children']:
+                                    aggregated_children[child_name]['children'][grandchild_name]['time'] += grandchild_node['time']
+                                else:
+                                    aggregated_children[child_name]['children'][grandchild_name] = grandchild_node
                         else:
                             aggregated_children[child_name] = child_node
                 
                 aggregated[base_name] = {
                     'time': total_time,
                     'children': aggregated_children,
-                    'file_count': len(operations)
+                    'file_count': len(operations),
+                    'filenames': filenames  # Store the actual filenames for reference
                 }
         
         return aggregated
 
     def _extract_operation_base_name(self, operation_name):
         """Extract the base operation name without filename."""
-        # Look for common file extensions at the end of operation names
-        common_extensions = ['.cpp', '.c', '.cc', '.cxx', '.h', '.hpp', '.hxx']
+        # Use stored filename data for precise extraction
+        if operation_name in self.operation_filenames:
+            filename = self.operation_filenames[operation_name]
+            if operation_name.endswith('_' + filename):
+                return operation_name[:-len('_' + filename)]
         
-        for ext in common_extensions:
-            if operation_name.endswith(ext):
-                # Find the last occurrence of the extension
-                ext_pos = operation_name.rfind(ext)
-                
-                # Look for known operation patterns and extract the base name
-                # Common patterns: makefile_required_sources_*, makefile_compile_rules_*, etc.
-                known_prefixes = [
-                    'makefile_required_sources_',
-                    'makefile_compile_rules_',
-                    'exe_link_required_sources_',
-                    'exe_link_rule_creation_',
-                    'magic_flags_readfile_',
-                    'magic_flags_headerdeps_',
-                    'header_dependency_analysis_',
-                    'include_analysis_',
-                    'conditional_compilation_'
-                ]
-                
-                for prefix in known_prefixes:
-                    if operation_name.startswith(prefix):
-                        return prefix.rstrip('_')
-                
-                # Fallback: use the original logic for unknown patterns
-                parts = operation_name.split('_')
-                if len(parts) >= 2 and '.' in parts[-1]:
-                    return '_'.join(parts[:-1])
-                break
-        
+        # Simple fallback for operations without stored filename data
         return operation_name
 
     def _get_filename_from_operation(self, operation_name):
         """Extract filename from an operation name."""
-        # Use the base extraction logic and then get the remainder as filename
-        base_name = self._extract_operation_base_name(operation_name)
+        # Return stored filename data if available
+        if operation_name in self.operation_filenames:
+            return self.operation_filenames[operation_name]
         
-        if base_name != operation_name and operation_name.startswith(base_name + '_'):
-            return operation_name[len(base_name) + 1:]
-        
+        # Simple fallback: return the operation name itself
         return operation_name
 
 
@@ -393,6 +326,11 @@ def initialize_timer(enabled=False):
 def time_operation(operation_name):
     """Context manager decorator for timing operations."""
     return _global_timer.time_operation(operation_name)
+
+
+def time_file_operation(operation_prefix, filename):
+    """Context manager for timing operations that involve a specific file."""
+    return _global_timer.time_file_operation(operation_prefix, filename)
 
 
 def start_timing(operation_name):

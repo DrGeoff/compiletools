@@ -67,7 +67,7 @@ class HeaderDepsBase(object):
                 - System include paths are excluded by default unless configured otherwise.
         """
         realpath = compiletools.wrappedos.realpath(filename)
-        with compiletools.timing.time_operation(f"header_dependency_analysis_{os.path.basename(filename)}"):
+        with compiletools.timing.time_file_operation("header_dependency_analysis", filename):
             try:
                 result = self._process_impl(realpath)
             except IOError:
@@ -269,13 +269,13 @@ class DirectHeaderDeps(HeaderDepsBase):
         # Import modules outside timing block
         import compiletools.dirnamer
         
-        with compiletools.timing.time_operation(f"include_analysis_{os.path.basename(realpath)}"):
+        with compiletools.timing.time_file_operation("include_analysis", realpath):
             max_read_size = getattr(self.args, 'max_file_read_size', 0)
             
             # Use FileAnalyzer for efficient file reading and pattern detection  
             # Note: create_file_analyzer() handles StringZilla/Legacy fallback internally
             
-            with compiletools.timing.time_operation(f"file_read_{os.path.basename(realpath)}"):
+            with compiletools.timing.time_file_operation("file_read", realpath):
                 analyzer = create_file_analyzer(realpath, max_read_size, self.args.verbose, cache=self.file_analyzer_cache)
                 analysis_result = analyzer.analyze()
                 text = analysis_result.text
@@ -286,7 +286,7 @@ class DirectHeaderDeps(HeaderDepsBase):
                     print(f"DirectHeaderDeps::analyze - FileAnalyzer pre-found {len(analysis_result.include_positions)} includes in {realpath}")
 
             # Process conditional compilation - this updates self.defined_macros as it encounters #define
-            with compiletools.timing.time_operation(f"conditional_compilation_{os.path.basename(realpath)}"):
+            with compiletools.timing.time_file_operation("conditional_compilation", realpath):
                 # Pass FileAnalyzer's pre-computed directive positions for optimization
                 processed_text = self._process_conditional_compilation(
                     text, 
@@ -295,7 +295,7 @@ class DirectHeaderDeps(HeaderDepsBase):
 
             # The pattern is intended to match all include statements but
             # not the ones with either C or C++ commented out.
-            with compiletools.timing.time_operation(f"pattern_matching_{os.path.basename(realpath)}"):
+            with compiletools.timing.time_file_operation("pattern_matching", realpath):
                 import re
                 # Optimization: Use FileAnalyzer's pre-computed include positions when available
                 includes = []

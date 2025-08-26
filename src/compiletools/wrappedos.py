@@ -37,6 +37,12 @@ def dirname(trialpath):
     return os.path.dirname(trialpath)
 
 
+@functools.lru_cache(maxsize=None)
+def basename(trialpath):
+    """ A cached version of os.path.basename """
+    return os.path.basename(trialpath)
+
+
 def isc(trialpath):
     """ Is the given file a C file ? """
     return os.path.splitext(trialpath)[1] == ".c"
@@ -57,3 +63,4 @@ def clear_cache():
     isdir.cache_clear()
     realpath.cache_clear()
     dirname.cache_clear()
+    basename.cache_clear()
