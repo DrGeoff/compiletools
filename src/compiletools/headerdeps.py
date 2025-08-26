@@ -57,7 +57,15 @@ class HeaderDepsBase(object):
         raise NotImplementedError
 
     def process(self, filename):
-        """Return the set of dependencies for a given filename"""
+        """Return an ordered list of header dependencies for the given file.
+
+        Notes:
+                - The list preserves discovery order (depth-first and preprocessor-respecting
+                    for DirectHeaderDeps; cpp -MM derived for CppHeaderDeps) while removing
+                    duplicates.
+                - The input file itself is excluded from the returned list.
+                - System include paths are excluded by default unless configured otherwise.
+        """
         realpath = compiletools.wrappedos.realpath(filename)
         with compiletools.timing.time_operation(f"header_dependency_analysis_{os.path.basename(filename)}"):
             try:
@@ -279,18 +287,25 @@ class DirectHeaderDeps(HeaderDepsBase):
         realpath = compiletools.wrappedos.realpath(filename)
         return self._generate_tree_impl(realpath)
 
-    def _process_impl_recursive(self, realpath, results):
-        results.add(realpath)
+    def _process_impl_recursive(self, realpath, results_order, results_set):
+        if realpath in results_set:
+            return
+        results_set.add(realpath)
+        
+        # Process includes first (depth-first traversal to match preprocessor)
         cwd = compiletools.wrappedos.dirname(realpath)
         for include in self._create_include_list(realpath):
             trialpath = self._find_include(include, cwd)
-            if trialpath and trialpath not in results:
+            if trialpath and trialpath not in results_set:
                 if self.args.verbose >= 9:
                     print(
                         "DirectHeaderDeps::_process_impl_recursive about to follow ",
                         trialpath,
                     )
-                self._process_impl_recursive(trialpath, results)
+                self._process_impl_recursive(trialpath, results_order, results_set)
+        
+        # Add current file after processing includes (depth-first order)
+        results_order.append(realpath)
 
     # TODO: Stop writing to the same cache as CPPHeaderDeps.
     # Because the magic flags rely on the .deps cache, this hack was put in
@@ -306,10 +321,13 @@ class DirectHeaderDeps(HeaderDepsBase):
         # macro accumulation within a single analysis
         self._initialize_includes_and_macros()
 
-        results = set()
-        self._process_impl_recursive(realpath, results)
-        results.discard(realpath)
-        return results
+        results_order = []  # Maintain order of discovery
+        results_set = set()  # Fast lookup for cycle detection
+        self._process_impl_recursive(realpath, results_order, results_set)
+        # Remove the original file from results while preserving order
+        if realpath in results_order:
+            results_order.remove(realpath)
+        return results_order
 
 
     @staticmethod

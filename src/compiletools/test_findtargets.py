@@ -29,6 +29,7 @@ class TestFindTargetsModule:
             "library/main.cpp",
             "lotsofmagic/lotsofmagic.cpp",
             "macro_deps/main.cpp",
+            "magic_processing_order/complex_test.cpp",
             "magicinclude/main.cpp",
             "magicpkgconfig/main.cpp",
             "magicsourceinheader/main.cpp",
@@ -42,6 +43,7 @@ class TestFindTargetsModule:
         relativeexpectedtests = {
             "cross_platform/test_source.cpp",
             "factory/test_factory.cpp",
+            "magic_processing_order/test_macro_transform.cpp",
             "numbers/test_direct_include.cpp",
             "numbers/test_library.cpp",
             "simple/test_cflags.c",

@@ -116,7 +116,11 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
             
             # Version-dependent API (test for bugs)
             "version_dependent_api/test_main.cpp",
-            "version_dependent_api/test_main_new.cpp"
+            "version_dependent_api/test_main_new.cpp",
+            
+            # Magic processing order bug test
+            "magic_processing_order/test_macro_transform.cpp",
+            "magic_processing_order/complex_test.cpp"
             
             # Note: magicinclude/main.cpp excluded - requires special include path setup not provided by equivalence test
         ]
@@ -229,3 +233,61 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
             assert self._check_flags(result, "CPPFLAGS", common_flags, []), \
                 "All versions should have common MYAPP flags"
 
+    def test_magic_processing_order_bug(self):
+        """Test that DirectMagicFlags and CppMagicFlags produce identical results - should expose the processing order bug"""
+        source_file = "magic_processing_order/complex_test.cpp"
+        
+        # Test with the exact macro combination that reproduces the real bug
+        test_flags = ["--append-CPPFLAGS=-DNDEBUG", "--append-CPPFLAGS=-DUSE_SIMULATION_MODE", 
+                     "--append-CPPFLAGS=-DUSE_CUSTOM_FEATURES"]
+        
+        # Get results from both parsers
+        result_direct = self._parse_with_magic("direct", source_file, test_flags)
+        result_cpp = self._parse_with_magic("cpp", source_file, test_flags)
+        
+        # Print results for debugging
+        print(f"\nDirect result: {result_direct}")
+        print(f"CPP result: {result_cpp}")
+        
+        # The critical test: results should be identical between parsers
+        # This should FAIL if there's a macro transformation bug
+        assert result_direct == result_cpp, \
+            f"BUG EXPOSED: DirectMagicFlags and CppMagicFlags produce different results!\n" \
+            f"DirectMagicFlags: {result_direct}\n" \
+            f"CppMagicFlags: {result_cpp}\n" \
+            f"This indicates a magic processing order bug in DirectMagicFlags!"
+
+    def test_conditional_magic_comments_with_complex_headers(self):
+        """Test conditional magic comments work correctly with header dependencies"""
+        source_file = "magic_processing_order/complex_test.cpp"
+        
+        # Test different macro combinations
+        test_cases = [
+            # NDEBUG + USE_SIMULATION_MODE should exclude production_util, include optimized_core
+            (["--append-CPPFLAGS=-DNDEBUG", "--append-CPPFLAGS=-DUSE_SIMULATION_MODE"], 
+             ["optimized_core"], ["production_util", "debug_util", "standard_core"]),
+            
+            # No NDEBUG, no USE_SIMULATION_MODE should include debug_util and standard_core
+            ([], ["debug_util", "standard_core"], ["production_util", "optimized_core"]),
+            
+            # NDEBUG but no USE_SIMULATION_MODE should include production_util and optimized_core
+            (["--append-CPPFLAGS=-DNDEBUG"], 
+             ["production_util", "optimized_core"], ["debug_util", "standard_core"])
+        ]
+        
+        for test_flags, expected_libs, unexpected_libs in test_cases:
+            result_direct = self._parse_with_magic("direct", source_file, test_flags)
+            result_cpp = self._parse_with_magic("cpp", source_file, test_flags)
+            
+            # Verify both parsers get same results
+            assert result_direct == result_cpp, \
+                f"Parsers disagree for flags {test_flags}:\nDirect: {result_direct}\nCPP: {result_cpp}"
+            
+            # Verify correct libraries are included/excluded
+            ldflags_str = " ".join(result_direct.get("LDFLAGS", []))
+            
+            for lib in expected_libs:
+                assert f"-l{lib}" in ldflags_str, f"Expected -l{lib} in LDFLAGS for flags {test_flags}, got: {ldflags_str}"
+            
+            for lib in unexpected_libs:
+                assert f"-l{lib}" not in ldflags_str, f"Unexpected -l{lib} in LDFLAGS for flags {test_flags}, got: {ldflags_str}"
