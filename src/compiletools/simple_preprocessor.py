@@ -46,16 +46,13 @@ class SimplePreprocessor:
             expr = " ".join(expr.split())  # normalize whitespace
         return expr
         
-    def process(self, text):
-        """Process text and return only active sections"""
-        return self.process_with_positions(text, None)
-        
-    def process_with_positions(self, text, directive_positions=None):
-        """Process text and return only active sections, optionally using position data for optimization.
+    def process(self, text, directive_positions={}):
+        """Process text and return only active sections using FileAnalyzer's pre-computed directive positions.
         
         Args:
             text: The source text to process
-            directive_positions: Optional dict of {directive_name: [positions]} for optimization
+            directive_positions: Dict of {directive_name: [positions]} from FileAnalyzer.
+                                Defaults to empty dict for testing/fallback.
             
         Returns:
             Processed text with only active conditional sections
@@ -67,17 +64,23 @@ class SimplePreprocessor:
         # Each entry: (is_active, seen_else, any_condition_met)
         condition_stack = [(True, False, False)]
         
-        # If we have position data, we could potentially optimize directive detection
-        # For now, we'll use the existing line-by-line approach which is already efficient
-        # Future optimization: use directive_positions to skip non-directive lines faster
+        # Convert FileAnalyzer's character positions to line numbers for fast lookup
+        directive_lines = set()
+        for directive_type, positions in directive_positions.items():
+            for pos in positions:
+                # Find which line this position is on
+                line_num = text[:pos].count('\n')
+                directive_lines.add(line_num)
         
         i = 0
         while i < len(lines):
             line = lines[i]
             stripped = line.strip()
             
-            # Handle preprocessor directives
-            if stripped.startswith('#'):
+            # Handle preprocessor directives (using FileAnalyzer's pre-computed positions)
+            # Fall back to string check if no directive positions available (e.g., in tests)
+            is_directive_line = (i in directive_lines) if directive_lines else stripped.startswith('#')
+            if is_directive_line and stripped.startswith('#'):
                 # Handle multiline preprocessor directives
                 full_directive = stripped
                 line_continuation_count = 0
