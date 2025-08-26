@@ -179,7 +179,8 @@ class ExeLinkRuleCreator(LinkRuleCreator):
                     "ExeLinkRuleCreator. Asking hunter for required_source_files for source=",
                     source,
                 )
-            completesources = self.hunter.required_source_files(source)
+            with compiletools.timing.time_operation(f"exe_link_required_sources_{os.path.basename(source)}"):
+                completesources = self.hunter.required_source_files(source)
             if self.args.verbose >= 6:
                 print(
                     "ExeLinkRuleCreator. Complete list of implied source files for "
@@ -188,14 +189,15 @@ class ExeLinkRuleCreator(LinkRuleCreator):
                     + " ".join(cs for cs in completesources)
                 )
             exename = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
-            rule = self._create_link_rule(
-                outputname=exename,
-                completesources=completesources,
-                linker=self.args.LD,
-                linkerflags=linkerflags,
-                extraprereqs=extraprereqs,
-            )
-            linkrules[rule.target] = rule
+            with compiletools.timing.time_operation(f"exe_link_rule_creation_{os.path.basename(source)}"):
+                rule = self._create_link_rule(
+                    outputname=exename,
+                    completesources=completesources,
+                    linker=self.args.LD,
+                    linkerflags=linkerflags,
+                    extraprereqs=extraprereqs,
+                )
+                linkrules[rule.target] = rule
 
         return list(linkrules.values())
 
@@ -436,120 +438,134 @@ class MakefileCreator:
         return buildoutputs
 
     def create(self):
-        if self._uptodate():
-            return
+        with compiletools.timing.time_operation("makefile_uptodate_check"):
+            if self._uptodate():
+                return
 
-        # Find the realpaths of the given filenames (to avoid this being
-        # duplicated many times)
-        os.makedirs(self.namer.executable_dir(), exist_ok=True)
-        rule = self._create_all_rule()
-        self.rules[rule.target] = rule
-        buildoutputs = self._gather_build_outputs()
-        rule = self._create_build_rule(buildoutputs)
-        self.rules[rule.target] = rule
-
-        realpath_sources = []
-        if self.args.filename:
-            realpath_sources += sorted(compiletools.wrappedos.realpath(source) for source in self.args.filename)
-        if self.args.tests:
-            realpath_tests = sorted(compiletools.wrappedos.realpath(source) for source in self.args.tests)
-            realpath_sources += realpath_tests
-
-        if self.args.filename or self.args.tests:
-            allexes = {self.namer.executable_pathname(source) for source in realpath_sources}
-            for exe in allexes:
-                cprule = self._create_cp_rule(exe)
-                if cprule:
-                    self.rules[cprule.target] = cprule
-
-            link_rules = self._create_link_rules_for_sources(realpath_sources, exe_static_dynamic="Exe")
-            for rule in link_rules:
-                self.rules[rule.target] = rule
-
-        if self.args.tests:
-            test_rules = self._create_test_rules(realpath_tests)
-            for rule in test_rules:
-                self.rules[rule.target] = rule
-            if self.args.serialisetests:
-                rule = self._create_tests_not_parallel_rule()
-                self.rules[rule.target] = rule
-
-        if self.args.static:
-            libraryname = self.namer.staticlibrary_pathname(compiletools.wrappedos.realpath(self.args.static[0]))
-            cprule = self._create_cp_rule(libraryname)
-            if cprule:
-                self.rules[cprule.target] = cprule
-            realpath_static = {compiletools.wrappedos.realpath(filename) for filename in self.args.static}
-            static_rules = self._create_link_rules_for_sources(
-                realpath_static,
-                exe_static_dynamic="StaticLibrary",
-                libraryname=libraryname,
-            )
-            for rule in static_rules:
-                self.rules[rule.target] = rule
-
-        if self.args.dynamic:
-            libraryname = self.namer.dynamiclibrary_pathname(compiletools.wrappedos.realpath(self.args.dynamic[0]))
-            cprule = self._create_cp_rule(libraryname)
-            if cprule:
-                self.rules[cprule.target] = cprule
-            realpath_dynamic = {compiletools.wrappedos.realpath(filename) for filename in self.args.dynamic}
-            dynamic_rules = self._create_link_rules_for_sources(
-                realpath_dynamic,
-                exe_static_dynamic="DynamicLibrary",
-                libraryname=libraryname,
-            )
-            for rule in dynamic_rules:
-                self.rules[rule.target] = rule
-
-        if self.args.filename or self.args.tests:
-            compile_rules = self._create_compile_rules_for_sources(realpath_sources)
-            for rule in compile_rules:
-                self.rules[rule.target] = rule
-        if self.args.static and realpath_static:
-            static_compile_rules = self._create_compile_rules_for_sources(realpath_static)
-            for rule in static_compile_rules:
-                self.rules[rule.target] = rule
-        if self.args.dynamic and realpath_dynamic:
-            dynamic_compile_rules = self._create_compile_rules_for_sources(realpath_dynamic)
-            for rule in dynamic_compile_rules:
-                self.rules[rule.target] = rule
-
-        clean_rules = self._create_clean_rules(buildoutputs)
-        for rule in clean_rules:
+        with compiletools.timing.time_operation("makefile_setup"):
+            # Find the realpaths of the given filenames (to avoid this being
+            # duplicated many times)
+            os.makedirs(self.namer.executable_dir(), exist_ok=True)
+            rule = self._create_all_rule()
+            self.rules[rule.target] = rule
+            buildoutputs = self._gather_build_outputs()
+            rule = self._create_build_rule(buildoutputs)
             self.rules[rule.target] = rule
 
-        if self.args.build_only_changed:
-            changed_files = set(self.args.build_only_changed.split(" "))
-            targets = set()
-            done = False
-            while not done:
-                done = True
-                for rule in self.rules.values():
-                    if rule.target in targets:
-                        continue
-                    relevant_changed_files = set(rule.prerequisites.split(" ")).intersection(changed_files)
-                    if not relevant_changed_files:
-                        continue
-                    changed_files.add(rule.target)
-                    targets.add(rule.target)
-                    done = False
-                    if self.args.verbose >= 3:
-                        print(
-                            "Building {} because it depends on changed: {}".format(
-                                rule.target, list(relevant_changed_files)
-                            )
-                        )
-            new_rules = {}
-            for rule in self.rules.values():
-                if not rule.phony:
-                    new_rules[rule.target] = rule
-                else:
-                    rule.prerequisites = " ".join(set(rule.prerequisites.split()).intersection(targets))
-                    new_rules[rule.target] = rule
-            self.rules = new_rules
+        with compiletools.timing.time_operation("makefile_gather_sources"):
+            realpath_sources = []
+            if self.args.filename:
+                realpath_sources += sorted(compiletools.wrappedos.realpath(source) for source in self.args.filename)
+            if self.args.tests:
+                realpath_tests = sorted(compiletools.wrappedos.realpath(source) for source in self.args.tests)
+                realpath_sources += realpath_tests
 
-        self.write(self.args.makefilename)
+        if self.args.filename or self.args.tests:
+            with compiletools.timing.time_operation("makefile_exe_cp_rules"):
+                allexes = {self.namer.executable_pathname(source) for source in realpath_sources}
+                for exe in allexes:
+                    cprule = self._create_cp_rule(exe)
+                    if cprule:
+                        self.rules[cprule.target] = cprule
+
+            with compiletools.timing.time_operation("makefile_exe_link_rules"):
+                link_rules = self._create_link_rules_for_sources(realpath_sources, exe_static_dynamic="Exe")
+                for rule in link_rules:
+                    self.rules[rule.target] = rule
+
+        if self.args.tests:
+            with compiletools.timing.time_operation("makefile_test_rules"):
+                test_rules = self._create_test_rules(realpath_tests)
+                for rule in test_rules:
+                    self.rules[rule.target] = rule
+                if self.args.serialisetests:
+                    rule = self._create_tests_not_parallel_rule()
+                    self.rules[rule.target] = rule
+
+        if self.args.static:
+            with compiletools.timing.time_operation("makefile_static_library_rules"):
+                libraryname = self.namer.staticlibrary_pathname(compiletools.wrappedos.realpath(self.args.static[0]))
+                cprule = self._create_cp_rule(libraryname)
+                if cprule:
+                    self.rules[cprule.target] = cprule
+                realpath_static = {compiletools.wrappedos.realpath(filename) for filename in self.args.static}
+                static_rules = self._create_link_rules_for_sources(
+                    realpath_static,
+                    exe_static_dynamic="StaticLibrary",
+                    libraryname=libraryname,
+                )
+                for rule in static_rules:
+                    self.rules[rule.target] = rule
+
+        if self.args.dynamic:
+            with compiletools.timing.time_operation("makefile_dynamic_library_rules"):
+                libraryname = self.namer.dynamiclibrary_pathname(compiletools.wrappedos.realpath(self.args.dynamic[0]))
+                cprule = self._create_cp_rule(libraryname)
+                if cprule:
+                    self.rules[cprule.target] = cprule
+                realpath_dynamic = {compiletools.wrappedos.realpath(filename) for filename in self.args.dynamic}
+                dynamic_rules = self._create_link_rules_for_sources(
+                    realpath_dynamic,
+                    exe_static_dynamic="DynamicLibrary",
+                    libraryname=libraryname,
+                )
+                for rule in dynamic_rules:
+                    self.rules[rule.target] = rule
+
+        if self.args.filename or self.args.tests:
+            with compiletools.timing.time_operation("makefile_exe_compile_rules"):
+                compile_rules = self._create_compile_rules_for_sources(realpath_sources)
+                for rule in compile_rules:
+                    self.rules[rule.target] = rule
+        if self.args.static and realpath_static:
+            with compiletools.timing.time_operation("makefile_static_compile_rules"):
+                static_compile_rules = self._create_compile_rules_for_sources(realpath_static)
+                for rule in static_compile_rules:
+                    self.rules[rule.target] = rule
+        if self.args.dynamic and realpath_dynamic:
+            with compiletools.timing.time_operation("makefile_dynamic_compile_rules"):
+                dynamic_compile_rules = self._create_compile_rules_for_sources(realpath_dynamic)
+                for rule in dynamic_compile_rules:
+                    self.rules[rule.target] = rule
+
+        with compiletools.timing.time_operation("makefile_clean_rules"):
+            clean_rules = self._create_clean_rules(buildoutputs)
+            for rule in clean_rules:
+                self.rules[rule.target] = rule
+
+        if self.args.build_only_changed:
+            with compiletools.timing.time_operation("makefile_build_only_changed"):
+                changed_files = set(self.args.build_only_changed.split(" "))
+                targets = set()
+                done = False
+                while not done:
+                    done = True
+                    for rule in self.rules.values():
+                        if rule.target in targets:
+                            continue
+                        relevant_changed_files = set(rule.prerequisites.split(" ")).intersection(changed_files)
+                        if not relevant_changed_files:
+                            continue
+                        changed_files.add(rule.target)
+                        targets.add(rule.target)
+                        done = False
+                        if self.args.verbose >= 3:
+                            print(
+                                "Building {} because it depends on changed: {}".format(
+                                    rule.target, list(relevant_changed_files)
+                                )
+                            )
+                new_rules = {}
+                for rule in self.rules.values():
+                    if not rule.phony:
+                        new_rules[rule.target] = rule
+                    else:
+                        rule.prerequisites = " ".join(set(rule.prerequisites.split()).intersection(targets))
+                        new_rules[rule.target] = rule
+                self.rules = new_rules
+
+        with compiletools.timing.time_operation("makefile_write_to_disk"):
+            self.write(self.args.makefilename)
         return self.args.makefilename
 
     def _create_object_directory(self):
@@ -567,14 +583,16 @@ class MakefileCreator:
         if compiletools.utils.isheader(filename):
             sys.stderr.write("Error.  Trying to create a compile rule for a header file: ", filename)
 
-        deplist = self.hunter.header_dependencies(filename)
-        prerequisites = [filename] + sorted([str(dep) for dep in deplist])
+        with compiletools.timing.time_operation(f"makefile_header_deps_{os.path.basename(filename)}"):
+            deplist = self.hunter.header_dependencies(filename)
+            prerequisites = [filename] + sorted([str(dep) for dep in deplist])
 
         self.object_directories.add(self.namer.object_dir(filename))
         obj_name = self.namer.object_pathname(filename)
         self.objects.add(obj_name)
 
-        magicflags = self.hunter.magicflags(filename)
+        with compiletools.timing.time_operation(f"makefile_magic_flags_{os.path.basename(filename)}"):
+            magicflags = self.hunter.magicflags(filename)
         recipe = ""
         
         # Add timing wrapper if enabled
@@ -628,11 +646,13 @@ class MakefileCreator:
         # Output all the link rules
         if self.args.verbose >= 3:
             print("Creating link rule for ", sources)
-        linkrulecreatorclass = globals()[exe_static_dynamic + "LinkRuleCreator"]
-        linkrulecreatorobject = linkrulecreatorclass(args=self.args, namer=self.namer, hunter=self.hunter)
-        link_rules = linkrulecreatorobject(libraryname=libraryname, sources=sources)
-        for rule in link_rules:
-            rules_for_source[rule.target] = rule
+        
+        with compiletools.timing.time_operation(f"makefile_link_rule_creation_{exe_static_dynamic}"):
+            linkrulecreatorclass = globals()[exe_static_dynamic + "LinkRuleCreator"]
+            linkrulecreatorobject = linkrulecreatorclass(args=self.args, namer=self.namer, hunter=self.hunter)
+            link_rules = linkrulecreatorobject(libraryname=libraryname, sources=sources)
+            for rule in link_rules:
+                rules_for_source[rule.target] = rule
 
         return list(rules_for_source.values())
 
@@ -649,17 +669,20 @@ class MakefileCreator:
 
         # Output all the compile rules
         for source in sources:
-            # Reset the cycle detection because we are starting a new source
-            # file
-            cycle_detection = set()
-            completesources = self.hunter.required_source_files(source)
-            for item in completesources:
-                if item not in cycle_detection:
-                    cycle_detection.add(item)
-                    rule = self._create_compile_rule_for_source(item)
-                    rules_for_source[rule.target] = rule
-                else:
-                    print("ct-create-makefile detected cycle on source " + item)
+            with compiletools.timing.time_operation(f"makefile_required_sources_{os.path.basename(source)}"):
+                # Reset the cycle detection because we are starting a new source
+                # file
+                cycle_detection = set()
+                completesources = self.hunter.required_source_files(source)
+            
+            with compiletools.timing.time_operation(f"makefile_compile_rules_{os.path.basename(source)}"):
+                for item in completesources:
+                    if item not in cycle_detection:
+                        cycle_detection.add(item)
+                        rule = self._create_compile_rule_for_source(item)
+                        rules_for_source[rule.target] = rule
+                    else:
+                        print("ct-create-makefile detected cycle on source " + item)
 
         return list(rules_for_source.values())
 
