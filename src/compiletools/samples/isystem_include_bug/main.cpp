@@ -1,5 +1,8 @@
 #include <system/version.h>
 
+// Use READMACROS to explicitly specify system header for macro extraction
+//#READMACROS=fake_system_include/system/version.h
+
 // Conditional compilation based on macros from system header
 #if (SYSTEM_VERSION_MAJOR < 2) || (SYSTEM_VERSION_MAJOR == 2 && SYSTEM_VERSION_MINOR < 10)
 //#CPPFLAGS=-DUSE_LEGACY_API -DLEGACY_HANDLER=system::LegacyProcessor
