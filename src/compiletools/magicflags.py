@@ -325,6 +325,55 @@ class DirectMagicFlags(MagicFlagsBase):
                 return compiletools.wrappedos.realpath(candidate)
         return None
 
+    def _extract_macros_from_file(self, filename):
+        """Extract #define macros from a file using cached FileAnalyzer results"""
+        try:
+            max_read_size = getattr(self._args, 'max_file_read_size', 0)
+            analyzer = create_file_analyzer(filename, max_read_size, self._args.verbose, cache=self.file_analyzer_cache)
+            analysis_result = analyzer.analyze()
+            
+            # Use FileAnalyzer's pre-computed directive positions for efficiency
+            define_positions = analysis_result.directive_positions.get("define", [])
+            if not define_positions:
+                return
+                
+            lines = analysis_result.text.split('\n')
+            
+            # Extract #define directives from known positions
+            import re
+            for pos in define_positions:
+                # Find which line this position is on
+                line_num = analysis_result.text[:pos].count('\n')
+                if line_num < len(lines):
+                    line = lines[line_num].strip()
+                    
+                    # Parse #define directive
+                    match = re.match(r'^\s*#\s*define\s+(\w+)(?:\s+(.+?))?$', line)
+                    if match:
+                        macro_name = match.group(1)
+                        macro_value = match.group(2)
+                        
+                        # Clean up the macro value
+                        if macro_value:
+                            macro_value = macro_value.strip()
+                            # Remove trailing comments
+                            if '//' in macro_value:
+                                macro_value = macro_value.split('//')[0].strip()
+                            if '/*' in macro_value:
+                                macro_value = re.sub(r'/\*.*?\*/', '', macro_value).strip()
+                        else:
+                            macro_value = "1"  # Default value for macros without explicit values
+                        
+                        # Skip function-like macros for simplicity
+                        if '(' not in macro_name:
+                            self.defined_macros[macro_name] = macro_value
+                            if self._args.verbose >= 9:
+                                print(f"DirectMagicFlags: extracted macro {macro_name} = {macro_value} from {filename}")
+                        
+        except Exception as e:
+            if self._args.verbose >= 5:
+                print(f"DirectMagicFlags warning: could not extract macros from {filename}: {e}")
+
     def _get_system_headers_from_source(self, filename):
         """Extract system headers from a source file and find them in include paths
         
@@ -403,6 +452,13 @@ class DirectMagicFlags(MagicFlagsBase):
         
         if self._args.verbose >= 9 and system_headers_to_process:
             print(f"DirectMagicFlags will process {len(system_headers_to_process)} system headers: {system_headers_to_process}")
+        
+        # CRITICAL: Extract macros from system headers BEFORE processing conditional compilation
+        # This ensures macros like MYAPP_VERSION_MAJOR are available for #if evaluation
+        for system_header in system_headers_to_process:
+            if self._args.verbose >= 9:
+                print(f"DirectMagicFlags: extracting macros from system header {system_header}")
+            self._extract_macros_from_file(system_header)
         
         # Process files iteratively until no new macros are discovered
         # This handles cases where macros defined in one file affect conditional
