@@ -487,11 +487,11 @@ def _set_project_version(args):
                 print("Set projectversion to the zero version")
 
         if "-DCAKE_PROJECT_VERSION" not in args.CPPFLAGS:
-            args.CPPFLAGS += ' -DCAKE_PROJECT_VERSION=\\"' + args.projectversion + '\\"'
+            args.CPPFLAGS += ' -DCAKE_PROJECT_VERSION=' + shlex.quote(args.projectversion)
         if "-DCAKE_PROJECT_VERSION" not in args.CFLAGS:
-            args.CFLAGS += ' -DCAKE_PROJECT_VERSION=\\"' + args.projectversion + '\\"'
+            args.CFLAGS += ' -DCAKE_PROJECT_VERSION=' + shlex.quote(args.projectversion)
         if "-DCAKE_PROJECT_VERSION" not in args.CXXFLAGS:
-            args.CXXFLAGS += ' -DCAKE_PROJECT_VERSION=\\"' + args.projectversion + '\\"'
+            args.CXXFLAGS += ' -DCAKE_PROJECT_VERSION=' + shlex.quote(args.projectversion)
 
         if args.verbose >= 6:
             print("*FLAG variables have been modified with the project version:")
@@ -548,9 +548,10 @@ def _tier_one_modifications(args):
 
 
 def _strip_quotes(args):
-    """Sometimes you need to quote options (e.g. ones that start with hypen)
-    This will strip a layer of quotes off.
-    Also strip any extraneous whitespace.
+    """Remove shell quotes from arguments while preserving content quotes.
+    
+    Uses proper shell parsing to understand when quotes are shell quoting
+    vs. part of the actual content. Also strips extraneous whitespace.
     """
     for name in vars(args):
         value = getattr(args, name)
@@ -559,13 +560,55 @@ def _strip_quotes(args):
             # try and process every character in a string
             if compiletools.utils.is_nonstr_iter(value):
                 for index, element in enumerate(value):
-                    value[index] = element.strip("\"'").strip()
+                    value[index] = _safely_unquote_string(element)
             else:
                 try:
                     # Otherwise assume its a string
-                    setattr(args, name, value.strip("\"'").strip())
+                    setattr(args, name, _safely_unquote_string(value))
                 except (AttributeError, ValueError, TypeError):
                     pass
+
+def _safely_unquote_string(value):
+    """Safely remove shell quotes from a string using proper parsing.
+    
+    Only removes quotes that are actual shell quotes, not content quotes.
+    Falls back to compatibility behavior for edge cases.
+    """
+    if not isinstance(value, str):
+        return value
+        
+    # Strip whitespace first
+    value = value.strip()
+    
+    # If the string doesn't look like it has shell quotes, don't process it
+    if not (value.startswith('"') or value.startswith("'")):
+        return value
+    
+    try:
+        # Use shlex to parse the string as shell would
+        # If it parses to exactly one token, it was properly quoted
+        tokens = shlex.split(value)
+        if len(tokens) == 1:
+            # Single token means the quotes were shell quotes
+            unquoted = tokens[0]
+            
+            # For backwards compatibility, if the result still has quotes at both ends,
+            # recursively strip them (mimics old behavior for nested quotes)
+            if ((unquoted.startswith('"') and unquoted.endswith('"')) or 
+                (unquoted.startswith("'") and unquoted.endswith("'"))):
+                return _safely_unquote_string(unquoted)
+            else:
+                return unquoted
+        else:
+            # Multiple tokens or parsing issues - return original
+            return value
+    except ValueError:
+        # Malformed quoting - fall back to original naive approach for compatibility
+        # but only strip matching quote pairs
+        if ((value.startswith('"') and value.endswith('"')) or 
+            (value.startswith("'") and value.endswith("'"))):
+            return value[1:-1].strip()
+        return value.strip("\"'").strip()
 
 
 def _flatten_variables(args):
