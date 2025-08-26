@@ -313,7 +313,7 @@ class DirectMagicFlags(MagicFlagsBase):
                 # Process conditional compilation for this file
                 processed_content = self._process_conditional_compilation(file_content)
                 
-                text += file_header + processed_content
+                text += file_header + processed_content + "\n"
 
         return text
 

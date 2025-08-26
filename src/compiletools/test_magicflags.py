@@ -90,15 +90,47 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
     def test_direct_and_cpp_magic_generate_same_results(self):
         """Test that DirectMagicFlags and CppMagicFlags produce identical results on conditional compilation samples"""
-        # Test key conditional compilation samples
+        # Test ALL conditional compilation samples for equivalence - expose any bugs
         test_files = [
+            # Original tested files
             "cross_platform/cross_platform.cpp",
             "magicsourceinheader/main.cpp", 
-            "macro_deps/main.cpp"
+            "macro_deps/main.cpp",
+            
+            # LDFLAGS conditional compilation
+            "ldflags/conditional_ldflags_test.cpp",
+            "ldflags/version_dependent_ldflags.cpp",
+            
+            # Platform-specific includes
+            "conditional_includes/main.cpp",
+            
+            # Feature-based compilation
+            "feature_headers/main.cpp",
+            
+            # Complex macro scenarios
+            "cppflags_macros/elif_test.cpp",
+            "cppflags_macros/multi_flag_test.cpp", 
+            "cppflags_macros/nested_macros_test.cpp",
+            "cppflags_macros/compiler_builtin_test.cpp",
+            "cppflags_macros/advanced_preprocessor_test.cpp",
+            
+            # Version-dependent API (test for bugs)
+            "version_dependent_api/test_main.cpp",
+            "version_dependent_api/test_main_new.cpp"
+            
+            # Note: magicinclude/main.cpp excluded - requires special include path setup not provided by equivalence test
         ]
         
+        failures = []
         for filename in test_files:
-            tb.compare_direct_cpp_magic(self, filename, self._tmpdir)
+            try:
+                tb.compare_direct_cpp_magic(self, filename, self._tmpdir)
+            except (AssertionError, Exception) as e:
+                failures.append(f"{filename}: {str(e)}")
+        
+        if failures:
+            fail_msg = "\n\nDirectMagicFlags vs CppMagicFlags equivalence failures:\n" + "\n".join(failures)
+            assert False, fail_msg
 
     def test_macro_deps_cross_file(self):
         """Test that macros defined in source files affect header magic flags"""
