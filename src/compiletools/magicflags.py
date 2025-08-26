@@ -233,6 +233,8 @@ class DirectMagicFlags(MagicFlagsBase):
         self.defined_macros = {}
         # Store FileAnalyzer results for potential optimization in parsing
         self._file_analyzer_results = {}
+        # Cache for system include paths
+        self._system_include_paths = None
 
     def _add_macros_from_command_line_flags(self):
         """Extract -D macros from command-line CPPFLAGS and CXXFLAGS and add them to defined_macros"""
@@ -248,6 +250,80 @@ class DirectMagicFlags(MagicFlagsBase):
         
         # Direct assignment - no copying overhead
         self.defined_macros.update(macros)
+
+    def _get_system_include_paths(self):
+        """Extract -I/-isystem include paths from command-line flags"""
+        if self._system_include_paths is not None:
+            return self._system_include_paths
+            
+        include_paths = []
+        
+        # Extract from CPPFLAGS and CXXFLAGS  
+        for flag_name in ['CPPFLAGS', 'CXXFLAGS']:
+            flag_value = getattr(self._args, flag_name, '')
+            if not flag_value:
+                continue
+                
+            # Handle both -I path and -Ipath formats
+            include_pattern = re.compile(r'-I(?:\s+|)([^\s]+)')
+            include_paths.extend(include_pattern.findall(flag_value))
+            
+            # Handle both -isystem path and -isystempath formats  
+            isystem_pattern = re.compile(r'-isystem(?:\s+|)([^\s]+)')
+            include_paths.extend(isystem_pattern.findall(flag_value))
+            
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_paths = []
+        for path in include_paths:
+            if path not in seen:
+                seen.add(path)
+                unique_paths.append(path)
+                
+        self._system_include_paths = unique_paths
+        
+        if self._args.verbose >= 9 and unique_paths:
+            print(f"DirectMagicFlags extracted system include paths: {unique_paths}")
+            
+        return self._system_include_paths
+
+    def _find_system_header(self, include_name):
+        """Find a system header in the -I/-isystem include paths"""
+        for include_path in self._get_system_include_paths():
+            candidate = os.path.join(include_path, include_name)
+            if compiletools.wrappedos.isfile(candidate):
+                return compiletools.wrappedos.realpath(candidate)
+        return None
+
+    def _get_system_headers_from_source(self, filename):
+        """Extract system headers from a source file and find them in include paths
+        
+        Returns list of (include_name, resolved_path) tuples for system includes found
+        """
+        system_headers = []
+        
+        # Read the file to find #include directives
+        try:
+            max_read_size = getattr(self._args, 'max_file_read_size', 0)
+            analyzer = create_file_analyzer(filename, max_read_size, self._args.verbose, cache=self.file_analyzer_cache)
+            analysis_result = analyzer.analyze()
+            
+            # Look for #include <system_header> directives in the raw file content
+            # Use angle brackets to identify system includes
+            system_include_pattern = re.compile(r'^\s*#\s*include\s*<([^>]+)>', re.MULTILINE)
+            for match in system_include_pattern.finditer(analysis_result.text):
+                include_name = match.group(1)
+                resolved_path = self._find_system_header(include_name)
+                if resolved_path:
+                    system_headers.append((include_name, resolved_path))
+                    if self._args.verbose >= 9:
+                        print(f"DirectMagicFlags found system header: {include_name} -> {resolved_path}")
+                        
+        except Exception as e:
+            if self._args.verbose >= 5:
+                print(f"DirectMagicFlags warning: could not scan {filename} for system headers: {e}")
+                
+        return system_headers
 
     def _process_conditional_compilation(self, text, directive_positions):
         """Process conditional compilation directives and return only active sections"""
@@ -280,6 +356,18 @@ class DirectMagicFlags(MagicFlagsBase):
         
         headers = self._headerdeps.process(filename)
         
+        # Find system headers from -I/-isystem paths that need to be processed
+        # Process these first to match real preprocessor behavior
+        system_headers_to_process = set()
+        all_source_files = [filename] + headers
+        
+        for source_file in all_source_files:
+            for include_name, resolved_path in self._get_system_headers_from_source(source_file):
+                system_headers_to_process.add(resolved_path)
+        
+        if self._args.verbose >= 9 and system_headers_to_process:
+            print(f"DirectMagicFlags will process {len(system_headers_to_process)} system headers: {system_headers_to_process}")
+        
         # Process files iteratively until no new macros are discovered
         # This handles cases where macros defined in one file affect conditional
         # compilation in other files
@@ -295,9 +383,10 @@ class DirectMagicFlags(MagicFlagsBase):
                 print(f"DirectMagicFlags::readfile iteration {iteration}, known macros: {set(self.defined_macros.keys())}")
             
             text = ""
-            # Process files in preprocessor order to match CppMagicFlags
-            # Main file first, then headers (matching cpp -E behavior)
-            all_files = [filename] + [h for h in headers if h != filename]
+            # Process files in preprocessor order to match CppMagicFlags:
+            # 1. System headers first (from -I/-isystem paths)  
+            # 2. Main file, then project headers (matching cpp -E behavior)
+            all_files = list(system_headers_to_process) + [filename] + [h for h in headers if h != filename]
             for fname in all_files:
                 if self._args.verbose >= 9:
                     print("DirectMagicFlags::readfile is processing " + fname)

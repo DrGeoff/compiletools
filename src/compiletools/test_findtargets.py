@@ -24,6 +24,7 @@ class TestFindTargetsModule:
             "cppflags_macros/nested_macros_test.cpp",
             "dottypaths/dottypaths.cpp",
             "feature_headers/main.cpp",
+            "isystem_include_bug/main.cpp",
             "ldflags/conditional_ldflags_test.cpp",
             "ldflags/version_dependent_ldflags.cpp",
             "library/main.cpp",
