@@ -199,7 +199,7 @@ class Timer:
             file = sys.stderr
         
         # At lower verbosity levels, aggregate per-file operations for cleaner overview
-        if verbose_level == 1 and indent > 0:
+        if verbose_level == 1:
             hierarchy = self._aggregate_per_file_operations(hierarchy)
         
         # Sort operations by time descending
@@ -256,31 +256,18 @@ class Timer:
             else:
                 # Multiple operations with same base - aggregate them
                 total_time = sum(node['time'] for _, node in operations)
-                aggregated_children = {}
                 filenames = []
                 
-                # Collect filenames and merge children from all operations
+                # Collect filenames for display
                 for operation_name, node in operations:
                     if operation_name in self.operation_filenames:
                         filenames.append(self.operation_filenames[operation_name])
-                    
-                    # Merge children - for file operations, children should be aggregated too
-                    for child_name, child_node in node['children'].items():
-                        if child_name in aggregated_children:
-                            # Aggregate child times
-                            aggregated_children[child_name]['time'] += child_node['time']
-                            # Merge grandchildren if any
-                            for grandchild_name, grandchild_node in child_node['children'].items():
-                                if grandchild_name in aggregated_children[child_name]['children']:
-                                    aggregated_children[child_name]['children'][grandchild_name]['time'] += grandchild_node['time']
-                                else:
-                                    aggregated_children[child_name]['children'][grandchild_name] = grandchild_node
-                        else:
-                            aggregated_children[child_name] = child_node
                 
+                # For aggregated operations, don't show individual children
+                # as that defeats the purpose of aggregation
                 aggregated[base_name] = {
                     'time': total_time,
-                    'children': aggregated_children,
+                    'children': {},  # No children for aggregated view
                     'file_count': len(operations),
                     'filenames': filenames  # Store the actual filenames for reference
                 }
