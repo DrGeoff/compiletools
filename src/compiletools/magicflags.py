@@ -125,7 +125,7 @@ class MagicFlagsBase:
         flagsforfilename.setdefault("CFLAGS", []).append("-I " + flag)
         flagsforfilename.setdefault("CXXFLAGS", []).append("-I " + flag)
         if self._args.verbose >= 9:
-            print(f"Added -I {flag} to CPPFLAGS, CFLAGS, and CXXFLAGS")
+            print("Added -I {} to CPPFLAGS, CFLAGS, and CXXFLAGS".format(flag))
         return flagsforfilename
 
     def _handle_pkg_config(self, flag):
@@ -161,10 +161,14 @@ class MagicFlagsBase:
 
     def _handle_readmacros(self, flag, source_filename):
         """Handle READMACROS magic flag by adding file to explicit macro processing list"""
-        # Resolve the file path relative to the source file's directory if needed
+        # First try to resolve as a system header
         if not os.path.isabs(flag):
-            source_dir = compiletools.wrappedos.dirname(source_filename)
-            resolved_flag = compiletools.wrappedos.realpath(os.path.join(source_dir, flag))
+            # Try to find in system include paths first
+            resolved_flag = self._find_system_header(flag)
+            if not resolved_flag:
+                # Fall back to resolving relative to source file directory
+                source_dir = compiletools.wrappedos.dirname(source_filename)
+                resolved_flag = compiletools.wrappedos.realpath(os.path.join(source_dir, flag))
         else:
             resolved_flag = compiletools.wrappedos.realpath(flag)
         
@@ -182,12 +186,13 @@ class MagicFlagsBase:
 
     def _process_magic_flag(self, magic, flag, flagsforfilename, text, filename):
         """Override to handle READMACROS in DirectMagicFlags only"""
-        # Call parent implementation first
-        super()._process_magic_flag(magic, flag, flagsforfilename, text, filename)
-        
-        # Handle READMACROS specifically for DirectMagicFlags
+        # Handle READMACROS specifically for DirectMagicFlags - don't add to output
         if magic == "READMACROS":
             self._handle_readmacros(flag, filename)
+            return  # Don't call parent - READMACROS shouldn't appear in final output
+        
+        # Call parent implementation for all other magic flags
+        super()._process_magic_flag(magic, flag, flagsforfilename, text, filename)
 
     def _parse(self, filename):
         if self._args.verbose >= 4:
@@ -473,9 +478,11 @@ class DirectMagicFlags(MagicFlagsBase):
         
         # First pass: scan all files for READMACROS flags to collect explicit macro files
         all_source_files = [filename] + headers
+        if self._args.verbose >= 9:
+            print(f"DirectMagicFlags: First pass - scanning {len(all_source_files)} files for READMACROS flags")
         for source_file in all_source_files:
             if self._args.verbose >= 9:
-                print(f"DEBUG: First pass - scanning {source_file} for READMACROS flags")
+                print(f"First pass - scanning {source_file} for READMACROS flags")
             try:
                 max_read_size = getattr(self._args, 'max_file_read_size', 0)
                 analyzer = create_file_analyzer(source_file, max_read_size, self._args.verbose, cache=self.file_analyzer_cache)
@@ -546,6 +553,7 @@ class DirectMagicFlags(MagicFlagsBase):
                 
                 # Process conditional compilation for this file
                 # Pass FileAnalyzer's pre-computed directive positions for optimization
+                
                 processed_content = self._process_conditional_compilation(
                     file_content, 
                     analysis_result.directive_positions
