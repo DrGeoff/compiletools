@@ -170,15 +170,28 @@ class Timer:
         
         top_level_ops = [op for op in self.timings.keys() if op not in all_nested]
         
-        # Build hierarchy recursively from top-level operations
+        # Build hierarchy recursively from top-level operations with cycle detection
         hierarchy = {}
+        visited = set()
         for op in top_level_ops:
-            hierarchy[op] = self._build_operation_node(op)
+            hierarchy[op] = self._build_operation_node(op, visited.copy())
             
         return hierarchy
     
-    def _build_operation_node(self, operation_name):
+    def _build_operation_node(self, operation_name, visited=None):
         """Build a single node in the hierarchy with its children."""
+        if visited is None:
+            visited = set()
+        
+        # Prevent infinite recursion by checking if we've already visited this node
+        if operation_name in visited:
+            return {
+                'time': self.timings.get(operation_name, 0.0),
+                'children': {}  # Don't recurse into already visited nodes
+            }
+        
+        visited.add(operation_name)
+        
         node = {
             'time': self.timings.get(operation_name, 0.0),
             'children': {}
@@ -188,7 +201,7 @@ class Timer:
         if operation_name in self.nested_timings:
             for child_name in self.nested_timings[operation_name]:
                 if child_name in self.timings:
-                    node['children'][child_name] = self._build_operation_node(child_name)
+                    node['children'][child_name] = self._build_operation_node(child_name, visited.copy())
         
         return node
 
