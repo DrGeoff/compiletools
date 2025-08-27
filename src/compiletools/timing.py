@@ -206,14 +206,18 @@ class Timer:
         return node
 
 
-    def _report_hierarchy_recursive(self, hierarchy, file=None, indent=0, threshold_ms=1.0, verbose_level=1):
+    def _report_hierarchy_recursive(self, hierarchy, file=None, indent=0, threshold_ms=1.0, verbose_level=1, already_aggregated=False):
         """Recursively report the timing hierarchy based on actual execution nesting."""
         if file is None:
             file = sys.stderr
         
         # At lower verbosity levels, aggregate per-file operations for cleaner overview
-        if verbose_level == 1:
-            hierarchy = self._aggregate_per_file_operations(hierarchy)
+        # Only do aggregation at the top level and skip for large hierarchies to avoid slowness
+        if verbose_level == 1 and not already_aggregated:
+            total_operations = self._count_total_operations(hierarchy)
+            if total_operations < 1000:  # Only aggregate for smaller hierarchies
+                hierarchy = self._aggregate_per_file_operations(hierarchy)
+            already_aggregated = True
         
         # Sort operations by time descending
         sorted_operations = sorted(hierarchy.items(), 
@@ -246,7 +250,7 @@ class Timer:
                     print(f"{indent_str}  ⚠ Children time ({self.format_time(children_total)}) > parent time", file=file)
                 
                 # Recursively report children
-                self._report_hierarchy_recursive(node['children'], file, indent + 1, threshold_ms, verbose_level)
+                self._report_hierarchy_recursive(node['children'], file, indent + 1, threshold_ms, verbose_level, already_aggregated)
 
     def _aggregate_per_file_operations(self, hierarchy):
         """Aggregate per-file operations into summary operations using stored filename data."""
@@ -286,6 +290,20 @@ class Timer:
                 }
         
         return aggregated
+    
+    def _count_total_operations(self, hierarchy):
+        """Count total number of operations in the hierarchy."""
+        count = 0
+        
+        def count_recursive(node_hierarchy):
+            nonlocal count
+            count += len(node_hierarchy)
+            for node in node_hierarchy.values():
+                if node.get('children'):
+                    count_recursive(node['children'])
+        
+        count_recursive(hierarchy)
+        return count
 
     def _extract_operation_base_name(self, operation_name):
         """Extract the base operation name without filename."""
