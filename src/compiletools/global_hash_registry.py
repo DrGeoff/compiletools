@@ -9,11 +9,25 @@ git-sha-report functionality efficiently.
 from typing import Dict, Optional
 import threading
 import os
+import hashlib
 from compiletools import wrappedos
 
 # Module-level cache: None = not loaded, Dict = loaded hashes
 _HASHES: Optional[Dict[str, str]] = None
 _lock = threading.Lock()
+
+
+def _compute_external_file_hash(filepath: str) -> Optional[str]:
+    """Compute git blob hash for a file using git's algorithm."""
+    try:
+        with open(filepath, 'rb') as f:
+            content = f.read()
+        
+        # Git blob hash: sha1("blob {size}\0{content}")
+        blob_data = f"blob {len(content)}\0".encode() + content
+        return hashlib.sha1(blob_data).hexdigest()
+    except (OSError, IOError):
+        return None
 
 
 def load_hashes() -> None:
@@ -45,11 +59,14 @@ def load_hashes() -> None:
 def get_file_hash(filepath: str) -> Optional[str]:
     """Get hash for a file, loading hashes on first call.
     
+    For files tracked in git, uses cached hashes from git registry.
+    For external files (system libraries, etc.), computes git blob hash on-demand.
+    
     Args:
         filepath: Path to file (absolute or relative)
         
     Returns:
-        Git blob hash if available, None if not in registry
+        Git blob hash if file exists, None if file doesn't exist
     """
     # Ensure hashes are loaded
     if _HASHES is None:
@@ -70,6 +87,13 @@ def get_file_hash(filepath: str) -> Optional[str]:
             result = _HASHES.get(abs_git_path)
         except Exception:
             pass  # Git root not available, stick with original result
+    
+    # If still not found, check if file exists and compute hash on-demand
+    if result is None and os.path.exists(abs_path):
+        result = _compute_external_file_hash(abs_path)
+        if result:
+            # Cache the computed hash for future lookups
+            _HASHES[abs_path] = result
     
     return result
 
