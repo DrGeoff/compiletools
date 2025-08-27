@@ -206,10 +206,12 @@ class Timer:
         return node
 
 
-    def _report_hierarchy_recursive(self, hierarchy, file=None, indent=0, threshold_ms=1.0, verbose_level=1, already_aggregated=False):
+    def _report_hierarchy_recursive(self, hierarchy, file=None, indent=0, threshold_ms=1.0, verbose_level=1, already_aggregated=False, visited_nodes=None):
         """Recursively report the timing hierarchy based on actual execution nesting."""
         if file is None:
             file = sys.stderr
+        if visited_nodes is None:
+            visited_nodes = set()
         
         # At lower verbosity levels, aggregate per-file operations for cleaner overview
         # Only do aggregation at the top level and skip for large hierarchies to avoid slowness
@@ -231,6 +233,12 @@ class Timer:
             if indent > 1 and operation_time * 1000 < threshold_ms:
                 continue
             
+            # Prevent infinite recursion by checking node identity
+            node_id = id(node)
+            if node_id in visited_nodes:
+                continue
+            visited_nodes.add(node_id)
+            
             # Format the operation line
             indent_str = "  " * indent
             time_str = self.format_time(operation_time)
@@ -250,7 +258,7 @@ class Timer:
                     print(f"{indent_str}  ⚠ Children time ({self.format_time(children_total)}) > parent time", file=file)
                 
                 # Recursively report children
-                self._report_hierarchy_recursive(node['children'], file, indent + 1, threshold_ms, verbose_level, already_aggregated)
+                self._report_hierarchy_recursive(node['children'], file, indent + 1, threshold_ms, verbose_level, already_aggregated, visited_nodes)
 
     def _aggregate_per_file_operations(self, hierarchy):
         """Aggregate per-file operations into summary operations using stored filename data."""
@@ -294,13 +302,24 @@ class Timer:
     def _count_total_operations(self, hierarchy):
         """Count total number of operations in the hierarchy."""
         count = 0
+        visited = set()
         
-        def count_recursive(node_hierarchy):
+        def count_recursive(node_hierarchy, path=None):
             nonlocal count
+            if path is None:
+                path = set()
+            
             count += len(node_hierarchy)
-            for node in node_hierarchy.values():
+            for name, node in node_hierarchy.items():
+                # Prevent infinite recursion by checking if we've seen this node before
+                node_id = id(node)
+                if node_id in visited or name in path:
+                    continue
+                    
+                visited.add(node_id)
                 if node.get('children'):
-                    count_recursive(node['children'])
+                    new_path = path | {name}
+                    count_recursive(node['children'], new_path)
         
         count_recursive(hierarchy)
         return count
