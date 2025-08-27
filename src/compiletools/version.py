@@ -2,4 +2,4 @@
     simultaneously.  Also add the flags to git tag and commit everything
     in one operation.
 """
-__version__ = "5.0.0"
+__version__ = "5.1.0"
