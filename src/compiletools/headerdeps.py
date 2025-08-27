@@ -12,7 +12,6 @@ import compiletools.preprocessor
 import compiletools.compiler_macros
 from compiletools.simple_preprocessor import SimplePreprocessor
 from compiletools.file_analyzer import create_file_analyzer
-import compiletools.timing
 
 
 
@@ -67,16 +66,15 @@ class HeaderDepsBase(object):
                 - System include paths are excluded by default unless configured otherwise.
         """
         realpath = compiletools.wrappedos.realpath(filename)
-        with compiletools.timing.time_file_operation("header_dependency_analysis", filename):
-            try:
-                result = self._process_impl(realpath)
-            except IOError:
-                # If there was any error the first time around, an error correcting removal would have occured
-                # So strangely, the best thing to do is simply try again
-                result = None
+        try:
+            result = self._process_impl(realpath)
+        except IOError:
+            # If there was any error the first time around, an error correcting removal would have occured
+            # So strangely, the best thing to do is simply try again
+            result = None
 
-            if not result:
-                result = self._process_impl(realpath)
+        if not result:
+            result = self._process_impl(realpath)
 
         return result
 
@@ -269,59 +267,55 @@ class DirectHeaderDeps(HeaderDepsBase):
         # Import modules outside timing block
         import compiletools.dirnamer
         
-        with compiletools.timing.time_file_operation("include_analysis", realpath):
-            max_read_size = getattr(self.args, 'max_file_read_size', 0)
-            
-            # Use FileAnalyzer for efficient file reading and pattern detection  
-            # Note: create_file_analyzer() handles StringZilla/Legacy fallback internally
-            
-            with compiletools.timing.time_file_operation("file_read", realpath):
-                analyzer = create_file_analyzer(realpath, max_read_size, self.args.verbose, cache=self.file_analyzer_cache)
-                analysis_result = analyzer.analyze()
-                text = analysis_result.text
-                
-                # Potential optimization: FileAnalyzer already found include_positions  
-                # We could potentially use these to optimize regex processing later
-                if self.args.verbose >= 9 and analysis_result.include_positions:
-                    print(f"DirectHeaderDeps::analyze - FileAnalyzer pre-found {len(analysis_result.include_positions)} includes in {realpath}")
+        max_read_size = getattr(self.args, 'max_file_read_size', 0)
+        
+        # Use FileAnalyzer for efficient file reading and pattern detection  
+        # Note: create_file_analyzer() handles StringZilla/Legacy fallback internally
+        
+        analyzer = create_file_analyzer(realpath, max_read_size, self.args.verbose, cache=self.file_analyzer_cache)
+        analysis_result = analyzer.analyze()
+        text = analysis_result.text
+        
+        # Potential optimization: FileAnalyzer already found include_positions  
+        # We could potentially use these to optimize regex processing later
+        if self.args.verbose >= 9 and analysis_result.include_positions:
+            print(f"DirectHeaderDeps::analyze - FileAnalyzer pre-found {len(analysis_result.include_positions)} includes in {realpath}")
 
-            # Process conditional compilation - this updates self.defined_macros as it encounters #define
-            with compiletools.timing.time_file_operation("conditional_compilation", realpath):
-                # Pass FileAnalyzer's pre-computed directive positions for optimization
-                processed_text = self._process_conditional_compilation(
-                    text, 
-                    analysis_result.directive_positions
-                )
+        # Process conditional compilation - this updates self.defined_macros as it encounters #define
+        # Pass FileAnalyzer's pre-computed directive positions for optimization
+        processed_text = self._process_conditional_compilation(
+            text, 
+            analysis_result.directive_positions
+        )
 
-            # The pattern is intended to match all include statements but
-            # not the ones with either C or C++ commented out.
-            with compiletools.timing.time_file_operation("pattern_matching", realpath):
-                import re
-                # Optimization: Use FileAnalyzer's pre-computed include positions when available
-                includes = []
-                if analysis_result.include_positions:
-                    # Extract include filenames from positions that survived conditional compilation
-                    original_lines = text.split('\n')
-                    for pos in analysis_result.include_positions:
-                        line_num = text[:pos].count('\n')
-                        if line_num < len(original_lines):
-                            include_line = original_lines[line_num]
-                            # Check if this include line survived preprocessing
-                            if include_line.strip() in processed_text:
-                                # Extract filename using simpler regex on single line
-                                match = re.search(r'#include[\s]*["<][\s]*([\S]*)[\s]*[">]', include_line)
-                                if match:
-                                    includes.append(match.group(1))
-                
-                # Fallback to full text search if no includes found or no position data
-                if not includes:
-                    pat = re.compile(
-                        r'/\*.*?\*/|//.*?$|^[\s]*#include[\s]*["<][\s]*([\S]*)[\s]*[">]',
-                        re.MULTILINE | re.DOTALL,
-                    )
-                    includes = [group for group in pat.findall(processed_text) if group]
-                
-                return includes
+        # The pattern is intended to match all include statements but
+        # not the ones with either C or C++ commented out.
+        import re
+        # Optimization: Use FileAnalyzer's pre-computed include positions when available
+        includes = []
+        if analysis_result.include_positions:
+            # Extract include filenames from positions that survived conditional compilation
+            original_lines = text.split('\n')
+            for pos in analysis_result.include_positions:
+                line_num = text[:pos].count('\n')
+                if line_num < len(original_lines):
+                    include_line = original_lines[line_num]
+                    # Check if this include line survived preprocessing
+                    if include_line.strip() in processed_text:
+                        # Extract filename using simpler regex on single line
+                        match = re.search(r'#include[\s]*["<][\s]*([\S]*)[\s]*[">]', include_line)
+                        if match:
+                            includes.append(match.group(1))
+        
+        # Fallback to full text search if no includes found or no position data
+        if not includes:
+            pat = re.compile(
+                r'/\*.*?\*/|//.*?$|^[\s]*#include[\s]*["<][\s]*([\S]*)[\s]*[">]',
+                re.MULTILINE | re.DOTALL,
+            )
+            includes = [group for group in pat.findall(processed_text) if group]
+        
+        return includes
 
     def _generate_tree_impl(self, realpath, node=None):
         """Return a tree that describes the header includes
