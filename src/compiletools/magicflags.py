@@ -13,7 +13,6 @@ import compiletools.apptools
 import compiletools.compiler_macros
 import compiletools.dirnamer
 from compiletools.file_analyzer import create_file_analyzer
-import compiletools.timing
 
 
 def create(args, headerdeps):
@@ -83,8 +82,7 @@ class MagicFlagsBase:
         raise NotImplementedError
 
     def __call__(self, filename):
-        with compiletools.timing.time_file_operation("magic_flags_analysis", filename):
-            return self.parse(filename)
+        return self.parse(filename)
 
     def _handle_source(self, flag, text, filename, magic):
         # Find the include before the //#SOURCE=
@@ -132,23 +130,21 @@ class MagicFlagsBase:
         flagsforfilename = defaultdict(list)
         for pkg in flag.split():
             # TODO: when we move to python 3.7, use text=True rather than universal_newlines=True and capture_output=True,
-            with compiletools.timing.time_operation(f"pkg_config_cflags_{pkg}"):
-                cflags_raw = subprocess.run(
-                    ["pkg-config", "--cflags", pkg],
-                    stdout=subprocess.PIPE,
-                    universal_newlines=True,
-                ).stdout.rstrip()
-                
-                # Replace -I flags with -isystem, but only when -I is a standalone flag
-                # This helps the CppHeaderDeps avoid searching packages
-                cflags = re.sub(r'-I(?=\s|/|$)', '-isystem', cflags_raw)
+            cflags_raw = subprocess.run(
+                ["pkg-config", "--cflags", pkg],
+                stdout=subprocess.PIPE,
+                universal_newlines=True,
+            ).stdout.rstrip()
             
-            with compiletools.timing.time_operation(f"pkg_config_libs_{pkg}"):
-                libs = subprocess.run(
-                    ["pkg-config", "--libs", pkg],
-                    stdout=subprocess.PIPE,
-                    universal_newlines=True,
-                ).stdout.rstrip()
+            # Replace -I flags with -isystem, but only when -I is a standalone flag
+            # This helps the CppHeaderDeps avoid searching packages
+            cflags = re.sub(r'-I(?=\s|/|$)', '-isystem', cflags_raw)
+            
+            libs = subprocess.run(
+                ["pkg-config", "--libs", pkg],
+                stdout=subprocess.PIPE,
+                universal_newlines=True,
+            ).stdout.rstrip()
             flagsforfilename["CPPFLAGS"].append(cflags)
             flagsforfilename["CFLAGS"].append(cflags)
             flagsforfilename["CXXFLAGS"].append(cflags)
@@ -203,18 +199,15 @@ class MagicFlagsBase:
         # When used in the "usual" fashion this is true.
         # However, it is possible to call directly so we must
         # ensure that the headerdeps exist manually.
-        with compiletools.timing.time_file_operation("magic_flags_headerdeps", filename):
-            self._headerdeps.process(filename)
+        self._headerdeps.process(filename)
 
-        with compiletools.timing.time_file_operation("magic_flags_readfile", filename):
-            text = self.readfile(filename)
+        text = self.readfile(filename)
         
-        with compiletools.timing.time_file_operation("magic_flags_parsing", filename):
-            flagsforfilename = defaultdict(list)
+        flagsforfilename = defaultdict(list)
 
-            for match in self.magicpattern.finditer(text):
-                magic, flag = match.groups()
-                self._process_magic_flag(magic, flag, flagsforfilename, text, filename)
+        for match in self.magicpattern.finditer(text):
+            magic, flag = match.groups()
+            self._process_magic_flag(magic, flag, flagsforfilename, text, filename)
 
         # Deduplicate all flags while preserving order
         for key in flagsforfilename:
@@ -230,19 +223,17 @@ class MagicFlagsBase:
 
         # If the magic was INCLUDE then modify that into the equivalent CPPFLAGS, CFLAGS, and CXXFLAGS
         if magic == "INCLUDE":
-            with compiletools.timing.time_operation(f"magic_flags_include_handling_{flag}"):
-                extrafff = self._handle_include(flag)
-                for key, values in extrafff.items():
-                    for value in values:
-                        flagsforfilename[key].append(value)
+            extrafff = self._handle_include(flag)
+            for key, values in extrafff.items():
+                for value in values:
+                    flagsforfilename[key].append(value)
 
         # If the magic was PKG-CONFIG then call pkg-config
         if magic == "PKG-CONFIG":
-            with compiletools.timing.time_operation(f"magic_flags_pkgconfig_{flag}"):
-                extrafff = self._handle_pkg_config(flag)
-                for key, values in extrafff.items():
-                    for value in values:
-                        flagsforfilename[key].append(value)
+            extrafff = self._handle_pkg_config(flag)
+            for key, values in extrafff.items():
+                for value in values:
+                    flagsforfilename[key].append(value)
 
         flagsforfilename[magic].append(flag)
         if self._args.verbose >= 5:

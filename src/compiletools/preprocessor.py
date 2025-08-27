@@ -1,5 +1,4 @@
 import subprocess
-import compiletools.timing
 import sys
 import compiletools.utils
 
@@ -30,8 +29,7 @@ class PreProcessor(object):
             if redirect_stderr_to_stdout:
                 kwargs["stderr"] = subprocess.STDOUT
 
-            with compiletools.timing.time_file_operation("preprocessor", realpath):
-                output = subprocess.check_output(cmd, **kwargs)
+            output = subprocess.check_output(cmd, **kwargs)
             if self.args.verbose >= 5:
                 print(output)
         except OSError as err:

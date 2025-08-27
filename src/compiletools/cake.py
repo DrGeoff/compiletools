@@ -12,7 +12,7 @@ import compiletools.filelist
 import compiletools.findtargets
 import compiletools.jobs
 import compiletools.wrappedos
-import compiletools.timing
+
 
 
 class Cake(object):
@@ -155,50 +155,44 @@ class Cake(object):
                     compiletools.wrappedos.copy(src, outputdir)
 
     def _callmakefile(self):
-        with compiletools.timing.time_operation("makefile_creation"):
-            makefile_creator = compiletools.makefile.MakefileCreator(self.args, self.hunter)
-            makefile_creator.create()
-            os.makedirs(self.namer.executable_dir(), exist_ok=True)
-        with compiletools.timing.time_operation("makefile_execution"):
-            cmd = ["make"]
-            if self.args.verbose <= 1:
-                cmd.append("-s")
-            if self.args.verbose >= 4:
-                # --trace first comes in GNU make 4.0
-                with compiletools.timing.time_operation("make_version_check"):
-                    make_version = (
-                        subprocess.check_output(["make", "--version"], universal_newlines=True)
-                        .splitlines()[0]
-                        .split(" ")[-1]
-                        .split(".")[0]
-                    )
-                if int(make_version) >= 4:
-                    cmd.append("--trace")
-            cmd.extend(["-j", str(self.args.parallel), "-f", self.args.makefilename])
-            if self.args.clean:
-                cmd.append("realclean")
-            else:
-                cmd.append("build")
-            if self.args.verbose >= 1:
-                print(" ".join(cmd))
+        makefile_creator = compiletools.makefile.MakefileCreator(self.args, self.hunter)
+        makefile_creator.create()
+        os.makedirs(self.namer.executable_dir(), exist_ok=True)
+        cmd = ["make"]
+        if self.args.verbose <= 1:
+            cmd.append("-s")
+        if self.args.verbose >= 4:
+            # --trace first comes in GNU make 4.0
+            make_version = (
+                subprocess.check_output(["make", "--version"], universal_newlines=True)
+                .splitlines()[0]
+                .split(" ")[-1]
+                .split(".")[0]
+            )
+            if int(make_version) >= 4:
+                cmd.append("--trace")
+        cmd.extend(["-j", str(self.args.parallel), "-f", self.args.makefilename])
+        if self.args.clean:
+            cmd.append("realclean")
+        else:
+            cmd.append("build")
+        if self.args.verbose >= 1:
+            print(" ".join(cmd))
             
-            # Time the main build subprocess
-            operation_name = "make_realclean" if self.args.clean else "make_build"
-            with compiletools.timing.time_operation(operation_name):
-                subprocess.check_call(cmd, universal_newlines=True)
+        # Time the main build subprocess
+        subprocess.check_call(cmd, universal_newlines=True)
 
-            if self.args.tests and not self.args.clean:
-                cmd = ["make"]
-                cmd.extend(["-j", str(self.args.parallel)])
-                if self.args.verbose < 2:
-                    cmd.append("-s")
-                cmd.extend(["-f", self.args.makefilename, "runtests"])
-                if self.args.verbose >= 2:
-                    print(" ".join(cmd))
+        if self.args.tests and not self.args.clean:
+            cmd = ["make"]
+            cmd.extend(["-j", str(self.args.parallel)])
+            if self.args.verbose < 2:
+                cmd.append("-s")
+            cmd.extend(["-f", self.args.makefilename, "runtests"])
+            if self.args.verbose >= 2:
+                print(" ".join(cmd))
                 
-                # Time the test execution subprocess
-                with compiletools.timing.time_operation("make_runtests"):
-                    subprocess.check_call(cmd, universal_newlines=True)
+            # Time the test execution subprocess
+            subprocess.check_call(cmd, universal_newlines=True)
 
         if self.args.clean:
             # Remove the extra executables we copied
@@ -228,27 +222,23 @@ class Cake(object):
         if self.args.verbose > 4:
             print("Early scanning. Cake determining targets and implied files")
 
-        with compiletools.timing.time_operation("create_ct_objects"):
-            self._createctobjs()
+        self._createctobjs()
         recreateobjs = False
         if self.args.static and len(self.args.static) == 1:
-            with compiletools.timing.time_operation("static_source_hunting"):
-                self.args.static.extend(
-                    self.hunter.required_source_files(self.args.static[0])
-                )
+            self.args.static.extend(
+                self.hunter.required_source_files(self.args.static[0])
+            )
             recreateobjs = True
 
         if self.args.dynamic and len(self.args.dynamic) == 1:
-            with compiletools.timing.time_operation("dynamic_source_hunting"):
-                self.args.dynamic.extend(
-                    self.hunter.required_source_files(self.args.dynamic[0])
-                )
+            self.args.dynamic.extend(
+                self.hunter.required_source_files(self.args.dynamic[0])
+            )
             recreateobjs = True
 
         if self.args.auto:
-            with compiletools.timing.time_operation("target_detection"):
-                findtargets = compiletools.findtargets.FindTargets(self.args)
-                findtargets.process(self.args)
+            findtargets = compiletools.findtargets.FindTargets(self.args)
+            findtargets.process(self.args)
             recreateobjs = True
 
         if recreateobjs:
@@ -258,15 +248,13 @@ class Cake(object):
             # targets. And recreate the ct objects
             if self.args.verbose > 4:
                 print("Cake recreating objects and reparsing for second stage processing")
-            with compiletools.timing.time_operation("recreate_ct_objects"):
-                compiletools.apptools.substitutions(self.args, verbose=0)
-                self._createctobjs()
+            compiletools.apptools.substitutions(self.args, verbose=0)
+            self._createctobjs()
 
         compiletools.apptools.verboseprintconfig(self.args)
 
         if self.args.filelist:
-            with compiletools.timing.time_operation("filelist_generation"):
-                self._callfilelist()
+            self._callfilelist()
         else:
             self._callmakefile()
 
@@ -293,9 +281,6 @@ def main(argv=None):
 
     args = compiletools.apptools.parseargs(cap, argv)
 
-    # Initialize timing if enabled
-    timing_enabled = hasattr(args, 'time') and args.time
-    compiletools.timing.initialize_timer(timing_enabled)
     
 
     if not any([args.filename, args.static, args.dynamic, args.tests, args.auto]):
@@ -309,8 +294,7 @@ def main(argv=None):
 
     try:
         cake = Cake(args)
-        with compiletools.timing.time_operation("total_build_time"):
-            cake.process()
+        cake.process()
         # For testing purposes, clear out the memcaches for the times when main is called more than once.
         cake.clear_cache()
     except IOError as ioe:
@@ -326,8 +310,4 @@ def main(argv=None):
         else:
             raise
     
-    # Report timing information if enabled
-    if timing_enabled:
-        compiletools.timing.report_timing(args.verbose)
-
     return 0

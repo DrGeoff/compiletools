@@ -9,7 +9,6 @@ import compiletools.magicflags
 import compiletools.hunter
 import compiletools.namer
 import compiletools.configutils
-import compiletools.timing
 
 
 class CompilationDatabaseCreator:
