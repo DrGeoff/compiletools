@@ -1,6 +1,7 @@
 import os
 import inspect
 import functools
+import shlex
 import compiletools.wrappedos
 
 
@@ -11,6 +12,12 @@ def is_nonstr_iter(obj):
     if isinstance(obj, str):
         return False
     return hasattr(obj, "__iter__")
+
+@functools.lru_cache(maxsize=None)
+def cached_shlex_split(command_line):
+    """Cache shlex parsing results"""
+    return shlex.split(command_line)
+
 
 @functools.lru_cache(maxsize=None)
 def isheader(filename):
@@ -55,6 +62,7 @@ def impliedheader(filename):
 
 
 def clear_cache():
+    cached_shlex_split.cache_clear()
     isheader.cache_clear()
     issource.cache_clear()
     implied_source.cache_clear()

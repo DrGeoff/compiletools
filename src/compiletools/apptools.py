@@ -11,6 +11,7 @@ from compiletools.version import __version__
 import compiletools.git_utils
 import compiletools.configutils
 import compiletools.utils
+from compiletools.utils import cached_shlex_split
 import compiletools.dirnamer
 
 try:
@@ -369,7 +370,7 @@ def extract_command_line_macros(args, flag_sources=None, include_compiler_macros
             
         # Use shlex.split for robust parsing
         try:
-            flags = shlex.split(flag_string)
+            flags = cached_shlex_split(flag_string)
         except ValueError:
             # Fallback to simple split if shlex fails on malformed input
             flags = flag_string.split()
@@ -581,7 +582,7 @@ def _safely_unquote_string(value):
     try:
         # Use shlex to parse the string as shell would
         # If it parses to exactly one token, it was properly quoted
-        tokens = shlex.split(value)
+        tokens = cached_shlex_split(value)
         if len(tokens) == 1:
             # Single token means the quotes were shell quotes
             unquoted = tokens[0]
