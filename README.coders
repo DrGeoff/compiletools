@@ -117,6 +117,13 @@ When you are doing performance testing there are 3 caches you need to be aware o
             CTCACHE=None turns off diskcaching
 
 #
+# Profiling
+#
+To profile the ct-cake build process:
+
+source $HOME/.venv312/bin/activate && python -m cProfile -s cumulative $(which ct-cake) --auto
+
+#
 # Gotchas
 #
 If you encounter cache-related issues, clear the cache using:
