@@ -7,6 +7,8 @@ from pprint import pprint
 
 import compiletools.wrappedos
 import compiletools.apptools
+import compiletools.utils
+from compiletools.utils import cached_shlex_split
 import compiletools.tree as tree
 import compiletools.preprocessor
 import compiletools.compiler_macros
@@ -90,9 +92,8 @@ class HeaderDepsBase(object):
         isystem_paths = []
         
         # Split the flag string into individual tokens using shell parsing
-        import shlex
         try:
-            tokens = shlex.split(flag_value)
+            tokens = cached_shlex_split(flag_value)
         except ValueError:
             # Fall back to simple split if shlex fails
             tokens = flag_value.split()
@@ -132,9 +133,8 @@ class HeaderDepsBase(object):
         include_paths = []
         
         # Split the flag string into individual tokens using shell parsing
-        import shlex
         try:
-            tokens = shlex.split(flag_value)
+            tokens = cached_shlex_split(flag_value)
         except ValueError:
             # Fall back to simple split if shlex fails
             tokens = flag_value.split()

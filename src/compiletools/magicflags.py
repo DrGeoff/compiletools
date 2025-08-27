@@ -5,6 +5,7 @@ import re
 import functools
 from collections import defaultdict
 import compiletools.utils
+from compiletools.utils import cached_shlex_split
 
 import compiletools.git_utils
 import compiletools.headerdeps
@@ -27,11 +28,6 @@ def cached_pkg_config(package, option):
     return result.stdout.rstrip()
 
 
-@functools.lru_cache(maxsize=None)
-def cached_shlex_split(command_line):
-    """Cache shlex parsing results"""
-    import shlex
-    return shlex.split(command_line)
 
 
 def create(args, headerdeps):
@@ -263,7 +259,7 @@ class MagicFlagsBase:
         CppMagicFlags.clear_cache()
         # Clear LRU caches
         cached_pkg_config.cache_clear()
-        cached_shlex_split.cache_clear()
+        compiletools.utils.cached_shlex_split.cache_clear()
 
 
 class DirectMagicFlags(MagicFlagsBase):
