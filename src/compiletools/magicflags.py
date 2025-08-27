@@ -2,6 +2,7 @@ import sys
 import os
 import subprocess
 import re
+import functools
 from collections import defaultdict
 import compiletools.utils
 
@@ -13,6 +14,24 @@ import compiletools.apptools
 import compiletools.compiler_macros
 import compiletools.dirnamer
 from compiletools.file_analyzer import create_file_analyzer
+
+
+@functools.lru_cache(maxsize=None)
+def cached_pkg_config(package, option):
+    """Cache pkg-config results for package and option (--cflags or --libs)"""
+    result = subprocess.run(
+        ["pkg-config", option, package],
+        stdout=subprocess.PIPE,
+        universal_newlines=True,
+    )
+    return result.stdout.rstrip()
+
+
+@functools.lru_cache(maxsize=None)
+def cached_shlex_split(command_line):
+    """Cache shlex parsing results"""
+    import shlex
+    return shlex.split(command_line)
 
 
 def create(args, headerdeps):
@@ -129,22 +148,13 @@ class MagicFlagsBase:
     def _handle_pkg_config(self, flag):
         flagsforfilename = defaultdict(list)
         for pkg in flag.split():
-            # TODO: when we move to python 3.7, use text=True rather than universal_newlines=True and capture_output=True,
-            cflags_raw = subprocess.run(
-                ["pkg-config", "--cflags", pkg],
-                stdout=subprocess.PIPE,
-                universal_newlines=True,
-            ).stdout.rstrip()
+            cflags_raw = cached_pkg_config(pkg, "--cflags")
             
             # Replace -I flags with -isystem, but only when -I is a standalone flag
             # This helps the CppHeaderDeps avoid searching packages
             cflags = re.sub(r'-I(?=\s|/|$)', '-isystem', cflags_raw)
             
-            libs = subprocess.run(
-                ["pkg-config", "--libs", pkg],
-                stdout=subprocess.PIPE,
-                universal_newlines=True,
-            ).stdout.rstrip()
+            libs = cached_pkg_config(pkg, "--libs")
             flagsforfilename["CPPFLAGS"].append(cflags)
             flagsforfilename["CFLAGS"].append(cflags)
             flagsforfilename["CXXFLAGS"].append(cflags)
@@ -251,6 +261,9 @@ class MagicFlagsBase:
         compiletools.apptools.clear_cache()
         DirectMagicFlags.clear_cache()
         CppMagicFlags.clear_cache()
+        # Clear LRU caches
+        cached_pkg_config.cache_clear()
+        cached_shlex_split.cache_clear()
 
 
 class DirectMagicFlags(MagicFlagsBase):
@@ -296,9 +309,8 @@ class DirectMagicFlags(MagicFlagsBase):
                 continue
                 
             # Split the flag string into individual tokens
-            import shlex
             try:
-                tokens = shlex.split(flag_value)
+                tokens = cached_shlex_split(flag_value)
             except ValueError:
                 # Fall back to simple split if shlex fails
                 tokens = flag_value.split()
