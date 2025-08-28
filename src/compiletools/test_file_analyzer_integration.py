@@ -15,6 +15,11 @@ import compiletools.headerdeps
 import compiletools.magicflags
 
 
+def get_text_from_result(result):
+    """Helper function to reconstruct text from FileAnalysisResult lines for testing."""
+    return '\n'.join(result.lines)
+
+
 class TestHeaderDepsIntegration(tb.BaseCompileToolsTestCase):
     """Test DirectHeaderDeps integration with FileAnalyzer."""
     

@@ -1,5 +1,7 @@
 """Simple C preprocessor for handling conditional compilation directives."""
 
+from typing import List
+
 
 
 class SimplePreprocessor:
@@ -46,13 +48,67 @@ class SimplePreprocessor:
             expr = " ".join(expr.split())  # normalize whitespace
         return expr
         
-    def process(self, text, directive_positions={}):
+    def process_structured(self, file_result) -> List[int]:
+        """Process FileAnalysisResult and return active line numbers using structured directive data.
+        
+        Args:
+            file_result: FileAnalysisResult with structured directive information
+            
+        Returns:
+            List of line numbers (0-based) that are active after conditional compilation
+        """
+        lines = file_result.lines
+        active_lines = []
+        
+        # Stack to track conditional compilation state
+        # Each entry: (is_active, seen_else, any_condition_met)
+        condition_stack = [(True, False, False)]
+        
+        # Convert directive_by_line to a sorted list for processing in order
+        directive_lines = sorted(file_result.directive_by_line.keys())
+        directive_iter = iter(directive_lines)
+        next_directive_line = next(directive_iter, None)
+        
+        i = 0
+        while i < len(lines):
+            # Check if current line has a directive
+            if i == next_directive_line:
+                directive = file_result.directive_by_line[i]
+                
+                # Handle multiline directives - skip continuation lines
+                continuation_lines = len(directive.full_text) - 1
+                
+                # Handle the directive
+                handled = self._handle_directive_structured(directive, condition_stack, i + 1)
+                
+                # Include #define lines in active_lines even when handled (for macro extraction)
+                # Also include unhandled directives (like #include) if in active context
+                if condition_stack[-1][0]:
+                    if directive.directive_type == 'define' or handled is False:
+                        active_lines.append(i)
+                        # Add continuation lines too
+                        for j in range(continuation_lines):
+                            if i + j + 1 < len(lines):
+                                active_lines.append(i + j + 1)
+                
+                # Skip the continuation lines we've already processed
+                i += continuation_lines + 1
+                next_directive_line = next(directive_iter, None)
+            else:
+                # Regular line - include if we're in an active context
+                if condition_stack[-1][0]:
+                    active_lines.append(i)
+                i += 1
+        
+        return active_lines
+    
+    def process(self, text, directive_positions, line_byte_offsets):
         """Process text and return only active sections using FileAnalyzer's pre-computed directive positions.
         
         Args:
             text: The source text to process
             directive_positions: Dict of {directive_name: [positions]} from FileAnalyzer.
-                                Defaults to empty dict for testing/fallback.
+            line_byte_offsets: List of byte offsets for each line from FileAnalyzer.
             
         Returns:
             Processed text with only active conditional sections
@@ -64,12 +120,13 @@ class SimplePreprocessor:
         # Each entry: (is_active, seen_else, any_condition_met)
         condition_stack = [(True, False, False)]
         
-        # Convert FileAnalyzer's character positions to line numbers for fast lookup
+        # Convert FileAnalyzer's character positions to line numbers using optimized O(log n) lookup
+        import bisect
         directive_lines = set()
         for directive_type, positions in directive_positions.items():
             for pos in positions:
-                # Find which line this position is on
-                line_num = text[:pos].count('\n')
+                # Use binary search on pre-computed line offsets for O(log n) performance
+                line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
                 directive_lines.add(line_num)
         
         i = 0
@@ -78,8 +135,7 @@ class SimplePreprocessor:
             stripped = line.strip()
             
             # Handle preprocessor directives (using FileAnalyzer's pre-computed positions)
-            # Fall back to string check if no directive positions available (e.g., in tests)
-            is_directive_line = (i in directive_lines) if directive_lines else stripped.startswith('#')
+            is_directive_line = i in directive_lines
             if is_directive_line and stripped.startswith('#'):
                 # Handle multiline preprocessor directives
                 full_directive = stripped
@@ -167,6 +223,41 @@ class SimplePreprocessor:
             # This allows #include and other directives to be processed normally
             if self.verbose >= 8:
                 print(f"SimplePreprocessor: Ignoring unknown directive #{name}")
+            return False  # Indicate that this directive wasn't handled
+    
+    def _handle_directive_structured(self, directive, condition_stack, line_num):
+        """Handle a specific preprocessor directive using structured data"""
+        dtype = directive.directive_type
+        
+        if dtype == 'define':
+            self._handle_define_structured(directive, condition_stack)
+            return True
+        elif dtype == 'undef':
+            self._handle_undef_structured(directive, condition_stack)
+            return True
+        elif dtype == 'ifdef':
+            self._handle_ifdef_structured(directive, condition_stack)
+            return True
+        elif dtype == 'ifndef':
+            self._handle_ifndef_structured(directive, condition_stack)
+            return True
+        elif dtype == 'if':
+            self._handle_if_structured(directive, condition_stack)
+            return True
+        elif dtype == 'elif':
+            self._handle_elif_structured(directive, condition_stack)
+            return True
+        elif dtype == 'else':
+            self._handle_else(condition_stack)
+            return True
+        elif dtype == 'endif':
+            self._handle_endif(condition_stack)
+            return True
+        else:
+            # Unknown directive - ignore but don't consume the line
+            # This allows #include and other directives to be processed normally
+            if self.verbose >= 8:
+                print(f"SimplePreprocessor: Ignoring unknown directive #{dtype}")
             return False  # Indicate that this directive wasn't handled
     
     def _handle_define(self, args, condition_stack):
@@ -280,6 +371,90 @@ class SimplePreprocessor:
             condition_stack.pop()
             if self.verbose >= 9:
                 print("SimplePreprocessor: #endif")
+    
+    def _handle_define_structured(self, directive, condition_stack):
+        """Handle #define directive using structured data"""
+        if not condition_stack[-1][0]:
+            return  # Not in active context
+            
+        if directive.macro_name:
+            macro_value = directive.macro_value if directive.macro_value is not None else "1"
+            self.macros[directive.macro_name] = macro_value
+            if self.verbose >= 9:
+                print(f"SimplePreprocessor: defined macro {directive.macro_name} = {macro_value}")
+    
+    def _handle_undef_structured(self, directive, condition_stack):
+        """Handle #undef directive using structured data"""
+        if not condition_stack[-1][0]:
+            return  # Not in active context
+            
+        if directive.macro_name and directive.macro_name in self.macros:
+            del self.macros[directive.macro_name]
+            if self.verbose >= 9:
+                print(f"SimplePreprocessor: undefined macro {directive.macro_name}")
+    
+    def _handle_ifdef_structured(self, directive, condition_stack):
+        """Handle #ifdef directive using structured data"""
+        if directive.macro_name:
+            is_defined = directive.macro_name in self.macros
+            is_active = is_defined and condition_stack[-1][0]
+            condition_stack.append((is_active, False, is_active))
+            if self.verbose >= 9:
+                print(f"SimplePreprocessor: #ifdef {directive.macro_name} -> {is_defined}")
+    
+    def _handle_ifndef_structured(self, directive, condition_stack):
+        """Handle #ifndef directive using structured data"""
+        if directive.macro_name:
+            is_defined = directive.macro_name in self.macros
+            is_active = (not is_defined) and condition_stack[-1][0]
+            condition_stack.append((is_active, False, is_active))
+            if self.verbose >= 9:
+                print(f"SimplePreprocessor: #ifndef {directive.macro_name} -> {not is_defined}")
+    
+    def _handle_if_structured(self, directive, condition_stack):
+        """Handle #if directive using structured data"""
+        if directive.condition:
+            try:
+                # Strip comments before processing
+                expr = self._strip_comments(directive.condition)
+                result = self._evaluate_expression(expr)
+                is_active = bool(result) and condition_stack[-1][0]
+                condition_stack.append((is_active, False, is_active))
+                if self.verbose >= 9:
+                    print(f"SimplePreprocessor: #if {directive.condition} -> {result} ({is_active})")
+            except Exception as e:
+                # If evaluation fails, assume false
+                if self.verbose >= 8:
+                    print(f"SimplePreprocessor: #if evaluation failed for '{directive.condition}': {e}")
+                condition_stack.append((False, False, False))
+        else:
+            # No condition provided
+            condition_stack.append((False, False, False))
+    
+    def _handle_elif_structured(self, directive, condition_stack):
+        """Handle #elif directive using structured data"""
+        if len(condition_stack) <= 1:
+            return
+            
+        current_active, seen_else, any_condition_met = condition_stack.pop()
+        if not seen_else and not any_condition_met and directive.condition:
+            parent_active = condition_stack[-1][0] if condition_stack else True
+            try:
+                # Strip comments before processing
+                expr = self._strip_comments(directive.condition)
+                result = self._evaluate_expression(expr)
+                new_active = bool(result) and parent_active
+                new_any_condition_met = any_condition_met or new_active
+                condition_stack.append((new_active, False, new_any_condition_met))
+                if self.verbose >= 9:
+                    print(f"SimplePreprocessor: #elif {directive.condition} -> {result} ({new_active})")
+            except Exception as e:
+                if self.verbose >= 8:
+                    print(f"SimplePreprocessor: #elif evaluation failed for '{directive.condition}': {e}")
+                condition_stack.append((False, False, any_condition_met))
+        else:
+            # Either we already found a true condition or seen_else is True
+            condition_stack.append((False, seen_else, any_condition_met))
     
     def _evaluate_expression(self, expr):
         """Evaluate a C preprocessor expression"""

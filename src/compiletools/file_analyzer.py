@@ -6,24 +6,169 @@ falling back to traditional regex-based analysis for compatibility.
 
 import os
 import re
+import mmap
+import bisect
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 from io import open
 
 import compiletools.wrappedos
 
 
+def read_file_mmap(filepath, max_size=0):
+    """Use memory-mapped I/O for large files with fallback to traditional reading.
+    
+    Args:
+        filepath: Path to file to read
+        max_size: Maximum bytes to read (0 = entire file)
+        
+    Returns:
+        tuple: (text_content, bytes_analyzed, was_truncated)
+    """
+    try:
+        file_size = os.path.getsize(filepath)
+        
+        # Handle empty files (mmap fails on zero-byte files)
+        if file_size == 0:
+            return "", 0, False
+        
+        with open(filepath, 'rb') as f:
+            with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                if max_size > 0 and max_size < file_size:
+                    data = mm[:max_size]
+                    bytes_analyzed = max_size
+                    was_truncated = True
+                else:
+                    data = mm[:]
+                    bytes_analyzed = len(data)
+                    was_truncated = False
+                    
+                text = data.decode('utf-8', errors='ignore')
+                return text, bytes_analyzed, was_truncated
+                
+    except (OSError, IOError, ValueError):
+        # Fallback to traditional reading on any mmap failure
+        return read_file_traditional(filepath, max_size)
+
+
+def read_file_traditional(filepath, max_size=0):
+    """Traditional file reading fallback.
+    
+    Args:
+        filepath: Path to file to read  
+        max_size: Maximum bytes to read (0 = entire file)
+        
+    Returns:
+        tuple: (text_content, bytes_analyzed, was_truncated)
+    """
+    try:
+        file_size = os.path.getsize(filepath)
+        
+        with open(filepath, encoding="utf-8", errors="ignore") as f:
+            if max_size > 0 and max_size < file_size:
+                text = f.read(max_size)
+                bytes_analyzed = len(text.encode('utf-8'))
+                was_truncated = True
+            else:
+                text = f.read()
+                bytes_analyzed = len(text.encode('utf-8'))
+                was_truncated = False
+                
+        return text, bytes_analyzed, was_truncated
+        
+    except (OSError, IOError, ValueError):
+        # Return empty content on any error
+        return "", 0, False
+
+
+@dataclass
+class PreprocessorDirective:
+    """A preprocessor directive with all its content."""
+    line_num: int                    # Starting line number (0-based)
+    byte_pos: int                    # Byte position in original file
+    directive_type: str              # 'if', 'ifdef', 'ifndef', 'elif', 'else', 'endif', 'define', 'undef', 'include'
+    full_text: List[str]             # All lines including continuations
+    condition: Optional[str] = None  # The condition expression (for if/ifdef/ifndef/elif)
+    macro_name: Optional[str] = None # Macro name (for define/undef/ifdef/ifndef)
+    macro_value: Optional[str] = None # Macro value (for define)
+
+
 @dataclass
 class FileAnalysisResult:
-    """Standardized result from file analysis containing pattern positions and content."""
-    text: str                               # Actual text content (respects max_read_size)
-    include_positions: List[int]            # Positions of #include statements  
-    magic_positions: List[int]              # Positions of //#KEY= patterns
-    directive_positions: Dict[str, List[int]]  # All preprocessor directive positions by type
-    bytes_analyzed: int                     # How much of file was actually processed
-    was_truncated: bool                     # Whether file was larger than max_read_size
+    """Complete structured result without text field.
+    
+    Provides all information needed by consumers without requiring text reconstruction.
+    """
+    
+    # Line-level data (for SimplePreprocessor) - required fields first
+    lines: List[str]                        # All lines of the file
+    line_byte_offsets: List[int]            # Byte offset where each line starts
+    
+    # Position arrays (for fast lookups) - required fields
+    include_positions: List[int]            # Byte positions of #include directives
+    magic_positions: List[int]              # Byte positions of //#KEY= patterns
+    directive_positions: Dict[str, List[int]]  # Byte positions by directive type
+    
+    # Preprocessor directives (structured for SimplePreprocessor) - required fields
+    directives: List[PreprocessorDirective]  # All directives with full context
+    directive_by_line: Dict[int, PreprocessorDirective]  # Line number -> directive mapping
+    
+    # Metadata - required fields
+    bytes_analyzed: int                     # Bytes analyzed from file
+    was_truncated: bool                     # Whether file was truncated
+    
+    # Optional fields with defaults come last
+    includes: List[Dict] = field(default_factory=list)
+    # Each include dict contains:
+    # {
+    #   'line_num': int,           # Line number (0-based)
+    #   'byte_pos': int,           # Byte position
+    #   'full_line': str,          # Complete include line
+    #   'filename': str,           # Extracted filename
+    #   'is_system': bool,         # True for <>, False for ""
+    #   'is_commented': bool,      # True if in comment
+    # }
+    
+    magic_flags: List[Dict] = field(default_factory=list)
+    # Each magic flag dict contains:
+    # {
+    #   'line_num': int,           # Line number (0-based)
+    #   'byte_pos': int,           # Byte position
+    #   'full_line': str,          # Complete line with //#KEY=value
+    #   'key': str,                # The KEY part
+    #   'value': str,              # The value part
+    # }
+    
+    defines: List[Dict] = field(default_factory=list)
+    # Each define dict contains:
+    # {
+    #   'line_num': int,           # Starting line number
+    #   'byte_pos': int,           # Byte position
+    #   'lines': List[str],        # All lines including continuations
+    #   'name': str,               # Macro name
+    #   'value': Optional[str],    # Macro value (if any)
+    #   'is_function_like': bool,  # True for function-like macros
+    #   'params': List[str],       # Parameters for function-like macros
+    # }
+    
+    system_headers: Set[str] = field(default_factory=set)  # Unique system headers found
+    quoted_headers: Set[str] = field(default_factory=set)  # Unique quoted headers found
+    content_hash: str = ""                  # SHA1 of original content
+    
+    # Helper method for SimplePreprocessor compatibility
+    def get_directive_line_numbers(self) -> Dict[str, Set[int]]:
+        """Get line numbers for each directive type (for SimplePreprocessor)."""
+        result = {}
+        for dtype, positions in self.directive_positions.items():
+            line_nums = set()
+            for pos in positions:
+                # Binary search in line_byte_offsets to find line number
+                line_num = bisect.bisect_right(self.line_byte_offsets, pos) - 1
+                line_nums.add(line_num)
+            result[dtype] = line_nums
+        return result
 
 
 class FileAnalyzer(ABC):
@@ -72,8 +217,15 @@ class LegacyFileAnalyzer(FileAnalyzer):
         except OSError:
             # File doesn't exist, return empty result directly
             return FileAnalysisResult(
-                text="", include_positions=[], magic_positions=[],
-                directive_positions={}, bytes_analyzed=0, was_truncated=False
+                lines=[],
+                line_byte_offsets=[],
+                include_positions=[], 
+                magic_positions=[],
+                directive_positions={}, 
+                directives=[],
+                directive_by_line={},
+                bytes_analyzed=0, 
+                was_truncated=False
             )
         return self._cached_analyze(mtime)
     
@@ -82,43 +234,179 @@ class LegacyFileAnalyzer(FileAnalyzer):
         """Cached analysis implementation."""
         if not os.path.exists(self.filepath):
             return FileAnalysisResult(
-                text="", include_positions=[], magic_positions=[],
-                directive_positions={}, bytes_analyzed=0, was_truncated=False
+                lines=[],
+                line_byte_offsets=[],
+                include_positions=[], 
+                magic_positions=[],
+                directive_positions={}, 
+                directives=[],
+                directive_by_line={},
+                bytes_analyzed=0, 
+                was_truncated=False
             )
             
         try:
             file_size = os.path.getsize(self.filepath)
             read_entire_file = self._should_read_entire_file(file_size)
             
-            with open(self.filepath, encoding="utf-8", errors="ignore") as f:
-                if read_entire_file:
-                    text = f.read()
-                    bytes_analyzed = len(text.encode('utf-8'))
-                    was_truncated = False
-                else:
-                    text = f.read(self.max_read_size)
-                    bytes_analyzed = len(text.encode('utf-8'))
-                    was_truncated = not read_entire_file and file_size > bytes_analyzed
+            # Use memory-mapped I/O for better performance
+            if read_entire_file:
+                text, bytes_analyzed, was_truncated = read_file_mmap(self.filepath, 0)
+            else:
+                text, bytes_analyzed, was_truncated = read_file_mmap(self.filepath, self.max_read_size)
                     
         except (IOError, OSError):
             return FileAnalysisResult(
-                text="", include_positions=[], magic_positions=[],
-                directive_positions={}, bytes_analyzed=0, was_truncated=False
+                lines=[],
+                line_byte_offsets=[],
+                include_positions=[], 
+                magic_positions=[],
+                directive_positions={}, 
+                directives=[],
+                directive_by_line={},
+                bytes_analyzed=0, 
+                was_truncated=False
             )
             
+        # Split into lines and compute line byte offsets
+        lines = text.split('\n')
+        line_byte_offsets = []
+        offset = 0
+        for line in lines:
+            line_byte_offsets.append(offset)
+            offset += len(line.encode('utf-8')) + 1  # +1 for \n
+        
         # Find pattern positions in the raw text (before preprocessing)
-        # Note: Conditional compilation should be handled by the caller
         include_positions = self._find_include_positions(text)
         magic_positions = self._find_magic_positions(text)
         directive_positions = self._find_directive_positions(text)
         
+        # Extract structured directive information
+        directives = []
+        directive_by_line = {}
+        processed_lines = set()
+        
+        for dtype, positions in directive_positions.items():
+            for pos in positions:
+                # Use binary search on pre-computed line offsets for O(log n) performance
+                line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
+                if line_num in processed_lines:
+                    continue
+                
+                # Extract directive with continuations
+                directive_lines = []
+                current_line = line_num
+                while current_line < len(lines):
+                    line = lines[current_line]
+                    directive_lines.append(line)
+                    processed_lines.add(current_line)
+                    if not line.rstrip().endswith('\\'):
+                        break
+                    current_line += 1
+                
+                # Parse directive
+                directive = self._parse_directive_struct(dtype, pos, line_num, directive_lines)
+                directives.append(directive)
+                directive_by_line[line_num] = directive
+        
+        # Extract includes with full information
+        includes = []
+        for pos in include_positions:
+            line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
+            line = lines[line_num] if line_num < len(lines) else ""
+            
+            # Check if commented
+            is_commented = self._is_position_commented(text, pos)
+            
+            # Extract filename and type
+            match = re.search(r'#include\s*([<"])([^>"]+)[>"]', line)
+            if match:
+                includes.append({
+                    'line_num': line_num,
+                    'byte_pos': pos,
+                    'full_line': line,
+                    'filename': match.group(2),
+                    'is_system': match.group(1) == '<',
+                    'is_commented': is_commented
+                })
+        
+        # Extract magic flags with full information
+        magic_flags = []
+        for pos in magic_positions:
+            line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
+            line = lines[line_num] if line_num < len(lines) else ""
+            
+            # Parse magic flag
+            match = re.search(r'//#([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*(.*)', line)
+            if match:
+                magic_flags.append({
+                    'line_num': line_num,
+                    'byte_pos': pos,
+                    'full_line': line,
+                    'key': match.group(1),
+                    'value': match.group(2).strip()
+                })
+        
+        # Extract defines with full information
+        defines = []
+        for pos in directive_positions.get('define', []):
+            line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
+            
+            # Get all lines including continuations
+            define_lines = []
+            current_line = line_num
+            while current_line < len(lines):
+                line = lines[current_line]
+                define_lines.append(line)
+                if not line.rstrip().endswith('\\'):
+                    break
+                current_line += 1
+            
+            # Parse define
+            joined = ' '.join(line.rstrip('\\').strip() for line in define_lines)
+            match = re.match(r'^\s*#\s*define\s+(\w+)(?:\(([^)]*)\))?\s*(.*)?$', joined)
+            if match:
+                name = match.group(1)
+                params_str = match.group(2)
+                value = match.group(3)
+                
+                is_function_like = params_str is not None
+                params = [p.strip() for p in params_str.split(',')] if params_str else []
+                
+                defines.append({
+                    'line_num': line_num,
+                    'byte_pos': pos,
+                    'lines': define_lines,
+                    'name': name,
+                    'value': value.strip() if value else None,
+                    'is_function_like': is_function_like,
+                    'params': params
+                })
+        
+        # Extract unique headers
+        system_headers = {inc['filename'] for inc in includes if inc['is_system']}
+        quoted_headers = {inc['filename'] for inc in includes if not inc['is_system']}
+        
+        # Compute content hash
+        import hashlib
+        content_hash = hashlib.sha1(text.encode('utf-8')).hexdigest()
+        
         return FileAnalysisResult(
-            text=text,
+            lines=lines,
+            line_byte_offsets=line_byte_offsets,
             include_positions=include_positions,
             magic_positions=magic_positions,
             directive_positions=directive_positions,
+            directives=directives,
+            directive_by_line=directive_by_line,
             bytes_analyzed=bytes_analyzed,
-            was_truncated=was_truncated
+            was_truncated=was_truncated,
+            includes=includes,
+            magic_flags=magic_flags,
+            defines=defines,
+            system_headers=system_headers,
+            quoted_headers=quoted_headers,
+            content_hash=content_hash
         )
         
     def _find_include_positions(self, text: str) -> List[int]:
@@ -182,6 +470,68 @@ class LegacyFileAnalyzer(FileAnalyzer):
             directive_positions[directive_name].append(hash_position)
             
         return directive_positions
+    
+    def _parse_directive_struct(self, dtype: str, pos: int, line_num: int, 
+                                directive_lines: List[str]) -> PreprocessorDirective:
+        """Parse a directive into structured form."""
+        joined = ' '.join(line.rstrip('\\').strip() for line in directive_lines)
+        
+        directive = PreprocessorDirective(
+            line_num=line_num,
+            byte_pos=pos,
+            directive_type=dtype,
+            full_text=directive_lines
+        )
+        
+        if dtype in ('ifdef', 'ifndef'):
+            match = re.search(r'#\s*' + dtype + r'\s+(\w+)', joined)
+            if match:
+                directive.macro_name = match.group(1)
+                
+        elif dtype in ('if', 'elif'):
+            match = re.search(r'#\s*' + dtype + r'\s+(.*)', joined)
+            if match:
+                directive.condition = match.group(1).strip()
+                
+        elif dtype == 'define':
+            match = re.match(r'^\s*#\s*define\s+(\w+)(?:\s+(.*))?$', joined)
+            if match:
+                directive.macro_name = match.group(1)
+                directive.macro_value = match.group(2).strip() if match.group(2) else None
+                
+        elif dtype == 'undef':
+            match = re.search(r'#\s*undef\s+(\w+)', joined)
+            if match:
+                directive.macro_name = match.group(1)
+        
+        return directive
+    
+    def _is_position_commented(self, text: str, pos: int) -> bool:
+        """Check if position is inside a comment (single-line or multi-line block)."""
+        # Check for single-line comment on current line
+        line_start = text.rfind('\n', 0, pos) + 1
+        line_prefix = text[line_start:pos]
+        
+        # Look for // in the line prefix
+        comment_pos = line_prefix.find('//')
+        if comment_pos != -1:
+            # Check if there's only whitespace before //
+            before_comment = line_prefix[:comment_pos].strip()
+            if before_comment == '':
+                return True
+            
+        # Check for multi-line block comment
+        # Find the most recent /* and */ before this position
+        last_block_start = text.rfind('/*', 0, pos)
+        if last_block_start != -1:
+            # Found a /* before this position
+            # Check if there's a closing */ between the /* and our position
+            last_block_end = text.rfind('*/', last_block_start, pos)
+            if last_block_end == -1:
+                # No closing */ found, so we're inside the block comment
+                return True
+                
+        return False
 
 
 class StringZillaFileAnalyzer(FileAnalyzer):
@@ -207,8 +557,15 @@ class StringZillaFileAnalyzer(FileAnalyzer):
         except OSError:
             # File doesn't exist, return empty result directly
             return FileAnalysisResult(
-                text="", include_positions=[], magic_positions=[],
-                directive_positions={}, bytes_analyzed=0, was_truncated=False
+                lines=[],
+                line_byte_offsets=[],
+                include_positions=[], 
+                magic_positions=[],
+                directive_positions={}, 
+                directives=[],
+                directive_by_line={},
+                bytes_analyzed=0, 
+                was_truncated=False
             )
         return self._cached_analyze(mtime)
     
@@ -220,8 +577,15 @@ class StringZillaFileAnalyzer(FileAnalyzer):
             
         if not os.path.exists(self.filepath):
             return FileAnalysisResult(
-                text="", include_positions=[], magic_positions=[],
-                directive_positions={}, bytes_analyzed=0, was_truncated=False
+                lines=[],
+                line_byte_offsets=[],
+                include_positions=[], 
+                magic_positions=[],
+                directive_positions={}, 
+                directives=[],
+                directive_by_line={},
+                bytes_analyzed=0, 
+                was_truncated=False
             )
             
         try:
@@ -237,33 +601,162 @@ class StringZillaFileAnalyzer(FileAnalyzer):
                 bytes_analyzed = len(text.encode('utf-8'))
                 was_truncated = False
             else:
-                # Read limited amount
-                with open(self.filepath, encoding="utf-8", errors="ignore") as f:
-                    text = f.read(self.max_read_size)
-                    bytes_analyzed = len(text.encode('utf-8'))
-                    was_truncated = not read_entire_file and file_size > bytes_analyzed
+                # Read limited amount using mmap for better performance
+                text, bytes_analyzed, was_truncated = read_file_mmap(self.filepath, self.max_read_size)
                 # Create Str for limited read case
                 str_text = Str(text)
                     
         except (IOError, OSError):
             return FileAnalysisResult(
-                text="", include_positions=[], magic_positions=[],
-                directive_positions={}, bytes_analyzed=0, was_truncated=False
+                lines=[],
+                line_byte_offsets=[],
+                include_positions=[], 
+                magic_positions=[],
+                directive_positions={}, 
+                directives=[],
+                directive_by_line={},
+                bytes_analyzed=0, 
+                was_truncated=False
             )
             
+        # Split into lines and compute line byte offsets
+        lines = text.split('\n')
+        line_byte_offsets = []
+        offset = 0
+        for line in lines:
+            line_byte_offsets.append(offset)
+            offset += len(line.encode('utf-8')) + 1  # +1 for \n
+        
         # Use StringZilla SIMD operations directly on str_text
-        # Note: Conditional compilation should be handled by the caller
         include_positions = self._find_include_positions_simd(str_text)
         magic_positions = self._find_magic_positions_simd(str_text)
         directive_positions = self._find_directive_positions_simd(str_text)
         
+        # Extract structured directive information (reuse LegacyFileAnalyzer logic)
+        directives = []
+        directive_by_line = {}
+        processed_lines = set()
+        
+        for dtype, positions in directive_positions.items():
+            for pos in positions:
+                line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
+                if line_num in processed_lines:
+                    continue
+                
+                # Extract directive with continuations
+                directive_lines = []
+                current_line = line_num
+                while current_line < len(lines):
+                    line = lines[current_line]
+                    directive_lines.append(line)
+                    processed_lines.add(current_line)
+                    if not line.rstrip().endswith('\\'):
+                        break
+                    current_line += 1
+                
+                # Parse directive
+                directive = self._parse_directive_struct(dtype, pos, line_num, directive_lines)
+                directives.append(directive)
+                directive_by_line[line_num] = directive
+        
+        # Extract includes with full information
+        includes = []
+        for pos in include_positions:
+            line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
+            line = lines[line_num] if line_num < len(lines) else ""
+            
+            # Check if commented (use StringZilla method)
+            is_commented = self._is_position_commented(str_text, pos)
+            
+            # Extract filename and type
+            match = re.search(r'#include\s*([<"])([^>"]+)[>"]', line)
+            if match:
+                includes.append({
+                    'line_num': line_num,
+                    'byte_pos': pos,
+                    'full_line': line,
+                    'filename': match.group(2),
+                    'is_system': match.group(1) == '<',
+                    'is_commented': is_commented
+                })
+        
+        # Extract magic flags with full information
+        magic_flags = []
+        for pos in magic_positions:
+            line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
+            line = lines[line_num] if line_num < len(lines) else ""
+            
+            # Parse magic flag
+            match = re.search(r'//#([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*(.*)', line)
+            if match:
+                magic_flags.append({
+                    'line_num': line_num,
+                    'byte_pos': pos,
+                    'full_line': line,
+                    'key': match.group(1),
+                    'value': match.group(2).strip()
+                })
+        
+        # Extract defines with full information
+        defines = []
+        for pos in directive_positions.get('define', []):
+            line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
+            
+            # Get all lines including continuations
+            define_lines = []
+            current_line = line_num
+            while current_line < len(lines):
+                line = lines[current_line]
+                define_lines.append(line)
+                if not line.rstrip().endswith('\\'):
+                    break
+                current_line += 1
+            
+            # Parse define
+            joined = ' '.join(line.rstrip('\\').strip() for line in define_lines)
+            match = re.match(r'^\s*#\s*define\s+(\w+)(?:\(([^)]*)\))?\s*(.*)?$', joined)
+            if match:
+                name = match.group(1)
+                params_str = match.group(2)
+                value = match.group(3)
+                
+                is_function_like = params_str is not None
+                params = [p.strip() for p in params_str.split(',')] if params_str else []
+                
+                defines.append({
+                    'line_num': line_num,
+                    'byte_pos': pos,
+                    'lines': define_lines,
+                    'name': name,
+                    'value': value.strip() if value else None,
+                    'is_function_like': is_function_like,
+                    'params': params
+                })
+        
+        # Extract unique headers
+        system_headers = {inc['filename'] for inc in includes if inc['is_system']}
+        quoted_headers = {inc['filename'] for inc in includes if not inc['is_system']}
+        
+        # Compute content hash
+        import hashlib
+        content_hash = hashlib.sha1(text.encode('utf-8')).hexdigest()
+        
         return FileAnalysisResult(
-            text=text,
+            lines=lines,
+            line_byte_offsets=line_byte_offsets,
             include_positions=include_positions,
             magic_positions=magic_positions,
             directive_positions=directive_positions,
+            directives=directives,
+            directive_by_line=directive_by_line,
             bytes_analyzed=bytes_analyzed,
-            was_truncated=was_truncated
+            was_truncated=was_truncated,
+            includes=includes,
+            magic_flags=magic_flags,
+            defines=defines,
+            system_headers=system_headers,
+            quoted_headers=quoted_headers,
+            content_hash=content_hash
         )
         
     def _find_include_positions_simd(self, str_text) -> List[int]:
@@ -404,6 +897,41 @@ class StringZillaFileAnalyzer(FileAnalyzer):
             start = pos + 1
             
         return directive_positions
+    
+    def _parse_directive_struct(self, dtype: str, pos: int, line_num: int, 
+                                directive_lines: List[str]) -> PreprocessorDirective:
+        """Parse a directive into structured form."""
+        joined = ' '.join(line.rstrip('\\').strip() for line in directive_lines)
+        
+        directive = PreprocessorDirective(
+            line_num=line_num,
+            byte_pos=pos,
+            directive_type=dtype,
+            full_text=directive_lines
+        )
+        
+        if dtype in ('ifdef', 'ifndef'):
+            match = re.search(r'#\s*' + dtype + r'\s+(\w+)', joined)
+            if match:
+                directive.macro_name = match.group(1)
+                
+        elif dtype in ('if', 'elif'):
+            match = re.search(r'#\s*' + dtype + r'\s+(.*)', joined)
+            if match:
+                directive.condition = match.group(1).strip()
+                
+        elif dtype == 'define':
+            match = re.match(r'^\s*#\s*define\s+(\w+)(?:\s+(.*))?$', joined)
+            if match:
+                directive.macro_name = match.group(1)
+                directive.macro_value = match.group(2).strip() if match.group(2) else None
+                
+        elif dtype == 'undef':
+            match = re.search(r'#\s*undef\s+(\w+)', joined)
+            if match:
+                directive.macro_name = match.group(1)
+        
+        return directive
 
 
 class CachedFileAnalyzer(FileAnalyzer):

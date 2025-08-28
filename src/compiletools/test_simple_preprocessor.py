@@ -1,5 +1,6 @@
 import sys
 import os
+import re
 
 # Add the parent directory to sys.path so we can import ct modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -19,6 +20,33 @@ class TestSimplePreprocessor:
             'COUNT': '5'
         }
         self.processor = SimplePreprocessor(self.macros, verbose=0)
+    
+    def _create_test_parameters(self, text):
+        """Helper to create directive_positions and line_byte_offsets for testing"""
+        lines = text.split('\n')
+        
+        # Create line_byte_offsets
+        line_byte_offsets = []
+        offset = 0
+        for line in lines:
+            line_byte_offsets.append(offset)
+            offset += len(line.encode('utf-8')) + 1  # +1 for \n
+        
+        # Find directive positions
+        directive_positions = {}
+        for line_num, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                # Parse directive type
+                match = re.match(r'^\s*#\s*([a-zA-Z_]+)', stripped)
+                if match:
+                    directive_name = match.group(1)
+                    if directive_name not in directive_positions:
+                        directive_positions[directive_name] = []
+                    # Calculate byte position for this line
+                    directive_positions[directive_name].append(line_byte_offsets[line_num])
+        
+        return directive_positions, line_byte_offsets
 
     def test_expression_evaluation_basic(self):
         """Test basic expression evaluation"""
@@ -88,7 +116,8 @@ class TestSimplePreprocessor:
 #include "test.h"
 #endif
 '''
-        result = self.processor.process(text)
+        directive_positions, line_byte_offsets = self._create_test_parameters(text)
+        result = self.processor.process(text, directive_positions, line_byte_offsets)
         assert '#include "test.h"' in result
         
     def test_conditional_compilation_ifndef(self):
@@ -98,7 +127,8 @@ class TestSimplePreprocessor:
 #include "test.h"
 #endif
 '''
-        result = self.processor.process(text)
+        directive_positions, line_byte_offsets = self._create_test_parameters(text)
+        result = self.processor.process(text, directive_positions, line_byte_offsets)
         assert '#include "test.h"' in result
         
     def test_conditional_compilation_if_simple(self):
@@ -108,7 +138,8 @@ class TestSimplePreprocessor:
 #include "version3.h"
 #endif
 '''
-        result = self.processor.process(text)
+        directive_positions, line_byte_offsets = self._create_test_parameters(text)
+        result = self.processor.process(text, directive_positions, line_byte_offsets)
         assert '#include "version3.h"' in result
         
     def test_conditional_compilation_if_complex(self):
@@ -118,7 +149,8 @@ class TestSimplePreprocessor:
 #include "advanced.h"
 #endif
 '''
-        result = self.processor.process(text)
+        directive_positions, line_byte_offsets = self._create_test_parameters(text)
+        result = self.processor.process(text, directive_positions, line_byte_offsets)
         assert '#include "advanced.h"' in result
         
     def test_conditional_compilation_if_with_not_equal(self):
@@ -128,7 +160,8 @@ class TestSimplePreprocessor:
 #include "nonzero.h"
 #endif
 '''
-        result = self.processor.process(text)
+        directive_positions, line_byte_offsets = self._create_test_parameters(text)
+        result = self.processor.process(text, directive_positions, line_byte_offsets)
         assert '#include "nonzero.h"' in result
         
     def test_conditional_compilation_nested(self):
@@ -140,7 +173,8 @@ class TestSimplePreprocessor:
     #endif
 #endif
 '''
-        result = self.processor.process(text)
+        directive_positions, line_byte_offsets = self._create_test_parameters(text)
+        result = self.processor.process(text, directive_positions, line_byte_offsets)
         assert '#include "test_v3.h"' in result
         
     def test_conditional_compilation_else(self):
@@ -152,7 +186,8 @@ class TestSimplePreprocessor:
 #include "defined.h"
 #endif
 '''
-        result = self.processor.process(text)
+        directive_positions, line_byte_offsets = self._create_test_parameters(text)
+        result = self.processor.process(text, directive_positions, line_byte_offsets)
         assert '#include "defined.h"' in result
         assert '#include "undefined.h"' not in result
         
@@ -169,7 +204,8 @@ class TestSimplePreprocessor:
 #include "default.h"
 #endif
 '''
-        result = self.processor.process(text)
+        directive_positions, line_byte_offsets = self._create_test_parameters(text)
+        result = self.processor.process(text, directive_positions, line_byte_offsets)
         assert '#include "version3.h"' in result
         assert '#include "version1.h"' not in result
         assert '#include "version2.h"' not in result
@@ -183,7 +219,8 @@ class TestSimplePreprocessor:
 #include "forty_two.h"
 #endif
 '''
-        result = self.processor.process(text)
+        directive_positions, line_byte_offsets = self._create_test_parameters(text)
+        result = self.processor.process(text, directive_positions, line_byte_offsets)
         assert '#include "forty_two.h"' in result
         
     def test_macro_undef(self):
@@ -197,7 +234,8 @@ class TestSimplePreprocessor:
 #include "after_undef.h"
 #endif
 '''
-        result = self.processor.process(text)
+        directive_positions, line_byte_offsets = self._create_test_parameters(text)
+        result = self.processor.process(text, directive_positions, line_byte_offsets)
         assert '#include "before_undef.h"' in result
         assert '#include "after_undef.h"' not in result
 
@@ -230,7 +268,8 @@ class TestSimplePreprocessor:
     #endif
 #endif
 '''
-        result = processor.process(text)
+        directive_positions, line_byte_offsets = self._create_test_parameters(text)
+        result = processor.process(text, directive_positions, line_byte_offsets)
         
         # These should be included
         assert '#include "linux_epoll_threading.hpp"' in result
@@ -315,7 +354,8 @@ class TestSimplePreprocessor:
     included_line
 #endif
 '''
-        result = self.processor.process(text)
+        directive_positions, line_byte_offsets = self._create_test_parameters(text)
+        result = self.processor.process(text, directive_positions, line_byte_offsets)
         assert 'included_line' in result
 
     def test_block_comment_stripping(self):
@@ -325,7 +365,8 @@ class TestSimplePreprocessor:
 ok
 #endif
 '''
-        result = self.processor.process(text)
+        directive_positions, line_byte_offsets = self._create_test_parameters(text)
+        result = self.processor.process(text, directive_positions, line_byte_offsets)
         assert 'ok' in result
 
     def test_numeric_literal_parsing(self):

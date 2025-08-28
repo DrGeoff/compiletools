@@ -10,6 +10,11 @@ from compiletools.file_analyzer import create_file_analyzer
 from compiletools.testhelper import samplesdir
 
 
+def get_text_from_result(result):
+    """Helper function to reconstruct text from FileAnalysisResult lines for testing."""
+    return '\n'.join(result.lines)
+
+
 class TestCTCacheTypeConfiguration:
     """Test CTCACHE_TYPE configuration hierarchy and integration."""
     
@@ -86,7 +91,7 @@ class TestCTCacheTypeConfiguration:
         
         # Verify analysis works
         assert result is not None, "Analysis should succeed"
-        assert "#include" in result.text, "Should read file content"
+        assert "#include" in get_text_from_result(result), "Should read file content"
         assert len(result.include_positions) > 0, "Should detect include statements"
     
     def test_verbose_output_disabled_by_default(self):

@@ -89,7 +89,7 @@ def test_macro_state_pollution_bug(temp_sample_dir):
         has_feature_without_macro = any('enabled_feature.h' in dep for dep in without_macro_deps)
         
         # Debug output
-        print(f"\nDependency analysis results:")
+        print("\nDependency analysis results:")
         print(f"  with_macro.cpp deps: {with_macro_deps}")
         print(f"  without_macro.cpp deps: {without_macro_deps}")
         print(f"  with_macro includes enabled_feature.h: {has_feature_with_macro}")

@@ -1,6 +1,5 @@
 import json
 import os
-import tempfile
 
 import compiletools.compilation_database
 import compiletools.testhelper as uth

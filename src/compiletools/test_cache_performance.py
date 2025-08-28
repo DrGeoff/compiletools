@@ -11,6 +11,11 @@ from compiletools.file_analyzer_cache import (
 from compiletools.testhelper import samplesdir
 
 
+def get_text_from_result(result):
+    """Helper function to reconstruct text from FileAnalysisResult lines for testing."""
+    return '\n'.join(result.lines)
+
+
 class TestFileAnalyzerCache:
     """Test FileAnalyzer caching functionality."""
     
@@ -41,7 +46,7 @@ class TestFileAnalyzerCache:
         result2 = analyzer2.analyze()
         
         # Results should be identical
-        assert result1.text == result2.text
+        assert get_text_from_result(result1) == get_text_from_result(result2)
         assert result1.include_positions == result2.include_positions
         assert result1.magic_positions == result2.magic_positions
         assert result1.directive_positions == result2.directive_positions
@@ -68,7 +73,7 @@ class TestFileAnalyzerCache:
         assert time2 <= time1 * 2.0, f"Cache hit ({time2:.6f}s) should not be much slower than miss ({time1:.6f}s)"
         
         # Results should be identical
-        assert result1.text == result2.text
+        assert get_text_from_result(result1) == get_text_from_result(result2)
     
     def test_cache_invalidation_on_file_change(self, simple_cpp_file):
         """Test that cache correctly invalidates when file content changes.
@@ -98,7 +103,7 @@ class TestFileAnalyzerCache:
             assert result1 is not None
             assert result2 is not None
             # Content should be the same (same actual file) but cache treats them separately
-            assert result1.text == result2.text
+            assert get_text_from_result(result1) == get_text_from_result(result2)
     
     def test_null_cache_never_caches(self, simple_cpp_file):
         """Test that null cache implementation never caches anything."""
@@ -109,7 +114,17 @@ class TestFileAnalyzerCache:
         
         # put should be a no-op (no exception)
         from compiletools.file_analyzer import FileAnalysisResult
-        result = FileAnalysisResult("test", [], [], {}, 4, False)
+        result = FileAnalysisResult(
+            lines=["test"],
+            line_byte_offsets=[0],
+            include_positions=[],
+            magic_positions=[],
+            directive_positions={},
+            directives=[],
+            directive_by_line={},
+            bytes_analyzed=4,
+            was_truncated=False
+        )
         cache.put(simple_cpp_file, "any_hash", result)
         
         # Still no result
@@ -124,9 +139,21 @@ class TestFileAnalyzerCache:
         from compiletools.file_analyzer import FileAnalysisResult
         
         # Add entries up to capacity
-        result1 = FileAnalysisResult("test1", [], [], {}, 5, False)
-        result2 = FileAnalysisResult("test2", [], [], {}, 5, False)
-        result3 = FileAnalysisResult("test3", [], [], {}, 5, False)
+        result1 = FileAnalysisResult(
+            lines=["test1"], line_byte_offsets=[0],
+            include_positions=[], magic_positions=[], directive_positions={},
+            directives=[], directive_by_line={}, bytes_analyzed=5, was_truncated=False
+        )
+        result2 = FileAnalysisResult(
+            lines=["test2"], line_byte_offsets=[0],
+            include_positions=[], magic_positions=[], directive_positions={},
+            directives=[], directive_by_line={}, bytes_analyzed=5, was_truncated=False
+        )
+        result3 = FileAnalysisResult(
+            lines=["test3"], line_byte_offsets=[0],
+            include_positions=[], magic_positions=[], directive_positions={},
+            directives=[], directive_by_line={}, bytes_analyzed=5, was_truncated=False
+        )
         
         cache.put("file1.cpp", "hash1", result1)
         cache.put("file2.cpp", "hash2", result2)
@@ -177,7 +204,17 @@ class TestCacheBackends:
             
             # Create first cache instance and store data
             cache1 = DiskCache(cache_dir=shared_cache_dir)
-            result = FileAnalysisResult("test content", [0], [], {"include": [0]}, 16, False)
+            result = FileAnalysisResult(
+                lines=["test content"],
+                line_byte_offsets=[0],
+                include_positions=[0],
+                magic_positions=[],
+                directive_positions={"include": [0]},
+                directives=[],
+                directive_by_line={},
+                bytes_analyzed=16,
+                was_truncated=False
+            )
             cache1.put(test_file, "test_hash", result)
             
             # Create second cache instance - should retrieve same data
@@ -185,7 +222,7 @@ class TestCacheBackends:
             retrieved = cache2.get(test_file, "test_hash")
             
             assert retrieved is not None
-            assert retrieved.text == "test content"
+            assert get_text_from_result(retrieved) == "test content"
             assert retrieved.include_positions == [0]
     
     @pytest.mark.skipif(
@@ -200,12 +237,22 @@ class TestCacheBackends:
             cache = RedisCache()
             from compiletools.file_analyzer import FileAnalysisResult
             
-            result = FileAnalysisResult("redis test", [], [], {}, 10, False)
+            result = FileAnalysisResult(
+                lines=["redis test"],
+                line_byte_offsets=[0],
+                include_positions=[],
+                magic_positions=[],
+                directive_positions={},
+                directives=[],
+                directive_by_line={},
+                bytes_analyzed=10,
+                was_truncated=False
+            )
             cache.put("test_file.cpp", "redis_hash", result)
             
             retrieved = cache.get("test_file.cpp", "redis_hash")
             assert retrieved is not None
-            assert retrieved.text == "redis test"
+            assert get_text_from_result(retrieved) == "redis test"
             
         except Exception:
             pytest.skip("Redis not available")

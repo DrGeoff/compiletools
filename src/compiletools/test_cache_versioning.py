@@ -14,6 +14,11 @@ from compiletools.file_analyzer_cache import (
 from compiletools.testhelper import samplesdir
 
 
+def get_text_from_result(result):
+    """Helper function to reconstruct text from FileAnalysisResult lines for testing."""
+    return '\n'.join(result.lines)
+
+
 class TestCacheVersioning:
     """Test automatic cache versioning based on dataclass structure."""
     
@@ -73,14 +78,16 @@ class TestCacheVersioning:
     
     def test_direct_pickle_serialization(self):
         """Test that cache now uses direct pickle serialization."""
-        from compiletools.file_analyzer import create_file_analyzer
         
         # Create test result
         result = FileAnalysisResult(
-            text="test content",
+            lines=["test content"],
+            line_byte_offsets=[0],
             include_positions=[1, 2, 3],
             magic_positions=[4, 5],
             directive_positions={"test": [6, 7]},
+            directives=[],
+            directive_by_line={},
             bytes_analyzed=100,
             was_truncated=False
         )
@@ -97,7 +104,7 @@ class TestCacheVersioning:
                 
             # Should be a FileAnalysisResult directly, not a wrapper dict
             assert isinstance(cached_data, FileAnalysisResult)
-            assert cached_data.text == result.text
+            assert get_text_from_result(cached_data) == get_text_from_result(result)
             assert cached_data.include_positions == result.include_positions
 
 
@@ -130,7 +137,7 @@ class TestCacheCompatibilityIntegration:
             # Should retrieve successfully
             retrieved = cache.get(simple_cpp_file, "test_hash")
             assert retrieved is not None
-            assert retrieved.text == result.text
+            assert get_text_from_result(retrieved) == get_text_from_result(result)
             
             # Create a fake "old version" directory in the temp dir
             old_cache_dir = Path(temp_dir) / "old_version_data"
@@ -142,7 +149,6 @@ class TestCacheCompatibilityIntegration:
     
     def test_corrupted_pickle_handling(self, simple_cpp_file):
         """Test that corrupted pickle files are handled gracefully."""
-        from compiletools.file_analyzer import create_file_analyzer
         
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = DiskCache(cache_dir=temp_dir)
@@ -199,7 +205,7 @@ class TestCacheCompatibilityIntegration:
         
         retrieved = cache.get(simple_cpp_file, "test_hash")
         assert retrieved is not None
-        assert retrieved.text == result.text
+        assert get_text_from_result(retrieved) == get_text_from_result(result)
         
         # Manually inject incompatible data into cache
         cache._cache[cache._make_key(simple_cpp_file, "bad_hash")] = result

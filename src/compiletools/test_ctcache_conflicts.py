@@ -10,6 +10,11 @@ from compiletools.file_analyzer_cache import DiskCache, SQLiteCache
 from compiletools.testhelper import samplesdir
 
 
+def get_text_from_result(result):
+    """Helper function to reconstruct text from FileAnalysisResult lines for testing."""
+    return '\n'.join(result.lines)
+
+
 class TestCTCacheConfigurationConflicts:
     """Test handling of conflicting CTCACHE and CTCACHE_TYPE settings."""
     
@@ -58,7 +63,7 @@ class TestCTCacheConfigurationConflicts:
         result = analyzer.analyze()
         
         assert result is not None
-        assert "#include" in result.text
+        assert "#include" in get_text_from_result(result)
         assert len(result.include_positions) > 0
     
     def test_sqlite_cache_with_ctcache_disabled(self, simple_cpp_file):
@@ -82,7 +87,7 @@ class TestCTCacheConfigurationConflicts:
         result = analyzer.analyze()
         
         assert result is not None
-        assert "#include" in result.text
+        assert "#include" in get_text_from_result(result)
         assert len(result.include_positions) > 0
     
     def test_memory_cache_unaffected_by_ctcache_disabled(self, simple_cpp_file):
@@ -96,7 +101,7 @@ class TestCTCacheConfigurationConflicts:
         result = analyzer.analyze()
         
         assert result is not None
-        assert "#include" in result.text
+        assert "#include" in get_text_from_result(result)
         assert len(result.include_positions) > 0
     
     def test_null_cache_with_any_ctcache_setting(self, simple_cpp_file):
@@ -109,7 +114,7 @@ class TestCTCacheConfigurationConflicts:
         result = analyzer.analyze()
         
         assert result is not None
-        assert "#include" in result.text
+        assert "#include" in get_text_from_result(result)
         assert len(result.include_positions) > 0
     
     @pytest.mark.parametrize("cache_type", ['null', 'memory', 'disk', 'sqlite'])
@@ -123,7 +128,7 @@ class TestCTCacheConfigurationConflicts:
         result = analyzer.analyze()
         
         assert result is not None
-        assert "#include" in result.text
+        assert "#include" in get_text_from_result(result)
         assert len(result.include_positions) > 0
     
     def test_cache_fallback_hierarchy_with_conflicts(self, simple_cpp_file):
