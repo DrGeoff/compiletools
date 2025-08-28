@@ -70,7 +70,8 @@ class TestVariant:
             compiletools.testhelper.create_temp_ct_conf(os.getcwd())
             compiletools.testhelper.create_temp_config(os.getcwd())
 
-            configs = compiletools.configutils.defaultconfigs(
+            configs = compiletools.configutils.get_existing_config_files(
+                filename="ct.conf",
                 user_config_dir="/var",
                 system_config_dir="/var",
                 exedir=uth.cakedir(),
