@@ -4,6 +4,7 @@ import subprocess
 import os
 import compiletools.utils
 import compiletools.apptools
+import compiletools.configutils
 import compiletools.headerdeps
 import compiletools.magicflags
 import compiletools.hunter
@@ -263,6 +264,7 @@ class Cake(object):
         compiletools.wrappedos.clear_cache()
         compiletools.utils.clear_cache()
         compiletools.git_utils.clear_cache()
+        compiletools.configutils.clear_cache()
         self.namer.clear_cache()
         self.hunter.clear_cache()
         compiletools.magicflags.MagicFlagsBase.clear_cache()

@@ -2,6 +2,7 @@ import sys
 import os
 import ast
 import appdirs
+from functools import lru_cache
 
 # Work around an incompatibility between configargparse 0.10 and 0.11
 try:
@@ -61,7 +62,8 @@ def extract_item_from_ct_conf(
     """
     fileparser = CfgFileParser()
     for cfgpath in reversed(
-        defaultconfigs(
+        get_existing_config_files(
+            filename="ct.conf",
             user_config_dir=user_config_dir,
             system_config_dir=system_config_dir,
             exedir=exedir,
@@ -171,8 +173,9 @@ def extract_variant(
     return result
 
 
+@lru_cache(maxsize=None)
 def default_config_directories(
-    user_config_dir=None, system_config_dir=None, exedir=None, repoonly=False, verbose=0, gitroot=None
+    user_config_dir=None, system_config_dir=None, exedir=None, repoonly=False, verbose=0, gitroot=None, current_dir=None
 ):
     # Use configuration in the order (lowest to highest priority)
     # If repoonly is true, start the procedure at step 4
@@ -204,9 +207,11 @@ def default_config_directories(
         exedir = compiletools.wrappedos.dirname(compiletools.wrappedos.realpath(sys.argv[0]))
 
     executable_config_dir = os.path.join(exedir, "ct", "ct.conf.d")
+    if current_dir is None:
+        current_dir = os.getcwd()
     if gitroot is None:
         gitroot = compiletools.git_utils.find_git_root()
-    results = [os.getcwd(), gitroot]
+    results = [current_dir, gitroot]
     
     # Add config directories that actually exist
     project_config_dir = os.path.join(gitroot, "ct.conf.d")
@@ -225,28 +230,30 @@ def default_config_directories(
     return results
 
 
-def defaultconfigs(
-    user_config_dir=None, system_config_dir=None, exedir=None, verbose=0, gitroot=None
-):
-    """ Find the ct.conf files """
-    ctconfs = [
-        os.path.join(defaultdir, "ct.conf")
-        for defaultdir in reversed(
-            default_config_directories(
-                user_config_dir=user_config_dir,
-                system_config_dir=system_config_dir,
-                exedir=exedir,
-                verbose=verbose,
-                gitroot=gitroot,
-            )
-        )
+def get_existing_config_files(filename="ct.conf", **kwargs):
+    """Get list of existing config files in standard directories"""
+    # Always resolve current_dir explicitly for proper caching
+    if 'current_dir' not in kwargs or kwargs['current_dir'] is None:
+        kwargs['current_dir'] = os.getcwd()
+    directories = default_config_directories(**kwargs)
+    
+    configs = [
+        os.path.join(directory, filename) 
+        for directory in reversed(directories)
     ]
+    
+    # Only return files that actually exist
+    existing_configs = [cfg for cfg in configs if compiletools.wrappedos.isfile(cfg)]
+    
+    if kwargs.get('verbose', 0) >= 8:
+        print(" ".join(["Existing config files:"] + existing_configs))
+    
+    return existing_configs
 
-    # Only return the configs that exist
-    configs = [cfg for cfg in ctconfs if compiletools.wrappedos.isfile(cfg)]
-    if verbose >= 8:
-        print(" ".join(["Default configs are "] + configs))
-    return configs
+
+def clear_cache():
+    """Clear LRU caches for testing"""
+    default_config_directories.cache_clear()
 
 
 def config_files_from_variant(
@@ -269,7 +276,8 @@ def config_files_from_variant(
         )
 
     # Start with the default ct.conf files
-    variantconfigs = defaultconfigs(
+    variantconfigs = get_existing_config_files(
+        filename="ct.conf",
         user_config_dir=user_config_dir,
         system_config_dir=system_config_dir,
         exedir=exedir,
@@ -293,6 +301,7 @@ def config_files_from_variant(
                         exedir=exedir,
                         verbose=verbose,
                         gitroot=gitroot,
+                        current_dir=os.getcwd()
                     )
                 )
             ]

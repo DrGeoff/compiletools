@@ -123,6 +123,7 @@ def find_possible_variants(
         repoonly=repoonly,
         verbose=verbose,
         gitroot=gitroot,
+        current_dir=os.getcwd(),
     )
 
     for cfg_dir in search_directories:

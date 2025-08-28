@@ -8,6 +8,8 @@ import compiletools.magicflags
 import compiletools.utils
 import compiletools.configutils
 import compiletools.wrappedos
+import compiletools.git_utils
+import compiletools.compiler_macros
 
 from importlib import reload
 
@@ -15,7 +17,20 @@ from importlib import reload
 class BaseCompileToolsTestCase:
     """Base test case with common setup/teardown for compiletools tests"""
     
+    def _clear_all_caches(self):
+        """Clear all LRU and module caches to ensure test isolation"""
+        compiletools.wrappedos.clear_cache()
+        compiletools.utils.clear_cache()
+        compiletools.git_utils.clear_cache()
+        compiletools.configutils.clear_cache()
+        compiletools.apptools.clear_cache()
+        compiletools.compiler_macros.clear_cache()
+        compiletools.headerdeps.HeaderDepsBase.clear_cache()
+        compiletools.magicflags.MagicFlagsBase.clear_cache()
+        # Note: namer and hunter caches are cleared per-instance, not globally
+    
     def setup_method(self):
+        self._clear_all_caches()  # Clear before setup
         self._temp_context = uth.TempDirectoryContext(change_dir=True)
         self._tmpdir = self._temp_context.__enter__()
         uth.delete_existing_parsers()
@@ -26,6 +41,7 @@ class BaseCompileToolsTestCase:
             self._temp_context.__exit__(None, None, None)
         uth.delete_existing_parsers()
         compiletools.apptools.resetcallbacks()
+        self._clear_all_caches()  # Clear after teardown
         
     def _verify_one_exe_per_main(self, relativepaths, search_dir=None):
         """Common executable verification logic"""
