@@ -248,12 +248,12 @@ class DirectHeaderDeps(HeaderDepsBase):
         else:
             return self._search_project_includes(include)
 
-    def _process_conditional_compilation(self, text, directive_positions):
+    def _process_conditional_compilation(self, text, directive_positions, line_byte_offsets):
         """Process conditional compilation directives and return only active sections"""
         preprocessor = SimplePreprocessor(self.defined_macros, self.args.verbose)
         
         # Always pass FileAnalyzer's pre-computed directive positions for maximum performance
-        processed_text = preprocessor.process(text, directive_positions)
+        processed_text = preprocessor.process(text, directive_positions, line_byte_offsets)
         
         # Update our defined_macros dict with any changes from the preprocessor
         # This allows macro accumulation within a single dependency analysis
@@ -265,7 +265,6 @@ class DirectHeaderDeps(HeaderDepsBase):
     def _create_include_list(self, realpath):
         """Internal use. Create the list of includes for the given file"""
         # Import modules outside timing block
-        import compiletools.dirnamer
         
         max_read_size = getattr(self.args, 'max_file_read_size', 0)
         
@@ -274,7 +273,7 @@ class DirectHeaderDeps(HeaderDepsBase):
         
         analyzer = create_file_analyzer(realpath, max_read_size, self.args.verbose, cache=self.file_analyzer_cache)
         analysis_result = analyzer.analyze()
-        text = analysis_result.text
+        text = '\n'.join(analysis_result.lines)
         
         # Potential optimization: FileAnalyzer already found include_positions  
         # We could potentially use these to optimize regex processing later
@@ -285,19 +284,21 @@ class DirectHeaderDeps(HeaderDepsBase):
         # Pass FileAnalyzer's pre-computed directive positions for optimization
         processed_text = self._process_conditional_compilation(
             text, 
-            analysis_result.directive_positions
+            analysis_result.directive_positions,
+            analysis_result.line_byte_offsets
         )
 
         # The pattern is intended to match all include statements but
         # not the ones with either C or C++ commented out.
-        import re
         # Optimization: Use FileAnalyzer's pre-computed include positions when available
         includes = []
         if analysis_result.include_positions:
             # Extract include filenames from positions that survived conditional compilation
+            import bisect
             original_lines = text.split('\n')
             for pos in analysis_result.include_positions:
-                line_num = text[:pos].count('\n')
+                # Use binary search on pre-computed line offsets for O(log n) performance
+                line_num = bisect.bisect_right(analysis_result.line_byte_offsets, pos) - 1
                 if line_num < len(original_lines):
                     include_line = original_lines[line_num]
                     # Check if this include line survived preprocessing

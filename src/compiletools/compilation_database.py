@@ -14,10 +14,10 @@ import compiletools.configutils
 class CompilationDatabaseCreator:
     """Creates compile_commands.json files for clang tooling integration"""
     
-    def __init__(self, args):
+    def __init__(self, args, file_analyzer_cache=None):
         self.args = args
         self.namer = compiletools.namer.Namer(args)
-        self.headerdeps = compiletools.headerdeps.create(args)
+        self.headerdeps = compiletools.headerdeps.create(args, file_analyzer_cache=file_analyzer_cache)
         self.magicparser = compiletools.magicflags.create(args, self.headerdeps)
         self.hunter = compiletools.hunter.Hunter(args, self.headerdeps, self.magicparser)
         
@@ -189,7 +189,7 @@ def main(argv=None):
     shared_file_analyzer_cache = create_shared_analysis_cache(args)
     
     # Create and run the compilation database creator
-    creator = CompilationDatabaseCreator(args)
+    creator = CompilationDatabaseCreator(args, file_analyzer_cache=shared_file_analyzer_cache)
     creator.write_compilation_database()
     
     return 0

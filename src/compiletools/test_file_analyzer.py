@@ -12,20 +12,29 @@ from compiletools.file_analyzer import (
 )
 
 
+def get_text_from_result(result):
+    """Helper function to reconstruct text from FileAnalysisResult lines for testing."""
+    return '\n'.join(result.lines)
+
+
 class TestFileAnalysisResult:
     """Test FileAnalysisResult dataclass."""
     
     def test_dataclass_creation(self):
         result = FileAnalysisResult(
-            text="test content",
+            lines=["test", "content"],
+            line_byte_offsets=[0, 5],
             include_positions=[10, 20],
             magic_positions=[5],
             directive_positions={"include": [10, 20], "define": [30]},
+            directives=[],
+            directive_by_line={},
             bytes_analyzed=100,
             was_truncated=False
         )
         
-        assert result.text == "test content"
+        assert result.lines == ["test", "content"]
+        assert list(result.line_byte_offsets) == [0, 5]
         assert result.include_positions == [10, 20]
         assert result.magic_positions == [5]
         assert result.directive_positions == {"include": [10, 20], "define": [30]}
@@ -73,7 +82,8 @@ class TestFileAnalyzerImplementations:
             stringzilla_result = stringzilla.analyze()
             
             # Compare results - they must be identical
-            assert legacy_result.text == stringzilla_result.text
+            assert legacy_result.lines == stringzilla_result.lines
+            assert list(legacy_result.line_byte_offsets) == list(stringzilla_result.line_byte_offsets)
             assert legacy_result.include_positions == stringzilla_result.include_positions
             assert legacy_result.magic_positions == stringzilla_result.magic_positions
             assert legacy_result.directive_positions == stringzilla_result.directive_positions
@@ -82,9 +92,10 @@ class TestFileAnalyzerImplementations:
             
         except ImportError:
             # StringZilla not available, just test that legacy works
-            assert "stdio.h" in legacy_result.text
-            assert "stdlib.h" in legacy_result.text
-            # Note: commented includes appear in text but not in include_positions
+            file_content = '\n'.join(legacy_result.lines)
+            assert "stdio.h" in file_content
+            assert "stdlib.h" in file_content
+            # Note: commented includes appear in lines but not in include_positions
             assert len(legacy_result.include_positions) == 2  # stdlib.h and stdio.h only
             
     def test_raw_file_analysis(self):
@@ -102,16 +113,17 @@ class TestFileAnalyzerImplementations:
             stringzilla_result = stringzilla.analyze()
             
             # Both should produce identical results
-            assert legacy_result.text == stringzilla_result.text
+            assert get_text_from_result(legacy_result) == get_text_from_result(stringzilla_result)
             assert legacy_result.include_positions == stringzilla_result.include_positions
             assert legacy_result.magic_positions == stringzilla_result.magic_positions
             
         except ImportError:
             # StringZilla not available, verify legacy behavior
             # FileAnalyzer returns raw text with all conditional sections
-            assert "#define USE_FEATURE_X" in legacy_result.text
-            assert "#include \"feature_header.hpp\"" in legacy_result.text
-            assert "int main()" in legacy_result.text
+            legacy_text = get_text_from_result(legacy_result)
+            assert "#define USE_FEATURE_X" in legacy_text
+            assert "#include \"feature_header.hpp\"" in legacy_text
+            assert "int main()" in legacy_text
             assert len(legacy_result.include_positions) == 1  # One include in main.cpp
             assert len(legacy_result.magic_positions) == 0  # No magic flags in main.cpp itself
             
@@ -195,7 +207,7 @@ class TestFileAnalyzerImplementations:
         legacy = LegacyFileAnalyzer(filepath, max_read_size=0, verbose=0)
         result = legacy.analyze()
         
-        assert result.text == ""
+        assert get_text_from_result(result) == ""
         assert result.include_positions == []
         assert result.magic_positions == []
         assert result.directive_positions == {}
@@ -209,7 +221,7 @@ class TestFileAnalyzerImplementations:
         legacy = LegacyFileAnalyzer(filepath, max_read_size=0, verbose=0)
         result = legacy.analyze()
         
-        assert result.text == ""
+        assert get_text_from_result(result) == ""
         assert result.include_positions == []
         assert result.magic_positions == []
         assert result.bytes_analyzed == 0
@@ -285,14 +297,15 @@ class TestPatternDetectionAccuracy:
         
         # Should only find the real, uncommented includes
         assert len(result.include_positions) == 2  # stdlib.h and stdio.h
-        assert "stdio.h" in result.text
-        assert "stdlib.h" in result.text
-        assert "commented_out.h" in result.text  # Present in raw text
-        assert "block_commented.h" in result.text  # Present in raw text
+        result_text = get_text_from_result(result)
+        assert "stdio.h" in result_text
+        assert "stdlib.h" in result_text
+        assert "commented_out.h" in result_text  # Present in raw text
+        assert "block_commented.h" in result_text  # Present in raw text
         
         # But positions should only point to uncommented includes
         include_lines = []
-        lines = result.text.split('\n')
+        lines = result.lines
         for pos in result.include_positions:
             # Find which line this position is on
             char_count = 0
@@ -324,7 +337,7 @@ class TestPatternDetectionAccuracy:
         
         # Verify which patterns were found
         magic_lines = []
-        lines = result.text.split('\n')
+        lines = result.lines
         for pos in result.magic_positions:
             char_count = 0
             for i, line in enumerate(lines):
@@ -340,8 +353,9 @@ class TestPatternDetectionAccuracy:
         
         # Verify invalid patterns are not detected
         # These appear in the file text but should not be in magic_positions
-        assert '// #LIBS=not_magic (space before #)' in result.text
-        assert '/* //#LIBS=commented_out */' in result.text
+        result_text = get_text_from_result(result)
+        assert '// #LIBS=not_magic (space before #)' in result_text
+        assert '/* //#LIBS=commented_out */' in result_text
         # But they should not be in the detected magic positions
         invalid_patterns = ['// #LIBS=not_magic', '/* //#LIBS=commented_out */']
         for pattern in invalid_patterns:
@@ -387,7 +401,7 @@ class TestPatternDetectionAccuracy:
             legacy_result = legacy.analyze()
             
             # Both should produce identical results
-            assert sz_result.text == legacy_result.text
+            assert get_text_from_result(sz_result) == get_text_from_result(legacy_result)
             assert sz_result.include_positions == legacy_result.include_positions
             assert sz_result.magic_positions == legacy_result.magic_positions  
             assert sz_result.directive_positions == legacy_result.directive_positions
@@ -433,16 +447,18 @@ class TestPatternDetectionAccuracy:
             
             # Verify that stdlib.h and math.h inside block comments are NOT detected
             # by checking that the text contains them but they're not at detected positions
-            assert '#include <stdlib.h>' in legacy_result.text
-            assert '#include <math.h>' in legacy_result.text
+            legacy_text = get_text_from_result(legacy_result)
+            assert '#include <stdlib.h>' in legacy_text
+            assert '#include <math.h>' in legacy_text
             
             # Get the actual detected includes by examining what's at each position
             detected_includes = []
             for pos in legacy_result.include_positions:
                 # Extract a reasonable substring around each position
                 start = max(0, pos - 5)
-                end = min(len(legacy_result.text), pos + 30)
-                substring = legacy_result.text[start:end]
+                legacy_text = get_text_from_result(legacy_result)
+                end = min(len(legacy_text), pos + 30)
+                substring = legacy_text[start:end]
                 detected_includes.append(substring)
             
             # Should have detected cmath and iostream but not stdlib.h or math.h
@@ -461,6 +477,7 @@ class TestPatternDetectionAccuracy:
             assert len(legacy_result.include_positions) == 2
             
             # Verify that commented includes are not detected
-            assert '#include <stdlib.h>' in legacy_result.text  # Present in text
-            assert '#include <math.h>' in legacy_result.text  # Present in text
+            legacy_text = get_text_from_result(legacy_result)
+            assert '#include <stdlib.h>' in legacy_text  # Present in text
+            assert '#include <math.h>' in legacy_text  # Present in text
             # But only 2 positions detected (cmath and iostream)

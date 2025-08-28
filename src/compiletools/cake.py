@@ -49,8 +49,12 @@ class Cake(object):
 
     def _createctobjs(self):
         """ Has to be separate because --auto fiddles with the args """
+        # Create shared cache for all file analysis components
+        from compiletools.file_analyzer import create_shared_analysis_cache
+        shared_file_analyzer_cache = create_shared_analysis_cache(self.args)
+        
         self.namer = compiletools.namer.Namer(self.args)
-        self.headerdeps = compiletools.headerdeps.create(self.args)
+        self.headerdeps = compiletools.headerdeps.create(self.args, file_analyzer_cache=shared_file_analyzer_cache)
         self.magicparser = compiletools.magicflags.create(self.args, self.headerdeps)
         self.hunter = compiletools.hunter.Hunter(self.args, self.headerdeps, self.magicparser)
 

@@ -317,7 +317,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         direct_cppflags = " ".join(result_direct.get("CPPFLAGS", []))
         cpp_cppflags = " ".join(result_cpp.get("CPPFLAGS", []))
         
-        print(f"\n-isystem include path test results:")
+        print("\n-isystem include path test results:")
         print(f"DirectMagicFlags: {direct_cppflags}")
         print(f"CppMagicFlags: {cpp_cppflags}")
         
@@ -376,7 +376,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         # Test the _get_system_include_paths method directly
         extracted_paths = direct_magic._get_system_include_paths()
         
-        print(f"\nShlex parsing test results:")
+        print("\nShlex parsing test results:")
         print(f"CPPFLAGS: {MockArgs().CPPFLAGS}")
         print(f"CXXFLAGS: {MockArgs().CXXFLAGS}")
         print(f"Extracted paths: {extracted_paths}")

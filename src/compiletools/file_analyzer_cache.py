@@ -79,7 +79,7 @@ import sqlite3
 import tempfile
 import time
 from abc import ABC, abstractmethod
-from dataclasses import asdict, fields, is_dataclass, MISSING
+from dataclasses import fields, is_dataclass, MISSING
 from pathlib import Path
 from typing import Dict, List, Optional
 

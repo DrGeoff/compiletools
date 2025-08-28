@@ -5,7 +5,6 @@ Test case for the macro state dependency bug found in ct-cake workflow.
 This test demonstrates the specific bug where DirectHeaderDeps returned 
 inconsistent results due to macro state pollution between calls.
 """
-import pytest
 import os
 import sys
 from pathlib import Path
