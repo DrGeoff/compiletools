@@ -264,57 +264,36 @@ class DirectHeaderDeps(HeaderDepsBase):
 
     def _create_include_list(self, realpath):
         """Internal use. Create the list of includes for the given file"""
-        # Import modules outside timing block
-        
         max_read_size = getattr(self.args, 'max_file_read_size', 0)
         
         # Use FileAnalyzer for efficient file reading and pattern detection  
-        # Note: create_file_analyzer() handles StringZilla/Legacy fallback internally
-        
         analyzer = create_file_analyzer(realpath, max_read_size, self.args.verbose, cache=self.file_analyzer_cache)
         analysis_result = analyzer.analyze()
-        text = '\n'.join(analysis_result.lines)
         
-        # Potential optimization: FileAnalyzer already found include_positions  
-        # We could potentially use these to optimize regex processing later
         if self.args.verbose >= 9 and analysis_result.include_positions:
             print(f"DirectHeaderDeps::analyze - FileAnalyzer pre-found {len(analysis_result.include_positions)} includes in {realpath}")
 
-        # Process conditional compilation - this updates self.defined_macros as it encounters #define
-        # Pass FileAnalyzer's pre-computed directive positions for optimization
-        processed_text = self._process_conditional_compilation(
-            text, 
-            analysis_result.directive_positions,
-            analysis_result.line_byte_offsets
-        )
-
-        # The pattern is intended to match all include statements but
-        # not the ones with either C or C++ commented out.
-        # Optimization: Use FileAnalyzer's pre-computed include positions when available
-        includes = []
-        if analysis_result.include_positions:
-            # Extract include filenames from positions that survived conditional compilation
-            import bisect
-            original_lines = text.split('\n')
-            for pos in analysis_result.include_positions:
-                # Use binary search on pre-computed line offsets for O(log n) performance
-                line_num = bisect.bisect_right(analysis_result.line_byte_offsets, pos) - 1
-                if line_num < len(original_lines):
-                    include_line = original_lines[line_num]
-                    # Check if this include line survived preprocessing
-                    if include_line.strip() in processed_text:
-                        # Extract filename using simpler regex on single line
-                        match = re.search(r'#include[\s]*["<][\s]*([\S]*)[\s]*[">]', include_line)
-                        if match:
-                            includes.append(match.group(1))
+        # Use SimplePreprocessor to get active line numbers (proper architecture)
+        preprocessor = SimplePreprocessor(self.defined_macros, verbose=self.args.verbose)
+        active_lines = preprocessor.process_structured(analysis_result)
+        active_line_set = set(active_lines)
         
-        # Fallback to full text search if no includes found or no position data
-        if not includes:
-            pat = re.compile(
-                r'/\*.*?\*/|//.*?$|^[\s]*#include[\s]*["<][\s]*([\S]*)[\s]*[">]',
-                re.MULTILINE | re.DOTALL,
-            )
-            includes = [group for group in pat.findall(processed_text) if group]
+        # Update our macro state from preprocessor results
+        self.defined_macros.update(preprocessor.macros)
+        
+        # Extract active includes from FileAnalyzer's structured results (no regex needed!)
+        includes = []
+        for include_info in analysis_result.includes:
+            # When working with cached data that lacks line content, active_line_set may be empty
+            # In that case, trust the cached structured data directly (oracle cache stores filtered results)
+            if not analysis_result.lines and not active_line_set:
+                # Use cached data directly - oracle cache already filtered during original analysis
+                if not include_info['is_commented']:
+                    includes.append(include_info['filename'])
+            else:
+                # Normal case: only include if this line is active after preprocessing and not commented
+                if include_info['line_num'] in active_line_set and not include_info['is_commented']:
+                    includes.append(include_info['filename'])
         
         return includes
 

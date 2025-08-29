@@ -119,6 +119,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
             "factory/test_factory.cpp",
             "numbers/test_direct_include.cpp",
             "dottypaths/dottypaths.cpp",
+            "calculator/main.cpp",
         ]
         for filename in filenames:
             tb.compare_direct_cpp_headers(self, self._get_sample_path(filename))
@@ -140,6 +141,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
                 "simple/helloworld_c.c",
                 "simple/helloworld_cpp.cpp",
                 "simple/test_cflags.c",
+                "calculator/main.cpp",
             ]
             realpaths = [os.path.join(samplesdir, filename) for filename in relativepaths]
 

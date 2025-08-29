@@ -830,22 +830,27 @@ class RedisCache(FileAnalyzerCache):
 def create_cache(cache_type: str = 'disk', **kwargs) -> FileAnalyzerCache:
     """Factory function to create cache instance.
     
-    All persistent cache types (disk, sqlite, redis) now have integrated
+    All persistent cache types (disk, sqlite, redis, mmap) now have integrated
     infinite LRU memory caching for optimal performance.
     
     Args:
-        cache_type: Type of cache ('null', 'memory', 'disk', 'sqlite', 'redis')
+        cache_type: Type of cache ('null', 'memory', 'disk', 'sqlite', 'redis', 'mmap', 'oracle')
         **kwargs: Additional arguments for cache constructor
         
     Returns:
         FileAnalyzerCache instance with LRU caching built-in for persistent types
     """
+    # Import oracle cache here to avoid circular imports
+    from compiletools.mmap_oracle_cache import MMapOracleCache
+    
     cache_types = {
         'null': NullCache,
         'memory': MemoryCache,
         'disk': DiskCache,
         'sqlite': SQLiteCache,
         'redis': RedisCache,
+        'mmap': MMapOracleCache,
+        'oracle': MMapOracleCache,  # Alias for mmap
     }
     
     cache_class = cache_types.get(cache_type.lower())
