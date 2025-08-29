@@ -406,15 +406,12 @@ def clear_cache():
 
 
 def _add_flags_from_pkg_config(args):
+    # Import cached pkg-config function to avoid redundant subprocess calls
+    from compiletools.magicflags import cached_pkg_config
+    
     for pkg in args.pkg_config:
-        # TODO: when we move to python 3.7, use text=True rather than universal_newlines=True and capture_output=True,
         cflags = (
-            subprocess.run(
-                ["pkg-config", "--cflags", pkg],
-                stdout=subprocess.PIPE,
-                universal_newlines=True,
-            )
-            .stdout.rstrip()
+            cached_pkg_config(pkg, "--cflags")
             .replace("-I", "-isystem ")
         )  # This helps the CppHeaderDeps avoid searching packages
 
@@ -428,11 +425,7 @@ def _add_flags_from_pkg_config(args):
         # Only query pkg-config for libs if LDFLAGS is defined in the args namespace.
         # Some tools (like ct-magicflags) don't call add_link_arguments() so LDFLAGS won't exist.
         if hasattr(args, 'LDFLAGS'):
-            libs = subprocess.run(
-                ["pkg-config", "--libs", pkg],
-                stdout=subprocess.PIPE,
-                universal_newlines=True,
-            ).stdout.rstrip()
+            libs = cached_pkg_config(pkg, "--libs")
             if libs:
                 args.LDFLAGS += f" {libs}"
                 if args.verbose >= 6:

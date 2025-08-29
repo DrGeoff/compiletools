@@ -1,6 +1,8 @@
 """Simple C preprocessor for handling conditional compilation directives."""
 
 from typing import List
+import hashlib
+import functools
 
 
 
@@ -17,6 +19,15 @@ class SimplePreprocessor:
     - Provides recursive macro expansion helper for advanced use
     """
     
+    # Class-level cache: (file_hash, macro_signature) -> (active_lines, final_macro_state)
+    _result_cache = {}
+    
+    @classmethod
+    def clear_cache(cls):
+        """Clear the preprocessor result cache."""
+        cls._result_cache.clear()
+    
+    
     def __init__(self, defined_macros, verbose=0):
         # Use a dict to store macro values, not just existence
         self.macros = {}
@@ -30,6 +41,10 @@ class SimplePreprocessor:
                 self.macros[macro] = "1"  # Default value for macros without explicit values
         self.verbose = verbose
         
+    def _create_macro_signature(self):
+        """Create a hashable signature of the current macro state."""
+        return tuple(sorted(self.macros.items()))
+    
     
     def _strip_comments(self, expr):
         """Strip C/C++ style comments from expressions.
@@ -57,6 +72,18 @@ class SimplePreprocessor:
         Returns:
             List of line numbers (0-based) that are active after conditional compilation
         """
+        # DISABLE CACHING for correctness - macro state dependency is complex  
+        # TODO: Implement proper functional caching that handles macro state evolution
+        # from compiletools.global_hash_registry import get_file_hash
+        # file_hash = get_file_hash(getattr(file_result, 'filepath', ''))
+        # initial_macro_state = dict(self.macros)
+        # initial_macro_signature = tuple(sorted(initial_macro_state.items()))
+        # cache_key = (file_hash, initial_macro_signature)
+        # 
+        # if cache_key in self._result_cache:
+        #     active_lines, macro_changes = self._result_cache[cache_key]
+        #     self.macros.update(macro_changes)
+        #     return active_lines
         lines = file_result.lines
         active_lines = []
         
@@ -99,6 +126,12 @@ class SimplePreprocessor:
                 if condition_stack[-1][0]:
                     active_lines.append(i)
                 i += 1
+        
+        # CACHING DISABLED
+        # final_macro_state = dict(self.macros)
+        # macro_changes = {k: v for k, v in final_macro_state.items() 
+        #                 if k not in initial_macro_state or initial_macro_state[k] != v}
+        # self._result_cache[cache_key] = (active_lines.copy(), macro_changes)
         
         return active_lines
     
