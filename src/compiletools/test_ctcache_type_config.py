@@ -62,7 +62,7 @@ class TestCTCacheTypeConfiguration:
         cache_type = compiletools.dirnamer.get_cache_type()
         assert cache_type is None, "'None' string should convert to None"
     
-    @pytest.mark.parametrize("cache_type_str", ['null', 'memory', 'disk', 'sqlite', 'redis'])
+    @pytest.mark.parametrize("cache_type_str", ['null', 'memory', 'disk', 'sqlite', 'redis', 'oracle', 'mmap'])
     def test_valid_cache_types(self, cache_type_str):
         """Test that all valid cache types are returned correctly."""
         os.environ['CTCACHE_TYPE'] = cache_type_str
@@ -125,6 +125,62 @@ class TestCTCacheTypeConfiguration:
         del os.environ['CTCACHE_TYPE']
         cache_type = compiletools.dirnamer.get_cache_type()
         assert cache_type is None
+    
+    @pytest.mark.parametrize("cache_type_str,expected", [
+        ('None', None),
+        ('memory', 'memory'),
+        ('disk', 'disk'),
+        ('oracle', 'oracle'),
+        ('mmap', 'mmap'),
+    ])
+    def test_calculator_sample_with_cache_types(self, cache_type_str, expected):
+        """Test calculator sample dependency detection across different cache types.
+        
+        This test specifically verifies the deeper dependency pattern that exposes cache bugs:
+        main.cpp → calculator.h → calculator.cpp → add.H → (build system discovers) → add.C
+        """
+        import compiletools.testhelper as uth
+        
+        # Set cache type environment
+        os.environ['CTCACHE_TYPE'] = cache_type_str
+        
+        # Get calculator sample files
+        calculator_main = str(Path(samplesdir()) / "calculator" / "main.cpp")
+        
+        # Use the utility function from testhelper instead of manual setup
+        dependencies = uth.headerdeps_result(
+            calculator_main,
+            kind="direct",
+            include=str(Path(samplesdir()) / "calculator"),
+            cache=cache_type_str if cache_type_str != 'None' else 'None'
+        )
+        
+        # Verify that calculator.h is in dependencies
+        calculator_h_found = False
+        for dep in dependencies:
+            if dep.endswith('calculator.h'):
+                calculator_h_found = True
+                break
+        
+        assert calculator_h_found, f"calculator.h not found in dependencies with cache type {cache_type_str}. Dependencies: {dependencies}"
+        
+        # Verify add.H is also found in the deeper dependency chain
+        add_h_found = False
+        for dep in dependencies:
+            if dep.endswith('add.H'):
+                add_h_found = True
+                break
+        
+        assert add_h_found, f"add.H not found in dependencies with cache type {cache_type_str}. Dependencies: {dependencies}"
+        
+        # Test cache consistency by running again (all cache types, not just oracle/mmap)
+        dependencies2 = uth.headerdeps_result(
+            calculator_main,
+            kind="direct", 
+            include=str(Path(samplesdir()) / "calculator"),
+            cache=cache_type_str if cache_type_str != 'None' else 'None'
+        )
+        assert dependencies == dependencies2, f"Second run results differ for {cache_type_str}"
 
 
 class TestCTCacheTypeArgument:
@@ -135,7 +191,7 @@ class TestCTCacheTypeArgument:
         # This would typically be tested by actually parsing arguments,
         # but we test the configuration extraction instead
         
-        valid_choices = ["None", "null", "memory", "disk", "sqlite", "redis"]
+        valid_choices = ["None", "null", "memory", "disk", "sqlite", "redis", "oracle", "mmap"]
         
         for choice in valid_choices:
             argv = [f'--CTCACHE_TYPE={choice}']

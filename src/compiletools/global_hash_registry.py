@@ -53,7 +53,9 @@ def load_hashes() -> None:
             print(f"GlobalHashRegistry: Loaded {len(_HASHES)} file hashes from git")
             
         except Exception as e:
-            raise RuntimeError(f"GlobalHashRegistry: Failed to load git hashes: {e}") from e
+            # Gracefully handle git failures (e.g., in test environments, non-git directories)
+            print(f"GlobalHashRegistry: Git not available, using fallback mode: {e}")
+            _HASHES = {}  # Empty hash registry - will compute hashes on demand
 
 
 def get_file_hash(filepath: str) -> Optional[str]:

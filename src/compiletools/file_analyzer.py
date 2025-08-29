@@ -387,9 +387,9 @@ class LegacyFileAnalyzer(FileAnalyzer):
         system_headers = {inc['filename'] for inc in includes if inc['is_system']}
         quoted_headers = {inc['filename'] for inc in includes if not inc['is_system']}
         
-        # Compute content hash
-        import hashlib
-        content_hash = hashlib.sha1(text.encode('utf-8')).hexdigest()
+        # Get content hash from global registry
+        from compiletools.global_hash_registry import get_file_hash
+        content_hash = get_file_hash(self.filepath)
         
         return FileAnalysisResult(
             lines=lines,
@@ -737,9 +737,9 @@ class StringZillaFileAnalyzer(FileAnalyzer):
         system_headers = {inc['filename'] for inc in includes if inc['is_system']}
         quoted_headers = {inc['filename'] for inc in includes if not inc['is_system']}
         
-        # Compute content hash
-        import hashlib
-        content_hash = hashlib.sha1(text.encode('utf-8')).hexdigest()
+        # Get content hash from global registry
+        from compiletools.global_hash_registry import get_file_hash
+        content_hash = get_file_hash(self.filepath)
         
         return FileAnalysisResult(
             lines=lines,

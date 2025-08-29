@@ -40,6 +40,7 @@ class TestFindTargetsModule:
             "pkgconfig/main.cpp",
             "simple/helloworld_c.c",
             "simple/helloworld_cpp.cpp",
+            "calculator/main.cpp",
         }
         relativeexpectedtests = {
             "cross_platform/test_source.cpp",

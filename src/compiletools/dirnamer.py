@@ -22,8 +22,8 @@ def add_arguments(cap):
     cap.add_argument(
         "--CTCACHE_TYPE",
         default="None",
-        choices=["None", "null", "memory", "disk", "sqlite", "redis"],
-        help="Type of cache for FileAnalyzer results. None means no caching, disk is recommended for persistence.",
+        choices=["None", "null", "memory", "disk", "sqlite", "redis", "mmap", "oracle"],
+        help="Type of cache for FileAnalyzer results. None means no caching, oracle/mmap is recommended for best performance.",
     )
 
 
