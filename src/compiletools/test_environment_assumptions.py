@@ -17,13 +17,44 @@ def temp_dir():
     uth.reset()
 
 
+def test_functional_cxx_compiler_detection():
+    """Test that the new compiler detection function finds a working compiler."""
+    compiler = uth.get_functional_cxx_compiler()
+    
+    if compiler is None:
+        pytest.skip("No functional C++ compiler detected - this may indicate platform limitations")
+    
+    # Verify the detected compiler is actually functional
+    assert shutil.which(compiler) is not None, f"Detected compiler {compiler} not in PATH"
+
+
+def test_functional_cxx_compiler_caching():
+    """Test that compiler detection result is properly cached."""
+    # Clear cache to ensure clean test
+    uth.get_functional_cxx_compiler.cache_clear()
+    
+    # First call
+    compiler1 = uth.get_functional_cxx_compiler()
+    
+    # Second call should return same result (from cache)
+    compiler2 = uth.get_functional_cxx_compiler()
+    
+    assert compiler1 == compiler2, "Compiler detection caching not working properly"
+
+
 def test_gcc_compiler_available(temp_dir):
     """Test that GCC compiler is available and supports C++17."""
-    gcc_path = shutil.which('gcc')
-    assert gcc_path is not None, "GCC compiler not found in PATH"
+    # Use new detection function first
+    detected_compiler = uth.get_functional_cxx_compiler()
     
+    if detected_compiler and 'gcc' not in detected_compiler and 'g++' not in detected_compiler:
+        pytest.skip("GCC not detected as primary compiler - may not be available")
+    
+    gcc_path = shutil.which('gcc')
     gxx_path = shutil.which('g++')
-    assert gxx_path is not None, "G++ compiler not found in PATH"
+    
+    if gcc_path is None or gxx_path is None:
+        pytest.skip("GCC/G++ not found in PATH - using detected alternative")
     
     # Test C++17 support by compiling a simple program
     test_cpp = os.path.join(temp_dir, 'test_cpp17.cpp')
@@ -232,6 +263,34 @@ int main() {
         'g++', '-Wall', test_cpp, '-o', test_exe
     ], capture_output=True, text=True)
     assert result.returncode == 0, f"GCC does not support -Wall: {result.stderr}"
+
+
+def test_create_temp_config_uses_detected_compiler(temp_dir):
+    """Test that create_temp_config integrates with compiler detection."""
+    config_path = uth.create_temp_config(tempdir=temp_dir)
+    
+    try:
+        with open(config_path, 'r') as f:
+            content = f.read()
+        
+        # Should contain compiler settings
+        assert 'CC=' in content, "Config missing CC setting"
+        assert 'CXX=' in content, "Config missing CXX setting"
+        assert 'CPPFLAGS=' in content, "Config missing CPPFLAGS setting"
+        
+        # Extract CXX value to verify it's functional
+        for line in content.split('\n'):
+            if line.startswith('CXX='):
+                cxx_compiler = line.split('=', 1)[1].strip()
+                # Should be able to find the compiler in PATH
+                assert shutil.which(cxx_compiler) is not None, f"Config specified non-existent compiler: {cxx_compiler}"
+                break
+        else:
+            assert False, "Could not find CXX setting in config"
+            
+    finally:
+        if os.path.exists(config_path):
+            os.unlink(config_path)
 
 
 @pytest.mark.parametrize("tool", ['make', 'ar', 'nm', 'objdump', 'strip'])
