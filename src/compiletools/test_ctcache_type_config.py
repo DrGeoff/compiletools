@@ -140,6 +140,7 @@ class TestCTCacheTypeConfiguration:
         main.cpp → calculator.h → calculator.cpp → add.H → (build system discovers) → add.C
         """
         import compiletools.testhelper as uth
+        import tempfile
         
         # Set cache type environment
         os.environ['CTCACHE_TYPE'] = cache_type_str
@@ -147,13 +148,43 @@ class TestCTCacheTypeConfiguration:
         # Get calculator sample files
         calculator_main = str(Path(samplesdir()) / "calculator" / "main.cpp")
         
-        # Use the utility function from testhelper instead of manual setup
-        dependencies = uth.headerdeps_result(
-            calculator_main,
-            kind="direct",
-            include=str(Path(samplesdir()) / "calculator"),
-            cache=cache_type_str if cache_type_str != 'None' else 'None'
-        )
+        # Use temp directory for cache location instead of project root
+        if cache_type_str == 'None':
+            cache_dir = 'None'
+            # Use the utility function from testhelper instead of manual setup
+            dependencies = uth.headerdeps_result(
+                calculator_main,
+                kind="direct",
+                include=str(Path(samplesdir()) / "calculator"),
+                cache=cache_dir
+            )
+            
+            # Test cache consistency by running again
+            dependencies2 = uth.headerdeps_result(
+                calculator_main,
+                kind="direct", 
+                include=str(Path(samplesdir()) / "calculator"),
+                cache=cache_dir
+            )
+        else:
+            # Use temp directory context for cache types that need disk storage
+            with uth.TempDirContextNoChange(prefix=f'test_cache_{cache_type_str}_') as cache_dir:
+                
+                # Use the utility function from testhelper instead of manual setup
+                dependencies = uth.headerdeps_result(
+                    calculator_main,
+                    kind="direct",
+                    include=str(Path(samplesdir()) / "calculator"),
+                    cache=cache_dir
+                )
+                
+                # Test cache consistency by running again
+                dependencies2 = uth.headerdeps_result(
+                    calculator_main,
+                    kind="direct", 
+                    include=str(Path(samplesdir()) / "calculator"),
+                    cache=cache_dir
+                )
         
         # Verify that calculator.h is in dependencies
         calculator_h_found = False
@@ -173,13 +204,6 @@ class TestCTCacheTypeConfiguration:
         
         assert add_h_found, f"add.H not found in dependencies with cache type {cache_type_str}. Dependencies: {dependencies}"
         
-        # Test cache consistency by running again (all cache types, not just oracle/mmap)
-        dependencies2 = uth.headerdeps_result(
-            calculator_main,
-            kind="direct", 
-            include=str(Path(samplesdir()) / "calculator"),
-            cache=cache_type_str if cache_type_str != 'None' else 'None'
-        )
         assert dependencies == dependencies2, f"Second run results differ for {cache_type_str}"
 
 

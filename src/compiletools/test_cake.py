@@ -2,6 +2,7 @@ import os
 import os.path
 import shutil
 import configargparse
+import pytest
 
 # import pdb
 
@@ -35,6 +36,7 @@ class TestCake:
         compiletools.cake.main(self._create_argv(cache_home) + extraargv)
 
 
+    @uth.requires_functional_compiler
     def test_no_git_root(self):
         with uth.TempDirContext():
             self._tmpdir = os.getcwd()

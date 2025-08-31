@@ -29,14 +29,12 @@ This design enables lock-free reads by using atomic operations and write-once
 semantics. Multiple processes can read simultaneously without contention.
 """
 
-import hashlib
 import mmap
 import os
 import struct
 import tempfile
 import threading
 import time
-from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 

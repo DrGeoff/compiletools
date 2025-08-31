@@ -3,6 +3,9 @@ import os
 import subprocess
 import argparse
 import shlex
+import tempfile
+import functools
+import textwrap
 
 # Only used for the verbose print.
 import configargparse
@@ -137,7 +140,8 @@ def add_common_arguments(cap, argv=None, variant=None):
     )
     cap.add("--CPP", help="C preprocessor (override)", default="unsupplied_implies_use_CXX")
     cap.add("--CC", help="C compiler (override)", default="gcc")
-    cap.add("--CXX", help="C++ compiler (override)", default="g++")
+    # Default will be set later using functional compiler detection
+    cap.add("--CXX", help="C++ compiler (override)", default=None)
     cap.add(
         "--CPPFLAGS",
         nargs="+",
@@ -393,9 +397,14 @@ def extract_command_line_macros(args, flag_sources=None, include_compiler_macros
     # Add compiler, platform, and architecture macros if requested
     if include_compiler_macros:
         import compiletools.compiler_macros
-        compiler = getattr(args, 'CXX', 'g++')
-        compiler_macros = compiletools.compiler_macros.get_compiler_macros(compiler, verbose)
-        macros.update(compiler_macros)
+        functional_compiler = get_functional_cxx_compiler()
+        compiler = getattr(args, 'CXX', functional_compiler)
+        if compiler is None:
+            if verbose >= 1:
+                print("Warning: No functional C++ compiler detected. Skipping compiler macros.")
+        else:
+            compiler_macros = compiletools.compiler_macros.get_compiler_macros(compiler, verbose)
+            macros.update(compiler_macros)
     
     return macros
 
@@ -403,6 +412,157 @@ def extract_command_line_macros(args, flag_sources=None, include_compiler_macros
 def clear_cache():
     """Clear any caches for macro extraction (currently no-op)."""
     pass
+
+
+@functools.lru_cache(maxsize=8)
+def _get_functional_cxx_compiler_cached(env_cxx, env_cc, env_path):
+    """Internal cached implementation of functional C++ compiler detection.
+    
+    This function tests compiler candidates to ensure they can:
+    - Execute basic version checks
+    - Compile C++20 code with -std=c++20
+    
+    Args:
+        env_cxx: Value of CXX environment variable (or None)
+        env_cc: Value of CC environment variable (or None)  
+        env_path: Value of PATH environment variable (for cache invalidation)
+    
+    Returns:
+        str: Path to working C++ compiler executable, or None if none found
+    """
+    # Compiler candidates to test, in priority order
+    candidates = []
+    
+    # Check environment variables first (user preference)
+    if env_cxx and env_cxx.strip():
+        candidates.append(env_cxx.strip())
+    if env_cc and env_cc.strip():
+        # Try adding ++ suffix for C compilers that might have C++ versions
+        cc = env_cc.strip()
+        candidates.append(cc)
+        if cc.endswith('gcc'):
+            candidates.append(cc.replace('gcc', 'g++'))
+        elif cc.endswith('clang'):
+            candidates.append(cc.replace('clang', 'clang++'))
+    
+    # Common system compiler names
+    common_compilers = ['g++', 'clang++', 'gcc', 'clang']
+    for compiler in common_compilers:
+        if compiler not in candidates:
+            candidates.append(compiler)
+    
+    # Test each candidate
+    for compiler_name in candidates:
+        if _test_compiler_functionality(compiler_name):
+            return compiler_name
+    
+    return None
+
+
+def get_functional_cxx_compiler():
+    """Detect and return a fully functional C++ compiler that supports C++20.
+    
+    IMPORTANT: This is a FALLBACK mechanism for when args.CXX is not set.
+    Production code should rely on args.CXX being properly configured by 
+    parseargs() rather than calling this function directly.
+    
+    This function tests compiler candidates to ensure they can:
+    - Execute basic version checks
+    - Compile C++20 code with -std=c++20
+    
+    The result is cached for performance since compiler detection is expensive.
+    The cache key includes environment variables so changes are detected.
+    
+    Returns:
+        str: Path to working C++ compiler executable, or None if none found
+        
+    Usage:
+        # PREFERRED - rely on parseargs() setting args.CXX:
+        args = parseargs(cap, argv)
+        compiler = args.CXX  # Already validated and set
+        
+        # FALLBACK - only when args.CXX is not available:
+        if not hasattr(args, 'CXX') or args.CXX is None:
+            compiler = get_functional_cxx_compiler()
+    """
+    # Extract environment variables for cache key
+    env_cxx = os.environ.get('CXX')
+    env_cc = os.environ.get('CC') 
+    env_path = os.environ.get('PATH')
+    
+    return _get_functional_cxx_compiler_cached(env_cxx, env_cc, env_path)
+
+
+# Expose the cache_clear method for tests
+get_functional_cxx_compiler.cache_clear = _get_functional_cxx_compiler_cached.cache_clear
+
+
+def _test_compiler_functionality(compiler_name):
+    """Test if a compiler supports the functionality needed by the test suite.
+    
+    Args:
+        compiler_name: Name or path of compiler to test
+        
+    Returns:
+        bool: True if compiler is fully functional, False otherwise
+    """
+    try:
+        # Test 1: Basic version check
+        result = subprocess.run(
+            [compiler_name, '--version'],
+            capture_output=True,
+            timeout=5,
+            text=True
+        )
+        if result.returncode != 0:
+            return False
+            
+        # Test 2: C++20 compilation test
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.cpp', delete=False) as f:
+            # Write a simple C++20 test program
+            f.write(textwrap.dedent('''
+                #include <iostream>
+                #include <string_view>
+                #include <optional>
+                #include <concepts>
+                template<typename T>
+                concept Integral = std::integral<T>;
+                int main() {
+                    std::string_view sv = "C++20 test";
+                    std::optional<int> opt = 42;
+                    return 0;
+                }
+            ''').strip())
+            test_cpp = f.name
+            
+        try:
+            # Try to compile with C++20
+            with tempfile.NamedTemporaryFile(suffix='.o', delete=False) as obj_file:
+                obj_path = obj_file.name
+                
+            result = subprocess.run([
+                compiler_name, '-std=c++20', '-c', test_cpp, '-o', obj_path
+            ], capture_output=True, timeout=10, text=True)
+            
+            success = result.returncode == 0
+            
+        finally:
+            # Cleanup test files
+            try:
+                os.unlink(test_cpp)
+            except OSError:
+                pass
+            try:
+                if 'obj_path' in locals():
+                    os.unlink(obj_path)
+            except OSError:
+                pass
+                
+        return success
+        
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, 
+            FileNotFoundError, OSError):
+        return False
 
 
 def _add_flags_from_pkg_config(args):
@@ -770,6 +930,18 @@ def parseargs(cap, argv, verbose=None):
         print(f"Parsing commandline arguments has occured. Before substitutions args={args}")
 
     substitutions(args, verbose)
+
+    # Set CXX default if not specified and a functional compiler is available
+    if hasattr(args, 'CXX') and args.CXX is None:
+        functional_compiler = get_functional_cxx_compiler()
+        if functional_compiler:
+            args.CXX = functional_compiler
+            if verbose >= 6:
+                print(f"Set CXX to detected functional compiler: {functional_compiler}")
+        else:
+            # Leave as None to trigger appropriate error handling downstream
+            if verbose >= 6:
+                print("No functional C++ compiler detected, leaving CXX as None")
 
     if verbose > 8:
         print("parseargs has completed.  Returning args")

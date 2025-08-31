@@ -2,13 +2,16 @@
 
 from pathlib import Path
 import configargparse
+import pytest
 
 import compiletools.headerdeps as headerdeps
 import compiletools.hunter as hunter
 import compiletools.magicflags as magicflags
 import compiletools.apptools
+import compiletools.testhelper as uth
 
 
+@uth.requires_functional_compiler
 def test_macro_state_dependency_is_fixed():
     """Demonstrate that different macro states produce different results"""
     
@@ -79,6 +82,7 @@ def test_macro_state_dependency_is_fixed():
     print("would have included release.h due to cached results.")
 
 
+@uth.requires_functional_compiler
 def test_hunter_respects_macro_state_changes():
     """Test that Hunter correctly handles macro state changes (regression test)
     

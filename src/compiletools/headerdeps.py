@@ -1,5 +1,4 @@
 import os
-import re
 import functools
 
 # At deep verbose levels pprint is used
@@ -167,18 +166,12 @@ class HeaderDepsBase(object):
         # print("HeaderDepsBase::clear_cache")
         import compiletools.apptools
         compiletools.apptools.clear_cache()
-        # Clear SimplePreprocessor cache
-        from compiletools.simple_preprocessor import SimplePreprocessor
-        SimplePreprocessor.clear_cache()
         DirectHeaderDeps.clear_cache()
         CppHeaderDeps.clear_cache()
 
 
 class DirectHeaderDeps(HeaderDepsBase):
     """Create a tree structure that shows the header include tree"""
-    
-    # Class-level cache for include lists: (file_hash, macro_signature) -> (includes, final_macro_state)
-    _include_list_cache = {}
 
     def __init__(self, args, file_analyzer_cache=None):
         HeaderDepsBase.__init__(self, args)
@@ -201,10 +194,6 @@ class DirectHeaderDeps(HeaderDepsBase):
         
         # Initialize includes and macros
         self._initialize_includes_and_macros()
-    
-    def _create_macro_signature(self):
-        """Create a hashable signature of the current macro state."""
-        return tuple(sorted(self.defined_macros.items()))
     
     def get_file_analyzer_cache(self):
         """Get the shared FileAnalyzer cache for reuse by other components."""
@@ -274,19 +263,6 @@ class DirectHeaderDeps(HeaderDepsBase):
 
     def _create_include_list(self, realpath):
         """Internal use. Create the list of includes for the given file"""
-        # DISABLE CACHING for correctness - macro state dependency is complex
-        # TODO: Implement proper functional caching that handles macro state evolution
-        # from compiletools.global_hash_registry import get_file_hash
-        # file_hash = get_file_hash(realpath)
-        # initial_macro_state = dict(self.defined_macros)
-        # initial_macro_signature = tuple(sorted(initial_macro_state.items()))
-        # cache_key = (file_hash, initial_macro_signature)
-        # 
-        # if cache_key in DirectHeaderDeps._include_list_cache:
-        #     includes, macro_changes = DirectHeaderDeps._include_list_cache[cache_key]
-        #     self.defined_macros.update(macro_changes)
-        #     return includes
-        
         max_read_size = getattr(self.args, 'max_file_read_size', 0)
         
         # Use FileAnalyzer for efficient file reading and pattern detection  
@@ -317,12 +293,6 @@ class DirectHeaderDeps(HeaderDepsBase):
                 # Normal case: only include if this line is active after preprocessing and not commented
                 if include_info['line_num'] in active_line_set and not include_info['is_commented']:
                     includes.append(include_info['filename'])
-        
-        # CACHING DISABLED
-        # final_macro_state = dict(self.defined_macros)
-        # macro_changes = {k: v for k, v in final_macro_state.items() 
-        #                 if k not in initial_macro_state or initial_macro_state[k] != v}
-        # DirectHeaderDeps._include_list_cache[cache_key] = (includes.copy(), macro_changes)
         
         return includes
 
@@ -393,9 +363,6 @@ class DirectHeaderDeps(HeaderDepsBase):
         # Add current file after processing includes (depth-first order)
         results_order.append(realpath)
 
-    # TODO: Stop writing to the same cache as CPPHeaderDeps.
-    # Because the magic flags rely on the .deps cache, this hack was put in
-    # place.
     # NOTE: Cache removed due to macro state dependency - cache was keyed only on file path
     # but results depend on self.defined_macros which can change between calls
     def _process_impl(self, realpath):
@@ -421,8 +388,6 @@ class DirectHeaderDeps(HeaderDepsBase):
         # print("DirectHeaderDeps::clear_cache")
         DirectHeaderDeps._search_project_includes.cache_clear()
         DirectHeaderDeps._find_include.cache_clear()
-        # Clear new class-level caches added for performance optimization
-        DirectHeaderDeps._include_list_cache.clear()
 
 
 class CppHeaderDeps(HeaderDepsBase):

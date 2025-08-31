@@ -7,127 +7,32 @@ import tempfile
 import textwrap
 from pathlib import Path
 import compiletools.apptools
-import subprocess
 import functools
+import pytest
 
 # The abbreviation "uth" is often used for this "testhelper"
 
 
-@functools.lru_cache(maxsize=1)
-def get_functional_cxx_compiler():
-    """Detect and return a fully functional C++ compiler that supports C++20.
-    
-    This function tests compiler candidates to ensure they can:
-    - Execute basic version checks
-    - Compile C++20 code with -std=c++20
-    
-    The result is cached for performance since compiler detection is expensive.
-    
-    Returns:
-        str: Path to working C++ compiler executable, or None if none found
-        
-    Example:
-        compiler = uth.get_functional_cxx_compiler()
-        if compiler:
-            subprocess.run([compiler, '-std=c++20', '-c', 'test.cpp'])
-        else:
-            pytest.skip("No functional C++ compiler available")
-    """
-    # Compiler candidates to test, in priority order
-    candidates = []
-    
-    # Check environment variables first (user preference)
-    if 'CXX' in os.environ and os.environ['CXX'].strip():
-        candidates.append(os.environ['CXX'].strip())
-    if 'CC' in os.environ and os.environ['CC'].strip():
-        # Try adding ++ suffix for C compilers that might have C++ versions
-        cc = os.environ['CC'].strip()
-        candidates.append(cc)
-        if cc.endswith('gcc'):
-            candidates.append(cc.replace('gcc', 'g++'))
-        elif cc.endswith('clang'):
-            candidates.append(cc.replace('clang', 'clang++'))
-    
-    # Common system compiler names
-    common_compilers = ['g++', 'clang++', 'gcc', 'clang']
-    for compiler in common_compilers:
-        if compiler not in candidates:
-            candidates.append(compiler)
-    
-    # Test each candidate
-    for compiler_name in candidates:
-        if _test_compiler_functionality(compiler_name):
-            return compiler_name
-    
-    return None
 
 
-def _test_compiler_functionality(compiler_name):
-    """Test if a compiler supports the functionality needed by the test suite.
+def requires_functional_compiler(func):
+    """Decorator to skip tests that require a functional C++ compiler.
     
-    Args:
-        compiler_name: Name or path of compiler to test
-        
-    Returns:
-        bool: True if compiler is fully functional, False otherwise
+    This decorator checks if a functional C++ compiler is available and 
+    automatically skips the test with an appropriate message if none is found.
+    
+    Usage:
+        @requires_functional_compiler
+        def test_something_that_needs_compiler(self):
+            # Test code that requires a C++ compiler
+            pass
     """
-    try:
-        # Test 1: Basic version check
-        result = subprocess.run(
-            [compiler_name, '--version'],
-            capture_output=True,
-            timeout=5,
-            text=True
-        )
-        if result.returncode != 0:
-            return False
-            
-        # Test 2: C++20 compilation test
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.cpp', delete=False) as f:
-            # Write a simple C++20 test program
-            f.write('''
-#include <iostream>
-#include <string_view>
-#include <optional>
-#include <concepts>
-template<typename T>
-concept Integral = std::integral<T>;
-int main() {
-    std::string_view sv = "C++20 test";
-    std::optional<int> opt = 42;
-    return 0;
-}
-''')
-            test_cpp = f.name
-            
-        try:
-            # Try to compile with C++20
-            with tempfile.NamedTemporaryFile(suffix='.o', delete=False) as obj_file:
-                obj_path = obj_file.name
-                
-            result = subprocess.run([
-                compiler_name, '-std=c++20', '-c', test_cpp, '-o', obj_path
-            ], capture_output=True, timeout=10, text=True)
-            
-            success = result.returncode == 0
-            
-        finally:
-            # Cleanup test files
-            try:
-                os.unlink(test_cpp)
-            except OSError:
-                pass
-            try:
-                if 'obj_path' in locals():
-                    os.unlink(obj_path)
-            except OSError:
-                pass
-                
-        return success
-        
-    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, 
-            FileNotFoundError, OSError):
-        return False
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        if compiletools.apptools.get_functional_cxx_compiler() is None:
+            pytest.skip("No functional C++ compiler detected")
+        return func(*args, **kwargs)
+    return wrapper
 
 
 def reset():
@@ -177,7 +82,7 @@ def create_temp_config(tempdir=None, filename=None, extralines=[]):
     Note: User is responsible for removing the config file when finished
     """
     # Try to get a functional C++ compiler
-    functional_cxx = get_functional_cxx_compiler()
+    functional_cxx = compiletools.apptools.get_functional_cxx_compiler()
     
     # Determine CC and CXX values
     if functional_cxx:

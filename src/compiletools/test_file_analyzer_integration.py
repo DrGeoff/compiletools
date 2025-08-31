@@ -9,8 +9,10 @@ import tempfile
 import configargparse
 from textwrap import dedent
 from unittest.mock import patch
+import pytest
 
 import compiletools.test_base as tb
+import compiletools.testhelper as uth
 import compiletools.headerdeps
 import compiletools.magicflags
 
@@ -191,7 +193,8 @@ class TestMagicFlagsIntegration(tb.BaseCompileToolsTestCase):
         # Create instances using the shared args
         headerdeps = compiletools.headerdeps.DirectHeaderDeps(args)
         return compiletools.magicflags.DirectMagicFlags(args, headerdeps)
-        
+    
+    @uth.requires_functional_compiler
     def test_magic_flags_basic_detection(self):
         """Test basic magic flag detection."""
         main_content = dedent('''
@@ -213,6 +216,7 @@ class TestMagicFlagsIntegration(tb.BaseCompileToolsTestCase):
         assert "//#CFLAGS=-O2 -g" in result
         assert "//#LDFLAGS=-static" in result
         
+    @uth.requires_functional_compiler
     def test_magic_flags_with_max_read_size(self):
         """Test magic flags with limited read size."""
         main_content = '''//#LIBS=early_lib
@@ -229,6 +233,7 @@ int main() { return 0; }'''
         # Should find early magic flag
         assert "//#LIBS=early_lib" in result
         
+    @uth.requires_functional_compiler
     def test_magic_flags_conditional_compilation(self):
         """Test magic flags with conditional compilation."""
         main_content = dedent('''
@@ -252,6 +257,7 @@ int main() { return 0; }'''
         # Should not include opengl lib (USE_GRAPHICS not defined)
         # Note: This depends on preprocessor behavior
         
+    @uth.requires_functional_compiler
     def test_magic_flags_with_headers(self):
         """Test magic flags processing with header files."""
         header_content = dedent('''
@@ -275,6 +281,7 @@ int main() { return 0; }'''
         assert "//#CFLAGS=-DHEADER_FEATURE" in result
         assert "//#LIBS=main_lib" in result
         
+    @uth.requires_functional_compiler
     def test_magic_flags_stringzilla_fallback_behavior(self):
         """Test StringZilla fallback to Legacy when StringZilla unavailable."""
         main_content = '''//#LIBS=testlib
@@ -293,6 +300,7 @@ int main() { return 0; }'''
             result = magicflags.readfile(main_path)
             assert "//#LIBS=testlib" in result
             
+    @uth.requires_functional_compiler
     def test_magic_flags_iterative_macro_discovery(self):
         """Test iterative processing for macro discovery."""
         header_content = "#define ENABLE_FEATURE 1"

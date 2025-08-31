@@ -1,6 +1,7 @@
 import os
 import io
 from contextlib import redirect_stdout
+import pytest
 
 from importlib import reload
 
@@ -18,6 +19,7 @@ def _reload_ct_with_cache(cache_home):
         return cache_home
 
 
+@uth.requires_functional_compiler
 def test_cppdeps():
     uth.reset()
     
