@@ -135,12 +135,8 @@ def test_linker_features(temp_dir):
     if functional_compiler is None:
         pytest.skip("No functional C++ compiler detected")
         
-    # Derive C compiler from C++ compiler if possible
-    c_compiler = functional_compiler
-    if functional_compiler.endswith('g++'):
-        c_compiler = functional_compiler[:-2] + 'cc'  # g++ -> gcc
-    elif functional_compiler.endswith('clang++'):
-        c_compiler = 'clang'  # clang++ -> clang
+    # Derive C compiler from C++ compiler
+    c_compiler = compiletools.apptools.derive_c_compiler_from_cxx(functional_compiler)
     
     # Create a simple test object to link
     test_c = os.path.join(temp_dir, 'test_linker.c')
@@ -168,12 +164,8 @@ def test_fPIC_support(temp_dir):
     if functional_compiler is None:
         pytest.skip("No functional C++ compiler detected")
         
-    # Derive C compiler from C++ compiler if possible
-    c_compiler = functional_compiler
-    if functional_compiler.endswith('g++'):
-        c_compiler = functional_compiler[:-2] + 'cc'  # g++ -> gcc
-    elif functional_compiler.endswith('clang++'):
-        c_compiler = 'clang'  # clang++ -> clang
+    # Derive C compiler from C++ compiler
+    c_compiler = compiletools.apptools.derive_c_compiler_from_cxx(functional_compiler)
         
     test_c = os.path.join(temp_dir, 'test_fpic.c')
     test_o = os.path.join(temp_dir, 'test_fpic.o')
