@@ -2,7 +2,6 @@ import os
 import os.path
 import shutil
 import configargparse
-import pytest
 
 # import pdb
 

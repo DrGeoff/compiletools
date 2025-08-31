@@ -2,7 +2,6 @@
 
 from pathlib import Path
 import configargparse
-import pytest
 
 import compiletools.headerdeps as headerdeps
 import compiletools.hunter as hunter

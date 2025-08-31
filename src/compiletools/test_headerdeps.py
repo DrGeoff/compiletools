@@ -1,7 +1,6 @@
 import os
 import sys
 import configargparse
-import pytest
 import compiletools.test_base as tb
 
 from importlib import reload
