@@ -727,7 +727,8 @@ class DirectMagicFlags(MagicFlagsBase):
         max_iterations = 5  # Prevent infinite loops
         iteration = 0
         
-        while set(previous_macros.keys()) != set(self.defined_macros.keys()) and iteration < max_iterations:
+        # Use do-while style to ensure at least one iteration
+        while True:
             previous_macros = self.defined_macros.copy()
             iteration += 1
             
@@ -774,6 +775,10 @@ class DirectMagicFlags(MagicFlagsBase):
                 )
                 
                 text += file_header + processed_content + "\n"
+            
+            # Break if no new macros discovered or max iterations reached
+            if set(previous_macros.keys()) == set(self.defined_macros.keys()) or iteration >= max_iterations:
+                break
 
         return text
 
