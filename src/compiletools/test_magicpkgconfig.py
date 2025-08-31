@@ -121,51 +121,27 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                 cxxflags = " ".join(parsed_flags["CXXFLAGS"])
                 
                 # Check that pkg-config results are present (basic validation)
-                try:
-                    zlib_cflags = subprocess.run(
-                        ["pkg-config", "--cflags", "zlib"], 
-                        capture_output=True, text=True, check=True
-                    ).stdout.strip().replace("-I", "-isystem ")
-                    
-                    libcrypt_cflags = subprocess.run(
-                        ["pkg-config", "--cflags", "libcrypt"], 
-                        capture_output=True, text=True, check=True
-                    ).stdout.strip().replace("-I", "-isystem ")
-                    
-                    # Verify the parsed flags contain the expected pkg-config results
-                    if zlib_cflags:
-                        assert zlib_cflags in cxxflags
-                    if libcrypt_cflags:
-                        assert libcrypt_cflags in cxxflags
-                        
-                except subprocess.CalledProcessError:
-                    # pkg-config might fail for missing packages, but the test should still parse the PKG-CONFIG directive
-                    pass
+                zlib_cflags = compiletools.magicflags.cached_pkg_config("zlib", "--cflags").replace("-I", "-isystem ")
+                libcrypt_cflags = compiletools.magicflags.cached_pkg_config("libcrypt", "--cflags").replace("-I", "-isystem ")
+                
+                # Verify the parsed flags contain the expected pkg-config results
+                if zlib_cflags:
+                    assert zlib_cflags in cxxflags
+                if libcrypt_cflags:
+                    assert libcrypt_cflags in cxxflags
                 
                 # Verify LDFLAGS were extracted 
                 assert "LDFLAGS" in parsed_flags
                 ldflags = " ".join(parsed_flags["LDFLAGS"])
                 
-                try:
-                    zlib_libs = subprocess.run(
-                        ["pkg-config", "--libs", "zlib"], 
-                        capture_output=True, text=True, check=True
-                    ).stdout.strip()
-                    
-                    libcrypt_libs = subprocess.run(
-                        ["pkg-config", "--libs", "libcrypt"], 
-                        capture_output=True, text=True, check=True
-                    ).stdout.strip()
-                    
-                    # Verify the parsed flags contain the expected pkg-config results
-                    if zlib_libs:
-                        assert zlib_libs in ldflags
-                    if libcrypt_libs:
-                        assert libcrypt_libs in ldflags
-                        
-                except subprocess.CalledProcessError:
-                    # pkg-config might fail for missing packages
-                    pass
+                zlib_libs = compiletools.magicflags.cached_pkg_config("zlib", "--libs")
+                libcrypt_libs = compiletools.magicflags.cached_pkg_config("libcrypt", "--libs")
+                
+                # Verify the parsed flags contain the expected pkg-config results
+                if zlib_libs:
+                    assert zlib_libs in ldflags
+                if libcrypt_libs:
+                    assert libcrypt_libs in ldflags
 
 
     @uth.requires_functional_compiler

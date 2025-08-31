@@ -46,6 +46,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert set(result.get("SOURCE")) == expected_source
 
     @uth.requires_functional_compiler
+    @uth.requires_pkg_config("zlib")
     def test_lotsofmagic(self):
         """Test parsing multiple magic flags from a complex file"""
         result = self._parse_with_magic("cpp", "lotsofmagic/lotsofmagic.cpp")
@@ -63,17 +64,10 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert "-lm" in ldflags  # From explicit //#LDFLAGS=-lm
         
         # Check that pkg-config flags were added (if pkg-config available)
-        try:
-            import subprocess
-            zlib_libs = subprocess.run(["pkg-config", "--libs", "zlib"], 
-                                     capture_output=True, text=True, check=True)
-            if zlib_libs.stdout.strip():
-                # The entire pkg-config output should be in LDFLAGS as a single item
-                pkg_output = zlib_libs.stdout.strip()
-                assert pkg_output in ldflags, f"Expected '{pkg_output}' from pkg-config to be in LDFLAGS"
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            # pkg-config not available or zlib not found - that's ok
-            pass
+        zlib_libs = compiletools.magicflags.cached_pkg_config("zlib", "--libs")
+        if zlib_libs:
+            # The entire pkg-config output should be in LDFLAGS as a single item
+            assert zlib_libs in ldflags, f"Expected '{zlib_libs}' from pkg-config to be in LDFLAGS"
             
         # Check that PKG-CONFIG processing adds empty entries for flag types
         assert "CPPFLAGS" in result
