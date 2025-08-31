@@ -459,6 +459,23 @@ def _get_functional_cxx_compiler_cached(env_cxx, env_cc, env_path):
     return None
 
 
+def derive_c_compiler_from_cxx(cxx_compiler):
+    """Derive a C compiler from a C++ compiler name.
+    
+    Args:
+        cxx_compiler (str): C++ compiler name (e.g., 'g++', 'clang++')
+        
+    Returns:
+        str: Corresponding C compiler name (e.g., 'gcc', 'clang')
+    """
+    cxx_to_c_map = {
+        'g++': 'gcc',
+        'clang++': 'clang',
+    }
+    
+    return cxx_to_c_map.get(cxx_compiler, cxx_compiler)
+
+
 def get_functional_cxx_compiler():
     """Detect and return a fully functional C++ compiler that supports C++20.
     
