@@ -202,6 +202,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         expected_headers = ["cppflags_feature.hpp", "cflags_feature.hpp", "cxxflags_feature.hpp"]
         _assert_headers_present(result_set, expected_headers)
 
+    @uth.requires_functional_compiler
     def test_compiler_builtin_macro_recognition(self):
         filename = self._get_sample_path("cppflags_macros/compiler_builtin_test.cpp")
         result_set = uth.headerdeps_result(
@@ -252,6 +253,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         _assert_headers_present(result_set, ["version2_feature.hpp"])
         _assert_headers_absent(result_set, ["version1_feature.hpp", "version3_feature.hpp", "default_feature.hpp"])
 
+    @uth.requires_functional_compiler
     def test_elif_matches_cpp_preprocessor(self):
         filename = self._get_sample_path("cppflags_macros/elif_test.cpp")
         scenarios = [
@@ -274,6 +276,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         _assert_headers_present(result_set, expected_headers)
         _assert_headers_absent(result_set, forbidden_headers)
 
+    @uth.requires_functional_compiler
     def test_advanced_preprocessor_matches_cpp_preprocessor(self):
         filename = self._get_sample_path("cppflags_macros/advanced_preprocessor_test.cpp")
         scenarios = [
@@ -284,6 +287,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         ]
         _run_scenario_test(filename, scenarios)
 
+    @uth.requires_functional_compiler
     def test_multiply_nested_macros_with_complex_logic(self):
         filename = self._get_sample_path("cppflags_macros/nested_macros_test.cpp")
         scenarios = [

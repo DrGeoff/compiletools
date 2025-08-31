@@ -34,6 +34,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         result = self._parse_with_magic(None, "simple/test_cflags.c")
         assert self._check_flags(result, "CFLAGS", ["-std=gnu99"], [])
 
+    @uth.requires_functional_compiler
     def test_SOURCE_direct(self):
         """Test SOURCE detection using direct magic"""
         result = self._parse_with_magic("direct", "cross_platform/cross_platform.cpp")
@@ -86,6 +87,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         }
         assert result == expected
 
+    @uth.requires_functional_compiler
     def test_SOURCE_in_header_direct(self):
         """Test SOURCE detection from header files using direct magic"""
         result = self._parse_with_magic("direct", "magicsourceinheader/main.cpp")
@@ -210,6 +212,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert self._check_flags(result_direct, "LDFLAGS", new_api_flags, old_api_flags), \
             "DirectMagicFlags must have feature parity with CppMagicFlags for complex #if expressions"
 
+    @uth.requires_functional_compiler
     def test_myapp_version_dependent_api_regression(self):
         """Test that external header version macros work correctly for MYAPP API selection"""
         
@@ -311,6 +314,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         The bug exists but is corrected in later iterations, making it hard to test."""
         pass
     
+    @uth.requires_functional_compiler
     def test_system_header_macro_extraction_bug_fix(self):
         """Test that DirectMagicFlags has the system header macro extraction fix
         

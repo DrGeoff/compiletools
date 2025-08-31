@@ -48,7 +48,7 @@ class TestVariant:
                 exedir=uth.cakedir(),
                 gitroot=os.getcwd(),
             )
-            assert "debug" == variant
+            assert "dbg" == variant
 
     def test_extract_variant_from_blank_argv(self):
         # Force to find the temp directory ct.conf
@@ -62,7 +62,7 @@ class TestVariant:
                 verbose=0,
                 gitroot=os.getcwd(),
             )
-            assert "debug" == variant
+            assert "foo.debug" == variant
 
 
     def test_default_configs(self):

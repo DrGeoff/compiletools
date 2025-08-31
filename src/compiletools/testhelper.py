@@ -136,7 +136,6 @@ def create_temp_config(tempdir=None, filename=None, extralines=[]):
         tf_handle, filename = tempfile.mkstemp(suffix=".conf", text=True, dir=tempdir)
 
     with open(filename, "w") as ff:
-        ff.write("ID=GNU\n")
         ff.write(f"CC={CC}\n")
         ff.write(f"CXX={CXX}\n")
         ff.write('CPPFLAGS="-std=c++20"\n')
@@ -146,7 +145,7 @@ def create_temp_config(tempdir=None, filename=None, extralines=[]):
     return filename
 
 
-def create_temp_ct_conf(tempdir, defaultvariant="debug", extralines=[]):
+def create_temp_ct_conf(tempdir, defaultvariant="dbg", extralines=[]):
     """User is responsible for removing the config file when
     they are finished
     """

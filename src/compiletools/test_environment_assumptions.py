@@ -305,6 +305,7 @@ int main() {
     assert result.returncode == 0, f"Compiler does not support -Wall: {result.stderr}"
 
 
+@uth.requires_functional_compiler
 def test_create_temp_config_uses_detected_compiler(temp_dir):
     """Test that create_temp_config integrates with compiler detection."""
     config_path = uth.create_temp_config(tempdir=temp_dir)

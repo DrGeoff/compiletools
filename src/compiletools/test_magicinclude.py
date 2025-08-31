@@ -12,6 +12,7 @@ import compiletools.test_base as tb
 class TestMagicInclude(tb.BaseCompileToolsTestCase):
 
 
+    @uth.requires_functional_compiler
     def test_magicinclude(self):
         # This test is to ensure that the //#INCLUDE magic flag
         # works to pick up subdir/important.hpp
@@ -41,6 +42,7 @@ class TestMagicInclude(tb.BaseCompileToolsTestCase):
             relativepaths = ["magicinclude/main.cpp"]
             self._verify_one_exe_per_main(relativepaths, search_dir=tmpdir)
 
+    @uth.requires_functional_compiler
     def test_magicinclude_append(self):
         # This test is to ensure that the //#INCLUDE magic flag
         # works to pick up subdir/important.hpp        
