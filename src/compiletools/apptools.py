@@ -6,6 +6,7 @@ import shlex
 import tempfile
 import functools
 import textwrap
+import warnings
 
 # Only used for the verbose print.
 import configargparse
@@ -410,8 +411,9 @@ def extract_command_line_macros(args, flag_sources=None, include_compiler_macros
 
 
 def clear_cache():
-    """Clear any caches for macro extraction (currently no-op)."""
-    pass
+    """Clear any caches for macro extraction and pkg-config."""
+    cached_pkg_config.cache_clear()
+    _get_functional_cxx_compiler_cached.cache_clear()
 
 
 @functools.lru_cache(maxsize=8)
@@ -582,10 +584,30 @@ def _test_compiler_functionality(compiler_name):
         return False
 
 
-def _add_flags_from_pkg_config(args):
-    # Import cached pkg-config function to avoid redundant subprocess calls
-    from compiletools.magicflags import cached_pkg_config
+@functools.lru_cache(maxsize=None)
+def cached_pkg_config(package, option):
+    """Cache pkg-config results for package and option (--cflags or --libs)"""
+    # First check if the package exists
+    exists_result = subprocess.run(
+        ["pkg-config", "--exists", package],
+        capture_output=True,
+        check=False
+    )
+    if exists_result.returncode != 0:
+        # Package doesn't exist, return empty string
+        # TODO: Switch from warnings to logging for pkg-config messages
+        warnings.warn(f"pkg-config package '{package}' not found", UserWarning)
+        return ""
     
+    result = subprocess.run(
+        ["pkg-config", option, package],
+        stdout=subprocess.PIPE,
+        universal_newlines=True,
+    )
+    return result.stdout.rstrip()
+
+
+def _add_flags_from_pkg_config(args):
     for pkg in args.pkg_config:
         cflags = (
             cached_pkg_config(pkg, "--cflags")

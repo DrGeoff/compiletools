@@ -6,6 +6,7 @@ import compiletools.testhelper as uth
 import compiletools.utils
 import compiletools.cake
 import compiletools.magicflags
+import compiletools.apptools
 import compiletools.headerdeps
 import compiletools.test_base as tb
 
@@ -121,8 +122,8 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                 cxxflags = " ".join(parsed_flags["CXXFLAGS"])
                 
                 # Check that pkg-config results are present (basic validation)
-                zlib_cflags = compiletools.magicflags.cached_pkg_config("zlib", "--cflags").replace("-I", "-isystem ")
-                libcrypt_cflags = compiletools.magicflags.cached_pkg_config("libcrypt", "--cflags").replace("-I", "-isystem ")
+                zlib_cflags = compiletools.apptools.cached_pkg_config("zlib", "--cflags").replace("-I", "-isystem ")
+                libcrypt_cflags = compiletools.apptools.cached_pkg_config("libcrypt", "--cflags").replace("-I", "-isystem ")
                 
                 # Verify the parsed flags contain the expected pkg-config results
                 if zlib_cflags:
@@ -134,8 +135,8 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                 assert "LDFLAGS" in parsed_flags
                 ldflags = " ".join(parsed_flags["LDFLAGS"])
                 
-                zlib_libs = compiletools.magicflags.cached_pkg_config("zlib", "--libs")
-                libcrypt_libs = compiletools.magicflags.cached_pkg_config("libcrypt", "--libs")
+                zlib_libs = compiletools.apptools.cached_pkg_config("zlib", "--libs")
+                libcrypt_libs = compiletools.apptools.cached_pkg_config("libcrypt", "--libs")
                 
                 # Verify the parsed flags contain the expected pkg-config results
                 if zlib_libs:

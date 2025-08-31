@@ -1,9 +1,6 @@
 import sys
 import os
-import subprocess
 import re
-import functools
-import warnings
 from collections import defaultdict
 import compiletools.utils
 from compiletools.utils import cached_shlex_split
@@ -17,29 +14,7 @@ import compiletools.compiler_macros
 import compiletools.dirnamer
 from compiletools.file_analyzer import create_file_analyzer
 from compiletools.simple_preprocessor import SimplePreprocessor
-
-
-@functools.lru_cache(maxsize=None)
-def cached_pkg_config(package, option):
-    """Cache pkg-config results for package and option (--cflags or --libs)"""
-    # First check if the package exists
-    exists_result = subprocess.run(
-        ["pkg-config", "--exists", package],
-        capture_output=True,
-        check=False
-    )
-    if exists_result.returncode != 0:
-        # Package doesn't exist, return empty string
-        # TODO: Switch from warnings to logging for pkg-config messages
-        warnings.warn(f"pkg-config package '{package}' not found", UserWarning)
-        return ""
-    
-    result = subprocess.run(
-        ["pkg-config", option, package],
-        stdout=subprocess.PIPE,
-        universal_newlines=True,
-    )
-    return result.stdout.rstrip()
+from compiletools.apptools import cached_pkg_config
 
 
 
@@ -353,7 +328,6 @@ class MagicFlagsBase:
         DirectMagicFlags.clear_cache()
         CppMagicFlags.clear_cache()
         # Clear LRU caches
-        cached_pkg_config.cache_clear()
         compiletools.utils.cached_shlex_split.cache_clear()
 
 

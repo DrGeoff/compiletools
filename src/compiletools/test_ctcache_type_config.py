@@ -140,7 +140,6 @@ class TestCTCacheTypeConfiguration:
         main.cpp → calculator.h → calculator.cpp → add.H → (build system discovers) → add.C
         """
         import compiletools.testhelper as uth
-        import tempfile
         
         # Set cache type environment
         os.environ['CTCACHE_TYPE'] = cache_type_str

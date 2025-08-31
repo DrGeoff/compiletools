@@ -2,6 +2,8 @@
 import pytest
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
+import compiletools.magicflags
+import compiletools.apptools
 
 
 class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
@@ -64,7 +66,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert "-lm" in ldflags  # From explicit //#LDFLAGS=-lm
         
         # Check that pkg-config flags were added (if pkg-config available)
-        zlib_libs = compiletools.magicflags.cached_pkg_config("zlib", "--libs")
+        zlib_libs = compiletools.apptools.cached_pkg_config("zlib", "--libs")
         if zlib_libs:
             # The entire pkg-config output should be in LDFLAGS as a single item
             assert zlib_libs in ldflags, f"Expected '{zlib_libs}' from pkg-config to be in LDFLAGS"

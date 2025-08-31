@@ -9,7 +9,6 @@ import tempfile
 import configargparse
 from textwrap import dedent
 from unittest.mock import patch
-import pytest
 
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
