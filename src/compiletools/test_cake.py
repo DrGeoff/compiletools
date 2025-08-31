@@ -246,20 +246,24 @@ class TestCake:
             # Check that only the expected timestamps have changed
             self._verify_timestamps(expected_changes, prets, postts)
 
+    @uth.requires_functional_compiler
     def test_source_edit_recompiles(self):
         """ Make sure that when the source file is altered that a rebuild occurs """
         self._compile_edit_compile(["main.cpp"], ["main.cpp", "main.o", "main"])
 
+    @uth.requires_functional_compiler
     def test_header_edit_recompiles(self):
         """ Make sure that when a header file is altered that a rebuild occurs """
         self._compile_edit_compile(
             ["extra.hpp"], ["extra.hpp", "extra.o", "main.o", "main"]
         )
 
+    @uth.requires_functional_compiler
     def test_dependent_source_edit_recompiles(self):
         """ Make sure that when an implied source file is altered that a rebuild occurs """
         self._compile_edit_compile(["extra.cpp"], ["extra.cpp", "extra.o", "main"])
 
+    @uth.requires_functional_compiler
     def test_deeper_include_edit_recompiles(self):
         """ Make sure that when a deeper include file is put into extra.hpp that a rebuild occurs """
         self._compile_edit_compile(

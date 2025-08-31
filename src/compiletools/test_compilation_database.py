@@ -9,6 +9,7 @@ class TestCompilationDatabase:
     def setup_method(self):
         uth.reset()
 
+    @uth.requires_functional_compiler
     def test_basic_compilation_database_creation(self):
         """Test basic compilation database creation with simple C++ files"""
         
@@ -51,6 +52,7 @@ class TestCompilationDatabase:
                             assert len(cmd["arguments"]) > 0
                             assert cmd["arguments"][0].endswith(("gcc", "g++", "clang", "clang++"))
 
+    @uth.requires_functional_compiler
     def test_compilation_database_with_relative_paths(self):
         """Test compilation database creation with relative paths option"""
         
@@ -81,6 +83,7 @@ class TestCompilationDatabase:
                             # File path should be relative when --relative-paths is used
                             assert not cmd["file"].startswith("/"), f"File path should be relative with --relative-paths, got: {cmd['file']}"
 
+    @uth.requires_functional_compiler
     def test_compilation_database_creator_class(self):
         """Test the CompilationDatabaseCreator class directly"""
         

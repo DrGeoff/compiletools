@@ -8,6 +8,7 @@ import compiletools.test_base
 # Although this is virtually identical to the test_cake.py, we can't merge the tests due to memoized results.
 class TestMovingHeaders(compiletools.test_base.BaseCompileToolsTestCase):
 
+    @uth.requires_functional_compiler
     def test_moving_headers(self):
         # The concept of this test is to check that ct-cake copes with header files being changed directory
         
