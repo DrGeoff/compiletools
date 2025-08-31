@@ -1,6 +1,7 @@
 import os
 import sys
 import configargparse
+import pytest
 import compiletools.test_base as tb
 
 from importlib import reload
@@ -114,6 +115,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         compiletools.headerdeps.add_arguments(cap)
 
 
+    @uth.requires_functional_compiler
     def test_direct_and_cpp_generate_same_results(self):
         filenames = [
             "factory/test_factory.cpp",
@@ -154,14 +156,17 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
 
             # The key test: both HeaderDeps implementations should produce the same results
             assert set(directresults) == set(cppresults)
+    @uth.requires_functional_compiler
     def test_direct_and_cpp_generate_same_results_ex(self):
         self._direct_and_cpp_generate_same_results_ex()
 
+    @uth.requires_functional_compiler
     def test_conditional_includes(self):
         """Test that DirectHeaderDeps correctly handles conditional includes"""
         filename = self._get_sample_path("conditional_includes/main.cpp")
         tb.compare_direct_cpp_headers(self, filename)
 
+    @uth.requires_functional_compiler
     def test_user_defined_feature_headers(self):
         """Test that DirectHeaderDeps correctly handles user-defined feature macros"""
         filename = self._get_sample_path("feature_headers/main.cpp")

@@ -1,4 +1,5 @@
 import os
+import pytest
 import configargparse
 import compiletools.testhelper as uth
 import compiletools.dirnamer
@@ -102,8 +103,10 @@ def create_magic_parser(extraargs=None, cache_home="None", tempdir=None):
     headerdeps = compiletools.headerdeps.create(args)
     return compiletools.magicflags.create(args, headerdeps)
 
+@uth.requires_functional_compiler
 def compare_direct_cpp_magic(test_case, relativepath, tempdir=None):
     """Utility to test that DirectMagicFlags and CppMagicFlags produce identical results"""
+        
     with uth.TempDirContext() as _:
         if tempdir is not None:
             # If specific tempdir provided, copy current working dir content there
@@ -115,12 +118,24 @@ def compare_direct_cpp_magic(test_case, relativepath, tempdir=None):
         # Test direct parser with isolated context
         with uth.ParserContext():
             magicparser_direct = create_magic_parser(["--magic", "direct"], tempdir=os.getcwd())
-            result_direct = magicparser_direct.parse(realpath)
+            try:
+                result_direct = magicparser_direct.parse(realpath)
+            except RuntimeError as e:
+                if "No functional C++ compiler detected" in str(e):
+                    pytest.skip("No functional C++ compiler detected")
+                else:
+                    raise
         
         # Test cpp parser with fresh isolated context
         with uth.ParserContext():
             magicparser_cpp = create_magic_parser(["--magic", "cpp"], tempdir=os.getcwd())
-            result_cpp = magicparser_cpp.parse(realpath)
+            try:
+                result_cpp = magicparser_cpp.parse(realpath)
+            except RuntimeError as e:
+                if "No functional C++ compiler detected" in str(e):
+                    pytest.skip("No functional C++ compiler detected")
+                else:
+                    raise
         
         # Results should be identical
         assert result_direct == result_cpp, \

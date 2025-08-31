@@ -9,6 +9,7 @@ class TestLibrary:
     def setup_method(self):
         pass
 
+    @uth.requires_functional_compiler
     def test_build_and_link_static_library(self):
         with uth.TempDirContextWithChange() as tmpdir:
             with uth.EnvironmentContext({"CTCACHE": "None"}):

@@ -1,7 +1,6 @@
 """Tests for MMapOracleCache implementation."""
 
 import hashlib
-import os
 import tempfile
 import time
 from pathlib import Path
@@ -487,7 +486,7 @@ class TestMMapOracleCacheErrorHandling:
             
             # Should raise error when trying to open corrupted file
             with pytest.raises(ValueError, match="Invalid cache file magic"):
-                cache = MMapOracleCache(cache_dir=temp_dir)
+                cache = MMapOracleCache(cache_dir=temp_dir)  # noqa: F841
     
     def test_version_mismatch_handling(self):
         """Test handling of cache files with wrong version."""
@@ -513,7 +512,7 @@ class TestMMapOracleCacheErrorHandling:
             
             # Should raise version mismatch error
             with pytest.raises(ValueError, match="Cache version mismatch"):
-                cache2 = MMapOracleCache(cache_dir=temp_dir)
+                cache2 = MMapOracleCache(cache_dir=temp_dir)  # noqa: F841
     
     def test_insufficient_space_handling(self):
         """Test handling when cache runs out of space."""
@@ -595,7 +594,7 @@ class TestMMapOracleCacheErrorHandling:
                 # Should not crash, but may not work as expected
                 try:
                     cache.put("test.cpp", invalid_hash, result)
-                    cached = cache.get("test.cpp", invalid_hash)
+                    cached = cache.get("test.cpp", invalid_hash)  # noqa: F841
                     # Either works or returns None - should not crash
                 except ValueError:
                     # Expected for some invalid formats

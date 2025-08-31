@@ -49,6 +49,7 @@ class TestMakefile:
                 }
                 assert expected_exes == actual_exes
 
+    @uth.requires_functional_compiler
     def test_makefile(self):
         with uth.TempDirContextNoChange() as tempdir1:
             self._create_makefile_and_make(tempdir1)
@@ -64,9 +65,11 @@ class TestMakefile:
                 # print(comparator.diff_files)
                 assert len(comparator.diff_files) == 0
 
+    @uth.requires_functional_compiler
     def test_static_library(self):
         _test_library("--static")
 
+    @uth.requires_functional_compiler
     def test_dynamic_library(self):
         _test_library("--dynamic")
 

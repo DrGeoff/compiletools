@@ -13,7 +13,6 @@ class TestCompilationDatabase:
         """Test basic compilation database creation with simple C++ files"""
         
         with uth.TempDirContext() as _:
-            origdir = uth.ctdir()
             samplesdir = uth.samplesdir()
             
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:

@@ -1,8 +1,6 @@
 """Simple C preprocessor for handling conditional compilation directives."""
 
 from typing import List
-import hashlib
-import functools
 
 
 

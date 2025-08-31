@@ -384,8 +384,7 @@ class DirectMagicFlags(MagicFlagsBase):
         self._add_macros_from_command_line_flags()
         
         # Get compiler, platform, and architecture macros dynamically
-        compiler = getattr(self._args, 'CXX', 'g++')
-        macros = compiletools.compiler_macros.get_compiler_macros(compiler, self._args.verbose)
+        macros = compiletools.compiler_macros.get_compiler_macros(self._args.CXX, self._args.verbose)
         self.defined_macros.update(macros)
         
         # Get headers from headerdeps
@@ -684,8 +683,7 @@ class DirectMagicFlags(MagicFlagsBase):
         self._add_macros_from_command_line_flags()
         
         # Get compiler, platform, and architecture macros dynamically
-        compiler = getattr(self._args, 'CXX', 'g++')
-        macros = compiletools.compiler_macros.get_compiler_macros(compiler, self._args.verbose)
+        macros = compiletools.compiler_macros.get_compiler_macros(self._args.CXX, self._args.verbose)
         self.defined_macros.update(macros)
         
         headers = self._headerdeps.process(filename)

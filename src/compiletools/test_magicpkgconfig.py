@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import pytest
 import compiletools.testhelper as uth
 import compiletools.utils
 import compiletools.cake
@@ -15,10 +16,10 @@ import compiletools.test_base as tb
 class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
 
 
+    @uth.requires_functional_compiler
     def test_magicpkgconfig(self):
         # This test is to ensure that the //#PKG-CONFIG magic flag 
         # correctly acquires extra cflags and libs
-
         with uth.CompileToolsTestContext() as (tmpdir, config_path):
             # Copy the magicpkgconfig test files to the temp directory and compile
             # using ct-cake
@@ -40,10 +41,10 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
             relativepaths = ["magicpkgconfig/main.cpp"]
             self._verify_one_exe_per_main(relativepaths, search_dir=tmpdir)
 
+    @uth.requires_functional_compiler
     def test_cmdline_pkgconfig(self):
         # This test is to ensure that the "--pkg-config zlib" flag 
         # correctly acquires extra cflags and libs
-
         with uth.CompileToolsTestContext() as (tmpdir, config_path):
             # Copy the pkgconfig test files to the temp directory and compile
             # using ct-cake
@@ -66,6 +67,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
             relativepaths = ["pkgconfig/main.cpp"]
             self._verify_one_exe_per_main(relativepaths, search_dir=tmpdir)
 
+    @uth.requires_functional_compiler
     def test_magicpkgconfig_flags_discovery(self):
         with uth.CompileToolsTestContext() as (tmpdir, config_path):
             # Copy the magicpkgconfig test files to the temp directory
@@ -96,7 +98,13 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                 sample_file = os.path.join(tmpmagicpkgconfig, "main.cpp")
                 
                 # Parse the magic flags
-                parsed_flags = magicparser.parse(sample_file)
+                try:
+                    parsed_flags = magicparser.parse(sample_file)
+                except RuntimeError as e:
+                    if "No functional C++ compiler detected" in str(e):
+                        pytest.skip("No functional C++ compiler detected")
+                    else:
+                        raise
                 
                 # Verify PKG-CONFIG flag was found
                 assert "PKG-CONFIG" in parsed_flags
@@ -156,6 +164,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                     pass
 
 
+    @uth.requires_functional_compiler
     def test_pkg_config_transformation_in_actual_parsing(self):
         """Test that the -I to -isystem transformation occurs during actual magic flag parsing using sample code"""
         with uth.CompileToolsTestContext() as (tmpdir, config_path):

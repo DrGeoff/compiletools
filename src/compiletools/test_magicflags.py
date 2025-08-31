@@ -1,5 +1,7 @@
 
+import pytest
 import compiletools.test_base as tb
+import compiletools.testhelper as uth
 
 
 class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
@@ -15,9 +17,15 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         args = ["--magic", magic_type] if magic_type else []
         if extra_args:
             args.extend(extra_args)
-        return tb.create_magic_parser(args, tempdir=self._tmpdir).parse(
-            self._get_sample_path(source_file)
-        )
+        try:
+            return tb.create_magic_parser(args, tempdir=self._tmpdir).parse(
+                self._get_sample_path(source_file)
+            )
+        except RuntimeError as e:
+            if "No functional C++ compiler detected" in str(e):
+                pytest.skip("No functional C++ compiler detected")
+            else:
+                raise
 
     def test_parsing_CFLAGS(self):
         """Test parsing CFLAGS from magic comments"""
@@ -30,12 +38,14 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         expected_source = {self._get_sample_path("cross_platform/cross_platform_lin.cpp")}
         assert set(result.get("SOURCE")) == expected_source
 
+    @uth.requires_functional_compiler
     def test_SOURCE_cpp(self):
         """Test SOURCE detection using cpp magic"""
         result = self._parse_with_magic("cpp", "cross_platform/cross_platform.cpp")
         expected_source = {self._get_sample_path("cross_platform/cross_platform_lin.cpp")}
         assert set(result.get("SOURCE")) == expected_source
 
+    @uth.requires_functional_compiler
     def test_lotsofmagic(self):
         """Test parsing multiple magic flags from a complex file"""
         result = self._parse_with_magic("cpp", "lotsofmagic/lotsofmagic.cpp")
@@ -70,6 +80,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert "CFLAGS" in result  
         assert "CXXFLAGS" in result
 
+    @uth.requires_functional_compiler
     def test_SOURCE_in_header(self):
         """Test SOURCE detection from header files using cpp magic"""
         result = self._parse_with_magic("cpp", "magicsourceinheader/main.cpp")
@@ -88,8 +99,10 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         }
         assert result == expected
 
+    @uth.requires_functional_compiler
     def test_direct_and_cpp_magic_generate_same_results(self):
         """Test that DirectMagicFlags and CppMagicFlags produce identical results on conditional compilation samples"""
+            
         # Test ALL conditional compilation samples for equivalence - expose any bugs
         test_files = [
             # Original tested files
@@ -157,9 +170,9 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert feature_x_source in result_direct["SOURCE"]
         assert feature_y_source not in result_direct["SOURCE"]
 
+    @uth.requires_functional_compiler
     def test_conditional_ldflags_with_command_line_macro(self):
         """Test that conditional LDFLAGS work with command-line defined macros"""
-        
         source_file = "ldflags/conditional_ldflags_test.cpp"
         debug_flags = ["-ldebug_library", "-ltest_framework"]
         production_flags = ["-lproduction_library", "-loptimized_framework"]
@@ -183,6 +196,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert self._check_flags(result_direct_cxx, "LDFLAGS", production_flags, debug_flags), \
             "Direct magic should handle macros from CXXFLAGS correctly"
 
+    @uth.requires_functional_compiler
     def test_version_dependent_ldflags_requires_feature_parity(self):
         """Test that DirectMagicFlags must have feature parity with CppMagicFlags for complex #if expressions"""
         
@@ -233,8 +247,10 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
             assert self._check_flags(result, "CPPFLAGS", common_flags, []), \
                 "All versions should have common MYAPP flags"
 
+    @uth.requires_functional_compiler
     def test_magic_processing_order_bug(self):
         """Test that DirectMagicFlags and CppMagicFlags produce identical results - should expose the processing order bug"""
+        
         source_file = "magic_processing_order/complex_test.cpp"
         
         # Test with the exact macro combination that reproduces the real bug
@@ -257,8 +273,10 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
             f"CppMagicFlags: {result_cpp}\n" \
             f"This indicates a magic processing order bug in DirectMagicFlags!"
 
+    @uth.requires_functional_compiler
     def test_conditional_magic_comments_with_complex_headers(self):
         """Test conditional magic comments work correctly with header dependencies"""
+        
         source_file = "magic_processing_order/complex_test.cpp"
         
         # Test different macro combinations
@@ -345,3 +363,103 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         # Verify common flags are present
         assert self._check_flags(result_direct, "CPPFLAGS", common_flags, []), \
             f"Should include common SYSTEM flags, got CPPFLAGS: {result_direct.get('CPPFLAGS', [])}"
+
+    @uth.requires_functional_compiler
+    def test_isystem_include_path_bug(self):
+        """Test that exposes the -isystem include path bug where DirectMagicFlags 
+        doesn't process system headers the same way CppMagicFlags does.
+        
+        DirectMagicFlags only processes local files and misses macros defined in 
+        system headers accessible via -isystem include paths.
+        """
+        
+        source_file = "isystem_include_bug/main.cpp"
+        
+        # Path to fake system include directory
+        fake_system_include = self._get_sample_path("isystem_include_bug/fake_system_include")
+        
+        # Test with -isystem include path that contains version macros
+        include_args = [f"--append-CPPFLAGS=-isystem {fake_system_include}"]
+        
+        # Get results from both parsers with identical arguments 
+        result_direct = self._parse_with_magic("direct", source_file, include_args)
+        result_cpp = self._parse_with_magic("cpp", source_file, include_args)
+        
+        # Extract CPPFLAGS for comparison
+        direct_cppflags = " ".join(result_direct.get("CPPFLAGS", []))
+        cpp_cppflags = " ".join(result_cpp.get("CPPFLAGS", []))
+        
+        print("\n-isystem include path test results:")
+        print(f"DirectMagicFlags: {direct_cppflags}")
+        print(f"CppMagicFlags: {cpp_cppflags}")
+        
+        # Define the expected patterns based on version 2.15
+        legacy_pattern = "USE_LEGACY_API"  # Should appear if macros undefined (DirectMagicFlags)
+        modern_pattern = "SYSTEM_ENABLE_V2"  # Should appear if macros = 2,15 (CppMagicFlags)
+        common_pattern = "SYSTEM_CORE_ENABLED"  # Should appear in both
+        
+        # Verify both have common flags
+        assert common_pattern in direct_cppflags, f"DirectMagicFlags missing common flags: {direct_cppflags}"
+        assert common_pattern in cpp_cppflags, f"CppMagicFlags missing common flags: {cpp_cppflags}"
+        
+        # This WILL FAIL and expose the -isystem include path bug
+        if legacy_pattern in direct_cppflags and modern_pattern in cpp_cppflags:
+            assert False, f"-ISYSTEM INCLUDE PATH BUG EXPOSED: DirectMagicFlags doesn't process system headers!\n" \
+                         f"DirectMagicFlags: {direct_cppflags} (can't see system headers - treats macros as undefined)\n" \
+                         f"CppMagicFlags: {cpp_cppflags} (processes system headers correctly - sees real macro values)\n" \
+                         f"DirectMagicFlags never processes -I/-isystem include paths like the real preprocessor does!\n" \
+                         f"SYSTEM_VERSION_MAJOR=2, SYSTEM_VERSION_MINOR=15 should choose modern branch!"
+        
+        # Any difference in results exposes the bug
+        if result_direct != result_cpp:
+            assert False, f"-ISYSTEM INCLUDE PATH BUG: DirectMagicFlags and CppMagicFlags process include paths differently!\n" \
+                         f"DirectMagicFlags result: {result_direct}\n" \
+                         f"CppMagicFlags result: {result_cpp}\n" \
+                         f"DirectMagicFlags doesn't process -I/-isystem include paths like the real preprocessor!"
+        
+        # If we reach here, both parsers produce identical results (bug is fixed)
+        print("✓ Both parsers process -isystem include paths identically - bug is fixed!")
+
+    def test_shlex_parsing_fix_for_quoted_include_paths(self):
+        """Test that DirectMagicFlags correctly parses quoted include paths with spaces.
+        
+        This test validates the shlex.split() fix that replaced the original regex-based
+        approach. The regex approach would fail to handle shell quoting correctly.
+        """
+        
+        # Create a mock args object with quoted include paths containing spaces
+        class MockArgs:
+            def __init__(self):
+                # Test case that would break with regex but works with shlex
+                self.CPPFLAGS = '-DSOME_MACRO -isystem "/path with spaces/include" -DANOTHER_MACRO'
+                self.CXXFLAGS = '-I "/another path/headers" -std=c++17'
+                self.verbose = 9  # Enable debug output
+                self.headerdeps = 'direct'  # Required by headerdeps.create
+                self.max_file_read_size = 0
+                
+        # Create a DirectMagicFlags instance with mock dependencies
+        import compiletools.headerdeps
+        import compiletools.magicflags
+        mock_headerdeps = compiletools.headerdeps.create(MockArgs())
+        
+        # Create DirectMagicFlags instance 
+        direct_magic = compiletools.magicflags.DirectMagicFlags(MockArgs(), mock_headerdeps)
+        
+        # Test the _get_system_include_paths method directly
+        extracted_paths = direct_magic._get_system_include_paths()
+        
+        print("\nShlex parsing test results:")
+        print(f"CPPFLAGS: {MockArgs().CPPFLAGS}")
+        print(f"CXXFLAGS: {MockArgs().CXXFLAGS}")
+        print(f"Extracted include paths: {extracted_paths}")
+        
+        # Expected behavior: shlex should correctly parse quoted paths with spaces
+        expected_paths = ["/path with spaces/include", "/another path/headers"]
+        
+        # Verify that both paths with spaces are correctly extracted
+        for expected_path in expected_paths:
+            assert expected_path in extracted_paths, \
+                f"Failed to extract quoted path '{expected_path}'. Got: {extracted_paths}. " \
+                f"This suggests shlex.split() fix didn't work or regressed to regex parsing."
+        
+        print("✓ Shlex parsing correctly handles quoted include paths with spaces!")
