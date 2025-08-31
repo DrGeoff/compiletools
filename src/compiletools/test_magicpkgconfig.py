@@ -17,6 +17,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
 
 
     @uth.requires_functional_compiler
+    @uth.requires_pkg_config("zlib", "libcrypt")
     def test_magicpkgconfig(self):
         # This test is to ensure that the //#PKG-CONFIG magic flag 
         # correctly acquires extra cflags and libs
@@ -42,6 +43,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
             self._verify_one_exe_per_main(relativepaths, search_dir=tmpdir)
 
     @uth.requires_functional_compiler
+    @uth.requires_pkg_config("zlib")
     def test_cmdline_pkgconfig(self):
         # This test is to ensure that the "--pkg-config zlib" flag 
         # correctly acquires extra cflags and libs
@@ -68,6 +70,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
             self._verify_one_exe_per_main(relativepaths, search_dir=tmpdir)
 
     @uth.requires_functional_compiler
+    @uth.requires_pkg_config("zlib", "libcrypt")
     def test_magicpkgconfig_flags_discovery(self):
         with uth.CompileToolsTestContext() as (tmpdir, config_path):
             # Copy the magicpkgconfig test files to the temp directory
@@ -166,6 +169,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
 
 
     @uth.requires_functional_compiler
+    @uth.requires_pkg_config("zlib", "libcrypt")
     def test_pkg_config_transformation_in_actual_parsing(self):
         """Test that the -I to -isystem transformation occurs during actual magic flag parsing using sample code"""
         with uth.CompileToolsTestContext() as (tmpdir, config_path):

@@ -9,6 +9,7 @@ from pathlib import Path
 import compiletools.apptools
 import functools
 import pytest
+import subprocess
 
 # The abbreviation "uth" is often used for this "testhelper"
 
@@ -33,6 +34,54 @@ def requires_functional_compiler(func):
             pytest.skip("No functional C++ compiler detected")
         return func(*args, **kwargs)
     return wrapper
+
+
+def requires_pkg_config(*packages):
+    """Decorator to skip tests that require specific pkg-config packages.
+    
+    This decorator checks if the specified pkg-config packages are available
+    and automatically skips the test with an appropriate message if any are missing.
+    
+    Args:
+        *packages: One or more package names to check with pkg-config --exists
+    
+    Usage:
+        @requires_pkg_config("zlib")
+        def test_something_that_needs_zlib(self):
+            # Test code that requires zlib
+            pass
+            
+        @requires_pkg_config("zlib", "libcrypt")
+        def test_something_that_needs_multiple_packages(self):
+            # Test code that requires both zlib and libcrypt
+            pass
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            missing_packages = []
+            for package in packages:
+                try:
+                    result = subprocess.run(
+                        ["pkg-config", "--exists", package],
+                        capture_output=True,
+                        check=False
+                    )
+                    if result.returncode != 0:
+                        missing_packages.append(package)
+                except (subprocess.SubprocessError, FileNotFoundError):
+                    # pkg-config not available or other error
+                    missing_packages.append(package)
+            
+            if missing_packages:
+                if len(missing_packages) == 1:
+                    pytest.skip(f"pkg-config package '{missing_packages[0]}' not available")
+                else:
+                    pytest.skip(f"pkg-config packages {missing_packages} not available")
+            
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
 
 
 def reset():
