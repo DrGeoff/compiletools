@@ -417,7 +417,7 @@ def clear_cache():
 
 
 @functools.lru_cache(maxsize=8)
-def _get_functional_cxx_compiler_cached(env_cxx, env_cc, env_path):
+def _get_functional_cxx_compiler_cached(env_cxx=None, env_cc=None, env_path=None):
     """Internal cached implementation of functional C++ compiler detection.
     
     This function tests compiler candidates to ensure they can:
@@ -425,6 +425,7 @@ def _get_functional_cxx_compiler_cached(env_cxx, env_cc, env_path):
     - Compile C++20 code with -std=c++20
     
     Args:
+        These are only used for test cases.  For normal use, call get_functional_cxx_compiler()
         env_cxx: Value of CXX environment variable (or None)
         env_cc: Value of CC environment variable (or None)  
         env_path: Value of PATH environment variable (for cache invalidation)
@@ -504,12 +505,7 @@ def get_functional_cxx_compiler():
         if not hasattr(args, 'CXX') or args.CXX is None:
             compiler = get_functional_cxx_compiler()
     """
-    # Extract environment variables for cache key
-    env_cxx = os.environ.get('CXX')
-    env_cc = os.environ.get('CC') 
-    env_path = os.environ.get('PATH')
-    
-    return _get_functional_cxx_compiler_cached(env_cxx, env_cc, env_path)
+    return _get_functional_cxx_compiler_cached()
 
 
 # Expose the cache_clear method for tests
@@ -968,8 +964,6 @@ def parseargs(cap, argv, verbose=None):
     if verbose > 8:
         print(f"Parsing commandline arguments has occured. Before substitutions args={args}")
 
-    substitutions(args, verbose)
-
     # Set CXX default if not specified and a functional compiler is available
     if hasattr(args, 'CXX') and args.CXX is None:
         functional_compiler = get_functional_cxx_compiler()
@@ -978,9 +972,12 @@ def parseargs(cap, argv, verbose=None):
             if verbose >= 6:
                 print(f"Set CXX to detected functional compiler: {functional_compiler}")
         else:
-            # Leave as None to trigger appropriate error handling downstream
-            if verbose >= 6:
-                print("No functional C++ compiler detected, leaving CXX as None")
+            RuntimeError("No functional C++ compiler detected. Please set CXX explicitly.")
+
+    if verbose > 8:
+        print(f"Parsing functioanl compiler has been set. Before substitutions args={args}")
+
+    substitutions(args, verbose)
 
     if verbose > 8:
         print("parseargs has completed.  Returning args")

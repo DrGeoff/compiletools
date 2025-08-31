@@ -117,8 +117,7 @@ def ctconfdir():
 def create_temp_config(tempdir=None, filename=None, extralines=[]):
     """Create a temporary config file with detected functional compilers.
     
-    Uses get_functional_cxx_compiler() to detect working C++ compiler,
-    falling back to environment variables or defaults if detection fails.
+    Uses get_functional_cxx_compiler() to detect working C++ compiler
     
     Args:
         tempdir: Directory to create temp file in
@@ -130,34 +129,19 @@ def create_temp_config(tempdir=None, filename=None, extralines=[]):
         
     Note: User is responsible for removing the config file when finished
     """
-    # Try to get a functional C++ compiler
-    functional_cxx = compiletools.apptools.get_functional_cxx_compiler()
-    
-    # Determine CC and CXX values
-    if functional_cxx:
-        CXX = functional_cxx
-        # Derive C compiler from C++ compiler if possible
-        if functional_cxx.endswith('clang++'):
-            CC = functional_cxx.replace('clang++', 'clang')
-        elif functional_cxx.endswith('g++'):
-            CC = functional_cxx.replace('g++', 'gcc')
-        else:
-            CC = functional_cxx  # Fallback to same compiler
-    else:
-        # Fallback to environment variables or defaults
-        CC = os.environ.get("CC", "gcc")
-        CXX = os.environ.get("CXX", "g++")
-
+    CXX = compiletools.apptools.get_functional_cxx_compiler()
+    CC = compiletools.apptools.derive_c_compiler_from_cxx(CXX)
+   
     if not filename:
         tf_handle, filename = tempfile.mkstemp(suffix=".conf", text=True, dir=tempdir)
 
     with open(filename, "w") as ff:
         ff.write("ID=GNU\n")
-        ff.write("CC=" + CC + "\n")
-        ff.write("CXX=" + CXX + "\n")
+        ff.write(f"CC={CC}\n")
+        ff.write(f"CXX={CXX}\n")
         ff.write('CPPFLAGS="-std=c++20"\n')
         for line in extralines:
-            ff.write(line + "\n")
+            ff.write(f"{line}\n")
 
     return filename
 
@@ -169,12 +153,12 @@ def create_temp_ct_conf(tempdir, defaultvariant="debug", extralines=[]):
     with open(os.path.join(tempdir, "ct.conf"), "w") as ff:
         # ff.write('CTCACHE = ' + os.path.join(tempdir,'ct-unittest-cache' + '\n'))
         # ff.write('CTCACHE = None' + '\n')
-        ff.write(" ".join(["variant =", defaultvariant, "\n"]))
+        ff.write(f"variant = {defaultvariant}\n")
         ff.write("variantaliases = {'dbg':'foo.debug', 'rls':'foo.release'}\n")
-        ff.write("exemarkers = [main]" + "\n")
-        ff.write("testmarkers = unit_test.hpp" + "\n")
+        ff.write("exemarkers = [main]\n")
+        ff.write("testmarkers = unit_test.hpp\n")
         for line in extralines:
-            ff.write(line + "\n")
+            ff.write(f"{line}\n")
 
 
 class TempDirectoryContext:
@@ -454,7 +438,7 @@ def CPPDepsTestContext(variant_configs=None, reload_modules=None, ctcache=None):
     """
     import importlib
     
-    variant_configs = variant_configs or ['gcc.debug.conf']
+    variant_configs = variant_configs or ['blank.conf']
     reload_modules = reload_modules or []
     
     # Use our refactored context managers in a nested fashion

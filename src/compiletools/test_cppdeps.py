@@ -23,7 +23,7 @@ def test_cppdeps():
     uth.reset()
     
     with uth.CPPDepsTestContext(
-        variant_configs=['gcc.debug.conf'],
+        variant_configs=['blank.conf'],
         reload_modules=[compiletools.headerdeps, compiletools.cppdeps]
     ):
         output_buffer = io.StringIO()
