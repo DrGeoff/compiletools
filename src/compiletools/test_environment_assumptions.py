@@ -137,8 +137,10 @@ def test_linker_features(temp_dir):
         
     # Derive C compiler from C++ compiler if possible
     c_compiler = functional_compiler
-    if functional_compiler.endswith('++'):
-        c_compiler = functional_compiler[:-2]  # Remove ++ suffix
+    if functional_compiler.endswith('g++'):
+        c_compiler = functional_compiler[:-2] + 'cc'  # g++ -> gcc
+    elif functional_compiler.endswith('clang++'):
+        c_compiler = 'clang'  # clang++ -> clang
     
     # Create a simple test object to link
     test_c = os.path.join(temp_dir, 'test_linker.c')
@@ -168,8 +170,10 @@ def test_fPIC_support(temp_dir):
         
     # Derive C compiler from C++ compiler if possible
     c_compiler = functional_compiler
-    if functional_compiler.endswith('++'):
-        c_compiler = functional_compiler[:-2]  # Remove ++ suffix
+    if functional_compiler.endswith('g++'):
+        c_compiler = functional_compiler[:-2] + 'cc'  # g++ -> gcc
+    elif functional_compiler.endswith('clang++'):
+        c_compiler = 'clang'  # clang++ -> clang
         
     test_c = os.path.join(temp_dir, 'test_fpic.c')
     test_o = os.path.join(temp_dir, 'test_fpic.o')

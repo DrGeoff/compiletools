@@ -674,6 +674,8 @@ class DirectMagicFlags(MagicFlagsBase):
         """Read the first chunk of the file and all the headers it includes"""
         if self._args.verbose >= 9:
             print(f"DEBUG: DirectMagicFlags.readfile called with {filename}")
+        # Initialize text variable to prevent UnboundLocalError
+        text = ""
         # Reset defined macros for each new parse
         self.defined_macros = {}
         # Reset explicit macro files for each new parse
