@@ -987,8 +987,9 @@ def parseargs(cap, argv, verbose=None):
 def terminalcolumns():
     """How many columns in the text terminal"""
     try:
-        columns = int(subprocess.check_output(["stty", "size"]).split()[1])
-    except subprocess.CalledProcessError:
+        result = subprocess.run(["stty", "size"], capture_output=True, text=True, check=True)
+        columns = int(result.stdout.split()[1])
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError, IndexError, ValueError):
         columns = 80
     return columns
 
