@@ -25,9 +25,20 @@ class Namer(object):
         compiletools.apptools.add_output_directory_arguments(cap, variant=variant)
 
     def topbindir(self):
-        """ What is the topmost part of the bin directory """
-        if "bin" in self.args.bindir:
-            return "bin/"
+        """
+        Return the top-level directory for executable placement.
+        
+        For relative paths containing subdirectories (variant-style builds),
+        return the parent directory to place executables in the top-level.
+        For absolute paths, return the full path as specified by the user.
+        
+        Examples:
+            bin/gcc.release → "bin/"
+            bin.special/gcc.release → "bin.special/"
+            /opt/local/bin → "/opt/local/bin"
+        """
+        if not os.path.isabs(self.args.bindir) and os.sep in self.args.bindir:
+            return self.args.bindir.split(os.sep)[0] + os.sep
         else:
             return self.args.bindir
 
