@@ -16,6 +16,7 @@ class Namer(object):
     def __init__(self, args, argv=None, variant=None, exedir=None):
         self.args = args
         self._project = compiletools.git_utils.Project(args)
+        self._cached_macros = None
 
     @staticmethod
     def add_arguments(cap, argv=None, variant=None):
@@ -63,18 +64,32 @@ class Namer(object):
         return self.args.objdir
 
     @functools.lru_cache(maxsize=None)
-    def object_name(self, sourcefilename):
+    def object_name(self, sourcefilename, macro_hash=None):
         """ Return the name (not the path) of the object file
             for the given source.
+            
+            Args:
+                sourcefilename: Path to source file
+                macro_hash: Pre-computed hash of macro state (for shared objects)
         """
         directory, name = os.path.split(sourcefilename)
         basename = os.path.splitext(name)[0]
-        return "".join([directory.replace("/", "@@"), "@@", basename, ".o"])
+        base_name = "".join([directory.replace("/", "@@"), "@@", basename])
+        
+        # Check if shared objects mode is enabled
+        shared_objects = compiletools.configutils.extract_item_from_ct_conf(
+            'shared-objects', default='false'
+        ).lower() in ('true', '1', 'yes', 'on')
+        
+        if shared_objects and macro_hash:
+            return self._shared_object_name(sourcefilename, base_name, macro_hash)
+        else:
+            return base_name + ".o"
 
     @functools.lru_cache(maxsize=None)
-    def object_pathname(self, sourcefilename):
+    def object_pathname(self, sourcefilename, macro_hash=None):
         return "".join(
-            [self.object_dir(sourcefilename), "/", self.object_name(sourcefilename)]
+            [self.object_dir(sourcefilename), "/", self.object_name(sourcefilename, macro_hash)]
         )
 
     @functools.lru_cache(maxsize=None)
@@ -163,6 +178,19 @@ class Namer(object):
             return list(alltestsexes)
         return []
 
+    def _shared_object_name(self, sourcefilename, base_name, macro_hash):
+        """Generate shared object name with file and macro state hashes."""
+        from compiletools.global_hash_registry import get_file_hash
+        
+        # Get file content hash
+        file_hash = get_file_hash(sourcefilename)
+        if not file_hash:
+            # Fallback for files not in git
+            file_hash = "unknown"
+        file_hash_short = file_hash[:12]
+        
+        return f"{base_name}_{file_hash_short}_{macro_hash}.o"
+
     def clear_cache(self):
         compiletools.wrappedos.clear_cache()
         compiletools.utils.clear_cache()
@@ -177,3 +205,4 @@ class Namer(object):
         self.staticlibrary_pathname.cache_clear()
         self.dynamiclibrary_name.cache_clear()
         self.dynamiclibrary_pathname.cache_clear()
+        self._cached_macros = None

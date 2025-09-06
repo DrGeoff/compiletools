@@ -1,5 +1,5 @@
 import os
-
+import functools
 
 import compiletools.utils
 import compiletools.wrappedos
@@ -27,6 +27,9 @@ class Hunter(object):
     """ Deeply inspect files to understand what are the header dependencies,
         other required source files, other required compile/link flags.
     """
+    
+    # Class-level cache for magic parsing results
+    _magic_cache = {}
 
     def __init__(self, args, headerdeps, magicparser):
         self.args = args
@@ -41,11 +44,26 @@ class Hunter(object):
             print("Hunter::_extractSOURCE. realpath=", realpath, " SOURCE flag:", ess)
         return ess
 
-    def _required_files_impl(self, realpath, processed=None):
+    @functools.lru_cache(maxsize=None)
+    def _required_files_cached(self, realpath, macro_hash):
+        """Cached dependency resolution keyed by file path + macro state.
+        
+        Args:
+            realpath: The real path to the file
+            macro_hash: Hash of the macro state affecting this file's dependencies
+            
+        Returns:
+            List of all files (headers and sources) that this file depends on
+        """
+        return self._required_files_impl_uncached(realpath)
+    
+    def _required_files_impl_uncached(self, realpath, processed=None):
         """ The recursive implementation that finds the source files.
             This function returns all headers and source files encountered.
             If you only need the source files then post process the result.
             It is a precondition that realpath actually is a realpath.
+            
+            This is the uncached version - normally called via _required_files_cached.
         """
         if not processed:
             processed = set()
@@ -79,7 +97,7 @@ class Hunter(object):
                 )
             morefiles = []
             for nextfile in todo:
-                morefiles.extend(self._required_files_impl(nextfile, processed))
+                morefiles.extend(self._required_files_impl_uncached(nextfile, processed))
             todo = [f for f in compiletools.utils.ordered_unique(morefiles) if f not in processed]
 
         if self.args.verbose >= 9:
@@ -110,7 +128,25 @@ class Hunter(object):
         """
         if self.args.verbose >= 9:
             print("Hunter::required_files for " + filename)
-        return self._required_files_impl(compiletools.wrappedos.realpath(filename))
+            
+        realpath = compiletools.wrappedos.realpath(filename)
+        
+        # Use macro-hash-aware caching for performance
+        try:
+            # Ensure magic flags are processed to get macro hash
+            self.magicflags(filename)
+            macro_hash = self.macro_hash(filename)
+            
+            if self.args.verbose >= 8:
+                print(f"Hunter::required_files using cached lookup with macro_hash {macro_hash} for {filename}")
+            
+            return self._required_files_cached(realpath, macro_hash)
+            
+        except RuntimeError:
+            # Fallback: macro hash not available (shouldn't happen in normal usage)
+            if self.args.verbose >= 5:
+                print(f"Hunter::required_files falling back to uncached for {filename} (macro hash not available)")
+            return self._required_files_impl_uncached(realpath)
 
     @staticmethod
     def clear_cache():
@@ -118,9 +154,38 @@ class Hunter(object):
         compiletools.wrappedos.clear_cache()
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
         compiletools.magicflags.MagicFlagsBase.clear_cache()
+        # Note: Cannot clear instance-level _parse_magic caches from static method
+        # Each Hunter instance will retain its own cache until the instance is destroyed
+
+    def clear_instance_cache(self):
+        """Clear this instance's caches."""
+        if hasattr(self, '_parse_magic'):
+            self._parse_magic.cache_clear()
+        if hasattr(self, '_required_files_cached'):
+            self._required_files_cached.cache_clear()
+
+    @functools.lru_cache(maxsize=None)
+    def _parse_magic(self, filename):
+        """Cache the magic parse result to avoid duplicate processing."""
+        return self.magicparser.parse(filename)
 
     def magicflags(self, filename):
-        return self.magicparser.parse(filename)
+        """Get magic flags dict from cached parse result."""
+        return self._parse_magic(filename)
+
+    def macro_hash(self, filename):
+        """Get final converged macro hash for the given file.
+        
+        Raises:
+            RuntimeError: If parse() hasn't been called for this file yet
+        """
+        final_hash = self.magicparser.get_final_macro_hash(filename)
+        if final_hash is None:
+            raise RuntimeError(
+                f"macro_hash() called for {filename} but parse() hasn't been called yet. "
+                f"Call magicflags() first to process the file."
+            )
+        return final_hash
 
     def header_dependencies(self, source_filename):
         if self.args.verbose >= 8:

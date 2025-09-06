@@ -178,7 +178,7 @@ class DirectHeaderDeps(HeaderDepsBase):
 
         # Keep track of ancestor paths so that we can do header cycle detection
         self.ancestor_paths = []
-
+    
         # Use provided file analyzer cache or create one if none provided (for backward compatibility)
         if file_analyzer_cache is not None:
             self.file_analyzer_cache = file_analyzer_cache
@@ -247,19 +247,6 @@ class DirectHeaderDeps(HeaderDepsBase):
         else:
             return self._search_project_includes(include)
 
-    def _process_conditional_compilation(self, text, directive_positions, line_byte_offsets):
-        """Process conditional compilation directives and return only active sections"""
-        preprocessor = SimplePreprocessor(self.defined_macros, self.args.verbose)
-        
-        # Always pass FileAnalyzer's pre-computed directive positions for maximum performance
-        processed_text = preprocessor.process(text, directive_positions, line_byte_offsets)
-        
-        # Update our defined_macros dict with any changes from the preprocessor
-        # This allows macro accumulation within a single dependency analysis
-        self.defined_macros.clear()
-        self.defined_macros.update(preprocessor.macros)
-        
-        return processed_text
 
     def _create_include_list(self, realpath):
         """Internal use. Create the list of includes for the given file"""
@@ -363,8 +350,7 @@ class DirectHeaderDeps(HeaderDepsBase):
         # Add current file after processing includes (depth-first order)
         results_order.append(realpath)
 
-    # NOTE: Cache removed due to macro state dependency - cache was keyed only on file path
-    # but results depend on self.defined_macros which can change between calls
+    @functools.lru_cache(maxsize=None)
     def _process_impl(self, realpath):
         if self.args.verbose >= 9:
             print("DirectHeaderDeps::_process_impl: " + realpath)
@@ -383,11 +369,19 @@ class DirectHeaderDeps(HeaderDepsBase):
         return results_order
 
 
+    def clear_instance_cache(self):
+        """Clear this instance's _process_impl cache."""
+        self._process_impl.cache_clear()
+        if self.args.verbose >= 5:
+            print("DirectHeaderDeps::clear_instance_cache completed")
+    
     @staticmethod
     def clear_cache():
         # print("DirectHeaderDeps::clear_cache")
         DirectHeaderDeps._search_project_includes.cache_clear()
         DirectHeaderDeps._find_include.cache_clear()
+        # Note: Cannot clear instance-level _process_impl caches from static method
+        # Each DirectHeaderDeps instance will retain its cache until destroyed
 
 
 class CppHeaderDeps(HeaderDepsBase):

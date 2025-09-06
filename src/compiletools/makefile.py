@@ -1,6 +1,8 @@
 # vim: set filetype=python:
 import os
 import sys
+import subprocess
+import textwrap
 from io import open
 
 
@@ -207,6 +209,12 @@ class MakefileCreator:
 
         self.namer = compiletools.namer.Namer(args)
         self.hunter = hunter
+        
+        # Detect filesystem type once and cache it
+        self._filesystem_type = self._detect_filesystem_type()
+        
+        # Check if shared object mode is enabled
+        self._shared_objects = self._is_shared_objects_enabled()
 
     @staticmethod
     def add_arguments(cap):
@@ -232,6 +240,31 @@ class MakefileCreator:
             default=False,
             help="Force the unit tests to run serially rather than in parallel. Defaults to false because it is slower.",
         )
+
+    def _detect_filesystem_type(self):
+        """Detect filesystem type once for objdir"""
+        try:
+            result = subprocess.run(['stat', '-f', '-c', '%T', self.args.objdir], 
+                                  capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                fstype = result.stdout.strip()
+            else:
+                # Fallback to alternative stat format  
+                result = subprocess.run(['stat', '-c', '%T', self.args.objdir], 
+                                      capture_output=True, text=True, timeout=5)
+                fstype = result.stdout.strip() if result.returncode == 0 else 'unknown'
+        except (subprocess.SubprocessError, OSError, ValueError):
+            fstype = 'unknown'
+        
+        if self.args.verbose >= 3:
+            print(f"Detected filesystem type: {fstype}")
+        return fstype
+
+    def _is_shared_objects_enabled(self):
+        """Check if shared object mode is enabled via config"""
+        return compiletools.configutils.extract_item_from_ct_conf(
+            'shared-objects', default='false', verbose=self.args.verbose
+        ).lower() in ('true', '1', 'yes', 'on')
 
     def _uptodate(self):
         """Is the Makefile up to date?
@@ -288,6 +321,75 @@ class MakefileCreator:
             print("Makefile is up to date.  Not recreating.")
 
         return True
+
+    def _get_locking_recipe_prefix(self):
+        """Generate filesystem-specific locking code prefix"""
+        if not self._shared_objects:
+            return ""
+        
+        lock_generators = {
+            'gpfs': self._lockdir_prefix,
+            'lustre': self._lockdir_prefix, 
+            'nfs': self._lockdir_prefix,      # NFS requires lockdir approach
+            'nfs4': self._lockdir_prefix,     # NFS4 requires lockdir approach
+            'cifs': self._cifs_lock_prefix,
+            'smb': self._cifs_lock_prefix,
+        }
+        
+        for fs_pattern, generator in lock_generators.items():
+            if fs_pattern in self._filesystem_type.lower():
+                return generator()
+        
+        return self._posix_flock_prefix()
+
+    def _lockdir_prefix(self):
+        """Common lockdir implementation for GPFS, Lustre, NFS"""
+        sleep_interval = "0.05"  # Default for GPFS
+        if 'lustre' in self._filesystem_type.lower():
+            sleep_interval = "0.02"  # Faster for Lustre
+        elif 'nfs' in self._filesystem_type.lower():
+            sleep_interval = "0.1"   # Slower for NFS due to network latency
+        
+        return textwrap.dedent(f'''
+            lockdir="$@.lockdir"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
+            \twhile ! mkdir "$$lockdir" 2>/dev/null; do sleep {sleep_interval}; done; \\
+            \t''').strip()
+
+    def _cifs_lock_prefix(self):
+        """CIFS/SMB specific locking with exclusive file creation"""
+        return textwrap.dedent('''
+            lockfile="$@.lock"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
+            \texec 9> "$$lockfile"; \\
+            \twhile ! (set -C; echo $$$$ > "$$lockfile.excl") 2>/dev/null; do sleep 0.2; done; \\
+            \ttrap 'rm -f "$$lockfile.excl"' EXIT; \\
+            \t''').strip()
+
+    def _posix_flock_prefix(self):
+        """POSIX flock implementation for standard filesystems"""
+        return textwrap.dedent('''
+            lockfile="$@.lock"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
+            \texec 9> "$$lockfile"; \\
+            \tif command -v flock >/dev/null 2>&1; then flock 9; else \\
+            \t\twhile ! (set -C; echo $$$$ > "$$lockfile.pid") 2>/dev/null; do sleep 0.1; done; \\
+            \t\ttrap 'rm -f "$$lockfile.pid"' EXIT; \\
+            \tfi; \\
+            \t''').strip()
+
+    def _get_locking_recipe_suffix(self):
+        """Generate filesystem-specific locking code suffix"""
+        if not self._shared_objects:
+            return ""
+        
+        # Lockdir filesystems use same cleanup pattern
+        lockdir_filesystems = {'gpfs', 'lustre', 'nfs', 'nfs4'}
+        
+        if any(fs in self._filesystem_type.lower() for fs in lockdir_filesystems):
+            return '; mv "$$tmp" $@; rmdir "$$lockdir"'
+        elif any(fs in self._filesystem_type.lower() for fs in {'cifs', 'smb'}):
+            return '; mv "$$tmp" $@; rm -f "$$lockfile" "$$lockfile.excl" 2>/dev/null'
+        else:
+            # POSIX flock fallback
+            return '; mv "$$tmp" $@; rm -f "$$lockfile" "$$lockfile.pid" 2>/dev/null'
 
     def _create_all_rule(self):
         """Create the rule that in depends on all build products"""
@@ -558,27 +660,39 @@ class MakefileCreator:
         deplist = self.hunter.header_dependencies(filename)
         prerequisites = [filename] + sorted([str(dep) for dep in deplist])
 
+        # Get magicflags and macro hash for shared object naming
+        magicflags = self.hunter.magicflags(filename)
+        macro_hash = self.hunter.macro_hash(filename) if self._shared_objects else None
+
         self.object_directories.add(self.namer.object_dir(filename))
-        obj_name = self.namer.object_pathname(filename)
+        obj_name = self.namer.object_pathname(filename, macro_hash)
         self.objects.add(obj_name)
 
-        magicflags = self.hunter.magicflags(filename)
         recipe = ""
         
         if self.args.verbose >= 1:
             recipe = " ".join(["@echo ...", filename, ";"])
         
+        # Get locking prefix and suffix for shared objects
+        lock_prefix = self._get_locking_recipe_prefix()
+        lock_suffix = self._get_locking_recipe_suffix()
+        
         magic_cpp_flags = magicflags.get("CPPFLAGS", [])
         if compiletools.wrappedos.isc(filename):
             magic_c_flags = magicflags.get("CFLAGS", [])
             compile_flags = [self.args.CC, self.args.CFLAGS] + list(magic_cpp_flags) + list(magic_c_flags)
-            compile_cmd = " ".join(compile_flags + ["-c", "-o", obj_name, filename])
         else:
             magic_cxx_flags = magicflags.get("CXXFLAGS", [])
             compile_flags = [self.args.CXX, self.args.CXXFLAGS] + list(magic_cpp_flags) + list(magic_cxx_flags)
-            compile_cmd = " ".join(compile_flags + ["-c", "-o", obj_name, filename])
         
-        recipe += compile_cmd
+        if self._shared_objects:
+            # Use temporary file for atomic writes with locking
+            compile_cmd = " ".join(compile_flags + ["-c", "-o", '"$$tmp"', filename])
+            recipe += lock_prefix + compile_cmd + lock_suffix
+        else:
+            # Direct compilation to final object
+            compile_cmd = " ".join(compile_flags + ["-c", "-o", obj_name, filename])
+            recipe += compile_cmd
 
         if self.args.verbose >= 3:
             print("Creating rule for ", obj_name)
@@ -590,6 +704,7 @@ class MakefileCreator:
             order_only_prerequisites=self.args.objdir,
             recipe=recipe,
         )
+
 
     def _create_link_rules_for_sources(self, sources, exe_static_dynamic, libraryname=None):
         """For all the given source files return the set of rules required

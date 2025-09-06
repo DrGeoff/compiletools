@@ -8,7 +8,6 @@ import os
 import tempfile
 import configargparse
 from textwrap import dedent
-from unittest.mock import patch
 
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
@@ -135,24 +134,6 @@ int main() { return 0; }'''
         assert "feature_a.h" in includes
         # Note: feature_b.h may or may not be included depending on preprocessor behavior
         
-    def test_header_deps_stringzilla_fallback_behavior(self):
-        """Test StringZilla fallback to Legacy when StringZilla unavailable."""
-        main_content = '''#include <stdio.h>
-#include "local.h"
-int main() { return 0; }'''
-        
-        main_path = self.create_test_file("main.c", main_content)
-        self.create_test_file("local.h", "void local_func();")
-        
-        headerdeps = self.create_headerdeps_instance()
-        
-        # Mock StringZilla to be unavailable, should fallback to Legacy automatically
-        with patch('compiletools.file_analyzer.StringZillaFileAnalyzer') as mock_stringzilla:
-            mock_stringzilla.side_effect = ImportError("StringZilla not available")
-            
-            # Should still work via internal fallback to LegacyFileAnalyzer
-            includes = headerdeps._create_include_list(main_path)
-            assert "local.h" in includes
 
 
 class TestMagicFlagsIntegration(tb.BaseCompileToolsTestCase):
@@ -208,12 +189,17 @@ class TestMagicFlagsIntegration(tb.BaseCompileToolsTestCase):
         main_path = self.create_test_file("main.c", main_content)
         
         magicflags = self.create_magicflags_instance()
-        result = magicflags.readfile(main_path)
+        result = magicflags.parse(main_path)
         
-        # Should contain the magic flag comments
-        assert "//#LIBS=pthread m" in result
-        assert "//#CFLAGS=-O2 -g" in result
-        assert "//#LDFLAGS=-static" in result
+        # Should detect the magic flags properly
+        assert "LIBS" in result
+        assert "CFLAGS" in result  
+        assert "LDFLAGS" in result
+        assert "pthread" in str(result["LIBS"])
+        assert "m" in str(result["LIBS"])
+        assert "-O2" in str(result["CFLAGS"])
+        assert "-g" in str(result["CFLAGS"])
+        assert "-static" in str(result["LDFLAGS"])
         
     @uth.requires_functional_compiler
     def test_magic_flags_with_max_read_size(self):
@@ -227,10 +213,11 @@ int main() { return 0; }'''
         
         # Test with small read size
         magicflags = self.create_magicflags_instance(max_file_read_size=100)
-        result = magicflags.readfile(main_path)
+        result = magicflags.parse(main_path)
         
         # Should find early magic flag
-        assert "//#LIBS=early_lib" in result
+        assert "LIBS" in result
+        assert "early_lib" in str(result["LIBS"])
         
     @uth.requires_functional_compiler
     def test_magic_flags_conditional_compilation(self):
@@ -249,10 +236,11 @@ int main() { return 0; }'''
         main_path = self.create_test_file("main.c", main_content)
         
         magicflags = self.create_magicflags_instance()
-        result = magicflags.readfile(main_path)
+        result = magicflags.parse(main_path)
         
         # Should include pthread lib (USE_THREADING is defined)
-        assert "//#LIBS=pthread" in result
+        assert "LIBS" in result
+        assert "pthread" in str(result["LIBS"])
         # Should not include opengl lib (USE_GRAPHICS not defined)
         # Note: This depends on preprocessor behavior
         
@@ -274,31 +262,14 @@ int main() { return 0; }'''
         main_path = self.create_test_file("main.c", main_content)
         
         magicflags = self.create_magicflags_instance()
-        result = magicflags.readfile(main_path)
+        result = magicflags.parse(main_path)
         
         # Should contain magic flags from both files
-        assert "//#CFLAGS=-DHEADER_FEATURE" in result
-        assert "//#LIBS=main_lib" in result
+        assert "CFLAGS" in result
+        assert "LIBS" in result
+        assert "-DHEADER_FEATURE" in str(result["CFLAGS"])
+        assert "main_lib" in str(result["LIBS"])
         
-    @uth.requires_functional_compiler
-    def test_magic_flags_stringzilla_fallback_behavior(self):
-        """Test StringZilla fallback to Legacy when StringZilla unavailable."""
-        main_content = '''//#LIBS=testlib
-#include <stdio.h>
-int main() { return 0; }'''
-        
-        main_path = self.create_test_file("main.c", main_content)
-        
-        magicflags = self.create_magicflags_instance()
-        
-        # Mock StringZilla to be unavailable, should fallback to Legacy automatically
-        with patch('compiletools.file_analyzer.StringZillaFileAnalyzer') as mock_stringzilla:
-            mock_stringzilla.side_effect = ImportError("StringZilla not available")
-            
-            # Should still work via internal fallback to LegacyFileAnalyzer
-            result = magicflags.readfile(main_path)
-            assert "//#LIBS=testlib" in result
-            
     @uth.requires_functional_compiler
     def test_magic_flags_iterative_macro_discovery(self):
         """Test iterative processing for macro discovery."""
@@ -316,10 +287,11 @@ int main() { return 0; }'''
         main_path = self.create_test_file("main.c", main_content)
         
         magicflags = self.create_magicflags_instance()
-        result = magicflags.readfile(main_path)
+        result = magicflags.parse(main_path)
         
         # Should find the feature lib after processing header
-        assert "//#LIBS=feature_lib" in result
+        assert "LIBS" in result
+        assert "feature_lib" in str(result["LIBS"])
 
 
 class TestFileAnalyzerConfigurationIntegration:

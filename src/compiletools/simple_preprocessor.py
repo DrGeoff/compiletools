@@ -17,15 +17,6 @@ class SimplePreprocessor:
     - Provides recursive macro expansion helper for advanced use
     """
     
-    # Class-level cache: (file_hash, macro_signature) -> (active_lines, final_macro_state)
-    _result_cache = {}
-    
-    @classmethod
-    def clear_cache(cls):
-        """Clear the preprocessor result cache."""
-        cls._result_cache.clear()
-    
-    
     def __init__(self, defined_macros, verbose=0):
         # Use a dict to store macro values, not just existence
         self.macros = {}
@@ -42,6 +33,14 @@ class SimplePreprocessor:
     def _create_macro_signature(self):
         """Create a hashable signature of the current macro state."""
         return tuple(sorted(self.macros.items()))
+    
+    @property 
+    def macro_hash(self):
+        """Compute hash of current macro state."""
+        import hashlib
+        macro_items = sorted(self.macros.items())
+        macro_string = "|".join(f"{k}={v}" for k, v in macro_items)
+        return hashlib.sha256(macro_string.encode('utf-8')).hexdigest()[:12]
     
     
     def _strip_comments(self, expr):
@@ -70,18 +69,6 @@ class SimplePreprocessor:
         Returns:
             List of line numbers (0-based) that are active after conditional compilation
         """
-        # DISABLE CACHING for correctness - macro state dependency is complex  
-        # TODO: Implement proper functional caching that handles macro state evolution
-        # from compiletools.global_hash_registry import get_file_hash
-        # file_hash = get_file_hash(getattr(file_result, 'filepath', ''))
-        # initial_macro_state = dict(self.macros)
-        # initial_macro_signature = tuple(sorted(initial_macro_state.items()))
-        # cache_key = (file_hash, initial_macro_signature)
-        # 
-        # if cache_key in self._result_cache:
-        #     active_lines, macro_changes = self._result_cache[cache_key]
-        #     self.macros.update(macro_changes)
-        #     return active_lines
         lines = file_result.lines
         active_lines = []
         
@@ -106,10 +93,10 @@ class SimplePreprocessor:
                 # Handle the directive
                 handled = self._handle_directive_structured(directive, condition_stack, i + 1)
                 
-                # Include #define lines in active_lines even when handled (for macro extraction)
+                # Include #define and #undef lines in active_lines even when handled (for macro extraction)
                 # Also include unhandled directives (like #include) if in active context
                 if condition_stack[-1][0]:
-                    if directive.directive_type == 'define' or handled is False:
+                    if directive.directive_type in ('define', 'undef') or handled is False:
                         active_lines.append(i)
                         # Add continuation lines too
                         for j in range(continuation_lines):
@@ -125,83 +112,9 @@ class SimplePreprocessor:
                     active_lines.append(i)
                 i += 1
         
-        # CACHING DISABLED
-        # final_macro_state = dict(self.macros)
-        # macro_changes = {k: v for k, v in final_macro_state.items() 
-        #                 if k not in initial_macro_state or initial_macro_state[k] != v}
-        # self._result_cache[cache_key] = (active_lines.copy(), macro_changes)
-        
         return active_lines
     
-    def process(self, text, directive_positions, line_byte_offsets):
-        """Process text and return only active sections using FileAnalyzer's pre-computed directive positions.
-        
-        Args:
-            text: The source text to process
-            directive_positions: Dict of {directive_name: [positions]} from FileAnalyzer.
-            line_byte_offsets: List of byte offsets for each line from FileAnalyzer.
-            
-        Returns:
-            Processed text with only active conditional sections
-        """
-        lines = text.split('\n')
-        result_lines = []
-        
-        # Stack to track conditional compilation state
-        # Each entry: (is_active, seen_else, any_condition_met)
-        condition_stack = [(True, False, False)]
-        
-        # Convert FileAnalyzer's character positions to line numbers using optimized O(log n) lookup
-        import bisect
-        directive_lines = set()
-        for directive_type, positions in directive_positions.items():
-            for pos in positions:
-                # Use binary search on pre-computed line offsets for O(log n) performance
-                line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
-                directive_lines.add(line_num)
-        
-        i = 0
-        while i < len(lines):
-            line = lines[i]
-            stripped = line.strip()
-            
-            # Handle preprocessor directives (using FileAnalyzer's pre-computed positions)
-            is_directive_line = i in directive_lines
-            if is_directive_line and stripped.startswith('#'):
-                # Handle multiline preprocessor directives
-                full_directive = stripped
-                line_continuation_count = 0
-                while full_directive.rstrip().endswith('\\') and i + line_continuation_count + 1 < len(lines):
-                    line_continuation_count += 1
-                    next_line = lines[i + line_continuation_count].strip()
-                    # Remove the trailing backslash and any trailing whitespace, then add the next line
-                    full_directive = full_directive.rstrip().rstrip('\\').rstrip() + ' ' + next_line
-                
-                directive = self._parse_directive(full_directive)
-                if directive:
-                    handled = self._handle_directive(directive, condition_stack, i + 1)
-                    # If directive wasn't handled (like #include), treat it as a regular line
-                    if handled is False and condition_stack[-1][0]:
-                        result_lines.append(line)
-                        # Add continuation lines too if not handled
-                        for j in range(line_continuation_count):
-                            result_lines.append(lines[i + j + 1])
-                # If no directive was parsed, treat as regular line
-                elif condition_stack[-1][0]:
-                    result_lines.append(line)
-                    # Add continuation lines too
-                    for j in range(line_continuation_count):
-                        result_lines.append(lines[i + j + 1])
-                
-                # Skip the continuation lines we've already processed
-                i += line_continuation_count + 1
-            else:
-                # Only include non-directive lines if we're in an active context
-                if condition_stack[-1][0]:
-                    result_lines.append(line)
-                i += 1
-        
-        return '\n'.join(result_lines)
+    # Text-based processing removed - all processing now goes through process_structured()
     
     def _parse_directive(self, line):
         """Parse a preprocessor directive line"""
