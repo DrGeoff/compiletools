@@ -43,6 +43,41 @@ class TestFuncs:
         assert args.append_CPPFLAGS == ["-DNEWPROTOCOL -DV172"]
         assert args.append_CXXFLAGS == ["-DNEWPROTOCOL -DV172"]
 
+    def test_extract_system_include_paths_with_quoted_spaces(self):
+        """Test that extract_system_include_paths correctly parses quoted include paths with spaces.
+        
+        This test validates the shlex.split() fix that replaced the original regex-based
+        approach. The regex approach would fail to handle shell quoting correctly.
+        """
+        
+        # Create a mock args object with quoted include paths containing spaces
+        class MockArgs:
+            def __init__(self):
+                # Test case that would break with regex but works with shlex
+                self.CPPFLAGS = '-DSOME_MACRO -isystem "/path with spaces/include" -DANOTHER_MACRO'
+                self.CXXFLAGS = '-I "/another path/headers" -std=c++17'
+                
+        mock_args = MockArgs()
+        
+        # Test the extract_system_include_paths function directly
+        extracted_paths = compiletools.apptools.extract_system_include_paths(mock_args, verbose=9)
+        
+        print("\nShlex parsing test results:")
+        print(f"CPPFLAGS: {mock_args.CPPFLAGS}")
+        print(f"CXXFLAGS: {mock_args.CXXFLAGS}")
+        print(f"Extracted include paths: {extracted_paths}")
+        
+        # Expected behavior: shlex should correctly parse quoted paths with spaces
+        expected_paths = ["/path with spaces/include", "/another path/headers"]
+        
+        # Verify that both paths with spaces are correctly extracted
+        for expected_path in expected_paths:
+            assert expected_path in extracted_paths, \
+                f"Failed to extract quoted path '{expected_path}'. Got: {extracted_paths}. " \
+                f"This suggests shlex.split() fix didn't work or regressed to regex parsing."
+        
+        print("✓ Shlex parsing correctly handles quoted include paths with spaces!")
+
 
 class TestConfig:
     def setup_method(self):

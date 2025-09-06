@@ -341,6 +341,94 @@ def _add_include_paths_to_flags(args):
         print("\tCXXFLAGS=" + args.CXXFLAGS)
 
 
+def extract_system_include_paths(args, flag_sources=None, verbose=0):
+    """Extract -I and -isystem include paths from command-line flags.
+    
+    Args:
+        args: Parsed arguments object with flag attributes (CPPFLAGS, CFLAGS, CXXFLAGS)
+        flag_sources: List of flag names to extract from (default: ['CPPFLAGS', 'CXXFLAGS'])
+        verbose: Verbosity level for debugging
+        
+    Returns:
+        List of unique include paths in order
+    """
+    if flag_sources is None:
+        flag_sources = ['CPPFLAGS', 'CXXFLAGS']
+    
+    include_paths = []
+    
+    for flag_name in flag_sources:
+        flag_value = getattr(args, flag_name, '')
+        if not flag_value:
+            continue
+            
+        # Use existing shlex functionality from cached_shlex_split
+        try:
+            tokens = cached_shlex_split(flag_value)
+        except ValueError:
+            # Fall back to simple split if shlex fails
+            tokens = flag_value.split()
+        
+        # Process tokens to find -I and -isystem flags
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            
+            if token == '-I' or token == '-isystem':
+                # Next token should be the path
+                if i + 1 < len(tokens):
+                    include_paths.append(tokens[i + 1])
+                    i += 2
+                else:
+                    i += 1
+            elif token.startswith('-I'):
+                # -Ipath format
+                path = token[2:]
+                if path:  # Make sure it's not just "-I"
+                    include_paths.append(path)
+                i += 1
+            elif token.startswith('-isystem'):
+                # -isystempath format (though this is unusual)
+                path = token[8:]
+                if path:  # Make sure it's not just "-isystem"
+                    include_paths.append(path)
+                i += 1
+            else:
+                i += 1
+    
+    # Remove duplicates while preserving order using existing ordered_unique
+    include_paths = compiletools.utils.ordered_unique(include_paths)
+    
+    if verbose >= 9 and include_paths:
+        print(f"Extracted system include paths: {include_paths}")
+        
+    return include_paths
+
+
+def find_system_header(header_name, args, verbose=0):
+    """Find a system header in the -I/-isystem include paths.
+    
+    Args:
+        header_name: Name of header to find (e.g., "stdio.h", "mylib/header.h")
+        args: Parsed arguments object with flag attributes
+        verbose: Verbosity level for debugging
+        
+    Returns:
+        Absolute path to header if found, None otherwise
+    """
+    include_paths = extract_system_include_paths(args, verbose=verbose)
+    
+    for include_path in include_paths:
+        candidate = os.path.join(include_path, header_name)
+        if compiletools.wrappedos.isfile(candidate):
+            return compiletools.wrappedos.realpath(candidate)
+    
+    if verbose >= 9:
+        print(f"System header '{header_name}' not found in include paths: {include_paths}")
+    
+    return None
+
+
 def extract_command_line_macros(args, flag_sources=None, include_compiler_macros=True, verbose=0):
     """Extract -D macro definitions from command line flags.
     
@@ -398,12 +486,17 @@ def extract_command_line_macros(args, flag_sources=None, include_compiler_macros
     # Add compiler, platform, and architecture macros if requested
     if include_compiler_macros:
         import compiletools.compiler_macros
-        functional_compiler = get_functional_cxx_compiler()
-        compiler = getattr(args, 'CXX', functional_compiler)
+        # Use same pattern as parseargs() - check args.CXX first to avoid redundant detection
+        compiler = getattr(args, 'CXX', None)
         if compiler is None:
-            if verbose >= 1:
-                print("Warning: No functional C++ compiler detected. Skipping compiler macros.")
-        else:
+            functional_compiler = get_functional_cxx_compiler()
+            if functional_compiler:
+                compiler = functional_compiler
+            else:
+                if verbose >= 1:
+                    print("Warning: No functional C++ compiler detected. Skipping compiler macros.")
+        
+        if compiler is not None:
             compiler_macros = compiletools.compiler_macros.get_compiler_macros(compiler, verbose)
             macros.update(compiler_macros)
     

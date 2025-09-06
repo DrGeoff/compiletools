@@ -10,6 +10,7 @@ from typing import Dict, Optional
 import threading
 import os
 import hashlib
+from functools import lru_cache
 from compiletools import wrappedos
 
 # Module-level cache: None = not loaded, Dict = loaded hashes
@@ -58,6 +59,7 @@ def load_hashes() -> None:
             _HASHES = {}  # Empty hash registry - will compute hashes on demand
 
 
+@lru_cache(maxsize=None)
 def get_file_hash(filepath: str) -> Optional[str]:
     """Get hash for a file, loading hashes on first call.
     
