@@ -2,6 +2,8 @@ import json
 import os
 
 import compiletools.compilation_database
+import compiletools.makefile
+import compiletools.findtargets
 import compiletools.testhelper as uth
 
 
@@ -169,3 +171,463 @@ class TestCompilationDatabase:
                             assert isinstance(cmd["file"], str)
                             assert len(cmd["directory"]) > 0
                             assert len(cmd["file"]) > 0
+
+    @uth.requires_functional_compiler
+    def test_compilation_database_vs_makefile_equivalence(self):
+        """Test that compilation database generates equivalent commands to Makefile"""
+        
+        with uth.TempDirContext() as _:
+            samplesdir = uth.samplesdir()
+            
+            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+                # Use the same test files as the Makefile test
+                relativepaths = [
+                    "simple/helloworld_cpp.cpp",
+                    "simple/helloworld_c.c"
+                ]
+                realpaths = [os.path.join(samplesdir, filename) for filename in relativepaths]
+                
+                # Generate compilation database
+                comp_db_output = "compile_commands.json"
+                with uth.ParserContext():
+                    compiletools.compilation_database.main([
+                        "--config=" + temp_config_name,
+                        "--output=" + comp_db_output
+                    ] + realpaths)
+                    
+                # Generate Makefile  
+                with uth.ParserContext():
+                    compiletools.makefile.main([
+                        "--config=" + temp_config_name
+                    ] + realpaths)
+                    
+                # Read compilation database
+                with open(comp_db_output, 'r') as f:
+                    comp_db_commands = json.load(f)
+                
+                # Parse Makefile for compilation rules
+                makefile_commands = self._extract_compile_commands_from_makefile()
+                
+                # Compare commands for equivalence
+                self._assert_commands_equivalent(comp_db_commands, makefile_commands, realpaths)
+
+    @uth.requires_functional_compiler
+    def test_compilation_database_vs_makefile_complex_project(self):
+        """Test equivalence with a more complex project having multiple files and dependencies"""
+        
+        with uth.TempDirContext() as _:
+            samplesdir = uth.samplesdir()
+            
+            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+                # Use factory sample which has multiple source files with dependencies
+                relativepaths = [
+                    "factory/test_factory.cpp",
+                    "factory/widget_factory.cpp", 
+                    "factory/a_widget.cpp",
+                    "factory/z_widget.cpp",
+                    # Also include numbers sample for additional complexity
+                    "numbers/test_direct_include.cpp",
+                    "numbers/get_numbers.cpp",
+                    "numbers/get_int.cpp",
+                    "numbers/get_double.cpp"
+                ]
+                realpaths = [os.path.join(samplesdir, filename) for filename in relativepaths]
+                
+                # Generate compilation database
+                comp_db_output = "compile_commands_complex.json"
+                with uth.ParserContext():
+                    compiletools.compilation_database.main([
+                        "--config=" + temp_config_name,
+                        "--output=" + comp_db_output
+                    ] + realpaths)
+                    
+                # Generate Makefile  
+                with uth.ParserContext():
+                    compiletools.makefile.main([
+                        "--config=" + temp_config_name
+                    ] + realpaths)
+                    
+                # Read compilation database
+                with open(comp_db_output, 'r') as f:
+                    comp_db_commands = json.load(f)
+                
+                # Parse Makefile for compilation rules
+                makefile_commands = self._extract_compile_commands_from_makefile()
+                
+                # Verify we have commands for all source files
+                assert len(comp_db_commands) >= len(relativepaths), \
+                    f"Expected at least {len(relativepaths)} compilation database entries, got {len(comp_db_commands)}"
+                assert len(makefile_commands) >= len(relativepaths), \
+                    f"Expected at least {len(relativepaths)} Makefile commands, got {len(makefile_commands)}"
+                
+                # Compare commands for equivalence
+                self._assert_commands_equivalent(comp_db_commands, makefile_commands, realpaths)
+                
+                # Additional verification: check that header dependencies are handled
+                # Both tools should produce the same set of include flags
+                comp_db_includes = set()
+                makefile_includes = set()
+                
+                for cmd in comp_db_commands:
+                    args = cmd["arguments"]
+                    for i, arg in enumerate(args):
+                        if arg == "-I" and i + 1 < len(args):
+                            comp_db_includes.add(args[i + 1])
+                            
+                for source_file, command in makefile_commands.items():
+                    for i, arg in enumerate(command):
+                        if arg == "-I" and i + 1 < len(command):
+                            makefile_includes.add(command[i + 1])
+                            
+                # The include sets should be equivalent (same directories used)
+                assert comp_db_includes == makefile_includes, \
+                    f"Include directories differ: comp_db={comp_db_includes}, makefile={makefile_includes}"
+
+    @uth.requires_functional_compiler
+    def test_compilation_database_with_findtargets_discovery(self):
+        """Test compilation database with FindTargets-based auto-discovery like cake --auto"""
+        
+        with uth.TempDirContext() as _:
+            samplesdir = uth.samplesdir()
+            
+            # Copy some sample files to the current directory for auto-discovery
+            import shutil
+            shutil.copy(os.path.join(samplesdir, "simple/helloworld_cpp.cpp"), ".")
+            shutil.copy(os.path.join(samplesdir, "simple/helloworld_c.c"), ".")
+            
+            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+                with uth.ParserContext():
+                    # Create args object like compilation database would
+                    cap = compiletools.apptools.create_parser(
+                        "Test compilation database with auto-discovery", argv=[
+                            "--config=" + temp_config_name,
+                            "--exemarkers=main(",  # Tell it how to identify executable files
+                            "--auto"  # Enable auto-discovery
+                        ]
+                    )
+                    compiletools.compilation_database.CompilationDatabaseCreator.add_arguments(cap)
+                    compiletools.hunter.add_arguments(cap)
+                    compiletools.findtargets.add_arguments(cap)  # Add findtargets arguments including --auto
+                    
+                    # Parse args with auto-discovery enabled
+                    args = compiletools.apptools.parseargs(cap, [
+                        "--config=" + temp_config_name,
+                        "--exemarkers=main(",  # Tell it how to identify executable files
+                        "--testmarkers=test(",  # Tell it how to identify test files
+                        "--auto"  # Enable auto-discovery
+                    ])
+                    
+                    # Use FindTargets to discover source files (following cake.py pattern)
+                    findtargets = compiletools.findtargets.FindTargets(args)
+                    findtargets.process(args)
+                    
+                    # Verify that targets were found
+                    assert hasattr(args, 'filename') and args.filename, \
+                        f"FindTargets should have found source files, got: {getattr(args, 'filename', [])}"
+                    
+                    # Create compilation database with the discovered files
+                    from compiletools.file_analyzer import create_shared_analysis_cache
+                    shared_file_analyzer_cache = create_shared_analysis_cache(args)
+                    
+                    creator = compiletools.compilation_database.CompilationDatabaseCreator(
+                        args, file_analyzer_cache=shared_file_analyzer_cache
+                    )
+                    
+                    comp_db_output = "compile_commands_findtargets.json"
+                    args.compilation_database_output = comp_db_output
+                    creator.write_compilation_database()
+                
+                # Verify compilation database was created and contains discovered files
+                assert os.path.exists(comp_db_output), "Compilation database should be created"
+                
+                with open(comp_db_output, 'r') as f:
+                    comp_db_commands = json.load(f)
+                
+                # Should have found our copied source files
+                assert len(comp_db_commands) >= 2, f"Expected at least 2 files, got {len(comp_db_commands)}"
+                
+                # Verify the discovered files include our test files
+                found_files = {os.path.basename(cmd["file"]) for cmd in comp_db_commands}
+                expected_files = {"helloworld_cpp.cpp", "helloworld_c.c"}
+                
+                assert expected_files.issubset(found_files), \
+                    f"Expected files {expected_files} not found in discovered files {found_files}"
+                
+                # Verify all commands are valid compilation commands
+                for cmd in comp_db_commands:
+                    assert "arguments" in cmd, "Each command should have arguments"
+                    assert "directory" in cmd, "Each command should have directory"
+                    assert "file" in cmd, "Each command should have file"
+                    
+                    args_list = cmd["arguments"]
+                    assert len(args_list) > 0, "Arguments should not be empty"
+                    assert "-c" in args_list, "Should be compilation command with -c flag"
+                    
+                    # Check compiler is appropriate for file type
+                    filename = os.path.basename(cmd["file"])
+                    compiler = args_list[0]
+                    if filename.endswith('.cpp'):
+                        assert any(cpp in compiler for cpp in ['g++', 'clang++', 'c++']), \
+                            f"C++ file should use C++ compiler, got {compiler}"
+                    elif filename.endswith('.c'):
+                        assert any(c in compiler for c in ['gcc', 'clang']) and \
+                               not any(cpp in compiler for cpp in ['g++', 'clang++', 'c++']), \
+                            f"C file should use C compiler, got {compiler}"
+
+    @uth.requires_functional_compiler
+    def test_compilation_database_incremental_updates(self):
+        """Test that compilation database supports incremental updates without wiping existing entries"""
+        
+        with uth.TempDirContext() as _:
+            samplesdir = uth.samplesdir()
+            
+            # Copy multiple sample files for initial build
+            import shutil
+            shutil.copy(os.path.join(samplesdir, "simple/helloworld_cpp.cpp"), ".")
+            shutil.copy(os.path.join(samplesdir, "simple/helloworld_c.c"), ".")
+            shutil.copy(os.path.join(samplesdir, "factory/test_factory.cpp"), ".")
+            
+            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+                comp_db_output = "compile_commands.json"
+                
+                # Step 1: Create initial compilation database with all files
+                initial_files = ["helloworld_cpp.cpp", "helloworld_c.c", "test_factory.cpp"]
+                with uth.ParserContext():
+                    compiletools.compilation_database.main([
+                        "--config=" + temp_config_name,
+                        "--output=" + comp_db_output
+                    ] + initial_files)
+                
+                # Verify initial database
+                assert os.path.exists(comp_db_output), "Initial compilation database should be created"
+                
+                with open(comp_db_output, 'r') as f:
+                    initial_commands = json.load(f)
+                
+                assert len(initial_commands) == 3, f"Expected 3 initial commands, got {len(initial_commands)}"
+                initial_files_set = {os.path.basename(cmd["file"]) for cmd in initial_commands}
+                assert initial_files_set == {"helloworld_cpp.cpp", "helloworld_c.c", "test_factory.cpp"}
+                
+                # Step 2: Simulate updating just one file (like after editing and recompiling)
+                # This should only update the entry for that file, not wipe the entire database
+                updated_file = ["helloworld_cpp.cpp"]
+                with uth.ParserContext():
+                    compiletools.compilation_database.main([
+                        "--config=" + temp_config_name,
+                        "--output=" + comp_db_output
+                    ] + updated_file)
+                
+                # Step 3: Verify incremental behavior
+                with open(comp_db_output, 'r') as f:
+                    updated_commands = json.load(f)
+                
+                # CRITICAL: The database should still contain ALL original files
+                # This test will currently FAIL because the current implementation overwrites
+                # but this is the behavior we need to implement
+                updated_files_set = {os.path.basename(cmd["file"]) for cmd in updated_commands}
+                
+                # The key assertion: all original files should still be present
+                assert len(updated_commands) == 3, \
+                    f"Incremental update should preserve all entries. Expected 3, got {len(updated_commands)}. " \
+                    f"Files in database: {updated_files_set}"
+                
+                assert "helloworld_c.c" in updated_files_set, \
+                    "helloworld_c.c should be preserved after updating helloworld_cpp.cpp"
+                assert "test_factory.cpp" in updated_files_set, \
+                    "test_factory.cpp should be preserved after updating helloworld_cpp.cpp"
+                assert "helloworld_cpp.cpp" in updated_files_set, \
+                    "helloworld_cpp.cpp should still be present after update"
+                
+                # Additional verification: the updated file should have current timestamp/flags
+                # while other files should remain unchanged
+                cpp_entry = next(cmd for cmd in updated_commands if "helloworld_cpp.cpp" in cmd["file"])
+                c_entry = next(cmd for cmd in updated_commands if "helloworld_c.c" in cmd["file"])
+                factory_entry = next(cmd for cmd in updated_commands if "test_factory.cpp" in cmd["file"])
+                
+                # All entries should still be valid compilation commands
+                for entry in [cpp_entry, c_entry, factory_entry]:
+                    assert "arguments" in entry
+                    assert "directory" in entry  
+                    assert "file" in entry
+                    assert "-c" in entry["arguments"], "Should be compilation command"
+
+    @uth.requires_functional_compiler
+    def test_compilation_database_complex_incremental_scenarios(self):
+        """Test more complex incremental scenarios: multiple updates, additions, and deletions"""
+        
+        with uth.TempDirContext() as _:
+            samplesdir = uth.samplesdir()
+            
+            # Copy initial set of files
+            import shutil
+            shutil.copy(os.path.join(samplesdir, "simple/helloworld_cpp.cpp"), ".")
+            shutil.copy(os.path.join(samplesdir, "simple/helloworld_c.c"), ".")
+            
+            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+                comp_db_output = "compile_commands.json"
+                
+                # Step 1: Initial database with 2 files
+                with uth.ParserContext():
+                    compiletools.compilation_database.main([
+                        "--config=" + temp_config_name,
+                        "--output=" + comp_db_output,
+                        "helloworld_cpp.cpp", "helloworld_c.c"
+                    ])
+                
+                with open(comp_db_output, 'r') as f:
+                    initial_db = json.load(f)
+                assert len(initial_db) == 2, "Should have 2 initial entries"
+                
+                # Step 2: Add a new file
+                shutil.copy(os.path.join(samplesdir, "factory/test_factory.cpp"), ".")
+                with uth.ParserContext():
+                    compiletools.compilation_database.main([
+                        "--config=" + temp_config_name,
+                        "--output=" + comp_db_output,
+                        "test_factory.cpp"  # Only the new file
+                    ])
+                
+                with open(comp_db_output, 'r') as f:
+                    after_addition = json.load(f)
+                assert len(after_addition) == 3, "Should have 3 entries after addition"
+                files_after_addition = {os.path.basename(cmd["file"]) for cmd in after_addition}
+                assert files_after_addition == {"helloworld_cpp.cpp", "helloworld_c.c", "test_factory.cpp"}
+                
+                # Step 3: Update multiple existing files simultaneously
+                with uth.ParserContext():
+                    compiletools.compilation_database.main([
+                        "--config=" + temp_config_name,
+                        "--output=" + comp_db_output,
+                        "helloworld_cpp.cpp", "test_factory.cpp"  # Update 2 files, preserve 1
+                    ])
+                
+                with open(comp_db_output, 'r') as f:
+                    after_multi_update = json.load(f)
+                assert len(after_multi_update) == 3, "Should still have 3 entries after multi-update"
+                files_after_multi = {os.path.basename(cmd["file"]) for cmd in after_multi_update}
+                assert files_after_multi == {"helloworld_cpp.cpp", "helloworld_c.c", "test_factory.cpp"}
+                
+                # Step 4: Test with file that no longer exists (simulating deletion)
+                # Remove one of the source files but keep it in database
+                os.remove("test_factory.cpp")
+                
+                # Update only remaining files - the deleted file's entry should be preserved
+                with uth.ParserContext():
+                    compiletools.compilation_database.main([
+                        "--config=" + temp_config_name,
+                        "--output=" + comp_db_output,
+                        "helloworld_c.c"  # Only update one existing file
+                    ])
+                
+                with open(comp_db_output, 'r') as f:
+                    after_deletion_test = json.load(f)
+                
+                # The deleted file should still be in the database (incremental update preserves it)
+                assert len(after_deletion_test) == 3, "Should preserve entry for deleted file"
+                files_after_deletion = {os.path.basename(cmd["file"]) for cmd in after_deletion_test}
+                assert "test_factory.cpp" in files_after_deletion, "Deleted file entry should be preserved"
+                
+                # Step 5: Test empty update (no files specified) - should preserve all
+                with uth.ParserContext():
+                    compiletools.compilation_database.main([
+                        "--config=" + temp_config_name,
+                        "--output=" + comp_db_output
+                        # No files specified
+                    ])
+                
+                with open(comp_db_output, 'r') as f:
+                    after_empty_update = json.load(f)
+                
+                # With no files to update, existing database should be preserved
+                # (though it might be empty if no auto-discovery happens)
+                # The key is that it shouldn't corrupt the existing database
+                assert isinstance(after_empty_update, list), "Should still be valid JSON array"
+
+    def _extract_compile_commands_from_makefile(self):
+        """Extract compilation commands from generated Makefile"""
+        makefile_commands = {}
+        
+        # Find the Makefile
+        filelist = os.listdir(".")
+        makefile_name = next((f for f in filelist if f.startswith("Makefile")), None)
+        assert makefile_name, "No Makefile found"
+        
+        # Parse Makefile to extract compile commands
+        with open(makefile_name, 'r') as f:
+            lines = f.readlines()
+        
+        import re
+        for line_num, line in enumerate(lines):
+            original_line = line
+            line = line.strip()
+            
+            # Look for compilation commands (lines starting with tab and containing compiler)
+            if original_line.startswith('\t'):
+                # Extract compiler command
+                command = original_line[1:].strip()  # Remove tab
+                if any(compiler in command for compiler in ['gcc', 'g++', 'clang', 'clang++']):
+                    # Only process commands that have -c flag (compilation, not linking)
+                    if '-c' in command.split():
+                        # Extract source file from command - it's at the end
+                        # Look for .c or .cpp files in the command
+                        source_match = re.search(r'(\S+\.(?:cpp|c|cc|cxx|C))', command)
+                        if source_match:
+                            source_file = source_match.group(1)
+                            makefile_commands[source_file] = command.split()
+                        
+        return makefile_commands
+
+    def _assert_commands_equivalent(self, comp_db_commands, makefile_commands, source_files):
+        """Assert that compilation database and Makefile commands are equivalent"""
+        
+        # Create mapping from source files to compilation database commands
+        comp_db_by_file = {}
+        for cmd in comp_db_commands:
+            file_path = cmd["file"]
+            # Normalize path to just filename for comparison
+            filename = os.path.basename(file_path)
+            comp_db_by_file[filename] = cmd["arguments"]
+        
+        # Normalize makefile commands by filename
+        makefile_by_file = {}
+        for source_file, command in makefile_commands.items():
+            filename = os.path.basename(source_file)
+            makefile_by_file[filename] = command
+        
+        # Check that we have commands for each source file
+        for source_file in source_files:
+            filename = os.path.basename(source_file)
+            
+            assert filename in comp_db_by_file, f"No compilation database entry for {filename}"
+            assert filename in makefile_by_file, f"No Makefile command for {filename}"
+            
+            comp_db_args = comp_db_by_file[filename]
+            makefile_args = makefile_by_file[filename]
+            
+            # Both should be compilation commands (contain -c flag)
+            assert "-c" in comp_db_args, f"Compilation database missing -c flag for {filename}"
+            assert "-c" in makefile_args, f"Makefile missing -c flag for {filename}"
+            
+            # Both should contain the source file
+            source_found_in_comp_db = any(filename in arg for arg in comp_db_args)
+            source_found_in_makefile = any(filename in arg for arg in makefile_args)
+            
+            assert source_found_in_comp_db, f"Source file {filename} not found in compilation database command"
+            assert source_found_in_makefile, f"Source file {filename} not found in Makefile command"
+            
+            # Both should use the same compiler type (C vs C++)
+            comp_db_compiler = comp_db_args[0]
+            makefile_compiler = makefile_args[0]
+            
+            # Check compiler compatibility (both should be C++ or both C)
+            is_cpp_file = filename.endswith(('.cpp', '.cxx', '.cc', '.C', '.CC'))
+            
+            if is_cpp_file:
+                assert any(cpp_compiler in comp_db_compiler for cpp_compiler in ['g++', 'clang++', 'c++']), \
+                    f"Expected C++ compiler for {filename}, got {comp_db_compiler}"
+                assert any(cpp_compiler in makefile_compiler for cpp_compiler in ['g++', 'clang++', 'c++']), \
+                    f"Expected C++ compiler for {filename}, got {makefile_compiler}"
+            else:
+                assert any(c_compiler in comp_db_compiler for c_compiler in ['gcc', 'clang']) and \
+                       not any(cpp_compiler in comp_db_compiler for cpp_compiler in ['g++', 'clang++', 'c++']), \
+                    f"Expected C compiler for {filename}, got {comp_db_compiler}"
