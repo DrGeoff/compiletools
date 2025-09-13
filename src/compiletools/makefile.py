@@ -529,6 +529,12 @@ class MakefileCreator:
         if self._uptodate():
             return
 
+        # Pre-discover all source files to optimize subsequent dependency lookups
+        # This ensures that all hunter.required_source_files() calls benefit from cached results
+        if self.args.verbose >= 7:
+            print("Makefile: Pre-discovering all source files for optimization")
+        self.hunter.huntsource()
+
         # Find the realpaths of the given filenames (to avoid this being
         # duplicated many times)
         os.makedirs(self.namer.executable_dir(), exist_ok=True)
@@ -738,20 +744,16 @@ class MakefileCreator:
         rule = self._create_object_directory()
         rules_for_source[rule.target] = rule
 
-        # Output all the compile rules
+        # Collect all source files that need compile rules
+        all_compile_sources = set()
         for source in sources:
-            # Reset the cycle detection because we are starting a new source
-            # file
-            cycle_detection = set()
             completesources = self.hunter.required_source_files(source)
-            
-            for item in completesources:
-                if item not in cycle_detection:
-                    cycle_detection.add(item)
-                    rule = self._create_compile_rule_for_source(item)
-                    rules_for_source[rule.target] = rule
-                else:
-                    print("ct-create-makefile detected cycle on source " + item)
+            all_compile_sources.update(completesources)
+
+        # Create compile rules for each unique source (avoids duplication)
+        for source_file in all_compile_sources:
+            rule = self._create_compile_rule_for_source(source_file)
+            rules_for_source[rule.target] = rule
 
         return list(rules_for_source.values())
 

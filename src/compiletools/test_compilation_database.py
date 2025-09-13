@@ -471,7 +471,8 @@ class TestCompilationDatabase:
                     compiletools.compilation_database.main([
                         "--config=" + temp_config_name,
                         "--compilation-database-output=" + comp_db_output,
-                        "helloworld_cpp.cpp", "helloworld_c.c"
+                        os.path.abspath("helloworld_cpp.cpp"),
+                        os.path.abspath("helloworld_c.c")
                     ])
                 
                 with open(comp_db_output, 'r') as f:
@@ -484,7 +485,7 @@ class TestCompilationDatabase:
                     compiletools.compilation_database.main([
                         "--config=" + temp_config_name,
                         "--compilation-database-output=" + comp_db_output,
-                        "test_factory.cpp"  # Only the new file
+                        os.path.abspath("test_factory.cpp")  # Only the new file
                     ])
                 
                 with open(comp_db_output, 'r') as f:
@@ -498,7 +499,8 @@ class TestCompilationDatabase:
                     compiletools.compilation_database.main([
                         "--config=" + temp_config_name,
                         "--compilation-database-output=" + comp_db_output,
-                        "helloworld_cpp.cpp", "test_factory.cpp"  # Update 2 files, preserve 1
+                        os.path.abspath("helloworld_cpp.cpp"),
+                        os.path.abspath("test_factory.cpp")  # Update 2 files, preserve 1
                     ])
                 
                 with open(comp_db_output, 'r') as f:
@@ -591,7 +593,8 @@ class TestCompilationDatabase:
                     compiletools.compilation_database.main([
                         "--config=" + temp_config_name,
                         "--compilation-database-output=" + comp_db_output,
-                        "helloworld_cpp.cpp", "helloworld_c.c"
+                        os.path.abspath("helloworld_cpp.cpp"),
+                        os.path.abspath("helloworld_c.c")
                     ])
                 
                 # Verify the database was created correctly
@@ -610,7 +613,7 @@ class TestCompilationDatabase:
                     compiletools.compilation_database.main([
                         "--config=" + temp_config_name,
                         "--compilation-database-output=" + comp_db_output,
-                        "helloworld_cpp.cpp"  # Update just one file
+                        os.path.abspath("helloworld_cpp.cpp")  # Update just one file
                     ])
                 
                 # Verify incremental update preserved all entries

@@ -34,20 +34,21 @@ class CompilationDatabaseCreator:
         
     @staticmethod
     def add_arguments(cap):
-        """Add command-line arguments"""
-        cap.add("filename", nargs="*", help="Source file(s) to include in compilation database")
-        
+        """Add command-line arguments for standalone ct-compilation-database"""
+        # Add standard target arguments that define what sources to process
+        compiletools.apptools.add_target_arguments_ex(cap)
+
         cap.add(
             "--compilation-database-output",
             dest="compilation_database_output",
             default="compile_commands.json",
             help="Output filename for compilation database (default: compile_commands.json)"
         )
-        
+
         cap.add(
             "--relative-paths",
             dest="compilation_database_relative",
-            action="store_true", 
+            action="store_true",
             help="Use relative paths instead of absolute paths"
         )
 
@@ -127,34 +128,31 @@ class CompilationDatabaseCreator:
 
     def create_compilation_database(self) -> List[Dict[str, Any]]:
         """Create the compilation database as a list of command objects"""
-        
+
         commands = []
-        
-        # Use explicitly provided files if available, otherwise hunt for sources
-        if hasattr(self.args, 'filename') and self.args.filename:
-            source_files = self.args.filename
-        else:
-            try:
-                # Hunt for source files
-                self.hunter.huntsource()
-                source_files = self.hunter.getsources()
-                
-                # Also process test files if they exist
-                if hasattr(self.hunter, 'gettestsources'):
-                    test_files = self.hunter.gettestsources()
-                    source_files.extend(test_files)
-                    
-            except Exception as e:
-                if self.args.verbose:
-                    print(f"Warning: Error during source hunting: {e}")
-                source_files = []
-        
+
+        # Discover all source files using Hunter's project-level discovery
+        try:
+            # Hunt for all source files from command line arguments and dependencies
+            self.hunter.huntsource()
+            source_files = self.hunter.getsources()
+
+            if self.args.verbose >= 6:
+                print(f"CompilationDatabase: Processing {len(source_files)} source files")
+
+        except Exception as e:
+            if self.args.verbose:
+                print(f"Warning: Error during source hunting: {e}")
+            source_files = []
+
         # Process each source file
         for source_file in source_files:
             if os.path.exists(source_file):
                 command_obj = self._create_command_object(source_file)
                 commands.append(command_obj)
-            
+            elif self.args.verbose >= 2:
+                print(f"Warning: Source file does not exist: {source_file}")
+
         return commands
 
     def write_compilation_database(self, output_file: str = None):
@@ -183,6 +181,7 @@ class CompilationDatabaseCreator:
                 if self.args.verbose:
                     print(f"Warning: Could not read existing compilation database: {e}")
                 existing_commands = []
+
         
         # Merge: Keep existing entries for files we're not updating using StringZilla operations
         merged_commands = []

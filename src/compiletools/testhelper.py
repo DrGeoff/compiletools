@@ -266,7 +266,7 @@ def ParserContext():
     saved_parsers = configargparse._parsers.copy()
     delete_existing_parsers()
     compiletools.apptools.resetcallbacks()
-    
+
     try:
         yield
     finally:
