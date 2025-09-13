@@ -1,7 +1,9 @@
 import json
 import os
 from typing import List, Dict, Any
+from functools import lru_cache
 
+import stringzilla as sz
 import compiletools.utils
 import compiletools.apptools
 import compiletools.headerdeps
@@ -9,17 +11,26 @@ import compiletools.magicflags
 import compiletools.hunter
 import compiletools.namer
 import compiletools.configutils
+import compiletools.wrappedos
 
 
 class CompilationDatabaseCreator:
     """Creates compile_commands.json files for clang tooling integration"""
     
-    def __init__(self, args, file_analyzer_cache=None):
+    def __init__(self, args, file_analyzer_cache=None, namer=None, headerdeps=None, magicparser=None, hunter=None):
         self.args = args
-        self.namer = compiletools.namer.Namer(args)
-        self.headerdeps = compiletools.headerdeps.create(args, file_analyzer_cache=file_analyzer_cache)
-        self.magicparser = compiletools.magicflags.create(args, self.headerdeps)
-        self.hunter = compiletools.hunter.Hunter(args, self.headerdeps, self.magicparser)
+        
+        # Use provided objects or create new ones
+        self.namer = namer if namer is not None else compiletools.namer.Namer(args)
+        self.headerdeps = headerdeps if headerdeps is not None else compiletools.headerdeps.create(args, file_analyzer_cache=file_analyzer_cache)
+        self.magicparser = magicparser if magicparser is not None else compiletools.magicflags.create(args, self.headerdeps)
+        self.hunter = hunter if hunter is not None else compiletools.hunter.Hunter(args, self.headerdeps, self.magicparser)
+            
+    def _normalize_path_sz(self, file_path: str) -> str:
+        """Normalize file path using wrappedos with shared StringZilla-aware cache"""
+        # Use enhanced wrappedos.abspath that handles both Python str and StringZilla Str
+        return compiletools.wrappedos.abspath(file_path)
+    
         
     @staticmethod
     def add_arguments(cap):
@@ -27,7 +38,7 @@ class CompilationDatabaseCreator:
         cap.add("filename", nargs="*", help="Source file(s) to include in compilation database")
         
         cap.add(
-            "--output", "-o",
+            "--compilation-database-output",
             dest="compilation_database_output",
             default="compile_commands.json",
             help="Output filename for compilation database (default: compile_commands.json)"
@@ -41,10 +52,10 @@ class CompilationDatabaseCreator:
         )
 
     def _get_compiler_command(self, source_file: str) -> List[str]:
-        """Generate compiler command arguments for a source file"""
+        """Generate compiler command arguments for a source file with StringZilla optimization"""
         
-        # Determine compiler based on file extension  
-        if source_file.endswith(('.cpp', '.cxx', '.cc', '.C', '.CC')):
+        # Determine compiler based on file extension
+        if compiletools.utils.is_cpp_source(source_file):
             compiler = self.args.CXX
         else:
             compiler = self.args.CC
@@ -57,27 +68,27 @@ class CompilationDatabaseCreator:
             if isinstance(self.args.CPPFLAGS, list):
                 args.extend(self.args.CPPFLAGS)
             else:
-                args.extend(self.args.CPPFLAGS.split())
+                args.extend(compiletools.utils.cached_shlex_split(self.args.CPPFLAGS))
                 
-        if source_file.endswith(('.cpp', '.cxx', '.cc', '.C', '.CC')):
+        if compiletools.utils.is_cpp_source(source_file):
             if hasattr(self.args, 'CXXFLAGS') and self.args.CXXFLAGS:
                 if isinstance(self.args.CXXFLAGS, list):
                     args.extend(self.args.CXXFLAGS)
                 else:
-                    args.extend(self.args.CXXFLAGS.split())
+                    args.extend(compiletools.utils.cached_shlex_split(self.args.CXXFLAGS))
         else:
             if hasattr(self.args, 'CFLAGS') and self.args.CFLAGS:
-                args.extend(self.args.CFLAGS.split())
+                args.extend(compiletools.utils.cached_shlex_split(self.args.CFLAGS))
             
         # Add magic flags for this specific file
         try:
             magic_cppflags = self.magicparser.getmagic_cppflags_for_file(source_file)
             if magic_cppflags:
-                args.extend(magic_cppflags.split())
+                args.extend(compiletools.utils.cached_shlex_split(magic_cppflags))
                 
             magic_cxxflags = self.magicparser.getmagic_cxxflags_for_file(source_file)
             if magic_cxxflags:
-                args.extend(magic_cxxflags.split())
+                args.extend(compiletools.utils.cached_shlex_split(magic_cxxflags))
         except AttributeError:
             # Magic flags methods may not exist
             pass
@@ -155,29 +166,36 @@ class CompilationDatabaseCreator:
         # Create the command objects for current files
         new_commands = self.create_compilation_database()
         
-        # For incremental updates: read existing database and merge
+        # For incremental updates: read existing database and merge using StringZilla
         existing_commands = []
         if os.path.exists(output_file):
             try:
-                with open(output_file, 'r', encoding='utf-8') as f:
-                    existing_commands = json.load(f)
-                if self.args.verbose:
-                    print(f"Loaded existing compilation database with {len(existing_commands)} entries")
+                # Use StringZilla memory-mapped file reading
+                file_content = sz.Str(sz.File(output_file))
+                # JSON parsing requires conversion only at the boundary
+                if len(file_content) > 0:
+                    existing_commands = json.loads(file_content.decode('utf-8'))
+                    if self.args.verbose:
+                        print(f"Loaded existing compilation database with StringZilla: {len(existing_commands)} entries")
+                else:
+                    existing_commands = []
             except Exception as e:
                 if self.args.verbose:
                     print(f"Warning: Could not read existing compilation database: {e}")
                 existing_commands = []
         
-        # Merge: Keep existing entries for files we're not updating
+        # Merge: Keep existing entries for files we're not updating using StringZilla operations
         merged_commands = []
         
-        # Get set of files being updated (normalize paths for comparison)
-        new_files = {os.path.abspath(cmd["file"]) for cmd in new_commands}
+        # Get set of files being updated using StringZilla-optimized path normalization
+        new_files = {self._normalize_path_sz(cmd["file"]) for cmd in new_commands}
         
-        # Keep existing entries for files not being updated
+        # Always use StringZilla for consistent file path operations
         for existing_cmd in existing_commands:
-            existing_file = os.path.abspath(existing_cmd["file"])
-            if existing_file not in new_files:
+            # Use StringZilla Str and wrappedos for efficient path operations
+            existing_file_sz = sz.Str(existing_cmd["file"])
+            existing_file_normalized = self._normalize_path_sz(existing_file_sz)
+            if existing_file_normalized not in new_files:
                 merged_commands.append(existing_cmd)
         
         # Add all new/updated entries
