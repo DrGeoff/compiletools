@@ -154,6 +154,8 @@ class Hunter(object):
         compiletools.wrappedos.clear_cache()
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
         compiletools.magicflags.MagicFlagsBase.clear_cache()
+        # Clear class-level cache
+        Hunter._magic_cache.clear()
         # Note: Cannot clear instance-level _parse_magic caches from static method
         # Each Hunter instance will retain its own cache until the instance is destroyed
 
@@ -163,6 +165,11 @@ class Hunter(object):
             self._parse_magic.cache_clear()
         if hasattr(self, '_required_files_cached'):
             self._required_files_cached.cache_clear()
+        # Clear project-level source discovery caches
+        if hasattr(self, '_hunted_sources'):
+            del self._hunted_sources
+        if hasattr(self, '_test_sources'):
+            del self._test_sources
 
     @functools.lru_cache(maxsize=None)
     def _parse_magic(self, filename):
@@ -191,3 +198,114 @@ class Hunter(object):
         if self.args.verbose >= 8:
             print("Hunter asking for header dependencies for ", source_filename)
         return self.headerdeps.process(source_filename)
+
+    def huntsource(self):
+        """Discover all source files from command line arguments and their dependencies.
+
+        This method analyzes the files specified in args.filename, args.static,
+        args.dynamic, and args.tests, then expands each to include all source
+        files it depends on. Results are cached for subsequent getsources() calls.
+        """
+        # For simplicity and test reliability, always recompute
+        # This prevents test isolation issues while maintaining functionality
+        if hasattr(self, '_hunted_sources'):
+            del self._hunted_sources
+        if hasattr(self, '_test_sources'):
+            del self._test_sources
+
+        if self.args.verbose >= 5:
+            print("Hunter::huntsource - Discovering all project sources")
+
+        # Get initial sources from command line arguments
+        initial_sources = []
+        if getattr(self.args, 'static', None):
+            initial_sources.extend(self.args.static)
+        if getattr(self.args, 'dynamic', None):
+            initial_sources.extend(self.args.dynamic)
+        if getattr(self.args, 'filename', None):
+            initial_sources.extend(self.args.filename)
+        if getattr(self.args, 'tests', None):
+            initial_sources.extend(self.args.tests)
+
+
+        if not initial_sources:
+            self._hunted_sources = []
+            if self.args.verbose >= 5:
+                print("Hunter::huntsource - No initial sources found")
+            return
+
+        initial_sources = compiletools.utils.ordered_unique(initial_sources)
+        if self.args.verbose >= 6:
+            print(f"Hunter::huntsource - Initial sources: {initial_sources}")
+
+        # Expand each source to include its dependencies
+        all_sources = set()
+        for source in initial_sources:
+            try:
+                realpath_source = compiletools.wrappedos.realpath(source)
+
+                # Skip files that don't exist
+                if not os.path.exists(realpath_source):
+                    if self.args.verbose >= 2:
+                        print(f"Hunter::huntsource - Source file does not exist: {source} -> {realpath_source}")
+                    continue
+
+                required_sources = self.required_source_files(realpath_source)
+                all_sources.update(required_sources)
+
+                if self.args.verbose >= 7:
+                    print(f"Hunter::huntsource - {source} expanded to {len(required_sources)} sources")
+
+            except Exception as e:
+                if self.args.verbose >= 2:
+                    print(f"Warning: Error expanding source {source}: {e}")
+                # Include the original source even if expansion fails, but only if it exists
+                if os.path.exists(source):
+                    all_sources.add(compiletools.wrappedos.realpath(source))
+
+        # Cache the results as sorted absolute paths
+        self._hunted_sources = sorted(compiletools.wrappedos.realpath(src) for src in all_sources)
+
+
+        if self.args.verbose >= 5:
+            print(f"Hunter::huntsource - Discovered {len(self._hunted_sources)} total sources")
+
+    def getsources(self):
+        """Get all discovered source files.
+
+        Returns the list of source files discovered by huntsource().
+        Calls huntsource() automatically if not already called.
+
+        Returns:
+            List of absolute paths to all source files
+        """
+        if not hasattr(self, '_hunted_sources'):
+            self.huntsource()
+        return self._hunted_sources
+
+    def gettestsources(self):
+        """Get test source files specifically.
+
+        Returns only the source files that came from args.tests expansion.
+        Calls huntsource() automatically if not already called.
+
+        Returns:
+            List of absolute paths to test source files
+        """
+        if not hasattr(self, '_test_sources'):
+            # Expand only test sources
+            test_sources = set()
+            if getattr(self.args, 'tests', None):
+                for source in self.args.tests:
+                    try:
+                        realpath_source = compiletools.wrappedos.realpath(source)
+                        required_sources = self.required_source_files(realpath_source)
+                        test_sources.update(required_sources)
+                    except Exception as e:
+                        if self.args.verbose >= 2:
+                            print(f"Warning: Error expanding test source {source}: {e}")
+                        test_sources.add(compiletools.wrappedos.realpath(source))
+
+            self._test_sources = sorted(compiletools.wrappedos.realpath(src) for src in test_sources)
+
+        return self._test_sources
