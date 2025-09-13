@@ -147,21 +147,51 @@ class CompilationDatabaseCreator:
         return commands
 
     def write_compilation_database(self, output_file: str = None):
-        """Write the compilation database to file"""
+        """Write the compilation database to file with incremental update support"""
         
         if output_file is None:
             output_file = self.args.compilation_database_output
             
-        # Create the command objects
-        commands = self.create_compilation_database()
+        # Create the command objects for current files
+        new_commands = self.create_compilation_database()
         
-        # Write JSON file
+        # For incremental updates: read existing database and merge
+        existing_commands = []
+        if os.path.exists(output_file):
+            try:
+                with open(output_file, 'r', encoding='utf-8') as f:
+                    existing_commands = json.load(f)
+                if self.args.verbose:
+                    print(f"Loaded existing compilation database with {len(existing_commands)} entries")
+            except Exception as e:
+                if self.args.verbose:
+                    print(f"Warning: Could not read existing compilation database: {e}")
+                existing_commands = []
+        
+        # Merge: Keep existing entries for files we're not updating
+        merged_commands = []
+        
+        # Get set of files being updated (normalize paths for comparison)
+        new_files = {os.path.abspath(cmd["file"]) for cmd in new_commands}
+        
+        # Keep existing entries for files not being updated
+        for existing_cmd in existing_commands:
+            existing_file = os.path.abspath(existing_cmd["file"])
+            if existing_file not in new_files:
+                merged_commands.append(existing_cmd)
+        
+        # Add all new/updated entries
+        merged_commands.extend(new_commands)
+        
+        # Write merged JSON file
         try:
             with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(commands, f, indent=2, ensure_ascii=False)
+                json.dump(merged_commands, f, indent=2, ensure_ascii=False)
                 
             if self.args.verbose:
-                print(f"Written compilation database with {len(commands)} entries to {output_file}")
+                print(f"Written compilation database with {len(merged_commands)} entries to {output_file}")
+                print(f"  Updated: {len(new_commands)} entries")
+                print(f"  Preserved: {len(merged_commands) - len(new_commands)} entries")
                 
         except Exception as e:
             print(f"Error writing compilation database: {e}")
