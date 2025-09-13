@@ -67,6 +67,107 @@ class TestCake:
                 for filename in relativepaths
             }
             assert expected_exes == actual_exes
+            
+            # Check that compilation database was created
+            assert os.path.exists("compile_commands.json"), "Compilation database should be created by default"
+            
+            # Verify compilation database content
+            import json
+            with open("compile_commands.json", 'r') as f:
+                commands = json.load(f)
+            assert isinstance(commands, list), "Compilation database should be a JSON array"
+            assert len(commands) >= len(relativepaths), f"Expected at least {len(relativepaths)} compilation commands"
+            
+            # Verify each command has required fields
+            for cmd in commands:
+                assert "directory" in cmd, "Each command should have 'directory' field"
+                assert "file" in cmd, "Each command should have 'file' field"
+                assert "arguments" in cmd, "Each command should have 'arguments' field"
+
+    @uth.requires_functional_compiler
+    def test_no_compilation_database(self):
+        """Test that compilation database can be disabled with --no-compilation-database"""
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+
+            # Copy a known cpp file to a non-git directory and compile using cake
+            relativepaths = ["simple/helloworld_cpp.cpp"]
+            realpaths = [
+                os.path.join(uth.samplesdir(), filename) for filename in relativepaths
+            ]
+            for ff in realpaths:
+                shutil.copy2(ff, self._tmpdir)
+
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            # Call ct-cake with --no-compilation-database
+            self._call_ct_cake(extraargv=["--no-compilation-database"])
+
+            # Check that an executable got built
+            actual_exes = set()
+            for root, dirs, files in os.walk(self._tmpdir):
+                for ff in files:
+                    if compiletools.utils.isexecutable(os.path.join(root, ff)):
+                        actual_exes.add(ff)
+
+            expected_exes = {
+                os.path.splitext(os.path.split(filename)[1])[0]
+                for filename in relativepaths
+            }
+            assert expected_exes == actual_exes
+            
+            # Check that compilation database was NOT created
+            assert not os.path.exists("compile_commands.json"), "Compilation database should not be created with --no-compilation-database"
+
+    @uth.requires_functional_compiler
+    def test_custom_compilation_database_output(self):
+        """Test that compilation database can be written to a custom filename"""
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+
+            # Copy a known cpp file to a non-git directory and compile using cake
+            relativepaths = ["simple/helloworld_cpp.cpp"]
+            realpaths = [
+                os.path.join(uth.samplesdir(), filename) for filename in relativepaths
+            ]
+            for ff in realpaths:
+                shutil.copy2(ff, self._tmpdir)
+
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            # Call ct-cake with custom compilation database output
+            custom_output = "my_compile_commands.json"
+            self._call_ct_cake(extraargv=[f"--compilation-database-output={custom_output}"])
+
+            # Check that an executable got built
+            actual_exes = set()
+            for root, dirs, files in os.walk(self._tmpdir):
+                for ff in files:
+                    if compiletools.utils.isexecutable(os.path.join(root, ff)):
+                        actual_exes.add(ff)
+
+            expected_exes = {
+                os.path.splitext(os.path.split(filename)[1])[0]
+                for filename in relativepaths
+            }
+            assert expected_exes == actual_exes
+            
+            # Check that compilation database was created with custom name
+            assert os.path.exists(custom_output), f"Custom compilation database {custom_output} should be created"
+            assert not os.path.exists("compile_commands.json"), "Default compilation database should not be created when custom output is specified"
+            
+            # Verify custom compilation database content
+            import json
+            with open(custom_output, 'r') as f:
+                commands = json.load(f)
+            assert isinstance(commands, list), "Custom compilation database should be a JSON array"
+            assert len(commands) >= len(relativepaths), f"Expected at least {len(relativepaths)} compilation commands"
 
     def _get_file_contents(self):
         """Define all available source file contents"""

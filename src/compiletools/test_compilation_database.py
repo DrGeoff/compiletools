@@ -31,7 +31,7 @@ class TestCompilationDatabase:
                         output_file = "compile_commands.json"
                         compiletools.compilation_database.main([
                             "--config=" + temp_config_name,
-                            "--output=" + output_file
+                            "--compilation-database-output=" + output_file
                         ] + realpaths)
                         
                         # Verify file was created
@@ -70,7 +70,7 @@ class TestCompilationDatabase:
                         compiletools.compilation_database.main([
                             "--config=" + temp_config_name,
                             "--relative-paths",
-                            "--output=" + output_file
+                            "--compilation-database-output=" + output_file
                         ] + realpaths)
                         
                         assert os.path.exists(output_file)
@@ -100,7 +100,7 @@ class TestCompilationDatabase:
                     # Use the module's main function to test integration
                     argv = [
                         "--config=" + temp_config_name,
-                        "--output=test_output.json"
+                        "--compilation-database-output=test_output.json"
                     ] + realpaths
                     
                     cap = compiletools.apptools.create_parser(
@@ -146,7 +146,7 @@ class TestCompilationDatabase:
                         output_file = "format_test.json"
                         compiletools.compilation_database.main([
                             "--config=" + temp_config_name,
-                            "--output=" + output_file
+                            "--compilation-database-output=" + output_file
                         ] + realpaths)
                         
                         # Verify JSON can be parsed
@@ -192,7 +192,7 @@ class TestCompilationDatabase:
                 with uth.ParserContext():
                     compiletools.compilation_database.main([
                         "--config=" + temp_config_name,
-                        "--output=" + comp_db_output
+                        "--compilation-database-output=" + comp_db_output
                     ] + realpaths)
                     
                 # Generate Makefile  
@@ -238,7 +238,7 @@ class TestCompilationDatabase:
                 with uth.ParserContext():
                     compiletools.compilation_database.main([
                         "--config=" + temp_config_name,
-                        "--output=" + comp_db_output
+                        "--compilation-database-output=" + comp_db_output
                     ] + realpaths)
                     
                 # Generate Makefile  
@@ -395,7 +395,7 @@ class TestCompilationDatabase:
                 with uth.ParserContext():
                     compiletools.compilation_database.main([
                         "--config=" + temp_config_name,
-                        "--output=" + comp_db_output
+                        "--compilation-database-output=" + comp_db_output
                     ] + initial_files)
                 
                 # Verify initial database
@@ -414,7 +414,7 @@ class TestCompilationDatabase:
                 with uth.ParserContext():
                     compiletools.compilation_database.main([
                         "--config=" + temp_config_name,
-                        "--output=" + comp_db_output
+                        "--compilation-database-output=" + comp_db_output
                     ] + updated_file)
                 
                 # Step 3: Verify incremental behavior
@@ -470,7 +470,7 @@ class TestCompilationDatabase:
                 with uth.ParserContext():
                     compiletools.compilation_database.main([
                         "--config=" + temp_config_name,
-                        "--output=" + comp_db_output,
+                        "--compilation-database-output=" + comp_db_output,
                         "helloworld_cpp.cpp", "helloworld_c.c"
                     ])
                 
@@ -483,7 +483,7 @@ class TestCompilationDatabase:
                 with uth.ParserContext():
                     compiletools.compilation_database.main([
                         "--config=" + temp_config_name,
-                        "--output=" + comp_db_output,
+                        "--compilation-database-output=" + comp_db_output,
                         "test_factory.cpp"  # Only the new file
                     ])
                 
@@ -497,7 +497,7 @@ class TestCompilationDatabase:
                 with uth.ParserContext():
                     compiletools.compilation_database.main([
                         "--config=" + temp_config_name,
-                        "--output=" + comp_db_output,
+                        "--compilation-database-output=" + comp_db_output,
                         "helloworld_cpp.cpp", "test_factory.cpp"  # Update 2 files, preserve 1
                     ])
                 
@@ -515,7 +515,7 @@ class TestCompilationDatabase:
                 with uth.ParserContext():
                     compiletools.compilation_database.main([
                         "--config=" + temp_config_name,
-                        "--output=" + comp_db_output,
+                        "--compilation-database-output=" + comp_db_output,
                         "helloworld_c.c"  # Only update one existing file
                     ])
                 
@@ -531,7 +531,7 @@ class TestCompilationDatabase:
                 with uth.ParserContext():
                     compiletools.compilation_database.main([
                         "--config=" + temp_config_name,
-                        "--output=" + comp_db_output
+                        "--compilation-database-output=" + comp_db_output
                         # No files specified
                     ])
                 
@@ -542,6 +542,85 @@ class TestCompilationDatabase:
                 # (though it might be empty if no auto-discovery happens)
                 # The key is that it shouldn't corrupt the existing database
                 assert isinstance(after_empty_update, list), "Should still be valid JSON array"
+
+    @uth.requires_functional_compiler
+    def test_compilation_database_stringzilla_performance_features(self):
+        """Test that StringZilla optimizations are working correctly"""
+        
+        with uth.TempDirContext() as _:
+            samplesdir = uth.samplesdir()
+            
+            # Copy files for testing
+            import shutil
+            shutil.copy(os.path.join(samplesdir, "simple/helloworld_cpp.cpp"), ".")
+            shutil.copy(os.path.join(samplesdir, "simple/helloworld_c.c"), ".")
+            
+            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+                comp_db_output = "compile_commands.json"
+                
+                # Test StringZilla path cache functionality
+                with uth.ParserContext():
+                    cap = compiletools.apptools.create_parser("test", argv=["--config=" + temp_config_name])
+                    compiletools.compilation_database.CompilationDatabaseCreator.add_arguments(cap)
+                    compiletools.hunter.add_arguments(cap)
+                    args = compiletools.apptools.parseargs(cap, ["--config=" + temp_config_name])
+                    creator = compiletools.compilation_database.CompilationDatabaseCreator(args)
+                    
+                    # Test path normalization caching with enhanced wrappedos
+                    path1 = creator._normalize_path_sz("./test.cpp")
+                    path2 = creator._normalize_path_sz("./test.cpp")  # Should hit wrappedos cache
+                    assert path1 == path2, "Path normalization should be consistent"
+                    
+                    # Test StringZilla Str input as well - should share same cache
+                    import stringzilla as sz
+                    path3 = creator._normalize_path_sz(sz.Str("./test.cpp"))
+                    assert path1 == path3, "StringZilla and Python string should produce same result"
+                    
+                    # Test that wrappedos lru_cache is working (cache_info available)
+                    cache_info = compiletools.wrappedos._abspath_impl.cache_info()
+                    assert cache_info.hits >= 2, "wrappedos lru_cache should have multiple hits from shared usage"
+                    
+                    # Test C++ file detection
+                    assert compiletools.utils.is_cpp_source("test.cpp"), "Should detect .cpp as C++"
+                    assert compiletools.utils.is_cpp_source("test.cxx"), "Should detect .cxx as C++"
+                    assert not compiletools.utils.is_cpp_source("test.c"), "Should detect .c as C"
+                    assert not compiletools.utils.is_cpp_source("test.h"), "Should not detect .h as source"
+                
+                # Create a compilation database to test StringZilla file handling
+                with uth.ParserContext():
+                    compiletools.compilation_database.main([
+                        "--config=" + temp_config_name,
+                        "--compilation-database-output=" + comp_db_output,
+                        "helloworld_cpp.cpp", "helloworld_c.c"
+                    ])
+                
+                # Verify the database was created correctly
+                assert os.path.exists(comp_db_output), "Compilation database should be created"
+                
+                with open(comp_db_output, 'r') as f:
+                    commands = json.load(f)
+                
+                assert len(commands) == 2, "Should have 2 compilation commands"
+                
+                # Test StringZilla optimized incremental update
+                file_size = os.path.getsize(comp_db_output)
+                
+                # Create another update to test the merging logic
+                with uth.ParserContext():
+                    compiletools.compilation_database.main([
+                        "--config=" + temp_config_name,
+                        "--compilation-database-output=" + comp_db_output,
+                        "helloworld_cpp.cpp"  # Update just one file
+                    ])
+                
+                # Verify incremental update preserved all entries
+                with open(comp_db_output, 'r') as f:
+                    updated_commands = json.load(f)
+                
+                assert len(updated_commands) == 2, "Incremental update should preserve all entries"
+                
+                # Verify StringZilla was used appropriately based on file size
+                # (The actual StringZilla usage is internal, but we can verify the results are correct)
 
     def _extract_compile_commands_from_makefile(self):
         """Extract compilation commands from generated Makefile"""

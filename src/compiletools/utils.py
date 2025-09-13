@@ -4,6 +4,12 @@ import functools
 import shlex
 import compiletools.wrappedos
 
+# Module-level constant for C++ source extensions (lowercase)
+_CPP_SOURCE_EXTS = (
+    '.cpp', '.cxx', '.cc', '.c++', '.cp', '.mm', '.ixx'
+)
+
+_C_SOURCE_EXTS = (".c")
 
 def is_nonstr_iter(obj):
     """ A python 3 only method for deciding if the given variable
@@ -24,6 +30,12 @@ def isheader(filename):
     """ Internal use.  Is filename a header file?"""
     return filename.split(".")[-1].lower() in ["h", "hpp", "hxx", "hh", "inl"]
 
+@functools.lru_cache(maxsize=None)
+def is_cpp_source(path: str) -> bool:
+    """Lightweight C++ source detection by extension (case-insensitive)."""
+    # Fast path: split once
+    _, ext = os.path.splitext(path)
+    return ext.lower() in _CPP_SOURCE_EXTS
 
 @functools.lru_cache(maxsize=None)
 def issource(filename):

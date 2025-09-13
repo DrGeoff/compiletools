@@ -13,6 +13,7 @@ import compiletools.filelist
 import compiletools.findtargets
 import compiletools.jobs
 import compiletools.wrappedos
+import compiletools.compilation_database
 
 
 
@@ -51,10 +52,10 @@ class Cake(object):
         """ Has to be separate because --auto fiddles with the args """
         # Create shared cache for all file analysis components
         from compiletools.file_analyzer import create_shared_analysis_cache
-        shared_file_analyzer_cache = create_shared_analysis_cache(self.args)
+        self.shared_file_analyzer_cache = create_shared_analysis_cache(self.args)
         
         self.namer = compiletools.namer.Namer(self.args)
-        self.headerdeps = compiletools.headerdeps.create(self.args, file_analyzer_cache=shared_file_analyzer_cache)
+        self.headerdeps = compiletools.headerdeps.create(self.args, file_analyzer_cache=self.shared_file_analyzer_cache)
         self.magicparser = compiletools.magicflags.create(self.args, self.headerdeps)
         self.hunter = compiletools.hunter.Hunter(self.args, self.headerdeps, self.magicparser)
 
@@ -86,6 +87,28 @@ class Cake(object):
 
         compiletools.findtargets.add_arguments(cap)
 
+        compiletools.utils.add_flag_argument(
+            parser=cap,
+            name="compilation-database",
+            dest="compilation_database",
+            default=True,
+            help="Generate compile_commands.json for clang tooling.",
+        )
+        
+        cap.add(
+            "--compilation-database-output",
+            dest="compilation_database_output",
+            default="compile_commands.json",
+            help="Output filename for compilation database (default: compile_commands.json)"
+        )
+        
+        cap.add(
+            "--compilation-database-relative-paths",
+            dest="compilation_database_relative",
+            action="store_true", 
+            help="Use relative paths instead of absolute paths in compilation database"
+        )
+
         compiletools.utils.add_boolean_argument(
             parser=cap,
             name="preprocess",
@@ -111,6 +134,24 @@ class Cake(object):
     def _callfilelist(self):
         filelist = compiletools.filelist.Filelist(self.args, self.hunter, style="flat")
         filelist.process()
+
+    def _call_compilation_database(self):
+        """Generate compilation database if requested"""
+        if not getattr(self.args, 'compilation_database', True):
+            return
+        if self.args.clean:
+            return  # Don't generate compilation database during clean
+            
+        # Reuse existing objects to avoid duplicating work
+        creator = compiletools.compilation_database.CompilationDatabaseCreator(
+            self.args, 
+            file_analyzer_cache=self.shared_file_analyzer_cache,
+            namer=self.namer,
+            headerdeps=self.headerdeps,
+            magicparser=self.magicparser,
+            hunter=self.hunter
+        )
+        creator.write_compilation_database()
 
     def _copyexes(self):
         # Copy the executables into the "bin" dir (as per cake)
@@ -162,6 +203,10 @@ class Cake(object):
     def _callmakefile(self):
         makefile_creator = compiletools.makefile.MakefileCreator(self.args, self.hunter)
         makefile_creator.create()
+        
+        # Generate compilation database after makefile creation but before build
+        self._call_compilation_database()
+        
         os.makedirs(self.namer.executable_dir(), exist_ok=True)
         cmd = ["make"]
         if self.args.verbose <= 1:
