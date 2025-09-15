@@ -280,7 +280,7 @@ class MagicFlagsBase:
                     flagsforfilename[key].append(value)
 
         # Split flag string into individual flags - all magic flags can contain multiple values
-        individual_flags = compiletools.utils.cached_shlex_split(flag)
+        individual_flags = compiletools.utils.split_command_cached(flag)
         flagsforfilename[magic].extend(individual_flags)
         if self._args.verbose >= 5:
             print(
@@ -298,7 +298,7 @@ class MagicFlagsBase:
         DirectMagicFlags.clear_cache()
         CppMagicFlags.clear_cache()
         # Clear LRU caches
-        compiletools.utils.cached_shlex_split.cache_clear()
+        compiletools.utils.split_command_cached.cache_clear()
 
 
 class DirectMagicFlags(MagicFlagsBase):

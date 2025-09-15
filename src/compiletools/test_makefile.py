@@ -39,7 +39,7 @@ class TestMakefile:
                 actual_exes = set()
                 for root, dirs, files in os.walk(tempdir):
                     for ff in files:
-                        if compiletools.utils.isexecutable(os.path.join(root, ff)):
+                        if compiletools.utils.is_executable(os.path.join(root, ff)):
                             actual_exes.add(ff)
                             print(root + " " + ff)
 

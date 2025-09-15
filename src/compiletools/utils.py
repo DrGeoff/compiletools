@@ -1,48 +1,82 @@
+from __future__ import annotations
+
 import os
 import inspect
 import functools
 import shlex
 import argparse
-from typing import Any, Iterable
+from pathlib import Path
+from typing import Any, Iterable, Union
 from itertools import chain
 import compiletools.wrappedos
 
+# Public API
+__all__ = [
+    'CPP_SOURCE_EXTS', 'C_SOURCE_EXTS', 'ALL_SOURCE_EXTS', 'HEADER_EXTS',
+    'is_non_string_iterable', 'split_command_cached',
+    'is_header', 'is_cpp_source', 'is_c_source', 'is_source', 'is_executable',
+    'implied_source', 'implied_header', 'clear_cache',
+    'extract_init_args', 'to_bool', 'add_boolean_argument', 'add_flag_argument',
+    'remove_mount', 'ordered_unique', 'ordered_union', 'ordered_difference',
+    'deduplicate_compiler_flags', 'combine_and_deduplicate_compiler_flags'
+]
+
 # Module-level constant for C++ source extensions (lowercase)
-_CPP_SOURCE_EXTS = frozenset({
+CPP_SOURCE_EXTS = frozenset({
     '.cpp', '.cxx', '.cc', '.c++', '.cp', '.mm', '.ixx'
 })
 
-_C_SOURCE_EXTS = frozenset({".c"})
+C_SOURCE_EXTS = frozenset({".c"})
 
 # Combined source extensions for C and C++
-_ALL_SOURCE_EXTS = _CPP_SOURCE_EXTS | _C_SOURCE_EXTS
+ALL_SOURCE_EXTS = CPP_SOURCE_EXTS | C_SOURCE_EXTS
 
 # Header file extensions (lowercase)
-_HEADER_EXTS = frozenset({'.h', '.hpp', '.hxx', '.hh', '.inl'})
+HEADER_EXTS = frozenset({'.h', '.hpp', '.hxx', '.hh', '.inl'})
 
 # Source extensions with case variations for implied_source function
-_SOURCE_EXTS_WITH_CASE = ('.cpp', '.cxx', '.cc', '.c++', '.cp', '.mm', '.ixx', '.c', '.C', '.CC')
+SOURCE_EXTS_WITH_CASE = frozenset({'.cpp', '.cxx', '.cc', '.c++', '.cp', '.mm', '.ixx', '.c', '.C', '.CC'})
 
-# Header extensions with case variations for impliedheader function
-_HEADER_EXTS_WITH_CASE = ('.h', '.hpp', '.hxx', '.hh', '.inl', '.H', '.HH')
+# Header extensions with case variations for implied_header function
+HEADER_EXTS_WITH_CASE = frozenset({'.h', '.hpp', '.hxx', '.hh', '.inl', '.H', '.HH'})
 
-def is_nonstr_iter(obj: Any) -> bool:
-    """ A python 3 only method for deciding if the given variable
-        is a non-string iterable
+# Boolean conversion mapping for to_bool function
+BOOL_MAP = {
+    # True values
+    "yes": True, "y": True, "true": True, "t": True, "1": True, "on": True,
+    # False values
+    "no": False, "n": False, "false": False, "f": False, "0": False, "off": False
+}
+
+@functools.lru_cache(maxsize=None)
+def _get_lower_ext(filename: str) -> str:
+    """Fast extension extraction and lowercase conversion."""
+    idx = filename.rfind('.')
+    if idx == -1 or idx == len(filename) - 1:
+        return ""
+    return filename[idx:].lower()
+
+def is_non_string_iterable(obj: Any) -> bool:
+    """Check if an object is an iterable but not a string.
+
+    Args:
+        obj: Object to check
+
+    Returns:
+        True if object is iterable but not a string
     """
     return not isinstance(obj, str) and hasattr(obj, "__iter__")
 
 @functools.lru_cache(maxsize=None)
-def cached_shlex_split(command_line: str) -> list[str]:
+def split_command_cached(command_line: str) -> list[str]:
     """Cache shlex parsing results"""
     return shlex.split(command_line)
 
 
 @functools.lru_cache(maxsize=None)
-def isheader(filename: str) -> bool:
-    """ Internal use.  Is filename a header file?"""
-    _, ext = os.path.splitext(filename)
-    return ext.lower() in _HEADER_EXTS
+def is_header(filename: str) -> bool:
+    """Is filename a header file?"""
+    return _get_lower_ext(filename) in HEADER_EXTS
 
 @functools.lru_cache(maxsize=None)
 def is_cpp_source(path: str) -> bool:
@@ -52,7 +86,7 @@ def is_cpp_source(path: str) -> bool:
     # Handle .C (uppercase) as C++, but regular extensions use lowercase
     if ext == ".C":
         return True
-    return ext.lower() in _CPP_SOURCE_EXTS
+    return ext.lower() in CPP_SOURCE_EXTS
 
 @functools.lru_cache(maxsize=None)
 def is_c_source(path: str) -> bool:
@@ -62,66 +96,120 @@ def is_c_source(path: str) -> bool:
     return ext == ".c"
 
 @functools.lru_cache(maxsize=None)
-def issource(filename: str) -> bool:
-    """ Internal use. Is the filename a source file?"""
-    _, ext = os.path.splitext(filename)
-    return ext.lower() in _ALL_SOURCE_EXTS
+def is_source(filename: str) -> bool:
+    """Is the filename a source file?"""
+    return _get_lower_ext(filename) in ALL_SOURCE_EXTS
 
 
-def isexecutable(filename: str) -> bool:
+
+def is_executable(filename: str) -> bool:
     return os.path.isfile(filename) and os.access(filename, os.X_OK)
+
+
+def _find_file_with_extensions(filename: str, extensions: frozenset[str]) -> str | None:
+    """Generic helper to find a file with different extensions.
+
+    Args:
+        filename: Base filename to search for
+        extensions: Tuple of extensions to try
+
+    Returns:
+        Real path of found file, or None if no file exists
+    """
+    if not filename:
+        return None
+
+    basename = os.path.splitext(filename)[0]
+    for ext in extensions:
+        trialpath = basename + ext
+        if compiletools.wrappedos.isfile(trialpath):
+            return compiletools.wrappedos.realpath(trialpath)
+    return None
 
 
 @functools.lru_cache(maxsize=None)
 def implied_source(filename: str) -> str | None:
-    """ If a header file is included in a build then assume that the corresponding c or cpp file must also be build. """
-    basename = os.path.splitext(filename)[0]
-    for ext in _SOURCE_EXTS_WITH_CASE:
-        trialpath = basename + ext
-        if compiletools.wrappedos.isfile(trialpath):
-            return compiletools.wrappedos.realpath(trialpath)
-    return None
+    """Find the source file corresponding to a header file.
+
+    If a header file is included in a build, find the corresponding
+    C or C++ source file that should also be built.
+
+    Args:
+        filename: Header filename to find source for
+
+    Returns:
+        Path to corresponding source file, or None if not found
+    """
+    return _find_file_with_extensions(filename, SOURCE_EXTS_WITH_CASE)
 
 
 @functools.lru_cache(maxsize=None)
-def impliedheader(filename: str) -> str | None:
-    """ Guess what the header file is corresponding to the given source file """
-    basename = os.path.splitext(filename)[0]
-    for ext in _HEADER_EXTS_WITH_CASE:
-        trialpath = basename + ext
-        if compiletools.wrappedos.isfile(trialpath):
-            return compiletools.wrappedos.realpath(trialpath)
-    return None
+def implied_header(filename: str) -> str | None:
+    """Find the header file corresponding to a source file.
+
+    Args:
+        filename: Source filename to find header for
+
+    Returns:
+        Path to corresponding header file, or None if not found
+    """
+    return _find_file_with_extensions(filename, HEADER_EXTS_WITH_CASE)
 
 
 def clear_cache() -> None:
-    cached_shlex_split.cache_clear()
-    isheader.cache_clear()
+    """Clear all function caches."""
+    _get_lower_ext.cache_clear()
+    split_command_cached.cache_clear()
+    is_header.cache_clear()
     is_cpp_source.cache_clear()
     is_c_source.cache_clear()
-    issource.cache_clear()
+    is_source.cache_clear()
     implied_source.cache_clear()
-    impliedheader.cache_clear()
+    implied_header.cache_clear()
 
 
-def extractinitargs(args: argparse.Namespace, classname: type) -> dict[str, Any]:
-    """ Extract the arguments that classname.__init__ needs out of args """
-    function_args = inspect.getfullargspec(classname.__init__).args
-    return {key: value for key, value in vars(args).items() if key in function_args}
+def extract_init_args(args: argparse.Namespace, classname: type) -> dict[str, Any]:
+    """Extract the arguments that classname.__init__ needs out of args.
 
+    Args:
+        args: Namespace containing parsed arguments
+        classname: Class whose __init__ method signature to inspect
 
-def tobool(value: Any) -> bool:
+    Returns:
+        Dictionary of arguments needed by classname.__init__
     """
-    Tries to convert a wide variety of values to a boolean
-    Raises an exception for unrecognised values
-    """
-    str_value = str(value).lower()
-    if str_value in {"yes", "y", "true", "t", "1", "on"}:
-        return True
-    if str_value in {"no", "n", "false", "f", "0", "off"}:
-        return False
+    sig = inspect.signature(classname.__init__)
+    # Filter out 'self' and get only the parameters we care about
+    params = {
+        p.name for p in sig.parameters.values()
+        if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY) and p.name != "self"
+    }
+    return {key: value for key, value in vars(args).items() if key in params}
 
-    raise ValueError(f"Don't know how to convert {value} to boolean.")
+
+def to_bool(value: Any) -> bool:
+    """Convert a wide variety of values to a boolean.
+
+    Args:
+        value: Value to convert to boolean
+
+    Returns:
+        bool: Converted boolean value
+
+    Raises:
+        ValueError: If value cannot be converted to boolean
+    """
+    # Handle boolean values directly
+    if isinstance(value, bool):
+        return value
+
+    str_value = str(value).strip().lower()
+    if str_value in BOOL_MAP:
+        return BOOL_MAP[str_value]
+
+    # Better error message showing acceptable values
+    acceptable = sorted(BOOL_MAP.keys())
+    raise ValueError(f"Cannot convert {value!r} to boolean. Expected one of: {', '.join(acceptable)} or True/False.")
 
 
 def add_boolean_argument(
@@ -129,22 +217,40 @@ def add_boolean_argument(
     name: str,
     dest: str | None = None,
     default: bool = False,
-    help: str | None = None
+    help: str | None = None,
+    allow_value_conversion: bool = True
 ) -> None:
-    """Add a boolean argument to an ArgumentParser instance."""
+    """Add a boolean argument to an ArgumentParser instance.
+
+    Args:
+        parser: ArgumentParser to add the argument to
+        name: Name of the argument (without --)
+        dest: Destination attribute name (defaults to name)
+        default: Default value
+        help: Help text
+        allow_value_conversion: If True, allows value conversion (e.g., --flag=yes),
+                               if False, treats as simple flag (--flag or --no-flag only)
+    """
     dest = dest or name
     group = parser.add_mutually_exclusive_group()
     bool_help = f"{help} Use --no-{name} to turn the feature off."
-    group.add_argument(
-        f"--{name}",
-        metavar="",
-        nargs="?",
-        dest=dest,
-        default=default,
-        const=True,
-        type=tobool,
-        help=bool_help,
-    )
+
+    if allow_value_conversion:
+        group.add_argument(
+            f"--{name}",
+            metavar="",
+            nargs="?",
+            dest=dest,
+            default=default,
+            const=True,
+            type=to_bool,
+            help=bool_help,
+        )
+    else:
+        group.add_argument(
+            f"--{name}", dest=dest, default=default, action="store_true", help=bool_help
+        )
+
     group.add_argument(f"--no-{name}", dest=dest, action="store_false")
 
 
@@ -155,24 +261,36 @@ def add_flag_argument(
     default: bool = False,
     help: str | None = None
 ) -> None:
-    """ Add a flag argument to an ArgumentParser instance.
-        Either the --flag is present or the --no-flag is present.
-        No trying to convert boolean values like the add_boolean_argument
+    """Add a flag argument to an ArgumentParser instance.
+
+    This is a convenience wrapper around add_boolean_argument with
+    allow_value_conversion=False for simple flag behavior.
     """
-    dest = dest or name
-    group = parser.add_mutually_exclusive_group()
-    bool_help = f"{help} Use --no-{name} to turn the feature off."
-    group.add_argument(
-        f"--{name}", dest=dest, default=default, action="store_true", help=bool_help
-    )
-    group.add_argument(
-        f"--no-{name}", dest=dest, action="store_false", default=not default
-    )
+    add_boolean_argument(parser, name, dest, default, help, allow_value_conversion=False)
 
 
-def removemount(absolutepath: str) -> str:
-    """ Remove the '/' on unix and (TODO) 'C:\' on Windows """
-    return absolutepath[1:]
+def remove_mount(absolutepath: Union[str, Path]) -> str:
+    """Remove the mount point from an absolute path.
+
+    Args:
+        absolutepath: Absolute path to process
+
+    Returns:
+        Path with mount point removed
+
+    Examples:
+        >>> remove_mount("/home/user/file.txt")
+        "home/user/file.txt"
+        >>> remove_mount("C:\\Users\\user\\file.txt")  # Windows
+        "Users\\user\\file.txt"
+    """
+    path = Path(absolutepath)
+    if not path.is_absolute():
+        raise ValueError(f"Path must be absolute: {absolutepath}")
+
+    # Get parts and skip the root/anchor
+    parts = path.parts[1:]  # Skip root ('/' on Unix, 'C:\\' on Windows)
+    return str(Path(*parts)) if parts else ""
 
 
 def ordered_unique(iterable: Iterable[Any]) -> list[Any]:
@@ -206,24 +324,20 @@ def deduplicate_compiler_flags(flags: list[str]) -> list[str]:
         return flags
 
     # Flags that take arguments (both separate and combined forms)
-    flag_with_args = {'-I', '-isystem', '-L', '-l', '-D', '-U', '-F', '-framework'}
+    FLAG_WITH_ARGS = frozenset({'-I', '-isystem', '-L', '-l', '-D', '-U', '-F', '-framework'})
 
     deduplicated = []
     seen_flag_args = {}  # flag -> set of seen arguments
+    seen_simple_flags = set()
     i = 0
 
     while i < len(flags):
         flag = flags[i]
 
-        # Check if this is a flag that takes an argument
+        # Find matching flag prefix efficiently
         matched_flag = None
-        for flag_prefix in flag_with_args:
-            if flag == flag_prefix:
-                # Separate form: '-I path'
-                matched_flag = flag_prefix
-                break
-            elif flag.startswith(flag_prefix) and len(flag) > len(flag_prefix):
-                # Combined form: '-Ipath'
+        for flag_prefix in FLAG_WITH_ARGS:
+            if flag == flag_prefix or (flag.startswith(flag_prefix) and len(flag) > len(flag_prefix)):
                 matched_flag = flag_prefix
                 break
 
@@ -249,15 +363,40 @@ def deduplicate_compiler_flags(flags: list[str]) -> list[str]:
             else:
                 i += 1
         else:
-            # Regular flag - use normal deduplication
-            if flag not in deduplicated:
+            # Regular flag - use set-based deduplication for O(1) lookup
+            if flag not in seen_simple_flags:
                 deduplicated.append(flag)
+                seen_simple_flags.add(flag)
             i += 1
 
     return deduplicated
 
 
-def combine_and_deduplicate_compiler_flags(*flag_sources) -> list[str]:
+def _process_flag_source(source: Union[str, list[str], tuple[str, ...]]) -> list[str]:
+    """Process a single flag source into a list of individual flags."""
+    if not source:
+        return []
+
+    if isinstance(source, str):
+        return split_command_cached(source)
+
+    if isinstance(source, (list, tuple)):
+        flags = []
+        for item in source:
+            if isinstance(item, str):
+                # Check if item might be a multi-flag string
+                if ' ' in item and not item.startswith('/'):
+                    flags.extend(split_command_cached(item))
+                else:
+                    flags.append(item)
+            else:
+                flags.append(str(item))
+        return flags
+
+    return [str(source)]
+
+
+def combine_and_deduplicate_compiler_flags(*flag_sources: Union[str, list[str], tuple[str, ...]]) -> list[str]:
     """Combine multiple sources of compiler flags and deduplicate intelligently.
 
     Takes multiple flag sources (lists or strings) and:
@@ -272,30 +411,8 @@ def combine_and_deduplicate_compiler_flags(*flag_sources) -> list[str]:
         Combined and deduplicated list of flags
     """
     combined_flags = []
-
     for source in flag_sources:
-        if not source:
-            continue
-
-        if isinstance(source, str):
-            # Split string into individual flags
-            combined_flags.extend(cached_shlex_split(source))
-        elif isinstance(source, (list, tuple)):
-            # Extend with list/tuple items
-            for item in source:
-                if isinstance(item, str):
-                    # Check if item might be a multi-flag string
-                    if ' ' in item and not item.startswith('/'):
-                        # Looks like multiple flags in one string
-                        combined_flags.extend(cached_shlex_split(item))
-                    else:
-                        # Single flag
-                        combined_flags.append(item)
-                else:
-                    combined_flags.append(str(item))
-        else:
-            # Convert other types to string
-            combined_flags.append(str(source))
+        combined_flags.extend(_process_flag_source(source))
 
     return deduplicate_compiler_flags(combined_flags)
 

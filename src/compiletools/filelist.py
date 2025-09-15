@@ -21,12 +21,12 @@ class IndentStyle(compiletools.git_utils.NameAdjuster):
 
 class HeaderPassFilter(object):
     def __call__(self, files):
-        return {fn for fn in files if compiletools.utils.isheader(fn)}
+        return {fn for fn in files if compiletools.utils.is_header(fn)}
 
 
 class SourcePassFilter(object):
     def __call__(self, files):
-        return {fn for fn in files if compiletools.utils.issource(fn)}
+        return {fn for fn in files if compiletools.utils.is_source(fn)}
 
 
 class AllPassFilter(object):

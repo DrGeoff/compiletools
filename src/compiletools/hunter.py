@@ -76,7 +76,7 @@ class Hunter(object):
 
         # One of the magic flags is SOURCE.  If that was present, add to the
         # file list.
-        if self.args.allow_magic_source_in_header or compiletools.utils.issource(realpath):
+        if self.args.allow_magic_source_in_header or compiletools.utils.is_source(realpath):
             todo.extend(self._extractSOURCE(realpath))
 
         # The header deps and magic flags have been parsed at this point so it
@@ -116,7 +116,7 @@ class Hunter(object):
             [
                 filename
                 for filename in self.required_files(filename)
-                if compiletools.utils.issource(filename)
+                if compiletools.utils.is_source(filename)
             ]
         )
 

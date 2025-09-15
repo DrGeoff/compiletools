@@ -66,7 +66,7 @@ class Project(object):
         if self._args.git_root:
             return strip_git_root(filename)
         else:
-            return compiletools.utils.removemount(filename)
+            return compiletools.utils.remove_mount(filename)
 
 
 class NameAdjuster(object):

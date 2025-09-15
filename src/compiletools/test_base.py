@@ -50,13 +50,13 @@ class BaseCompileToolsTestCase:
         actual_exes = set()
         for root, dirs, files in os.walk(search_directory):
             for ff in files:
-                if compiletools.utils.isexecutable(os.path.join(root, ff)):
+                if compiletools.utils.is_executable(os.path.join(root, ff)):
                     actual_exes.add(ff)
 
         expected_exes = {
             os.path.splitext(os.path.split(filename)[1])[0]
             for filename in relativepaths
-            if compiletools.utils.issource(filename)
+            if compiletools.utils.is_source(filename)
         }
         assert expected_exes == actual_exes
 

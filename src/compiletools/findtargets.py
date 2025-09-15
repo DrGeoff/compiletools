@@ -151,7 +151,7 @@ class FindTargets(object):
                 continue
             for filename in files:
                 pathname = os.path.join(root, filename)
-                if not compiletools.utils.issource(pathname):
+                if not compiletools.utils.is_source(pathname):
                     continue
                 with open(pathname, encoding="utf-8", errors="ignore") as ff:
                     for line in ff:

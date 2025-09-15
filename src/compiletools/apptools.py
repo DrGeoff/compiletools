@@ -15,7 +15,7 @@ from compiletools.version import __version__
 import compiletools.git_utils
 import compiletools.configutils
 import compiletools.utils
-from compiletools.utils import cached_shlex_split
+from compiletools.utils import split_command_cached
 import compiletools.dirnamer
 
 try:
@@ -362,9 +362,9 @@ def extract_system_include_paths(args, flag_sources=None, verbose=0):
         if not flag_value:
             continue
             
-        # Use existing shlex functionality from cached_shlex_split
+        # Use existing shlex functionality from split_command_cached
         try:
-            tokens = cached_shlex_split(flag_value)
+            tokens = split_command_cached(flag_value)
         except ValueError:
             # Fall back to simple split if shlex fails
             tokens = flag_value.split()
@@ -463,7 +463,7 @@ def extract_command_line_macros(args, flag_sources=None, include_compiler_macros
             
         # Use shlex.split for robust parsing
         try:
-            flags = cached_shlex_split(flag_string)
+            flags = split_command_cached(flag_string)
         except ValueError:
             # Fallback to simple split if shlex fails on malformed input
             flags = flag_string.split()
@@ -850,7 +850,7 @@ def _strip_quotes(args):
         if value is not None:
             # Can't just use the for loop directly because that would
             # try and process every character in a string
-            if compiletools.utils.is_nonstr_iter(value):
+            if compiletools.utils.is_non_string_iterable(value):
                 for index, element in enumerate(value):
                     value[index] = _safely_unquote_string(element)
             else:
@@ -879,7 +879,7 @@ def _safely_unquote_string(value):
     try:
         # Use shlex to parse the string as shell would
         # If it parses to exactly one token, it was properly quoted
-        tokens = cached_shlex_split(value)
+        tokens = split_command_cached(value)
         if len(tokens) == 1:
             # Single token means the quotes were shell quotes
             unquoted = tokens[0]

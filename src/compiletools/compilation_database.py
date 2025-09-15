@@ -59,7 +59,7 @@ class CompilationDatabaseCreator:
         args = []
         if compiler:
             # Split compiler command (e.g., "ccache g++" -> ["ccache", "g++"])
-            compiler_parts = compiletools.utils.cached_shlex_split(compiler)
+            compiler_parts = compiletools.utils.split_command_cached(compiler)
             args.extend(compiler_parts)
         else:
             # If no compiler is set, we can't generate a valid command

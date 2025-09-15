@@ -15,7 +15,7 @@ class PreProcessor(object):
 
     def process(self, realpath, extraargs, redirect_stderr_to_stdout=False):
         cmd = self.args.CPP.split() + self.args.CPPFLAGS.split() + extraargs.split()
-        if compiletools.utils.isheader(realpath):
+        if compiletools.utils.is_header(realpath):
             # Use /dev/null as the dummy source file.
             cmd.extend(["-include", realpath, "-x", "c++", "/dev/null"])
         else:

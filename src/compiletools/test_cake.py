@@ -59,7 +59,7 @@ class TestCake:
             actual_exes = set()
             for root, dirs, files in os.walk(self._tmpdir):
                 for ff in files:
-                    if compiletools.utils.isexecutable(os.path.join(root, ff)):
+                    if compiletools.utils.is_executable(os.path.join(root, ff)):
                         actual_exes.add(ff)
 
             expected_exes = {
@@ -110,7 +110,7 @@ class TestCake:
             actual_exes = set()
             for root, dirs, files in os.walk(self._tmpdir):
                 for ff in files:
-                    if compiletools.utils.isexecutable(os.path.join(root, ff)):
+                    if compiletools.utils.is_executable(os.path.join(root, ff)):
                         actual_exes.add(ff)
 
             expected_exes = {
@@ -149,7 +149,7 @@ class TestCake:
             actual_exes = set()
             for root, dirs, files in os.walk(self._tmpdir):
                 for ff in files:
-                    if compiletools.utils.isexecutable(os.path.join(root, ff)):
+                    if compiletools.utils.is_executable(os.path.join(root, ff)):
                         actual_exes.add(ff)
 
             expected_exes = {
