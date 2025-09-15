@@ -49,13 +49,17 @@ def is_cpp_source(path: str) -> bool:
     """Lightweight C++ source detection by extension (case-insensitive)."""
     # Fast path: split once
     _, ext = os.path.splitext(path)
+    # Handle .C (uppercase) as C++, but regular extensions use lowercase
+    if ext == ".C":
+        return True
     return ext.lower() in _CPP_SOURCE_EXTS
 
 @functools.lru_cache(maxsize=None)
 def is_c_source(path: str) -> bool:
-    """Test if the given file has a .c extension."""
+    """Test if the given file has a .c extension (but not .C which is C++)."""
     _, ext = os.path.splitext(path)
-    return ext.lower() == ".c"
+    # .c (lowercase) is C, but .C (uppercase) is C++
+    return ext == ".c"
 
 @functools.lru_cache(maxsize=None)
 def issource(filename: str) -> bool:

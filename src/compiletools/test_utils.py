@@ -43,6 +43,39 @@ class TestIsFuncs:
         assert not utils.issource("myfile.hpp")
         assert not utils.issource("/home/user/myfile.with.dots.hpp")
 
+    def test_is_c_source(self):
+        # Test that .c files are identified as C source
+        assert utils.is_c_source("myfile.c")
+        assert utils.is_c_source("/path/to/myfile.c")
+
+        # Test that .C files are NOT identified as C source (they're C++)
+        assert not utils.is_c_source("myfile.C")
+        assert not utils.is_c_source("/path/to/myfile.C")
+
+        # Test that other extensions are not C source
+        assert not utils.is_c_source("myfile.cpp")
+        assert not utils.is_c_source("myfile.cxx")
+        assert not utils.is_c_source("myfile.h")
+
+    def test_is_cpp_source(self):
+        # Test that common C++ extensions are identified as C++ source
+        assert utils.is_cpp_source("myfile.cpp")
+        assert utils.is_cpp_source("myfile.cxx")
+        assert utils.is_cpp_source("myfile.cc")
+        assert utils.is_cpp_source("myfile.c++")
+
+        # Test that .C (uppercase) is identified as C++ source
+        assert utils.is_cpp_source("myfile.C")
+        assert utils.is_cpp_source("/path/to/myfile.C")
+
+        # Test that .c (lowercase) is NOT identified as C++ source
+        assert not utils.is_cpp_source("myfile.c")
+        assert not utils.is_cpp_source("/path/to/myfile.c")
+
+        # Test that headers are not C++ source
+        assert not utils.is_cpp_source("myfile.h")
+        assert not utils.is_cpp_source("myfile.hpp")
+
 
 class TestImpliedSource:
     def test_implied_source_nonexistent_file(self):
