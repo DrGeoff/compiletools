@@ -110,5 +110,5 @@ uv build
 # password = pypi-<your-token>
 # (recommended: chmod 600 ~/.pypirc)
 # Publish to PyPI using uv (check PyPI Simple API to avoid re-upload conflicts)
-uv publish --check-url https://pypi.org/simple
+uv publish --token "$PYPI_API_TOKEN" --check-url https://pypi.org/simple --non-interactive --skip-existing
 popd >/dev/null
