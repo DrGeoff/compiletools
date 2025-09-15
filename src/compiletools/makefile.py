@@ -684,7 +684,7 @@ class MakefileCreator:
         lock_suffix = self._get_locking_recipe_suffix()
         
         magic_cpp_flags = magicflags.get("CPPFLAGS", [])
-        if compiletools.wrappedos.isc(filename):
+        if compiletools.utils.is_c_source(filename):
             magic_c_flags = magicflags.get("CFLAGS", [])
             compile_flags = [self.args.CC, self.args.CFLAGS] + list(magic_cpp_flags) + list(magic_c_flags)
         else:
