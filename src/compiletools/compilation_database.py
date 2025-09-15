@@ -48,45 +48,51 @@ class CompilationDatabaseCreator:
 
     def _get_compiler_command(self, source_file: str) -> List[str]:
         """Generate compiler command arguments for a source file with StringZilla optimization"""
-        
+
         # Determine compiler based on file extension
         if compiletools.utils.is_cpp_source(source_file):
             compiler = self.args.CXX
         else:
             compiler = self.args.CC
-        
-        # Build arguments list
-        args = [compiler]
-        
-        # Add standard flags
-        if hasattr(self.args, 'CPPFLAGS') and self.args.CPPFLAGS:
-            if isinstance(self.args.CPPFLAGS, list):
-                args.extend(self.args.CPPFLAGS)
-            else:
-                args.extend(compiletools.utils.cached_shlex_split(self.args.CPPFLAGS))
-                
-        if compiletools.utils.is_cpp_source(source_file):
-            if hasattr(self.args, 'CXXFLAGS') and self.args.CXXFLAGS:
-                if isinstance(self.args.CXXFLAGS, list):
-                    args.extend(self.args.CXXFLAGS)
-                else:
-                    args.extend(compiletools.utils.cached_shlex_split(self.args.CXXFLAGS))
+
+        # Build arguments list - properly split compiler command if it contains multiple tokens
+        args = []
+        if compiler:
+            # Split compiler command (e.g., "ccache g++" -> ["ccache", "g++"])
+            compiler_parts = compiletools.utils.cached_shlex_split(compiler)
+            args.extend(compiler_parts)
         else:
-            if hasattr(self.args, 'CFLAGS') and self.args.CFLAGS:
-                args.extend(compiletools.utils.cached_shlex_split(self.args.CFLAGS))
-            
-        # Add magic flags for this specific file
+            # If no compiler is set, we can't generate a valid command
+            return []
+        
+        # Get magic flags for this specific file
         try:
-            magic_cppflags = self.magicparser.getmagic_cppflags_for_file(source_file)
-            if magic_cppflags:
-                args.extend(compiletools.utils.cached_shlex_split(magic_cppflags))
-                
-            magic_cxxflags = self.magicparser.getmagic_cxxflags_for_file(source_file)
-            if magic_cxxflags:
-                args.extend(compiletools.utils.cached_shlex_split(magic_cxxflags))
-        except AttributeError:
-            # Magic flags methods may not exist
-            pass
+            magic_flags = self.magicparser.parse(source_file)
+        except Exception as e:
+            # Magic flags parsing may fail for various reasons
+            if self.args.verbose >= 2:
+                print(f"Warning: Could not parse magic flags for {source_file}: {e}")
+            magic_flags = {}
+
+        # Combine and deduplicate all flag sources
+        if compiletools.utils.is_cpp_source(source_file):
+            # C++ source: combine CPPFLAGS + CXXFLAGS from both args and magic flags
+            combined_flags = compiletools.utils.combine_and_deduplicate_compiler_flags(
+                getattr(self.args, 'CPPFLAGS', None),
+                magic_flags.get("CPPFLAGS", []),
+                getattr(self.args, 'CXXFLAGS', None),
+                magic_flags.get("CXXFLAGS", [])
+            )
+        else:
+            # C source: combine CPPFLAGS + CFLAGS from both args and magic flags
+            combined_flags = compiletools.utils.combine_and_deduplicate_compiler_flags(
+                getattr(self.args, 'CPPFLAGS', None),
+                magic_flags.get("CPPFLAGS", []),
+                getattr(self.args, 'CFLAGS', None),
+                magic_flags.get("CFLAGS", [])
+            )
+
+        args.extend(combined_flags)
         
         # Add compile-only flag
         args.extend(["-c"])
@@ -101,19 +107,23 @@ class CompilationDatabaseCreator:
 
     def _create_command_object(self, source_file: str) -> Dict[str, Any]:
         """Create a single command object for the compilation database"""
-        
+
         # Directory is always absolute (working directory)
         directory = os.path.realpath(os.getcwd())
-            
+
         # Get file path - relative or absolute based on option
         if self.args.compilation_database_relative:
             file_path = os.path.relpath(source_file, os.getcwd())
         else:
             file_path = os.path.realpath(source_file)
-            
+
         # Generate arguments
         arguments = self._get_compiler_command(source_file)
-        
+
+        # Skip files with empty arguments arrays - they provide no compile context
+        if not arguments:
+            return None
+
         return {
             "directory": directory,
             "file": file_path,
@@ -143,7 +153,10 @@ class CompilationDatabaseCreator:
         for source_file in source_files:
             if os.path.exists(source_file):
                 command_obj = self._create_command_object(source_file)
-                commands.append(command_obj)
+                if command_obj is not None:
+                    commands.append(command_obj)
+                elif self.args.verbose >= 2:
+                    print(f"Warning: Skipping source file with empty arguments: {source_file}")
             elif self.args.verbose >= 2:
                 print(f"Warning: Source file does not exist: {source_file}")
 

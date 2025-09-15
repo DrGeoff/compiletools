@@ -248,9 +248,14 @@ class MagicFlagsBase:
                 # Pass magic_flag data and filepath for structured processing
                 self._process_magic_flag(magic, flag, flagsforfilename, magic_flag, filepath)
 
-        # Deduplicate all flags while preserving order
+        # Merge deprecated LINKFLAGS into LDFLAGS before deduplication
+        if "LINKFLAGS" in flagsforfilename:
+            flagsforfilename["LDFLAGS"].extend(flagsforfilename["LINKFLAGS"])
+            del flagsforfilename["LINKFLAGS"]
+
+        # Deduplicate all flags while preserving order, with smart compiler flag handling
         for key in flagsforfilename:
-            flagsforfilename[key] = compiletools.utils.ordered_unique(flagsforfilename[key])
+            flagsforfilename[key] = compiletools.utils.deduplicate_compiler_flags(flagsforfilename[key])
 
         return flagsforfilename
 
@@ -274,7 +279,9 @@ class MagicFlagsBase:
                 for value in values:
                     flagsforfilename[key].append(value)
 
-        flagsforfilename[magic].append(flag)
+        # Split flag string into individual flags - all magic flags can contain multiple values
+        individual_flags = compiletools.utils.cached_shlex_split(flag)
+        flagsforfilename[magic].extend(individual_flags)
         if self._args.verbose >= 5:
             print(
                 "Using magic flag {0}={1} extracted from {2}".format(

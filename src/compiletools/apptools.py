@@ -805,6 +805,19 @@ def _do_xxpend(args, name):
             setattr(args, name, attr)
 
 
+def _deduplicate_all_flags(args):
+    """Deduplicate all compiler and linker flags after all processing is complete"""
+    flaglist = ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS")
+    for flag_name in flaglist:
+        if hasattr(args, flag_name):
+            flag_value = getattr(args, flag_name)
+            if flag_value:
+                # Split the flag string into individual flags and deduplicate
+                deduplicated_flags = compiletools.utils.combine_and_deduplicate_compiler_flags(flag_value)
+                # Convert back to space-separated string
+                setattr(args, flag_name, " ".join(deduplicated_flags))
+
+
 def _tier_one_modifications(args):
     """Do some early modifications that can potentially cause
     downstream modifications.
@@ -816,6 +829,9 @@ def _tier_one_modifications(args):
     flaglist = ("INCLUDE", "CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS")
     for flag in flaglist:
         _do_xxpend(args, flag)
+
+    # Deduplicate all compiler/linker flags after all processing is complete
+    _deduplicate_all_flags(args)
 
     # Cake used preprocess to mean both magic flag preprocess and headerdeps preprocess
     if hasattr(args, "preprocess") and args.preprocess:

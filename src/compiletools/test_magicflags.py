@@ -1,4 +1,5 @@
 
+import os
 import pytest
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
@@ -58,7 +59,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert "F1" in result and result["F1"] == ["1"]
         assert "F2" in result and result["F2"] == ["2"] 
         assert "F3" in result and result["F3"] == ["3"]
-        assert "LINKFLAGS" in result and result["LINKFLAGS"] == ["-lpcap"]
+        assert "LDFLAGS" in result and "-lpcap" in result["LDFLAGS"]
         assert "PKG-CONFIG" in result and result["PKG-CONFIG"] == ["zlib"]
         
         # Check that PKG-CONFIG processing adds flags to LDFLAGS
@@ -419,4 +420,133 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         
         # If we reach here, both parsers produce identical results (bug is fixed)
         print("✓ Both parsers process -isystem include paths identically - bug is fixed!")
+
+    def test_duplicate_flag_deduplication(self):
+        """Test that duplicate compiler flags are properly deduplicated using samples"""
+        # Use our new duplicate_flags sample
+        sample_file = os.path.join(os.path.dirname(__file__), "samples", "duplicate_flags", "main.cpp")
+
+        # Test with DirectMagicFlags
+        result = self._parse_with_magic("direct", sample_file, [])
+
+        # Check CPPFLAGS for duplicates
+        cppflags = result.get("CPPFLAGS", [])
+        print(f"CPPFLAGS result: {cppflags}")
+
+        # Count occurrences of duplicate flags
+        include_test_count = 0
+        duplicate_macro_count = 0
+        i = 0
+        while i < len(cppflags):
+            if cppflags[i] == "-I" and i + 1 < len(cppflags) and cppflags[i + 1] == "/usr/include/test":
+                include_test_count += 1
+                i += 2
+            elif cppflags[i] == "-D" and i + 1 < len(cppflags) and cppflags[i + 1] == "DUPLICATE_MACRO":
+                duplicate_macro_count += 1
+                i += 2
+            else:
+                i += 1
+
+        # Verify deduplication worked - each flag should appear at most once
+        assert include_test_count <= 1, f"Duplicate -I /usr/include/test found {include_test_count} times in {cppflags}"
+        assert duplicate_macro_count <= 1, f"Duplicate -D DUPLICATE_MACRO found {duplicate_macro_count} times in {cppflags}"
+
+        print("✓ Duplicate flag deduplication test passed!")
+
+    def test_mixed_flag_forms_deduplication(self):
+        """Test that mixed forms like '-I/path' and '-I path' are properly deduplicated"""
+        import compiletools.utils
+
+        # Test mixed -I forms
+        flags = ['-I/usr/include/test', '-I', '/usr/include/test', '-I/usr/include/other', '-I', '/usr/include/other']
+        deduplicated = compiletools.utils.deduplicate_compiler_flags(flags)
+
+        # Should have only 2 include paths, not 4
+        include_paths = []
+        i = 0
+        while i < len(deduplicated):
+            if deduplicated[i] == "-I" and i + 1 < len(deduplicated):
+                include_paths.append(deduplicated[i + 1])
+                i += 2
+            elif deduplicated[i].startswith("-I") and len(deduplicated[i]) > 2:
+                include_paths.append(deduplicated[i][2:])
+                i += 1
+            else:
+                i += 1
+
+        unique_paths = set(include_paths)
+        assert len(include_paths) == len(unique_paths), f"Mixed -I forms not deduplicated: {include_paths}"
+        assert len(unique_paths) == 2, f"Expected 2 unique paths, got {len(unique_paths)}: {unique_paths}"
+
+        # Test mixed -isystem forms
+        flags2 = ['-isystem/usr/include/sys', '-isystem', '/usr/include/sys']
+        deduplicated2 = compiletools.utils.deduplicate_compiler_flags(flags2)
+
+        isystem_paths = []
+        i = 0
+        while i < len(deduplicated2):
+            if deduplicated2[i] == "-isystem" and i + 1 < len(deduplicated2):
+                isystem_paths.append(deduplicated2[i + 1])
+                i += 2
+            elif deduplicated2[i].startswith("-isystem") and len(deduplicated2[i]) > 8:
+                isystem_paths.append(deduplicated2[i][8:])
+                i += 1
+            else:
+                i += 1
+
+        assert len(isystem_paths) == 1, f"Mixed -isystem forms not deduplicated: {isystem_paths}"
+
+        print("✓ Mixed flag forms deduplication test passed!")
+
+    def test_ldflags_and_linkflags_deduplication(self):
+        """Test that LDFLAGS and LINKFLAGS are properly deduplicated using samples"""
+        # Use our duplicate_flags sample which now includes LDFLAGS/LINKFLAGS
+        sample_file = os.path.join(os.path.dirname(__file__), "samples", "duplicate_flags", "main.cpp")
+
+        # Test with DirectMagicFlags
+        result = self._parse_with_magic("direct", sample_file, [])
+
+        # Check LDFLAGS for duplicates (LINKFLAGS should be merged into LDFLAGS)
+        ldflags = result.get("LDFLAGS", [])
+        print(f"LDFLAGS result: {ldflags}")
+
+        # LINKFLAGS should no longer appear in results (merged into LDFLAGS)
+        linkflags = result.get("LINKFLAGS", [])
+        print(f"LINKFLAGS result: {linkflags}")
+        assert len(linkflags) == 0, f"LINKFLAGS should be empty (merged into LDFLAGS), got: {linkflags}"
+
+        # Count occurrences of duplicate library paths and libraries in LDFLAGS only
+        combined_flags = ldflags
+
+        lib_paths = []
+        libraries = []
+        i = 0
+        while i < len(combined_flags):
+            if combined_flags[i] == "-L" and i + 1 < len(combined_flags):
+                lib_paths.append(combined_flags[i + 1])
+                i += 2
+            elif combined_flags[i].startswith("-L") and len(combined_flags[i]) > 2:
+                lib_paths.append(combined_flags[i][2:])
+                i += 1
+            elif combined_flags[i] == "-l" and i + 1 < len(combined_flags):
+                libraries.append(combined_flags[i + 1])
+                i += 2
+            elif combined_flags[i].startswith("-l") and len(combined_flags[i]) > 2:
+                libraries.append(combined_flags[i][2:])
+                i += 1
+            else:
+                i += 1
+
+        # Verify deduplication worked
+        unique_lib_paths = set(lib_paths)
+        unique_libraries = set(libraries)
+
+        assert len(lib_paths) == len(unique_lib_paths), f"Duplicate library paths found: {lib_paths}"
+        assert len(libraries) == len(unique_libraries), f"Duplicate libraries found: {libraries}"
+
+        # Verify specific expected deduplication
+        assert lib_paths.count("/usr/lib") <= 1, f"/usr/lib path duplicated: {lib_paths}"
+        assert libraries.count("math") <= 1 and libraries.count("m") <= 1, f"math library duplicated: {libraries}"
+
+        print("✓ LDFLAGS and LINKFLAGS deduplication test passed!")
 

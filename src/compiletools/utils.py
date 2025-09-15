@@ -193,6 +193,113 @@ def ordered_union(*iterables: Iterable[Any]) -> list[Any]:
     return list(dict.fromkeys(chain(*iterables)))
 
 
+def deduplicate_compiler_flags(flags: list[str]) -> list[str]:
+    """Deduplicate compiler flags with smart handling for flag-argument pairs.
+
+    Handles both single flags and flag-argument pairs like:
+    - '-I path', '-isystem path', '-L path', '-D macro'
+    - '-Ipath', '-isystempath', '-Lpath', '-Dmacro'
+
+    Preserves order and removes duplicates based on the argument/path portion.
+    """
+    if not flags:
+        return flags
+
+    # Flags that take arguments (both separate and combined forms)
+    flag_with_args = {'-I', '-isystem', '-L', '-l', '-D', '-U', '-F', '-framework'}
+
+    deduplicated = []
+    seen_flag_args = {}  # flag -> set of seen arguments
+    i = 0
+
+    while i < len(flags):
+        flag = flags[i]
+
+        # Check if this is a flag that takes an argument
+        matched_flag = None
+        for flag_prefix in flag_with_args:
+            if flag == flag_prefix:
+                # Separate form: '-I path'
+                matched_flag = flag_prefix
+                break
+            elif flag.startswith(flag_prefix) and len(flag) > len(flag_prefix):
+                # Combined form: '-Ipath'
+                matched_flag = flag_prefix
+                break
+
+        if matched_flag:
+            if flag == matched_flag and i + 1 < len(flags):
+                # Separate form: '-I path'
+                arg = flags[i + 1]
+                if matched_flag not in seen_flag_args:
+                    seen_flag_args[matched_flag] = set()
+                if arg not in seen_flag_args[matched_flag]:
+                    deduplicated.extend([flag, arg])
+                    seen_flag_args[matched_flag].add(arg)
+                i += 2
+            elif flag.startswith(matched_flag):
+                # Combined form: '-Ipath'
+                arg = flag[len(matched_flag):]
+                if matched_flag not in seen_flag_args:
+                    seen_flag_args[matched_flag] = set()
+                if arg not in seen_flag_args[matched_flag]:
+                    deduplicated.append(flag)
+                    seen_flag_args[matched_flag].add(arg)
+                i += 1
+            else:
+                i += 1
+        else:
+            # Regular flag - use normal deduplication
+            if flag not in deduplicated:
+                deduplicated.append(flag)
+            i += 1
+
+    return deduplicated
+
+
+def combine_and_deduplicate_compiler_flags(*flag_sources) -> list[str]:
+    """Combine multiple sources of compiler flags and deduplicate intelligently.
+
+    Takes multiple flag sources (lists or strings) and:
+    1. Converts strings to flag lists using shlex_split
+    2. Combines all sources preserving order
+    3. Deduplicates using smart compiler flag logic
+
+    Args:
+        *flag_sources: Multiple sources of flags - can be lists of strings or single strings
+
+    Returns:
+        Combined and deduplicated list of flags
+    """
+    combined_flags = []
+
+    for source in flag_sources:
+        if not source:
+            continue
+
+        if isinstance(source, str):
+            # Split string into individual flags
+            combined_flags.extend(cached_shlex_split(source))
+        elif isinstance(source, (list, tuple)):
+            # Extend with list/tuple items
+            for item in source:
+                if isinstance(item, str):
+                    # Check if item might be a multi-flag string
+                    if ' ' in item and not item.startswith('/'):
+                        # Looks like multiple flags in one string
+                        combined_flags.extend(cached_shlex_split(item))
+                    else:
+                        # Single flag
+                        combined_flags.append(item)
+                else:
+                    combined_flags.append(str(item))
+        else:
+            # Convert other types to string
+            combined_flags.append(str(source))
+
+    return deduplicate_compiler_flags(combined_flags)
+
+
 def ordered_difference(iterable: Iterable[Any], subtract: Iterable[Any]) -> list[Any]:
     """Return items from iterable not in subtract, preserving order.
 

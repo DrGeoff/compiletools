@@ -108,8 +108,7 @@ class LinkRuleCreator(object):
             for source in completesources:
                 magic_flags = self.hunter.magicflags(source)
                 all_magic_ldflags.extend(magic_flags.get("LDFLAGS", []))
-                all_magic_ldflags.extend(magic_flags.get("LINKFLAGS", []))  # For backward compatibility with cake
-            all_magic_ldflags = compiletools.utils.ordered_unique(all_magic_ldflags)
+                # LINKFLAGS is now merged into LDFLAGS by magicflags.py
         recipe = ""
         
         if self.args.verbose >= 1:
