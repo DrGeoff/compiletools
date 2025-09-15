@@ -87,6 +87,9 @@ def requires_pkg_config(*packages):
 def reset():
     delete_existing_parsers()
     compiletools.apptools.resetcallbacks()
+    # Clear wrappedos caches to prevent test interactions
+    import compiletools.wrappedos as wo
+    wo.clear_cache()
 
 
 def delete_existing_parsers():

@@ -471,8 +471,8 @@ class TestCompilationDatabase:
                     compiletools.compilation_database.main([
                         "--config=" + temp_config_name,
                         "--compilation-database-output=" + comp_db_output,
-                        os.path.abspath("helloworld_cpp.cpp"),
-                        os.path.abspath("helloworld_c.c")
+                        os.path.realpath("helloworld_cpp.cpp"),
+                        os.path.realpath("helloworld_c.c")
                     ])
                 
                 with open(comp_db_output, 'r') as f:
@@ -485,7 +485,7 @@ class TestCompilationDatabase:
                     compiletools.compilation_database.main([
                         "--config=" + temp_config_name,
                         "--compilation-database-output=" + comp_db_output,
-                        os.path.abspath("test_factory.cpp")  # Only the new file
+                        os.path.realpath("test_factory.cpp")  # Only the new file
                     ])
                 
                 with open(comp_db_output, 'r') as f:
@@ -499,8 +499,8 @@ class TestCompilationDatabase:
                     compiletools.compilation_database.main([
                         "--config=" + temp_config_name,
                         "--compilation-database-output=" + comp_db_output,
-                        os.path.abspath("helloworld_cpp.cpp"),
-                        os.path.abspath("test_factory.cpp")  # Update 2 files, preserve 1
+                        os.path.realpath("helloworld_cpp.cpp"),
+                        os.path.realpath("test_factory.cpp")  # Update 2 files, preserve 1
                     ])
                 
                 with open(comp_db_output, 'r') as f:
@@ -569,17 +569,18 @@ class TestCompilationDatabase:
                     creator = compiletools.compilation_database.CompilationDatabaseCreator(args)
                     
                     # Test path normalization caching with enhanced wrappedos
-                    path1 = creator._normalize_path_sz("./test.cpp")
-                    path2 = creator._normalize_path_sz("./test.cpp")  # Should hit wrappedos cache
+                    path1 = compiletools.wrappedos.realpath("./test.cpp")
+                    path2 = compiletools.wrappedos.realpath("./test.cpp")  # Should hit wrappedos cache
                     assert path1 == path2, "Path normalization should be consistent"
-                    
-                    # Test StringZilla Str input as well - should share same cache
+
+                    # Test StringZilla API - should leverage shared cache
                     import stringzilla as sz
-                    path3 = creator._normalize_path_sz(sz.Str("./test.cpp"))
+                    path3_sz = compiletools.wrappedos.realpath_sz(sz.Str("./test.cpp"))
+                    path3 = str(path3_sz)  # Convert for comparison
                     assert path1 == path3, "StringZilla and Python string should produce same result"
-                    
+
                     # Test that wrappedos lru_cache is working (cache_info available)
-                    cache_info = compiletools.wrappedos._abspath_impl.cache_info()
+                    cache_info = compiletools.wrappedos.realpath.cache_info()
                     assert cache_info.hits >= 2, "wrappedos lru_cache should have multiple hits from shared usage"
                     
                     # Test C++ file detection
@@ -593,8 +594,8 @@ class TestCompilationDatabase:
                     compiletools.compilation_database.main([
                         "--config=" + temp_config_name,
                         "--compilation-database-output=" + comp_db_output,
-                        os.path.abspath("helloworld_cpp.cpp"),
-                        os.path.abspath("helloworld_c.c")
+                        os.path.realpath("helloworld_cpp.cpp"),
+                        os.path.realpath("helloworld_c.c")
                     ])
                 
                 # Verify the database was created correctly
@@ -613,7 +614,7 @@ class TestCompilationDatabase:
                     compiletools.compilation_database.main([
                         "--config=" + temp_config_name,
                         "--compilation-database-output=" + comp_db_output,
-                        os.path.abspath("helloworld_cpp.cpp")  # Update just one file
+                        os.path.realpath("helloworld_cpp.cpp")  # Update just one file
                     ])
                 
                 # Verify incremental update preserved all entries

@@ -98,8 +98,8 @@ class Cake(object):
         cap.add(
             "--compilation-database-output",
             dest="compilation_database_output",
-            default="compile_commands.json",
-            help="Output filename for compilation database (default: compile_commands.json)"
+            default=None,
+            help="Output filename for compilation database (default: <gitroot>/compile_commands.json)"
         )
         
         cap.add(
