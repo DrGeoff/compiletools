@@ -9,7 +9,7 @@ Swiss army knife for building a C/C++ project
 :Author: drgeoffathome@gmail.com
 :Date:   2018-02-06
 :Copyright: Copyright (C) 2011-2016 Zomojo Pty Ltd
-:Version: 5.3.1
+:Version: 5.3.2
 :Manual section: 1
 :Manual group: developers
 
