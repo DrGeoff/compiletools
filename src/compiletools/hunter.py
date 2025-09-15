@@ -155,7 +155,7 @@ class Hunter(object):
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
         compiletools.magicflags.MagicFlagsBase.clear_cache()
         # Clear class-level cache
-        Hunter._magic_cache.clear()
+        # Hunter._magic_cache.clear()  # This cache doesn't exist
         # Note: Cannot clear instance-level _parse_magic caches from static method
         # Each Hunter instance will retain its own cache until the instance is destroyed
 
@@ -264,7 +264,7 @@ class Hunter(object):
                     all_sources.add(compiletools.wrappedos.realpath(source))
 
         # Cache the results as sorted absolute paths
-        self._hunted_sources = sorted(compiletools.wrappedos.realpath(src) for src in all_sources)
+        self._hunted_sources = sorted(all_sources)  # all_sources already contains realpaths
 
 
         if self.args.verbose >= 5:
