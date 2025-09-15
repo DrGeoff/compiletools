@@ -26,12 +26,6 @@ class CompilationDatabaseCreator:
         self.magicparser = magicparser if magicparser is not None else compiletools.magicflags.create(args, self.headerdeps)
         self.hunter = hunter if hunter is not None else compiletools.hunter.Hunter(args, self.headerdeps, self.magicparser)
             
-    def _normalize_path_sz(self, file_path: str) -> str:
-        """Normalize file path using wrappedos with shared StringZilla-aware cache"""
-        # Use enhanced wrappedos.abspath that handles both Python str and StringZilla Str
-        return compiletools.wrappedos.abspath(file_path)
-    
-        
     @staticmethod
     def add_arguments(cap):
         """Add command-line arguments for standalone ct-compilation-database"""
@@ -41,8 +35,8 @@ class CompilationDatabaseCreator:
         cap.add(
             "--compilation-database-output",
             dest="compilation_database_output",
-            default="compile_commands.json",
-            help="Output filename for compilation database (default: compile_commands.json)"
+            default=None,
+            help="Output filename for compilation database (default: <gitroot>/compile_commands.json)"
         )
 
         cap.add(
@@ -101,7 +95,7 @@ class CompilationDatabaseCreator:
         if self.args.compilation_database_relative:
             args.append(os.path.relpath(source_file, os.getcwd()))
         else:
-            args.append(os.path.abspath(source_file))
+            args.append(os.path.realpath(source_file))
             
         return args
 
@@ -109,13 +103,13 @@ class CompilationDatabaseCreator:
         """Create a single command object for the compilation database"""
         
         # Directory is always absolute (working directory)
-        directory = os.path.abspath(os.getcwd())
+        directory = os.path.realpath(os.getcwd())
             
         # Get file path - relative or absolute based on option
         if self.args.compilation_database_relative:
             file_path = os.path.relpath(source_file, os.getcwd())
         else:
-            file_path = os.path.abspath(source_file)
+            file_path = os.path.realpath(source_file)
             
         # Generate arguments
         arguments = self._get_compiler_command(source_file)
@@ -159,7 +153,7 @@ class CompilationDatabaseCreator:
         """Write the compilation database to file with incremental update support"""
         
         if output_file is None:
-            output_file = self.args.compilation_database_output
+            output_file = self.namer.compilation_database_pathname()
             
         # Create the command objects for current files
         new_commands = self.create_compilation_database()
@@ -186,15 +180,21 @@ class CompilationDatabaseCreator:
         # Merge: Keep existing entries for files we're not updating using StringZilla operations
         merged_commands = []
         
-        # Get set of files being updated using StringZilla-optimized path normalization
-        new_files = {self._normalize_path_sz(cmd["file"]) for cmd in new_commands}
-        
-        # Always use StringZilla for consistent file path operations
+        # Use StringZilla for optimal path processing performance
+        # Build set of normalized file paths from new commands
+        new_files_normalized = set()
+        for cmd in new_commands:
+            # Convert to StringZilla for optimal caching, then back to str for set
+            file_sz = sz.Str(cmd["file"])
+            normalized_sz = compiletools.wrappedos.realpath_sz(file_sz)
+            new_files_normalized.add(str(normalized_sz))
+
+        # Process existing commands with StringZilla optimization
         for existing_cmd in existing_commands:
-            # Use StringZilla Str and wrappedos for efficient path operations
+            # Convert to StringZilla for consistent processing
             existing_file_sz = sz.Str(existing_cmd["file"])
-            existing_file_normalized = self._normalize_path_sz(existing_file_sz)
-            if existing_file_normalized not in new_files:
+            existing_normalized_sz = compiletools.wrappedos.realpath_sz(existing_file_sz)
+            if str(existing_normalized_sz) not in new_files_normalized:
                 merged_commands.append(existing_cmd)
         
         # Add all new/updated entries
@@ -202,8 +202,14 @@ class CompilationDatabaseCreator:
         
         # Write merged JSON file
         try:
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(merged_commands, f, indent=2, ensure_ascii=False)
+            # Ensure the output directory exists
+            output_dir = compiletools.wrappedos.dirname(output_file)
+            if output_dir and not compiletools.wrappedos.isdir(output_dir):
+                os.makedirs(output_dir, exist_ok=True)
+
+            # Use StringZilla Str.write_to for faster file writing - no GIL, no copies
+            json_content = json.dumps(merged_commands, indent=2, ensure_ascii=False)
+            sz.Str(json_content).write_to(output_file)
                 
             if self.args.verbose:
                 print(f"Written compilation database with {len(merged_commands)} entries to {output_file}")

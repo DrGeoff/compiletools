@@ -1,108 +1,123 @@
-""" Wrap and memoize a variety of os calls """
+"""
+Cached filesystem operations with StringZilla optimization.
+
+Provides LRU-cached versions of common os.path operations. Callers choose the
+appropriate function: standard versions for Python str, _sz versions for StringZilla.
+Optimized for speed over memory - uses separate caches to avoid conversions.
+"""
 import os
 import shutil
 import functools
+from typing import Union
 import stringzilla as sz
 
+# Type aliases for clarity
+PathInput = Union[str, sz.Str]
 
-def _to_python_str(path):
-    """Convert StringZilla Str to Python string for OS calls, ensuring cache key consistency"""
-    if isinstance(path, sz.Str):
-        return path.decode('utf-8')
-    return path
 
+# Python str API - cached directly, no extra function call layer
+@functools.lru_cache(maxsize=None)
+def realpath(path: str) -> str:
+    """Cached os.path.realpath for Python strings."""
+    return os.path.realpath(path)
 
 @functools.lru_cache(maxsize=None)
-def _getmtime_impl(realpath_str):
-    """ Internal cached implementation of os.path.getmtime """
-    return os.path.getmtime(realpath_str)
-
-def getmtime(realpath):
-    """ Cached version of os.path.getmtime - accepts Python str or StringZilla Str """
-    return _getmtime_impl(_to_python_str(realpath))
-
+def abspath(path: str) -> str:
+    """Cached os.path.abspath for Python strings."""
+    return os.path.abspath(path)
 
 @functools.lru_cache(maxsize=None)
-def _isfile_impl(trialpath_str):
-    """ Internal cached implementation of os.path.isfile """
-    return os.path.isfile(trialpath_str)
-
-def isfile(trialpath):
-    """ Cached version of os.path.isfile - accepts Python str or StringZilla Str """
-    return _isfile_impl(_to_python_str(trialpath))
-
+def dirname(path: str) -> str:
+    """Cached os.path.dirname for Python strings."""
+    return os.path.dirname(path)
 
 @functools.lru_cache(maxsize=None)
-def _isdir_impl(trialpath_str):
-    """ Internal cached implementation of os.path.isdir """
-    return os.path.isdir(trialpath_str)
-
-def isdir(trialpath):
-    """ Cached version of os.path.isdir - accepts Python str or StringZilla Str """
-    return _isdir_impl(_to_python_str(trialpath))
-
+def basename(path: str) -> str:
+    """Cached os.path.basename for Python strings."""
+    return os.path.basename(path)
 
 @functools.lru_cache(maxsize=None)
-def _realpath_impl(trialpath_str):
-    """ Internal cached implementation of os.path.realpath """
-    # Note: We can't raise an exception on file non-existence
-    # because this is sometimes called in order to create the file.
-    return os.path.realpath(trialpath_str)
-
-def realpath(trialpath):
-    """ Cache os.path.realpath - accepts Python str or StringZilla Str """
-    return _realpath_impl(_to_python_str(trialpath))
-
+def getmtime(path: str) -> float:
+    """Cached os.path.getmtime for Python strings."""
+    return os.path.getmtime(path)
 
 @functools.lru_cache(maxsize=None)
-def _abspath_impl(trialpath_str):
-    """ Internal cached implementation of os.path.abspath """
-    return os.path.abspath(trialpath_str)
-
-def abspath(trialpath):
-    """ Cached version of os.path.abspath - accepts Python str or StringZilla Str """
-    return _abspath_impl(_to_python_str(trialpath))
-
+def isfile(path: str) -> bool:
+    """Cached os.path.isfile for Python strings."""
+    return os.path.isfile(path)
 
 @functools.lru_cache(maxsize=None)
-def _dirname_impl(trialpath_str):
-    """ Internal cached implementation of os.path.dirname """
-    return os.path.dirname(trialpath_str)
+def isdir(path: str) -> bool:
+    """Cached os.path.isdir for Python strings."""
+    return os.path.isdir(path)
 
-def dirname(trialpath):
-    """ A cached version of os.path.dirname - accepts Python str or StringZilla Str """
-    return _dirname_impl(_to_python_str(trialpath))
 
+# StringZilla API - cached directly, leverages shared Python str caches
+@functools.lru_cache(maxsize=None)
+def realpath_sz(path: sz.Str) -> sz.Str:
+    """Cached realpath for StringZilla - avoids conversions when cached."""
+    return sz.Str(realpath(path.decode('utf-8')))
 
 @functools.lru_cache(maxsize=None)
-def _basename_impl(trialpath_str):
-    """ Internal cached implementation of os.path.basename """
-    return os.path.basename(trialpath_str)
+def abspath_sz(path: sz.Str) -> sz.Str:
+    """Cached abspath for StringZilla - avoids conversions when cached."""
+    return sz.Str(abspath(path.decode('utf-8')))
 
-def basename(trialpath):
-    """ A cached version of os.path.basename - accepts Python str or StringZilla Str """
-    return _basename_impl(_to_python_str(trialpath))
+@functools.lru_cache(maxsize=None)
+def dirname_sz(path: sz.Str) -> sz.Str:
+    """Cached dirname for StringZilla - avoids conversions when cached."""
+    return sz.Str(dirname(path.decode('utf-8')))
+
+@functools.lru_cache(maxsize=None)
+def basename_sz(path: sz.Str) -> sz.Str:
+    """Cached basename for StringZilla - avoids conversions when cached."""
+    return sz.Str(basename(path.decode('utf-8')))
+
+@functools.lru_cache(maxsize=None)
+def getmtime_sz(path: sz.Str) -> float:
+    """Cached getmtime for StringZilla - leverages shared cache."""
+    return getmtime(path.decode('utf-8'))
+
+@functools.lru_cache(maxsize=None)
+def isfile_sz(path: sz.Str) -> bool:
+    """Cached isfile for StringZilla - leverages shared cache."""
+    return isfile(path.decode('utf-8'))
+
+@functools.lru_cache(maxsize=None)
+def isdir_sz(path: sz.Str) -> bool:
+    """Cached isdir for StringZilla - leverages shared cache."""
+    return isdir(path.decode('utf-8'))
+
+# Utility functions
+def isc(path: str) -> bool:
+    """Test if the given file has a .c extension."""
+    return os.path.splitext(path)[1] == ".c"
 
 
-def isc(trialpath):
-    """ Is the given file a C file ? """
-    return os.path.splitext(trialpath)[1] == ".c"
-
-
-
-def copy(src, dest):
-    """ copy the src to the dest and print any errors """
+def copy(src: str, dest: str) -> None:
+    """Copy src to dest with error handling."""
     try:
         shutil.copy2(src, dest)
     except IOError as err:
-        print("Unable to copy file {}".format(err))
+        print(f"Unable to copy file: {err}")
 
 
-def clear_cache():
-    _getmtime_impl.cache_clear()
-    _isfile_impl.cache_clear()
-    _isdir_impl.cache_clear()
-    _realpath_impl.cache_clear()
-    _abspath_impl.cache_clear()
-    _dirname_impl.cache_clear()
-    _basename_impl.cache_clear()
+def clear_cache() -> None:
+    """Clear all LRU caches to free memory."""
+    # Python str API caches
+    realpath.cache_clear()
+    abspath.cache_clear()
+    dirname.cache_clear()
+    basename.cache_clear()
+    getmtime.cache_clear()
+    isfile.cache_clear()
+    isdir.cache_clear()
+
+    # StringZilla API caches
+    realpath_sz.cache_clear()
+    abspath_sz.cache_clear()
+    dirname_sz.cache_clear()
+    basename_sz.cache_clear()
+    getmtime_sz.cache_clear()
+    isfile_sz.cache_clear()
+    isdir_sz.cache_clear()

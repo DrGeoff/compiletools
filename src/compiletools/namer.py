@@ -154,6 +154,20 @@ class Namer(object):
             ]
         )
 
+    def compilation_database_pathname(self):
+        """ Return the path for the compilation database, defaulting to git root """
+        if hasattr(self.args, 'compilation_database_output') and self.args.compilation_database_output:
+            # If user provided a path, use it (could be relative or absolute)
+            if os.path.isabs(self.args.compilation_database_output):
+                return self.args.compilation_database_output
+            else:
+                # Relative path - resolve from current directory
+                return compiletools.wrappedos.realpath(self.args.compilation_database_output)
+        else:
+            # Default to git root
+            gitroot = compiletools.git_utils.find_git_root()
+            return os.path.join(gitroot, "compile_commands.json")
+
     def all_executable_pathnames(self):
         """ Use the filenames from the command line to determine the 
             executable names.
