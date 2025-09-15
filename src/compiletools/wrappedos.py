@@ -88,12 +88,6 @@ def isdir_sz(path: sz.Str) -> bool:
     """Cached isdir for StringZilla - leverages shared cache."""
     return isdir(path.decode('utf-8'))
 
-# Utility functions
-def isc(path: str) -> bool:
-    """Test if the given file has a .c extension."""
-    return os.path.splitext(path)[1] == ".c"
-
-
 def copy(src: str, dest: str) -> None:
     """Copy src to dest with error handling."""
     try:
