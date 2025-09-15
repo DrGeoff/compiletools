@@ -714,3 +714,98 @@ class TestCompilationDatabase:
                 assert any(c_compiler in comp_db_compiler for c_compiler in ['gcc', 'clang']) and \
                        not any(cpp_compiler in comp_db_compiler for cpp_compiler in ['g++', 'clang++', 'c++']), \
                     f"Expected C compiler for {filename}, got {comp_db_compiler}"
+
+    @uth.requires_functional_compiler
+    def test_compile_commands_json_format_compliance(self):
+        """Test that compile_commands.json follows clang specification exactly"""
+
+        with uth.TempDirContext() as _:
+            samplesdir = uth.samplesdir()
+
+            # Use our duplicate_flags sample to test both format and deduplication
+            duplicate_flags_sample = os.path.join(samplesdir, "duplicate_flags", "main.cpp")
+
+            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+                # Copy the sample to test directory
+                import shutil
+                shutil.copy(duplicate_flags_sample, "test_main.cpp")
+
+                with uth.ParserContext():
+                    output_file = "compile_commands_format.json"
+                    compiletools.compilation_database.main([
+                        "--config=" + temp_config_name,
+                        "--compilation-database-output=" + output_file,
+                        os.path.realpath("test_main.cpp")
+                    ])
+
+                    # Verify file was created
+                    assert os.path.exists(output_file)
+
+                    # Read and parse JSON
+                    with open(output_file, 'r') as f:
+                        commands = json.load(f)
+
+                    assert isinstance(commands, list), "Root should be JSON array"
+                    assert len(commands) >= 1, "Should have at least one command"
+
+                    for cmd in commands:
+                        # Test required fields per clang spec
+                        assert "directory" in cmd, "Missing required 'directory' field"
+                        assert "file" in cmd, "Missing required 'file' field"
+                        assert "arguments" in cmd, "Missing 'arguments' field (preferred over 'command')"
+
+                        # Test field types
+                        assert isinstance(cmd["directory"], str), "directory must be string"
+                        assert isinstance(cmd["file"], str), "file must be string"
+                        assert isinstance(cmd["arguments"], list), "arguments must be array"
+
+                        # Test that arguments array is not empty
+                        assert len(cmd["arguments"]) > 0, "arguments array must not be empty"
+
+                        # Test compiler splitting - first argument should not be "ccache g++"
+                        first_arg = cmd["arguments"][0]
+                        assert " " not in first_arg or first_arg.startswith("/"), \
+                            f"Compiler command improperly split: '{first_arg}' - should be ['ccache', 'g++'] not ['ccache g++']"
+
+                        # Test for duplicate -isystem flags
+                        args = cmd["arguments"]
+                        isystem_paths = []
+                        i = 0
+                        while i < len(args):
+                            if args[i] == "-isystem" and i + 1 < len(args):
+                                isystem_paths.append(args[i + 1])
+                                i += 2
+                            elif args[i].startswith("-isystem") and len(args[i]) > 8:
+                                isystem_paths.append(args[i][8:])
+                                i += 1
+                            else:
+                                i += 1
+
+                        # Check for duplicates
+                        unique_isystem_paths = set(isystem_paths)
+                        assert len(isystem_paths) == len(unique_isystem_paths), \
+                            f"Duplicate -isystem paths found: {isystem_paths}"
+
+                        # Test for duplicate -I flags
+                        include_paths = []
+                        i = 0
+                        while i < len(args):
+                            if args[i] == "-I" and i + 1 < len(args):
+                                include_paths.append(args[i + 1])
+                                i += 2
+                            elif args[i].startswith("-I") and len(args[i]) > 2:
+                                include_paths.append(args[i][2:])
+                                i += 1
+                            else:
+                                i += 1
+
+                        unique_include_paths = set(include_paths)
+                        assert len(include_paths) == len(unique_include_paths), \
+                            f"Duplicate -I paths found: {include_paths}"
+
+                        print(f"✓ Command format valid for {cmd['file']}")
+                        print(f"  Compiler: {first_arg}")
+                        print(f"  Include paths: {include_paths}")
+                        print(f"  System include paths: {isystem_paths}")
+
+                    print("✓ All compile_commands.json format compliance tests passed!")

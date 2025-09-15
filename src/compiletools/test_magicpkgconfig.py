@@ -114,8 +114,9 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                 # Verify PKG-CONFIG flag was found
                 assert "PKG-CONFIG" in parsed_flags
                 pkgconfig_flags = list(parsed_flags["PKG-CONFIG"])
-                assert len(pkgconfig_flags) == 1
-                assert pkgconfig_flags[0] == "zlib libcrypt"
+                assert len(pkgconfig_flags) == 2
+                assert "zlib" in pkgconfig_flags
+                assert "libcrypt" in pkgconfig_flags
                 
                 # Verify CXXFLAGS were extracted (should contain zlib and libcrypt cflags)
                 assert "CXXFLAGS" in parsed_flags
@@ -184,8 +185,9 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                 # Verify PKG-CONFIG flag was found (should contain "zlib libcrypt")
                 assert "PKG-CONFIG" in parsed_flags, "PKG-CONFIG directive should be parsed"
                 pkgconfig_flags = list(parsed_flags["PKG-CONFIG"])
-                assert len(pkgconfig_flags) == 1
-                assert pkgconfig_flags[0] == "zlib libcrypt"
+                assert len(pkgconfig_flags) == 2
+                assert "zlib" in pkgconfig_flags
+                assert "libcrypt" in pkgconfig_flags
                 
                 # Check CXXFLAGS for the presence of -isystem transformations
                 if "CXXFLAGS" in parsed_flags:
