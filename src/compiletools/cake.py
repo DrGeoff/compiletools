@@ -177,7 +177,7 @@ class Cake(object):
             for srcexe in filelist:
                 base = os.path.basename(srcexe)
                 destexe = compiletools.wrappedos.realpath(os.path.join(outputdir, base))
-                if compiletools.utils.isexecutable(srcexe) and srcexe != destexe:
+                if compiletools.utils.is_executable(srcexe) and srcexe != destexe:
                     if self.args.verbose > 0:
                         print("".join([outputdir, base]))
                     compiletools.wrappedos.copy(srcexe, outputdir)

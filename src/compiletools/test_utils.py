@@ -5,43 +5,43 @@ import compiletools.utils as utils
 
 
 class TestIsFuncs:
-    def test_isheader(self):
-        assert utils.isheader("myfile.h")
-        assert utils.isheader("/home/user/myfile.h")
-        assert utils.isheader("myfile.H")
-        assert utils.isheader("My File.H")
-        assert utils.isheader("myfile.inl")
-        assert utils.isheader("myfile.hh")
-        assert utils.isheader("myfile.hxx")
-        assert utils.isheader("myfile.hpp")
-        assert utils.isheader("/home/user/myfile.hpp")
-        assert utils.isheader("myfile.with.dots.hpp")
-        assert utils.isheader("/home/user/myfile.with.dots.hpp")
-        assert utils.isheader("myfile_underscore.h")
-        assert utils.isheader("myfile-hypen.h")
-        assert utils.isheader("myfile.h")
+    def test_is_header(self):
+        assert utils.is_header("myfile.h")
+        assert utils.is_header("/home/user/myfile.h")
+        assert utils.is_header("myfile.H")
+        assert utils.is_header("My File.H")
+        assert utils.is_header("myfile.inl")
+        assert utils.is_header("myfile.hh")
+        assert utils.is_header("myfile.hxx")
+        assert utils.is_header("myfile.hpp")
+        assert utils.is_header("/home/user/myfile.hpp")
+        assert utils.is_header("myfile.with.dots.hpp")
+        assert utils.is_header("/home/user/myfile.with.dots.hpp")
+        assert utils.is_header("myfile_underscore.h")
+        assert utils.is_header("myfile-hypen.h")
+        assert utils.is_header("myfile.h")
 
-        assert not utils.isheader("myfile.c")
-        assert not utils.isheader("myfile.cc")
-        assert not utils.isheader("myfile.cpp")
-        assert not utils.isheader("/home/user/myfile")
+        assert not utils.is_header("myfile.c")
+        assert not utils.is_header("myfile.cc")
+        assert not utils.is_header("myfile.cpp")
+        assert not utils.is_header("/home/user/myfile")
 
-    def test_issource(self):
-        assert utils.issource("myfile.c")
-        assert utils.issource("myfile.cc")
-        assert utils.issource("myfile.cpp")
-        assert utils.issource("/home/user/myfile.cpp")
-        assert utils.issource("/home/user/myfile.with.dots.cpp")
-        assert utils.issource("myfile.C")
-        assert utils.issource("myfile.CC")
-        assert utils.issource("My File.c")
-        assert utils.issource("My File.cpp")
-        assert utils.issource("myfile.cxx")
+    def test_is_source(self):
+        assert utils.is_source("myfile.c")
+        assert utils.is_source("myfile.cc")
+        assert utils.is_source("myfile.cpp")
+        assert utils.is_source("/home/user/myfile.cpp")
+        assert utils.is_source("/home/user/myfile.with.dots.cpp")
+        assert utils.is_source("myfile.C")
+        assert utils.is_source("myfile.CC")
+        assert utils.is_source("My File.c")
+        assert utils.is_source("My File.cpp")
+        assert utils.is_source("myfile.cxx")
 
-        assert not utils.issource("myfile.h")
-        assert not utils.issource("myfile.hh")
-        assert not utils.issource("myfile.hpp")
-        assert not utils.issource("/home/user/myfile.with.dots.hpp")
+        assert not utils.is_source("myfile.h")
+        assert not utils.is_source("myfile.hh")
+        assert not utils.is_source("myfile.hpp")
+        assert not utils.is_source("/home/user/myfile.with.dots.hpp")
 
     def test_is_c_source(self):
         # Test that .c files are identified as C source
@@ -87,6 +87,46 @@ class TestImpliedSource:
         expected = os.path.join(uth.samplesdir(), basename + ".cpp")
         result = utils.implied_source(os.path.join(uth.samplesdir(), relativefilename))
         assert expected == result
+
+
+class TestToBool:
+    def test_to_bool_true_values(self):
+        """Test that various true values are converted correctly"""
+        true_values = ["yes", "y", "true", "t", "1", "on", "YES", "True", "ON"]
+        for value in true_values:
+            assert utils.to_bool(value) is True, f"Expected True for {value}"
+
+    def test_to_bool_false_values(self):
+        """Test that various false values are converted correctly"""
+        false_values = ["no", "n", "false", "f", "0", "off", "NO", "False", "OFF"]
+        for value in false_values:
+            assert utils.to_bool(value) is False, f"Expected False for {value}"
+
+    def test_to_bool_invalid_values(self):
+        """Test that invalid values raise ValueError"""
+        invalid_values = ["maybe", "invalid", "2", ""]
+        for value in invalid_values:
+            try:
+                utils.to_bool(value)
+                assert False, f"Expected ValueError for {value}"
+            except ValueError:
+                pass  # Expected
+
+
+class TestRemoveMount:
+    def test_remove_mount_unix_path(self):
+        """Test remove_mount with Unix-style paths"""
+        assert utils.remove_mount("/home/user/file.txt") == "home/user/file.txt"
+        assert utils.remove_mount("/") == ""
+        assert utils.remove_mount("/file.txt") == "file.txt"
+
+    def test_remove_mount_invalid_path(self):
+        """Test remove_mount with non-absolute path raises error"""
+        try:
+            utils.remove_mount("relative/path")
+            assert False, "Expected ValueError for relative path"
+        except ValueError:
+            pass  # Expected
 
 
 class TestOrderedUnique:

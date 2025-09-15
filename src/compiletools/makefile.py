@@ -659,7 +659,7 @@ class MakefileCreator:
         if self.args.verbose >= 9:
             print("MakefileCreator::_create_compile_rule_for_source" + filename)
 
-        if compiletools.utils.isheader(filename):
+        if compiletools.utils.is_header(filename):
             sys.stderr.write("Error.  Trying to create a compile rule for a header file: ", filename)
 
         deplist = self.hunter.header_dependencies(filename)

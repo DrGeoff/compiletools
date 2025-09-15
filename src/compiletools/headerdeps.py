@@ -7,7 +7,7 @@ from pprint import pprint
 import compiletools.wrappedos
 import compiletools.apptools
 import compiletools.utils
-from compiletools.utils import cached_shlex_split
+from compiletools.utils import split_command_cached
 import compiletools.tree as tree
 import compiletools.preprocessor
 import compiletools.compiler_macros
@@ -92,7 +92,7 @@ class HeaderDepsBase(object):
         
         # Split the flag string into individual tokens using shell parsing
         try:
-            tokens = cached_shlex_split(flag_value)
+            tokens = split_command_cached(flag_value)
         except ValueError:
             # Fall back to simple split if shlex fails
             tokens = flag_value.split()
@@ -133,7 +133,7 @@ class HeaderDepsBase(object):
         
         # Split the flag string into individual tokens using shell parsing
         try:
-            tokens = cached_shlex_split(flag_value)
+            tokens = split_command_cached(flag_value)
         except ValueError:
             # Fall back to simple split if shlex fails
             tokens = flag_value.split()
