@@ -5,6 +5,7 @@ import subprocess
 import textwrap
 from io import open
 
+import stringzilla as sz
 
 import compiletools.utils
 import compiletools.wrappedos
@@ -107,14 +108,14 @@ class LinkRuleCreator(object):
         if not suppressmagicldflags:
             for source in completesources:
                 magic_flags = self.hunter.magicflags(source)
-                all_magic_ldflags.extend(magic_flags.get("LDFLAGS", []))
+                all_magic_ldflags.extend(magic_flags.get(sz.Str("LDFLAGS"), []))
                 # LINKFLAGS is now merged into LDFLAGS by magicflags.py
         recipe = ""
         
         if self.args.verbose >= 1:
             recipe += " ".join(["+@echo ...", outputname, ";"])
         
-        link_flags = [linker, "-o", outputname] + list(object_names) + list(all_magic_ldflags) + [linkerflags]
+        link_flags = [linker, "-o", outputname] + list(object_names) + [str(flag) for flag in all_magic_ldflags] + [linkerflags]
         link_cmd = " ".join(link_flags)
         recipe += link_cmd
         return Rule(target=outputname, prerequisites=allprerequisites, recipe=recipe)
@@ -682,13 +683,13 @@ class MakefileCreator:
         lock_prefix = self._get_locking_recipe_prefix()
         lock_suffix = self._get_locking_recipe_suffix()
         
-        magic_cpp_flags = magicflags.get("CPPFLAGS", [])
+        magic_cpp_flags = magicflags.get(sz.Str("CPPFLAGS"), [])
         if compiletools.utils.is_c_source(filename):
-            magic_c_flags = magicflags.get("CFLAGS", [])
-            compile_flags = [self.args.CC, self.args.CFLAGS] + list(magic_cpp_flags) + list(magic_c_flags)
+            magic_c_flags = magicflags.get(sz.Str("CFLAGS"), [])
+            compile_flags = [self.args.CC, self.args.CFLAGS] + [str(flag) for flag in magic_cpp_flags] + [str(flag) for flag in magic_c_flags]
         else:
-            magic_cxx_flags = magicflags.get("CXXFLAGS", [])
-            compile_flags = [self.args.CXX, self.args.CXXFLAGS] + list(magic_cpp_flags) + list(magic_cxx_flags)
+            magic_cxx_flags = magicflags.get(sz.Str("CXXFLAGS"), [])
+            compile_flags = [self.args.CXX, self.args.CXXFLAGS] + [str(flag) for flag in magic_cpp_flags] + [str(flag) for flag in magic_cxx_flags]
         
         if self._shared_objects:
             # Use temporary file for atomic writes with locking

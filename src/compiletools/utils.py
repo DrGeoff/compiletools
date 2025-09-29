@@ -74,6 +74,14 @@ def split_command_cached(command_line: str) -> list[str]:
 
 
 @functools.lru_cache(maxsize=None)
+def split_command_cached_sz(command_line_sz) -> list:
+    """StringZilla-aware version returning StringZilla.Str list"""
+    import stringzilla as sz
+    str_results = shlex.split(command_line_sz.decode('utf-8'))
+    return [sz.Str(s) for s in str_results]
+
+
+@functools.lru_cache(maxsize=None)
 def is_header(filename: str) -> bool:
     """Is filename a header file?"""
     return _get_lower_ext(filename) in HEADER_EXTS
@@ -160,6 +168,7 @@ def clear_cache() -> None:
     """Clear all function caches."""
     _get_lower_ext.cache_clear()
     split_command_cached.cache_clear()
+    split_command_cached_sz.cache_clear()
     is_header.cache_clear()
     is_cpp_source.cache_clear()
     is_c_source.cache_clear()

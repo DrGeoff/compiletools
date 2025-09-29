@@ -34,7 +34,7 @@ def is_alpha_or_underscore_sz(sz_str: 'stringzilla.Str', pos: int = 0) -> bool:
     return (sz_str[pos:pos+1].find_first_not_of('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_') == -1)
 
 
-def join_lines_strip_backslash_sz(lines: List[str]) -> 'stringzilla.Str':
+def join_lines_strip_backslash_sz(lines: List['stringzilla.Str']) -> 'stringzilla.Str':
     """Join lines stripping backslashes using StringZilla operations.
 
     Performance note: Despite the str/Str conversions, this approach is optimal because:
@@ -48,9 +48,8 @@ def join_lines_strip_backslash_sz(lines: List[str]) -> 'stringzilla.Str':
 
     result_parts = []
     for line in lines:
-        sz_line = Str(line) if not isinstance(line, Str) else line
         # Use SIMD-optimized strip_sz for whitespace removal
-        trimmed = strip_sz(sz_line, ' \t\r\n')
+        trimmed = strip_sz(line, ' \t\r\n')
         if len(trimmed) > 0 and trimmed[-1] == '\\':
             trimmed = trimmed[:-1]  # Remove backslash
         trimmed = strip_sz(trimmed, ' \t')  # Remove trailing whitespace
@@ -58,3 +57,22 @@ def join_lines_strip_backslash_sz(lines: List[str]) -> 'stringzilla.Str':
 
     # Use Python's highly optimized string join, then convert once to StringZilla
     return Str(' '.join(result_parts))
+
+
+def concat_sz(*parts) -> 'stringzilla.Str':
+    """Efficient StringZilla.Str concatenation.
+
+    Performance note: Uses Python's optimized string joining then converts once
+    to StringZilla.Str to minimize conversion overhead while maintaining SIMD benefits.
+    """
+    from stringzilla import Str
+    return Str(''.join(str(p) for p in parts))
+
+
+def join_sz(separator: str, items) -> str:
+    """Join StringZilla.Str items with separator, converting to str for compatibility.
+
+    This helper enables tests and other consumers to use str.join() patterns
+    with StringZilla.Str objects without manual conversion.
+    """
+    return separator.join(str(item) for item in items)

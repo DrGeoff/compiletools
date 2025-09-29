@@ -1,6 +1,7 @@
 
 import os
 import pytest
+import stringzilla as sz
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
 import compiletools.magicflags
@@ -11,7 +12,9 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
     
     def _check_flags(self, result, flag_type, expected_flags, unexpected_flags):
         """Helper to verify flags of given type contain expected flags and not unexpected ones"""
-        flags_str = " ".join(result[flag_type])
+        import stringzilla as sz
+        flag_key = sz.Str(flag_type) if isinstance(flag_type, str) else flag_type
+        flags_str = " ".join(str(flag) for flag in result[flag_key])
         return (all(flag in flags_str for flag in expected_flags) and
                 not any(flag in flags_str for flag in unexpected_flags))
 
@@ -40,14 +43,14 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         """Test SOURCE detection using direct magic"""
         result = self._parse_with_magic("direct", "cross_platform/cross_platform.cpp")
         expected_source = {self._get_sample_path("cross_platform/cross_platform_lin.cpp")}
-        assert set(result.get("SOURCE")) == expected_source
+        assert {str(s) for s in result.get(sz.Str("SOURCE"))} == expected_source
 
     @uth.requires_functional_compiler
     def test_SOURCE_cpp(self):
         """Test SOURCE detection using cpp magic"""
         result = self._parse_with_magic("cpp", "cross_platform/cross_platform.cpp")
         expected_source = {self._get_sample_path("cross_platform/cross_platform_lin.cpp")}
-        assert set(result.get("SOURCE")) == expected_source
+        assert {str(s) for s in result.get(sz.Str("SOURCE"))} == expected_source
 
     @uth.requires_functional_compiler
     @uth.requires_pkg_config("zlib")
@@ -56,16 +59,17 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         result = self._parse_with_magic("cpp", "lotsofmagic/lotsofmagic.cpp")
         
         # Check that basic magic flags are present
-        assert "F1" in result and result["F1"] == ["1"]
-        assert "F2" in result and result["F2"] == ["2"] 
-        assert "F3" in result and result["F3"] == ["3"]
-        assert "LDFLAGS" in result and "-lpcap" in result["LDFLAGS"]
-        assert "PKG-CONFIG" in result and result["PKG-CONFIG"] == ["zlib"]
-        
+        import stringzilla as sz
+        assert sz.Str("F1") in result and str(result[sz.Str("F1")]) == str([sz.Str("1")])
+        assert sz.Str("F2") in result and str(result[sz.Str("F2")]) == str([sz.Str("2")])
+        assert sz.Str("F3") in result and str(result[sz.Str("F3")]) == str([sz.Str("3")])
+        assert sz.Str("LDFLAGS") in result and "-lpcap" in str(result[sz.Str("LDFLAGS")])
+        assert sz.Str("PKG-CONFIG") in result and str(result[sz.Str("PKG-CONFIG")]) == str([sz.Str("zlib")])
+
         # Check that PKG-CONFIG processing adds flags to LDFLAGS
-        assert "LDFLAGS" in result
-        ldflags = result["LDFLAGS"]
-        assert "-lm" in ldflags  # From explicit //#LDFLAGS=-lm
+        assert sz.Str("LDFLAGS") in result
+        ldflags = result[sz.Str("LDFLAGS")]
+        assert "-lm" in str(ldflags)  # From explicit //#LDFLAGS=-lm
         
         # Check that pkg-config flags were added (if pkg-config available)
         zlib_libs = compiletools.apptools.cached_pkg_config("zlib", "--libs")
@@ -74,29 +78,33 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
             assert zlib_libs in ldflags, f"Expected '{zlib_libs}' from pkg-config to be in LDFLAGS"
             
         # Check that PKG-CONFIG processing adds empty entries for flag types
-        assert "CPPFLAGS" in result
-        assert "CFLAGS" in result  
-        assert "CXXFLAGS" in result
+        assert sz.Str("CPPFLAGS") in result
+        assert sz.Str("CFLAGS") in result
+        assert sz.Str("CXXFLAGS") in result
 
     @uth.requires_functional_compiler
     def test_SOURCE_in_header(self):
         """Test SOURCE detection from header files using cpp magic"""
         result = self._parse_with_magic("cpp", "magicsourceinheader/main.cpp")
-        expected = {
-            "LDFLAGS": ["-lm"],
-            "SOURCE": [self._get_sample_path("magicsourceinheader/include_dir/sub_dir/the_code_lin.cpp")]
-        }
-        assert result == expected
+        expected_ldflags = ["-lm"]
+        expected_source = [self._get_sample_path("magicsourceinheader/include_dir/sub_dir/the_code_lin.cpp")]
+
+        assert sz.Str("LDFLAGS") in result
+        assert [str(x) for x in result[sz.Str("LDFLAGS")]] == expected_ldflags
+        assert sz.Str("SOURCE") in result
+        assert [str(x) for x in result[sz.Str("SOURCE")]] == expected_source
 
     @uth.requires_functional_compiler
     def test_SOURCE_in_header_direct(self):
         """Test SOURCE detection from header files using direct magic"""
         result = self._parse_with_magic("direct", "magicsourceinheader/main.cpp")
-        expected = {
-            "LDFLAGS": ["-lm"],
-            "SOURCE": [self._get_sample_path("magicsourceinheader/include_dir/sub_dir/the_code_lin.cpp")]
-        }
-        assert result == expected
+        expected_ldflags = ["-lm"]
+        expected_source = [self._get_sample_path("magicsourceinheader/include_dir/sub_dir/the_code_lin.cpp")]
+
+        assert sz.Str("LDFLAGS") in result
+        assert [str(x) for x in result[sz.Str("LDFLAGS")]] == expected_ldflags
+        assert sz.Str("SOURCE") in result
+        assert [str(x) for x in result[sz.Str("SOURCE")]] == expected_source
 
     @uth.requires_functional_compiler
     def test_direct_and_cpp_magic_generate_same_results(self):
@@ -159,15 +167,15 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         result_direct = self._parse_with_magic("direct", source_file)
         
         # Should only contain feature X dependencies, not feature Y
-        assert "PKG-CONFIG" in result_direct
-        assert "zlib" in result_direct["PKG-CONFIG"]
-        assert "libcrypt" not in result_direct.get("PKG-CONFIG", [])
+        assert sz.Str("PKG-CONFIG") in result_direct
+        assert "zlib" in [str(x) for x in result_direct[sz.Str("PKG-CONFIG")]]
+        assert "libcrypt" not in [str(x) for x in result_direct.get(sz.Str("PKG-CONFIG"), [])]
         
-        assert "SOURCE" in result_direct
+        assert sz.Str("SOURCE") in result_direct
         feature_x_source = self._get_sample_path("macro_deps/feature_x_impl.cpp")
         feature_y_source = self._get_sample_path("macro_deps/feature_y_impl.cpp")
-        assert feature_x_source in result_direct["SOURCE"]
-        assert feature_y_source not in result_direct["SOURCE"]
+        assert feature_x_source in [str(x) for x in result_direct[sz.Str("SOURCE")]]
+        assert feature_y_source not in [str(x) for x in result_direct[sz.Str("SOURCE")]]
 
     @uth.requires_functional_compiler
     def test_conditional_ldflags_with_command_line_macro(self):
@@ -302,7 +310,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
                 f"Parsers disagree for flags {test_flags}:\nDirect: {result_direct}\nCPP: {result_cpp}"
             
             # Verify correct libraries are included/excluded
-            ldflags_str = " ".join(result_direct.get("LDFLAGS", []))
+            ldflags_str = " ".join(str(x) for x in result_direct.get(sz.Str("LDFLAGS"), []))
             
             for lib in expected_libs:
                 assert f"-l{lib}" in ldflags_str, f"Expected -l{lib} in LDFLAGS for flags {test_flags}, got: {ldflags_str}"
@@ -387,8 +395,8 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         result_cpp = self._parse_with_magic("cpp", source_file, include_args)
         
         # Extract CPPFLAGS for comparison
-        direct_cppflags = " ".join(result_direct.get("CPPFLAGS", []))
-        cpp_cppflags = " ".join(result_cpp.get("CPPFLAGS", []))
+        direct_cppflags = " ".join(str(x) for x in result_direct.get(sz.Str("CPPFLAGS"), []))
+        cpp_cppflags = " ".join(str(x) for x in result_cpp.get(sz.Str("CPPFLAGS"), []))
         
         print("\n-isystem include path test results:")
         print(f"DirectMagicFlags: {direct_cppflags}")
@@ -430,7 +438,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         result = self._parse_with_magic("direct", sample_file, [])
 
         # Check CPPFLAGS for duplicates
-        cppflags = result.get("CPPFLAGS", [])
+        cppflags = result.get(sz.Str("CPPFLAGS"), [])
         print(f"CPPFLAGS result: {cppflags}")
 
         # Count occurrences of duplicate flags
@@ -507,11 +515,11 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         result = self._parse_with_magic("direct", sample_file, [])
 
         # Check LDFLAGS for duplicates (LINKFLAGS should be merged into LDFLAGS)
-        ldflags = result.get("LDFLAGS", [])
+        ldflags = result.get(sz.Str("LDFLAGS"), [])
         print(f"LDFLAGS result: {ldflags}")
 
         # LINKFLAGS should no longer appear in results (merged into LDFLAGS)
-        linkflags = result.get("LINKFLAGS", [])
+        linkflags = result.get(sz.Str("LINKFLAGS"), [])
         print(f"LINKFLAGS result: {linkflags}")
         assert len(linkflags) == 0, f"LINKFLAGS should be empty (merged into LDFLAGS), got: {linkflags}"
 

@@ -1,7 +1,6 @@
 import json
 import os
 from typing import List, Dict, Any
-from functools import lru_cache
 
 import stringzilla as sz
 import compiletools.utils
@@ -75,21 +74,22 @@ class CompilationDatabaseCreator:
             magic_flags = {}
 
         # Combine and deduplicate all flag sources
+        import stringzilla as sz
         if compiletools.utils.is_cpp_source(source_file):
             # C++ source: combine CPPFLAGS + CXXFLAGS from both args and magic flags
             combined_flags = compiletools.utils.combine_and_deduplicate_compiler_flags(
                 getattr(self.args, 'CPPFLAGS', None),
-                magic_flags.get("CPPFLAGS", []),
+                magic_flags.get(sz.Str("CPPFLAGS"), []),
                 getattr(self.args, 'CXXFLAGS', None),
-                magic_flags.get("CXXFLAGS", [])
+                magic_flags.get(sz.Str("CXXFLAGS"), [])
             )
         else:
             # C source: combine CPPFLAGS + CFLAGS from both args and magic flags
             combined_flags = compiletools.utils.combine_and_deduplicate_compiler_flags(
                 getattr(self.args, 'CPPFLAGS', None),
-                magic_flags.get("CPPFLAGS", []),
+                magic_flags.get(sz.Str("CPPFLAGS"), []),
                 getattr(self.args, 'CFLAGS', None),
-                magic_flags.get("CFLAGS", [])
+                magic_flags.get(sz.Str("CFLAGS"), [])
             )
 
         args.extend(combined_flags)

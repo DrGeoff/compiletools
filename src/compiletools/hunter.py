@@ -37,9 +37,11 @@ class Hunter(object):
         self.magicparser = magicparser
 
     def _extractSOURCE(self, realpath):
-        sources = self.magicparser.parse(realpath).get("SOURCE", [])
+        import stringzilla as sz
+        result = self.magicparser.parse(realpath)
+        sources = result.get(sz.Str("SOURCE"), [])
         cwd = compiletools.wrappedos.dirname(realpath)
-        ess = {compiletools.wrappedos.realpath(os.path.join(cwd, es)) for es in sources}
+        ess = {compiletools.wrappedos.realpath(os.path.join(cwd, str(es))) for es in sources}
         if self.args.verbose >= 2 and ess:
             print("Hunter::_extractSOURCE. realpath=", realpath, " SOURCE flag:", ess)
         return ess

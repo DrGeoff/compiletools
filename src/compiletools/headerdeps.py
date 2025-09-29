@@ -1,5 +1,6 @@
 import os
 import functools
+import stringzilla as sz
 
 # At deep verbose levels pprint is used
 from pprint import pprint
@@ -128,15 +129,22 @@ class HeaderDepsBase(object):
         """
         if not flag_value:
             return []
-            
+
         include_paths = []
-        
+
+        # Handle both string and list inputs from configargparse
+        if isinstance(flag_value, list):
+            # Join list elements into a single string
+            flag_string = ' '.join(flag_value)
+        else:
+            flag_string = flag_value
+
         # Split the flag string into individual tokens using shell parsing
         try:
-            tokens = split_command_cached(flag_value)
+            tokens = split_command_cached(flag_string)
         except ValueError:
             # Fall back to simple split if shlex fails
-            tokens = flag_value.split()
+            tokens = flag_string.split()
         
         # Process tokens to find -I flags
         i = 0
@@ -196,39 +204,38 @@ class DirectHeaderDeps(HeaderDepsBase):
             
         # Extract macro definitions from command line flags and compiler
         import compiletools.apptools
-        self.defined_macros = compiletools.apptools.extract_command_line_macros(
-            self.args, 
+        raw_macros = compiletools.apptools.extract_command_line_macros(
+            self.args,
             flag_sources=['CPPFLAGS', 'CFLAGS', 'CXXFLAGS'],
             include_compiler_macros=True,
             verbose=self.args.verbose
         )
+        # Convert all keys and values to StringZilla.Str for consistency
+        self.defined_macros = {sz.Str(k): sz.Str(v) for k, v in raw_macros.items()}
 
     @functools.lru_cache(maxsize=None)
-    def _search_project_includes(self, include):
+    def _search_project_includes(self, include: sz.Str):
         """Internal use.  Find the given include file in the project include paths"""
         for inc_dir in self.includes:
-            trialpath = os.path.join(inc_dir, include)
-            if compiletools.wrappedos.isfile(trialpath):
-                return compiletools.wrappedos.realpath(trialpath)
+            trialpath_sz = compiletools.wrappedos.join_sz(sz.Str(inc_dir), include)
+            if compiletools.wrappedos.isfile_sz(trialpath_sz):
+                return str(compiletools.wrappedos.realpath_sz(trialpath_sz))
 
-        # else:
-        #    TODO: Try system include paths if the user sets (the currently nonexistent) "use-system" flag
-        #    Only get here if the include file cannot be found anywhere
-        #    raise FileNotFoundError("DirectHeaderDeps could not determine the location of ",include)
+        # TODO: Try system include paths if the user sets (the currently nonexistent) "use-system" flag
         return None
 
     @functools.lru_cache(maxsize=None)
-    def _find_include(self, include, cwd):
+    def _find_include(self, include: sz.Str, cwd: str):
         """Internal use.  Find the given include file.
         Start at the current working directory then try the project includes
         """
         # Check if the file is referable from the current working directory
         # if that guess doesn't exist then try all the include paths
-        trialpath = os.path.join(cwd, include)
-        if compiletools.wrappedos.isfile(trialpath):
-            return compiletools.wrappedos.realpath(trialpath)
-        else:
-            return self._search_project_includes(include)
+        trialpath_sz = compiletools.wrappedos.join_sz(sz.Str(cwd), include)
+        if compiletools.wrappedos.isfile_sz(trialpath_sz):
+            return str(compiletools.wrappedos.realpath_sz(trialpath_sz))
+
+        return self._search_project_includes(include)
 
 
     def _create_include_list(self, realpath):
@@ -249,21 +256,14 @@ class DirectHeaderDeps(HeaderDepsBase):
         
         # Update our macro state from preprocessor results
         self.defined_macros.update(preprocessor.macros)
-        
+
         # Extract active includes from FileAnalyzer's structured results (no regex needed!)
         includes = []
         for include_info in analysis_result.includes:
-            # When working with cached data that lacks line content, active_line_set may be empty
-            # In that case, trust the cached structured data directly (oracle cache stores filtered results)
-            if not analysis_result.lines and not active_line_set:
-                # Use cached data directly - oracle cache already filtered during original analysis
-                if not include_info['is_commented']:
-                    includes.append(include_info['filename'])
-            else:
-                # Normal case: only include if this line is active after preprocessing and not commented
-                if include_info['line_num'] in active_line_set and not include_info['is_commented']:
-                    includes.append(include_info['filename'])
-        
+            # Only include if this line is active after preprocessing and not commented
+            if include_info['line_num'] in active_line_set and not include_info['is_commented']:
+                includes.append(sz.Str(include_info['filename']))
+
         return includes
 
     def _generate_tree_impl(self, realpath, node=None):

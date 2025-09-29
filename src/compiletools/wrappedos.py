@@ -51,6 +51,15 @@ def isdir(path: str) -> bool:
     """Cached os.path.isdir for Python strings."""
     return os.path.isdir(path)
 
+@functools.lru_cache(maxsize=None)
+def isabs(path: str) -> bool:
+    """Cached os.path.isabs for Python strings."""
+    return os.path.isabs(path)
+
+def join(path: str, *paths: str) -> str:
+    """os.path.join for Python strings."""
+    return os.path.join(path, *paths)
+
 
 # StringZilla API - cached directly, leverages shared Python str caches
 @functools.lru_cache(maxsize=None)
@@ -88,6 +97,15 @@ def isdir_sz(path: sz.Str) -> bool:
     """Cached isdir for StringZilla - leverages shared cache."""
     return isdir(path.decode('utf-8'))
 
+@functools.lru_cache(maxsize=None)
+def isabs_sz(path: sz.Str) -> bool:
+    """Cached isabs for StringZilla - leverages shared cache."""
+    return isabs(path.decode('utf-8'))
+
+def join_sz(path: sz.Str, *paths: sz.Str) -> sz.Str:
+    """os.path.join for StringZilla strings."""
+    return sz.Str(join(path.decode('utf-8'), *(p.decode('utf-8') for p in paths)))
+
 def copy(src: str, dest: str) -> None:
     """Copy src to dest with error handling."""
     try:
@@ -106,6 +124,7 @@ def clear_cache() -> None:
     getmtime.cache_clear()
     isfile.cache_clear()
     isdir.cache_clear()
+    isabs.cache_clear()
 
     # StringZilla API caches
     realpath_sz.cache_clear()
@@ -115,3 +134,4 @@ def clear_cache() -> None:
     getmtime_sz.cache_clear()
     isfile_sz.cache_clear()
     isdir_sz.cache_clear()
+    isabs_sz.cache_clear()
