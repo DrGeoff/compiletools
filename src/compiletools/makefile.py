@@ -784,12 +784,8 @@ def main(argv=None):
     args = compiletools.apptools.parseargs(cap, argv)
     
     
-    # Create shared cache for all file analysis components (pythonic dependency injection)
-    from compiletools.file_analyzer import create_shared_analysis_cache
-    shared_file_analyzer_cache = create_shared_analysis_cache(args)
-    
-    # Inject shared cache into HeaderDeps, MagicFlags will automatically use HeaderDeps cache
-    headerdeps = compiletools.headerdeps.create(args, file_analyzer_cache=shared_file_analyzer_cache)
+    # Create HeaderDeps and other components
+    headerdeps = compiletools.headerdeps.create(args)
     magicparser = compiletools.magicflags.create(args, headerdeps)
     hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser)
     makefile_creator = MakefileCreator(args, hunter)

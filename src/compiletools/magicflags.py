@@ -12,9 +12,10 @@ import compiletools.configutils
 import compiletools.apptools
 import compiletools.compiler_macros
 import compiletools.dirnamer
-from compiletools.file_analyzer import create_file_analyzer
+from compiletools.file_analyzer import FileAnalyzer
 from compiletools.simple_preprocessor import SimplePreprocessor
 from compiletools.apptools import cached_pkg_config
+from compiletools.stringzilla_utils import strip_sz
 
 
 
@@ -71,9 +72,6 @@ class MagicFlagsBase:
     def __init__(self, args, headerdeps):
         self._args = args
         self._headerdeps = headerdeps
-        
-        # Always use the file analyzer cache from HeaderDeps
-        self.file_analyzer_cache = self._headerdeps.get_file_analyzer_cache()
 
         # The magic pattern is //#key=value with whitespace ignored
         self.magicpattern = re.compile(
@@ -105,19 +103,18 @@ class MagicFlagsBase:
         """
         return self._final_macro_hashes.get(filename)
 
-    @lru_cache(maxsize=None)
     def _get_file_analyzer_result(self, filename):
-        """Get FileAnalysisResult for a file, using shared headerdeps cache.
-        
+        """Get FileAnalysisResult for a file, using module-level cache.
+
         Args:
             filename: Path to file to analyze
-            
+
         Returns:
             FileAnalysisResult: Analysis result for the file
         """
+        from compiletools.file_analyzer import analyze_file
         max_read_size = getattr(self._args, 'max_file_read_size', 0)
-        analyzer = create_file_analyzer(filename, max_read_size, self._args.verbose, cache=self._headerdeps.get_file_analyzer_cache())
-        return analyzer.analyze()
+        return analyze_file(filename, max_read_size, self._args.verbose)
 
     def __call__(self, filename):
         return self.parse(filename)
@@ -299,6 +296,9 @@ class MagicFlagsBase:
         CppMagicFlags.clear_cache()
         # Clear LRU caches
         compiletools.utils.split_command_cached.cache_clear()
+        # Clear FileAnalyzer module-level cache
+        from compiletools.file_analyzer import analyze_file
+        analyze_file.cache_clear()
 
 
 class DirectMagicFlags(MagicFlagsBase):
@@ -607,14 +607,6 @@ class CppMagicFlags(MagicFlagsBase):
             self.preprocessor = headerdeps.preprocessor
         else:
             self.preprocessor = compiletools.preprocessor.PreProcessor(args)
-    
-    def _strip_sz(self, sz_str, chars: str = ' \t\r\n'):
-        """Custom strip implementation for StringZilla.Str using character set operations."""
-        start = sz_str.find_first_not_of(chars)
-        if start == -1:
-            return sz_str[0:0]  # Return empty Str if all characters are whitespace
-        end = sz_str.find_last_not_of(chars)
-        return sz_str[start:end + 1]
 
     def _readfile(self, filename):
         """Preprocess the given filename but leave comments"""
@@ -669,8 +661,8 @@ class CppMagicFlags(MagicFlagsBase):
                     value_slice = after_marker[eq_pos + 1:]
                     
                     # Use StringZilla strip for better performance
-                    key_trimmed = self._strip_sz(key_slice)
-                    value_trimmed = self._strip_sz(value_slice)
+                    key_trimmed = strip_sz(key_slice)
+                    value_trimmed = strip_sz(value_slice)
                     
                     key_part = str(key_trimmed)
                     value_part = str(value_trimmed)

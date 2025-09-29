@@ -12,17 +12,17 @@ import compiletools.tree as tree
 import compiletools.preprocessor
 import compiletools.compiler_macros
 from compiletools.simple_preprocessor import SimplePreprocessor
-from compiletools.file_analyzer import create_file_analyzer
+from compiletools.file_analyzer import FileAnalyzer
 
 
 
-def create(args, file_analyzer_cache=None):
+def create(args):
     """HeaderDeps Factory"""
     classname = args.headerdeps.title() + "HeaderDeps"
     if args.verbose >= 4:
         print("Creating " + classname + " to process header dependencies.")
     depsclass = globals()[classname]
-    depsobject = depsclass(args, file_analyzer_cache=file_analyzer_cache)
+    depsobject = depsclass(args)
     return depsobject
 
 
@@ -173,31 +173,14 @@ class HeaderDepsBase(object):
 class DirectHeaderDeps(HeaderDepsBase):
     """Create a tree structure that shows the header include tree"""
 
-    def __init__(self, args, file_analyzer_cache=None):
+    def __init__(self, args):
         HeaderDepsBase.__init__(self, args)
 
         # Keep track of ancestor paths so that we can do header cycle detection
         self.ancestor_paths = []
-    
-        # Use provided file analyzer cache or create one if none provided (for backward compatibility)
-        if file_analyzer_cache is not None:
-            self.file_analyzer_cache = file_analyzer_cache
-        else:
-            # Fallback for backward compatibility - create cache internally
-            import compiletools.dirnamer
-            cache_type = compiletools.dirnamer.get_cache_type(args=args)
-            if cache_type:
-                from compiletools.file_analyzer_cache import create_cache
-                self.file_analyzer_cache = create_cache(cache_type)
-            else:
-                self.file_analyzer_cache = None
-        
+
         # Initialize includes and macros
         self._initialize_includes_and_macros()
-    
-    def get_file_analyzer_cache(self):
-        """Get the shared FileAnalyzer cache for reuse by other components."""
-        return self.file_analyzer_cache
     
     def _initialize_includes_and_macros(self):
         """Initialize include paths and macro definitions from compile flags."""
@@ -252,8 +235,8 @@ class DirectHeaderDeps(HeaderDepsBase):
         """Internal use. Create the list of includes for the given file"""
         max_read_size = getattr(self.args, 'max_file_read_size', 0)
         
-        # Use FileAnalyzer for efficient file reading and pattern detection  
-        analyzer = create_file_analyzer(realpath, max_read_size, self.args.verbose, cache=self.file_analyzer_cache)
+        # Use FileAnalyzer for efficient file reading and pattern detection
+        analyzer = FileAnalyzer(realpath, max_read_size, self.args.verbose)
         analysis_result = analyzer.analyze()
         
         if self.args.verbose >= 9 and analysis_result.include_positions:
@@ -387,17 +370,9 @@ class DirectHeaderDeps(HeaderDepsBase):
 class CppHeaderDeps(HeaderDepsBase):
     """Using the C Pre Processor, create the list of headers that the given file depends upon."""
 
-    def __init__(self, args, file_analyzer_cache=None):
+    def __init__(self, args):
         HeaderDepsBase.__init__(self, args)
         self.preprocessor = compiletools.preprocessor.PreProcessor(args)
-        
-        # CppHeaderDeps doesn't use file analyzers directly, so cache is not needed
-        # But we store it for API consistency
-        self.file_analyzer_cache = file_analyzer_cache
-    
-    def get_file_analyzer_cache(self):
-        """Get the shared FileAnalyzer cache for reuse by other components."""
-        return self.file_analyzer_cache
 
     def _process_impl(self, realpath):
         """Use the -MM option to the compiler to generate the list of dependencies
