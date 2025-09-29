@@ -15,7 +15,7 @@ import sys
 import os
 import shutil
 
-def profile_ct_cake_in_worktree(worktree_path: Path, sample_dir: str, cache_type: str = "null", 
+def profile_ct_cake_in_worktree(worktree_path: Path, sample_dir: str,
                                magic_mode: str = "direct", profile_file: Optional[str] = None) -> Tuple[Dict, bool]:
     """Profile ct-cake execution using subprocess for complete isolation."""
     
@@ -77,7 +77,6 @@ def profile_ct_cake_in_worktree(worktree_path: Path, sample_dir: str, cache_type
                 "python", "-m", "cProfile", "-o", profile_file,
                 str(ct_cake_path),
                 "--auto",
-                "--CTCACHE_TYPE", cache_type,
                 "--magic", magic_mode,
                 "--makefilename", str(tmppath / "Makefile"),
                 "--objdir", str(tmppath / "obj"),
@@ -204,20 +203,17 @@ def get_test_samples() -> List[str]:
     ]
 
 def get_test_configurations() -> List[Dict[str, str]]:
-    """Get list of test configurations combining cache types and magic modes."""
+    """Get list of test configurations for magic modes."""
     configurations = []
-    
-    cache_types = ["null", "memory", "sqlite"]
+
     magic_modes = ["direct", "cpp"]
-    
-    for cache_type in cache_types:
-        for magic_mode in magic_modes:
-            configurations.append({
-                "cache_type": cache_type,
-                "magic_mode": magic_mode,
-                "name": f"{cache_type}+{magic_mode}"
-            })
-    
+
+    for magic_mode in magic_modes:
+        configurations.append({
+            "magic_mode": magic_mode,
+            "name": magic_mode
+        })
+
     return configurations
 
 def cleanup_all_worktrees():
@@ -318,31 +314,30 @@ def install_package_in_worktree(worktree_path: Path) -> bool:
     
     return True
 
-def profile_branch_worktree(branch_name: str, worktree_path: Path, test_samples: List[str], 
-                           configurations: List[Dict[str, str]], save_profiles: bool = False, 
+def profile_branch_worktree(branch_name: str, worktree_path: Path, test_samples: List[str],
+                           configurations: List[Dict[str, str]], save_profiles: bool = False,
                            profile_dir: Optional[Path] = None) -> Dict:
     """Profile ct-cake performance using a worktree."""
     print(f"\nProfiling branch: {branch_name} (worktree: {worktree_path.name})")
-    
+
     results = {}
-    
+
     for config in configurations:
         config_name = config["name"]
-        cache_type = config["cache_type"]
         magic_mode = config["magic_mode"]
-        
+
         print(f"  Profiling configuration: {config_name}")
         config_results = {}
-        
+
         for sample_dir in test_samples:
             print(f"    {sample_dir}", end="... ")
-            
+
             profile_file = None
             if save_profiles and profile_dir:
                 profile_file = str(profile_dir / f"{branch_name}_{config_name}_{sample_dir}.prof")
-            
+
             stats_data, success = profile_ct_cake_in_worktree(
-                worktree_path, sample_dir, cache_type, magic_mode, profile_file
+                worktree_path, sample_dir, magic_mode, profile_file
             )
             
             if success:
@@ -603,27 +598,33 @@ def analyze_hotspots(baseline_data: Dict, current_data: Dict, baseline_name: str
                 
                 print(f"{display_name:<50} {baseline_str:<12} {current_str:<12} {change_str:<10}")
 
+def get_current_branch():
+    """Get the current git branch name."""
+    try:
+        result = subprocess.run(["git", "branch", "--show-current"],
+                              capture_output=True, text=True)
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return "HEAD"  # Fallback for detached HEAD state
+
 def main():
+    current_branch = get_current_branch()
+
     parser = argparse.ArgumentParser(
         description="Profile ct-cake performance between branches using git worktrees and cProfile",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
-        "--baseline-branch", 
+        "--baseline-branch",
         default="master",
         help="Baseline branch to compare against"
     )
     parser.add_argument(
         "--current-branch",
-        default="shared-objects", 
-        help="Current branch to test"
-    )
-    parser.add_argument(
-        "--cache-types",
-        nargs="+",
-        default=["null", "memory", "sqlite"],
-        choices=["null", "memory", "disk", "sqlite", "oracle", "mmap"],
-        help="Cache types to test"
+        default=current_branch,
+        help=f"Current branch to test (default: {current_branch})"
     )
     parser.add_argument(
         "--magic-modes",
@@ -674,7 +675,6 @@ def main():
             print("CT-CAKE DETAILED PERFORMANCE PROFILING (using git worktrees)")
             print(f"Baseline: {args.baseline_branch}")
             print(f"Current: {args.current_branch}")
-            print(f"Cache types: {', '.join(args.cache_types)}")
             print("This approach is completely safe - your working directory won't be affected")
             if args.save_profiles:
                 print("Saving individual profile files for detailed analysis")
@@ -685,13 +685,11 @@ def main():
             
             # Generate test configurations
             configurations = []
-            for cache_type in args.cache_types:
-                for magic_mode in args.magic_modes:
-                    configurations.append({
-                        "cache_type": cache_type,
-                        "magic_mode": magic_mode,
-                        "name": f"{cache_type}+{magic_mode}"
-                    })
+            for magic_mode in args.magic_modes:
+                configurations.append({
+                    "magic_mode": magic_mode,
+                    "name": magic_mode
+                })
             
             print(f"Test configurations: {', '.join([c['name'] for c in configurations])}")
             
@@ -736,7 +734,6 @@ def main():
                     "baseline_results": baseline_results,
                     "current_results": current_results,
                     "test_config": {
-                        "cache_types": args.cache_types,
                         "magic_modes": args.magic_modes,
                         "configurations": [c['name'] for c in configurations],
                         "test_samples": test_samples,

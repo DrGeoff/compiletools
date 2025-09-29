@@ -326,12 +326,7 @@ class TestCompilationDatabase:
                         f"FindTargets should have found source files, got: {getattr(args, 'filename', [])}"
                     
                     # Create compilation database with the discovered files
-                    from compiletools.file_analyzer import create_shared_analysis_cache
-                    shared_file_analyzer_cache = create_shared_analysis_cache(args)
-                    
-                    creator = compiletools.compilation_database.CompilationDatabaseCreator(
-                        args, file_analyzer_cache=shared_file_analyzer_cache
-                    )
+                    creator = compiletools.compilation_database.CompilationDatabaseCreator(args)
                     
                     comp_db_output = "compile_commands_findtargets.json"
                     args.compilation_database_output = comp_db_output

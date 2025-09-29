@@ -17,12 +17,12 @@ import compiletools.wrappedos
 class CompilationDatabaseCreator:
     """Creates compile_commands.json files for clang tooling integration"""
     
-    def __init__(self, args, file_analyzer_cache=None, namer=None, headerdeps=None, magicparser=None, hunter=None):
+    def __init__(self, args, namer=None, headerdeps=None, magicparser=None, hunter=None):
         self.args = args
-        
+
         # Use provided objects or create new ones
         self.namer = namer if namer is not None else compiletools.namer.Namer(args)
-        self.headerdeps = headerdeps if headerdeps is not None else compiletools.headerdeps.create(args, file_analyzer_cache=file_analyzer_cache)
+        self.headerdeps = headerdeps if headerdeps is not None else compiletools.headerdeps.create(args)
         self.magicparser = magicparser if magicparser is not None else compiletools.magicflags.create(args, self.headerdeps)
         self.hunter = hunter if hunter is not None else compiletools.hunter.Hunter(args, self.headerdeps, self.magicparser)
             
@@ -250,12 +250,8 @@ def main(argv=None):
     # Parse arguments
     args = compiletools.apptools.parseargs(cap, argv)
     
-    # Create shared cache for all file analysis components
-    from compiletools.file_analyzer import create_shared_analysis_cache
-    shared_file_analyzer_cache = create_shared_analysis_cache(args)
-    
     # Create and run the compilation database creator
-    creator = CompilationDatabaseCreator(args, file_analyzer_cache=shared_file_analyzer_cache)
+    creator = CompilationDatabaseCreator(args)
     creator.write_compilation_database()
     
     return 0

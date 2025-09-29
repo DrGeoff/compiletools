@@ -19,12 +19,6 @@ def add_arguments(cap):
         default="None",
         help="Location to cache the magicflags and deps. None means no caching.",
     )
-    cap.add_argument(
-        "--CTCACHE_TYPE",
-        default="None",
-        choices=["None", "null", "memory", "disk", "sqlite", "redis", "mmap", "oracle"],
-        help="Type of cache for FileAnalyzer results. None means no caching, oracle/mmap is recommended for best performance.",
-    )
 
 
 def _verbose_write(output, verbose=0, newline=False):
@@ -104,96 +98,26 @@ def user_cache_dir(
     return cachedir
 
 
-def get_cache_type(args=None, argv=None, exedir=None):
-    """Get the cache type for FileAnalyzer following config priority.
-    
-    Priority: command line > environment variables > config file > default
-    """
-    if args is None:
-        verbose = 0
-    else:
-        verbose = args.verbose if hasattr(args, 'verbose') else 0
-    
-    # Check command line first
-    cache_type = compiletools.configutils.extract_value_from_argv(key="CTCACHE_TYPE", argv=argv)
-    if cache_type:
-        _verbose_write(
-            "CTCACHE_TYPE from command line: " + cache_type,
-            verbose=verbose,
-            newline=True,
-        )
-        return None if cache_type == "None" else cache_type
-    
-    # Check environment variables
-    _verbose_write(
-        "CTCACHE_TYPE not on commandline. Checking environment variables.",
-        verbose=verbose,
-        newline=True,
-    )
-    try:
-        cache_type = os.environ["CTCACHE_TYPE"]
-        _verbose_write("CTCACHE_TYPE from environment: " + cache_type, verbose=verbose, newline=True)
-        return None if cache_type == "None" else cache_type
-    except KeyError:
-        pass
-    
-    # Check config files
-    _verbose_write(
-        "CTCACHE_TYPE not in environment. Checking config files.",
-        verbose=verbose,
-        newline=True,
-    )
-    cache_type = compiletools.configutils.extract_item_from_ct_conf(
-        "CTCACHE_TYPE", exedir=exedir, verbose=verbose
-    )
-    if cache_type:
-        _verbose_write("CTCACHE_TYPE from config: " + cache_type, verbose=verbose, newline=True)
-        return None if cache_type == "None" else cache_type
-    
-    # Default to None (no caching)
-    _verbose_write("CTCACHE_TYPE not found, defaulting to None", verbose=verbose, newline=True)
-    return None
 
 
 def main(argv=None):
-    cap = compiletools.apptools.create_parser("Cache directory and type management tool", argv=argv, include_config=False)
+    cap = compiletools.apptools.create_parser("Cache directory management tool", argv=argv, include_config=False)
     add_arguments(cap)
-    cap.add_argument(
-        "--type",
-        action="store_true",
-        help="Report the CTCACHE_TYPE setting instead of cache directory"
-    )
     cap.add_argument(
         "--clean",
         action="store_true",
         help="Remove the cache directory"
     )
-    cap.add_argument(
-        "--all",
-        action="store_true",
-        help="Report both cache directory and CTCACHE_TYPE setting"
-    )
     args = cap.parse_args(args=argv)
-    
+
     # If --clean was requested, remove the cache directory
     if args.clean:
         cachedir = compiletools.dirnamer.user_cache_dir(args=args)
         if args.verbose >= 1:
             print(" ".join(["Removing cache directory =", cachedir]))
-        
+
         if os.path.isdir(cachedir):
             shutil.rmtree(cachedir)
-    elif args.all:
-        # If --all was requested, print both cache directory and type
-        print(compiletools.dirnamer.user_cache_dir(args=args))
-        cache_type = get_cache_type(args=args, argv=argv)
-        cache_type_display = cache_type if cache_type is not None else "None"
-        print(f"CTCACHE_TYPE={cache_type_display}")
-    elif args.type:
-        # If --type was requested, print the cache type
-        cache_type = get_cache_type(args=args, argv=argv)
-        cache_type_display = cache_type if cache_type is not None else "None"
-        print(f"CTCACHE_TYPE={cache_type_display}")
     else:
         # Otherwise print the cache directory
         print(compiletools.dirnamer.user_cache_dir(args=args))

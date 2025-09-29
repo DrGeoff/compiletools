@@ -4,9 +4,8 @@ import os
 import tempfile
 
 from compiletools.file_analyzer import (
-    FileAnalysisResult, 
+    FileAnalysisResult,
     FileAnalyzer,
-    create_file_analyzer,
     read_file_mmap,
     read_file_traditional
 )
@@ -195,16 +194,16 @@ class TestReadFunctions:
 
 
 class TestFileAnalyzerFactory:
-    """Test create_file_analyzer factory function."""
-    
-    def test_factory_creates_analyzer(self):
-        """Test that factory creates FileAnalyzer instance."""
+    """Test FileAnalyzer constructor."""
+
+    def test_analyzer_constructor(self):
+        """Test that FileAnalyzer constructor works correctly."""
         with tempfile.NamedTemporaryFile(mode='w', suffix='.c', delete=False) as f:
             f.write("int main() { return 0; }")
             filepath = f.name
-            
+
         try:
-            analyzer = create_file_analyzer(filepath, 0, 0)
+            analyzer = FileAnalyzer(filepath, 0, 0)
             assert isinstance(analyzer, FileAnalyzer)
         finally:
             os.unlink(filepath)
