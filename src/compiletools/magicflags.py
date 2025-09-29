@@ -1,8 +1,7 @@
 import sys
-import os
 import re
 from collections import defaultdict
-from functools import lru_cache
+import stringzilla as sz
 import compiletools.utils
 
 import compiletools.git_utils
@@ -12,9 +11,8 @@ import compiletools.configutils
 import compiletools.apptools
 import compiletools.compiler_macros
 import compiletools.dirnamer
-from compiletools.file_analyzer import FileAnalyzer
 from compiletools.simple_preprocessor import SimplePreprocessor
-from compiletools.apptools import cached_pkg_config
+from compiletools.apptools import cached_pkg_config_sz
 from compiletools.stringzilla_utils import strip_sz
 
 
@@ -81,14 +79,16 @@ class MagicFlagsBase:
     def _compute_macro_hash(self, macros_dict=None):
         """Compute hash of macro state."""
         import hashlib
-        
+
         # Use provided macros or current state
         if macros_dict is None:
             macros_dict = getattr(self, 'defined_macros', {})
-        
+
         # Create deterministic hash of sorted macro definitions
+        # Optimize: use list comprehension instead of generator expression
         macro_items = sorted(macros_dict.items())
-        macro_string = "|".join(f"{k}={v}" for k, v in macro_items)
+        macro_parts = [f"{k}={v}" for k, v in macro_items]
+        macro_string = "|".join(macro_parts)
         return hashlib.sha256(macro_string.encode('utf-8')).hexdigest()[:12]
 
     def get_final_macro_hash(self, filename):
@@ -135,19 +135,19 @@ class MagicFlagsBase:
         context_file = magic_flag_data['source_file_context'] if 'source_file_context' in magic_flag_data and magic_flag_data['source_file_context'] else filename
 
         # Resolve SOURCE path relative to context file
-        if os.path.isabs(flag):
+        if compiletools.wrappedos.isabs_sz(flag):
             # Absolute path - use as-is
-            newflag = compiletools.wrappedos.realpath(flag)
+            newflag = compiletools.wrappedos.realpath_sz(flag)
         else:
             # Relative path - resolve relative to context file's directory
             context_dir = compiletools.wrappedos.dirname(context_file)
-            newflag = compiletools.wrappedos.realpath(os.path.join(context_dir, flag.strip()))
+            newflag = compiletools.wrappedos.realpath_sz(compiletools.wrappedos.join_sz(sz.Str(context_dir), strip_sz(flag)))
 
         if self._args.verbose >= 9:
             context_info = f", context_file={context_file}" if context_file != filename else ""
             print(f"SOURCE: flag={flag}{context_info} -> {newflag}")
 
-        if not compiletools.wrappedos.isfile(newflag):
+        if not compiletools.wrappedos.isfile_sz(newflag):
             raise IOError(
                 f"{filename} specified {magic}='{newflag}' but it does not exist"
             )
@@ -155,10 +155,11 @@ class MagicFlagsBase:
         return newflag
 
     def _handle_include(self, flag):
+        from compiletools.stringzilla_utils import concat_sz
         flagsforfilename = {}
-        flagsforfilename.setdefault("CPPFLAGS", []).append("-I " + flag)
-        flagsforfilename.setdefault("CFLAGS", []).append("-I " + flag)
-        flagsforfilename.setdefault("CXXFLAGS", []).append("-I " + flag)
+        flagsforfilename.setdefault(sz.Str("CPPFLAGS"), []).append(concat_sz("-I ", flag))
+        flagsforfilename.setdefault(sz.Str("CFLAGS"), []).append(concat_sz("-I ", flag))
+        flagsforfilename.setdefault(sz.Str("CXXFLAGS"), []).append(concat_sz("-I ", flag))
         if self._args.verbose >= 9:
             print("Added -I {} to CPPFLAGS, CFLAGS, and CXXFLAGS".format(flag))
         return flagsforfilename
@@ -166,17 +167,17 @@ class MagicFlagsBase:
     def _handle_pkg_config(self, flag):
         flagsforfilename = defaultdict(list)
         for pkg in flag.split():
-            cflags_raw = cached_pkg_config(pkg, "--cflags")
-            
-            # Replace -I flags with -isystem, but only when -I is a standalone flag
+            cflags_raw = cached_pkg_config_sz(pkg, "--cflags")
+
+            # Replace -I flags with -isystem
             # This helps the CppHeaderDeps avoid searching packages
-            cflags = re.sub(r'-I(?=\s|/|$)', '-isystem', cflags_raw)
-            
-            libs = cached_pkg_config(pkg, "--libs")
-            flagsforfilename["CPPFLAGS"].append(cflags)
-            flagsforfilename["CFLAGS"].append(cflags)
-            flagsforfilename["CXXFLAGS"].append(cflags)
-            flagsforfilename["LDFLAGS"].append(libs)
+            cflags = sz.Str(str(cflags_raw).replace('-I', '-isystem'))
+
+            libs = cached_pkg_config_sz(pkg, "--libs")
+            flagsforfilename[sz.Str("CPPFLAGS")].append(cflags)
+            flagsforfilename[sz.Str("CFLAGS")].append(cflags)
+            flagsforfilename[sz.Str("CXXFLAGS")].append(cflags)
+            flagsforfilename[sz.Str("LDFLAGS")].append(libs)
             if self._args.verbose >= 9:
                 print(f"Magic PKG-CONFIG = {pkg}:")
                 print(f"\tadded {cflags} to CPPFLAGS, CFLAGS, and CXXFLAGS")
@@ -186,17 +187,19 @@ class MagicFlagsBase:
     def _handle_readmacros(self, flag, source_filename):
         """Handle READMACROS magic flag by adding file to explicit macro processing list"""
         # First try to resolve as a system header using apptools
-        if not os.path.isabs(flag):
-            resolved_flag = compiletools.apptools.find_system_header(flag, self._args, verbose=self._args.verbose)
-            if not resolved_flag:
+        if not compiletools.wrappedos.isabs_sz(flag):
+            resolved_flag_str = compiletools.apptools.find_system_header(str(flag), self._args, verbose=self._args.verbose)
+            if not resolved_flag_str:
                 # Fall back to resolving relative to source file directory
                 source_dir = compiletools.wrappedos.dirname(source_filename)
-                resolved_flag = compiletools.wrappedos.realpath(os.path.join(source_dir, flag))
+                resolved_flag = compiletools.wrappedos.realpath_sz(compiletools.wrappedos.join_sz(sz.Str(source_dir), flag))
+            else:
+                resolved_flag = sz.Str(resolved_flag_str)
         else:
-            resolved_flag = compiletools.wrappedos.realpath(flag)
-        
+            resolved_flag = compiletools.wrappedos.realpath_sz(flag)
+
         # Check if file exists
-        if not compiletools.wrappedos.isfile(resolved_flag):
+        if not compiletools.wrappedos.isfile_sz(resolved_flag):
             raise IOError(
                 f"{source_filename} specified READMACROS='{flag}' but resolved file '{resolved_flag}' does not exist"
             )
@@ -210,7 +213,7 @@ class MagicFlagsBase:
     def _process_magic_flag(self, magic, flag, flagsforfilename, magic_flag_data, filename):
         """Override to handle READMACROS in DirectMagicFlags only"""
         # Handle READMACROS specifically for DirectMagicFlags - don't add to output
-        if magic == "READMACROS":
+        if magic == sz.Str("READMACROS"):
             self._handle_readmacros(flag, filename)
             return  # Don't call parent - READMACROS shouldn't appear in final output
         
@@ -246,9 +249,9 @@ class MagicFlagsBase:
                 self._process_magic_flag(magic, flag, flagsforfilename, magic_flag, filepath)
 
         # Merge deprecated LINKFLAGS into LDFLAGS before deduplication
-        if "LINKFLAGS" in flagsforfilename:
-            flagsforfilename["LDFLAGS"].extend(flagsforfilename["LINKFLAGS"])
-            del flagsforfilename["LINKFLAGS"]
+        if sz.Str("LINKFLAGS") in flagsforfilename:
+            flagsforfilename[sz.Str("LDFLAGS")].extend(flagsforfilename[sz.Str("LINKFLAGS")])
+            del flagsforfilename[sz.Str("LINKFLAGS")]
 
         # Deduplicate all flags while preserving order, with smart compiler flag handling
         for key in flagsforfilename:
@@ -259,25 +262,25 @@ class MagicFlagsBase:
     def _process_magic_flag(self, magic, flag, flagsforfilename, magic_flag_data, filename):
         """Process a single magic flag entry"""
         # If the magic was SOURCE then fix up the path in the flag
-        if magic == "SOURCE":
+        if magic == sz.Str("SOURCE"):
             flag = self._handle_source(flag, magic_flag_data, filename, magic)
 
         # If the magic was INCLUDE then modify that into the equivalent CPPFLAGS, CFLAGS, and CXXFLAGS
-        if magic == "INCLUDE":
+        if magic == sz.Str("INCLUDE"):
             extrafff = self._handle_include(flag)
             for key, values in extrafff.items():
                 for value in values:
                     flagsforfilename[key].append(value)
 
         # If the magic was PKG-CONFIG then call pkg-config
-        if magic == "PKG-CONFIG":
+        if magic == sz.Str("PKG-CONFIG"):
             extrafff = self._handle_pkg_config(flag)
             for key, values in extrafff.items():
                 for value in values:
                     flagsforfilename[key].append(value)
 
         # Split flag string into individual flags - all magic flags can contain multiple values
-        individual_flags = compiletools.utils.split_command_cached(flag)
+        individual_flags = compiletools.utils.split_command_cached_sz(flag)
         flagsforfilename[magic].extend(individual_flags)
         if self._args.verbose >= 5:
             print(
@@ -296,6 +299,7 @@ class MagicFlagsBase:
         CppMagicFlags.clear_cache()
         # Clear LRU caches
         compiletools.utils.split_command_cached.cache_clear()
+        compiletools.utils.split_command_cached_sz.cache_clear()
         # Clear FileAnalyzer module-level cache
         from compiletools.file_analyzer import analyze_file
         analyze_file.cache_clear()
@@ -330,8 +334,8 @@ class DirectMagicFlags(MagicFlagsBase):
             verbose=self._args.verbose
         )
         
-        # Direct assignment - no copying overhead
-        self.defined_macros.update(macros)
+        # Convert command-line macros to StringZilla.Str for type consistency
+        self.defined_macros.update({sz.Str(k): sz.Str(v) for k, v in macros.items()})
 
     def _extract_macros_from_magic_flags(self, magic_flags_result):
         """Extract -D macros from magic flag CPPFLAGS and CXXFLAGS."""
@@ -349,11 +353,12 @@ class DirectMagicFlags(MagicFlagsBase):
             verbose=self._args.verbose
         )
         
-        # Update defined_macros with extracted macros
-        self.defined_macros.update(macros)
+        # Convert magic flag macros to StringZilla.Str for type consistency
+        self.defined_macros.update({sz.Str(k): sz.Str(v) for k, v in macros.items()})
         
         if self._args.verbose >= 9:
             print(f"DirectMagicFlags: extracted {len(macros)} macros from magic flags: {macros}")
+
 
     def _extract_macros_from_file(self, filename):
         """Extract #define macros from a file using cached FileAnalyzer results."""
@@ -399,10 +404,13 @@ class DirectMagicFlags(MagicFlagsBase):
         
         # Get compiler, platform, and architecture macros dynamically
         macros = compiletools.compiler_macros.get_compiler_macros(self._args.CXX, self._args.verbose)
-        self.defined_macros.update(macros)
+        # Convert all str keys/values to StringZilla.Str for type consistency throughout the system
+        self.defined_macros.update({sz.Str(k): sz.Str(v) for k, v in macros.items()})
         
         # Get headers from headerdeps
         headers = self._headerdeps.process(filename)
+        if self._args.verbose >= 9:
+            print(f"DirectMagicFlags: headers from headerdeps: {headers}")
         all_source_files = [filename] + headers
         
         # First pass: scan all files for READMACROS flags to collect explicit macro files
@@ -415,7 +423,7 @@ class DirectMagicFlags(MagicFlagsBase):
                 
                 # Look for READMACROS magic flags in structured data
                 for magic_flag in analysis_result.magic_flags:
-                    if magic_flag['key'] == "READMACROS":
+                    if magic_flag['key'] == sz.Str("READMACROS"):
                         self._handle_readmacros(magic_flag['value'], source_file)
             except Exception as e:
                 if self._args.verbose >= 5:
@@ -433,6 +441,29 @@ class DirectMagicFlags(MagicFlagsBase):
         iteration = 0
         
         while (set(previous_macros.keys()) != set(self.defined_macros.keys()) or iteration == 0) and iteration < max_iterations:
+            # Enhanced debugging for convergence check
+            if self._args.verbose >= 9:
+                prev_keys = set(previous_macros.keys())
+                curr_keys = set(self.defined_macros.keys())
+                condition1 = set(previous_macros.keys()) != set(self.defined_macros.keys())
+                condition2 = iteration == 0
+                condition3 = iteration < max_iterations
+                overall_condition = (condition1 or condition2) and condition3
+                print(f"DirectMagicFlags: Iteration {iteration} start - convergence check:")
+                print(f"  - prev_keys != curr_keys: {condition1} (prev={len(prev_keys)}, curr={len(curr_keys)})")
+                print(f"  - iteration == 0: {condition2}")
+                print(f"  - iteration < max_iterations: {condition3}")
+                print(f"  - Overall while condition: {overall_condition}")
+                if prev_keys != curr_keys:
+                    added = curr_keys - prev_keys
+                    removed = prev_keys - curr_keys
+                    if added:
+                        print(f"  - Added keys: {added}")
+                    if removed:
+                        print(f"  - Removed keys: {removed}")
+                if iteration > 0:
+                    print(f"  - Sample prev key types: {[type(k).__name__ for k in list(prev_keys)[:3]]}")
+                    print(f"  - Sample curr key types: {[type(k).__name__ for k in list(curr_keys)[:3]]}")
             previous_macros = self.defined_macros.copy()
             iteration += 1
             
@@ -440,7 +471,10 @@ class DirectMagicFlags(MagicFlagsBase):
                 print(f"DirectMagicFlags::get_structured_data iteration {iteration}, known macros: {set(self.defined_macros.keys())}")
             
             # Process each file and extract macros from defines
-            all_files = list(self._explicit_macro_files) + [filename] + [h for h in headers if h != filename]
+            # Process headers FIRST so their macros are available for main file processing
+            all_files = list(self._explicit_macro_files) + [h for h in headers if h != filename] + [filename]
+            if self._args.verbose >= 9:
+                print(f"DirectMagicFlags: Processing order: {all_files}")
             for fname in all_files:
                 if self._args.verbose >= 9:
                     print("DirectMagicFlags::get_structured_data processing " + fname)
@@ -448,10 +482,58 @@ class DirectMagicFlags(MagicFlagsBase):
                     file_result = self._get_file_analyzer_result(fname)
                     
                     # Process conditional compilation to get active lines
-                    preprocessor = SimplePreprocessor(self.defined_macros, verbose=self._args.verbose)
+                    # First extract any #define macros from this file and add them to our macro set
+                    # so they're available for conditional compilation processing of this same file
+                    temp_macros = self.defined_macros.copy()
+
+                    for define_info in file_result.defines:
+                        # Only extract non-function-like macros for now
+                        if not define_info['is_function_like']:
+                            # Convert to StringZilla.Str for consistency throughout the system
+                            macro_name = sz.Str(define_info['name'])
+                            macro_value = sz.Str(define_info['value'] if define_info['value'] is not None else "1")
+                            temp_macros[macro_name] = macro_value
+                            if self._args.verbose >= 9:
+                                print(f"DirectMagicFlags: prepopulating macro {macro_name} = {macro_value} from {fname}")
+
+                    # For header files, temporarily remove include guard macros to ensure content is processed
+                    # This allows us to extract macros from headers even if they've been processed before
+                    if fname.endswith('.hpp') or fname.endswith('.h'):
+                        # Use include guard detection from FileAnalyzer
+                        include_guard = file_result.include_guard
+
+                        if include_guard:
+                            if self._args.verbose >= 9:
+                                print(f"DirectMagicFlags: found include guard {include_guard} for {fname}")
+
+                            if include_guard in temp_macros:
+                                if self._args.verbose >= 9:
+                                    print(f"DirectMagicFlags: temporarily removing include guard {include_guard} for macro extraction from {fname}")
+                                del temp_macros[include_guard]
+                        else:
+                            if self._args.verbose >= 9:
+                                print(f"DirectMagicFlags: no include guard found in {fname}")
+
+                    if self._args.verbose >= 9:
+                        print(f"DirectMagicFlags: Creating SimplePreprocessor for {fname} with macros: {list(temp_macros.keys())}")
+                        if 'ENABLE_FEATURE' in temp_macros:
+                            print(f"DirectMagicFlags: ENABLE_FEATURE = {temp_macros['ENABLE_FEATURE']} (type: {type(temp_macros['ENABLE_FEATURE'])})")
+                    preprocessor = SimplePreprocessor(temp_macros, verbose=self._args.verbose)
+                    if self._args.verbose >= 9:
+                        print(f"DirectMagicFlags: SimplePreprocessor.macros keys: {list(preprocessor.macros.keys())}")
+                        if any('ENABLE_FEATURE' in str(k) for k in preprocessor.macros.keys()):
+                            for k, v in preprocessor.macros.items():
+                                if 'ENABLE_FEATURE' in str(k):
+                                    print(f"DirectMagicFlags: Found matching key: {repr(k)} = {v} (key type: {type(k)})")
                     active_lines = preprocessor.process_structured(file_result)
                     active_line_set = set(active_lines)
-                    
+
+                    if self._args.verbose >= 9:
+                        print(f"DirectMagicFlags: {fname} has {len(file_result.defines)} defines, {len(active_lines)} active lines")
+                        print(f"DirectMagicFlags: Active lines for {fname}: {sorted(active_lines)}")
+                        if file_result.defines:
+                            print(f"DirectMagicFlags: Define lines in {fname}: {[d['line_num'] for d in file_result.defines]}")
+
                     # Extract macros from active magic flag CPPFLAGS and CXXFLAGS
                     active_magic_flags = []
                     for magic_flag in file_result.magic_flags:
@@ -465,20 +547,37 @@ class DirectMagicFlags(MagicFlagsBase):
                             magic_flags_result[magic_flag['key']].append(magic_flag['value'])
                         self._extract_macros_from_magic_flags(magic_flags_result)
                     
-                    # Extract macros from active #define directives and update immediately
-                    # so they're available for subsequent files in this iteration
+                    # Extract macros from active #define directives and update permanently
+                    # Only add macros that are actually active (in conditional compilation branches)
                     for define_info in file_result.defines:
                         if define_info['line_num'] in active_line_set:
-                            macro_name = define_info['name']
+                            macro_name = define_info['name']  # Keep as StringZilla.Str for consistency
                             macro_value = define_info['value'] if define_info['value'] is not None else "1"
-                            self.defined_macros[macro_name] = macro_value
-                            if self._args.verbose >= 9:
-                                print(f"DirectMagicFlags: extracted macro {macro_name} = {macro_value} from {fname}")
+                            # Only store non-function-like macros permanently
+                            if not define_info['is_function_like']:
+                                self.defined_macros[macro_name] = macro_value
+                                if self._args.verbose >= 9:
+                                    print(f"DirectMagicFlags: extracted macro {macro_name} = {macro_value} from {fname}")
                             
                 except Exception as e:
                     if self._args.verbose >= 5:
                         print(f"DirectMagicFlags warning: could not process {fname} for macro extraction: {e}")
-        
+
+        # Enhanced debugging for loop exit
+        if self._args.verbose >= 9:
+            final_prev_keys = set(previous_macros.keys())
+            final_curr_keys = set(self.defined_macros.keys())
+            final_condition1 = final_prev_keys != final_curr_keys
+            final_condition2 = iteration == 0
+            final_condition3 = iteration < max_iterations
+            print(f"DirectMagicFlags: Loop exit after {iteration} iterations:")
+            print(f"  - Final prev_keys != curr_keys: {final_condition1}")
+            print(f"  - Final iteration == 0: {final_condition2}")
+            print(f"  - Final iteration < max_iterations: {final_condition3} (iteration={iteration})")
+            print(f"  - Final macro count: {len(self.defined_macros)}")
+            if 'ENABLE_FEATURE' in [str(k) for k in self.defined_macros.keys()]:
+                print("  - ENABLE_FEATURE found in final macros")
+
         # CONVERGENCE ACHIEVED: Store final macro hash for this filename
         final_macro_hash = self._compute_macro_hash(self.defined_macros)
         
@@ -617,7 +716,6 @@ class CppMagicFlags(MagicFlagsBase):
 
     def get_structured_data(self, filename):
         """Get magic flags directly from preprocessed text using StringZilla SIMD operations"""
-        import stringzilla as sz
         
         if self._args.verbose >= 4:
             print("CppMagicFlags: Getting structured data from preprocessed C++ output")
@@ -663,17 +761,14 @@ class CppMagicFlags(MagicFlagsBase):
                     # Use StringZilla strip for better performance
                     key_trimmed = strip_sz(key_slice)
                     value_trimmed = strip_sz(value_slice)
-                    
-                    key_part = str(key_trimmed)
-                    value_part = str(value_trimmed)
-                    
-                    if key_part:  # Only add if key is non-empty
+
+                    if key_trimmed:  # Only add if key is non-empty
                         magic_flag = {
                             'line_num': line_num,
                             'byte_pos': -1,  # Not used for CppMagicFlags
                             'full_line': line_str,
-                            'key': key_part,
-                            'value': value_part
+                            'key': key_trimmed,
+                            'value': value_trimmed
                         }
                         
                         # Add source file context for SOURCE resolution

@@ -15,11 +15,12 @@ class TestSimplePreprocessor:
 
     def setup_method(self):
         """Set up test fixtures before each test method."""
+        import stringzilla as sz
         self.macros = {
-            'TEST_MACRO': '1',
-            'FEATURE_A': '1', 
-            'VERSION': '3',
-            'COUNT': '5'
+            sz.Str('TEST_MACRO'): sz.Str('1'),
+            sz.Str('FEATURE_A'): sz.Str('1'),
+            sz.Str('VERSION'): sz.Str('3'),
+            sz.Str('COUNT'): sz.Str('5')
         }
         self.processor = SimplePreprocessor(self.macros, verbose=0)
     
@@ -54,24 +55,28 @@ class TestSimplePreprocessor:
                     macro_value = None
                     
                     if directive_type in ['if', 'elif']:
-                        condition = rest.strip()
+                        import stringzilla as sz
+                        condition = sz.Str(rest.strip())
                     elif directive_type in ['ifdef', 'ifndef']:
-                        macro_name = rest.strip()
+                        import stringzilla as sz
+                        macro_name = sz.Str(rest.strip())
                     elif directive_type == 'define':
+                        import stringzilla as sz
                         parts = rest.split(None, 1)
-                        macro_name = parts[0] if parts else ""
-                        macro_value = parts[1] if len(parts) > 1 else "1"
+                        macro_name = sz.Str(parts[0]) if parts else sz.Str("")
+                        macro_value = sz.Str(parts[1]) if len(parts) > 1 else sz.Str("1")
                         # Handle function-like macros
-                        if '(' in macro_name:
-                            macro_name = macro_name.split('(')[0]
+                        if '(' in str(macro_name):
+                            macro_name = sz.Str(str(macro_name).split('(')[0])
                     elif directive_type == 'undef':
-                        macro_name = rest.strip()
+                        import stringzilla as sz
+                        macro_name = sz.Str(rest.strip())
                     
                     directive = PreprocessorDirective(
                         line_num=line_num,
                         byte_pos=line_byte_offsets[line_num],
                         directive_type=directive_type,
-                        full_text=[line],
+                        continuation_lines=0,
                         condition=condition,
                         macro_name=macro_name,
                         macro_value=macro_value
@@ -306,14 +311,15 @@ class TestSimplePreprocessor:
 
     def test_failing_scenario_use_epoll(self):
         """Test the exact scenario that's failing in the nested macros test"""
+        import stringzilla as sz
         # Set up macros exactly as in the failing test
         failing_macros = {
-            'BUILD_CONFIG': '2',
-            '__linux__': '1',
-            'USE_EPOLL': '1', 
-            'ENABLE_THREADING': '1',
-            'THREAD_COUNT': '4',
-            'NUMA_SUPPORT': '1'
+            sz.Str('BUILD_CONFIG'): sz.Str('2'),
+            sz.Str('__linux__'): sz.Str('1'),
+            sz.Str('USE_EPOLL'): sz.Str('1'),
+            sz.Str('ENABLE_THREADING'): sz.Str('1'),
+            sz.Str('THREAD_COUNT'): sz.Str('4'),
+            sz.Str('NUMA_SUPPORT'): sz.Str('1')
         }
         processor = SimplePreprocessor(failing_macros, verbose=0)
         
@@ -346,19 +352,20 @@ class TestSimplePreprocessor:
         assert result == '3'
         
         # Test recursive expansion
+        import stringzilla as sz
         processor_with_recursive = SimplePreprocessor({
-            'A': 'B',
-            'B': 'C', 
-            'C': '42'
+            sz.Str('A'): sz.Str('B'),
+            sz.Str('B'): sz.Str('C'),
+            sz.Str('C'): sz.Str('42')
         }, verbose=0)
-        
+
         result = processor_with_recursive._recursive_expand_macros('A')
         assert result == '42'
-        
+
         # Test max iterations protection (prevent infinite loops)
         processor_with_loop = SimplePreprocessor({
-            'X': 'Y',
-            'Y': 'X'
+            sz.Str('X'): sz.Str('Y'),
+            sz.Str('Y'): sz.Str('X')
         }, verbose=0)
         
         result = processor_with_loop._recursive_expand_macros('X', max_iterations=5)
@@ -388,7 +395,9 @@ class TestSimplePreprocessor:
         # we'll test both with and without a compiler
         
         # Test 1: Without compiler (empty path)
-        macros_empty = compiletools.compiler_macros.get_compiler_macros('', verbose=0)
+        import stringzilla as sz
+        macros_empty_raw = compiletools.compiler_macros.get_compiler_macros('', verbose=0)
+        macros_empty = {sz.Str(k): sz.Str(v) for k, v in macros_empty_raw.items()}
         processor_empty = SimplePreprocessor(macros_empty, verbose=0)
         # Should work with empty macros
         assert processor_empty.macros == macros_empty
@@ -402,14 +411,16 @@ class TestSimplePreprocessor:
         with patch('subprocess.run', return_value=mock_result):
             # Clear cache to ensure fresh call
             compiletools.compiler_macros.clear_cache()
-            macros = compiletools.compiler_macros.get_compiler_macros('gcc', verbose=0)
+            macros_raw = compiletools.compiler_macros.get_compiler_macros('gcc', verbose=0)
+            macros = {sz.Str(k): sz.Str(v) for k, v in macros_raw.items()}
             processor = SimplePreprocessor(macros, verbose=0)
             
             # Verify the mocked macros are present
-            assert '__linux__' in processor.macros
-            assert processor.macros['__linux__'] == '1'
-            assert '__GNUC__' in processor.macros
-            assert processor.macros['__GNUC__'] == '11'
+            import stringzilla as sz
+            assert sz.Str('__linux__') in processor.macros
+            assert processor.macros[sz.Str('__linux__')] == sz.Str('1')
+            assert sz.Str('__GNUC__') in processor.macros
+            assert processor.macros[sz.Str('__GNUC__')] == sz.Str('11')
 
     def test_if_with_comments(self):
         """Test #if directive with C++ style comments"""

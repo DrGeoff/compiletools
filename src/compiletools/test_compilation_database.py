@@ -561,8 +561,9 @@ class TestCompilationDatabase:
                     compiletools.compilation_database.CompilationDatabaseCreator.add_arguments(cap)
                     compiletools.hunter.add_arguments(cap)
                     args = compiletools.apptools.parseargs(cap, ["--config=" + temp_config_name])
-                    creator = compiletools.compilation_database.CompilationDatabaseCreator(args)
-                    
+                    # Create CompilationDatabaseCreator instance for testing
+                    compiletools.compilation_database.CompilationDatabaseCreator(args)
+
                     # Test path normalization caching with enhanced wrappedos
                     path1 = compiletools.wrappedos.realpath("./test.cpp")
                     path2 = compiletools.wrappedos.realpath("./test.cpp")  # Should hit wrappedos cache
@@ -602,8 +603,9 @@ class TestCompilationDatabase:
                 assert len(commands) == 2, "Should have 2 compilation commands"
                 
                 # Test StringZilla optimized incremental update
-                file_size = os.path.getsize(comp_db_output)
-                
+                # Record file size before update (for potential future use)
+                os.path.getsize(comp_db_output)
+
                 # Create another update to test the merging logic
                 with uth.ParserContext():
                     compiletools.compilation_database.main([

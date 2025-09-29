@@ -506,6 +506,7 @@ def extract_command_line_macros(args, flag_sources=None, include_compiler_macros
 def clear_cache():
     """Clear any caches for macro extraction and pkg-config."""
     cached_pkg_config.cache_clear()
+    cached_pkg_config_sz.cache_clear()
     _get_functional_cxx_compiler_cached.cache_clear()
 
 
@@ -694,6 +695,14 @@ def cached_pkg_config(package, option):
         universal_newlines=True,
     )
     return result.stdout.rstrip()
+
+
+@functools.lru_cache(maxsize=None)
+def cached_pkg_config_sz(package_sz, option):
+    """StringZilla-aware version of cached_pkg_config with separate cache"""
+    import stringzilla as sz
+    result = cached_pkg_config(package_sz.decode('utf-8'), option)
+    return sz.Str(result)
 
 
 def _add_flags_from_pkg_config(args):

@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 import pytest
+import stringzilla as sz
 import compiletools.testhelper as uth
 import compiletools.utils
 import compiletools.cake
@@ -112,15 +113,15 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                         raise
                 
                 # Verify PKG-CONFIG flag was found
-                assert "PKG-CONFIG" in parsed_flags
-                pkgconfig_flags = list(parsed_flags["PKG-CONFIG"])
+                assert sz.Str("PKG-CONFIG") in parsed_flags
+                pkgconfig_flags = [str(x) for x in parsed_flags[sz.Str("PKG-CONFIG")]]
                 assert len(pkgconfig_flags) == 2
                 assert "zlib" in pkgconfig_flags
                 assert "libcrypt" in pkgconfig_flags
                 
                 # Verify CXXFLAGS were extracted (should contain zlib and libcrypt cflags)
-                assert "CXXFLAGS" in parsed_flags
-                cxxflags = " ".join(parsed_flags["CXXFLAGS"])
+                assert sz.Str("CXXFLAGS") in parsed_flags
+                cxxflags = " ".join(str(x) for x in parsed_flags[sz.Str("CXXFLAGS")])
                 
                 # Check that pkg-config results are present (basic validation)
                 zlib_cflags = compiletools.apptools.cached_pkg_config("zlib", "--cflags").replace("-I", "-isystem ")
@@ -133,8 +134,8 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                     assert libcrypt_cflags in cxxflags
                 
                 # Verify LDFLAGS were extracted 
-                assert "LDFLAGS" in parsed_flags
-                ldflags = " ".join(parsed_flags["LDFLAGS"])
+                assert sz.Str("LDFLAGS") in parsed_flags
+                ldflags = " ".join(str(x) for x in parsed_flags[sz.Str("LDFLAGS")])
                 
                 zlib_libs = compiletools.apptools.cached_pkg_config("zlib", "--libs")
                 libcrypt_libs = compiletools.apptools.cached_pkg_config("libcrypt", "--libs")
@@ -183,15 +184,15 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                 parsed_flags = magicparser.parse(sample_file)
                 
                 # Verify PKG-CONFIG flag was found (should contain "zlib libcrypt")
-                assert "PKG-CONFIG" in parsed_flags, "PKG-CONFIG directive should be parsed"
-                pkgconfig_flags = list(parsed_flags["PKG-CONFIG"])
+                assert sz.Str("PKG-CONFIG") in parsed_flags, "PKG-CONFIG directive should be parsed"
+                pkgconfig_flags = [str(x) for x in parsed_flags[sz.Str("PKG-CONFIG")]]
                 assert len(pkgconfig_flags) == 2
                 assert "zlib" in pkgconfig_flags
                 assert "libcrypt" in pkgconfig_flags
                 
                 # Check CXXFLAGS for the presence of -isystem transformations
-                if "CXXFLAGS" in parsed_flags:
-                    cxxflags_list = parsed_flags["CXXFLAGS"]
+                if sz.Str("CXXFLAGS") in parsed_flags:
+                    cxxflags_list = [str(x) for x in parsed_flags[sz.Str("CXXFLAGS")]]
                     cxxflags_str = " ".join(cxxflags_list)
                     
                     # If there are any include paths from pkg-config, they should use -isystem

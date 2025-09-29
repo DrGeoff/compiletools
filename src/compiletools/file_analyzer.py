@@ -229,41 +229,9 @@ def find_directive_positions_simd_bulk(str_text, line_byte_offsets: List[int]) -
     return directive_positions
 
 
-def is_position_commented_simd_optimized(str_text, pos: int, line_byte_offsets: List[int]) -> bool:
-    """Optimized comment detection using pre-computed line boundaries."""
-    # Binary search for line start using precomputed line starts
-    line_start_idx = bisect.bisect_right(line_byte_offsets, pos) - 1
-    line_start = line_byte_offsets[line_start_idx] if line_start_idx >= 0 else 0
-
-    # Check for single-line comment on current line using StringZilla
-    line_prefix_slice = str_text[line_start:pos]
-    comment_pos = line_prefix_slice.find('//')
-    if comment_pos != -1:
-        return True
-
-    # Check for multi-line block comment using StringZilla rfind
-    last_block_start = str_text.rfind('/*', 0, pos)
-    if last_block_start != -1:
-        last_block_end = str_text.rfind('*/', last_block_start, pos)
-        if last_block_end == -1:
-            return True
-
-    return False
-
-
-def is_inside_block_comment_simd(str_text, pos: int) -> bool:
-    """Check if position is inside a multi-line block comment using StringZilla."""
-    last_block_start = str_text.rfind('/*', 0, pos)
-    if last_block_start != -1:
-        last_block_end = str_text.rfind('*/', last_block_start, pos)
-        if last_block_end == -1:
-            return True
-
-    return False
-
 
 def parse_directive_struct(dtype: str, pos: int, line_num: int,
-                          directive_lines: List[str]) -> 'PreprocessorDirective':
+                          directive_lines: List['stringzilla.Str']) -> 'PreprocessorDirective':
     """Parse a directive into structured form using StringZilla operations."""
     full_text_str = join_lines_strip_backslash_sz(directive_lines)
 
@@ -271,7 +239,7 @@ def parse_directive_struct(dtype: str, pos: int, line_num: int,
         line_num=line_num,
         byte_pos=pos,
         directive_type=dtype,
-        full_text=directive_lines
+        continuation_lines=len(directive_lines) - 1
     )
 
     # Find start of content after directive
@@ -288,10 +256,10 @@ def parse_directive_struct(dtype: str, pos: int, line_num: int,
     content_slice = full_text_str[content_start_pos:]
 
     if dtype in ('ifdef', 'ifndef', 'undef'):
-        directive.macro_name = str(strip_sz(content_slice))
+        directive.macro_name = strip_sz(content_slice)
 
     elif dtype in ('if', 'elif'):
-        directive.condition = str(strip_sz(content_slice))
+        directive.condition = strip_sz(content_slice)
 
     elif dtype == 'define':
         parts = content_slice.split(maxsplit=1)
@@ -300,12 +268,12 @@ def parse_directive_struct(dtype: str, pos: int, line_num: int,
             # Handle function-like macros: extract name before '('
             paren_pos = name_part.find('(')
             if paren_pos != -1:
-                directive.macro_name = str(name_part[:paren_pos])
+                directive.macro_name = name_part[:paren_pos]
             else:
-                directive.macro_name = str(name_part)
+                directive.macro_name = name_part
 
             if len(parts) > 1:
-                directive.macro_value = str(strip_sz(parts[1]))
+                directive.macro_value = strip_sz(parts[1])
             else:
                 directive.macro_value = None
 
@@ -406,10 +374,9 @@ def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'Fi
             current_line = line_num
             while current_line < len(lines):
                 line = lines[current_line]
-                sz_line = Str(str(line)) if not isinstance(line, Str) else line
-                directive_lines.append(str(sz_line))  # Store as str for processing
+                directive_lines.append(line)  # Already StringZilla.Str from splitlines()
                 processed_lines.add(current_line)
-                if not ends_with_backslash_sz(sz_line):
+                if not ends_with_backslash_sz(line):
                     break
                 current_line += 1
 
@@ -459,7 +426,7 @@ def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'Fi
                         'line_num': line_num,
                         'byte_pos': pos,
                         'full_line': line_str,
-                        'filename': str(filename_slice),
+                        'filename': filename_slice,
                         'is_system': is_system,
                         'is_commented': is_commented
                     })
@@ -473,7 +440,7 @@ def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'Fi
 
             # Parse magic flag using StringZilla operations - ensure line is Str
             if not isinstance(line, Str):
-                line = Str(str(line))
+                line = Str(line)
             hash_pos = line.find('//#')
             if hash_pos != -1:
                 after_hash = line[hash_pos + 3:]  # Skip //#
@@ -506,9 +473,9 @@ def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'Fi
                                 magic_flags.append({
                                     'line_num': line_num,
                                     'byte_pos': pos,
-                                    'full_line': str(line),
-                                    'key': str(key_trimmed),
-                                    'value': str(value_trimmed)
+                                    'full_line': line,
+                                    'key': key_trimmed,
+                                    'value': value_trimmed
                                 })
 
     # Extract defines with full information
@@ -521,9 +488,8 @@ def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'Fi
         current_line = line_num
         while current_line < len(lines):
             line = lines[current_line]
-            sz_line = Str(str(line)) if not isinstance(line, Str) else line
-            define_lines.append(str(sz_line))  # Convert to str for processing
-            if not ends_with_backslash_sz(sz_line):
+            define_lines.append(line)  # Already StringZilla.Str from splitlines()
+            if not ends_with_backslash_sz(line):
                 break
             current_line += 1
 
@@ -531,7 +497,7 @@ def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'Fi
         if not define_lines:
             continue
 
-        first_line = Str(define_lines[0])
+        first_line = define_lines[0]
         define_kw_pos = first_line.find('#define')
         if define_kw_pos == -1:
             continue
@@ -558,12 +524,12 @@ def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'Fi
             name_end_pos = space_pos
 
         if name_end_pos == -1: # Macro without value
-            name = str(full_define_str[name_part_start:])
+            name = full_define_str[name_part_start:]
             value = None
             is_function_like = False
             params = []
         else:
-            name = str(full_define_str[name_part_start:name_end_pos])
+            name = full_define_str[name_part_start:name_end_pos]
 
             # Check for function-like macro
             is_function_like = (paren_pos == name_end_pos)
@@ -571,7 +537,7 @@ def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'Fi
                 params_end_pos = full_define_str.find(')', paren_pos + 1)
                 if params_end_pos != -1:
                     params_str = full_define_str[paren_pos + 1:params_end_pos]
-                    params = [str(strip_sz(p)) for p in params_str.split(',')] if params_str else []
+                    params = [strip_sz(p) for p in params_str.split(',')] if params_str else []
                     value_start_pos = full_define_str.find_first_not_of(' \t', params_end_pos + 1)
                 else: # Malformed
                     params = []
@@ -581,7 +547,7 @@ def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'Fi
                 value_start_pos = full_define_str.find_first_not_of(' \t', name_end_pos)
 
             if value_start_pos != -1:
-                value = str(strip_sz(full_define_str[value_start_pos:]))
+                value = strip_sz(full_define_str[value_start_pos:])
             else:
                 value = None
 
@@ -599,8 +565,11 @@ def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'Fi
     system_headers = {inc['filename'] for inc in includes if inc['is_system']}
     quoted_headers = {inc['filename'] for inc in includes if not inc['is_system']}
 
+    # Detect include guard
+    include_guard = detect_include_guard(directives)
+
     return FileAnalysisResult(
-        lines=[str(line) for line in lines],  # Convert to str for compatibility
+        lines=lines,  # Keep StringZilla.Str objects for memory efficiency
         line_byte_offsets=line_byte_offsets,
         include_positions=include_positions,
         magic_positions=magic_positions,
@@ -614,7 +583,8 @@ def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'Fi
         defines=defines,
         system_headers=system_headers,
         quoted_headers=quoted_headers,
-        content_hash=content_hash
+        content_hash=content_hash,
+        include_guard=include_guard
     )
 
 
@@ -689,10 +659,47 @@ class PreprocessorDirective:
     line_num: int                    # Starting line number (0-based)
     byte_pos: int                    # Byte position in original file
     directive_type: str              # 'if', 'ifdef', 'ifndef', 'elif', 'else', 'endif', 'define', 'undef', 'include'
-    full_text: List[str]             # All lines including continuations
-    condition: Optional[str] = None  # The condition expression (for if/ifdef/ifndef/elif)
-    macro_name: Optional[str] = None # Macro name (for define/undef/ifdef/ifndef)
-    macro_value: Optional[str] = None # Macro value (for define)
+    continuation_lines: int          # Number of continuation lines (for multi-line directives)
+    condition: Optional['stringzilla.Str'] = None  # The condition expression (for if/ifdef/ifndef/elif)
+    macro_name: Optional['stringzilla.Str'] = None # Macro name (for define/undef/ifdef/ifndef)
+    macro_value: Optional['stringzilla.Str'] = None # Macro value (for define)
+
+
+def detect_include_guard(directives: List[PreprocessorDirective]) -> Optional['stringzilla.Str']:
+    """Detect include guard macro from preprocessor directives.
+
+    Supports both traditional include guards (#ifndef/#define) and #pragma once.
+    Returns the guard macro name as StringZilla.Str or sz.Str("pragma_once") for #pragma once.
+    """
+    import stringzilla as sz
+
+    if not directives:
+        return None
+
+    # Check for #pragma once first (simpler case)
+    for directive in directives:
+        if (directive.directive_type == 'pragma' and
+            directive.condition and
+            'once' in directive.condition):
+            return sz.Str("pragma_once")
+
+    # Check for traditional include guard pattern: #ifndef GUARD followed by #define GUARD
+    for i, directive in enumerate(directives):
+        if (directive.directive_type == 'ifndef' and
+            directive.macro_name):
+
+            guard_candidate = directive.macro_name
+
+            # Check if the next directive is #define with the same name
+            if (i + 1 < len(directives) and
+                directives[i + 1].directive_type == 'define' and
+                directives[i + 1].macro_name and
+                directives[i + 1].macro_name == guard_candidate):
+
+                # guard_candidate is already sz.Str from PreprocessorDirective.macro_name
+                return guard_candidate
+
+    return None
 
 
 @dataclass
@@ -703,7 +710,7 @@ class FileAnalysisResult:
     """
     
     # Line-level data (for SimplePreprocessor) - required fields first
-    lines: List[str]                        # All lines of the file
+    lines: List['stringzilla.Str']                        # All lines of the file
     line_byte_offsets: List[int]            # Byte offset where each line starts
     
     # Position arrays (for fast lookups) - required fields
@@ -723,39 +730,40 @@ class FileAnalysisResult:
     includes: List[Dict] = field(default_factory=list)
     # Each include dict contains:
     # {
-    #   'line_num': int,           # Line number (0-based)
-    #   'byte_pos': int,           # Byte position
-    #   'full_line': str,          # Complete include line
-    #   'filename': str,           # Extracted filename
-    #   'is_system': bool,         # True for <>, False for ""
-    #   'is_commented': bool,      # True if in comment
+    #   'line_num': int,                # Line number (0-based)
+    #   'byte_pos': int,                # Byte position
+    #   'full_line': str,               # Complete include line (str for compatibility)
+    #   'filename': stringzilla.Str,    # Extracted filename
+    #   'is_system': bool,              # True for <>, False for ""
+    #   'is_commented': bool,           # True if in comment
     # }
     
     magic_flags: List[Dict] = field(default_factory=list)
     # Each magic flag dict contains:
     # {
     #   'line_num': int,           # Line number (0-based)
-    #   'byte_pos': int,           # Byte position
-    #   'full_line': str,          # Complete line with //#KEY=value
-    #   'key': str,                # The KEY part
-    #   'value': str,              # The value part
+    #   'byte_pos': int,                 # Byte position
+    #   'full_line': stringzilla.Str,   # Complete line with //#KEY=value
+    #   'key': stringzilla.Str,          # The KEY part
+    #   'value': stringzilla.Str,        # The value part
     # }
     
     defines: List[Dict] = field(default_factory=list)
     # Each define dict contains:
     # {
-    #   'line_num': int,           # Starting line number
-    #   'byte_pos': int,           # Byte position
-    #   'lines': List[str],        # All lines including continuations
-    #   'name': str,               # Macro name
-    #   'value': Optional[str],    # Macro value (if any)
-    #   'is_function_like': bool,  # True for function-like macros
-    #   'params': List[str],       # Parameters for function-like macros
+    #   'line_num': int,                        # Starting line number
+    #   'byte_pos': int,                        # Byte position
+    #   'lines': List[stringzilla.Str],         # All lines including continuations
+    #   'name': stringzilla.Str,                # Macro name
+    #   'value': Optional[stringzilla.Str],     # Macro value (if any)
+    #   'is_function_like': bool,               # True for function-like macros
+    #   'params': List[stringzilla.Str],        # Parameters for function-like macros
     # }
     
     system_headers: Set[str] = field(default_factory=set)  # Unique system headers found
     quoted_headers: Set[str] = field(default_factory=set)  # Unique quoted headers found
     content_hash: str = ""                  # SHA1 of original content
+    include_guard: Optional['stringzilla.Str'] = None  # Include guard macro name (traditional) or sz.Str("pragma_once") for #pragma once
     
     # Helper method for SimplePreprocessor compatibility
     def get_directive_line_numbers(self) -> Dict[str, Set[int]]:

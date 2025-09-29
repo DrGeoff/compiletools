@@ -13,11 +13,12 @@ import compiletools.test_base as tb
 import compiletools.testhelper as uth
 import compiletools.headerdeps
 import compiletools.magicflags
+from compiletools.stringzilla_utils import join_sz
 
 
 def get_text_from_result(result):
     """Helper function to reconstruct text from FileAnalysisResult lines for testing."""
-    return '\n'.join(result.lines)
+    return join_sz('\n', result.lines)
 
 
 class TestHeaderDepsIntegration(tb.BaseCompileToolsTestCase):
@@ -165,7 +166,7 @@ class TestMagicFlagsIntegration(tb.BaseCompileToolsTestCase):
         
         args = cap.parse_args([
             '--headerdeps=direct',
-            '--magic=direct', 
+            '--magic=direct',
             f'--max-file-read-size={max_file_read_size}',
             f'--include={self.temp_dir}'
         ])
@@ -192,14 +193,15 @@ class TestMagicFlagsIntegration(tb.BaseCompileToolsTestCase):
         result = magicflags.parse(main_path)
         
         # Should detect the magic flags properly
-        assert "LIBS" in result
-        assert "CFLAGS" in result  
-        assert "LDFLAGS" in result
-        assert "pthread" in str(result["LIBS"])
-        assert "m" in str(result["LIBS"])
-        assert "-O2" in str(result["CFLAGS"])
-        assert "-g" in str(result["CFLAGS"])
-        assert "-static" in str(result["LDFLAGS"])
+        import stringzilla as sz
+        assert sz.Str("LIBS") in result
+        assert sz.Str("CFLAGS") in result
+        assert sz.Str("LDFLAGS") in result
+        assert "pthread" in str(result[sz.Str("LIBS")])
+        assert "m" in str(result[sz.Str("LIBS")])
+        assert "-O2" in str(result[sz.Str("CFLAGS")])
+        assert "-g" in str(result[sz.Str("CFLAGS")])
+        assert "-static" in str(result[sz.Str("LDFLAGS")])
         
     @uth.requires_functional_compiler
     def test_magic_flags_with_max_read_size(self):
@@ -216,8 +218,9 @@ int main() { return 0; }'''
         result = magicflags.parse(main_path)
         
         # Should find early magic flag
-        assert "LIBS" in result
-        assert "early_lib" in str(result["LIBS"])
+        import stringzilla as sz
+        assert sz.Str("LIBS") in result
+        assert "early_lib" in str(result[sz.Str("LIBS")])
         
     @uth.requires_functional_compiler
     def test_magic_flags_conditional_compilation(self):
@@ -239,8 +242,9 @@ int main() { return 0; }'''
         result = magicflags.parse(main_path)
         
         # Should include pthread lib (USE_THREADING is defined)
-        assert "LIBS" in result
-        assert "pthread" in str(result["LIBS"])
+        import stringzilla as sz
+        assert sz.Str("LIBS") in result
+        assert "pthread" in str(result[sz.Str("LIBS")])
         # Should not include opengl lib (USE_GRAPHICS not defined)
         # Note: This depends on preprocessor behavior
         
@@ -265,10 +269,11 @@ int main() { return 0; }'''
         result = magicflags.parse(main_path)
         
         # Should contain magic flags from both files
-        assert "CFLAGS" in result
-        assert "LIBS" in result
-        assert "-DHEADER_FEATURE" in str(result["CFLAGS"])
-        assert "main_lib" in str(result["LIBS"])
+        import stringzilla as sz
+        assert sz.Str("CFLAGS") in result
+        assert sz.Str("LIBS") in result
+        assert "-DHEADER_FEATURE" in str(result[sz.Str("CFLAGS")])
+        assert "main_lib" in str(result[sz.Str("LIBS")])
         
     @uth.requires_functional_compiler
     def test_magic_flags_iterative_macro_discovery(self):
@@ -290,8 +295,9 @@ int main() { return 0; }'''
         result = magicflags.parse(main_path)
         
         # Should find the feature lib after processing header
-        assert "LIBS" in result
-        assert "feature_lib" in str(result["LIBS"])
+        import stringzilla as sz
+        assert sz.Str("LIBS") in result
+        assert "feature_lib" in str(result[sz.Str("LIBS")])
 
 
 class TestFileAnalyzerConfigurationIntegration:

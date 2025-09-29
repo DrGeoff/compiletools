@@ -5,7 +5,8 @@ from compiletools.stringzilla_utils import (
     strip_sz,
     ends_with_backslash_sz,
     is_alpha_or_underscore_sz,
-    join_lines_strip_backslash_sz
+    join_lines_strip_backslash_sz,
+    join_sz
 )
 
 
@@ -169,43 +170,43 @@ class TestJoinLinesStripBackslashSz:
 
     def test_single_line_no_backslash(self):
         """Test single line without backslash."""
-        lines = ["hello world"]
+        lines = [stringzilla.Str("hello world")]
         result = join_lines_strip_backslash_sz(lines)
         assert str(result) == "hello world"
 
     def test_single_line_with_backslash(self):
         """Test single line with backslash."""
-        lines = ["hello world\\"]
+        lines = [stringzilla.Str("hello world\\")]
         result = join_lines_strip_backslash_sz(lines)
         assert str(result) == "hello world"
 
     def test_multiple_lines_no_backslash(self):
         """Test multiple lines without backslashes."""
-        lines = ["hello", "world", "test"]
+        lines = [stringzilla.Str("hello"), stringzilla.Str("world"), stringzilla.Str("test")]
         result = join_lines_strip_backslash_sz(lines)
         assert str(result) == "hello world test"
 
     def test_multiple_lines_with_backslashes(self):
         """Test multiple lines with backslashes."""
-        lines = ["hello\\", "world\\", "test"]
+        lines = [stringzilla.Str("hello\\"), stringzilla.Str("world\\"), stringzilla.Str("test")]
         result = join_lines_strip_backslash_sz(lines)
         assert str(result) == "hello world test"
 
     def test_mixed_lines(self):
         """Test mix of lines with and without backslashes."""
-        lines = ["hello\\", "world", "test\\"]
+        lines = [stringzilla.Str("hello\\"), stringzilla.Str("world"), stringzilla.Str("test\\")]
         result = join_lines_strip_backslash_sz(lines)
         assert str(result) == "hello world test"
 
     def test_backslash_with_whitespace(self):
         """Test backslash with trailing whitespace."""
-        lines = ["hello\\  \t", "world\\  \r\n", "test"]
+        lines = [stringzilla.Str("hello\\  \t"), stringzilla.Str("world\\  \r\n"), stringzilla.Str("test")]
         result = join_lines_strip_backslash_sz(lines)
         assert str(result) == "hello world test"
 
     def test_whitespace_only_lines(self):
         """Test lines with only whitespace."""
-        lines = ["  ", "\t", "hello"]
+        lines = [stringzilla.Str("  "), stringzilla.Str("\t"), stringzilla.Str("hello")]
         result = join_lines_strip_backslash_sz(lines)
         assert str(result) == "  hello"
 
@@ -214,3 +215,65 @@ class TestJoinLinesStripBackslashSz:
         lines = [stringzilla.Str("hello\\"), stringzilla.Str("world")]
         result = join_lines_strip_backslash_sz(lines)
         assert str(result) == "hello world"
+
+
+class TestJoinSz:
+    """Test join_sz function."""
+
+    def test_empty_list(self):
+        """Test joining empty list."""
+        result = join_sz("\n", [])
+        assert result == ""
+
+    def test_single_item(self):
+        """Test joining single item."""
+        items = [stringzilla.Str("hello")]
+        result = join_sz("\n", items)
+        assert result == "hello"
+
+    def test_multiple_strings(self):
+        """Test joining multiple string items."""
+        items = ["hello", "world", "test"]
+        result = join_sz("\n", items)
+        assert result == "hello\nworld\ntest"
+
+    def test_multiple_stringzilla_strs(self):
+        """Test joining multiple StringZilla.Str items."""
+        items = [stringzilla.Str("hello"), stringzilla.Str("world"), stringzilla.Str("test")]
+        result = join_sz("\n", items)
+        assert result == "hello\nworld\ntest"
+
+    def test_mixed_types(self):
+        """Test joining mixed string and StringZilla.Str items."""
+        items = ["hello", stringzilla.Str("world"), "test"]
+        result = join_sz("\n", items)
+        assert result == "hello\nworld\ntest"
+
+    def test_different_separators(self):
+        """Test different separator strings."""
+        items = [stringzilla.Str("a"), stringzilla.Str("b"), stringzilla.Str("c")]
+
+        # Space separator
+        result = join_sz(" ", items)
+        assert result == "a b c"
+
+        # Comma separator
+        result = join_sz(", ", items)
+        assert result == "a, b, c"
+
+        # Empty separator
+        result = join_sz("", items)
+        assert result == "abc"
+
+    def test_compatibility_with_str_join(self):
+        """Test that join_sz produces same results as str.join() for string inputs."""
+        items = ["hello", "world", "test"]
+        separator = "\n"
+
+        # Standard str.join()
+        expected = separator.join(items)
+
+        # Our join_sz function
+        result = join_sz(separator, items)
+
+        assert result == expected

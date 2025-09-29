@@ -9,11 +9,12 @@ from compiletools.file_analyzer import (
     read_file_mmap,
     read_file_traditional
 )
+from compiletools.stringzilla_utils import join_sz
 
 
 def get_text_from_result(result):
     """Helper function to reconstruct text from FileAnalysisResult lines for testing."""
-    return '\n'.join(result.lines)
+    return join_sz('\n', result.lines)
 
 
 class TestFileAnalysisResult:
@@ -77,7 +78,7 @@ int main() {
         result = analyzer.analyze()
         
         # Test basic functionality
-        file_content = '\n'.join(result.lines)
+        file_content = join_sz('\n', result.lines)
         assert "stdio.h" in file_content
         assert "stdlib.h" in file_content
         # Should have 2 include positions (not the commented one)

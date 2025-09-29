@@ -1,6 +1,8 @@
 """Simple C preprocessor for handling conditional compilation directives."""
 
 from typing import List
+import stringzilla as sz
+from compiletools.stringzilla_utils import is_alpha_or_underscore_sz
 
 
 
@@ -17,17 +19,9 @@ class SimplePreprocessor:
     - Provides recursive macro expansion helper for advanced use
     """
     
-    def __init__(self, defined_macros, verbose=0):
-        # Use a dict to store macro values, not just existence
-        self.macros = {}
-        # Initialize with existing defined macros
-        if isinstance(defined_macros, dict):
-            # defined_macros is already a dict of name->value
-            self.macros.update(defined_macros)
-        else:
-            # Legacy compatibility: defined_macros is a set of names
-            for macro in defined_macros:
-                self.macros[macro] = "1"  # Default value for macros without explicit values
+    def __init__(self, defined_macros: dict[sz.Str, sz.Str], verbose=0):
+        # Caller must provide dict with sz.Str keys and values - no type conversion needed
+        self.macros = defined_macros.copy()
         self.verbose = verbose
         
     def _create_macro_signature(self):
@@ -59,7 +53,95 @@ class SimplePreprocessor:
             expr = re.sub(r"/\*.*?\*/", " ", expr)
             expr = " ".join(expr.split())  # normalize whitespace
         return expr
-        
+
+    def _strip_comments_sz(self, expr_sz):
+        """Strip C/C++ style comments from StringZilla expressions."""
+        from compiletools.stringzilla_utils import strip_sz
+
+        # Strip C++ style line comments
+        comment_pos = expr_sz.find('//')
+        if comment_pos >= 0:
+            expr_sz = expr_sz[:comment_pos]
+            expr_sz = strip_sz(expr_sz)
+
+        # Strip C-style block comments (convert to str for regex, then back)
+        if expr_sz.find('/*') >= 0:
+            expr_str = str(expr_sz)
+            import re
+            expr_str = re.sub(r"/\*.*?\*/", " ", expr_str)
+            expr_str = " ".join(expr_str.split())  # normalize whitespace
+            expr_sz = sz.Str(expr_str)
+
+        return expr_sz
+
+    def _evaluate_expression_sz(self, expr_sz):
+        """Evaluate a StringZilla expression using native StringZilla operations"""
+        # Use StringZilla-native RECURSIVE macro expansion for better performance
+        expanded_sz = self._recursive_expand_macros_sz(expr_sz)
+        # Strip comments AFTER macro expansion to handle cases where comments were preserved through expansion
+        final_sz = self._strip_comments_sz(expanded_sz)
+        # For now, convert final expression to str for safe_eval, but this could be optimized
+        expr_str = str(final_sz)
+        result = self._safe_eval(expr_str)
+        return result
+
+    def _expand_macros_sz(self, expr_sz):
+        """Replace macro names with their values using StringZilla operations"""
+        # First handle defined() expressions to avoid expanding macros inside them
+        expr_str = str(expr_sz)
+        expr_str = self._expand_defined(expr_str)
+
+        # Convert back to StringZilla for macro expansion
+        result = sz.Str(expr_str)
+
+        reserved = {sz.Str("and"), sz.Str("or"), sz.Str("not")}
+
+        # Start from the beginning and find identifier patterns
+        i = 0
+
+        while i < len(result):
+            # Skip non-identifier characters
+            if not is_alpha_or_underscore_sz(result, i):
+                i += 1
+                continue
+
+            # Find the end of the identifier
+            identifier_start = i
+            while i < len(result) and (is_alpha_or_underscore_sz(result, i) or
+                                     (i > identifier_start and result[i:i+1].find_first_not_of('0123456789') == -1)):
+                i += 1
+
+            # Extract the identifier
+            identifier = result[identifier_start:i]
+
+            # Skip reserved words
+            if identifier in reserved:
+                continue
+
+            # Check if it's a macro and replace it
+            if identifier in self.macros:
+                value = self.macros[identifier]
+                # Replace in the result string
+                before = result[:identifier_start]
+                after = result[i:]
+                result = before + value + after
+                # Adjust position to account for replacement
+                i = identifier_start + len(value)
+
+        return result
+
+    def _recursive_expand_macros_sz(self, expr_sz, max_iterations=10):
+        """Recursively expand macros using StringZilla operations until no more changes occur"""
+        previous_expr = sz.Str("")  # Initialize with empty StringZilla.Str instead of None
+        iteration = 0
+
+        while expr_sz != previous_expr and iteration < max_iterations:
+            previous_expr = expr_sz
+            expr_sz = self._expand_macros_sz(expr_sz)
+            iteration += 1
+
+        return expr_sz
+
     def process_structured(self, file_result) -> List[int]:
         """Process FileAnalysisResult and return active line numbers using structured directive data.
         
@@ -88,7 +170,7 @@ class SimplePreprocessor:
                 directive = file_result.directive_by_line[i]
                 
                 # Handle multiline directives - skip continuation lines
-                continuation_lines = len(directive.full_text) - 1
+                continuation_lines = directive.continuation_lines
                 
                 # Handle the directive
                 handled = self._handle_directive_structured(directive, condition_stack, i + 1)
@@ -115,60 +197,7 @@ class SimplePreprocessor:
         return active_lines
     
     # Text-based processing removed - all processing now goes through process_structured()
-    
-    def _parse_directive(self, line):
-        """Parse a preprocessor directive line"""
-        # Remove leading # and split into parts
-        content = line[1:].strip()
-        parts = content.split(None, 1)
-        if not parts:
-            return None
-            
-        directive_name = parts[0]
-        directive_args = parts[1] if len(parts) > 1 else ""
-        
-        return {
-            'name': directive_name,
-            'args': directive_args,
-            'raw': line
-        }
-    
-    def _handle_directive(self, directive, condition_stack, line_num):
-        """Handle a specific preprocessor directive"""
-        name = directive['name']
-        args = directive['args']
-        
-        if name == 'define':
-            self._handle_define(args, condition_stack)
-            return True
-        elif name == 'undef':
-            self._handle_undef(args, condition_stack)
-            return True
-        elif name == 'ifdef':
-            self._handle_ifdef(args, condition_stack)
-            return True
-        elif name == 'ifndef':
-            self._handle_ifndef(args, condition_stack)
-            return True
-        elif name == 'if':
-            self._handle_if(args, condition_stack)
-            return True
-        elif name == 'elif':
-            self._handle_elif(args, condition_stack)
-            return True
-        elif name == 'else':
-            self._handle_else(condition_stack)
-            return True
-        elif name == 'endif':
-            self._handle_endif(condition_stack)
-            return True
-        else:
-            # Unknown directive - ignore but don't consume the line
-            # This allows #include and other directives to be processed normally
-            if self.verbose >= 8:
-                print(f"SimplePreprocessor: Ignoring unknown directive #{name}")
-            return False  # Indicate that this directive wasn't handled
-    
+
     def _handle_directive_structured(self, directive, condition_stack, line_num):
         """Handle a specific preprocessor directive using structured data"""
         dtype = directive.directive_type
@@ -203,97 +232,7 @@ class SimplePreprocessor:
             if self.verbose >= 8:
                 print(f"SimplePreprocessor: Ignoring unknown directive #{dtype}")
             return False  # Indicate that this directive wasn't handled
-    
-    def _handle_define(self, args, condition_stack):
-        """Handle #define directive"""
-        if not condition_stack[-1][0]:
-            return  # Not in active context
-            
-        parts = args.split(None, 1)
-        if not parts:
-            return
-            
-        macro_name = parts[0]
-        macro_value = parts[1] if len(parts) > 1 else "1"
-        
-        # Handle function-like macros by extracting just the name part
-        if '(' in macro_name:
-            macro_name = macro_name.split('(')[0]
-            
-        self.macros[macro_name] = macro_value
-        if self.verbose >= 9:
-            print(f"SimplePreprocessor: defined macro {macro_name} = {macro_value}")
-    
-    def _handle_undef(self, args, condition_stack):
-        """Handle #undef directive"""
-        if not condition_stack[-1][0]:
-            return  # Not in active context
-            
-        macro_name = args.strip()
-        if macro_name in self.macros:
-            del self.macros[macro_name]
-            if self.verbose >= 9:
-                print(f"SimplePreprocessor: undefined macro {macro_name}")
-    
-    def _handle_ifdef(self, args, condition_stack):
-        """Handle #ifdef directive"""
-        macro_name = args.strip()
-        is_defined = macro_name in self.macros
-        is_active = is_defined and condition_stack[-1][0]
-        condition_stack.append((is_active, False, is_active))
-        if self.verbose >= 9:
-            print(f"SimplePreprocessor: #ifdef {macro_name} -> {is_defined}")
-    
-    def _handle_ifndef(self, args, condition_stack):
-        """Handle #ifndef directive"""
-        macro_name = args.strip()
-        is_defined = macro_name in self.macros
-        is_active = (not is_defined) and condition_stack[-1][0]
-        condition_stack.append((is_active, False, is_active))
-        if self.verbose >= 9:
-            print(f"SimplePreprocessor: #ifndef {macro_name} -> {not is_defined}")
-    
-    def _handle_if(self, args, condition_stack):
-        """Handle #if directive"""
-        try:
-            # Strip comments before processing
-            expr = self._strip_comments(args.strip())
-            result = self._evaluate_expression(expr)
-            is_active = bool(result) and condition_stack[-1][0]
-            condition_stack.append((is_active, False, is_active))
-            if self.verbose >= 9:
-                print(f"SimplePreprocessor: #if {args} -> {result} ({is_active})")
-        except Exception as e:
-            # If evaluation fails, assume false
-            if self.verbose >= 8:
-                print(f"SimplePreprocessor: #if evaluation failed for '{args}': {e}")
-            condition_stack.append((False, False, False))
-    
-    def _handle_elif(self, args, condition_stack):
-        """Handle #elif directive"""
-        if len(condition_stack) <= 1:
-            return
-            
-        current_active, seen_else, any_condition_met = condition_stack.pop()
-        if not seen_else and not any_condition_met:
-            parent_active = condition_stack[-1][0] if condition_stack else True
-            try:
-                # Strip comments before processing
-                expr = self._strip_comments(args.strip())
-                result = self._evaluate_expression(expr)
-                new_active = bool(result) and parent_active
-                new_any_condition_met = any_condition_met or new_active
-                condition_stack.append((new_active, False, new_any_condition_met))
-                if self.verbose >= 9:
-                    print(f"SimplePreprocessor: #elif {args} -> {result} ({new_active})")
-            except Exception as e:
-                if self.verbose >= 8:
-                    print(f"SimplePreprocessor: #elif evaluation failed for '{args}': {e}")
-                condition_stack.append((False, False, any_condition_met))
-        else:
-            # Either we already found a true condition or seen_else is True
-            condition_stack.append((False, seen_else, any_condition_met))
-    
+
     def _handle_else(self, condition_stack):
         """Handle #else directive"""
         if len(condition_stack) <= 1:
@@ -359,9 +298,9 @@ class SimplePreprocessor:
         """Handle #if directive using structured data"""
         if directive.condition:
             try:
-                # Strip comments before processing
-                expr = self._strip_comments(directive.condition)
-                result = self._evaluate_expression(expr)
+                # Strip comments before processing - work with StringZilla strings
+                expr_sz = self._strip_comments_sz(directive.condition)
+                result = self._evaluate_expression_sz(expr_sz)
                 is_active = bool(result) and condition_stack[-1][0]
                 condition_stack.append((is_active, False, is_active))
                 if self.verbose >= 9:
@@ -384,9 +323,9 @@ class SimplePreprocessor:
         if not seen_else and not any_condition_met and directive.condition:
             parent_active = condition_stack[-1][0] if condition_stack else True
             try:
-                # Strip comments before processing
-                expr = self._strip_comments(directive.condition)
-                result = self._evaluate_expression(expr)
+                # Strip comments before processing - work with StringZilla strings
+                expr_sz = self._strip_comments_sz(directive.condition)
+                result = self._evaluate_expression_sz(expr_sz)
                 new_active = bool(result) and parent_active
                 new_any_condition_met = any_condition_met or new_active
                 condition_stack.append((new_active, False, new_any_condition_met))
@@ -419,21 +358,25 @@ class SimplePreprocessor:
     def _expand_defined(self, expr):
         """Expand defined(MACRO) expressions"""
         import re
-        
+
         # Handle defined(MACRO)
         def replace_defined_paren(match):
             macro_name = match.group(1)
-            return "1" if macro_name in self.macros else "0"
-        
+            # Convert to StringZilla.Str for consistent lookup
+            sz_macro_name = sz.Str(macro_name)
+            return "1" if sz_macro_name in self.macros else "0"
+
         expr = re.sub(r'defined\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)', replace_defined_paren, expr)
-        
+
         # Handle defined MACRO (without parentheses)
         def replace_defined_space(match):
             macro_name = match.group(1)
-            return "1" if macro_name in self.macros else "0"
-        
+            # Convert to StringZilla.Str for consistent lookup
+            sz_macro_name = sz.Str(macro_name)
+            return "1" if sz_macro_name in self.macros else "0"
+
         expr = re.sub(r'defined\s+([A-Za-z_][A-Za-z0-9_]*)', replace_defined_space, expr)
-        
+
         return expr
     
     def _expand_macros(self, expr):
@@ -450,8 +393,10 @@ class SimplePreprocessor:
             macro_name = match.group(0)
             if macro_name in reserved:
                 return macro_name
-            if macro_name in self.macros:
-                value = self.macros[macro_name]
+            import stringzilla as sz
+            sz_macro_name = sz.Str(macro_name)
+            if sz_macro_name in self.macros:
+                value = self.macros[sz_macro_name]
                 # Try to convert to int if possible
                 try:
                     return str(int(value))
@@ -469,31 +414,10 @@ class SimplePreprocessor:
     
     def _recursive_expand_macros(self, expr, max_iterations=10):
         """Recursively expand macros until no more changes occur or max iterations reached"""
-        import re
-        
-        def replace_macro(match):
-            macro_name = match.group(0)
-            if macro_name in self.macros:
-                value = self.macros[macro_name]
-                # Try to convert to int if possible
-                try:
-                    return str(int(value))
-                except ValueError:
-                    return value
-            else:
-                # Undefined macro defaults to 0
-                return "0"
-        
-        previous_expr = None
-        iteration = 0
-        
-        while expr != previous_expr and iteration < max_iterations:
-            previous_expr = expr
-            # Replace macro names (identifiers) with their values
-            expr = re.sub(r'(?<![0-9])\b[A-Za-z_][A-Za-z0-9_]*\b(?![0-9])', replace_macro, expr)
-            iteration += 1
-            
-        return expr
+        # Convert to StringZilla and use the native implementation
+        expr_sz = sz.Str(expr)
+        result_sz = self._recursive_expand_macros_sz(expr_sz, max_iterations)
+        return str(result_sz)
     
     def _safe_eval(self, expr):
         """Safely evaluate a numeric expression"""
