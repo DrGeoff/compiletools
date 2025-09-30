@@ -532,7 +532,6 @@ class TestMacroHashConsistency:
 
     def test_hash_empty_macro_state(self):
         """Verify empty macro state has consistent hash."""
-        import stringzilla as sz
 
         empty1 = {}
         empty2 = {}
@@ -564,9 +563,9 @@ class TestMacroHashConsistency:
         assert hash1 != hash2, "Different values with special chars should have different hashes"
 
     def test_hash_cross_module_consistency(self):
-        """Verify hash computation is consistent across module usage."""
+        """Verify hash computation is consistent and accessible."""
         import stringzilla as sz
-        from compiletools.simple_preprocessor import SimplePreprocessor, compute_macro_hash
+        from compiletools.simple_preprocessor import compute_macro_hash
 
         macros = {
             sz.Str("LINUX"): sz.Str("1"),
@@ -574,18 +573,15 @@ class TestMacroHashConsistency:
             sz.Str("VERSION"): sz.Str("100")
         }
 
-        # Direct hash computation
-        hash_direct = compute_macro_hash(macros)
+        # Hash computation (used by preprocessing_cache for cache keys)
+        hash_result = compute_macro_hash(macros)
 
-        # Hash via SimplePreprocessor (used internally for caching)
-        preprocessor = SimplePreprocessor(macros, verbose=0)
-        # The preprocessor uses compute_macro_hash internally for cache keys
-        # We verify it's using the same function by checking the hash length
+        # Verify hash format
+        assert len(hash_result) == 16, "Hash should be 16 characters (MD5 hex)"
+        assert all(c in '0123456789abcdef' for c in hash_result), "Hash should be hex"
 
-        assert len(hash_direct) == 16, "Direct hash should be 16 characters"
-
-        # Both should use the same hash function
-        # When preprocessor creates cache key, it uses compute_macro_hash
-        # This test verifies the function is accessible and produces consistent results
+        # Verify it's deterministic
+        hash_again = compute_macro_hash(macros)
+        assert hash_result == hash_again, "Hash should be deterministic"
 
 

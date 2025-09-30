@@ -1,6 +1,5 @@
 import os
 import subprocess
-import filecmp
 
 import compiletools.utils
 import compiletools.makefile

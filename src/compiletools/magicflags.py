@@ -11,7 +11,7 @@ import compiletools.configutils
 import compiletools.apptools
 import compiletools.compiler_macros
 import compiletools.dirnamer
-from compiletools.simple_preprocessor import SimplePreprocessor, compute_macro_hash
+from compiletools.simple_preprocessor import compute_macro_hash
 from compiletools.preprocessing_cache import get_or_compute_preprocessing
 from compiletools.apptools import cached_pkg_config_sz
 from compiletools.stringzilla_utils import strip_sz

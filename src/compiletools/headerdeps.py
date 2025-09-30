@@ -12,7 +12,6 @@ from compiletools.utils import split_command_cached
 import compiletools.tree as tree
 import compiletools.preprocessor
 import compiletools.compiler_macros
-from compiletools.simple_preprocessor import SimplePreprocessor
 from compiletools.preprocessing_cache import get_or_compute_preprocessing
 from compiletools.file_analyzer import FileAnalyzer
 
