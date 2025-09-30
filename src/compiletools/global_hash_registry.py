@@ -60,27 +60,30 @@ def load_hashes() -> None:
 
 
 @lru_cache(maxsize=None)
-def get_file_hash(filepath: str) -> Optional[str]:
+def get_file_hash(filepath: str) -> str:
     """Get hash for a file, loading hashes on first call.
-    
+
     For files tracked in git, uses cached hashes from git registry.
     For external files (system libraries, etc.), computes git blob hash on-demand.
-    
+
     Args:
         filepath: Path to file (absolute or relative)
-        
+
     Returns:
-        Git blob hash if file exists, None if file doesn't exist
+        Git blob hash
+
+    Raises:
+        FileNotFoundError: If filepath does not exist
     """
     # Ensure hashes are loaded
     if _HASHES is None:
         load_hashes()
-    
+
     # Convert to absolute path for consistent lookup
     # If path is relative, first try relative to current directory
     abs_path = wrappedos.realpath(filepath)
     result = _HASHES.get(abs_path)
-    
+
     # If not found and path was relative, try relative to git root
     if result is None and not os.path.isabs(filepath):
         try:
@@ -91,14 +94,19 @@ def get_file_hash(filepath: str) -> Optional[str]:
             result = _HASHES.get(abs_git_path)
         except Exception:
             pass  # Git root not available, stick with original result
-    
+
     # If still not found, check if file exists and compute hash on-demand
-    if result is None and os.path.exists(abs_path):
+    if result is None:
+        if not os.path.exists(abs_path):
+            raise FileNotFoundError(f"global_hash_registry encountered File not found: {filepath}")
+
         result = _compute_external_file_hash(abs_path)
         if result:
             # Cache the computed hash for future lookups
             _HASHES[abs_path] = result
-    
+        else:
+            raise FileNotFoundError(f"global_hash_registry encountered Failed to compute hash for file: {filepath}")
+
     return result
 
 

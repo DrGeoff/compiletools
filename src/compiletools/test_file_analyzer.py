@@ -9,12 +9,6 @@ from compiletools.file_analyzer import (
     read_file_mmap,
     read_file_traditional
 )
-from compiletools.stringzilla_utils import join_sz
-
-
-def get_text_from_result(result):
-    """Helper function to reconstruct text from FileAnalysisResult lines for testing."""
-    return join_sz('\n', result.lines)
 
 
 class TestFileAnalysisResult:
@@ -22,7 +16,7 @@ class TestFileAnalysisResult:
     
     def test_dataclass_creation(self):
         result = FileAnalysisResult(
-            lines=["test", "content"],
+            line_count=2,
             line_byte_offsets=[0, 5],
             include_positions=[10, 20],
             magic_positions=[5],
@@ -32,8 +26,8 @@ class TestFileAnalysisResult:
             bytes_analyzed=100,
             was_truncated=False
         )
-        
-        assert result.lines == ["test", "content"]
+
+        assert result.line_count == 2
         assert list(result.line_byte_offsets) == [0, 5]
         assert result.include_positions == [10, 20]
         assert result.magic_positions == [5]
@@ -76,13 +70,14 @@ int main() {
         filepath = self.create_test_file("test.c", content)
         analyzer = FileAnalyzer(filepath, max_read_size=0, verbose=0)
         result = analyzer.analyze()
-        
-        # Test basic functionality
-        file_content = join_sz('\n', result.lines)
-        assert "stdio.h" in file_content
-        assert "stdlib.h" in file_content
+
         # Should have 2 include positions (not the commented one)
         assert len(result.include_positions) == 2
+        # Verify the includes were detected correctly
+        assert len(result.includes) == 2
+        include_files = [inc['filename'] for inc in result.includes]
+        assert 'stdio.h' in include_files
+        assert 'stdlib.h' in include_files
         
     def test_magic_flags_detection(self):
         """Test magic flags detection."""

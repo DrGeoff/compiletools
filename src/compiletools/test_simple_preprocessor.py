@@ -95,7 +95,7 @@ class TestSimplePreprocessor:
                     directive_positions[directive_type].append(line_byte_offsets[line_num])
         
         return FileAnalysisResult(
-            lines=lines,
+            line_count=len(lines),
             line_byte_offsets=line_byte_offsets,
             include_positions=[],
             magic_positions=[],

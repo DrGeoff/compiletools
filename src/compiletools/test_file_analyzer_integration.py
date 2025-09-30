@@ -16,11 +16,6 @@ import compiletools.magicflags
 from compiletools.stringzilla_utils import join_sz
 
 
-def get_text_from_result(result):
-    """Helper function to reconstruct text from FileAnalysisResult lines for testing."""
-    return join_sz('\n', result.lines)
-
-
 class TestHeaderDepsIntegration(tb.BaseCompileToolsTestCase):
     """Test DirectHeaderDeps integration with FileAnalyzer."""
     

@@ -229,20 +229,20 @@ class SimplePreprocessor:
 
         _stats['cache_misses'] += 1
 
-        lines = file_result.lines
+        line_count = file_result.line_count
         active_lines = []
 
         # Stack to track conditional compilation state
         # Each entry: (is_active, seen_else, any_condition_met)
         condition_stack = [(True, False, False)]
-        
+
         # Convert directive_by_line to a sorted list for processing in order
         directive_lines = sorted(file_result.directive_by_line.keys())
         directive_iter = iter(directive_lines)
         next_directive_line = next(directive_iter, None)
-        
+
         i = 0
-        while i < len(lines):
+        while i < line_count:
             # Check if current line has a directive
             if i == next_directive_line:
                 directive = file_result.directive_by_line[i]
@@ -260,7 +260,7 @@ class SimplePreprocessor:
                         active_lines.append(i)
                         # Add continuation lines too
                         for j in range(continuation_lines):
-                            if i + j + 1 < len(lines):
+                            if i + j + 1 < line_count:
                                 active_lines.append(i + j + 1)
                 
                 # Skip the continuation lines we've already processed

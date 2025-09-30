@@ -283,36 +283,27 @@ def parse_directive_struct(dtype: str, pos: int, line_num: int,
 # Module-level cached file analysis - no object creation needed
 @lru_cache(maxsize=None)
 def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'FileAnalysisResult':
-    """Direct file analysis with caching - no object creation."""
-    # Get content hash from global registry - let errors propagate if file missing
+    """Direct file analysis with caching - no object creation.
+
+    Raises:
+        FileNotFoundError: If filepath does not exist
+    """
+    # Get content hash from global registry - raises FileNotFoundError if file missing
     from compiletools.global_hash_registry import get_file_hash
     content_hash = get_file_hash(filepath)
 
-    if not content_hash:
-        raise RuntimeError(f"File not found in global hash registry: {filepath}. "
-                          "This indicates the file was not present during startup or "
-                          "the global hash registry was not properly initialized.")
-
     filepath = compiletools.wrappedos.realpath(filepath)
 
-    if not os.path.exists(filepath):
-        return FileAnalysisResult(
-            lines=[],
-            line_byte_offsets=[],
-            include_positions=[],
-            magic_positions=[],
-            directive_positions={},
-            directives=[],
-            directive_by_line={},
-            bytes_analyzed=0,
-            was_truncated=False,
-            content_hash=content_hash
-        )
+    from stringzilla import Str, File
 
-    try:
-        from stringzilla import Str, File
+    file_size = os.path.getsize(filepath)
 
-        file_size = os.path.getsize(filepath)
+    # Handle empty files - StringZilla cannot memory-map zero-byte files
+    if file_size == 0:
+        str_text = Str("")
+        bytes_analyzed = 0
+        was_truncated = False
+    else:
         read_entire_file = (max_read_size == 0) or (file_size <= max_read_size)
 
         if read_entire_file:
@@ -324,20 +315,6 @@ def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'Fi
             # Read limited amount using mmap for better performance
             text, bytes_analyzed, was_truncated = read_file_mmap(filepath, max_read_size)
             str_text = Str(text)
-
-    except (IOError, OSError):
-        return FileAnalysisResult(
-            lines=[],
-            line_byte_offsets=[],
-            include_positions=[],
-            magic_positions=[],
-            directive_positions={},
-            directives=[],
-            directive_by_line={},
-            bytes_analyzed=0,
-            was_truncated=False,
-            content_hash=content_hash
-        )
 
     # Use StringZilla's splitlines for optimal line processing
     lines = str_text.splitlines()
@@ -478,7 +455,10 @@ def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'Fi
                                     'value': value_trimmed
                                 })
 
-    # Extract defines with full information
+    # Detect include guard first so we can exclude it from defines
+    include_guard = detect_include_guard(directives)
+
+    # Extract defines with full information (excluding include guard)
     defines = []
     for pos in directive_positions.get('define', []):
         line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
@@ -551,6 +531,10 @@ def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'Fi
             else:
                 value = None
 
+        # Skip include guard - it's tracked separately and doesn't affect compilation
+        if include_guard and name == include_guard:
+            continue
+
         defines.append({
             'line_num': line_num,
             'byte_pos': pos,
@@ -565,11 +549,8 @@ def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'Fi
     system_headers = {inc['filename'] for inc in includes if inc['is_system']}
     quoted_headers = {inc['filename'] for inc in includes if not inc['is_system']}
 
-    # Detect include guard
-    include_guard = detect_include_guard(directives)
-
     return FileAnalysisResult(
-        lines=lines,  # Keep StringZilla.Str objects for memory efficiency
+        line_count=len(lines),
         line_byte_offsets=line_byte_offsets,
         include_positions=include_positions,
         magic_positions=magic_positions,
@@ -710,7 +691,7 @@ class FileAnalysisResult:
     """
     
     # Line-level data (for SimplePreprocessor) - required fields first
-    lines: List['stringzilla.Str']                        # All lines of the file
+    line_count: int                         # Number of lines in the file
     line_byte_offsets: List[int]            # Byte offset where each line starts
     
     # Position arrays (for fast lookups) - required fields
