@@ -20,8 +20,31 @@ _stats = {
 _preprocessor_cache = {}
 
 
-def _compute_macro_hash(macros_dict) -> str:
-    """Compute deterministic hash of macro state for caching."""
+def compute_macro_hash(macros_dict) -> str:
+    """Compute deterministic hash of macro state for caching.
+
+    This is the CANONICAL macro hash implementation used throughout compiletools.
+    All subsystems (SimplePreprocessor, MagicFlags, HeaderDeps) must use this
+    function to ensure hash consistency.
+
+    Args:
+        macros_dict: Dictionary of macro definitions (dict[sz.Str, sz.Str])
+
+    Returns:
+        16-character hex hash of macro state (deterministic, sorted by key)
+
+    Examples:
+        >>> import stringzilla as sz
+        >>> macros = {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("2")}
+        >>> hash1 = compute_macro_hash(macros)
+        >>> len(hash1)
+        16
+    """
+    if not macros_dict:
+        # Empty macro state has consistent hash
+        return hashlib.sha256(b"").hexdigest()[:16]
+
+    # Sort by key for deterministic ordering
     macro_items = sorted(macros_dict.items())
     macro_parts = [f"{k}={v}" for k, v in macro_items]
     macro_string = "|".join(macro_parts)
@@ -50,16 +73,7 @@ class SimplePreprocessor:
     def _create_macro_signature(self):
         """Create a hashable signature of the current macro state."""
         return tuple(sorted(self.macros.items()))
-    
-    @property 
-    def macro_hash(self):
-        """Compute hash of current macro state."""
-        import hashlib
-        macro_items = sorted(self.macros.items())
-        macro_string = "|".join(f"{k}={v}" for k, v in macro_items)
-        return hashlib.sha256(macro_string.encode('utf-8')).hexdigest()[:12]
-    
-    
+
     def _strip_comments(self, expr):
         """Strip C/C++ style comments from expressions.
 
@@ -192,7 +206,7 @@ class SimplePreprocessor:
 
         # Check cache
         content_hash = file_result.content_hash
-        macro_hash = _compute_macro_hash(self.macros)
+        macro_hash = compute_macro_hash(self.macros)
         cache_key = (content_hash, macro_hash)
 
         if cache_key in _preprocessor_cache:

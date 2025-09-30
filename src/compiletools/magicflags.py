@@ -11,7 +11,7 @@ import compiletools.configutils
 import compiletools.apptools
 import compiletools.compiler_macros
 import compiletools.dirnamer
-from compiletools.simple_preprocessor import SimplePreprocessor
+from compiletools.simple_preprocessor import SimplePreprocessor, compute_macro_hash
 from compiletools.apptools import cached_pkg_config_sz
 from compiletools.stringzilla_utils import strip_sz
 
@@ -75,21 +75,6 @@ class MagicFlagsBase:
         self.magicpattern = re.compile(
             r"^[\s]*//#([\S]*?)[\s]*=[\s]*(.*)", re.MULTILINE
         )
-
-    def _compute_macro_hash(self, macros_dict=None):
-        """Compute hash of macro state."""
-        import hashlib
-
-        # Use provided macros or current state
-        if macros_dict is None:
-            macros_dict = getattr(self, 'defined_macros', {})
-
-        # Create deterministic hash of sorted macro definitions
-        # Optimize: use list comprehension instead of generator expression
-        macro_items = sorted(macros_dict.items())
-        macro_parts = [f"{k}={v}" for k, v in macro_items]
-        macro_string = "|".join(macro_parts)
-        return hashlib.sha256(macro_string.encode('utf-8')).hexdigest()[:12]
 
     def get_final_macro_hash(self, filename):
         """Get the final converged macro hash for a specific file.
@@ -570,7 +555,7 @@ class DirectMagicFlags(MagicFlagsBase):
             print(f"  - Final macro count: {len(self.defined_macros)}")
 
         # CONVERGENCE ACHIEVED: Store final macro hash for this filename
-        final_macro_hash = self._compute_macro_hash(self.defined_macros)
+        final_macro_hash = compute_macro_hash(self.defined_macros)
         
         # Check if we've already processed this file - verify consistency
         if filename in self._final_macro_hashes:
@@ -654,9 +639,9 @@ class DirectMagicFlags(MagicFlagsBase):
         """Verify that the macro state hasn't changed after convergence for a specific file."""
         if __debug__:
             if filename and filename in self._verification_final_macro_hashes:
-                current_hash = self._compute_macro_hash(self.defined_macros)
+                current_hash = compute_macro_hash(self.defined_macros)
                 converged_macro_state = self._verification_final_macro_hashes[filename]
-                converged_hash = self._compute_macro_hash(converged_macro_state)
+                converged_hash = compute_macro_hash(converged_macro_state)
                 assert current_hash == converged_hash, (
                     f"MACRO STATE CORRUPTION DETECTED in {context} for file {filename}!\n"
                     f"Converged hash: {converged_hash}\n"
