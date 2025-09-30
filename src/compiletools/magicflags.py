@@ -482,23 +482,8 @@ class DirectMagicFlags(MagicFlagsBase):
                             if self._args.verbose >= 9:
                                 print(f"DirectMagicFlags: prepopulating macro {macro_name} = {macro_value} from {fname}")
 
-                    # For header files, temporarily remove include guard macros to ensure content is processed
-                    # This allows us to extract macros from headers even if they've been processed before
-                    if fname.endswith('.hpp') or fname.endswith('.h'):
-                        # Use include guard detection from FileAnalyzer
-                        include_guard = file_result.include_guard
-
-                        if include_guard:
-                            if self._args.verbose >= 9:
-                                print(f"DirectMagicFlags: found include guard {include_guard} for {fname}")
-
-                            if include_guard in temp_macros:
-                                if self._args.verbose >= 9:
-                                    print(f"DirectMagicFlags: temporarily removing include guard {include_guard} for macro extraction from {fname}")
-                                del temp_macros[include_guard]
-                        else:
-                            if self._args.verbose >= 9:
-                                print(f"DirectMagicFlags: no include guard found in {fname}")
+                    # Note: Include guards are automatically excluded by FileAnalyzer
+                    # from the defines list, so they won't pollute the macro state
 
                     if self._args.verbose >= 9:
                         print(f"DirectMagicFlags: Processing {fname} with {len(temp_macros)} macros")

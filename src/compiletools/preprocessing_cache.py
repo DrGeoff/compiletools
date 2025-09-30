@@ -84,6 +84,11 @@ def get_or_compute_preprocessing(
     macro_hash = compute_macro_hash(input_macros)
     cache_key = (content_hash, macro_hash)
 
+    # Track macro states for analysis
+    if content_hash not in _macro_states_by_content:
+        _macro_states_by_content[content_hash] = []
+    _macro_states_by_content[content_hash].append((macro_hash, input_macros.copy()))
+
     # Check cache
     if cache_key in _unified_cache:
         _cache_stats['hits'] += 1
@@ -209,3 +214,72 @@ def dump_cache_keys(limit: int = 20):
         print(f"  [{i+1}] {filepath}")
         print(f"      content={content_hash[:8]}...{content_hash[-8:]}")
         print(f"      macro={macro_hash}")
+
+
+# Track macro states for analysis
+_macro_states_by_content = {}  # content_hash -> list of (macro_hash, input_macros)
+
+
+def analyze_cache_effectiveness():
+    """Analyze why cache isn't hitting as expected."""
+    from collections import defaultdict
+    from compiletools.global_hash_registry import get_filepath_by_hash
+
+    # Group by content_hash to see how many macro states per file
+    content_to_macro_hashes = defaultdict(set)
+    for content_hash, macro_hash in _unified_cache.keys():
+        content_to_macro_hashes[content_hash].add(macro_hash)
+
+    # Find files with multiple macro states
+    files_with_multiple_states = []
+    for content_hash, macro_hashes in content_to_macro_hashes.items():
+        if len(macro_hashes) > 1:
+            filepath = get_filepath_by_hash(content_hash) or '<unknown>'
+            files_with_multiple_states.append((filepath, content_hash, len(macro_hashes)))
+
+    print(f"\n=== Cache Effectiveness Analysis ===")
+    print(f"Total cache entries: {len(_unified_cache)}")
+    print(f"Unique files: {len(content_to_macro_hashes)}")
+    print(f"Files with multiple macro states: {len(files_with_multiple_states)}")
+
+    if files_with_multiple_states:
+        print(f"\nTop 10 files with most macro state variations:")
+        files_with_multiple_states.sort(key=lambda x: x[2], reverse=True)
+        for filepath, content_hash, count in files_with_multiple_states[:10]:
+            print(f"  {count:3}x  {filepath}")
+
+            # Analyze macro differences if we tracked them
+            if content_hash in _macro_states_by_content:
+                macro_states = _macro_states_by_content[content_hash]
+                print(f"       Analyzing {len(macro_states)} macro states:")
+
+                # Compare first two states to show differences
+                if len(macro_states) >= 2:
+                    state1_hash, state1_macros = macro_states[0]
+                    state2_hash, state2_macros = macro_states[1]
+
+                    keys1 = set(state1_macros.keys())
+                    keys2 = set(state2_macros.keys())
+
+                    only_in_1 = keys1 - keys2
+                    only_in_2 = keys2 - keys1
+                    common = keys1 & keys2
+
+                    different_values = []
+                    for key in common:
+                        if state1_macros[key] != state2_macros[key]:
+                            different_values.append(key)
+
+                    print(f"       State 1 has {len(state1_macros)} macros, State 2 has {len(state2_macros)} macros")
+                    if only_in_1:
+                        print(f"       Only in state 1: {list(only_in_1)[:5]}")
+                    if only_in_2:
+                        print(f"       Only in state 2: {list(only_in_2)[:5]}")
+                    if different_values:
+                        print(f"       Different values: {different_values[:5]}")
+
+    return {
+        'total_entries': len(_unified_cache),
+        'unique_files': len(content_to_macro_hashes),
+        'files_with_multiple_states': len(files_with_multiple_states)
+    }

@@ -77,7 +77,7 @@ class TestPreprocessingCache:
                 })
 
         return FileAnalysisResult(
-            lines=lines,
+            line_count=len(lines),
             line_byte_offsets=line_byte_offsets,
             include_positions=[],
             magic_positions=[],
@@ -231,7 +231,7 @@ class TestPreprocessingCache:
         )
 
         file_result = FileAnalysisResult(
-            lines=lines,
+            line_count=len(lines),
             line_byte_offsets=line_byte_offsets,
             include_positions=[],
             magic_positions=[],
@@ -324,7 +324,7 @@ class TestCacheManagement:
         text = "#include \"test.h\""
 
         file_result = FileAnalysisResult(
-            lines=[text],
+            line_count=1,
             line_byte_offsets=[0],
             include_positions=[],
             magic_positions=[],
@@ -373,7 +373,7 @@ class TestCacheManagement:
         for i in range(100):
             text = f"#include \"test{i}.h\""
             file_result = FileAnalysisResult(
-                lines=[text],
+                line_count=1,
                 line_byte_offsets=[0],
                 include_positions=[],
                 magic_positions=[],
