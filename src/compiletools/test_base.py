@@ -104,42 +104,77 @@ def create_magic_parser(extraargs=None, cache_home="None", tempdir=None):
     return compiletools.magicflags.create(args, headerdeps)
 
 @uth.requires_functional_compiler
-def compare_direct_cpp_magic(test_case, relativepath, tempdir=None):
-    """Utility to test that DirectMagicFlags and CppMagicFlags produce identical results"""
-        
+def compare_direct_cpp_magic(test_case, relativepath, tempdir=None, expected_values=None,
+                             parsers=None):
+    """Utility to test that DirectMagicFlags and CppMagicFlags produce identical results
+
+    Args:
+        test_case: Test case instance for assertions
+        relativepath: Path to test file relative to samples directory
+        tempdir: Optional temporary directory for test execution
+        expected_values: Optional dict of expected values to verify correctness
+                        Format: {"LDFLAGS": ["-lm"], "SOURCE": ["path/to/file.cpp"]}
+        parsers: Optional tuple of (magicparser_direct, magicparser_cpp) to reuse
+    """
+
     with uth.TempDirContext() as _:
         if tempdir is not None:
             # If specific tempdir provided, copy current working dir content there
             os.chdir(tempdir)
-            
+
         samplesdir = uth.samplesdir()
         realpath = os.path.join(samplesdir, relativepath)
-        
-        # Test direct parser with isolated context
-        with uth.ParserContext():
-            magicparser_direct = create_magic_parser(["--magic", "direct"], tempdir=os.getcwd())
+
+        # Use provided parsers or create new ones
+        if parsers:
+            magicparser_direct, magicparser_cpp = parsers
+            # Clear parser caches before reuse
+            magicparser_direct.clear_cache()
+            magicparser_cpp.clear_cache()
             try:
                 result_direct = magicparser_direct.parse(realpath)
-            except RuntimeError as e:
-                if "No functional C++ compiler detected" in str(e):
-                    pytest.skip("No functional C++ compiler detected")
-                else:
-                    raise
-        
-        # Test cpp parser with fresh isolated context
-        with uth.ParserContext():
-            magicparser_cpp = create_magic_parser(["--magic", "cpp"], tempdir=os.getcwd())
-            try:
                 result_cpp = magicparser_cpp.parse(realpath)
             except RuntimeError as e:
                 if "No functional C++ compiler detected" in str(e):
                     pytest.skip("No functional C++ compiler detected")
                 else:
                     raise
-        
+        else:
+            # Test direct parser with isolated context
+            with uth.ParserContext():
+                magicparser_direct = create_magic_parser(["--magic", "direct"], tempdir=os.getcwd())
+                try:
+                    result_direct = magicparser_direct.parse(realpath)
+                except RuntimeError as e:
+                    if "No functional C++ compiler detected" in str(e):
+                        pytest.skip("No functional C++ compiler detected")
+                    else:
+                        raise
+
+            # Test cpp parser with fresh isolated context
+            with uth.ParserContext():
+                magicparser_cpp = create_magic_parser(["--magic", "cpp"], tempdir=os.getcwd())
+                try:
+                    result_cpp = magicparser_cpp.parse(realpath)
+                except RuntimeError as e:
+                    if "No functional C++ compiler detected" in str(e):
+                        pytest.skip("No functional C++ compiler detected")
+                    else:
+                        raise
+
         # Results should be identical
         assert result_direct == result_cpp, \
                            f"DirectMagicFlags and CppMagicFlags gave different results for {relativepath}"
+
+        # If expected values provided, verify correctness
+        if expected_values:
+            import stringzilla as sz
+            for key, expected_list in expected_values.items():
+                sz_key = sz.Str(key)
+                assert sz_key in result_direct, f"Expected key '{key}' not found in result for {relativepath}"
+                actual_list = [str(x) for x in result_direct[sz_key]]
+                assert actual_list == expected_list, \
+                    f"For {relativepath}, expected {key}={expected_list}, got {actual_list}"
 
 
 def compare_direct_cpp_headers(test_case, filename, extraargs=None):

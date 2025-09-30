@@ -9,7 +9,12 @@ import compiletools.apptools
 
 
 class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
-    
+
+    def setup_method(self):
+        """Setup method - initialize parser cache"""
+        super().setup_method()
+        self._parser_cache = {}
+
     def _check_flags(self, result, flag_type, expected_flags, unexpected_flags):
         """Helper to verify flags of given type contain expected flags and not unexpected ones"""
         import stringzilla as sz
@@ -19,14 +24,28 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
                 not any(flag in flags_str for flag in unexpected_flags))
 
     def _parse_with_magic(self, magic_type, source_file, extra_args=None):
-        """Helper to create parser and parse file with given magic type"""
+        """Helper to create or reuse parser and parse file with given magic type
+
+        Parsers are cached by (magic_type, extra_args_tuple) to avoid recreating
+        identical parsers, but caches are cleared before each parse for isolation.
+        """
         args = ["--magic", magic_type] if magic_type else []
         if extra_args:
             args.extend(extra_args)
+
+        # Create cache key from magic type and extra args
+        extra_args_tuple = tuple(extra_args) if extra_args else ()
+        cache_key = (magic_type, extra_args_tuple)
+
+        # Get or create parser for this configuration
+        if cache_key not in self._parser_cache:
+            self._parser_cache[cache_key] = tb.create_magic_parser(args, tempdir=self._tmpdir)
+
+        parser = self._parser_cache[cache_key]
+        parser.clear_cache()  # Clear cache for test isolation
+
         try:
-            return tb.create_magic_parser(args, tempdir=self._tmpdir).parse(
-                self._get_sample_path(source_file)
-            )
+            return parser.parse(self._get_sample_path(source_file))
         except RuntimeError as e:
             if "No functional C++ compiler detected" in str(e):
                 pytest.skip("No functional C++ compiler detected")
@@ -37,20 +56,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         """Test parsing CFLAGS from magic comments"""
         result = self._parse_with_magic(None, "simple/test_cflags.c")
         assert self._check_flags(result, "CFLAGS", ["-std=gnu99"], [])
-
-    @uth.requires_functional_compiler
-    def test_SOURCE_direct(self):
-        """Test SOURCE detection using direct magic"""
-        result = self._parse_with_magic("direct", "cross_platform/cross_platform.cpp")
-        expected_source = {self._get_sample_path("cross_platform/cross_platform_lin.cpp")}
-        assert {str(s) for s in result.get(sz.Str("SOURCE"))} == expected_source
-
-    @uth.requires_functional_compiler
-    def test_SOURCE_cpp(self):
-        """Test SOURCE detection using cpp magic"""
-        result = self._parse_with_magic("cpp", "cross_platform/cross_platform.cpp")
-        expected_source = {self._get_sample_path("cross_platform/cross_platform_lin.cpp")}
-        assert {str(s) for s in result.get(sz.Str("SOURCE"))} == expected_source
 
     @uth.requires_functional_compiler
     @uth.requires_pkg_config("zlib")
@@ -83,78 +88,71 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert sz.Str("CXXFLAGS") in result
 
     @uth.requires_functional_compiler
-    def test_SOURCE_in_header(self):
-        """Test SOURCE detection from header files using cpp magic"""
-        result = self._parse_with_magic("cpp", "magicsourceinheader/main.cpp")
-        expected_ldflags = ["-lm"]
-        expected_source = [self._get_sample_path("magicsourceinheader/include_dir/sub_dir/the_code_lin.cpp")]
-
-        assert sz.Str("LDFLAGS") in result
-        assert [str(x) for x in result[sz.Str("LDFLAGS")]] == expected_ldflags
-        assert sz.Str("SOURCE") in result
-        assert [str(x) for x in result[sz.Str("SOURCE")]] == expected_source
-
-    @uth.requires_functional_compiler
-    def test_SOURCE_in_header_direct(self):
-        """Test SOURCE detection from header files using direct magic"""
-        result = self._parse_with_magic("direct", "magicsourceinheader/main.cpp")
-        expected_ldflags = ["-lm"]
-        expected_source = [self._get_sample_path("magicsourceinheader/include_dir/sub_dir/the_code_lin.cpp")]
-
-        assert sz.Str("LDFLAGS") in result
-        assert [str(x) for x in result[sz.Str("LDFLAGS")]] == expected_ldflags
-        assert sz.Str("SOURCE") in result
-        assert [str(x) for x in result[sz.Str("SOURCE")]] == expected_source
-
-    @uth.requires_functional_compiler
     def test_direct_and_cpp_magic_generate_same_results(self):
         """Test that DirectMagicFlags and CppMagicFlags produce identical results on conditional compilation samples"""
-            
-        # Test ALL conditional compilation samples for equivalence - expose any bugs
+
+        # Test files with optional expected values for correctness verification
+        # Format: (filename, expected_values_dict or None)
         test_files = [
-            # Original tested files
-            "cross_platform/cross_platform.cpp",
-            "magicsourceinheader/main.cpp", 
-            "macro_deps/main.cpp",
-            
+            # Core functionality with specific expected values
+            ("cross_platform/cross_platform.cpp",
+             {"SOURCE": [self._get_sample_path("cross_platform/cross_platform_lin.cpp")]}),
+
+            ("magicsourceinheader/main.cpp",
+             {"LDFLAGS": ["-lm"],
+              "SOURCE": [self._get_sample_path("magicsourceinheader/include_dir/sub_dir/the_code_lin.cpp")]}),
+
+            # Macro dependencies - verify correct feature selection
+            ("macro_deps/main.cpp", None),
+
             # LDFLAGS conditional compilation
-            "ldflags/conditional_ldflags_test.cpp",
-            "ldflags/version_dependent_ldflags.cpp",
-            
+            ("ldflags/conditional_ldflags_test.cpp", None),
+            ("ldflags/version_dependent_ldflags.cpp", None),
+
             # Platform-specific includes
-            "conditional_includes/main.cpp",
-            
+            ("conditional_includes/main.cpp", None),
+
             # Feature-based compilation
-            "feature_headers/main.cpp",
-            
-            # Complex macro scenarios
-            "cppflags_macros/elif_test.cpp",
-            "cppflags_macros/multi_flag_test.cpp", 
-            "cppflags_macros/nested_macros_test.cpp",
-            "cppflags_macros/compiler_builtin_test.cpp",
-            "cppflags_macros/advanced_preprocessor_test.cpp",
-            
-            # Version-dependent API (test for bugs)
-            "version_dependent_api/test_main.cpp",
-            "version_dependent_api/test_main_new.cpp",
-            
-            # Magic processing order bug test
-            "magic_processing_order/test_macro_transform.cpp",
-            "magic_processing_order/complex_test.cpp"
-            
-            # Note: magicinclude/main.cpp excluded - requires special include path setup not provided by equivalence test
+            ("feature_headers/main.cpp", None),
+
+            # Complex macro scenarios - each tests different preprocessor edge cases
+            ("cppflags_macros/elif_test.cpp", None),
+            ("cppflags_macros/multi_flag_test.cpp", None),
+            ("cppflags_macros/nested_macros_test.cpp", None),
+            ("cppflags_macros/compiler_builtin_test.cpp", None),
+            ("cppflags_macros/advanced_preprocessor_test.cpp", None),
+
+            # Version-dependent API - both old and new versions
+            ("version_dependent_api/test_main.cpp", None),
+            ("version_dependent_api/test_main_new.cpp", None),
+
+            # Magic processing order bug tests
+            ("magic_processing_order/test_macro_transform.cpp", None),
+            ("magic_processing_order/complex_test.cpp", None)
         ]
-        
-        failures = []
-        for filename in test_files:
-            try:
-                tb.compare_direct_cpp_magic(self, filename, self._tmpdir)
-            except (AssertionError, Exception) as e:
-                failures.append(f"{filename}: {str(e)}")
-        
-        if failures:
-            fail_msg = "\n\nDirectMagicFlags vs CppMagicFlags equivalence failures:\n" + "\n".join(failures)
-            assert False, fail_msg
+
+        # Create parsers once and reuse across all files
+        with uth.ParserContext():
+            magicparser_direct = tb.create_magic_parser(["--magic", "direct"], tempdir=self._tmpdir)
+            magicparser_cpp = tb.create_magic_parser(["--magic", "cpp"], tempdir=self._tmpdir)
+            parsers = (magicparser_direct, magicparser_cpp)
+
+            failures = []
+            for test_spec in test_files:
+                # Handle both tuple (filename, expected) and plain filename for compatibility
+                if isinstance(test_spec, tuple):
+                    filename, expected_values = test_spec
+                else:
+                    filename, expected_values = test_spec, None
+
+                try:
+                    tb.compare_direct_cpp_magic(self, filename, self._tmpdir, expected_values, parsers)
+                except (AssertionError, Exception) as e:
+                    failures.append(f"{filename}: {str(e)}")
+
+            if failures:
+                fail_msg = "\n\nDirectMagicFlags vs CppMagicFlags equivalence failures:\n" + "\n".join(failures)
+                assert False, fail_msg
 
     def test_macro_deps_cross_file(self):
         """Test that macros defined in source files affect header magic flags"""
