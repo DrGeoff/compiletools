@@ -254,8 +254,8 @@ class DirectHeaderDeps(HeaderDepsBase):
         result = get_or_compute_preprocessing(analysis_result, self.defined_macros, self.args.verbose)
         active_line_set = set(result.active_lines)
 
-        # Update our macro state from preprocessing results
-        self.defined_macros = result.updated_macros
+        # Update our macro state from preprocessing results (merge, don't replace)
+        self.defined_macros.update(result.updated_macros)
 
         # Extract active includes from FileAnalyzer's structured results (no regex needed!)
         includes = []
@@ -317,7 +317,7 @@ class DirectHeaderDeps(HeaderDepsBase):
         if realpath in results_set:
             return
         results_set.add(realpath)
-        
+
         # Process includes first (depth-first traversal to match preprocessor)
         cwd = compiletools.wrappedos.dirname(realpath)
         for include in self._create_include_list(realpath):
@@ -329,7 +329,7 @@ class DirectHeaderDeps(HeaderDepsBase):
                         trialpath,
                     )
                 self._process_impl_recursive(trialpath, results_order, results_set)
-        
+
         # Add current file after processing includes (depth-first order)
         results_order.append(realpath)
 

@@ -16,8 +16,11 @@ _stats = {
     'cache_misses': 0,
 }
 
-# Global preprocessor cache: (content_hash, macro_hash) -> active_lines (List[int])
-_preprocessor_cache = {}
+# Global preprocessor cache - dual strategy:
+# Invariant cache: content_hash -> active_lines (for files whose conditionals don't reference defined macros)
+# Variant cache: (content_hash, macro_hash) -> active_lines (for files that depend on macro state)
+_invariant_cache = {}
+_variant_cache = {}
 
 
 def compute_macro_hash(macros_dict) -> str:
@@ -204,30 +207,49 @@ class SimplePreprocessor:
             context = f"{caller.filename}:{caller.lineno} in {caller.name}"
             _stats['call_contexts'][context] += 1
 
-        # Check cache
+        # Dual cache strategy based on whether conditionals reference defined macros
         content_hash = file_result.content_hash
-        macro_hash = compute_macro_hash(self.macros)
-        cache_key = (content_hash, macro_hash)
+        is_invariant = not any(m in self.macros for m in file_result.conditional_macros)
 
-        if cache_key in _preprocessor_cache:
-            _stats['cache_hits'] += 1
-            active_lines = _preprocessor_cache[cache_key]
+        if is_invariant:
+            # Invariant: no referenced macros are defined
+            if content_hash in _invariant_cache:
+                _stats['cache_hits'] += 1
+                active_lines = _invariant_cache[content_hash]
 
-            # Reconstruct macro modifications by processing active #define/#undef directives
-            # This ensures macro state is updated even on cache hits
-            active_line_set = set(active_lines)
-            for line_num, directive in file_result.directive_by_line.items():
-                if line_num in active_line_set:
-                    if directive.directive_type == 'define' and directive.macro_name:
-                        macro_value = directive.macro_value if directive.macro_value is not None else "1"
-                        self.macros[directive.macro_name] = macro_value
-                    elif directive.directive_type == 'undef' and directive.macro_name:
-                        if directive.macro_name in self.macros:
-                            del self.macros[directive.macro_name]
+                # Reconstruct macro modifications from active #define/#undef
+                active_line_set = set(active_lines)
+                for line_num, directive in file_result.directive_by_line.items():
+                    if line_num in active_line_set:
+                        if directive.directive_type == 'define' and directive.macro_name:
+                            macro_value = directive.macro_value if directive.macro_value is not None else "1"
+                            self.macros[directive.macro_name] = macro_value
+                        elif directive.directive_type == 'undef' and directive.macro_name:
+                            if directive.macro_name in self.macros:
+                                del self.macros[directive.macro_name]
+                return active_lines
+            _stats['cache_misses'] += 1
+        else:
+            # Variant: depends on macro state
+            macro_hash = compute_macro_hash(self.macros)
+            cache_key = (content_hash, macro_hash)
 
-            return active_lines
+            if cache_key in _variant_cache:
+                _stats['cache_hits'] += 1
+                active_lines = _variant_cache[cache_key]
 
-        _stats['cache_misses'] += 1
+                # Reconstruct macro modifications from active #define/#undef
+                active_line_set = set(active_lines)
+                for line_num, directive in file_result.directive_by_line.items():
+                    if line_num in active_line_set:
+                        if directive.directive_type == 'define' and directive.macro_name:
+                            macro_value = directive.macro_value if directive.macro_value is not None else "1"
+                            self.macros[directive.macro_name] = macro_value
+                        elif directive.directive_type == 'undef' and directive.macro_name:
+                            if directive.macro_name in self.macros:
+                                del self.macros[directive.macro_name]
+                return active_lines
+            _stats['cache_misses'] += 1
 
         line_count = file_result.line_count
         active_lines = []
@@ -272,8 +294,11 @@ class SimplePreprocessor:
                     active_lines.append(i)
                 i += 1
 
-        # Store in cache before returning
-        _preprocessor_cache[cache_key] = active_lines
+        # Store in appropriate cache before returning
+        if is_invariant:
+            _invariant_cache[content_hash] = active_lines
+        else:
+            _variant_cache[cache_key] = active_lines
 
         return active_lines
     
@@ -592,7 +617,8 @@ class SimplePreprocessor:
 
 def clear_preprocessor_cache():
     """Clear the global preprocessor cache (for testing)."""
-    _preprocessor_cache.clear()
+    _invariant_cache.clear()
+    _variant_cache.clear()
 
 
 def print_preprocessor_stats():

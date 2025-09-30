@@ -360,8 +360,4 @@ def main(argv=None):
         from compiletools.simple_preprocessor import print_preprocessor_stats
         print_preprocessor_stats()
 
-        # Analyze preprocessing cache effectiveness
-        from compiletools.preprocessing_cache import analyze_cache_effectiveness
-        analyze_cache_effectiveness()
-
     return 0
