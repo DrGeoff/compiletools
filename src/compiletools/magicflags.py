@@ -516,15 +516,9 @@ class DirectMagicFlags(MagicFlagsBase):
 
                     if self._args.verbose >= 9:
                         print(f"DirectMagicFlags: Creating SimplePreprocessor for {fname} with macros: {list(temp_macros.keys())}")
-                        if 'ENABLE_FEATURE' in temp_macros:
-                            print(f"DirectMagicFlags: ENABLE_FEATURE = {temp_macros['ENABLE_FEATURE']} (type: {type(temp_macros['ENABLE_FEATURE'])})")
                     preprocessor = SimplePreprocessor(temp_macros, verbose=self._args.verbose)
                     if self._args.verbose >= 9:
                         print(f"DirectMagicFlags: SimplePreprocessor.macros keys: {list(preprocessor.macros.keys())}")
-                        if any('ENABLE_FEATURE' in str(k) for k in preprocessor.macros.keys()):
-                            for k, v in preprocessor.macros.items():
-                                if 'ENABLE_FEATURE' in str(k):
-                                    print(f"DirectMagicFlags: Found matching key: {repr(k)} = {v} (key type: {type(k)})")
                     active_lines = preprocessor.process_structured(file_result)
                     active_line_set = set(active_lines)
 
@@ -563,7 +557,6 @@ class DirectMagicFlags(MagicFlagsBase):
                     if self._args.verbose >= 5:
                         print(f"DirectMagicFlags warning: could not process {fname} for macro extraction: {e}")
 
-        # Enhanced debugging for loop exit
         if self._args.verbose >= 9:
             final_prev_keys = set(previous_macros.keys())
             final_curr_keys = set(self.defined_macros.keys())
@@ -575,8 +568,6 @@ class DirectMagicFlags(MagicFlagsBase):
             print(f"  - Final iteration == 0: {final_condition2}")
             print(f"  - Final iteration < max_iterations: {final_condition3} (iteration={iteration})")
             print(f"  - Final macro count: {len(self.defined_macros)}")
-            if 'ENABLE_FEATURE' in [str(k) for k in self.defined_macros.keys()]:
-                print("  - ENABLE_FEATURE found in final macros")
 
         # CONVERGENCE ACHIEVED: Store final macro hash for this filename
         final_macro_hash = self._compute_macro_hash(self.defined_macros)
