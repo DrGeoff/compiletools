@@ -13,6 +13,7 @@ import compiletools.tree as tree
 import compiletools.preprocessor
 import compiletools.compiler_macros
 from compiletools.simple_preprocessor import SimplePreprocessor
+from compiletools.preprocessing_cache import get_or_compute_preprocessing
 from compiletools.file_analyzer import FileAnalyzer
 
 
@@ -249,13 +250,12 @@ class DirectHeaderDeps(HeaderDepsBase):
         if self.args.verbose >= 9 and analysis_result.include_positions:
             print(f"DirectHeaderDeps::analyze - FileAnalyzer pre-found {len(analysis_result.include_positions)} includes in {realpath}")
 
-        # Use SimplePreprocessor to get active line numbers (proper architecture)
-        preprocessor = SimplePreprocessor(self.defined_macros, verbose=self.args.verbose)
-        active_lines = preprocessor.process_structured(analysis_result)
-        active_line_set = set(active_lines)
-        
-        # Update our macro state from preprocessor results
-        self.defined_macros.update(preprocessor.macros)
+        # Use unified preprocessing cache for active line detection
+        result = get_or_compute_preprocessing(analysis_result, self.defined_macros, self.args.verbose)
+        active_line_set = set(result.active_lines)
+
+        # Update our macro state from preprocessing results
+        self.defined_macros = result.updated_macros
 
         # Extract active includes from FileAnalyzer's structured results (no regex needed!)
         includes = []
