@@ -12,15 +12,7 @@ _stats = {
     'call_count': 0,
     'files_processed': Counter(),
     'call_contexts': Counter(),
-    'cache_hits': 0,
-    'cache_misses': 0,
 }
-
-# Global preprocessor cache - dual strategy:
-# Invariant cache: content_hash -> active_lines (for files whose conditionals don't reference defined macros)
-# Variant cache: (content_hash, macro_hash) -> active_lines (for files that depend on macro state)
-_invariant_cache = {}
-_variant_cache = {}
 
 
 def compute_macro_hash(macros_dict) -> str:
@@ -207,50 +199,6 @@ class SimplePreprocessor:
             context = f"{caller.filename}:{caller.lineno} in {caller.name}"
             _stats['call_contexts'][context] += 1
 
-        # Dual cache strategy based on whether conditionals reference defined macros
-        content_hash = file_result.content_hash
-        is_invariant = not any(m in self.macros for m in file_result.conditional_macros)
-
-        if is_invariant:
-            # Invariant: no referenced macros are defined
-            if content_hash in _invariant_cache:
-                _stats['cache_hits'] += 1
-                active_lines = _invariant_cache[content_hash]
-
-                # Reconstruct macro modifications from active #define/#undef
-                active_line_set = set(active_lines)
-                for line_num, directive in file_result.directive_by_line.items():
-                    if line_num in active_line_set:
-                        if directive.directive_type == 'define' and directive.macro_name:
-                            macro_value = directive.macro_value if directive.macro_value is not None else "1"
-                            self.macros[directive.macro_name] = macro_value
-                        elif directive.directive_type == 'undef' and directive.macro_name:
-                            if directive.macro_name in self.macros:
-                                del self.macros[directive.macro_name]
-                return active_lines
-            _stats['cache_misses'] += 1
-        else:
-            # Variant: depends on macro state
-            macro_hash = compute_macro_hash(self.macros)
-            cache_key = (content_hash, macro_hash)
-
-            if cache_key in _variant_cache:
-                _stats['cache_hits'] += 1
-                active_lines = _variant_cache[cache_key]
-
-                # Reconstruct macro modifications from active #define/#undef
-                active_line_set = set(active_lines)
-                for line_num, directive in file_result.directive_by_line.items():
-                    if line_num in active_line_set:
-                        if directive.directive_type == 'define' and directive.macro_name:
-                            macro_value = directive.macro_value if directive.macro_value is not None else "1"
-                            self.macros[directive.macro_name] = macro_value
-                        elif directive.directive_type == 'undef' and directive.macro_name:
-                            if directive.macro_name in self.macros:
-                                del self.macros[directive.macro_name]
-                return active_lines
-            _stats['cache_misses'] += 1
-
         line_count = file_result.line_count
         active_lines = []
 
@@ -293,12 +241,6 @@ class SimplePreprocessor:
                 if condition_stack[-1][0]:
                     active_lines.append(i)
                 i += 1
-
-        # Store in appropriate cache before returning
-        if is_invariant:
-            _invariant_cache[content_hash] = active_lines
-        else:
-            _variant_cache[cache_key] = active_lines
 
         return active_lines
     
@@ -615,21 +557,10 @@ class SimplePreprocessor:
         return expr
 
 
-def clear_preprocessor_cache():
-    """Clear the global preprocessor cache (for testing)."""
-    _invariant_cache.clear()
-    _variant_cache.clear()
-
-
 def print_preprocessor_stats():
-    """Print statistics about preprocessor usage."""
-    print("\n=== Preprocessor Statistics ===")
+    """Print SimplePreprocessor call statistics only."""
+    print("\n=== SimplePreprocessor Call Statistics ===")
     print(f"Total process_structured calls: {_stats['call_count']}")
-    print(f"Cache hits: {_stats['cache_hits']}")
-    print(f"Cache misses: {_stats['cache_misses']}")
-    if _stats['call_count'] > 0:
-        hit_rate = (_stats['cache_hits'] / _stats['call_count']) * 100
-        print(f"Cache hit rate: {hit_rate:.1f}%")
     print(f"\nTop 20 most processed files:")
     for filepath, count in _stats['files_processed'].most_common(20):
         print(f"  {count:6d}x  {filepath}")

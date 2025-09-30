@@ -28,9 +28,9 @@ class BaseCompileToolsTestCase:
         compiletools.compiler_macros.clear_cache()
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
         compiletools.magicflags.MagicFlagsBase.clear_cache()
-        # Clear simple_preprocessor global cache
-        from compiletools.simple_preprocessor import clear_preprocessor_cache
-        clear_preprocessor_cache()
+        # Clear preprocessing cache
+        from compiletools.preprocessing_cache import clear_cache
+        clear_cache()
         # Note: namer and hunter caches are cleared per-instance, not globally
     
     def setup_method(self):
