@@ -9,7 +9,7 @@ import mmap
 import bisect
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, FrozenSet
 from io import open
 
 import stringzilla
@@ -549,6 +549,9 @@ def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'Fi
     system_headers = {inc['filename'] for inc in includes if inc['is_system']}
     quoted_headers = {inc['filename'] for inc in includes if not inc['is_system']}
 
+    # Extract macros referenced in conditionals (for cache optimization)
+    conditional_macros = _extract_conditional_macros(directives)
+
     return FileAnalysisResult(
         line_count=len(lines),
         line_byte_offsets=line_byte_offsets,
@@ -565,7 +568,8 @@ def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'Fi
         system_headers=system_headers,
         quoted_headers=quoted_headers,
         content_hash=content_hash,
-        include_guard=include_guard
+        include_guard=include_guard,
+        conditional_macros=conditional_macros
     )
 
 
@@ -644,6 +648,50 @@ class PreprocessorDirective:
     condition: Optional['stringzilla.Str'] = None  # The condition expression (for if/ifdef/ifndef/elif)
     macro_name: Optional['stringzilla.Str'] = None # Macro name (for define/undef/ifdef/ifndef)
     macro_value: Optional['stringzilla.Str'] = None # Macro value (for define)
+
+
+def _extract_conditional_macros(directives: List[PreprocessorDirective]) -> FrozenSet['stringzilla.Str']:
+    """Extract all macro names referenced in conditional directives.
+
+    Returns frozenset of sz.Str macro names from ifdef/ifndef/if/elif conditions.
+    Used for cache optimization - files are effectively invariant when none
+    of these macros are defined.
+    """
+    import stringzilla as sz
+
+    macros = set()
+
+    for directive in directives:
+        if directive.directive_type in ('ifdef', 'ifndef'):
+            if directive.macro_name:
+                macros.add(directive.macro_name)
+        elif directive.directive_type in ('if', 'elif'):
+            if directive.condition:
+                # Extract identifiers from condition using stringzilla
+                cond = directive.condition
+                keywords = {'and', 'or', 'not', 'true', 'false', 'defined'}
+
+                i = 0
+                while i < len(cond):
+                    # Skip non-identifier chars
+                    if not is_alpha_or_underscore_sz(cond, i):
+                        i += 1
+                        continue
+
+                    # Found start of identifier
+                    start = i
+                    while i < len(cond) and (is_alpha_or_underscore_sz(cond, i) or
+                                           (i > start and cond[i:i+1].find_first_not_of('0123456789') == -1)):
+                        i += 1
+
+                    # Extract identifier
+                    identifier = cond[start:i]
+                    name = str(identifier)
+
+                    if name not in keywords:
+                        macros.add(identifier)
+
+    return frozenset(macros)
 
 
 def detect_include_guard(directives: List[PreprocessorDirective]) -> Optional['stringzilla.Str']:
@@ -745,6 +793,7 @@ class FileAnalysisResult:
     quoted_headers: Set[str] = field(default_factory=set)  # Unique quoted headers found
     content_hash: str = ""                  # SHA1 of original content
     include_guard: Optional['stringzilla.Str'] = None  # Include guard macro name (traditional) or sz.Str("pragma_once") for #pragma once
+    conditional_macros: FrozenSet['stringzilla.Str'] = field(default_factory=frozenset)  # Macros referenced in conditionals (for cache optimization)
     
     # Helper method for SimplePreprocessor compatibility
     def get_directive_line_numbers(self) -> Dict[str, Set[int]]:

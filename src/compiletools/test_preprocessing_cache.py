@@ -66,6 +66,14 @@ class TestPreprocessingCache:
                 directives.append(directive)
                 directive_by_line[line_num] = directive
 
+        # Build directive_positions from parsed directives
+        directive_positions = {}
+        for directive in directives:
+            dtype = directive.directive_type
+            if dtype not in directive_positions:
+                directive_positions[dtype] = []
+            directive_positions[dtype].append(directive.byte_pos)
+
         # Create includes list
         includes = []
         for line_num, line in enumerate(lines):
@@ -81,7 +89,7 @@ class TestPreprocessingCache:
             line_byte_offsets=line_byte_offsets,
             include_positions=[],
             magic_positions=[],
-            directive_positions={},
+            directive_positions=directive_positions,
             directives=directives,
             directive_by_line=directive_by_line,
             bytes_analyzed=len(text.encode('utf-8')),

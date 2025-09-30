@@ -8,6 +8,7 @@ import compiletools.hunter as hunter
 import compiletools.magicflags as magicflags
 import compiletools.apptools
 import compiletools.testhelper as uth
+import compiletools.preprocessing_cache as preprocessing_cache
 
 
 @uth.requires_functional_compiler
@@ -33,7 +34,8 @@ def test_macro_state_dependency_is_fixed():
     ]
     args = compiletools.apptools.parseargs(cap, argv)
     headerdeps.HeaderDepsBase.clear_cache()
-    
+    preprocessing_cache.clear_cache()
+
     deps1 = headerdeps.DirectHeaderDeps(args)
     includes1 = set(deps1.process(str(test_cpp)))
     
@@ -117,6 +119,7 @@ def test_hunter_respects_macro_state_changes():
     
     # Test 1: Without DEBUG macro should include release.h
     hunter.Hunter.clear_cache()
+    preprocessing_cache.clear_cache()
     hunter_no_debug = create_hunter_with_macros(debug_enabled=False)
     files_no_debug = set(hunter_no_debug.required_files(str(test_cpp)))
     

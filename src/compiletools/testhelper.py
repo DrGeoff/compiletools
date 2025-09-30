@@ -506,7 +506,11 @@ def headerdeps_result(filename, kind="direct", cppflags=None, include=None, extr
             with EnvironmentContext({"CTCACHE": cache}):
                 reload(compiletools.dirnamer)
                 reload(compiletools.headerdeps)
-                
+
+                # Clear preprocessing cache for test isolation
+                import compiletools.preprocessing_cache
+                compiletools.preprocessing_cache.clear_cache()
+
                 # Create fresh parser with complete isolation
                 with ParserContext():
                     cap = configargparse.ArgumentParser(
