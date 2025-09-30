@@ -12,6 +12,7 @@ import compiletools.apptools
 import compiletools.compiler_macros
 import compiletools.dirnamer
 from compiletools.simple_preprocessor import SimplePreprocessor, compute_macro_hash
+from compiletools.preprocessing_cache import get_or_compute_preprocessing
 from compiletools.apptools import cached_pkg_config_sz
 from compiletools.stringzilla_utils import strip_sz
 
@@ -500,16 +501,13 @@ class DirectMagicFlags(MagicFlagsBase):
                                 print(f"DirectMagicFlags: no include guard found in {fname}")
 
                     if self._args.verbose >= 9:
-                        print(f"DirectMagicFlags: Creating SimplePreprocessor for {fname} with macros: {list(temp_macros.keys())}")
-                    preprocessor = SimplePreprocessor(temp_macros, verbose=self._args.verbose)
-                    if self._args.verbose >= 9:
-                        print(f"DirectMagicFlags: SimplePreprocessor.macros keys: {list(preprocessor.macros.keys())}")
-                    active_lines = preprocessor.process_structured(file_result)
-                    active_line_set = set(active_lines)
+                        print(f"DirectMagicFlags: Processing {fname} with {len(temp_macros)} macros")
+                    result = get_or_compute_preprocessing(file_result, temp_macros, self._args.verbose)
+                    active_line_set = set(result.active_lines)
 
                     if self._args.verbose >= 9:
-                        print(f"DirectMagicFlags: {fname} has {len(file_result.defines)} defines, {len(active_lines)} active lines")
-                        print(f"DirectMagicFlags: Active lines for {fname}: {sorted(active_lines)}")
+                        print(f"DirectMagicFlags: {fname} has {len(file_result.defines)} defines, {len(result.active_lines)} active lines")
+                        print(f"DirectMagicFlags: Active lines for {fname}: {sorted(result.active_lines)}")
                         if file_result.defines:
                             print(f"DirectMagicFlags: Define lines in {fname}: {[d['line_num'] for d in file_result.defines]}")
 
@@ -586,37 +584,36 @@ class DirectMagicFlags(MagicFlagsBase):
         
         # Now return structured data with converged macro state
         result = []
-        
+
         # Get all files to process (main file + headers)
         all_files = list(self._explicit_macro_files) + [filename] + [h for h in headers if h != filename]
-        
+
         for filepath in all_files:
             if self._args.verbose >= 9:
                 print(f"DirectMagicFlags: Final processing of structured magic flags for {filepath}")
-            
+
             try:
                 # Get FileAnalysisResult using cached method
                 file_result = self._get_file_analyzer_result(filepath)
-                
+
                 # Get active line numbers using final converged macro state
-                preprocessor = SimplePreprocessor(self.defined_macros, verbose=self._args.verbose)
-                active_lines = preprocessor.process_structured(file_result)
-                active_line_set = set(active_lines)
-                
+                preprocessing_result = get_or_compute_preprocessing(file_result, self.defined_macros, self._args.verbose)
+                active_line_set = set(preprocessing_result.active_lines)
+
                 # Filter magic flags by active lines
                 active_magic_flags = []
                 for magic_flag in file_result.magic_flags:
                     if magic_flag['line_num'] in active_line_set:
                         active_magic_flags.append(magic_flag)
-                
+
                 if self._args.verbose >= 9:
                     print(f"DirectMagicFlags: Found {len(file_result.magic_flags)} total magic flags, {len(active_magic_flags)} active after preprocessing")
-                
+
                 result.append({
                     'filepath': filepath,
                     'active_magic_flags': active_magic_flags
                 })
-                
+
             except Exception as e:
                 if self._args.verbose >= 5:
                     print(f"DirectMagicFlags warning: could not process structured data for {filepath}: {e}")
@@ -625,11 +622,11 @@ class DirectMagicFlags(MagicFlagsBase):
                     'filepath': filepath,
                     'active_magic_flags': []
                 })
-        
+
         # Verify macro state hasn't been corrupted during final processing
         if __debug__:
             self._verify_macro_state_unchanged("get_structured_data() completion", filename)
-        
+
         return result
 
     # DirectMagicFlags doesn't implement readfile() - it uses structured data processing only
