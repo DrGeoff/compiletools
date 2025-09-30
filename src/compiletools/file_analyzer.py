@@ -657,7 +657,6 @@ def _extract_conditional_macros(directives: List[PreprocessorDirective]) -> Froz
     Used for cache optimization - files are effectively invariant when none
     of these macros are defined.
     """
-    import stringzilla as sz
 
     macros = set()
 

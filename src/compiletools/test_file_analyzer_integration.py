@@ -13,7 +13,6 @@ import compiletools.test_base as tb
 import compiletools.testhelper as uth
 import compiletools.headerdeps
 import compiletools.magicflags
-from compiletools.stringzilla_utils import join_sz
 
 
 class TestHeaderDepsIntegration(tb.BaseCompileToolsTestCase):

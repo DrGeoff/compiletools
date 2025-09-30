@@ -10,11 +10,9 @@ import stringzilla as sz
 from compiletools.preprocessing_cache import (
     get_or_compute_preprocessing,
     get_cache_stats,
-    clear_cache,
-    ProcessingResult
+    clear_cache
 )
 from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
-from compiletools.simple_preprocessor import compute_macro_hash
 
 
 class TestPreprocessingCache:
@@ -174,6 +172,10 @@ class TestPreprocessingCache:
         result1 = get_or_compute_preprocessing(file_result, macros1, 0)
         result2 = get_or_compute_preprocessing(file_result, macros2, 0)
 
+        # Both should have same active lines (FOO is defined in both)
+        assert result1.active_lines == result2.active_lines
+        assert 1 in result1.active_lines  # #include line is active
+
         # Different macro sets = different cache keys = both misses
         stats = get_cache_stats()
         assert stats['misses'] == 2
@@ -220,6 +222,16 @@ class TestPreprocessingCache:
 
         result1 = get_or_compute_preprocessing(file_result1, macros, 0)
         result2 = get_or_compute_preprocessing(file_result2, macros, 0)
+
+        # Both should have active lines (FOO is defined)
+        assert 1 in result1.active_lines  # #include line is active
+        assert 1 in result2.active_lines  # #include line is active
+
+        # But different includes
+        assert len(result1.active_includes) == 1
+        assert len(result2.active_includes) == 1
+        assert str(result1.active_includes[0]['filename']) == "test1.h"
+        assert str(result2.active_includes[0]['filename']) == "test2.h"
 
         # Different content_hash = different cache keys
         stats = get_cache_stats()

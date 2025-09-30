@@ -1,10 +1,9 @@
 """Simple C preprocessor for handling conditional compilation directives."""
 
-from typing import List, Tuple
+from typing import List
 import stringzilla as sz
 from compiletools.stringzilla_utils import is_alpha_or_underscore_sz
 from collections import Counter
-from functools import lru_cache
 import hashlib
 
 # Global statistics for profiling
@@ -561,9 +560,9 @@ def print_preprocessor_stats():
     """Print SimplePreprocessor call statistics only."""
     print("\n=== SimplePreprocessor Call Statistics ===")
     print(f"Total process_structured calls: {_stats['call_count']}")
-    print(f"\nTop 20 most processed files:")
+    print("\nTop 20 most processed files:")
     for filepath, count in _stats['files_processed'].most_common(20):
         print(f"  {count:6d}x  {filepath}")
-    print(f"\nTop 20 call contexts:")
+    print("\nTop 20 call contexts:")
     for context, count in _stats['call_contexts'].most_common(20):
         print(f"  {count:6d}x  {context}")
