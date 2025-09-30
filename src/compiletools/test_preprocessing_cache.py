@@ -84,6 +84,12 @@ class TestPreprocessingCache:
                     'type': 'quoted'
                 })
 
+        # Extract conditional_macros from directives (critical for cache logic)
+        conditional_macros = set()
+        for directive in directives:
+            if directive.directive_type in ('ifdef', 'ifndef') and directive.macro_name:
+                conditional_macros.add(directive.macro_name)
+
         return FileAnalysisResult(
             line_count=len(lines),
             line_byte_offsets=line_byte_offsets,
@@ -98,7 +104,8 @@ class TestPreprocessingCache:
             defines=[],
             magic_flags=[],
             content_hash=content_hash,
-            include_guard=None
+            include_guard=None,
+            conditional_macros=frozenset(conditional_macros)
         )
 
     def test_cache_basic_hit(self):

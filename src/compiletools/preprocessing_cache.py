@@ -53,27 +53,31 @@ def _make_macro_cache_key(macros: MacroDict) -> FrozenSet[Tuple[str, str]]:
     return frozenset((str(k), str(v)) for k, v in macros.items())
 
 
-def is_macro_invariant(file_result) -> bool:
-    """Determine if a file's active lines are independent of macro state.
+def is_macro_invariant(file_result, input_macros: MacroDict) -> bool:
+    """Determine if a file's active lines are independent of current macro state.
 
-    A file is macro-invariant if it contains no conditional compilation directives.
-    Such files always have the same active lines regardless of input macros.
+    A file is effectively invariant if none of its conditional macros are currently defined.
+    Even if a file contains #ifdef directives, if those macros aren't defined, the file
+    behaves identically regardless of other macro state changes.
 
-    Examples of macro-invariant files:
-    - Headers with only #define, #include, #pragma
-    - Implementation files without #ifdef/#ifndef
+    Examples of effectively invariant files:
+    - Headers with #ifdef __GNUC__ when __GNUC__ is not defined
+    - Files with platform checks that don't match current build
+    - Headers with only #define, #include, #pragma (no conditionals at all)
 
     Args:
-        file_result: FileAnalysisResult to check
+        file_result: FileAnalysisResult with conditional_macros field
+        input_macros: Current macro state to check against
 
     Returns:
-        True if file has no conditional directives, False otherwise
+        True if none of the file's conditional macros are defined, False otherwise
     """
-    conditional_directives = {'if', 'ifdef', 'ifndef', 'elif'}
-    return all(
-        len(file_result.directive_positions.get(dtype, [])) == 0
-        for dtype in conditional_directives
-    )
+    # If file has no conditionals at all, it's always invariant
+    if not file_result.conditional_macros:
+        return True
+
+    # Check if any conditional macro is currently defined
+    return not any(m in input_macros for m in file_result.conditional_macros)
 
 
 # Dual cache strategy:
@@ -128,7 +132,7 @@ def get_or_compute_preprocessing(
     _cache_stats['total_calls'] += 1
 
     content_hash = file_result.content_hash
-    invariant = is_macro_invariant(file_result)
+    invariant = is_macro_invariant(file_result, input_macros)
 
     # Check appropriate cache
     if invariant:
@@ -303,3 +307,28 @@ def clear_cache():
 
 # Track macro states for analysis
 _macro_states_by_content = {}  # content_hash -> list of (macro_hash, input_macros)
+
+
+def print_preprocessing_stats():
+    """Print preprocessing cache and SimplePreprocessor statistics."""
+    stats = get_cache_stats()
+
+    print("\n=== Preprocessing Cache Statistics ===")
+    print(f"Total preprocessing calls: {stats['total_calls']}")
+    print(f"Cache hits: {stats['hits']}")
+    print(f"Cache misses: {stats['misses']}")
+    print(f"Cache hit rate: {stats['hit_rate']:.1f}%")
+    print(f"\nCache entries:")
+    print(f"  Invariant entries: {stats['invariant_entries']}")
+    print(f"  Variant entries: {stats['variant_entries']}")
+    print(f"  Total entries: {stats['entries']}")
+    print(f"\nHit breakdown:")
+    print(f"  Invariant hits: {stats['invariant_hits']}")
+    print(f"  Variant hits: {stats['variant_hits']}")
+    print(f"\nMiss breakdown:")
+    print(f"  Invariant misses: {stats['invariant_misses']}")
+    print(f"  Variant misses: {stats['variant_misses']}")
+
+    # Print SimplePreprocessor call statistics
+    from compiletools.simple_preprocessor import print_preprocessor_stats
+    print_preprocessor_stats()

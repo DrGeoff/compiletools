@@ -16,9 +16,9 @@ class TestSimplePreprocessor:
     def setup_method(self):
         """Set up test fixtures before each test method."""
         import stringzilla as sz
-        # Clear global preprocessor cache before each test
-        from compiletools.simple_preprocessor import clear_preprocessor_cache
-        clear_preprocessor_cache()
+        # Clear preprocessing cache before each test
+        from compiletools.preprocessing_cache import clear_cache
+        clear_cache()
 
         self.macros = {
             sz.Str('TEST_MACRO'): sz.Str('1'),
