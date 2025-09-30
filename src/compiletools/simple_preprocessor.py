@@ -1,8 +1,31 @@
 """Simple C preprocessor for handling conditional compilation directives."""
 
-from typing import List
+from typing import List, Tuple
 import stringzilla as sz
 from compiletools.stringzilla_utils import is_alpha_or_underscore_sz
+from collections import Counter
+from functools import lru_cache
+import hashlib
+
+# Global statistics for profiling
+_stats = {
+    'call_count': 0,
+    'files_processed': Counter(),
+    'call_contexts': Counter(),
+    'cache_hits': 0,
+    'cache_misses': 0,
+}
+
+# Global preprocessor cache: (content_hash, macro_hash) -> active_lines (List[int])
+_preprocessor_cache = {}
+
+
+def _compute_macro_hash(macros_dict) -> str:
+    """Compute deterministic hash of macro state for caching."""
+    macro_items = sorted(macros_dict.items())
+    macro_parts = [f"{k}={v}" for k, v in macro_items]
+    macro_string = "|".join(macro_parts)
+    return hashlib.sha256(macro_string.encode('utf-8')).hexdigest()[:16]
 
 
 
@@ -144,16 +167,57 @@ class SimplePreprocessor:
 
     def process_structured(self, file_result) -> List[int]:
         """Process FileAnalysisResult and return active line numbers using structured directive data.
-        
+
         Args:
             file_result: FileAnalysisResult with structured directive information
-            
+
         Returns:
             List of line numbers (0-based) that are active after conditional compilation
         """
+        # Lookup filepath from content hash for logging
+        from compiletools.global_hash_registry import get_filepath_by_hash
+        filepath = get_filepath_by_hash(file_result.content_hash) or '<unknown>'
+
+        # Track statistics
+        _stats['call_count'] += 1
+        _stats['files_processed'][filepath] += 1
+
+        # Capture call context - get caller info
+        import traceback
+        stack = traceback.extract_stack()
+        if len(stack) >= 2:
+            caller = stack[-2]
+            context = f"{caller.filename}:{caller.lineno} in {caller.name}"
+            _stats['call_contexts'][context] += 1
+
+        # Check cache
+        content_hash = file_result.content_hash
+        macro_hash = _compute_macro_hash(self.macros)
+        cache_key = (content_hash, macro_hash)
+
+        if cache_key in _preprocessor_cache:
+            _stats['cache_hits'] += 1
+            active_lines = _preprocessor_cache[cache_key]
+
+            # Reconstruct macro modifications by processing active #define/#undef directives
+            # This ensures macro state is updated even on cache hits
+            active_line_set = set(active_lines)
+            for line_num, directive in file_result.directive_by_line.items():
+                if line_num in active_line_set:
+                    if directive.directive_type == 'define' and directive.macro_name:
+                        macro_value = directive.macro_value if directive.macro_value is not None else "1"
+                        self.macros[directive.macro_name] = macro_value
+                    elif directive.directive_type == 'undef' and directive.macro_name:
+                        if directive.macro_name in self.macros:
+                            del self.macros[directive.macro_name]
+
+            return active_lines
+
+        _stats['cache_misses'] += 1
+
         lines = file_result.lines
         active_lines = []
-        
+
         # Stack to track conditional compilation state
         # Each entry: (is_active, seen_else, any_condition_met)
         condition_stack = [(True, False, False)]
@@ -193,7 +257,10 @@ class SimplePreprocessor:
                 if condition_stack[-1][0]:
                     active_lines.append(i)
                 i += 1
-        
+
+        # Store in cache before returning
+        _preprocessor_cache[cache_key] = active_lines
+
         return active_lines
     
     # Text-based processing removed - all processing now goes through process_structured()
@@ -507,3 +574,25 @@ class SimplePreprocessor:
         # Replace octal: leading 0 followed by one or more octal digits, not 0x/0b already handled
         expr = re.sub(r'\b0[0-7]+\b', repl_oct, expr)
         return expr
+
+
+def clear_preprocessor_cache():
+    """Clear the global preprocessor cache (for testing)."""
+    _preprocessor_cache.clear()
+
+
+def print_preprocessor_stats():
+    """Print statistics about preprocessor usage."""
+    print("\n=== Preprocessor Statistics ===")
+    print(f"Total process_structured calls: {_stats['call_count']}")
+    print(f"Cache hits: {_stats['cache_hits']}")
+    print(f"Cache misses: {_stats['cache_misses']}")
+    if _stats['call_count'] > 0:
+        hit_rate = (_stats['cache_hits'] / _stats['call_count']) * 100
+        print(f"Cache hit rate: {hit_rate:.1f}%")
+    print(f"\nTop 20 most processed files:")
+    for filepath, count in _stats['files_processed'].most_common(20):
+        print(f"  {count:6d}x  {filepath}")
+    print(f"\nTop 20 call contexts:")
+    for context, count in _stats['call_contexts'].most_common(20):
+        print(f"  {count:6d}x  {context}")

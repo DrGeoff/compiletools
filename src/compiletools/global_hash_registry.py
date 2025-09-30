@@ -118,3 +118,21 @@ def clear_global_registry() -> None:
     global _HASHES
     with _lock:
         _HASHES = None
+
+
+def get_filepath_by_hash(file_hash: str) -> Optional[str]:
+    """Reverse lookup: get filepath from hash.
+
+    Args:
+        file_hash: Git blob hash
+
+    Returns:
+        Filepath if found, None otherwise
+    """
+    if _HASHES is None:
+        load_hashes()
+
+    for filepath, h in _HASHES.items():
+        if h == file_hash:
+            return filepath
+    return None

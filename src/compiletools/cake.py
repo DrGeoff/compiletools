@@ -355,5 +355,9 @@ def main(argv=None):
             return 1
         else:
             raise
-    
+    finally:
+        # Print preprocessor statistics
+        from compiletools.simple_preprocessor import print_preprocessor_stats
+        print_preprocessor_stats()
+
     return 0
