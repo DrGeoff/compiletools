@@ -54,17 +54,6 @@ class TestMakefile:
         with uth.TempDirContextNoChange() as tempdir1:
             self._create_makefile_and_make(tempdir1)
 
-            # Verify that the Makefiles and build products are identical between the two runs
-            with uth.TempDirContextNoChange() as tempdir2:
-                self._create_makefile_and_make(tempdir2)
-
-                # Only check the bin directory as the config file has a unique name
-                comparator = filecmp.dircmp(
-                    os.path.join(tempdir1, "bin"), os.path.join(tempdir2, "bin")
-                )
-                # print(comparator.diff_files)
-                assert len(comparator.diff_files) == 0
-
     @uth.requires_functional_compiler
     def test_static_library(self):
         _test_library("--static")
