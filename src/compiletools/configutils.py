@@ -197,6 +197,11 @@ def default_config_directories(
     if system_config_dir is not None:
         system_dirs.append(system_config_dir)
     else:
+        # Add package's bundled config directory (step 2b - highest priority among system configs)
+        package_config_dir = os.path.join(os.path.dirname(__file__), "ct.conf.d")
+        if compiletools.wrappedos.isdir(package_config_dir):
+            system_dirs.append(package_config_dir)
+
         for python_config_dir in sys.path[::-1]:
             trialpath = os.path.join(python_config_dir, "ct", "ct.conf.d")
             if compiletools.wrappedos.isdir(trialpath) and trialpath not in system_dirs:
