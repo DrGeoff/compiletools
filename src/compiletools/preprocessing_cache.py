@@ -14,7 +14,6 @@ from typing import List, Dict, FrozenSet, Tuple
 from dataclasses import dataclass
 import sys
 import stringzilla as sz
-from compiletools.simple_preprocessor import compute_macro_hash
 
 
 @dataclass
@@ -157,19 +156,13 @@ def get_or_compute_preprocessing(
         macro_key = _make_macro_cache_key(input_macros)
         cache_key = (content_hash, macro_key)
 
-        # Track macro states for analysis
-        if content_hash not in _macro_states_by_content:
-            _macro_states_by_content[content_hash] = []
-        macro_hash = compute_macro_hash(input_macros)
-        _macro_states_by_content[content_hash].append((macro_hash, input_macros.copy()))
-
         if cache_key in _variant_cache:
             _cache_stats['hits'] += 1
             _cache_stats['variant_hits'] += 1
             if verbose >= 9:
                 from compiletools.global_hash_registry import get_filepath_by_hash
                 filepath = get_filepath_by_hash(content_hash) or '<unknown>'
-                print(f"Variant cache hit: {filepath} (macro_hash={macro_hash})")
+                print(f"Variant cache hit: {filepath}")
             return _variant_cache[cache_key]
 
         _cache_stats['misses'] += 1
@@ -177,7 +170,7 @@ def get_or_compute_preprocessing(
         if verbose >= 9:
             from compiletools.global_hash_registry import get_filepath_by_hash
             filepath = get_filepath_by_hash(content_hash) or '<unknown>'
-            print(f"Variant cache miss: {filepath} (macro_hash={macro_hash})")
+            print(f"Variant cache miss: {filepath}")
 
     # Compute result
     preprocessor = SimplePreprocessor(input_macros.copy(), verbose=verbose)
@@ -291,7 +284,6 @@ def clear_cache():
     """
     _invariant_cache.clear()
     _variant_cache.clear()
-    _macro_states_by_content.clear()
     _cache_stats['hits'] = 0
     _cache_stats['misses'] = 0
     _cache_stats['invariant_hits'] = 0
@@ -303,10 +295,6 @@ def clear_cache():
     # Clear file analyzer cache since analysis results are used by preprocessing
     from compiletools.file_analyzer import analyze_file
     analyze_file.cache_clear()
-
-
-# Track macro states for analysis
-_macro_states_by_content = {}  # content_hash -> list of (macro_hash, input_macros)
 
 
 def print_preprocessing_stats():

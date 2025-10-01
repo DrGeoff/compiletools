@@ -503,6 +503,47 @@ def extract_command_line_macros(args, flag_sources=None, include_compiler_macros
     return macros
 
 
+def extract_command_line_macros_sz(args, flag_sources_sz, verbose=0):
+    """Extract -D macro definitions from sz.Str command line flags.
+
+    Args:
+        args: Object with sz.Str list attributes
+        flag_sources_sz: List of sz.Str flag names
+        verbose: Verbosity level
+
+    Returns:
+        Dict[sz.Str, sz.Str]: macro_name -> macro_value mapping
+    """
+    import stringzilla as sz
+
+    macros = {}
+
+    for flag_name_sz in flag_sources_sz:
+        flag_list = getattr(args, str(flag_name_sz), None)
+        if not flag_list:
+            continue
+
+        for flag_sz in flag_list:
+            if not flag_sz.startswith('-D'):
+                continue
+
+            macro_def = flag_sz[2:]
+            eq_pos = macro_def.find('=')
+            if eq_pos >= 0:
+                macro_name = macro_def[:eq_pos]
+                macro_value = macro_def[eq_pos + 1:]
+            else:
+                macro_name = macro_def
+                macro_value = sz.Str("1")
+
+            if macro_name:
+                macros[macro_name] = macro_value
+                if verbose >= 9:
+                    print(f"extract_command_line_macros_sz: added macro {macro_name} = {macro_value} from {flag_name_sz}")
+
+    return macros
+
+
 def clear_cache():
     """Clear any caches for macro extraction and pkg-config."""
     cached_pkg_config.cache_clear()
