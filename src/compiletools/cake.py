@@ -327,7 +327,6 @@ def main(argv=None):
 
     args = compiletools.apptools.parseargs(cap, argv)
 
-    
 
     if not any([args.filename, args.static, args.dynamic, args.tests, args.auto]):
         print(

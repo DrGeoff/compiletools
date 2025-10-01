@@ -35,6 +35,16 @@ class Hunter(object):
         self.args = args
         self.headerdeps = headerdeps
         self.magicparser = magicparser
+        # Clear lru_cache on instance methods to prevent stale cache across builds
+        # The cache is bound to the method, not the instance, so it persists
+        try:
+            Hunter._get_immediate_deps.cache_clear()
+        except AttributeError:
+            pass  # Method doesn't exist yet (first instantiation)
+        try:
+            Hunter._parse_magic.cache_clear()
+        except AttributeError:
+            pass  # Method doesn't exist yet (first instantiation)
 
     def _extractSOURCE(self, realpath):
         import stringzilla as sz
@@ -47,63 +57,52 @@ class Hunter(object):
         return ess
 
     @functools.lru_cache(maxsize=None)
-    def _required_files_cached(self, realpath, macro_hash):
-        """Cached dependency resolution keyed by file path + macro state.
-        
-        Args:
-            realpath: The real path to the file
-            macro_hash: Hash of the macro state affecting this file's dependencies
-            
+    def _get_immediate_deps(self, realpath, macro_hash):
+        """Get immediate dependencies for a single file (cached by realpath + macro_hash).
+
         Returns:
-            List of all files (headers and sources) that this file depends on
+            Tuple of (headers, sources) where each is a tuple of absolute paths
         """
-        return self._required_files_impl_uncached(realpath)
-    
-    def _required_files_impl_uncached(self, realpath, processed=None):
-        """ The recursive implementation that finds the source files.
-            This function returns all headers and source files encountered.
-            If you only need the source files then post process the result.
-            It is a precondition that realpath actually is a realpath.
-            
-            This is the uncached version - normally called via _required_files_cached.
-        """
-        if not processed:
-            processed = set()
         if self.args.verbose >= 7:
-            print("Hunter::_required_files_impl. Finding header deps for ", realpath)
+            print(f"Hunter::_get_immediate_deps for {realpath} (macro_hash={macro_hash})")
 
-        # Don't try and collapse these lines.
-        # We don't want todo as a handle to the headerdeps.process object.
-        todo = list(self.headerdeps.process(realpath))
+        headers = tuple(self.headerdeps.process(realpath))
 
-        # One of the magic flags is SOURCE.  If that was present, add to the
-        # file list.
+        sources = ()
         if self.args.allow_magic_source_in_header or compiletools.utils.is_source(realpath):
-            todo.extend(self._extractSOURCE(realpath))
+            sources = tuple(self._extractSOURCE(realpath))
 
-        # The header deps and magic flags have been parsed at this point so it
-        # is now safe to mark the realpath as processed.
-        processed.add(realpath)
-
-        # Note that the implied source file of an actual source file is itself
+        # Check for implied source (e.g., .cpp for .h)
         implied = compiletools.utils.implied_source(realpath)
         if implied:
-            todo.append(implied)
-            todo.extend(self.headerdeps.process(implied))
+            implied_headers = tuple(self.headerdeps.process(implied))
+            headers = headers + (implied,) + implied_headers
 
-        todo = [f for f in compiletools.utils.ordered_unique(todo) if f not in processed]
-        while todo:
-            if self.args.verbose >= 9:
-                print(
-                    "Hunter::_required_files_impl. ", realpath, " remaining todo:", todo
-                )
-            morefiles = []
-            for nextfile in todo:
-                morefiles.extend(self._required_files_impl_uncached(nextfile, processed))
-            todo = [f for f in compiletools.utils.ordered_unique(morefiles) if f not in processed]
+        return (headers, sources)
+
+    def _expand_deps_recursive(self, realpath, macro_hash, processed):
+        """Recursively expand dependencies (internal helper)."""
+        if realpath in processed:
+            return
+
+        processed.add(realpath)
+        headers, sources = self._get_immediate_deps(realpath, macro_hash)
+
+        for dep in headers + sources:
+            if dep not in processed:
+                self._expand_deps_recursive(dep, macro_hash, processed)
+
+    def _required_files_impl(self, realpath, macro_hash):
+        """Get all transitive dependencies for a file."""
+        if self.args.verbose >= 7:
+            print(f"Hunter::_required_files_impl for {realpath}")
+
+        processed = set()
+        self._expand_deps_recursive(realpath, macro_hash, processed)
 
         if self.args.verbose >= 9:
-            print("Hunter::_required_files_impl. ", realpath, " Returning ", processed)
+            print(f"Hunter::_required_files_impl returning {len(processed)} files")
+
         return list(processed)
 
     def required_source_files(self, filename):
@@ -130,25 +129,23 @@ class Hunter(object):
         """
         if self.args.verbose >= 9:
             print("Hunter::required_files for " + filename)
-            
+
         realpath = compiletools.wrappedos.realpath(filename)
-        
-        # Use macro-hash-aware caching for performance
+
+        # Ensure magic flags are processed to get macro hash
         try:
-            # Ensure magic flags are processed to get macro hash
             self.magicflags(filename)
             macro_hash = self.macro_hash(filename)
-            
-            if self.args.verbose >= 8:
-                print(f"Hunter::required_files using cached lookup with macro_hash {macro_hash} for {filename}")
-            
-            return self._required_files_cached(realpath, macro_hash)
-            
-        except RuntimeError:
-            # Fallback: macro hash not available (shouldn't happen in normal usage)
-            if self.args.verbose >= 5:
-                print(f"Hunter::required_files falling back to uncached for {filename} (macro hash not available)")
-            return self._required_files_impl_uncached(realpath)
+        except RuntimeError as e:
+            # This should not happen in normal usage - indicates magicflags() succeeded
+            # but macro_hash isn't available, suggesting a bug in our code
+            print(f"ERROR in required_files: {e}")
+            raise
+
+        if self.args.verbose >= 8:
+            print(f"Hunter::required_files for {filename} (macro_hash={macro_hash})")
+
+        return self._required_files_impl(realpath, macro_hash)
 
     @staticmethod
     def clear_cache():
@@ -165,8 +162,8 @@ class Hunter(object):
         """Clear this instance's caches."""
         if hasattr(self, '_parse_magic'):
             self._parse_magic.cache_clear()
-        if hasattr(self, '_required_files_cached'):
-            self._required_files_cached.cache_clear()
+        if hasattr(self, '_get_immediate_deps'):
+            self._get_immediate_deps.cache_clear()
         # Clear project-level source discovery caches
         if hasattr(self, '_hunted_sources'):
             del self._hunted_sources
@@ -184,7 +181,7 @@ class Hunter(object):
 
     def macro_hash(self, filename):
         """Get final converged macro hash for the given file.
-        
+
         Raises:
             RuntimeError: If parse() hasn't been called for this file yet
         """
@@ -267,7 +264,6 @@ class Hunter(object):
 
         # Cache the results as sorted absolute paths
         self._hunted_sources = sorted(all_sources)  # all_sources already contains realpaths
-
 
         if self.args.verbose >= 5:
             print(f"Hunter::huntsource - Discovered {len(self._hunted_sources)} total sources")

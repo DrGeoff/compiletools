@@ -173,6 +173,7 @@ def test_hunter_respects_macro_state_changes():
     # Clear cache after mutating the instance's dependencies (different cmdline args)
     hunter.Hunter.clear_cache()
     preprocessing_cache.clear_cache()
+    hunter_instance.clear_instance_cache()
 
     # Second call with changed macro state - this is the regression test
     files2 = set(hunter_instance.required_files(str(test_cpp)))
