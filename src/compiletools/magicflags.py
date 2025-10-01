@@ -14,7 +14,7 @@ import compiletools.configutils
 import compiletools.apptools
 import compiletools.compiler_macros
 import compiletools.dirnamer
-from compiletools.preprocessing_cache import get_or_compute_preprocessing, MacroState, compute_macro_hash
+from compiletools.preprocessing_cache import get_or_compute_preprocessing, MacroState, compute_macro_hash, is_macro_invariant
 from compiletools.apptools import cached_pkg_config_sz
 from compiletools.stringzilla_utils import strip_sz
 from compiletools.file_analyzer import FileAnalysisResult
@@ -544,25 +544,64 @@ class DirectMagicFlags(MagicFlagsBase):
             self._extract_macros_from_file(macro_file)
         
         # Process files iteratively until macros converge (keys and values stabilize)
-        previous_macros = {}
+        # Skip files that are macro-invariant and already processed
         max_iterations = 5
+        all_files = list(self._explicit_macro_files) + [filename] + [h for h in headers if h != filename]
+        processed_invariant_files = set()  # Files processed and found to be invariant
         iteration = 0
 
-        while (previous_macros != self.defined_macros or iteration == 0) and iteration < max_iterations:
-            previous_macros = self.defined_macros.copy()
+        while iteration < max_iterations:
             iteration += 1
+            macro_hash_before = compute_macro_hash(self.defined_macros)
+            files_processed = 0
+            files_skipped = 0
 
             if self._args.verbose >= 9:
                 print(f"DirectMagicFlags: Iteration {iteration}, {len(self.defined_macros)} known macros")
-            
-            # Process each file and extract macros from defines
-            # Main file first (often has PKG-CONFIG), then headers
-            all_files = list(self._explicit_macro_files) + [filename] + [h for h in headers if h != filename]
 
+            # Process each file, skipping those that are invariant and already processed
             for fname in all_files:
+                # Check if file is invariant under current macro state
+                try:
+                    file_result = self._get_file_analyzer_result(fname)
+                    currently_invariant = is_macro_invariant(file_result, self.defined_macros)
+                except Exception:
+                    # If we can't analyze, process it
+                    currently_invariant = False
+
+                # Skip if file is invariant and we've already processed it
+                if fname in processed_invariant_files and currently_invariant:
+                    if self._args.verbose >= 9:
+                        print(f"DirectMagicFlags: Skipping invariant file {fname}")
+                    files_skipped += 1
+                    continue
+
+                # Process the file
                 if self._args.verbose >= 9:
-                    print("DirectMagicFlags::get_structured_data processing " + fname)
+                    print(f"DirectMagicFlags: Processing {fname}")
                 self._process_file_for_macros(fname)
+                files_processed += 1
+
+                # Update invariance tracking after processing
+                try:
+                    file_result = self._get_file_analyzer_result(fname)
+                    if is_macro_invariant(file_result, self.defined_macros):
+                        processed_invariant_files.add(fname)
+                    else:
+                        # File is variant, remove from invariant set
+                        processed_invariant_files.discard(fname)
+                except Exception:
+                    processed_invariant_files.discard(fname)
+
+            if self._args.verbose >= 9:
+                print(f"DirectMagicFlags: Processed {files_processed} files, skipped {files_skipped} invariant")
+
+            # Check convergence
+            macro_hash_after = compute_macro_hash(self.defined_macros)
+            if macro_hash_after == macro_hash_before:
+                if self._args.verbose >= 9:
+                    print(f"DirectMagicFlags: Converged - macro state unchanged")
+                break
 
         if self._args.verbose >= 7:
             print(f"DirectMagicFlags: Macro convergence after {iteration} iterations, {len(self.defined_macros)} macros")

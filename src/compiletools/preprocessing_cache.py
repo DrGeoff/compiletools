@@ -173,6 +173,22 @@ def compute_macro_hash(macros: 'MacroState') -> int:
     return hash(_make_macro_cache_key(macros))
 
 
+def is_permanently_invariant(file_result) -> bool:
+    """Determine if a file is permanently invariant (no conditionals).
+
+    Files with no conditional compilation directives are always invariant
+    regardless of macro state. They can be processed once and never need
+    reprocessing during convergence iterations.
+
+    Args:
+        file_result: FileAnalysisResult with conditional_macros field
+
+    Returns:
+        True if file has no conditionals at all
+    """
+    return not file_result.conditional_macros
+
+
 def is_macro_invariant(file_result, input_macros: 'MacroState') -> bool:
     """Determine if a file's active lines are independent of current macro state.
 
@@ -193,7 +209,7 @@ def is_macro_invariant(file_result, input_macros: 'MacroState') -> bool:
         True if none of the file's conditional macros are defined in variable macros
     """
     # If file has no conditionals at all, it's always invariant
-    if not file_result.conditional_macros:
+    if is_permanently_invariant(file_result):
         return True
 
     # Only check variable macros - core macros are the same for all files
