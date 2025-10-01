@@ -354,23 +354,4 @@ def main(argv=None):
             return 1
         else:
             raise
-    finally:
-        # Print preprocessing statistics
-        from compiletools.preprocessing_cache import print_preprocessing_stats
-        print_preprocessing_stats()
-
-        # Print hash registry statistics
-        from compiletools.global_hash_registry import get_registry_stats
-        hash_stats = get_registry_stats()
-        if hash_stats.get('is_loaded'):
-            print("\n=== Hash Operation Statistics ===")
-            registry_hits = hash_stats.get('registry_hits', 0)
-            computed = hash_stats.get('computed_hashes', 0)
-            total_hash_ops = registry_hits + computed
-            if total_hash_ops > 0:
-                print(f"Total hash operations: {total_hash_ops}")
-                print(f"  Registry hits (cached): {registry_hits} ({100*registry_hits/total_hash_ops:.1f}%)")
-                print(f"  Computed hashes: {computed} ({100*computed/total_hash_ops:.1f}%)")
-                print(f"Hash reduction via registry: {100*registry_hits/total_hash_ops:.1f}%")
-
     return 0
