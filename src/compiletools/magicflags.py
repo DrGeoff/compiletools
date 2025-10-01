@@ -1,5 +1,6 @@
 import sys
 import re
+import functools
 from collections import defaultdict
 from typing import Dict, List, Optional, Union
 from types import SimpleNamespace
@@ -295,6 +296,11 @@ class MagicFlagsBase:
 
         return flagsforfilename
 
+    def _extend_flags_from_dict(self, flagsforfilename, extra_flags_dict):
+        """Helper to extend flags from a dict of flag lists."""
+        for key, values in extra_flags_dict.items():
+            flagsforfilename[key].extend(values)
+
     def _process_magic_flag(self, magic, flag, flagsforfilename, magic_flag_data, filename):
         """Process a single magic flag entry"""
         # READMACROS is handled during DirectMagicFlags first pass, don't add to output
@@ -307,18 +313,12 @@ class MagicFlagsBase:
 
         # If the magic was INCLUDE then modify that into the equivalent CPPFLAGS, CFLAGS, and CXXFLAGS
         if magic == sz.Str("INCLUDE"):
-            extrafff = self._handle_include(flag)
-            for key, values in extrafff.items():
-                for value in values:
-                    flagsforfilename[key].append(value)
+            self._extend_flags_from_dict(flagsforfilename, self._handle_include(flag))
             # INCLUDE generates flags for other keys, but also falls through to add to INCLUDE key
 
         # If the magic was PKG-CONFIG then call pkg-config
         if magic == sz.Str("PKG-CONFIG"):
-            extrafff = self._handle_pkg_config(flag)
-            for key, values in extrafff.items():
-                for value in values:
-                    flagsforfilename[key].append(value)
+            self._extend_flags_from_dict(flagsforfilename, self._handle_pkg_config(flag))
             # PKG-CONFIG generates flags for other keys AND adds itself to PKG-CONFIG key
 
         # Split flag string into individual flags - all magic flags can contain multiple values
@@ -346,12 +346,11 @@ class MagicFlagsBase:
 class DirectMagicFlags(MagicFlagsBase):
     def __init__(self, args, headerdeps):
         MagicFlagsBase.__init__(self, args, headerdeps)
+        # Compute initial macro state once (compiler built-ins + command-line macros)
+        # This is computed once and reused via copy() to avoid redundant initialization
+        self._initial_macro_state = self._initialize_macro_state()
         # Track defined macros with values during processing (MacroState with core + variable)
-        self.defined_macros = self._initialize_macro_state()
-        # Store FileAnalyzer results for potential optimization in parsing
-        self._file_analyzer_results = {}
-        # Cache for system include paths
-        self._system_include_paths = None
+        self.defined_macros = self._initial_macro_state.copy()
         # Track files specified by READMACROS magic flags
         self._explicit_macro_files = set()
         # Store final converged macro hashes by filename
@@ -406,33 +405,39 @@ class DirectMagicFlags(MagicFlagsBase):
             print(f"DirectMagicFlags: extracted {len(macros)} macros from magic flags: {macros}")
 
 
-    def _process_file_for_macros(self, fname: str) -> None:
-        """Process a single file to extract macros and active magic flags (mutates state).
+    @functools.lru_cache(maxsize=None)
+    def _compute_file_processing_result(self, fname: str, macro_hash: int):
+        """Pure function: compute file processing result without mutating state.
 
-        Updates self.defined_macros and self._stored_active_magic_flags based on
-        conditional compilation with current macro state.
+        Cacheable by (fname, macro_hash) to avoid reprocessing shared headers.
+        Uses macro_hash (int) as cache key since MacroState itself is not hashable.
+
+        NOTE: This method accesses self.defined_macros to get the actual MacroState.
+        The macro_hash parameter is only used as a cache key for lru_cache.
 
         Args:
             fname: File path to process
+            macro_hash: Hash of current macro state (from compute_macro_hash)
+
+        Returns:
+            Tuple of (active_magic_flags, extracted_variable_macros_dict, cppflags_macros, cxxflags_macros)
+            or None if file cannot be processed
         """
         try:
             file_result = self._get_file_analyzer_result(fname)
         except Exception as e:
             if self._args.verbose >= 5:
                 print(f"DirectMagicFlags warning: could not process {fname} for macro extraction: {e}")
-            return
+            return None
 
         # Process conditional compilation to get active lines using current macro state
         if self._args.verbose >= 9:
-            print(f"DirectMagicFlags: Processing {fname} with {len(self.defined_macros)} macros")
+            print(f"DirectMagicFlags: Computing result for {fname} with macro hash {macro_hash}")
         result = get_or_compute_preprocessing(file_result, self.defined_macros, self._args.verbose)
         active_line_set = set(result.active_lines)
 
         if self._args.verbose >= 9:
             print(f"DirectMagicFlags: {fname} has {len(file_result.defines)} defines, {len(result.active_lines)} active lines")
-            print(f"DirectMagicFlags: Active lines for {fname}: {sorted(result.active_lines)}")
-            if file_result.defines:
-                print(f"DirectMagicFlags: Define lines in {fname}: {[d['line_num'] for d in file_result.defines]}")
 
         # Extract macros from active magic flag CPPFLAGS and CXXFLAGS
         active_magic_flags = [
@@ -440,44 +445,80 @@ class DirectMagicFlags(MagicFlagsBase):
             if magic_flag['line_num'] in active_line_set
         ]
 
-        # Store active magic flags for this file to avoid redundant final pass
-        self._stored_active_magic_flags[fname] = active_magic_flags
-
-        # Extract -D macros from active magic flags
+        # Collect macros from active magic flags for caching
+        cppflags_macros = []
+        cxxflags_macros = []
         if active_magic_flags:
-            magic_flags_result = defaultdict(list)
             for magic_flag in active_magic_flags:
-                magic_flags_result[magic_flag['key']].append(magic_flag['value'])
-            self._extract_macros_from_magic_flags(magic_flags_result)
+                key = magic_flag['key']
+                value = magic_flag['value']
+                if key == sz.Str('CPPFLAGS') or key == sz.Str('CXXFLAGS'):
+                    # Extract -D macros
+                    for match in re.finditer(r'-D\s*(\w+)(?:=(\S+))?', str(value)):
+                        macro_name = sz.Str(match.group(1))
+                        macro_value = sz.Str(match.group(2)) if match.group(2) else sz.Str("1")
+                        if key == sz.Str('CPPFLAGS'):
+                            cppflags_macros.append((macro_name, macro_value))
+                        else:
+                            cxxflags_macros.append((macro_name, macro_value))
 
-        # Extract macros from active #define directives and update permanently
-        # Only add macros that are actually active (in conditional compilation branches)
+        # Extract variable macros from active #define directives
+        extracted_variable_macros = {}
         for define_info in file_result.defines:
             if define_info['line_num'] not in active_line_set:
                 continue
             if define_info['is_function_like']:
                 continue
 
-            macro_name = define_info['name']  # Keep as StringZilla.Str for consistency
+            macro_name = define_info['name']
             macro_value = define_info['value'] if define_info['value'] is not None else sz.Str("1")
+            extracted_variable_macros[macro_name] = macro_value
+
+        return (active_magic_flags, extracted_variable_macros, cppflags_macros, cxxflags_macros)
+
+    def _process_file_for_macros(self, fname: str) -> None:
+        """Process a single file to extract macros and active magic flags (mutates state).
+
+        Updates self.defined_macros and self._stored_active_magic_flags based on
+        conditional compilation with current macro state. Uses caching to avoid
+        reprocessing the same file with the same macro state.
+
+        Args:
+            fname: File path to process
+        """
+        # Compute hash for cache key (hashable int)
+        macro_hash = compute_macro_hash(self.defined_macros)
+
+        # Use cached computation - pass hash (hashable), function accesses self.defined_macros
+        cached_result = self._compute_file_processing_result(fname, macro_hash)
+
+        if cached_result is None:
+            return
+
+        active_magic_flags, extracted_variable_macros, cppflags_macros, cxxflags_macros = cached_result
+
+        if self._args.verbose >= 9:
+            print(f"DirectMagicFlags: Applying cached result for {fname} (macro hash {macro_hash})")
+
+        # Store active magic flags for this file to avoid redundant final pass
+        self._stored_active_magic_flags[fname] = active_magic_flags
+
+        # Apply extracted macros from magic flags to state
+        for macro_name, macro_value in cppflags_macros + cxxflags_macros:
+            self.defined_macros[macro_name] = macro_value
+            if self._args.verbose >= 9:
+                print(f"DirectMagicFlags: extracted macro {macro_name} = {macro_value} from magic flags in {fname}")
+
+        # Apply extracted variable macros to state
+        for macro_name, macro_value in extracted_variable_macros.items():
             self.defined_macros[macro_name] = macro_value
             if self._args.verbose >= 9:
                 print(f"DirectMagicFlags: extracted macro {macro_name} = {macro_value} from {fname}")
 
     def _extract_macros_from_file(self, filename):
-        """Extract #define macros from a file using cached FileAnalyzer results."""
+        """Extract #define macros from a file (unconditionally, no preprocessor evaluation)."""
         try:
-            # Check if we already have FileAnalyzer results for this file
-            if hasattr(self, '_file_analyzer_results') and filename in self._file_analyzer_results:
-                file_result = self._file_analyzer_results[filename]
-            else:
-                # Get FileAnalyzer results using cached method
-                file_result = self._get_file_analyzer_result(filename)
-
-                # Cache for potential reuse
-                if not hasattr(self, '_file_analyzer_results'):
-                    self._file_analyzer_results = {}
-                self._file_analyzer_results[filename] = file_result
+            file_result = self._get_file_analyzer_result(filename)
         except Exception as e:
             if self._args.verbose >= 5:
                 print(f"DirectMagicFlags warning: could not extract macros from {filename}: {e}")
@@ -492,6 +533,140 @@ class DirectMagicFlags(MagicFlagsBase):
             macro_value = define_info['value'] if define_info['value'] is not None else sz.Str("1")
             self.defined_macros[macro_name] = macro_value
 
+    def _build_all_files_list(self, filename, headers):
+        """Build deduplicated list of all files to process (explicit macros + main + headers)."""
+        return compiletools.utils.ordered_unique(
+            list(self._explicit_macro_files) + [filename] + [h for h in headers if h != filename]
+        )
+
+    def _reset_state(self):
+        """Reset state for new file processing."""
+        self.defined_macros = self._initial_macro_state.copy()
+        self._explicit_macro_files = set()
+        self._stored_active_magic_flags = {}
+
+    def _check_cache(self, filename, cache_key):
+        """Check cache and restore state if hit. Returns cached result or None."""
+        if cache_key not in self._structured_data_cache:
+            return None
+
+        if self._args.verbose >= 7:
+            file_hash, input_macro_hash = cache_key
+            print(f"DirectMagicFlags: Early cache hit for {filename} (hash={file_hash[:8]}, macros={input_macro_hash[:8]})")
+
+        # Restore macro state from previous convergence
+        if filename in self._verification_final_macro_hashes:
+            self.defined_macros = self._verification_final_macro_hashes[filename].copy()
+
+        return self._structured_data_cache[cache_key]
+
+    def _setup_explicit_macro_files(self, all_source_files):
+        """Collect and process READMACROS files."""
+        if self._args.verbose >= 9:
+            print(f"DirectMagicFlags: First pass - scanning {len(all_source_files)} files for READMACROS flags")
+
+        self._explicit_macro_files = self._collect_explicit_macro_files(all_source_files)
+
+        # Extract macros from explicitly specified files BEFORE processing conditional compilation
+        for macro_file in self._explicit_macro_files:
+            if self._args.verbose >= 9:
+                print(f"DirectMagicFlags: extracting macros from READMACROS file {macro_file}")
+            self._extract_macros_from_file(macro_file)
+
+    def _converge_macro_state(self, all_files, max_iterations=5):
+        """Iteratively process files until macro state converges.
+
+        Returns: number of iterations taken
+        """
+        processed_invariant_files = set()
+        iteration = 0
+
+        while iteration < max_iterations:
+            iteration += 1
+            macro_hash_before = compute_macro_hash(self.defined_macros)
+            macro_count_before = len(self.defined_macros.variable)
+            files_processed = 0
+            files_skipped = 0
+
+            if self._args.verbose >= 9:
+                print(f"DirectMagicFlags: Iteration {iteration}, {len(self.defined_macros)} known macros")
+
+            # Process each file, skipping those that are invariant and already processed
+            for fname in all_files:
+                file_result = self._get_file_analyzer_result(fname)
+                currently_invariant = is_macro_invariant(file_result, self.defined_macros)
+
+                if fname in processed_invariant_files and currently_invariant:
+                    if self._args.verbose >= 9:
+                        print(f"DirectMagicFlags: Skipping invariant file {fname}")
+                    files_skipped += 1
+                    continue
+
+                if self._args.verbose >= 9:
+                    print(f"DirectMagicFlags: Processing {fname}")
+                self._process_file_for_macros(fname)
+                files_processed += 1
+
+                # Update invariance tracking
+                if is_macro_invariant(file_result, self.defined_macros):
+                    processed_invariant_files.add(fname)
+                else:
+                    processed_invariant_files.discard(fname)
+
+            if self._args.verbose >= 9:
+                print(f"DirectMagicFlags: Processed {files_processed} files, skipped {files_skipped} invariant")
+
+            # Early exit if all files are invariant
+            if files_processed == 0:
+                if self._args.verbose >= 9:
+                    print(f"DirectMagicFlags: Converged - all {files_skipped} files invariant")
+                break
+
+            # Check convergence - first cheap count check, then expensive hash
+            macro_count_after = len(self.defined_macros.variable)
+            if macro_count_after != macro_count_before:
+                if self._args.verbose >= 9:
+                    print(f"DirectMagicFlags: Not converged - macro count: {macro_count_before} → {macro_count_after}")
+                continue
+
+            # Count unchanged, check for value-only changes with hash
+            macro_hash_after = compute_macro_hash(self.defined_macros)
+            if macro_hash_after == macro_hash_before:
+                if self._args.verbose >= 9:
+                    print(f"DirectMagicFlags: Converged - macro values unchanged")
+                break
+
+        if self._args.verbose >= 7:
+            print(f"DirectMagicFlags: Macro convergence after {iteration} iterations, {len(self.defined_macros)} macros")
+
+        return iteration
+
+    def _finalize_and_cache_result(self, filename, headers, cache_key):
+        """Store final macro hash and build cached result."""
+        # Store final macro hash
+        final_macro_hash = compute_macro_hash(self.defined_macros)
+        self._final_macro_hashes[filename] = final_macro_hash
+
+        if self._args.verbose >= 5:
+            print(f"DirectMagicFlags: Final converged macro hash for {filename}: {final_macro_hash}")
+
+        # Store converged macro state for verification
+        if __debug__:
+            self._verification_final_macro_hashes[filename] = self.defined_macros.copy()
+
+        # Build result from stored data
+        all_files = self._build_all_files_list(filename, headers)
+        result = self._build_structured_result(all_files, self._stored_active_magic_flags)
+
+        # Verify macro state integrity
+        if __debug__:
+            self._verify_macro_state_unchanged("get_structured_data() completion", filename)
+
+        # Cache result
+        self._structured_data_cache[cache_key] = result
+
+        return result
+
     def get_structured_data(self, filename: str) -> List[Dict[str, Union[str, sz.Str, List[Dict[str, Union[int, sz.Str]]]]]]:
         """Override to handle DirectMagicFlags complex macro processing.
 
@@ -504,160 +679,32 @@ class DirectMagicFlags(MagicFlagsBase):
         if self._args.verbose >= 4:
             print("DirectMagicFlags: Setting up structured data with macro processing")
 
-        # Reset state for each parse - initialize with MacroState containing core macros
-        self.defined_macros = self._initialize_macro_state()
-        self._explicit_macro_files = set()
-        # Store active magic flags during iteration to avoid redundant final pass
-        self._stored_active_magic_flags = {}
+        # Reset state
+        self._reset_state()
 
-        # Compute cache key: (file_hash, input_macro_hash)
+        # Check cache
         file_hash = get_file_hash(filename)
         input_macro_hash = compute_macro_hash(self.defined_macros)
         cache_key = (file_hash, input_macro_hash)
 
-        # Get headers from headerdeps (keep as str for file operations)
+        cached_result = self._check_cache(filename, cache_key)
+        if cached_result is not None:
+            return cached_result
+
+        # Get headers and setup
         headers = self._headerdeps.process(filename)
         if self._args.verbose >= 9:
             print(f"DirectMagicFlags: headers from headerdeps: {headers}")
+
         all_source_files = [filename] + headers
-        
-        # First pass: scan all files for READMACROS flags to collect explicit macro files
-        if self._args.verbose >= 9:
-            print(f"DirectMagicFlags: First pass - scanning {len(all_source_files)} files for READMACROS flags")
-        
-        for source_file in all_source_files:
-            try:
-                analysis_result = self._get_file_analyzer_result(source_file)
-                
-                # Look for READMACROS magic flags in structured data
-                for magic_flag in analysis_result.magic_flags:
-                    if magic_flag['key'] == sz.Str("READMACROS"):
-                        self._handle_readmacros(magic_flag['value'], source_file)
-            except Exception as e:
-                if self._args.verbose >= 5:
-                    print(f"DirectMagicFlags warning: could not scan {source_file} for READMACROS: {e}")
-        
-        # Extract macros from explicitly specified files BEFORE processing conditional compilation
-        for macro_file in self._explicit_macro_files:
-            if self._args.verbose >= 9:
-                print(f"DirectMagicFlags: extracting macros from READMACROS file {macro_file}")
-            self._extract_macros_from_file(macro_file)
-        
-        # Process files iteratively until macros converge (keys and values stabilize)
-        # Skip files that are macro-invariant and already processed
-        max_iterations = 5
-        all_files = list(self._explicit_macro_files) + [filename] + [h for h in headers if h != filename]
-        processed_invariant_files = set()  # Files processed and found to be invariant
-        iteration = 0
+        self._setup_explicit_macro_files(all_source_files)
 
-        while iteration < max_iterations:
-            iteration += 1
-            macro_hash_before = compute_macro_hash(self.defined_macros)
-            files_processed = 0
-            files_skipped = 0
+        # Converge macro state
+        all_files = self._build_all_files_list(filename, headers)
+        self._converge_macro_state(all_files)
 
-            if self._args.verbose >= 9:
-                print(f"DirectMagicFlags: Iteration {iteration}, {len(self.defined_macros)} known macros")
-
-            # Process each file, skipping those that are invariant and already processed
-            for fname in all_files:
-                # Check if file is invariant under current macro state
-                try:
-                    file_result = self._get_file_analyzer_result(fname)
-                    currently_invariant = is_macro_invariant(file_result, self.defined_macros)
-                except Exception:
-                    # If we can't analyze, process it
-                    currently_invariant = False
-
-                # Skip if file is invariant and we've already processed it
-                if fname in processed_invariant_files and currently_invariant:
-                    if self._args.verbose >= 9:
-                        print(f"DirectMagicFlags: Skipping invariant file {fname}")
-                    files_skipped += 1
-                    continue
-
-                # Process the file
-                if self._args.verbose >= 9:
-                    print(f"DirectMagicFlags: Processing {fname}")
-                self._process_file_for_macros(fname)
-                files_processed += 1
-
-                # Update invariance tracking after processing
-                try:
-                    file_result = self._get_file_analyzer_result(fname)
-                    if is_macro_invariant(file_result, self.defined_macros):
-                        processed_invariant_files.add(fname)
-                    else:
-                        # File is variant, remove from invariant set
-                        processed_invariant_files.discard(fname)
-                except Exception:
-                    processed_invariant_files.discard(fname)
-
-            if self._args.verbose >= 9:
-                print(f"DirectMagicFlags: Processed {files_processed} files, skipped {files_skipped} invariant")
-
-            # Check convergence
-            macro_hash_after = compute_macro_hash(self.defined_macros)
-            if macro_hash_after == macro_hash_before:
-                if self._args.verbose >= 9:
-                    print(f"DirectMagicFlags: Converged - macro state unchanged")
-                break
-
-        if self._args.verbose >= 7:
-            print(f"DirectMagicFlags: Macro convergence after {iteration} iterations, {len(self.defined_macros)} macros")
-
-        # CONVERGENCE ACHIEVED: Store final macro hash for this filename
-        final_macro_hash = compute_macro_hash(self.defined_macros)
-
-        # Check if we've already processed this file - verify consistency
-        if filename in self._final_macro_hashes:
-            previous_hash = self._final_macro_hashes[filename]
-            if final_macro_hash == previous_hash:
-                # Consistent reprocessing - this is OK, just return without updating storage
-                if self._args.verbose >= 7:
-                    print(f"DirectMagicFlags: Reprocessed {filename} - macro hash consistent: {final_macro_hash}")
-                # Note: returning early without building result - this might need adjustment
-                # TODO: Determine if we need to rebuild result or can skip entirely
-                pass  # Continue to rebuild result for now
-            else:
-                # Hash mismatch - this indicates a real bug
-                assert False, (
-                    f"BUG: Reprocessing {filename} produced different macro hash! "
-                    f"Previous: {previous_hash}, Current: {final_macro_hash}. "
-                    f"Convergence should be deterministic."
-                )
-
-        self._final_macro_hashes[filename] = final_macro_hash
-
-        if self._args.verbose >= 5:
-            print(f"DirectMagicFlags: Final converged macro hash for {filename}: {final_macro_hash}")
-
-        # Store the converged macro state for verification
-        if __debug__:
-            self._verification_final_macro_hashes[filename] = self.defined_macros.copy()
-
-        # Check if we can use cached result (after macro convergence)
-        if cache_key in self._structured_data_cache:
-            if self._args.verbose >= 7:
-                print(f"DirectMagicFlags: Cache hit for {filename} (hash={file_hash[:8]}, macros={input_macro_hash[:8]})")
-            # Macro state is already correct from convergence above, just return cached result
-            return self._structured_data_cache[cache_key]
-
-        # Use stored active magic flags instead of redundant final pass
-        # Construct result directly from stored data collected during iteration
-        # Get all files - use SAME order as old final pass for backward compatibility
-        # (main file first, then headers - this affects flag ordering in output)
-        all_files = list(self._explicit_macro_files) + [filename] + [h for h in headers if h != filename]
-        result = self._build_structured_result(all_files, self._stored_active_magic_flags)
-
-        # Verify macro state hasn't been corrupted during final processing
-        if __debug__:
-            self._verify_macro_state_unchanged("get_structured_data() completion", filename)
-
-        # Store result in cache for future calls
-        self._structured_data_cache[cache_key] = result
-
-        return result
+        # Finalize and return
+        return self._finalize_and_cache_result(filename, headers, cache_key)
 
     def _build_structured_result(self, all_files: List[str], stored_active_flags: dict) -> list:
         """Build final structured result from stored active magic flags (pure data transformation).
@@ -711,16 +758,7 @@ class DirectMagicFlags(MagicFlagsBase):
         # Verify macro state hasn't been corrupted during parsing
         if __debug__:
             self._verify_macro_state_unchanged("parse() completion", filename)
-        
-        # Optimization: Validate results using FileAnalyzer pre-computed data
-        if self._args.verbose >= 9:
-            total_original_magic_flags = sum(len(analysis.magic_flags)
-                                           for analysis in self._file_analyzer_results.values())
-            total_found_flags = sum(len(flags) for flags in result.values())
-            if total_original_magic_flags > 0:
-                print(f"DirectMagicFlags::parse - FileAnalyzer found {total_original_magic_flags} magic flags, "
-                      f"after conditional compilation: {total_found_flags} active flags")
-        
+
         return result
 
     @staticmethod
@@ -757,10 +795,7 @@ class CppMagicFlags(MagicFlagsBase):
 
         # Get preprocessed text (existing logic)
         preprocessed_text = self._readfile(filename)
-        
-        # Store preprocessed text for SOURCE resolution
-        self._preprocessed_text = preprocessed_text
-        
+
         # Use StringZilla for SIMD-optimized processing with source file context tracking
         text = sz.Str(preprocessed_text)
         magic_flags = []
@@ -770,15 +805,15 @@ class CppMagicFlags(MagicFlagsBase):
         
         # Split into lines using StringZilla (SIMD optimized)
         for line_sz in text.split('\n'):
-            line_str = str(line_sz)
-            
-            # Track current source file from preprocessor # directives
-            if line_str.startswith('# ') and '"' in line_str:
-                # Extract source file from preprocessor line directive
-                match = re.search(r'# \d+ "([^"]+)"', line_str)
-                if match:
-                    current_source_file = match.group(1)
-            
+            # Track current source file from preprocessor # directives using StringZilla
+            # Format: # <linenum> "<filepath>" <flags>
+            if line_sz.startswith('# '):
+                first_quote = line_sz.find('"')
+                if first_quote >= 0:
+                    second_quote = line_sz.find('"', first_quote + 1)
+                    if second_quote > first_quote:
+                        current_source_file = str(line_sz[first_quote + 1:second_quote])
+
             # Use StringZilla to find "//#" pattern with SIMD search
             magic_start = line_sz.find('//#')
             if magic_start >= 0:
