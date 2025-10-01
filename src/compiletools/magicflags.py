@@ -111,7 +111,9 @@ class MagicFlagsBase:
             str: 16-character hash of the final macro state for this file,
                  or None if the file hasn't been processed yet
         """
-        return self._final_macro_hashes.get(filename)
+        # Normalize to absolute path for consistent lookups
+        abs_filename = compiletools.wrappedos.realpath(filename)
+        return self._final_macro_hashes.get(abs_filename)
 
     def _get_file_analyzer_result(self, filename: str) -> FileAnalysisResult:
         """Get FileAnalysisResult for a file, using module-level cache.
@@ -554,9 +556,10 @@ class DirectMagicFlags(MagicFlagsBase):
             file_hash, input_macro_hash = cache_key
             print(f"DirectMagicFlags: Early cache hit for {filename} (hash={file_hash[:8]}, macros={input_macro_hash[:8]})")
 
-        # Restore macro state from previous convergence
-        if filename in self._verification_final_macro_hashes:
-            self.defined_macros = self._verification_final_macro_hashes[filename].copy()
+        # Restore macro state from previous convergence using absolute path
+        abs_filename = compiletools.wrappedos.realpath(filename)
+        if abs_filename in self._verification_final_macro_hashes:
+            self.defined_macros = self._verification_final_macro_hashes[abs_filename].copy()
 
         return self._structured_data_cache[cache_key]
 
@@ -643,16 +646,17 @@ class DirectMagicFlags(MagicFlagsBase):
 
     def _finalize_and_cache_result(self, filename, headers, cache_key):
         """Store final macro hash and build cached result."""
-        # Store final macro hash
+        # Store final macro hash using absolute path as key
         final_macro_hash = compute_macro_hash(self.defined_macros)
-        self._final_macro_hashes[filename] = final_macro_hash
+        abs_filename = compiletools.wrappedos.realpath(filename)
+        self._final_macro_hashes[abs_filename] = final_macro_hash
 
         if self._args.verbose >= 5:
             print(f"DirectMagicFlags: Final converged macro hash for {filename}: {final_macro_hash}")
 
         # Store converged macro state for verification
         if __debug__:
-            self._verification_final_macro_hashes[filename] = self.defined_macros.copy()
+            self._verification_final_macro_hashes[abs_filename] = self.defined_macros.copy()
 
         # Build result from stored data
         all_files = self._build_all_files_list(filename, headers)
@@ -763,7 +767,12 @@ class DirectMagicFlags(MagicFlagsBase):
 
     @staticmethod
     def clear_cache():
-        pass
+        # Clear instance method lru_caches on the class
+        # These are shared across all instances
+        try:
+            DirectMagicFlags._compute_file_processing_result.cache_clear()
+        except AttributeError:
+            pass  # Method doesn't exist yet
 
 
 class CppMagicFlags(MagicFlagsBase):

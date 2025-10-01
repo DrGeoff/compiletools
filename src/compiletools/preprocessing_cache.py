@@ -276,18 +276,10 @@ def get_or_compute_preprocessing(
         if content_hash in _invariant_cache:
             _cache_stats['hits'] += 1
             _cache_stats['invariant_hits'] += 1
-            if verbose >= 9:
-                from compiletools.global_hash_registry import get_filepath_by_hash
-                filepath = get_filepath_by_hash(content_hash) or '<unknown>'
-                print(f"Invariant cache hit: {filepath}")
             return _invariant_cache[content_hash]
 
         _cache_stats['misses'] += 1
         _cache_stats['invariant_misses'] += 1
-        if verbose >= 9:
-            from compiletools.global_hash_registry import get_filepath_by_hash
-            filepath = get_filepath_by_hash(content_hash) or '<unknown>'
-            print(f"Invariant cache miss: {filepath}")
     else:
         # Macro-variant: cache key is (content_hash, macro_cache_key)
         macro_key = _make_macro_cache_key(input_macros)
@@ -296,18 +288,10 @@ def get_or_compute_preprocessing(
         if cache_key in _variant_cache:
             _cache_stats['hits'] += 1
             _cache_stats['variant_hits'] += 1
-            if verbose >= 9:
-                from compiletools.global_hash_registry import get_filepath_by_hash
-                filepath = get_filepath_by_hash(content_hash) or '<unknown>'
-                print(f"Variant cache hit: {filepath}")
             return _variant_cache[cache_key]
 
         _cache_stats['misses'] += 1
         _cache_stats['variant_misses'] += 1
-        if verbose >= 9:
-            from compiletools.global_hash_registry import get_filepath_by_hash
-            filepath = get_filepath_by_hash(content_hash) or '<unknown>'
-            print(f"Variant cache miss: {filepath}")
 
     # Compute result - pass all macros to preprocessor
     all_macros = input_macros.all_macros()

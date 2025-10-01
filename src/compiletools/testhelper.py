@@ -552,14 +552,23 @@ def compare_headerdeps_kinds(filename, cppflags=None, kinds=("direct", "cpp"), i
 
 
 def touch(*paths):
-    """Touch multiple files using os.utime.
-    
+    """Touch multiple files by appending a comment to ensure content hash changes.
+
+    This ensures the file's content hash changes, not just its timestamp,
+    which is important for build systems that use content-based change detection.
+    Includes a small sleep to ensure timestamp differences are detectable.
+
     Args:
         *paths: Variable number of file paths to touch
     """
+    import time
     for path in paths:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        Path(path).touch()
+        # Append a comment with timestamp to ensure content changes
+        with open(path, 'a') as f:
+            f.write(f"\n// touched at {time.time()}\n")
+    # Sleep to ensure subsequent rebuilds have detectably different timestamps
+    time.sleep(0.1)
 
 
 def write_sources(mapping, target_dir=None):
