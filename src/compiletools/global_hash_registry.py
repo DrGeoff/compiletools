@@ -15,6 +15,7 @@ from compiletools import wrappedos
 
 # Module-level cache: None = not loaded, Dict = loaded hashes
 _HASHES: Optional[Dict[str, str]] = None
+_REVERSE_HASHES: Optional[Dict[str, str]] = None  # hash -> filepath cache
 _lock = threading.Lock()
 
 # Hash operation counters
@@ -38,30 +39,34 @@ def _compute_external_file_hash(filepath: str) -> Optional[str]:
 
 def load_hashes() -> None:
     """Load all file hashes once with thread safety."""
-    global _HASHES
-    
+    global _HASHES, _REVERSE_HASHES
+
     if _HASHES is not None:
         return  # Already loaded
-    
+
     with _lock:
         if _HASHES is not None:
             return  # Double-check after acquiring lock
-        
+
         try:
             from compiletools.git_sha_report import get_complete_working_directory_hashes
-            
+
             # Single call to get all file hashes
             all_hashes = get_complete_working_directory_hashes()
-            
+
             # Convert Path keys to string keys for easier lookup
             _HASHES = {str(path): sha for path, sha in all_hashes.items()}
-            
+
+            # Build reverse lookup cache: hash -> filepath
+            _REVERSE_HASHES = {sha: str(path) for path, sha in all_hashes.items()}
+
             print(f"GlobalHashRegistry: Loaded {len(_HASHES)} file hashes from git")
-            
+
         except Exception as e:
             # Gracefully handle git failures (e.g., in test environments, non-git directories)
             print(f"GlobalHashRegistry: Git not available, using fallback mode: {e}")
             _HASHES = {}  # Empty hash registry - will compute hashes on demand
+            _REVERSE_HASHES = {}
 
 
 @lru_cache(maxsize=None)
@@ -137,9 +142,10 @@ def get_registry_stats() -> Dict[str, int]:
 
 def clear_global_registry() -> None:
     """Clear the global registry (mainly for testing)."""
-    global _HASHES
+    global _HASHES, _REVERSE_HASHES
     with _lock:
         _HASHES = None
+        _REVERSE_HASHES = None
 
 
 def get_filepath_by_hash(file_hash: str) -> Optional[str]:
@@ -151,10 +157,7 @@ def get_filepath_by_hash(file_hash: str) -> Optional[str]:
     Returns:
         Filepath if found, None otherwise
     """
-    if _HASHES is None:
+    if _REVERSE_HASHES is None:
         load_hashes()
 
-    for filepath, h in _HASHES.items():
-        if h == file_hash:
-            return filepath
-    return None
+    return _REVERSE_HASHES.get(file_hash)

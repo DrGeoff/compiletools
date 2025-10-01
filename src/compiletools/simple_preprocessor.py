@@ -157,14 +157,6 @@ class SimplePreprocessor:
         _stats['call_count'] += 1
         _stats['files_processed'][filepath] += 1
 
-        # Capture call context - get caller info
-        import traceback
-        stack = traceback.extract_stack()
-        if len(stack) >= 2:
-            caller = stack[-2]
-            context = f"{caller.filename}:{caller.lineno} in {caller.name}"
-            _stats['call_contexts'][context] += 1
-
         line_count = file_result.line_count
         active_lines = []
 

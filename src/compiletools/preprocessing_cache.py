@@ -56,6 +56,7 @@ class MacroState:
     """
     core: MacroDict  # Static: compiler + cmdline macros
     variable: MacroDict  # Dynamic: file #defines
+    _cache_key: Optional[FrozenSet[Tuple[sz.Str, sz.Str]]]  # Cached frozenset for cache keys
 
     def __init__(self, core: MacroDict, variable: Optional[MacroDict] = None):
         """Initialize macro state.
@@ -66,6 +67,7 @@ class MacroState:
         """
         self.core = core
         self.variable = variable if variable is not None else {}
+        self._cache_key = None  # Lazy-computed cache key
 
     def all_macros(self) -> MacroDict:
         """Get merged view of all macros (core + variable).
@@ -142,10 +144,14 @@ class MacroState:
         return MacroState(self.core, self.variable.copy())
 
 
+# Simple cache: if variable dict is empty, return cached empty frozenset
+_EMPTY_FROZENSET: FrozenSet[Tuple[sz.Str, sz.Str]] = frozenset()
+
 def _make_macro_cache_key(macros: 'MacroState') -> FrozenSet[Tuple[sz.Str, sz.Str]]:
     """Create fast hashable cache key from macro state.
 
     Only hashes variable macros, ignoring static core for 80% performance improvement.
+    Optimized for the common case of empty variable dicts.
 
     Args:
         macros: MacroState containing core and variable macros
@@ -153,6 +159,8 @@ def _make_macro_cache_key(macros: 'MacroState') -> FrozenSet[Tuple[sz.Str, sz.St
     Returns:
         Frozenset of (key, value) tuples from variable macros only
     """
+    if not macros.variable:
+        return _EMPTY_FROZENSET
     return frozenset(macros.variable.items())
 
 
