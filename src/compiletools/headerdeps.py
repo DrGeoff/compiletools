@@ -12,7 +12,7 @@ from compiletools.utils import split_command_cached
 import compiletools.tree as tree
 import compiletools.preprocessor
 import compiletools.compiler_macros
-from compiletools.preprocessing_cache import get_or_compute_preprocessing
+from compiletools.preprocessing_cache import get_or_compute_preprocessing, MacroState
 from compiletools.file_analyzer import FileAnalyzer
 
 
@@ -203,6 +203,7 @@ class DirectHeaderDeps(HeaderDepsBase):
             print("Includes=" + str(self.includes))
             
         # Extract macro definitions from command line flags and compiler
+        # Both are static for the lifetime of this instance (core macros)
         import compiletools.apptools
         raw_macros = compiletools.apptools.extract_command_line_macros(
             self.args,
@@ -210,8 +211,9 @@ class DirectHeaderDeps(HeaderDepsBase):
             include_compiler_macros=True,
             verbose=self.args.verbose
         )
-        # Convert all keys and values to StringZilla.Str for consistency
-        self.defined_macros = {sz.Str(k): sz.Str(v) for k, v in raw_macros.items()}
+        # Convert all keys and values to StringZilla.Str and place in core
+        core_macros = {sz.Str(k): sz.Str(v) for k, v in raw_macros.items()}
+        self.defined_macros = MacroState(core_macros, {})
 
     @functools.lru_cache(maxsize=None)
     def _search_project_includes(self, include: sz.Str):

@@ -6,7 +6,8 @@ from textwrap import dedent
 # Add the parent directory to sys.path so we can import ct modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from compiletools.simple_preprocessor import SimplePreprocessor, compute_macro_hash
+from compiletools.simple_preprocessor import SimplePreprocessor
+from compiletools.preprocessing_cache import compute_macro_hash, MacroState
 from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
 
 
@@ -472,34 +473,40 @@ class TestMacroHashConsistency:
         """Verify same macro state always produces same hash."""
         import stringzilla as sz
 
-        macros = {
+        core = {}
+        variable = {
             sz.Str("FOO"): sz.Str("1"),
             sz.Str("BAR"): sz.Str("value"),
             sz.Str("BAZ"): sz.Str("0x100")
         }
+        macros = MacroState(core, variable)
 
         hash1 = compute_macro_hash(macros)
         hash2 = compute_macro_hash(macros)
 
         assert hash1 == hash2, "Same macro state should produce same hash"
-        assert len(hash1) == 16, f"Hash should be 16 characters, got {len(hash1)}"
+        assert isinstance(hash1, int), f"Hash should be an integer"
 
     def test_hash_ordering_independence(self):
         """Verify hash is same regardless of insertion order."""
         import stringzilla as sz
 
+        core = {}
         # Create dicts with different insertion orders
-        macros1 = {
+        variable1 = {
             sz.Str("A"): sz.Str("1"),
             sz.Str("B"): sz.Str("2"),
             sz.Str("C"): sz.Str("3")
         }
 
-        macros2 = {
+        variable2 = {
             sz.Str("C"): sz.Str("3"),
             sz.Str("A"): sz.Str("1"),
             sz.Str("B"): sz.Str("2")
         }
+
+        macros1 = MacroState(core, variable1)
+        macros2 = MacroState(core, variable2)
 
         hash1 = compute_macro_hash(macros1)
         hash2 = compute_macro_hash(macros2)
@@ -510,13 +517,14 @@ class TestMacroHashConsistency:
         """Verify different macro states produce different hashes."""
         import stringzilla as sz
 
-        macros1 = {sz.Str("FOO"): sz.Str("1")}
-        macros2 = {sz.Str("FOO"): sz.Str("2")}  # Different value
-        macros3 = {sz.Str("BAR"): sz.Str("1")}  # Different key
-        macros4 = {
+        core = {}
+        macros1 = MacroState(core, {sz.Str("FOO"): sz.Str("1")})
+        macros2 = MacroState(core, {sz.Str("FOO"): sz.Str("2")})  # Different value
+        macros3 = MacroState(core, {sz.Str("BAR"): sz.Str("1")})  # Different key
+        macros4 = MacroState(core, {
             sz.Str("FOO"): sz.Str("1"),
             sz.Str("BAR"): sz.Str("2")
-        }  # Additional key
+        })  # Additional key
 
         hash1 = compute_macro_hash(macros1)
         hash2 = compute_macro_hash(macros2)
@@ -533,52 +541,54 @@ class TestMacroHashConsistency:
     def test_hash_empty_macro_state(self):
         """Verify empty macro state has consistent hash."""
 
-        empty1 = {}
-        empty2 = {}
+        empty1 = MacroState({}, {})
+        empty2 = MacroState({}, {})
 
         hash1 = compute_macro_hash(empty1)
         hash2 = compute_macro_hash(empty2)
 
         assert hash1 == hash2, "Empty macro states should have same hash"
-        assert len(hash1) == 16, f"Hash should be 16 characters, got {len(hash1)}"
+        assert isinstance(hash1, int), "Hash should be an integer"
 
     def test_hash_with_special_characters(self):
         """Verify hash handles special characters in macro values."""
         import stringzilla as sz
 
-        macros1 = {
+        core = {}
+        macros1 = MacroState(core, {
             sz.Str("PATH"): sz.Str("/usr/local/include"),
             sz.Str("FLAGS"): sz.Str("-O2 -g -Wall")
-        }
+        })
 
-        macros2 = {
+        macros2 = MacroState(core, {
             sz.Str("PATH"): sz.Str("/usr/local/include"),
             sz.Str("FLAGS"): sz.Str("-O3 -g -Wall")  # Different flag
-        }
+        })
 
         hash1 = compute_macro_hash(macros1)
         hash2 = compute_macro_hash(macros2)
 
-        assert len(hash1) == 16, "Hash should be 16 characters"
+        assert isinstance(hash1, int), "Hash should be an integer"
         assert hash1 != hash2, "Different values with special chars should have different hashes"
 
     def test_hash_cross_module_consistency(self):
         """Verify hash computation is consistent and accessible."""
         import stringzilla as sz
-        from compiletools.simple_preprocessor import compute_macro_hash
+        from compiletools.preprocessing_cache import compute_macro_hash
 
-        macros = {
+        core = {}
+        variable = {
             sz.Str("LINUX"): sz.Str("1"),
             sz.Str("DEBUG"): sz.Str("1"),
             sz.Str("VERSION"): sz.Str("100")
         }
+        macros = MacroState(core, variable)
 
-        # Hash computation (used by preprocessing_cache for cache keys)
+        # Hash computation (used by magicflags for convergence detection)
         hash_result = compute_macro_hash(macros)
 
-        # Verify hash format
-        assert len(hash_result) == 16, "Hash should be 16 characters (MD5 hex)"
-        assert all(c in '0123456789abcdef' for c in hash_result), "Hash should be hex"
+        # Verify hash type
+        assert isinstance(hash_result, int), "Hash should be an integer"
 
         # Verify it's deterministic
         hash_again = compute_macro_hash(macros)

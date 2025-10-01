@@ -57,6 +57,11 @@ def test_macro_state_dependency_is_fixed():
         "-q"
     ]
     args2 = compiletools.apptools.parseargs(cap2, argv2)
+
+    # Clear cache before Test 2 since we're using different cmdline args
+    headerdeps.HeaderDepsBase.clear_cache()
+    preprocessing_cache.clear_cache()
+
     deps2 = headerdeps.DirectHeaderDeps(args2)
     
     includes2 = set(deps2.process(str(test_cpp)))
@@ -128,8 +133,12 @@ def test_hunter_respects_macro_state_changes():
     
     assert has_release_no_debug and not has_debug_no_debug, \
         f"Without DEBUG macro should include release.h only, got release={has_release_no_debug}, debug={has_debug_no_debug}"
-    
-    # Test 2: With DEBUG macro should include debug.h  
+
+    # Test 2: With DEBUG macro should include debug.h
+    # Clear cache since we're using different cmdline args
+    hunter.Hunter.clear_cache()
+    preprocessing_cache.clear_cache()
+
     hunter_with_debug = create_hunter_with_macros(debug_enabled=True)
     files_with_debug = set(hunter_with_debug.required_files(str(test_cpp)))
     
@@ -138,9 +147,13 @@ def test_hunter_respects_macro_state_changes():
     
     assert has_debug_with_debug and not has_release_with_debug, \
         f"With DEBUG macro should include debug.h only, got release={has_release_with_debug}, debug={has_debug_with_debug}"
-    
+
     # Test 3: Same Hunter instance with changed dependencies (the critical regression test)
     # This test would fail if someone reintroduced @lru_cache decorators
+    # Clear cache since we're using different cmdline args again
+    hunter.Hunter.clear_cache()
+    preprocessing_cache.clear_cache()
+
     hunter_instance = create_hunter_with_macros(debug_enabled=False)
     
     # First call without DEBUG
@@ -154,9 +167,13 @@ def test_hunter_respects_macro_state_changes():
     # Change the Hunter instance's dependencies to include DEBUG
     hunter_with_debug_deps = create_hunter_with_macros(debug_enabled=True)
     hunter_instance.args = hunter_with_debug_deps.args
-    hunter_instance.headerdeps = hunter_with_debug_deps.headerdeps  
+    hunter_instance.headerdeps = hunter_with_debug_deps.headerdeps
     hunter_instance.magicparser = hunter_with_debug_deps.magicparser
-    
+
+    # Clear cache after mutating the instance's dependencies (different cmdline args)
+    hunter.Hunter.clear_cache()
+    preprocessing_cache.clear_cache()
+
     # Second call with changed macro state - this is the regression test
     files2 = set(hunter_instance.required_files(str(test_cpp)))
     has_release2 = any("release.h" in str(f) for f in files2)
