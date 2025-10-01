@@ -14,8 +14,7 @@ import compiletools.configutils
 import compiletools.apptools
 import compiletools.compiler_macros
 import compiletools.dirnamer
-from compiletools.simple_preprocessor import compute_macro_hash
-from compiletools.preprocessing_cache import get_or_compute_preprocessing
+from compiletools.preprocessing_cache import get_or_compute_preprocessing, MacroState, compute_macro_hash
 from compiletools.apptools import cached_pkg_config_sz
 from compiletools.stringzilla_utils import strip_sz
 from compiletools.file_analyzer import FileAnalysisResult
@@ -347,8 +346,8 @@ class MagicFlagsBase:
 class DirectMagicFlags(MagicFlagsBase):
     def __init__(self, args, headerdeps):
         MagicFlagsBase.__init__(self, args, headerdeps)
-        # Track defined macros with values during processing (unified storage)
-        self.defined_macros = {}
+        # Track defined macros with values during processing (MacroState with core + variable)
+        self.defined_macros = self._initialize_macro_state()
         # Store FileAnalyzer results for potential optimization in parsing
         self._file_analyzer_results = {}
         # Cache for system include paths
@@ -363,44 +362,29 @@ class DirectMagicFlags(MagicFlagsBase):
         if __debug__:
             self._verification_final_macro_hashes = {}
 
-    def _add_macros_from_command_line_flags(self):
-        """Extract -D macros from command-line CPPFLAGS and CXXFLAGS and add them to defined_macros"""
-        import compiletools.apptools
-        
-        # Extract macros from CPPFLAGS and CXXFLAGS only (excluding CFLAGS to match original behavior)
-        macros = compiletools.apptools.extract_command_line_macros(
-            self._args,
-            flag_sources=['CPPFLAGS', 'CXXFLAGS'],
-            include_compiler_macros=False,  # Don't include compiler macros here, done separately
-            verbose=self._args.verbose
-        )
-        
-        # Convert command-line macros to StringZilla.Str for type consistency
-        self.defined_macros.update({sz.Str(k): sz.Str(v) for k, v in macros.items()})
-
-    def _initialize_macro_state(self) -> MacroDict:
-        """Initialize defined_macros with command-line and compiler macros.
+    def _initialize_macro_state(self) -> MacroState:
+        """Initialize MacroState with command-line and compiler macros as core.
 
         Returns:
-            MacroDict: Dictionary of macro names to values (both StringZilla.Str)
+            MacroState: Initialized with core (compiler + cmdline) and empty variable macros
         """
-        macros = {}
+        core_macros = {}
 
-        # Add macros from command-line CPPFLAGS and CXXFLAGS
-        import compiletools.apptools
+        # Get compiler built-in macros - these are the stable base (~378 macros)
+        compiler_macros = compiletools.compiler_macros.get_compiler_macros(self._args.CXX, self._args.verbose)
+        core_macros.update({sz.Str(k): sz.Str(v) for k, v in compiler_macros.items()})
+
+        # Add command-line macros to core - they're also static for the entire build
         cmd_macros = compiletools.apptools.extract_command_line_macros(
             self._args,
             flag_sources=['CPPFLAGS', 'CXXFLAGS'],
             include_compiler_macros=False,
             verbose=self._args.verbose
         )
-        macros.update({sz.Str(k): sz.Str(v) for k, v in cmd_macros.items()})
+        core_macros.update({sz.Str(k): sz.Str(v) for k, v in cmd_macros.items()})
 
-        # Get compiler, platform, and architecture macros dynamically
-        compiler_macros = compiletools.compiler_macros.get_compiler_macros(self._args.CXX, self._args.verbose)
-        macros.update({sz.Str(k): sz.Str(v) for k, v in compiler_macros.items()})
-
-        return macros
+        # Create MacroState with core macros, empty variable macros
+        return MacroState(core_macros, {})
 
     def _extract_macros_from_magic_flags(self, magic_flags_result):
         """Extract -D macros from magic flag CPPFLAGS and CXXFLAGS."""
@@ -520,19 +504,11 @@ class DirectMagicFlags(MagicFlagsBase):
         if self._args.verbose >= 4:
             print("DirectMagicFlags: Setting up structured data with macro processing")
 
-        # Reset state for each parse
-        self.defined_macros = {}
+        # Reset state for each parse - initialize with MacroState containing core macros
+        self.defined_macros = self._initialize_macro_state()
         self._explicit_macro_files = set()
         # Store active magic flags during iteration to avoid redundant final pass
         self._stored_active_magic_flags = {}
-
-        # Add macros from command-line CPPFLAGS and CXXFLAGS
-        self._add_macros_from_command_line_flags()
-
-        # Get compiler, platform, and architecture macros dynamically
-        macros = compiletools.compiler_macros.get_compiler_macros(self._args.CXX, self._args.verbose)
-        # Convert all str keys/values to StringZilla.Str for type consistency throughout the system
-        self.defined_macros.update({sz.Str(k): sz.Str(v) for k, v in macros.items()})
 
         # Compute cache key: (file_hash, input_macro_hash)
         file_hash = get_file_hash(filename)

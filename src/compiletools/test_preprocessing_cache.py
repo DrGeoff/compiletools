@@ -10,7 +10,8 @@ import stringzilla as sz
 from compiletools.preprocessing_cache import (
     get_or_compute_preprocessing,
     get_cache_stats,
-    clear_cache
+    clear_cache,
+    MacroState
 )
 from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
 
@@ -115,7 +116,7 @@ class TestPreprocessingCache:
         ''').strip()
 
         file_result = self._create_simple_file_result(text, "hash_001")
-        macros = {sz.Str("TEST_MACRO"): sz.Str("1")}
+        macros = MacroState({}, {sz.Str("TEST_MACRO"): sz.Str("1")})
 
         # First call - cache miss
         result1 = get_or_compute_preprocessing(file_result, macros, 0)
@@ -142,8 +143,8 @@ class TestPreprocessingCache:
         ''').strip()
 
         file_result = self._create_simple_file_result(text, "hash_002")
-        macros1 = {sz.Str("FOO"): sz.Str("1")}
-        macros2 = {sz.Str("FOO"): sz.Str("2")}
+        macros1 = MacroState({}, {sz.Str("FOO"): sz.Str("1")})
+        macros2 = MacroState({}, {sz.Str("FOO"): sz.Str("2")})
 
         result1 = get_or_compute_preprocessing(file_result, macros1, 0)
         result2 = get_or_compute_preprocessing(file_result, macros2, 0)
@@ -166,8 +167,8 @@ class TestPreprocessingCache:
         ''').strip()
 
         file_result = self._create_simple_file_result(text, "hash_003")
-        macros1 = {sz.Str("FOO"): sz.Str("1")}
-        macros2 = {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("1")}
+        macros1 = MacroState({}, {sz.Str("FOO"): sz.Str("1")})
+        macros2 = MacroState({}, {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("1")})
 
         result1 = get_or_compute_preprocessing(file_result, macros1, 0)
         result2 = get_or_compute_preprocessing(file_result, macros2, 0)
@@ -189,8 +190,8 @@ class TestPreprocessingCache:
         ''').strip()
 
         file_result = self._create_simple_file_result(text, "hash_004")
-        macros1 = {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("1")}
-        macros2 = {sz.Str("FOO"): sz.Str("1")}
+        macros1 = MacroState({}, {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("1")})
+        macros2 = MacroState({}, {sz.Str("FOO"): sz.Str("1")})
 
         result1 = get_or_compute_preprocessing(file_result, macros1, 0)
         result2 = get_or_compute_preprocessing(file_result, macros2, 0)
@@ -218,7 +219,7 @@ class TestPreprocessingCache:
 
         file_result1 = self._create_simple_file_result(text1, "hash_005a")
         file_result2 = self._create_simple_file_result(text2, "hash_005b")
-        macros = {sz.Str("FOO"): sz.Str("1")}
+        macros = MacroState({}, {sz.Str("FOO"): sz.Str("1")})
 
         result1 = get_or_compute_preprocessing(file_result1, macros, 0)
         result2 = get_or_compute_preprocessing(file_result2, macros, 0)
@@ -274,7 +275,7 @@ class TestPreprocessingCache:
             include_guard=None
         )
 
-        initial_macros = {}
+        initial_macros = MacroState({}, {})
         result = get_or_compute_preprocessing(file_result, initial_macros, 0)
 
         # Verify NEW_MACRO is in updated_macros
@@ -291,7 +292,7 @@ class TestPreprocessingCache:
         ''').strip()
 
         file_result = self._create_simple_file_result(text, "hash_007")
-        empty_macros = {}
+        empty_macros = MacroState({}, {})
 
         result1 = get_or_compute_preprocessing(file_result, empty_macros, 0)
         result2 = get_or_compute_preprocessing(file_result, empty_macros, 0)
@@ -309,7 +310,7 @@ class TestPreprocessingCache:
         ''').strip()
 
         file_result = self._create_simple_file_result(text, "hash_008")
-        macros = {}
+        macros = MacroState({}, {})
 
         # Clear stats
         clear_cache()
@@ -368,7 +369,7 @@ class TestCacheManagement:
         )
 
         # Add entry to cache
-        get_or_compute_preprocessing(file_result, {}, 0)
+        get_or_compute_preprocessing(file_result, MacroState({}, {}), 0)
         stats1 = get_cache_stats()
         assert stats1['entries'] == 1
 
@@ -415,7 +416,7 @@ class TestCacheManagement:
                 content_hash=f"hash_{i:03d}",
                 include_guard=None
             )
-            macros = {sz.Str(f"MACRO_{i}"): sz.Str(str(i))}
+            macros = MacroState({}, {sz.Str(f"MACRO_{i}"): sz.Str(str(i))})
             get_or_compute_preprocessing(file_result, macros, 0)
 
         current, peak = tracemalloc.get_traced_memory()

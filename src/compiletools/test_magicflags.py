@@ -44,6 +44,10 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         parser = self._parser_cache[cache_key]
         parser.clear_cache()  # Clear cache for test isolation
 
+        # Also clear preprocessing cache when args change (for MacroState correctness)
+        from compiletools.preprocessing_cache import clear_cache as clear_preprocessing_cache
+        clear_preprocessing_cache()
+
         try:
             return parser.parse(self._get_sample_path(source_file))
         except RuntimeError as e:

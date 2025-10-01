@@ -17,13 +17,18 @@ from compiletools import wrappedos
 _HASHES: Optional[Dict[str, str]] = None
 _lock = threading.Lock()
 
+# Hash operation counters
+_hash_ops = {'registry_hits': 0, 'computed_hashes': 0}
+
 
 def _compute_external_file_hash(filepath: str) -> Optional[str]:
     """Compute git blob hash for a file using git's algorithm."""
+    global _hash_ops
+    _hash_ops['computed_hashes'] += 1
     try:
         with open(filepath, 'rb') as f:
             content = f.read()
-        
+
         # Git blob hash: sha1("blob {size}\0{content}")
         blob_data = f"blob {len(content)}\0".encode() + content
         return hashlib.sha1(blob_data).hexdigest()
@@ -84,6 +89,10 @@ def get_file_hash(filepath: str) -> str:
     abs_path = wrappedos.realpath(filepath)
     result = _HASHES.get(abs_path)
 
+    if result is not None:
+        global _hash_ops
+        _hash_ops['registry_hits'] += 1
+
     # If not found and path was relative, try relative to git root
     if result is None and not os.path.isabs(filepath):
         try:
@@ -118,7 +127,12 @@ def get_registry_stats() -> Dict[str, int]:
     """Get global registry statistics."""
     if _HASHES is None:
         return {'total_files': 0, 'is_loaded': False}
-    return {'total_files': len(_HASHES), 'is_loaded': True}
+    return {
+        'total_files': len(_HASHES),
+        'is_loaded': True,
+        'registry_hits': _hash_ops['registry_hits'],
+        'computed_hashes': _hash_ops['computed_hashes']
+    }
 
 
 def clear_global_registry() -> None:

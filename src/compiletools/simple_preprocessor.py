@@ -4,7 +4,6 @@ from typing import List
 import stringzilla as sz
 from compiletools.stringzilla_utils import is_alpha_or_underscore_sz
 from collections import Counter
-import hashlib
 
 # Global statistics for profiling
 _stats = {
@@ -12,38 +11,6 @@ _stats = {
     'files_processed': Counter(),
     'call_contexts': Counter(),
 }
-
-
-def compute_macro_hash(macros_dict) -> str:
-    """Compute deterministic hash of macro state for caching.
-
-    This is the CANONICAL macro hash implementation used throughout compiletools.
-    All subsystems (SimplePreprocessor, MagicFlags, HeaderDeps) must use this
-    function to ensure hash consistency.
-
-    Args:
-        macros_dict: Dictionary of macro definitions (dict[sz.Str, sz.Str])
-
-    Returns:
-        16-character hex hash of macro state (deterministic, sorted by key)
-
-    Examples:
-        >>> import stringzilla as sz
-        >>> macros = {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("2")}
-        >>> hash1 = compute_macro_hash(macros)
-        >>> len(hash1)
-        16
-    """
-    if not macros_dict:
-        # Empty macro state has consistent hash
-        return hashlib.sha256(b"").hexdigest()[:16]
-
-    # Sort by key for deterministic ordering
-    macro_items = sorted(macros_dict.items())
-    macro_parts = [f"{k}={v}" for k, v in macro_items]
-    macro_string = "|".join(macro_parts)
-    return hashlib.sha256(macro_string.encode('utf-8')).hexdigest()[:16]
-
 
 
 class SimplePreprocessor:

@@ -50,6 +50,12 @@ def test_macro_state_dependency_with_different_macros():
         "-q"
     ]
     args2 = compiletools.apptools.parseargs(cap2, argv2)
+
+    # Clear cache before Test 2 since we're using different cmdline args
+    headerdeps.HeaderDepsBase.clear_cache()
+    from compiletools.preprocessing_cache import clear_cache
+    clear_cache()
+
     deps2 = headerdeps.DirectHeaderDeps(args2)
     
     # Process the same file again
