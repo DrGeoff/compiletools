@@ -13,7 +13,10 @@ import compiletools.tree as tree
 import compiletools.preprocessor
 import compiletools.compiler_macros
 from compiletools.preprocessing_cache import get_or_compute_preprocessing, MacroState
-from compiletools.file_analyzer import FileAnalyzer
+from compiletools.file_analyzer import analyze_file, set_analyzer_args
+
+# Cache for filtered include lists: (content_hash, macro_cache_key) -> list of includes
+_include_list_cache = {}
 
 
 
@@ -53,7 +56,6 @@ class HeaderDepsBase(object):
     def __init__(self, args):
         self.args = args
         # Set global analyzer args for FileAnalyzer caching
-        from compiletools.file_analyzer import set_analyzer_args
         set_analyzer_args(args)
 
     def _process_impl(self, realpath):
@@ -177,6 +179,7 @@ class HeaderDepsBase(object):
         # print("HeaderDepsBase::clear_cache")
         import compiletools.apptools
         compiletools.apptools.clear_cache()
+        _include_list_cache.clear()
         DirectHeaderDeps.clear_cache()
         CppHeaderDeps.clear_cache()
 
@@ -190,33 +193,45 @@ class DirectHeaderDeps(HeaderDepsBase):
         # Keep track of ancestor paths so that we can do header cycle detection
         self.ancestor_paths = []
 
+        # Cache core macros (computed once, reused for all files)
+        self._core_macros = None
+        self._includes = None
+
         # Initialize includes and macros
         self._initialize_includes_and_macros()
     
     def _initialize_includes_and_macros(self):
-        """Initialize include paths and macro definitions from compile flags."""
-        # Grab the include paths from the CPPFLAGS
-        # By default, exclude system paths
-        # TODO: include system paths if the user sets (the currently nonexistent) "use-system" flag
-        
-        # Use proper shell parsing instead of regex to handle quoted paths with spaces
-        self.includes = self._extract_include_paths_from_flags(self.args.CPPFLAGS)
+        """Initialize include paths and macro definitions from compile flags.
 
-        if self.args.verbose >= 3:
-            print("Includes=" + str(self.includes))
-            
-        # Extract macro definitions from command line flags and compiler
-        # Both are static for the lifetime of this instance (core macros)
-        import compiletools.apptools
-        raw_macros = compiletools.apptools.extract_command_line_macros(
-            self.args,
-            flag_sources=['CPPFLAGS', 'CFLAGS', 'CXXFLAGS'],
-            include_compiler_macros=True,
-            verbose=self.args.verbose
-        )
-        # Convert all keys and values to StringZilla.Str and place in core
-        core_macros = {sz.Str(k): sz.Str(v) for k, v in raw_macros.items()}
-        self.defined_macros = MacroState(core_macros, {})
+        Caches core macros and includes on first call for reuse across all files.
+        """
+        # Cache core macros and includes - they never change for this instance
+        if self._core_macros is None:
+            # Grab the include paths from the CPPFLAGS
+            # By default, exclude system paths
+            # TODO: include system paths if the user sets (the currently nonexistent) "use-system" flag
+
+            # Use proper shell parsing instead of regex to handle quoted paths with spaces
+            self._includes = self._extract_include_paths_from_flags(self.args.CPPFLAGS)
+
+            if self.args.verbose >= 3:
+                print("Includes=" + str(self._includes))
+
+            # Extract macro definitions from command line flags and compiler
+            # Both are static for the lifetime of this instance (core macros)
+            import compiletools.apptools
+            raw_macros = compiletools.apptools.extract_command_line_macros(
+                self.args,
+                flag_sources=['CPPFLAGS', 'CFLAGS', 'CXXFLAGS'],
+                include_compiler_macros=True,
+                verbose=self.args.verbose
+            )
+            # Convert all keys and values to StringZilla.Str and place in core
+            self._core_macros = {sz.Str(k): sz.Str(v) for k, v in raw_macros.items()}
+
+        # Set includes and reset macro state (reuse cached core, fresh variable dict)
+        self.includes = self._includes
+        self.defined_macros = MacroState(self._core_macros, {})
 
     @functools.lru_cache(maxsize=None)
     def _search_project_includes(self, include: sz.Str):
@@ -249,12 +264,11 @@ class DirectHeaderDeps(HeaderDepsBase):
         Args:
             realpath: File to process
             initial_macro_hash: Hash of initial macro state (part of cache key)
+
+        Note: Assumes caller has already initialized macro state via process()
         """
         if self.args.verbose >= 9:
             print(f"DirectHeaderDeps::_process_impl: {realpath} (macro_hash={initial_macro_hash})")
-
-        # Reset macro state for this analysis
-        self._initialize_includes_and_macros()
 
         results_order = []
         results_set = set()
@@ -266,6 +280,11 @@ class DirectHeaderDeps(HeaderDepsBase):
     def process(self, filename):
         """Override to compute and pass initial macro hash."""
         realpath = compiletools.wrappedos.realpath(filename)
+
+        # Reset macro state to ensure consistent initial_macro_hash for LRU cache
+        # Without this, macro state from previous files pollutes the hash,
+        # preventing cache hits when processing common headers
+        self._initialize_includes_and_macros()
         initial_macro_hash = self.defined_macros.get_hash()
 
         try:
@@ -280,14 +299,10 @@ class DirectHeaderDeps(HeaderDepsBase):
 
     def _create_include_list(self, realpath):
         """Internal use. Create the list of includes for the given file"""
-        # Get content hash for content-based caching
         from compiletools.global_hash_registry import get_file_hash
         content_hash = get_file_hash(realpath)
+        analysis_result = analyze_file(content_hash)
 
-        # Use FileAnalyzer for efficient file reading and pattern detection
-        analyzer = FileAnalyzer(content_hash, self.args)
-        analysis_result = analyzer.analyze()
-        
         if self.args.verbose >= 9 and analysis_result.include_positions:
             print(f"DirectHeaderDeps::analyze - FileAnalyzer pre-found {len(analysis_result.include_positions)} includes in {realpath}")
 
@@ -295,15 +310,20 @@ class DirectHeaderDeps(HeaderDepsBase):
         result = get_or_compute_preprocessing(analysis_result, self.defined_macros, self.args.verbose)
         active_line_set = set(result.active_lines)
 
-        # Update our macro state from preprocessing results (merge, don't replace)
-        self.defined_macros.update(result.updated_macros)
-
-        # Extract active includes from FileAnalyzer's structured results (no regex needed!)
-        return [
+        # Extract active includes from FileAnalyzer's structured results
+        include_list = [
             sz.Str(inc['filename'])
             for inc in analysis_result.includes
             if inc['line_num'] in active_line_set and not inc['is_commented']
         ]
+
+        # Replace macro state instead of mutating it.
+        # result.updated_macros comes from preprocessing cache and may already have
+        # its cache key computed. By replacing instead of mutating via update(),
+        # we preserve the cached key and avoid recomputation 76K times during traversal.
+        self.defined_macros = result.updated_macros
+
+        return include_list
 
     def _generate_tree_impl(self, realpath, node=None):
         """Return a tree that describes the header includes
