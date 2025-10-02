@@ -52,6 +52,9 @@ class HeaderDepsBase(object):
 
     def __init__(self, args):
         self.args = args
+        # Set global analyzer args for FileAnalyzer caching
+        from compiletools.file_analyzer import set_analyzer_args
+        set_analyzer_args(args)
 
     def _process_impl(self, realpath):
         """Derived classes implement this function"""
@@ -242,8 +245,12 @@ class DirectHeaderDeps(HeaderDepsBase):
 
     def _create_include_list(self, realpath):
         """Internal use. Create the list of includes for the given file"""
+        # Get content hash for content-based caching
+        from compiletools.global_hash_registry import get_file_hash
+        content_hash = get_file_hash(realpath)
+
         # Use FileAnalyzer for efficient file reading and pattern detection
-        analyzer = FileAnalyzer(realpath, self.args)
+        analyzer = FileAnalyzer(content_hash, self.args)
         analysis_result = analyzer.analyze()
         
         if self.args.verbose >= 9 and analysis_result.include_positions:

@@ -116,8 +116,9 @@ def get_file_hash(filepath: str) -> str:
 
         result = _compute_external_file_hash(abs_path)
         if result:
-            # Cache the computed hash for future lookups
+            # Cache the computed hash for future lookups (both forward and reverse)
             _HASHES[abs_path] = result
+            _REVERSE_HASHES[result] = abs_path
         else:
             raise FileNotFoundError(f"global_hash_registry encountered Failed to compute hash for file: {filepath}")
 
@@ -155,9 +156,10 @@ def get_filepath_by_hash(file_hash: str) -> Optional[str]:
         file_hash: Git blob hash
 
     Returns:
-        Filepath if found, None otherwise
+        Absolute realpath if found, None otherwise (already normalized in registry)
     """
     if _REVERSE_HASHES is None:
         load_hashes()
 
+    # Paths in registry are already realpath from git_sha_report
     return _REVERSE_HASHES.get(file_hash)

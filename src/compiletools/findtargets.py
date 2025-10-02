@@ -107,6 +107,9 @@ class FindTargets(object):
 
     def __init__(self, args, argv=None, variant=None, exedir=None):
         self._args = args
+        # Set global analyzer args for FileAnalyzer caching
+        from compiletools.file_analyzer import set_analyzer_args
+        set_analyzer_args(args)
         self.namer = compiletools.namer.Namer(
             self._args, argv=argv, variant=variant, exedir=exedir
         )
@@ -157,8 +160,12 @@ class FindTargets(object):
                     continue
 
                 try:
+                    # Get content hash for content-based caching
+                    from compiletools.global_hash_registry import get_file_hash
+                    content_hash = get_file_hash(pathname)
+
                     # Use FileAnalyzer instead of manual file reading
-                    result = compiletools.file_analyzer.analyze_file(pathname, self._args)
+                    result = compiletools.file_analyzer.analyze_file(content_hash)
 
                     # Apply filename-based test detection first
                     # A file starting with "test" is a test even if it has exemarkers
