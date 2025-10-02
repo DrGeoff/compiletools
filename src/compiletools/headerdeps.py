@@ -298,9 +298,29 @@ class DirectHeaderDeps(HeaderDepsBase):
         return result
 
     def _create_include_list(self, realpath):
-        """Internal use. Create the list of includes for the given file"""
+        """Internal use. Create the list of includes for the given file
+
+        Caches filtered include lists to avoid redundant processing when the same
+        file is encountered with the same macro state across different traversals.
+        """
         from compiletools.global_hash_registry import get_file_hash
         content_hash = get_file_hash(realpath)
+
+        # Check cache using content_hash + macro state
+        # Use cached _cache_key if available to avoid recomputation
+        if self.defined_macros._cache_key is not None:
+            macro_key = self.defined_macros._cache_key
+        else:
+            macro_key = self.defined_macros.get_cache_key()
+
+        cache_key = (content_hash, macro_key)
+
+        if cache_key in _include_list_cache:
+            cached_includes, cached_updated_macros = _include_list_cache[cache_key]
+            self.defined_macros = cached_updated_macros
+            return cached_includes
+
+        # Cache miss - compute the include list
         analysis_result = analyze_file(content_hash)
 
         if self.args.verbose >= 9 and analysis_result.include_positions:
@@ -320,8 +340,11 @@ class DirectHeaderDeps(HeaderDepsBase):
         # Replace macro state instead of mutating it.
         # result.updated_macros comes from preprocessing cache and may already have
         # its cache key computed. By replacing instead of mutating via update(),
-        # we preserve the cached key and avoid recomputation 76K times during traversal.
+        # we preserve the cached key and avoid recomputation during traversal.
         self.defined_macros = result.updated_macros
+
+        # Cache the result
+        _include_list_cache[cache_key] = (include_list, result.updated_macros)
 
         return include_list
 
