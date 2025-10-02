@@ -132,45 +132,45 @@ class MacroState:
         """Return all macro values (core + variable)."""
         return self.all_macros().values()
 
-    def update(self, other):
-        """Update variable macros with dict or MacroState."""
-        if isinstance(other, MacroState):
-            self.variable.update(other.variable)
-            # Note: don't update from other.core - core should be immutable
-        else:
-            self.variable.update(other)
+    def update(self, other: 'MacroState'):
+        """Update variable macros from another MacroState.
+
+        Optimized to skip redundant updates using cache key comparison.
+        Only invalidates cache when actual changes occur.
+        """
+        # Early exit if nothing to update
+        if not other.variable:
+            return
+
+        # Optimization: if both have cache keys, compare them
+        if self._cache_key is not None and other._cache_key is not None:
+            if self._cache_key == other._cache_key:
+                return  # Identical, skip update
+
+        # Perform update and invalidate cache
+        self.variable.update(other.variable)
+        self._cache_key = None
 
     def copy(self) -> 'MacroState':
         """Create shallow copy of this MacroState."""
         return MacroState(self.core, self.variable.copy())
 
+    def get_cache_key(self) -> FrozenSet[Tuple[sz.Str, sz.Str]]:
+        """Get or compute cache key for this MacroState.
+
+        Returns cached key if available, otherwise computes and caches it.
+        """
+        if not self.variable:
+            return _EMPTY_FROZENSET
+
+        if self._cache_key is None:
+            self._cache_key = frozenset(self.variable.items())
+
+        return self._cache_key
+
 
 # Simple cache: if variable dict is empty, return cached empty frozenset
 _EMPTY_FROZENSET: FrozenSet[Tuple[sz.Str, sz.Str]] = frozenset()
-
-def _make_macro_cache_key(macros: 'MacroState') -> FrozenSet[Tuple[sz.Str, sz.Str]]:
-    """Create fast hashable cache key from macro state.
-
-    Only hashes variable macros, ignoring static core for 80% performance improvement.
-    Optimized for the common case of empty variable dicts.
-    Uses lazy caching to avoid repeated frozenset creation.
-
-    Args:
-        macros: MacroState containing core and variable macros
-
-    Returns:
-        Frozenset of (key, value) tuples from variable macros only
-    """
-    if not macros.variable:
-        return _EMPTY_FROZENSET
-
-    # Use cached key if available
-    if macros._cache_key is not None:
-        return macros._cache_key
-
-    # Compute and cache the key
-    macros._cache_key = frozenset(macros.variable.items())
-    return macros._cache_key
 
 
 def compute_macro_hash(macros: 'MacroState') -> int:
@@ -187,7 +187,7 @@ def compute_macro_hash(macros: 'MacroState') -> int:
     Returns:
         Integer hash of variable macro state (fast, no sorting required)
     """
-    return hash(_make_macro_cache_key(macros))
+    return hash(macros.get_cache_key())
 
 
 def is_permanently_invariant(file_result) -> bool:
@@ -299,7 +299,7 @@ def get_or_compute_preprocessing(
         _cache_stats['invariant_misses'] += 1
     else:
         # Macro-variant: cache key is (content_hash, macro_cache_key)
-        macro_key = _make_macro_cache_key(input_macros)
+        macro_key = input_macros.get_cache_key()
         cache_key = (content_hash, macro_key)
 
         if cache_key in _variant_cache:
