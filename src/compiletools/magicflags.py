@@ -15,7 +15,7 @@ import compiletools.configutils
 import compiletools.apptools
 import compiletools.compiler_macros
 import compiletools.dirnamer
-from compiletools.preprocessing_cache import get_or_compute_preprocessing, MacroState, compute_macro_hash, is_macro_invariant
+from compiletools.preprocessing_cache import get_or_compute_preprocessing, MacroState, is_macro_invariant
 from compiletools.apptools import cached_pkg_config_sz
 from compiletools.stringzilla_utils import strip_sz
 from compiletools.file_analyzer import FileAnalysisResult
@@ -427,7 +427,7 @@ class DirectMagicFlags(MagicFlagsBase):
 
         Args:
             fname: File path to process
-            macro_hash: Hash of current macro state (from compute_macro_hash)
+            macro_hash: Hash of current macro state (from MacroState.get_hash())
 
         Returns:
             Tuple of (active_magic_flags, extracted_variable_macros_dict, cppflags_macros, cxxflags_macros)
@@ -497,7 +497,7 @@ class DirectMagicFlags(MagicFlagsBase):
             fname: File path to process
         """
         # Compute hash for cache key (hashable int)
-        macro_hash = compute_macro_hash(self.defined_macros)
+        macro_hash = self.defined_macros.get_hash()
 
         # Use cached computation - pass hash (hashable), function accesses self.defined_macros
         cached_result = self._compute_file_processing_result(fname, macro_hash)
@@ -574,7 +574,7 @@ class DirectMagicFlags(MagicFlagsBase):
         # The hash is already computed and stored from first processing
         if abs_filename not in self._final_macro_hashes:
             # Should not happen, but compute from current state as fallback
-            self._final_macro_hashes[abs_filename] = compute_macro_hash(self.defined_macros)
+            self._final_macro_hashes[abs_filename] = self.defined_macros.get_hash()
 
         return self._structured_data_cache[cache_key]
 
@@ -601,7 +601,7 @@ class DirectMagicFlags(MagicFlagsBase):
 
         while iteration < max_iterations:
             iteration += 1
-            macro_hash_before = compute_macro_hash(self.defined_macros)
+            macro_hash_before = self.defined_macros.get_hash()
             macro_count_before = len(self.defined_macros.variable)
             files_processed = 0
             files_skipped = 0
@@ -648,7 +648,7 @@ class DirectMagicFlags(MagicFlagsBase):
                 continue
 
             # Count unchanged, check for value-only changes with hash
-            macro_hash_after = compute_macro_hash(self.defined_macros)
+            macro_hash_after = self.defined_macros.get_hash()
             if macro_hash_after == macro_hash_before:
                 if self._args.verbose >= 9:
                     print("DirectMagicFlags: Converged - macro values unchanged")
@@ -662,7 +662,7 @@ class DirectMagicFlags(MagicFlagsBase):
     def _finalize_and_cache_result(self, filename, headers, cache_key):
         """Store final macro hash and build cached result."""
         # Store final macro hash using absolute path as key
-        final_macro_hash = compute_macro_hash(self.defined_macros)
+        final_macro_hash = self.defined_macros.get_hash()
         abs_filename = compiletools.wrappedos.realpath(filename)
         self._final_macro_hashes[abs_filename] = final_macro_hash
 
@@ -703,7 +703,7 @@ class DirectMagicFlags(MagicFlagsBase):
 
         # Check cache
         file_hash = get_file_hash(filename)
-        input_macro_hash = compute_macro_hash(self.defined_macros)
+        input_macro_hash = self.defined_macros.get_hash()
         cache_key = (file_hash, input_macro_hash)
 
         cached_result = self._check_cache(filename, cache_key)
@@ -759,9 +759,9 @@ class DirectMagicFlags(MagicFlagsBase):
         """Verify that the macro state hasn't changed after convergence for a specific file."""
         if __debug__:
             if filename and filename in self._verification_final_macro_hashes:
-                current_hash = compute_macro_hash(self.defined_macros)
+                current_hash = self.defined_macros.get_hash()
                 converged_macro_state = self._verification_final_macro_hashes[filename]
-                converged_hash = compute_macro_hash(converged_macro_state)
+                converged_hash = converged_macro_state.get_hash()
                 assert current_hash == converged_hash, (
                     f"MACRO STATE CORRUPTION DETECTED in {context} for file {filename}!\n"
                     f"Converged hash: {converged_hash}\n"

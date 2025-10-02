@@ -7,7 +7,7 @@ from textwrap import dedent
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from compiletools.simple_preprocessor import SimplePreprocessor
-from compiletools.preprocessing_cache import compute_macro_hash, MacroState
+from compiletools.preprocessing_cache import MacroState
 from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
 
 
@@ -481,8 +481,8 @@ class TestMacroHashConsistency:
         }
         macros = MacroState(core, variable)
 
-        hash1 = compute_macro_hash(macros)
-        hash2 = compute_macro_hash(macros)
+        hash1 = macros.get_hash()
+        hash2 = macros.get_hash()
 
         assert hash1 == hash2, "Same macro state should produce same hash"
         assert isinstance(hash1, int), "Hash should be an integer"
@@ -508,8 +508,8 @@ class TestMacroHashConsistency:
         macros1 = MacroState(core, variable1)
         macros2 = MacroState(core, variable2)
 
-        hash1 = compute_macro_hash(macros1)
-        hash2 = compute_macro_hash(macros2)
+        hash1 = macros1.get_hash()
+        hash2 = macros2.get_hash()
 
         assert hash1 == hash2, "Hash should be independent of insertion order"
 
@@ -526,10 +526,10 @@ class TestMacroHashConsistency:
             sz.Str("BAR"): sz.Str("2")
         })  # Additional key
 
-        hash1 = compute_macro_hash(macros1)
-        hash2 = compute_macro_hash(macros2)
-        hash3 = compute_macro_hash(macros3)
-        hash4 = compute_macro_hash(macros4)
+        hash1 = macros1.get_hash()
+        hash2 = macros2.get_hash()
+        hash3 = macros3.get_hash()
+        hash4 = macros4.get_hash()
 
         assert hash1 != hash2, "Different macro values should produce different hashes"
         assert hash1 != hash3, "Different macro keys should produce different hashes"
@@ -544,8 +544,8 @@ class TestMacroHashConsistency:
         empty1 = MacroState({}, {})
         empty2 = MacroState({}, {})
 
-        hash1 = compute_macro_hash(empty1)
-        hash2 = compute_macro_hash(empty2)
+        hash1 = empty1.get_hash()
+        hash2 = empty2.get_hash()
 
         assert hash1 == hash2, "Empty macro states should have same hash"
         assert isinstance(hash1, int), "Hash should be an integer"
@@ -565,8 +565,8 @@ class TestMacroHashConsistency:
             sz.Str("FLAGS"): sz.Str("-O3 -g -Wall")  # Different flag
         })
 
-        hash1 = compute_macro_hash(macros1)
-        hash2 = compute_macro_hash(macros2)
+        hash1 = macros1.get_hash()
+        hash2 = macros2.get_hash()
 
         assert isinstance(hash1, int), "Hash should be an integer"
         assert hash1 != hash2, "Different values with special chars should have different hashes"
@@ -574,7 +574,6 @@ class TestMacroHashConsistency:
     def test_hash_cross_module_consistency(self):
         """Verify hash computation is consistent and accessible."""
         import stringzilla as sz
-        from compiletools.preprocessing_cache import compute_macro_hash
 
         core = {}
         variable = {
@@ -585,13 +584,13 @@ class TestMacroHashConsistency:
         macros = MacroState(core, variable)
 
         # Hash computation (used by magicflags for convergence detection)
-        hash_result = compute_macro_hash(macros)
+        hash_result = macros.get_hash()
 
         # Verify hash type
         assert isinstance(hash_result, int), "Hash should be an integer"
 
         # Verify it's deterministic
-        hash_again = compute_macro_hash(macros)
+        hash_again = macros.get_hash()
         assert hash_result == hash_again, "Hash should be deterministic"
 
 
