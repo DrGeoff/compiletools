@@ -242,6 +242,41 @@ class DirectHeaderDeps(HeaderDepsBase):
 
         return self._search_project_includes(include)
 
+    @functools.lru_cache(maxsize=None)
+    def _process_impl(self, realpath, initial_macro_hash):
+        """Process file with macro state in cache key.
+
+        Args:
+            realpath: File to process
+            initial_macro_hash: Hash of initial macro state (part of cache key)
+        """
+        if self.args.verbose >= 9:
+            print(f"DirectHeaderDeps::_process_impl: {realpath} (macro_hash={initial_macro_hash})")
+
+        # Reset macro state for this analysis
+        self._initialize_includes_and_macros()
+
+        results_order = []
+        results_set = set()
+        self._process_impl_recursive(realpath, results_order, results_set)
+        if realpath in results_order:
+            results_order.remove(realpath)
+        return results_order
+
+    def process(self, filename):
+        """Override to compute and pass initial macro hash."""
+        realpath = compiletools.wrappedos.realpath(filename)
+        initial_macro_hash = self.defined_macros.get_hash()
+
+        try:
+            result = self._process_impl(realpath, initial_macro_hash)
+        except IOError:
+            result = None
+
+        if not result:
+            result = self._process_impl(realpath, initial_macro_hash)
+
+        return result
 
     def _create_include_list(self, realpath):
         """Internal use. Create the list of includes for the given file"""
@@ -336,25 +371,6 @@ class DirectHeaderDeps(HeaderDepsBase):
 
         # Add current file after processing includes (depth-first order)
         results_order.append(realpath)
-
-    @functools.lru_cache(maxsize=None)
-    def _process_impl(self, realpath):
-        if self.args.verbose >= 9:
-            print("DirectHeaderDeps::_process_impl: " + realpath)
-
-        # Reset macro state at the beginning of each top-level dependency analysis
-        # This ensures consistent results across multiple calls while allowing
-        # macro accumulation within a single analysis
-        self._initialize_includes_and_macros()
-
-        results_order = []  # Maintain order of discovery
-        results_set = set()  # Fast lookup for cycle detection
-        self._process_impl_recursive(realpath, results_order, results_set)
-        # Remove the original file from results while preserving order
-        if realpath in results_order:
-            results_order.remove(realpath)
-        return results_order
-
 
     def clear_instance_cache(self):
         """Clear this instance's _process_impl cache."""

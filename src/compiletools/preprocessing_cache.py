@@ -57,6 +57,7 @@ class MacroState:
     core: MacroDict  # Static: compiler + cmdline macros
     variable: MacroDict  # Dynamic: file #defines
     _cache_key: Optional[FrozenSet[Tuple[sz.Str, sz.Str]]]  # Cached frozenset for cache keys
+    _hash: Optional[int]  # Cached hash for convergence detection
 
     def __init__(self, core: MacroDict, variable: Optional[MacroDict] = None):
         """Initialize macro state.
@@ -68,6 +69,7 @@ class MacroState:
         self.core = core
         self.variable = variable if variable is not None else {}
         self._cache_key = None  # Lazy-computed cache key
+        self._hash = None  # Lazy-computed hash
 
     def all_macros(self) -> MacroDict:
         """Get merged view of all macros (core + variable).
@@ -106,7 +108,8 @@ class MacroState:
     def __setitem__(self, key, value):
         """Set macro value. Always sets in variable dict."""
         self.variable[key] = value
-        self._cache_key = None  # Invalidate cache
+        self._cache_key = None  # Invalidate caches
+        self._hash = None
 
     def __contains__(self, key) -> bool:
         """Check if macro key exists in either core or variable."""
@@ -147,9 +150,10 @@ class MacroState:
             if self._cache_key == other._cache_key:
                 return  # Identical, skip update
 
-        # Perform update and invalidate cache
+        # Perform update and invalidate caches
         self.variable.update(other.variable)
         self._cache_key = None
+        self._hash = None
 
     def copy(self) -> 'MacroState':
         """Create shallow copy of this MacroState."""
@@ -168,26 +172,19 @@ class MacroState:
 
         return self._cache_key
 
+    def get_hash(self) -> int:
+        """Get or compute hash of this MacroState for convergence detection.
+
+        Uses cached hash to avoid recomputation on repeated calls.
+        Only hashes variable macros, ignoring static core macros.
+        """
+        if self._hash is None:
+            self._hash = hash(self.get_cache_key())
+        return self._hash
+
 
 # Simple cache: if variable dict is empty, return cached empty frozenset
 _EMPTY_FROZENSET: FrozenSet[Tuple[sz.Str, sz.Str]] = frozenset()
-
-
-def compute_macro_hash(macros: 'MacroState') -> int:
-    """Compute hash of macro state for convergence detection in magicflags.
-
-    This function is used exclusively by DirectMagicFlags to detect when macro
-    state has converged during iterative processing. It leverages the existing
-    _make_macro_cache_key which only hashes variable macros, ignoring the ~388
-    static core macros (compiler built-ins) that are identical across all files.
-
-    Args:
-        macros: MacroState containing core and variable macros
-
-    Returns:
-        Integer hash of variable macro state (fast, no sorting required)
-    """
-    return hash(macros.get_cache_key())
 
 
 def is_permanently_invariant(file_result) -> bool:
