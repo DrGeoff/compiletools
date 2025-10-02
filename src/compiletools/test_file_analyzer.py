@@ -69,8 +69,10 @@ int main() {
 }'''
 
         filepath = self.create_test_file("test.c", content)
+        from compiletools.global_hash_registry import get_file_hash
+        content_hash = get_file_hash(filepath)
         args = SimpleNamespace(max_read_size=0, verbose=0)
-        analyzer = FileAnalyzer(filepath, args)
+        analyzer = FileAnalyzer(content_hash, args)
         result = analyzer.analyze()
 
         # Should have 2 include positions (not the commented one)
@@ -92,8 +94,10 @@ int main() {
 }'''
 
         filepath = self.create_test_file("magic.c", content)
+        from compiletools.global_hash_registry import get_file_hash
+        content_hash = get_file_hash(filepath)
         args = SimpleNamespace(max_read_size=0, verbose=0)
-        analyzer = FileAnalyzer(filepath, args)
+        analyzer = FileAnalyzer(content_hash, args)
         result = analyzer.analyze()
         
         # Should detect 2 magic flags
@@ -202,8 +206,10 @@ class TestFileAnalyzerFactory:
             filepath = f.name
 
         try:
+            from compiletools.global_hash_registry import get_file_hash
+            content_hash = get_file_hash(filepath)
             args = SimpleNamespace(max_read_size=0, verbose=0)
-            analyzer = FileAnalyzer(filepath, args)
+            analyzer = FileAnalyzer(content_hash, args)
             assert isinstance(analyzer, FileAnalyzer)
         finally:
             os.unlink(filepath)

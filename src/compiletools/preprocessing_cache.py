@@ -106,6 +106,7 @@ class MacroState:
     def __setitem__(self, key, value):
         """Set macro value. Always sets in variable dict."""
         self.variable[key] = value
+        self._cache_key = None  # Invalidate cache
 
     def __contains__(self, key) -> bool:
         """Check if macro key exists in either core or variable."""
@@ -152,6 +153,7 @@ def _make_macro_cache_key(macros: 'MacroState') -> FrozenSet[Tuple[sz.Str, sz.St
 
     Only hashes variable macros, ignoring static core for 80% performance improvement.
     Optimized for the common case of empty variable dicts.
+    Uses lazy caching to avoid repeated frozenset creation.
 
     Args:
         macros: MacroState containing core and variable macros
@@ -161,7 +163,14 @@ def _make_macro_cache_key(macros: 'MacroState') -> FrozenSet[Tuple[sz.Str, sz.St
     """
     if not macros.variable:
         return _EMPTY_FROZENSET
-    return frozenset(macros.variable.items())
+
+    # Use cached key if available
+    if macros._cache_key is not None:
+        return macros._cache_key
+
+    # Compute and cache the key
+    macros._cache_key = frozenset(macros.variable.items())
+    return macros._cache_key
 
 
 def compute_macro_hash(macros: 'MacroState') -> int:
@@ -434,6 +443,11 @@ def clear_cache():
     # Clear file analyzer cache since analysis results are used by preprocessing
     from compiletools.file_analyzer import analyze_file
     analyze_file.cache_clear()
+
+    # Clear global hash registry to prevent stale hash lookups in tests
+    from compiletools.global_hash_registry import clear_global_registry, get_file_hash
+    clear_global_registry()
+    get_file_hash.cache_clear()
 
 
 def print_preprocessing_stats():

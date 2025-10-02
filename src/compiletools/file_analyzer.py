@@ -51,7 +51,6 @@ def is_position_commented_simd_optimized(str_text: 'stringzilla.Str', pos: int, 
 
     return False
 
-
 def is_inside_block_comment_simd(str_text: 'stringzilla.Str', pos: int) -> bool:
     """Check if position is inside a multi-line block comment using StringZilla."""
     last_block_start = str_text.rfind('/*', 0, pos)
@@ -288,28 +287,39 @@ def parse_directive_struct(dtype: str, pos: int, line_num: int,
     return directive
 
 
-# Module-level file analysis cache keyed by content hash
-_file_analysis_cache = {}
+# Global args storage for file analysis (set once per build)
+_analyzer_args = None
 
-def analyze_file(filepath: str, args) -> 'FileAnalysisResult':
-    """Direct file analysis with caching - no object creation.
+def set_analyzer_args(args):
+    """Set global args for file analysis. Must be called once at build start.
 
     Args:
-        filepath: Path to the file to analyze
         args: Args object containing max_read_size, verbose, exemarkers, testmarkers, librarymarkers
+    """
+    global _analyzer_args
+    _analyzer_args = args
+
+from functools import lru_cache
+
+@lru_cache(maxsize=None)
+def analyze_file(content_hash: str) -> 'FileAnalysisResult':
+    """Direct file analysis with LRU caching - content hash based.
+
+    Args:
+        content_hash: Git blob hash of file content
 
     Raises:
-        FileNotFoundError: If filepath does not exist
+        FileNotFoundError: If file with given hash not found
+        RuntimeError: If analyzer args not set via set_analyzer_args()
     """
-    # Get content hash from global registry - raises FileNotFoundError if file missing
-    from compiletools.global_hash_registry import get_file_hash
-    content_hash = get_file_hash(filepath)
+    if _analyzer_args is None:
+        raise RuntimeError("analyze_file: analyzer args not set. Call set_analyzer_args() first.")
 
-    # Check cache using content hash as key
-    if content_hash in _file_analysis_cache:
-        return _file_analysis_cache[content_hash]
+    args = _analyzer_args
 
-    filepath = compiletools.wrappedos.realpath(filepath)
+    # Reverse lookup to get filepath (already realpath from registry)
+    from compiletools.global_hash_registry import get_filepath_by_hash
+    filepath = get_filepath_by_hash(content_hash)
 
     from stringzilla import Str, File
 
@@ -616,19 +626,50 @@ def analyze_file(filepath: str, args) -> 'FileAnalysisResult':
         marker_type=marker_type
     )
 
-    # Store in cache
-    _file_analysis_cache[content_hash] = result
     return result
 
 
-# Provide cache_clear function for compatibility with lru_cache-based code
 def cache_clear():
-    """Clear the file analysis cache."""
-    _file_analysis_cache.clear()
+    """Clear the file analysis cache and reset analyzer args."""
+    global _analyzer_args
+    _analyzer_args = None
+    analyze_file.cache_clear()
 
 
-# Attach cache_clear as attribute to analyze_file for compatibility
-analyze_file.cache_clear = cache_clear
+def get_cache_stats():
+    """Get cache statistics from LRU cache."""
+    info = analyze_file.cache_info()
+    return {
+        'hits': info.hits,
+        'misses': info.misses,
+        'total_calls': info.hits + info.misses,
+        'cache_size': info.currsize,
+        'max_size': info.maxsize
+    }
+
+
+def print_cache_stats():
+    """Print cache statistics."""
+    stats = get_cache_stats()
+    total = stats['total_calls']
+    hits = stats['hits']
+    misses = stats['misses']
+
+    if total == 0:
+        hit_rate = 0.0
+    else:
+        hit_rate = (hits / total) * 100
+
+    print("\n=== FileAnalyzer Cache Statistics ===")
+    print(f"Total calls:    {total:,}")
+    print(f"Cache hits:     {hits:,} ({hit_rate:.1f}%)")
+    print(f"Cache misses:   {misses:,}")
+    print(f"Cache size:     {stats['cache_size']:,}")
+
+
+# Attach cache management functions
+analyze_file.get_cache_stats = get_cache_stats
+analyze_file.print_cache_stats = print_cache_stats
 
 
 def read_file_mmap(filepath, max_size=0):
@@ -880,23 +921,26 @@ class FileAnalyzer:
     as a foundation.
     """
     
-    def __init__(self, filepath: str, args):
+    def __init__(self, content_hash: str, args):
         """Initialize file analyzer.
 
         Args:
-            filepath: Path to file to analyze (required)
+            content_hash: Git blob hash of file content
             args: Args object containing max_read_size, verbose, exemarkers, testmarkers, librarymarkers
         """
-        if filepath is None:
-            raise ValueError("filepath must be provided")
+        if content_hash is None:
+            raise ValueError("content_hash must be provided")
 
-        self.filepath = compiletools.wrappedos.realpath(filepath)
+        self.content_hash = content_hash
         self.args = args
+
+        # Set global analyzer args for LRU caching
+        set_analyzer_args(args)
 
         # StringZilla is now mandatory - no fallbacks
         import stringzilla as sz
         self.Str = sz.Str
-        
+
     # StringZilla utility methods now use the shared stringzilla_utils module
 
     def _should_read_entire_file(self, file_size: Optional[int] = None) -> bool:
@@ -909,8 +953,9 @@ class FileAnalyzer:
         return False
 
     def analyze(self) -> FileAnalysisResult:
-        """Analyze file using shared module-level cache."""
-        return analyze_file(self.filepath, self.args)
+        """Analyze file using shared module-level LRU cache."""
+        # Args must be set globally via set_analyzer_args before calling analyze
+        return analyze_file(self.content_hash)
     
     # _parse_directive_struct method removed - now uses stringzilla_utils module
     

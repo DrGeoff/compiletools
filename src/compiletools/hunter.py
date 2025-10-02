@@ -45,6 +45,10 @@ class Hunter(object):
             Hunter._parse_magic.cache_clear()
         except AttributeError:
             pass  # Method doesn't exist yet (first instantiation)
+        try:
+            Hunter._required_files_impl.cache_clear()
+        except AttributeError:
+            pass  # Method doesn't exist yet (first instantiation)
 
     def _extractSOURCE(self, realpath):
         import stringzilla as sz
@@ -92,8 +96,9 @@ class Hunter(object):
             if dep not in processed:
                 self._expand_deps_recursive(dep, macro_hash, processed)
 
+    @functools.lru_cache(maxsize=None)
     def _required_files_impl(self, realpath, macro_hash):
-        """Get all transitive dependencies for a file."""
+        """Get all transitive dependencies for a file (cached by realpath + macro_hash)."""
         if self.args.verbose >= 7:
             print(f"Hunter::_required_files_impl for {realpath}")
 
@@ -164,6 +169,8 @@ class Hunter(object):
             self._parse_magic.cache_clear()
         if hasattr(self, '_get_immediate_deps'):
             self._get_immediate_deps.cache_clear()
+        if hasattr(self, '_required_files_impl'):
+            self._required_files_impl.cache_clear()
         # Clear project-level source discovery caches
         if hasattr(self, '_hunted_sources'):
             del self._hunted_sources

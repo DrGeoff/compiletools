@@ -96,6 +96,10 @@ class MagicFlagsBase:
         self._args = args
         self._headerdeps = headerdeps
 
+        # Set global analyzer args for FileAnalyzer caching
+        from compiletools.file_analyzer import set_analyzer_args
+        set_analyzer_args(args)
+
         # The magic pattern is //#key=value with whitespace ignored
         self.magicpattern = re.compile(
             r"^[\s]*//#([\S]*?)[\s]*=[\s]*(.*)", re.MULTILINE
@@ -125,7 +129,9 @@ class MagicFlagsBase:
             FileAnalysisResult: Analysis result for the file
         """
         from compiletools.file_analyzer import analyze_file
-        return analyze_file(filename, self._args)
+        from compiletools.global_hash_registry import get_file_hash
+        content_hash = get_file_hash(filename)
+        return analyze_file(content_hash)
 
     def __call__(self, filename: str) -> FlagsDict:
         return self.parse(filename)
@@ -557,8 +563,15 @@ class DirectMagicFlags(MagicFlagsBase):
 
         # Restore macro state from previous convergence using absolute path
         abs_filename = compiletools.wrappedos.realpath(filename)
-        if abs_filename in self._verification_final_macro_hashes:
-            self.defined_macros = self._verification_final_macro_hashes[abs_filename].copy()
+        if __debug__:
+            if abs_filename in self._verification_final_macro_hashes:
+                self.defined_macros = self._verification_final_macro_hashes[abs_filename].copy()
+
+        # Ensure _final_macro_hashes is populated (required for hunter.macro_hash())
+        # The hash is already computed and stored from first processing
+        if abs_filename not in self._final_macro_hashes:
+            # Should not happen, but compute from current state as fallback
+            self._final_macro_hashes[abs_filename] = compute_macro_hash(self.defined_macros)
 
         return self._structured_data_cache[cache_key]
 

@@ -10,13 +10,14 @@ import compiletools.cake
 import compiletools.apptools
 import compiletools.dirnamer
 import compiletools.namer
+from compiletools.test_base import BaseCompileToolsTestCase
 
 
 
 
-class TestCake:
+class TestCake(BaseCompileToolsTestCase):
     def setup_method(self):
-        self._tmpdir = None
+        super().setup_method()  # Call base class setup to clear caches
         self._config_name = None
 
     def _create_argv(self, cache_home="None"):
