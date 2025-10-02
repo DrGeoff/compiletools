@@ -406,7 +406,10 @@ class DirectMagicFlags(MagicFlagsBase):
             verbose=self._args.verbose
         )
 
-        self.defined_macros.update(macros)
+        # Wrap dict in MacroState for update (use empty core since these are variable macros)
+        from compiletools.preprocessing_cache import MacroState
+        macro_state = MacroState(core={}, variable=macros)
+        self.defined_macros.update(macro_state)
 
         if self._args.verbose >= 9:
             print(f"DirectMagicFlags: extracted {len(macros)} macros from magic flags: {macros}")

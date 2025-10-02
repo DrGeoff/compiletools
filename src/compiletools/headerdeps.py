@@ -264,13 +264,11 @@ class DirectHeaderDeps(HeaderDepsBase):
         self.defined_macros.update(result.updated_macros)
 
         # Extract active includes from FileAnalyzer's structured results (no regex needed!)
-        includes = []
-        for include_info in analysis_result.includes:
-            # Only include if this line is active after preprocessing and not commented
-            if include_info['line_num'] in active_line_set and not include_info['is_commented']:
-                includes.append(sz.Str(include_info['filename']))
-
-        return includes
+        return [
+            sz.Str(inc['filename'])
+            for inc in analysis_result.includes
+            if inc['line_num'] in active_line_set and not inc['is_commented']
+        ]
 
     def _generate_tree_impl(self, realpath, node=None):
         """Return a tree that describes the header includes
