@@ -485,7 +485,7 @@ class TestMacroHashConsistency:
         hash2 = compute_macro_hash(macros)
 
         assert hash1 == hash2, "Same macro state should produce same hash"
-        assert isinstance(hash1, int), f"Hash should be an integer"
+        assert isinstance(hash1, int), "Hash should be an integer"
 
     def test_hash_ordering_independence(self):
         """Verify hash is same regardless of insertion order."""

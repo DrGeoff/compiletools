@@ -125,8 +125,7 @@ class MagicFlagsBase:
             FileAnalysisResult: Analysis result for the file
         """
         from compiletools.file_analyzer import analyze_file
-        max_read_size = getattr(self._args, 'max_file_read_size', 0)
-        return analyze_file(filename, max_read_size, self._args.verbose)
+        return analyze_file(filename, self._args)
 
     def __call__(self, filename: str) -> FlagsDict:
         return self.parse(filename)
@@ -636,7 +635,7 @@ class DirectMagicFlags(MagicFlagsBase):
             macro_hash_after = compute_macro_hash(self.defined_macros)
             if macro_hash_after == macro_hash_before:
                 if self._args.verbose >= 9:
-                    print(f"DirectMagicFlags: Converged - macro values unchanged")
+                    print("DirectMagicFlags: Converged - macro values unchanged")
                 break
 
         if self._args.verbose >= 7:

@@ -242,10 +242,8 @@ class DirectHeaderDeps(HeaderDepsBase):
 
     def _create_include_list(self, realpath):
         """Internal use. Create the list of includes for the given file"""
-        max_read_size = getattr(self.args, 'max_file_read_size', 0)
-        
         # Use FileAnalyzer for efficient file reading and pattern detection
-        analyzer = FileAnalyzer(realpath, max_read_size, self.args.verbose)
+        analyzer = FileAnalyzer(realpath, self.args)
         analysis_result = analyzer.analyze()
         
         if self.args.verbose >= 9 and analysis_result.include_positions:

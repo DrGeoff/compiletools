@@ -8,7 +8,7 @@ import os
 import mmap
 import bisect
 from dataclasses import dataclass, field
-from functools import lru_cache
+from enum import Enum
 from typing import Dict, List, Optional, Set, FrozenSet
 from io import open
 
@@ -20,6 +20,14 @@ from compiletools.stringzilla_utils import (
     is_alpha_or_underscore_sz,
     join_lines_strip_backslash_sz
 )
+
+
+class MarkerType(Enum):
+    """Type of marker found in source file."""
+    NONE = 0
+    EXE = 1
+    TEST = 2
+    LIBRARY = 3
 
 
 def is_position_commented_simd_optimized(str_text: 'stringzilla.Str', pos: int, line_byte_offsets: List[int]) -> bool:
@@ -280,10 +288,15 @@ def parse_directive_struct(dtype: str, pos: int, line_num: int,
     return directive
 
 
-# Module-level cached file analysis - no object creation needed
-@lru_cache(maxsize=None)
-def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'FileAnalysisResult':
+# Module-level file analysis cache keyed by content hash
+_file_analysis_cache = {}
+
+def analyze_file(filepath: str, args) -> 'FileAnalysisResult':
     """Direct file analysis with caching - no object creation.
+
+    Args:
+        filepath: Path to the file to analyze
+        args: Args object containing max_read_size, verbose, exemarkers, testmarkers, librarymarkers
 
     Raises:
         FileNotFoundError: If filepath does not exist
@@ -292,9 +305,19 @@ def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'Fi
     from compiletools.global_hash_registry import get_file_hash
     content_hash = get_file_hash(filepath)
 
+    # Check cache using content hash as key
+    if content_hash in _file_analysis_cache:
+        return _file_analysis_cache[content_hash]
+
     filepath = compiletools.wrappedos.realpath(filepath)
 
     from stringzilla import Str, File
+
+    # Extract parameters from args
+    max_read_size = getattr(args, 'max_read_size', 0)
+    exe_markers = getattr(args, 'exemarkers', [])
+    test_markers = getattr(args, 'testmarkers', [])
+    library_markers = getattr(args, 'librarymarkers', [])
 
     file_size = os.path.getsize(filepath)
 
@@ -552,7 +575,27 @@ def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'Fi
     # Extract macros referenced in conditionals (for cache optimization)
     conditional_macros = _extract_conditional_macros(directives)
 
-    return FileAnalysisResult(
+    # Detect marker type - check for exe, test, or library markers
+    marker_type = MarkerType.NONE
+    if exe_markers:
+        for marker in exe_markers:
+            if str_text.count(marker) > 0:
+                marker_type = MarkerType.EXE
+                break
+
+    if marker_type == MarkerType.NONE and test_markers:
+        for marker in test_markers:
+            if str_text.count(marker) > 0:
+                marker_type = MarkerType.TEST
+                break
+
+    if marker_type == MarkerType.NONE and library_markers:
+        for marker in library_markers:
+            if str_text.count(marker) > 0:
+                marker_type = MarkerType.LIBRARY
+                break
+
+    result = FileAnalysisResult(
         line_count=len(lines),
         line_byte_offsets=line_byte_offsets,
         include_positions=include_positions,
@@ -569,8 +612,23 @@ def analyze_file(filepath: str, max_read_size: int = 0, verbose: int = 0) -> 'Fi
         quoted_headers=quoted_headers,
         content_hash=content_hash,
         include_guard=include_guard,
-        conditional_macros=conditional_macros
+        conditional_macros=conditional_macros,
+        marker_type=marker_type
     )
+
+    # Store in cache
+    _file_analysis_cache[content_hash] = result
+    return result
+
+
+# Provide cache_clear function for compatibility with lru_cache-based code
+def cache_clear():
+    """Clear the file analysis cache."""
+    _file_analysis_cache.clear()
+
+
+# Attach cache_clear as attribute to analyze_file for compatibility
+analyze_file.cache_clear = cache_clear
 
 
 def read_file_mmap(filepath, max_size=0):
@@ -793,6 +851,7 @@ class FileAnalysisResult:
     content_hash: str = ""                  # SHA1 of original content
     include_guard: Optional['stringzilla.Str'] = None  # Include guard macro name (traditional) or sz.Str("pragma_once") for #pragma once
     conditional_macros: FrozenSet['stringzilla.Str'] = field(default_factory=frozenset)  # Macros referenced in conditionals (for cache optimization)
+    marker_type: MarkerType = MarkerType.NONE  # Type of marker found in file (exe, test, library, or none)
     
     # Helper method for SimplePreprocessor compatibility
     def get_directive_line_numbers(self) -> Dict[str, Set[int]]:
@@ -821,21 +880,19 @@ class FileAnalyzer:
     as a foundation.
     """
     
-    def __init__(self, filepath: str, max_read_size: int = 0, verbose: int = 0):
+    def __init__(self, filepath: str, args):
         """Initialize file analyzer.
-        
+
         Args:
             filepath: Path to file to analyze (required)
-            max_read_size: Maximum bytes to read (0 = entire file)
-            verbose: Verbosity level for debugging
+            args: Args object containing max_read_size, verbose, exemarkers, testmarkers, librarymarkers
         """
         if filepath is None:
             raise ValueError("filepath must be provided")
-            
+
         self.filepath = compiletools.wrappedos.realpath(filepath)
-        self.max_read_size = max_read_size
-        self.verbose = verbose
-        
+        self.args = args
+
         # StringZilla is now mandatory - no fallbacks
         import stringzilla as sz
         self.Str = sz.Str
@@ -844,15 +901,16 @@ class FileAnalyzer:
 
     def _should_read_entire_file(self, file_size: Optional[int] = None) -> bool:
         """Determine if entire file should be read based on configuration."""
-        if self.max_read_size == 0:
+        max_read_size = getattr(self.args, 'max_read_size', 0)
+        if max_read_size == 0:
             return True
-        if file_size and file_size <= self.max_read_size:
+        if file_size and file_size <= max_read_size:
             return True
         return False
-    
+
     def analyze(self) -> FileAnalysisResult:
         """Analyze file using shared module-level cache."""
-        return analyze_file(self.filepath, self.max_read_size, self.verbose)
+        return analyze_file(self.filepath, self.args)
     
     # _parse_directive_struct method removed - now uses stringzilla_utils module
     
