@@ -10,7 +10,7 @@ The cache uses two strategies:
 This optimizes the common case where files have #define but no #if/#ifdef.
 """
 
-from typing import List, Dict, Tuple, FrozenSet, Optional, Union
+from typing import List, Dict, Tuple, FrozenSet, Optional
 from dataclasses import dataclass
 import sys
 import stringzilla as sz

@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+from types import SimpleNamespace
 
 from compiletools.file_analyzer import (
     FileAnalysisResult,
@@ -66,9 +67,10 @@ class TestFileAnalyzer:
 int main() {
     return 0;
 }'''
-        
+
         filepath = self.create_test_file("test.c", content)
-        analyzer = FileAnalyzer(filepath, max_read_size=0, verbose=0)
+        args = SimpleNamespace(max_read_size=0, verbose=0)
+        analyzer = FileAnalyzer(filepath, args)
         result = analyzer.analyze()
 
         # Should have 2 include positions (not the commented one)
@@ -88,9 +90,10 @@ int main() {
 int main() {
     return 0;
 }'''
-        
+
         filepath = self.create_test_file("magic.c", content)
-        analyzer = FileAnalyzer(filepath, max_read_size=0, verbose=0)
+        args = SimpleNamespace(max_read_size=0, verbose=0)
+        analyzer = FileAnalyzer(filepath, args)
         result = analyzer.analyze()
         
         # Should detect 2 magic flags
@@ -199,7 +202,8 @@ class TestFileAnalyzerFactory:
             filepath = f.name
 
         try:
-            analyzer = FileAnalyzer(filepath, 0, 0)
+            args = SimpleNamespace(max_read_size=0, verbose=0)
+            analyzer = FileAnalyzer(filepath, args)
             assert isinstance(analyzer, FileAnalyzer)
         finally:
             os.unlink(filepath)

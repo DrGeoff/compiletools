@@ -5,6 +5,8 @@ import compiletools.utils
 import compiletools.namer
 import compiletools.configutils
 import compiletools.apptools
+import compiletools.file_analyzer
+from compiletools.file_analyzer import MarkerType
 
 
 def add_arguments(cap):
@@ -129,7 +131,7 @@ class FindTargets(object):
         if self._args.exemarkers is None:
             variant = getattr(self._args, 'variant', 'unknown')
             config_file = getattr(self._args, 'config', None)
-            
+
             print("Error: No exemarkers configured.", file=sys.stderr)
             print(f"  Variant: {variant}", file=sys.stderr)
             if config_file:
@@ -140,7 +142,7 @@ class FindTargets(object):
             print(f"  1. Configure exemarkers in your {variant}.conf file", file=sys.stderr)
             print("  2. Specify exemarkers on command line: --exemarkers='main('", file=sys.stderr)
             sys.exit(1)
-            
+
         if path is None:
             path = "."
         executabletargets = []
@@ -153,28 +155,34 @@ class FindTargets(object):
                 pathname = os.path.join(root, filename)
                 if not compiletools.utils.is_source(pathname):
                     continue
-                with open(pathname, encoding="utf-8", errors="ignore") as ff:
-                    for line in ff:
-                        if any(marker in line for marker in self._args.exemarkers):
-                            # A file starting with test....cpp will be interpreted
-                            # As a test even though it satisfied the exemarker
-                            if (
-                                filename.startswith("test")
-                                and self._args.filenametestmatch
-                            ):
-                                testtargets.append(pathname)
-                                if self._args.verbose >= 3:
-                                    print("Found a test: " + pathname)
-                            else:
-                                executabletargets.append(pathname)
-                                if self._args.verbose >= 3:
-                                    print("Found an executable source: " + pathname)
-                            break
-                        if any(marker in line for marker in self._args.testmarkers):
+
+                try:
+                    # Use FileAnalyzer instead of manual file reading
+                    result = compiletools.file_analyzer.analyze_file(pathname, self._args)
+
+                    # Apply filename-based test detection first
+                    # A file starting with "test" is a test even if it has exemarkers
+                    if filename.startswith("test") and self._args.filenametestmatch:
+                        if result.marker_type in (MarkerType.EXE, MarkerType.TEST):
                             testtargets.append(pathname)
                             if self._args.verbose >= 3:
                                 print("Found a test: " + pathname)
-                            break
+                            continue
+
+                    # Check marker type from FileAnalyzer
+                    if result.marker_type == MarkerType.EXE:
+                        executabletargets.append(pathname)
+                        if self._args.verbose >= 3:
+                            print("Found an executable source: " + pathname)
+                    elif result.marker_type == MarkerType.TEST:
+                        testtargets.append(pathname)
+                        if self._args.verbose >= 3:
+                            print("Found a test: " + pathname)
+
+                except (OSError, IOError, FileNotFoundError):
+                    # Skip files that can't be read
+                    continue
+
         if self._args.disable_tests:
             testtargets = []
         if self._args.disable_exes:
