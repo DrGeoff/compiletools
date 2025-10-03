@@ -39,6 +39,7 @@ def _compute_external_file_hash(filepath: str) -> Optional[str]:
 
 def load_hashes() -> None:
     """Load all file hashes once with thread safety."""
+    import gc
     global _HASHES, _REVERSE_HASHES
 
     if _HASHES is not None:
@@ -61,6 +62,11 @@ def load_hashes() -> None:
             _REVERSE_HASHES = {sha: str(path) for path, sha in all_hashes.items()}
 
             print(f"GlobalHashRegistry: Loaded {len(_HASHES)} file hashes from git")
+
+            # Explicitly clean up Path objects and force garbage collection
+            # to ensure file descriptors are released
+            del all_hashes
+            gc.collect()
 
         except Exception as e:
             # Gracefully handle git failures (e.g., in test environments, non-git directories)

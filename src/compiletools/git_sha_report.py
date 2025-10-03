@@ -104,25 +104,26 @@ def get_untracked_files() -> list[Path]:
 
 def batch_hash_objects(paths) -> Dict[Path, str]:
     """
-    Given a list of paths, return { path: blob_sha } using one git call.
+    Given a list of paths, return { path: blob_sha } using batched git calls.
     Converts absolute paths to relative paths (relative to git root) for git compatibility.
+    Batches calls to avoid "Too many open files" errors from git hash-object.
     """
     if not paths:
         return {}
-    
+
     git_root = find_git_root()
     # Convert absolute paths to relative paths for git hash-object
     # git hash-object --stdin-paths expects paths relative to cwd (which is git_root in run_git)
     relative_paths = []
     path_mapping = []  # Track which original path maps to which relative path
-    
+
     for p in paths:
         abs_path = Path(p).resolve()
-        
+
         # Skip directories - git hash-object only works on files
         if abs_path.is_dir():
             continue
-            
+
         try:
             rel_path = abs_path.relative_to(git_root)
             relative_paths.append(str(rel_path))
@@ -130,14 +131,26 @@ def batch_hash_objects(paths) -> Dict[Path, str]:
         except ValueError:
             # Path is outside git root, skip it
             continue
-    
+
     if not relative_paths:
         return {}
-    
-    input_data = "\n".join(relative_paths) + "\n"
-    output = run_git("git hash-object --stdin-paths", input_data=input_data)
-    shas = output.splitlines()
-    return dict(zip(path_mapping, shas))
+
+    # Batch git hash-object calls to avoid exhausting file descriptors
+    # git hash-object opens all files simultaneously, so limit batch size
+    # to stay well under typical fd limits (1024)
+    batch_size = 512
+    result = {}
+
+    for i in range(0, len(relative_paths), batch_size):
+        batch_rel_paths = relative_paths[i:i+batch_size]
+        batch_path_mapping = path_mapping[i:i+batch_size]
+
+        input_data = "\n".join(batch_rel_paths) + "\n"
+        output = run_git("git hash-object --stdin-paths", input_data=input_data)
+        shas = output.splitlines()
+        result.update(dict(zip(batch_path_mapping, shas)))
+
+    return result
 
 def get_current_blob_hashes() -> Dict[Path, str]:
     """
@@ -171,40 +184,58 @@ def get_complete_working_directory_hashes() -> Dict[Path, str]:
     Get blob hashes for ALL files in the working directory:
     - Tracked files (using efficient index metadata when possible)
     - Untracked files (excluding ignored files)
-    
+
     Returns complete working directory content fingerprint.
-    Uses only ONE batch_hash_objects call for optimal performance.
+    Processes in batches to avoid file descriptor exhaustion.
     """
+    import gc
+
     # Get index metadata for tracked files
     index_metadata = get_index_metadata()
     unchanged_tracked = {}
     changed_tracked_paths = []
 
-    # Process tracked files, separating unchanged from changed
-    for path, (blob_sha_index, size_index, mtime_index) in index_metadata.items():
-        try:
-            size_fs, mtime_fs = get_file_stat(path)
-        except FileNotFoundError:
-            # If the file is missing, skip it
-            continue
+    # Process tracked files in batches to avoid keeping too many Path objects
+    # alive at once, which could exhaust file descriptors
+    batch_size = 1000
+    items = list(index_metadata.items())
 
-        if size_fs == size_index and mtime_fs == mtime_index:
-            # File unchanged, use cached hash from index
-            unchanged_tracked[path] = blob_sha_index
-        else:
-            # File changed, needs to be hashed
-            changed_tracked_paths.append(path)
+    for i in range(0, len(items), batch_size):
+        batch = items[i:i+batch_size]
+        for path, (blob_sha_index, size_index, mtime_index) in batch:
+            try:
+                size_fs, mtime_fs = get_file_stat(path)
+            except FileNotFoundError:
+                # If the file is missing, skip it
+                continue
+
+            if size_fs == size_index and mtime_fs == mtime_index:
+                # File unchanged, use cached hash from index
+                unchanged_tracked[path] = blob_sha_index
+            else:
+                # File changed, needs to be hashed
+                changed_tracked_paths.append(path)
+
+        # Periodic garbage collection to release file descriptors
+        if i > 0 and i % 5000 == 0:
+            gc.collect()
 
     # Get all untracked files
     untracked_files = get_untracked_files()
-    
-    # SINGLE batch hash call for all files that need hashing
+
+    # Batch hash call for all files that need hashing
     all_files_to_hash = changed_tracked_paths + untracked_files
     if all_files_to_hash:
         new_hashes = batch_hash_objects(all_files_to_hash)
     else:
         new_hashes = {}
-    
+
+    # Clean up before returning
+    del all_files_to_hash
+    del changed_tracked_paths
+    del untracked_files
+    gc.collect()
+
     # Combine results: unchanged tracked + newly hashed tracked + untracked
     return {**unchanged_tracked, **new_hashes}
 
