@@ -41,48 +41,32 @@ def run_git(cmd: str, input_data: str = None) -> str:
             raise
         raise RuntimeError(f"Unexpected error running git command '{cmd}': {e}")
 
-def get_index_metadata() -> Dict[Path, Tuple[str, int, int]]:
+def get_index_hashes() -> Dict[Path, str]:
     """
-    Return index metadata for all tracked files:
-    { path: (blob_sha, size, mtime) }
+    Return blob hashes for all tracked files from git index:
+    { path: blob_sha }
+    Uses --stage without --debug to avoid opening all files.
     """
-    cmd = "git ls-files --stage --debug"
+    cmd = "git ls-files --stage"
     output = run_git(cmd)
 
-    metadata = {}
-    lines = output.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i]
+    # Get git root once outside the loop
+    git_root = find_git_root()
+
+    hashes = {}
+    for line in output.splitlines():
         # Parse "<mode> <blob_sha> <stage> <path>"
         parts = line.split(None, 3)
         if len(parts) != 4:
-            i += 1
             continue
-            
+
         mode, blob_sha, stage, path_str = parts
         # Since we run git commands from git root, paths are relative to git root
-        git_root = find_git_root()
         abs_path_str = os.path.join(git_root, path_str)
         path = Path(wrappedos.realpath(abs_path_str))
-        i += 1
+        hashes[path] = blob_sha
 
-        size = None
-        mtime = None
-        # Read debug info lines (indented with spaces)
-        while i < len(lines) and lines[i].startswith("  "):
-            debug_line = lines[i].strip()
-            if debug_line.startswith("size:"):
-                size = int(debug_line.split()[1])
-            elif debug_line.startswith("mtime:"):
-                # Handle format "mtime: seconds:nanoseconds" by taking only seconds
-                mtime_str = debug_line.split()[1]
-                mtime = int(mtime_str.split(':')[0])
-            i += 1
-
-        if size is not None and mtime is not None:
-            metadata[path] = (blob_sha, size, mtime)
-    return metadata
+    return hashes
 
 def get_file_stat(path: Path) -> Tuple[int, int]:
     """Return (size, mtime_seconds) for a file on disk."""
@@ -138,7 +122,7 @@ def batch_hash_objects(paths) -> Dict[Path, str]:
     # Batch git hash-object calls to avoid exhausting file descriptors
     # git hash-object opens all files simultaneously, so limit batch size
     # to stay well under typical fd limits (1024)
-    batch_size = 512
+    batch_size = 1000
     result = {}
 
     for i in range(0, len(relative_paths), batch_size):
@@ -155,89 +139,58 @@ def batch_hash_objects(paths) -> Dict[Path, str]:
 def get_current_blob_hashes() -> Dict[Path, str]:
     """
     Get the blob hash for every tracked file as it exists now.
-    Uses index metadata for unchanged files and re-hashes changed ones.
+    Simply uses index hashes directly - git status will detect real changes.
+    This is much faster and avoids file descriptor exhaustion.
     """
-    index_metadata = get_index_metadata()
-    unchanged = {}
-    changed_paths = []
+    return get_index_hashes()
 
-    for path, (blob_sha_index, size_index, mtime_index) in index_metadata.items():
-        try:
-            size_fs, mtime_fs = get_file_stat(path)
-        except FileNotFoundError:
-            # If the file is missing, we could skip or mark as None
-            continue
+def get_modified_but_unstaged_files() -> list[Path]:
+    """
+    Get list of tracked files that have been modified but not staged.
+    Uses git diff-files which only reports changed files without opening them all.
+    """
+    cmd = "git diff-files --name-only"
+    output = run_git(cmd)
+    if not output:
+        return []
 
-        if size_fs == size_index and mtime_fs == mtime_index:
-            unchanged[path] = blob_sha_index
-        else:
-            changed_paths.append(path)
-
-    # Batch-hash changed files
-    changed_hashes = batch_hash_objects(changed_paths)
-
-    # Merge results
-    return {**unchanged, **changed_hashes}
+    git_root = find_git_root()
+    return [Path(wrappedos.realpath(os.path.join(git_root, line))) for line in output.splitlines()]
 
 def get_complete_working_directory_hashes() -> Dict[Path, str]:
     """
     Get blob hashes for ALL files in the working directory:
-    - Tracked files (using efficient index metadata when possible)
+    - Tracked files (from git index, with updates for modified-but-unstaged files)
     - Untracked files (excluding ignored files)
 
     Returns complete working directory content fingerprint.
-    Processes in batches to avoid file descriptor exhaustion.
+    Efficient approach: use index hashes, then only re-hash modified unstaged files.
     """
     import gc
 
-    # Get index metadata for tracked files
-    index_metadata = get_index_metadata()
-    unchanged_tracked = {}
-    changed_tracked_paths = []
+    # Get hashes for all tracked files from index (no file opening)
+    tracked_hashes = get_index_hashes()
 
-    # Process tracked files in batches to avoid keeping too many Path objects
-    # alive at once, which could exhaust file descriptors
-    batch_size = 1000
-    items = list(index_metadata.items())
+    # Identify modified but unstaged files and re-hash only those
+    modified_files = get_modified_but_unstaged_files()
+    if modified_files:
+        modified_hashes = batch_hash_objects(modified_files)
+        tracked_hashes.update(modified_hashes)
 
-    for i in range(0, len(items), batch_size):
-        batch = items[i:i+batch_size]
-        for path, (blob_sha_index, size_index, mtime_index) in batch:
-            try:
-                size_fs, mtime_fs = get_file_stat(path)
-            except FileNotFoundError:
-                # If the file is missing, skip it
-                continue
-
-            if size_fs == size_index and mtime_fs == mtime_index:
-                # File unchanged, use cached hash from index
-                unchanged_tracked[path] = blob_sha_index
-            else:
-                # File changed, needs to be hashed
-                changed_tracked_paths.append(path)
-
-        # Periodic garbage collection to release file descriptors
-        if i > 0 and i % 5000 == 0:
-            gc.collect()
-
-    # Get all untracked files
+    # Get all untracked files and hash them in batches
     untracked_files = get_untracked_files()
-
-    # Batch hash call for all files that need hashing
-    all_files_to_hash = changed_tracked_paths + untracked_files
-    if all_files_to_hash:
-        new_hashes = batch_hash_objects(all_files_to_hash)
+    if untracked_files:
+        untracked_hashes = batch_hash_objects(untracked_files)
     else:
-        new_hashes = {}
+        untracked_hashes = {}
 
     # Clean up before returning
-    del all_files_to_hash
-    del changed_tracked_paths
     del untracked_files
+    del modified_files
     gc.collect()
 
-    # Combine results: unchanged tracked + newly hashed tracked + untracked
-    return {**unchanged_tracked, **new_hashes}
+    # Combine results: tracked (with modified updates) + untracked
+    return {**tracked_hashes, **untracked_hashes}
 
 def main():
     """Main entry point for ct-git-sha-report command."""
