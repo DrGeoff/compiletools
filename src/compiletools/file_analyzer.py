@@ -434,9 +434,12 @@ def set_analyzer_args(args):
     Args:
         args: Args object containing max_read_size, verbose, exemarkers, testmarkers, librarymarkers
     """
-    global _analyzer_args
+    global _analyzer_args, _file_reading_strategy
     _analyzer_args = args
-    # Determine strategy once at initialization
+    # Clear cached strategy to force re-evaluation with new args
+    # This is important when tools like ct-cake call _createctobjs() multiple times
+    _file_reading_strategy = None
+    # Determine strategy with new args
     _determine_file_reading_strategy()
 
 from functools import lru_cache
