@@ -47,6 +47,10 @@ def add_arguments(cap):
         help="Maximum bytes to read from files (0 = entire file)",
     )
 
+    # Add FileAnalyzer arguments for file reading strategy control
+    import compiletools.file_analyzer
+    compiletools.file_analyzer.FileAnalyzer.add_arguments(cap)
+
 
 class HeaderDepsBase(object):
     """Implement the common functionality of the different header
