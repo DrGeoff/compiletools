@@ -315,7 +315,7 @@ def _determine_file_reading_strategy() -> str:
     args = _analyzer_args
 
     # Check for manual overrides first
-    if args and getattr(args, 'no_mmap', False):
+    if args and not getattr(args, 'use_mmap', True):
         _file_reading_strategy = 'no_mmap'
         return _file_reading_strategy
 
@@ -1059,10 +1059,10 @@ class FileAnalyzer:
         # Manual overrides for testing/debugging
         compiletools.utils.add_flag_argument(
             parser=cap,
-            name="no-mmap",
-            dest="no_mmap",
-            default=False,
-            help="Disable mmap file reading (for GPFS, SMB/CIFS, etc.)"
+            name="use-mmap",
+            dest="use_mmap",
+            default=True,
+            help="Use mmap for file reading. Disable with --no-use-mmap for GPFS, SMB/CIFS, etc."
         )
 
         compiletools.utils.add_flag_argument(
