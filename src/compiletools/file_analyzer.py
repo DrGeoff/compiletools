@@ -328,8 +328,10 @@ def _determine_file_reading_strategy() -> str:
         return _file_reading_strategy
 
     # Get total file count from global hash registry
+    # IMPORTANT: Must load the registry first to get accurate file count
     try:
-        from compiletools.global_hash_registry import get_registry_stats
+        from compiletools.global_hash_registry import load_hashes, get_registry_stats
+        load_hashes()  # Ensure registry is loaded before checking stats
         stats = get_registry_stats()
         total_files = stats.get('total_files', 0)
     except (ImportError, AttributeError):
@@ -404,10 +406,9 @@ def _read_file_with_strategy(filepath: str, strategy: str):
             content = f.read()
         return Str(content)
     elif strategy == 'fd_safe':
-        # Use mmap but immediately copy data to close fd
-        str_file = Str(File(filepath))
-        # Convert to bytes and back to Str to close the fd
-        return Str(bytes(str_file))
+        # Str(File()) creates mmap view but keeps fd open until GC
+        # bytes() forces materialization/copy which closes the mmap fd immediately
+        return Str(bytes(Str(File(filepath))))
     else:  # 'normal'
         # Direct mmap, keep fd open (best performance)
         return Str(File(filepath))
