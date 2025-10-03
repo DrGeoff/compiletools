@@ -16,7 +16,6 @@ def add_arguments(cap):
 
     # Add FileAnalyzer arguments if not already added
     # (may already be added via headerdeps when called from cake)
-    import compiletools.file_analyzer
     try:
         compiletools.file_analyzer.FileAnalyzer.add_arguments(cap)
     except argparse.ArgumentError:

@@ -12,6 +12,7 @@ from compiletools.utils import split_command_cached
 import compiletools.tree as tree
 import compiletools.preprocessor
 import compiletools.compiler_macros
+import compiletools.file_analyzer
 from compiletools.preprocessing_cache import get_or_compute_preprocessing, MacroState
 from compiletools.file_analyzer import analyze_file, set_analyzer_args
 
@@ -48,7 +49,6 @@ def add_arguments(cap):
     )
 
     # Add FileAnalyzer arguments for file reading strategy control
-    import compiletools.file_analyzer
     compiletools.file_analyzer.FileAnalyzer.add_arguments(cap)
 
 
