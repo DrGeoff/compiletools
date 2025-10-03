@@ -79,7 +79,7 @@ class TestFileReadingStrategy:
             'exemarkers': [],
             'testmarkers': [],
             'librarymarkers': [],
-            'no_mmap': False,
+            'use_mmap': True,
             'fd_safe_file_reading': False,
             'force_normal_mode': False,
             'suppress_fd_warnings': True,
@@ -90,15 +90,15 @@ class TestFileReadingStrategy:
         strategy = _determine_file_reading_strategy()
         assert strategy in ['normal', 'fd_safe', 'no_mmap']
 
-    def test_manual_override_no_mmap(self):
-        """Test manual override to no_mmap mode."""
+    def test_manual_override_no_use_mmap(self):
+        """Test manual override to disable mmap (no_mmap mode)."""
         args = type('Args', (), {
             'max_read_size': 0,
             'verbose': 0,
             'exemarkers': [],
             'testmarkers': [],
             'librarymarkers': [],
-            'no_mmap': True,
+            'use_mmap': False,
             'fd_safe_file_reading': False,
             'force_normal_mode': False,
             'suppress_fd_warnings': True,
@@ -117,7 +117,7 @@ class TestFileReadingStrategy:
             'exemarkers': [],
             'testmarkers': [],
             'librarymarkers': [],
-            'no_mmap': False,
+            'use_mmap': True,
             'fd_safe_file_reading': True,
             'force_normal_mode': False,
             'suppress_fd_warnings': True,
@@ -136,7 +136,7 @@ class TestFileReadingStrategy:
             'exemarkers': [],
             'testmarkers': [],
             'librarymarkers': [],
-            'no_mmap': False,
+            'use_mmap': True,
             'fd_safe_file_reading': False,
             'force_normal_mode': True,
             'suppress_fd_warnings': True,
@@ -162,7 +162,7 @@ class TestFileReadingStrategy:
                     'exemarkers': [],
                     'testmarkers': [],
                     'librarymarkers': [],
-                    'no_mmap': False,
+                    'use_mmap': True,
                     'fd_safe_file_reading': False,
                     'force_normal_mode': False,
                     'suppress_fd_warnings': True,
@@ -179,14 +179,14 @@ class TestFileReadingStrategy:
 class TestFileAnalyzerArguments:
     """Tests for FileAnalyzer.add_arguments."""
 
-    def test_add_arguments_no_mmap(self):
-        """Test that --no-mmap argument works."""
+    def test_add_arguments_no_use_mmap(self):
+        """Test that --no-use-mmap argument works."""
         import configargparse
         cap = configargparse.ArgumentParser()
         FileAnalyzer.add_arguments(cap)
 
-        args = cap.parse_args(['--no-mmap'])
-        assert args.no_mmap is True
+        args = cap.parse_args(['--no-use-mmap'])
+        assert args.use_mmap is False
 
     def test_add_arguments_fd_safe(self):
         """Test that --fd-safe-file-reading argument works."""
@@ -251,7 +251,7 @@ class TestFileReadingWithRealFiles:
             'exemarkers': ['int main'],
             'testmarkers': [],
             'librarymarkers': [],
-            'no_mmap': False,
+            'use_mmap': True,
             'fd_safe_file_reading': True,
             'force_normal_mode': False,
             'suppress_fd_warnings': True,
@@ -293,7 +293,7 @@ class TestFileReadingWithRealFiles:
             'exemarkers': ['int main'],
             'testmarkers': [],
             'librarymarkers': [],
-            'no_mmap': False,
+            'use_mmap': True,
             'fd_safe_file_reading': False,
             'force_normal_mode': True,
             'suppress_fd_warnings': True,
@@ -311,8 +311,8 @@ class TestFileReadingWithRealFiles:
         assert len(result.includes) > 0
         assert any('iostream' in str(inc['filename']) for inc in result.includes)
 
-    def test_no_mmap_mode_reads_real_file(self):
-        """Test that no-mmap mode reads and analyzes real files correctly."""
+    def test_no_use_mmap_mode_reads_real_file(self):
+        """Test that --no-use-mmap mode reads and analyzes real files correctly."""
         from compiletools.global_hash_registry import load_hashes, get_file_hash
         import compiletools.wrappedos
 
@@ -332,7 +332,7 @@ class TestFileReadingWithRealFiles:
             'exemarkers': ['int main'],
             'testmarkers': [],
             'librarymarkers': [],
-            'no_mmap': True,
+            'use_mmap': False,
             'fd_safe_file_reading': False,
             'force_normal_mode': False,
             'suppress_fd_warnings': True,
