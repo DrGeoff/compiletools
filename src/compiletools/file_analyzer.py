@@ -7,6 +7,8 @@ falling back to traditional regex-based analysis for compatibility.
 import os
 import mmap
 import bisect
+import resource
+import sys
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Set, FrozenSet
@@ -14,6 +16,7 @@ from io import open
 
 import stringzilla
 import compiletools.wrappedos
+import compiletools.filesystem_utils
 from compiletools.stringzilla_utils import (
     strip_sz,
     ends_with_backslash_sz,
@@ -256,6 +259,160 @@ def parse_directive_struct(dtype: str, pos: int, line_num: int,
 # Global args storage for file analysis (set once per build)
 _analyzer_args = None
 
+# Module-level warning flags for one-time warnings
+_warned_low_ulimit = False
+_warned_filesystem = set()
+_file_reading_strategy = None  # Cache the chosen strategy
+_filesystem_override_strategy = None  # Cache filesystem-based strategy override
+
+
+def _warn_low_ulimit(total_files: int, soft_limit: int):
+    """Warn once about low file descriptor limit."""
+    global _warned_low_ulimit
+    if _warned_low_ulimit:
+        return
+    if _analyzer_args and getattr(_analyzer_args, 'suppress_fd_warnings', False):
+        return
+
+    print(f"Warning: Low file descriptor limit detected (ulimit -n = {soft_limit})", file=sys.stderr)
+    print(f"  Total files in project: {total_files}, available FDs: {int(soft_limit * 0.9)}", file=sys.stderr)
+    print(f"  Using fd-safe file reading to avoid 'Too many open files' errors", file=sys.stderr)
+    print(f"  This adds ~0.03ms overhead per file", file=sys.stderr)
+    print(f"  To improve performance: increase ulimit (e.g., ulimit -n 4096)", file=sys.stderr)
+    print(f"  To suppress this warning: add '--suppress-fd-warnings' flag or config", file=sys.stderr)
+    _warned_low_ulimit = True
+
+
+def _warn_filesystem_mmap_issue(fstype: str):
+    """Warn once per filesystem type about mmap issues."""
+    global _warned_filesystem
+    if fstype in _warned_filesystem:
+        return
+    if _analyzer_args and getattr(_analyzer_args, 'suppress_filesystem_warnings', False):
+        return
+
+    print(f"Warning: Detected {fstype} filesystem which has known mmap issues", file=sys.stderr)
+    print(f"  Using traditional file reading instead of memory mapping", file=sys.stderr)
+    print(f"  This may be slightly slower but prevents data corruption", file=sys.stderr)
+    print(f"  To suppress this warning: add '--suppress-filesystem-warnings' flag or config", file=sys.stderr)
+    _warned_filesystem.add(fstype)
+
+
+def _determine_file_reading_strategy() -> str:
+    """Determine which file reading strategy to use for this session.
+
+    Called once at file_analyzer initialization.
+
+    Returns:
+        'normal' - Use Str(File(filepath)) directly (best performance)
+        'fd_safe' - Use Str(bytes(Str(File(filepath)))) to close FDs immediately
+        'no_mmap' - Use traditional open()/read() (for problematic filesystems)
+    """
+    global _file_reading_strategy
+    if _file_reading_strategy is not None:
+        return _file_reading_strategy
+
+    args = _analyzer_args
+
+    # Check for manual overrides first
+    if args and getattr(args, 'no_mmap', False):
+        _file_reading_strategy = 'no_mmap'
+        return _file_reading_strategy
+
+    if args and getattr(args, 'fd_safe_file_reading', False):
+        _file_reading_strategy = 'fd_safe'
+        return _file_reading_strategy
+
+    if args and getattr(args, 'force_normal_mode', False):
+        _file_reading_strategy = 'normal'
+        return _file_reading_strategy
+
+    # Get total file count from global hash registry
+    try:
+        from compiletools.global_hash_registry import get_registry_stats
+        stats = get_registry_stats()
+        total_files = stats.get('total_files', 0)
+    except (ImportError, AttributeError):
+        total_files = 0
+
+    # Query actual OS limit
+    try:
+        soft_limit, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (OSError, AttributeError):
+        soft_limit = 1024  # Reasonable fallback
+
+    # If ulimit is dangerously low (< 100), always use fd_safe mode
+    # This handles shells with ulimit 20, test environments, etc.
+    if soft_limit < 100:
+        if total_files > 0:
+            _warn_low_ulimit(total_files, soft_limit)
+        _file_reading_strategy = 'fd_safe'
+        return _file_reading_strategy
+
+    # Check filesystem type (use first file's filesystem as representative)
+    # We'll check this per-file in actual implementation
+    # For now, assume local filesystem and check per-file later
+
+    # Compare file count to available fd limit
+    # Use 90% of soft limit to leave headroom for Python/system overhead
+    safe_fd_limit = int(soft_limit * 0.9)
+
+    if total_files > 0 and total_files > safe_fd_limit:
+        # Too many files for available fds - use copy trick
+        _warn_low_ulimit(total_files, soft_limit)
+        _file_reading_strategy = 'fd_safe'
+    else:
+        # Default to normal mode
+        _file_reading_strategy = 'normal'
+
+    return _file_reading_strategy
+
+
+def _read_file_with_strategy(filepath: str, strategy: str):
+    """Read file using specified strategy.
+
+    Args:
+        filepath: Path to file to read
+        strategy: 'normal', 'fd_safe', or 'no_mmap'
+
+    Returns:
+        stringzilla.Str object with file contents
+    """
+    from stringzilla import Str, File
+
+    global _filesystem_override_strategy
+
+    # Check filesystem once per session for normal mode
+    # Assumption: most projects are on a single filesystem
+    if strategy == 'normal':
+        if _filesystem_override_strategy is None:
+            # First file - check filesystem and cache result
+            fstype = compiletools.filesystem_utils.get_filesystem_type(filepath)
+            if not compiletools.filesystem_utils.supports_mmap_safely(fstype):
+                _warn_filesystem_mmap_issue(fstype)
+                _filesystem_override_strategy = 'no_mmap'
+            else:
+                _filesystem_override_strategy = 'normal'
+
+        # Use cached filesystem check result
+        if _filesystem_override_strategy == 'no_mmap':
+            strategy = 'no_mmap'
+
+    if strategy == 'no_mmap':
+        # Traditional file reading without mmap
+        with open(filepath, 'rb') as f:
+            content = f.read()
+        return Str(content)
+    elif strategy == 'fd_safe':
+        # Use mmap but immediately copy data to close fd
+        str_file = Str(File(filepath))
+        # Convert to bytes and back to Str to close the fd
+        return Str(bytes(str_file))
+    else:  # 'normal'
+        # Direct mmap, keep fd open (best performance)
+        return Str(File(filepath))
+
+
 def set_analyzer_args(args):
     """Set global args for file analysis. Must be called once at build start.
 
@@ -264,6 +421,8 @@ def set_analyzer_args(args):
     """
     global _analyzer_args
     _analyzer_args = args
+    # Determine strategy once at initialization
+    _determine_file_reading_strategy()
 
 from functools import lru_cache
 
@@ -297,6 +456,9 @@ def analyze_file(content_hash: str) -> 'FileAnalysisResult':
 
     file_size = os.path.getsize(filepath)
 
+    # Determine file reading strategy
+    strategy = _determine_file_reading_strategy()
+
     # Handle empty files - StringZilla cannot memory-map zero-byte files
     if file_size == 0:
         str_text = Str("")
@@ -306,8 +468,8 @@ def analyze_file(content_hash: str) -> 'FileAnalysisResult':
         read_entire_file = (max_read_size == 0) or (file_size <= max_read_size)
 
         if read_entire_file:
-            # Memory-map entire file and keep as Str for SIMD operations
-            str_text = Str(File(filepath))
+            # Read entire file using appropriate strategy
+            str_text = _read_file_with_strategy(filepath, strategy)
             bytes_analyzed = len(str_text)
             was_truncated = False
         else:
@@ -872,17 +1034,68 @@ class FileAnalysisResult:
 
 class FileAnalyzer:
     """SIMD-optimized implementation using StringZilla.
-    
+
     IMPORTANT: FileAnalyzer provides an INVARIANT file summary - the same file
     should always produce the same analysis result regardless of external context
     like preprocessor flags, compiler settings, or magic mode. This ensures
     reliable caching and consistent behavior across different build configurations.
-    
+
     Preprocessing and context-dependent analysis should be handled at higher levels
     (e.g., in MagicFlags classes) that can use FileAnalyzer's invariant results
     as a foundation.
     """
-    
+
+    @staticmethod
+    def add_arguments(cap):
+        """Add file analyzer specific arguments.
+
+        Args:
+            cap: ConfigArgParse parser instance
+        """
+        import compiletools.utils
+
+        # Manual overrides for testing/debugging
+        compiletools.utils.add_flag_argument(
+            parser=cap,
+            name="no-mmap",
+            dest="no_mmap",
+            default=False,
+            help="Disable mmap file reading (for GPFS, SMB/CIFS, etc.)"
+        )
+
+        compiletools.utils.add_flag_argument(
+            parser=cap,
+            name="fd-safe-file-reading",
+            dest="fd_safe_file_reading",
+            default=False,
+            help="Always use fd-safe file reading (copy trick)"
+        )
+
+        compiletools.utils.add_flag_argument(
+            parser=cap,
+            name="force-normal-mode",
+            dest="force_normal_mode",
+            default=False,
+            help="Force normal mmap mode (for testing/debugging)"
+        )
+
+        # Warning suppression
+        compiletools.utils.add_flag_argument(
+            parser=cap,
+            name="suppress-fd-warnings",
+            dest="suppress_fd_warnings",
+            default=False,
+            help="Suppress file descriptor limit warnings"
+        )
+
+        compiletools.utils.add_flag_argument(
+            parser=cap,
+            name="suppress-filesystem-warnings",
+            dest="suppress_filesystem_warnings",
+            default=False,
+            help="Suppress filesystem compatibility warnings"
+        )
+
     def __init__(self, content_hash: str, args):
         """Initialize file analyzer.
 
