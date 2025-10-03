@@ -215,3 +215,137 @@ class TestFileAnalyzerArguments:
 
         args = cap.parse_args(['--force-normal-mode'])
         assert args.force_normal_mode is True
+
+
+class TestFileReadingWithRealFiles:
+    """Tests that verify file reading strategies work with real sample files."""
+
+    def setup_method(self):
+        """Reset cached strategy before each test."""
+        import compiletools.file_analyzer
+        compiletools.file_analyzer._file_reading_strategy = None
+        compiletools.file_analyzer._analyzer_args = None
+        compiletools.file_analyzer._filesystem_override_strategy = None
+
+    def test_fd_safe_mode_reads_real_file(self):
+        """Test that fd-safe mode actually reads and analyzes real files correctly."""
+        from compiletools.global_hash_registry import load_hashes, get_file_hash
+        import compiletools.wrappedos
+
+        # Use a simple sample file
+        sample_file = os.path.join(
+            os.path.dirname(__file__),
+            'samples', 'simple', 'helloworld_cpp.cpp'
+        )
+        sample_file = compiletools.wrappedos.realpath(sample_file)
+        assert os.path.exists(sample_file), f"Sample file not found: {sample_file}"
+
+        # Load hash registry
+        load_hashes()
+        content_hash = get_file_hash(sample_file)
+
+        # Configure fd-safe mode
+        args = type('Args', (), {
+            'max_read_size': 0,
+            'verbose': 0,
+            'exemarkers': ['int main'],
+            'testmarkers': [],
+            'librarymarkers': [],
+            'no_mmap': False,
+            'fd_safe_file_reading': True,
+            'force_normal_mode': False,
+            'suppress_fd_warnings': True,
+            'suppress_filesystem_warnings': True,
+        })()
+
+        set_analyzer_args(args)
+        strategy = _determine_file_reading_strategy()
+        assert strategy == 'fd_safe'
+
+        # Analyze the file - this exercises _read_file_with_strategy
+        from compiletools.file_analyzer import analyze_file
+        result = analyze_file(content_hash)
+
+        # Verify the analysis worked correctly
+        assert result.line_count > 0
+        assert len(result.includes) > 0
+        assert any('iostream' in str(inc['filename']) for inc in result.includes)
+        assert result.bytes_analyzed > 0
+
+    def test_normal_mode_reads_real_file(self):
+        """Test that normal mode reads and analyzes real files correctly."""
+        from compiletools.global_hash_registry import load_hashes, get_file_hash
+        import compiletools.wrappedos
+
+        sample_file = os.path.join(
+            os.path.dirname(__file__),
+            'samples', 'simple', 'helloworld_cpp.cpp'
+        )
+        sample_file = compiletools.wrappedos.realpath(sample_file)
+        assert os.path.exists(sample_file)
+
+        load_hashes()
+        content_hash = get_file_hash(sample_file)
+
+        args = type('Args', (), {
+            'max_read_size': 0,
+            'verbose': 0,
+            'exemarkers': ['int main'],
+            'testmarkers': [],
+            'librarymarkers': [],
+            'no_mmap': False,
+            'fd_safe_file_reading': False,
+            'force_normal_mode': True,
+            'suppress_fd_warnings': True,
+            'suppress_filesystem_warnings': True,
+        })()
+
+        set_analyzer_args(args)
+        strategy = _determine_file_reading_strategy()
+        assert strategy == 'normal'
+
+        from compiletools.file_analyzer import analyze_file
+        result = analyze_file(content_hash)
+
+        assert result.line_count > 0
+        assert len(result.includes) > 0
+        assert any('iostream' in str(inc['filename']) for inc in result.includes)
+
+    def test_no_mmap_mode_reads_real_file(self):
+        """Test that no-mmap mode reads and analyzes real files correctly."""
+        from compiletools.global_hash_registry import load_hashes, get_file_hash
+        import compiletools.wrappedos
+
+        sample_file = os.path.join(
+            os.path.dirname(__file__),
+            'samples', 'simple', 'helloworld_cpp.cpp'
+        )
+        sample_file = compiletools.wrappedos.realpath(sample_file)
+        assert os.path.exists(sample_file)
+
+        load_hashes()
+        content_hash = get_file_hash(sample_file)
+
+        args = type('Args', (), {
+            'max_read_size': 0,
+            'verbose': 0,
+            'exemarkers': ['int main'],
+            'testmarkers': [],
+            'librarymarkers': [],
+            'no_mmap': True,
+            'fd_safe_file_reading': False,
+            'force_normal_mode': False,
+            'suppress_fd_warnings': True,
+            'suppress_filesystem_warnings': True,
+        })()
+
+        set_analyzer_args(args)
+        strategy = _determine_file_reading_strategy()
+        assert strategy == 'no_mmap'
+
+        from compiletools.file_analyzer import analyze_file
+        result = analyze_file(content_hash)
+
+        assert result.line_count > 0
+        assert len(result.includes) > 0
+        assert any('iostream' in str(inc['filename']) for inc in result.includes)
