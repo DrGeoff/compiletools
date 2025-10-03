@@ -15,6 +15,7 @@ import compiletools.magicflags
 import compiletools.hunter
 import compiletools.namer
 import compiletools.configutils
+import compiletools.filesystem_utils
 
 
 class Rule:
@@ -243,19 +244,7 @@ class MakefileCreator:
 
     def _detect_filesystem_type(self):
         """Detect filesystem type once for objdir"""
-        try:
-            result = subprocess.run(['stat', '-f', '-c', '%T', self.args.objdir], 
-                                  capture_output=True, text=True, timeout=5)
-            if result.returncode == 0:
-                fstype = result.stdout.strip()
-            else:
-                # Fallback to alternative stat format  
-                result = subprocess.run(['stat', '-c', '%T', self.args.objdir], 
-                                      capture_output=True, text=True, timeout=5)
-                fstype = result.stdout.strip() if result.returncode == 0 else 'unknown'
-        except (subprocess.SubprocessError, OSError, ValueError):
-            fstype = 'unknown'
-        
+        fstype = compiletools.filesystem_utils.get_filesystem_type(self.args.objdir)
         if self.args.verbose >= 3:
             print(f"Detected filesystem type: {fstype}")
         return fstype
@@ -326,30 +315,20 @@ class MakefileCreator:
         """Generate filesystem-specific locking code prefix"""
         if not self._shared_objects:
             return ""
-        
-        lock_generators = {
-            'gpfs': self._lockdir_prefix,
-            'lustre': self._lockdir_prefix, 
-            'nfs': self._lockdir_prefix,      # NFS requires lockdir approach
-            'nfs4': self._lockdir_prefix,     # NFS4 requires lockdir approach
-            'cifs': self._cifs_lock_prefix,
-            'smb': self._cifs_lock_prefix,
-        }
-        
-        for fs_pattern, generator in lock_generators.items():
-            if fs_pattern in self._filesystem_type.lower():
-                return generator()
-        
-        return self._posix_flock_prefix()
+
+        strategy = compiletools.filesystem_utils.get_lock_strategy(self._filesystem_type)
+
+        if strategy == 'lockdir':
+            return self._lockdir_prefix()
+        elif strategy == 'cifs':
+            return self._cifs_lock_prefix()
+        else:  # 'flock'
+            return self._posix_flock_prefix()
 
     def _lockdir_prefix(self):
         """Common lockdir implementation for GPFS, Lustre, NFS"""
-        sleep_interval = "0.05"  # Default for GPFS
-        if 'lustre' in self._filesystem_type.lower():
-            sleep_interval = "0.02"  # Faster for Lustre
-        elif 'nfs' in self._filesystem_type.lower():
-            sleep_interval = "0.1"   # Slower for NFS due to network latency
-        
+        sleep_interval = compiletools.filesystem_utils.get_lockdir_sleep_interval(self._filesystem_type)
+
         return textwrap.dedent(f'''
             lockdir="$@.lockdir"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
             \twhile ! mkdir "$$lockdir" 2>/dev/null; do sleep {sleep_interval}; done; \\
@@ -379,16 +358,14 @@ class MakefileCreator:
         """Generate filesystem-specific locking code suffix"""
         if not self._shared_objects:
             return ""
-        
-        # Lockdir filesystems use same cleanup pattern
-        lockdir_filesystems = {'gpfs', 'lustre', 'nfs', 'nfs4'}
-        
-        if any(fs in self._filesystem_type.lower() for fs in lockdir_filesystems):
+
+        strategy = compiletools.filesystem_utils.get_lock_strategy(self._filesystem_type)
+
+        if strategy == 'lockdir':
             return '; mv "$$tmp" $@; rmdir "$$lockdir"'
-        elif any(fs in self._filesystem_type.lower() for fs in {'cifs', 'smb'}):
+        elif strategy == 'cifs':
             return '; mv "$$tmp" $@; rm -f "$$lockfile" "$$lockfile.excl" 2>/dev/null'
-        else:
-            # POSIX flock fallback
+        else:  # 'flock'
             return '; mv "$$tmp" $@; rm -f "$$lockfile" "$$lockfile.pid" 2>/dev/null'
 
     def _create_all_rule(self):
