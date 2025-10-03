@@ -344,7 +344,7 @@ def main(argv=None):
         cake.clear_cache()
     except IOError as ioe:
         if args.verbose < 2:
-            print(" ".join(["Error processing", ioe.filename, ". Does it exist?"]))
+            print(f"Error processing {ioe.filename}: {ioe.strerror}")
             return 1
         else:
             raise
