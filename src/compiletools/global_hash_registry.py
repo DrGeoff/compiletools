@@ -37,8 +37,12 @@ def _compute_external_file_hash(filepath: str) -> Optional[str]:
         return None
 
 
-def load_hashes() -> None:
-    """Load all file hashes once with thread safety."""
+def load_hashes(verbose: int = 0) -> None:
+    """Load all file hashes once with thread safety.
+
+    Args:
+        verbose: Verbosity level (0 = silent, higher = more output)
+    """
     import gc
     global _HASHES, _REVERSE_HASHES
 
@@ -61,7 +65,8 @@ def load_hashes() -> None:
             # Build reverse lookup cache: hash -> filepath
             _REVERSE_HASHES = {sha: str(path) for path, sha in all_hashes.items()}
 
-            print(f"GlobalHashRegistry: Loaded {len(_HASHES)} file hashes from git")
+            if verbose >= 3:
+                print(f"GlobalHashRegistry: Loaded {len(_HASHES)} file hashes from git")
 
             # Explicitly clean up Path objects and force garbage collection
             # to ensure file descriptors are released
@@ -70,7 +75,8 @@ def load_hashes() -> None:
 
         except Exception as e:
             # Gracefully handle git failures (e.g., in test environments, non-git directories)
-            print(f"GlobalHashRegistry: Git not available, using fallback mode: {e}")
+            if verbose >= 3:
+                print(f"GlobalHashRegistry: Git not available, using fallback mode: {e}")
             _HASHES = {}  # Empty hash registry - will compute hashes on demand
             _REVERSE_HASHES = {}
 
