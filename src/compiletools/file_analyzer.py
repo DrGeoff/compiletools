@@ -739,11 +739,10 @@ def _extract_conditional_macros(directives: List[PreprocessorDirective]) -> Froz
                         i += 1
                         continue
 
-                    # Found start of identifier
+                    # Found start of identifier - vectorized
                     start = i
-                    while i < len(cond) and (is_alpha_or_underscore_sz(cond, i) or
-                                           (i > start and cond[i:i+1].find_first_not_of('0123456789') == -1)):
-                        i += 1
+                    identifier_end = cond.find_first_not_of('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_', start)
+                    i = identifier_end if identifier_end != -1 else len(cond)
 
                     # Extract identifier
                     identifier = cond[start:i]
