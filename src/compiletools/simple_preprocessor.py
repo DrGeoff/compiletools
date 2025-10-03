@@ -1,12 +1,15 @@
 """Simple C preprocessor for handling conditional compilation directives."""
 
-from typing import List
+from typing import List, Dict, Tuple, Any, TYPE_CHECKING
 import stringzilla as sz
 from compiletools.stringzilla_utils import is_alpha_or_underscore_sz
 from collections import Counter
 
+if TYPE_CHECKING:
+    from compiletools.file_analyzer import PreprocessorDirective, FileAnalysisResult
+
 # Global statistics for profiling
-_stats = {
+_stats: Dict[str, Any] = {
     'call_count': 0,
     'files_processed': Counter(),
     'call_contexts': Counter(),
@@ -25,34 +28,13 @@ class SimplePreprocessor:
     - Respects inactive branches (directives only alter state when active)
     - Provides recursive macro expansion helper for advanced use
     """
-    
-    def __init__(self, defined_macros: dict[sz.Str, sz.Str], verbose=0):
+
+    def __init__(self, defined_macros: Dict[sz.Str, sz.Str], verbose: int = 0) -> None:
         # Caller must provide dict with sz.Str keys and values - no type conversion needed
         self.macros = defined_macros.copy()
         self.verbose = verbose
-        
-    def _create_macro_signature(self):
-        """Create a hashable signature of the current macro state."""
-        return tuple(sorted(self.macros.items()))
 
-    def _strip_comments(self, expr):
-        """Strip C/C++ style comments from expressions.
-
-        - Removes // line comments
-        - Removes /* block comments */ (non-nested)
-        """
-        # Strip C++ style line comments
-        if '//' in expr:
-            expr = expr[:expr.find('//')].strip()
-
-        # Strip C-style block comments
-        import re
-        if '/*' in expr:
-            expr = re.sub(r"/\*.*?\*/", " ", expr)
-            expr = " ".join(expr.split())  # normalize whitespace
-        return expr
-
-    def _strip_comments_sz(self, expr_sz):
+    def _strip_comments_sz(self, expr_sz: sz.Str) -> sz.Str:
         """Strip C/C++ style comments from StringZilla expressions."""
         from compiletools.stringzilla_utils import strip_sz
 
@@ -62,17 +44,51 @@ class SimplePreprocessor:
             expr_sz = expr_sz[:comment_pos]
             expr_sz = strip_sz(expr_sz)
 
-        # Strip C-style block comments (convert to str for regex, then back)
-        if expr_sz.find('/*') >= 0:
-            expr_str = str(expr_sz)
-            import re
-            expr_str = re.sub(r"/\*.*?\*/", " ", expr_str)
-            expr_str = " ".join(expr_str.split())  # normalize whitespace
-            expr_sz = sz.Str(expr_str)
+        # Strip C-style block comments using StringZilla operations
+        start_pos = expr_sz.find('/*')
+        if start_pos >= 0:
+            # Build list of non-comment regions
+            regions = []
+            pos = 0
+
+            while True:
+                start_pos = expr_sz.find('/*', pos)
+                if start_pos < 0:
+                    # No more comments, add remaining text
+                    if pos < len(expr_sz):
+                        regions.append(expr_sz[pos:])
+                    break
+
+                # Add text before comment
+                if start_pos > pos:
+                    regions.append(expr_sz[pos:start_pos])
+
+                # Find end of comment
+                end_pos = expr_sz.find('*/', start_pos + 2)
+                if end_pos < 0:
+                    # Unclosed comment - skip rest
+                    break
+
+                # Add space where comment was
+                regions.append(sz.Str(' '))
+                pos = end_pos + 2
+
+            # Join regions efficiently using concat_sz
+            from compiletools.stringzilla_utils import concat_sz
+            expr_sz = concat_sz(*regions) if regions else sz.Str('')
+
+            # Normalize whitespace: convert to str, normalize, convert back
+            # (for tiny expressions this is acceptable and simpler than vectorization)
+            if len(expr_sz) > 0:
+                parts = str(expr_sz).split()
+                if parts:
+                    expr_sz = sz.Str(' '.join(parts))
+                else:
+                    expr_sz = sz.Str('')
 
         return expr_sz
 
-    def _evaluate_expression_sz(self, expr_sz):
+    def _evaluate_expression_sz(self, expr_sz: sz.Str) -> int:
         """Evaluate a StringZilla expression using native StringZilla operations"""
         # Use StringZilla-native RECURSIVE macro expansion for better performance
         expanded_sz = self._recursive_expand_macros_sz(expr_sz)
@@ -83,14 +99,115 @@ class SimplePreprocessor:
         result = self._safe_eval(expr_str)
         return result
 
-    def _expand_macros_sz(self, expr_sz):
+    def _expand_defined_sz(self, expr_sz: sz.Str) -> sz.Str:
+        """Expand defined(MACRO) expressions using StringZilla operations"""
+        from compiletools.stringzilla_utils import is_alpha_or_underscore_sz
+
+        result_parts = []
+        i = 0
+
+        while i < len(expr_sz):
+            # Look for 'defined'
+            defined_pos = expr_sz.find('defined', i)
+            if defined_pos == -1:
+                # No more 'defined' occurrences
+                result_parts.append(expr_sz[i:])
+                break
+
+            # Add text before 'defined'
+            if defined_pos > i:
+                result_parts.append(expr_sz[i:defined_pos])
+
+            # Check if this is actually 'defined' keyword (not part of identifier)
+            if defined_pos > 0 and is_alpha_or_underscore_sz(expr_sz, defined_pos - 1):
+                # Part of another identifier
+                result_parts.append(expr_sz[defined_pos:defined_pos + 7])
+                i = defined_pos + 7
+                continue
+
+            after_defined = defined_pos + 7  # len('defined')
+            if after_defined < len(expr_sz) and is_alpha_or_underscore_sz(expr_sz, after_defined):
+                # Part of longer identifier
+                result_parts.append(expr_sz[defined_pos:after_defined])
+                i = after_defined
+                continue
+
+            # Skip whitespace after 'defined'
+            j = after_defined
+            while j < len(expr_sz):
+                ch = expr_sz[j:j+1]
+                if ch.find_first_not_of(' \t') == -1:  # All chars are whitespace
+                    j += 1
+                else:
+                    break
+
+            if j >= len(expr_sz):
+                result_parts.append(expr_sz[defined_pos:])
+                break
+
+            # Check for parenthesized form: defined(MACRO)
+            macro_name = None
+            end_pos = j
+
+            ch = expr_sz[j:j+1]
+            if len(ch) > 0 and ch[0] == '(':
+                # Find macro name inside parens
+                j += 1
+                # Skip whitespace
+                while j < len(expr_sz):
+                    ch = expr_sz[j:j+1]
+                    if ch.find_first_not_of(' \t') == -1:
+                        j += 1
+                    else:
+                        break
+
+                # Extract macro name
+                if j < len(expr_sz) and is_alpha_or_underscore_sz(expr_sz, j):
+                    macro_start = j
+                    while j < len(expr_sz) and (is_alpha_or_underscore_sz(expr_sz, j) or
+                                                 (j > macro_start and expr_sz[j:j+1].find_first_not_of('0123456789') == -1)):
+                        j += 1
+                    macro_name = expr_sz[macro_start:j]
+
+                    # Skip whitespace before closing paren
+                    while j < len(expr_sz):
+                        ch = expr_sz[j:j+1]
+                        if ch.find_first_not_of(' \t') == -1:
+                            j += 1
+                        else:
+                            break
+
+                    # Check for closing paren
+                    if j < len(expr_sz):
+                        ch = expr_sz[j:j+1]
+                        if len(ch) > 0 and ch[0] == ')':
+                            end_pos = j + 1
+            else:
+                # Space form: defined MACRO
+                if is_alpha_or_underscore_sz(expr_sz, j):
+                    macro_start = j
+                    while j < len(expr_sz) and (is_alpha_or_underscore_sz(expr_sz, j) or
+                                                 expr_sz[j:j+1].find_first_not_of('0123456789') == -1):
+                        j += 1
+                    macro_name = expr_sz[macro_start:j]
+                    end_pos = j
+
+            # Replace with 1 or 0
+            if macro_name:
+                result_parts.append(sz.Str("1") if macro_name in self.macros else sz.Str("0"))
+                i = end_pos
+            else:
+                # Couldn't parse, keep as is
+                result_parts.append(expr_sz[defined_pos:after_defined])
+                i = after_defined
+
+        from compiletools.stringzilla_utils import concat_sz
+        return concat_sz(*result_parts) if result_parts else sz.Str('')
+
+    def _expand_macros_sz(self, expr_sz: sz.Str) -> sz.Str:
         """Replace macro names with their values using StringZilla operations"""
         # First handle defined() expressions to avoid expanding macros inside them
-        expr_str = str(expr_sz)
-        expr_str = self._expand_defined(expr_str)
-
-        # Convert back to StringZilla for macro expansion
-        result = sz.Str(expr_str)
+        result = self._expand_defined_sz(expr_sz)
 
         reserved = {sz.Str("and"), sz.Str("or"), sz.Str("not")}
 
@@ -128,7 +245,7 @@ class SimplePreprocessor:
 
         return result
 
-    def _recursive_expand_macros_sz(self, expr_sz, max_iterations=10):
+    def _recursive_expand_macros_sz(self, expr_sz: sz.Str, max_iterations: int = 10) -> sz.Str:
         """Recursively expand macros using StringZilla operations until no more changes occur"""
         previous_expr = sz.Str("")  # Initialize with empty StringZilla.Str instead of None
         iteration = 0
@@ -140,7 +257,7 @@ class SimplePreprocessor:
 
         return expr_sz
 
-    def process_structured(self, file_result) -> List[int]:
+    def process_structured(self, file_result: 'FileAnalysisResult') -> List[int]:
         """Process FileAnalysisResult and return active line numbers using structured directive data.
 
         Args:
@@ -204,7 +321,7 @@ class SimplePreprocessor:
     
     # Text-based processing removed - all processing now goes through process_structured()
 
-    def _handle_directive_structured(self, directive, condition_stack, line_num):
+    def _handle_directive_structured(self, directive: 'PreprocessorDirective', condition_stack: List[Tuple[bool, bool, bool]], line_num: int) -> bool:
         """Handle a specific preprocessor directive using structured data"""
         dtype = directive.directive_type
         
@@ -239,12 +356,12 @@ class SimplePreprocessor:
                 print(f"SimplePreprocessor: Ignoring unknown directive #{dtype}")
             return False  # Indicate that this directive wasn't handled
 
-    def _handle_else(self, condition_stack):
+    def _handle_else(self, condition_stack: List[Tuple[bool, bool, bool]]) -> None:
         """Handle #else directive"""
         if len(condition_stack) <= 1:
             return
-            
-        current_active, seen_else, any_condition_met = condition_stack.pop()
+
+        _, seen_else, any_condition_met = condition_stack.pop()
         if not seen_else:
             parent_active = condition_stack[-1][0] if condition_stack else True
             new_active = not any_condition_met and parent_active
@@ -254,14 +371,14 @@ class SimplePreprocessor:
         else:
             condition_stack.append((False, True, any_condition_met))
     
-    def _handle_endif(self, condition_stack):
+    def _handle_endif(self, condition_stack: List[Tuple[bool, bool, bool]]) -> None:
         """Handle #endif directive"""
         if len(condition_stack) > 1:
             condition_stack.pop()
             if self.verbose >= 9:
                 print("SimplePreprocessor: #endif")
     
-    def _handle_define_structured(self, directive, condition_stack):
+    def _handle_define_structured(self, directive: 'PreprocessorDirective', condition_stack: List[Tuple[bool, bool, bool]]) -> None:
         """Handle #define directive using structured data"""
         if not condition_stack[-1][0]:
             return  # Not in active context
@@ -272,7 +389,7 @@ class SimplePreprocessor:
             if self.verbose >= 9:
                 print(f"SimplePreprocessor: defined macro {directive.macro_name} = {macro_value}")
     
-    def _handle_undef_structured(self, directive, condition_stack):
+    def _handle_undef_structured(self, directive: 'PreprocessorDirective', condition_stack: List[Tuple[bool, bool, bool]]) -> None:
         """Handle #undef directive using structured data"""
         if not condition_stack[-1][0]:
             return  # Not in active context
@@ -282,7 +399,7 @@ class SimplePreprocessor:
             if self.verbose >= 9:
                 print(f"SimplePreprocessor: undefined macro {directive.macro_name}")
     
-    def _handle_ifdef_structured(self, directive, condition_stack):
+    def _handle_ifdef_structured(self, directive: 'PreprocessorDirective', condition_stack: List[Tuple[bool, bool, bool]]) -> None:
         """Handle #ifdef directive using structured data"""
         if directive.macro_name:
             is_defined = directive.macro_name in self.macros
@@ -291,7 +408,7 @@ class SimplePreprocessor:
             if self.verbose >= 9:
                 print(f"SimplePreprocessor: #ifdef {directive.macro_name} -> {is_defined}")
     
-    def _handle_ifndef_structured(self, directive, condition_stack):
+    def _handle_ifndef_structured(self, directive: 'PreprocessorDirective', condition_stack: List[Tuple[bool, bool, bool]]) -> None:
         """Handle #ifndef directive using structured data"""
         if directive.macro_name:
             is_defined = directive.macro_name in self.macros
@@ -300,7 +417,7 @@ class SimplePreprocessor:
             if self.verbose >= 9:
                 print(f"SimplePreprocessor: #ifndef {directive.macro_name} -> {not is_defined}")
     
-    def _handle_if_structured(self, directive, condition_stack):
+    def _handle_if_structured(self, directive: 'PreprocessorDirective', condition_stack: List[Tuple[bool, bool, bool]]) -> None:
         """Handle #if directive using structured data"""
         if directive.condition:
             try:
@@ -320,12 +437,12 @@ class SimplePreprocessor:
             # No condition provided
             condition_stack.append((False, False, False))
     
-    def _handle_elif_structured(self, directive, condition_stack):
+    def _handle_elif_structured(self, directive: 'PreprocessorDirective', condition_stack: List[Tuple[bool, bool, bool]]) -> None:
         """Handle #elif directive using structured data"""
         if len(condition_stack) <= 1:
             return
             
-        current_active, seen_else, any_condition_met = condition_stack.pop()
+        _, seen_else, any_condition_met = condition_stack.pop()
         if not seen_else and not any_condition_met and directive.condition:
             parent_active = condition_stack[-1][0] if condition_stack else True
             try:
@@ -345,87 +462,7 @@ class SimplePreprocessor:
             # Either we already found a true condition or seen_else is True
             condition_stack.append((False, seen_else, any_condition_met))
     
-    def _evaluate_expression(self, expr):
-        """Evaluate a C preprocessor expression"""
-        # This is a simplified expression evaluator
-        # Handle common cases: defined(MACRO), numeric comparisons, logical operations
-        
-        expr = expr.strip()
-        
-        # Handle defined(MACRO) and defined MACRO
-        expr = self._expand_defined(expr)
-        
-        # Replace macro names with their values (recursively)
-        expr = self._recursive_expand_macros(expr)
-        
-        # Evaluate the expression safely
-        return self._safe_eval(expr)
-    
-    def _expand_defined(self, expr):
-        """Expand defined(MACRO) expressions"""
-        import re
-
-        # Handle defined(MACRO)
-        def replace_defined_paren(match):
-            macro_name = match.group(1)
-            # Convert to StringZilla.Str for consistent lookup
-            sz_macro_name = sz.Str(macro_name)
-            return "1" if sz_macro_name in self.macros else "0"
-
-        expr = re.sub(r'defined\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)', replace_defined_paren, expr)
-
-        # Handle defined MACRO (without parentheses)
-        def replace_defined_space(match):
-            macro_name = match.group(1)
-            # Convert to StringZilla.Str for consistent lookup
-            sz_macro_name = sz.Str(macro_name)
-            return "1" if sz_macro_name in self.macros else "0"
-
-        expr = re.sub(r'defined\s+([A-Za-z_][A-Za-z0-9_]*)', replace_defined_space, expr)
-
-        return expr
-    
-    def _expand_macros(self, expr):
-        """Replace macro names with their values.
-
-        Avoid replacing logical word operators 'and', 'or', 'not' so our later
-        operator translation still works even if users type them explicitly.
-        """
-        import re
-
-        reserved = {"and", "or", "not"}
-
-        def replace_macro(match):
-            macro_name = match.group(0)
-            if macro_name in reserved:
-                return macro_name
-            import stringzilla as sz
-            sz_macro_name = sz.Str(macro_name)
-            if sz_macro_name in self.macros:
-                value = self.macros[sz_macro_name]
-                # Try to convert to int if possible
-                try:
-                    return str(int(value))
-                except ValueError:
-                    return value
-            else:
-                # Undefined macro defaults to 0
-                return "0"
-
-        # Replace macro names (identifiers) with their values
-        # Use word boundaries to avoid replacing parts of numbers or other tokens
-        expr = re.sub(r'(?<![0-9])\b[A-Za-z_][A-Za-z0-9_]*\b(?![0-9])', replace_macro, expr)
-
-        return expr
-    
-    def _recursive_expand_macros(self, expr, max_iterations=10):
-        """Recursively expand macros until no more changes occur or max iterations reached"""
-        # Convert to StringZilla and use the native implementation
-        expr_sz = sz.Str(expr)
-        result_sz = self._recursive_expand_macros_sz(expr_sz, max_iterations)
-        return str(result_sz)
-    
-    def _safe_eval(self, expr):
+    def _safe_eval(self, expr: str) -> int:
         """Safely evaluate a numeric expression"""
         # Clean up the expression
         expr = expr.strip()
@@ -484,7 +521,7 @@ class SimplePreprocessor:
                 print(f"SimplePreprocessor: Expression evaluation failed for '{expr}': {e}")
             return 0
 
-    def _normalize_numeric_literals(self, expr):
+    def _normalize_numeric_literals(self, expr: str) -> str:
         """Convert C-style numeric literals (hex, bin, oct) to decimal strings.
 
         - 0x... or 0X... -> decimal
@@ -493,13 +530,13 @@ class SimplePreprocessor:
         """
         import re
 
-        def repl_hex(m):
+        def repl_hex(m: re.Match[str]) -> str:
             return str(int(m.group(0), 16))
 
-        def repl_bin(m):
+        def repl_bin(m: re.Match[str]) -> str:
             return str(int(m.group(0), 2))
 
-        def repl_oct(m):
+        def repl_oct(m: re.Match[str]) -> str:
             s = m.group(0)
             # avoid replacing just '0'
             if s == '0':
@@ -515,7 +552,7 @@ class SimplePreprocessor:
         return expr
 
 
-def print_preprocessor_stats():
+def print_preprocessor_stats() -> None:
     """Print SimplePreprocessor call statistics only."""
     print("\n=== SimplePreprocessor Call Statistics ===")
     print(f"Total process_structured calls: {_stats['call_count']}")

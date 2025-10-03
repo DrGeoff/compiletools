@@ -110,67 +110,138 @@ class TestSimplePreprocessor:
             magic_flags=[]
         )
 
-    def test_expression_evaluation_basic(self):
-        """Test basic expression evaluation"""
+
+    def test_expression_evaluation_basic_sz(self):
+        """Test basic expression evaluation with StringZilla"""
+        import stringzilla as sz
         # Test simple numeric expressions
-        assert self.processor._evaluate_expression('1') == 1
-        assert self.processor._evaluate_expression('0') == 0
-        assert self.processor._evaluate_expression('1 + 1') == 2
-        
-    def test_expression_evaluation_comparisons(self):
-        """Test comparison operators"""
+        assert self.processor._evaluate_expression_sz(sz.Str('1')) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str('0')) == 0
+        assert self.processor._evaluate_expression_sz(sz.Str('1 + 1')) == 2
+
+    def test_expression_evaluation_comparisons_sz(self):
+        """Test comparison operators with StringZilla"""
+        import stringzilla as sz
         # Test == operator
-        assert self.processor._evaluate_expression('1 == 1') == 1
-        assert self.processor._evaluate_expression('1 == 0') == 0
-        
-        # Test != operator (this is the problematic one)
-        assert self.processor._evaluate_expression('1 != 0') == 1
-        assert self.processor._evaluate_expression('1 != 1') == 0
-        
+        assert self.processor._evaluate_expression_sz(sz.Str('1 == 1')) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str('1 == 0')) == 0
+
+        # Test != operator
+        assert self.processor._evaluate_expression_sz(sz.Str('1 != 0')) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str('1 != 1')) == 0
+
         # Test > operator
-        assert self.processor._evaluate_expression('2 > 1') == 1
-        assert self.processor._evaluate_expression('1 > 2') == 0
-        
-    def test_expression_evaluation_logical(self):
-        """Test logical operators"""
+        assert self.processor._evaluate_expression_sz(sz.Str('2 > 1')) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str('1 > 2')) == 0
+
+    def test_expression_evaluation_logical_sz(self):
+        """Test logical operators with StringZilla"""
+        import stringzilla as sz
         # Test && operator
-        assert self.processor._evaluate_expression('1 && 1') == 1
-        assert self.processor._evaluate_expression('1 && 0') == 0
-        assert self.processor._evaluate_expression('0 && 1') == 0
-        
-        # Test || operator  
-        assert self.processor._evaluate_expression('1 || 0') == 1
-        assert self.processor._evaluate_expression('0 || 1') == 1
-        assert self.processor._evaluate_expression('0 || 0') == 0
-        
-    def test_expression_evaluation_complex(self):
-        """Test complex expressions combining operators"""
+        assert self.processor._evaluate_expression_sz(sz.Str('1 && 1')) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str('1 && 0')) == 0
+        assert self.processor._evaluate_expression_sz(sz.Str('0 && 1')) == 0
+
+        # Test || operator
+        assert self.processor._evaluate_expression_sz(sz.Str('1 || 0')) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str('0 || 1')) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str('0 || 0')) == 0
+
+    def test_expression_evaluation_complex_sz(self):
+        """Test complex expressions combining operators with StringZilla"""
+        import stringzilla as sz
         # Test combinations
-        assert self.processor._evaluate_expression('1 != 0 && 2 > 1') == 1
-        assert self.processor._evaluate_expression('1 == 0 || 2 == 2') == 1
-        assert self.processor._evaluate_expression('(1 + 1) == 2') == 1
-        
-    def test_macro_expansion(self):
-        """Test macro expansion in expressions"""
+        assert self.processor._evaluate_expression_sz(sz.Str('1 != 0 && 2 > 1')) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str('1 == 0 || 2 == 2')) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str('(1 + 1) == 2')) == 1
+
+    def test_macro_expansion_sz(self):
+        """Test macro expansion in expressions with StringZilla"""
+        import stringzilla as sz
         # Test simple macro expansion
-        assert self.processor._evaluate_expression('TEST_MACRO') == 1
-        assert self.processor._evaluate_expression('VERSION') == 3
-        
+        assert self.processor._evaluate_expression_sz(sz.Str('TEST_MACRO')) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str('VERSION')) == 3
+
         # Test macro in comparisons
-        assert self.processor._evaluate_expression('VERSION == 3') == 1
-        assert self.processor._evaluate_expression('VERSION != 2') == 1
-        assert self.processor._evaluate_expression('COUNT > 3') == 1
-        
-    def test_defined_expressions(self):
-        """Test defined() expressions"""
+        assert self.processor._evaluate_expression_sz(sz.Str('VERSION == 3')) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str('VERSION != 2')) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str('COUNT > 3')) == 1
+
+    def test_defined_expressions_sz(self):
+        """Test defined() expressions with StringZilla"""
+        import stringzilla as sz
         # Test defined() function
-        assert self.processor._evaluate_expression('defined(TEST_MACRO)') == 1
-        assert self.processor._evaluate_expression('defined(UNDEFINED_MACRO)') == 0
-        
+        assert self.processor._evaluate_expression_sz(sz.Str('defined(TEST_MACRO)')) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str('defined(UNDEFINED_MACRO)')) == 0
+
         # Test defined() in complex expressions
-        assert self.processor._evaluate_expression('defined(TEST_MACRO) && TEST_MACRO == 1') == 1
-        assert self.processor._evaluate_expression('defined(VERSION) && VERSION > 2') == 1
-        
+        assert self.processor._evaluate_expression_sz(sz.Str('defined(TEST_MACRO) && TEST_MACRO == 1')) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str('defined(VERSION) && VERSION > 2')) == 1
+    
+    def test_numeric_literal_parsing_sz(self):
+        """Test hex, binary, and octal numeric literals in expressions with StringZilla"""
+        import stringzilla as sz
+        assert self.processor._evaluate_expression_sz(sz.Str('0x10 == 16')) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str('0b1010 == 10')) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str('010 == 8')) == 1  # octal
+        assert self.processor._evaluate_expression_sz(sz.Str('0 == 0')) == 1
+
+    def test_bitwise_operators_sz(self):
+        """Test bitwise and shift operators in expressions with StringZilla"""
+        import stringzilla as sz
+        assert self.processor._evaluate_expression_sz(sz.Str('1 & 1')) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str('1 | 0')) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str('1 ^ 1')) == 0
+        assert self.processor._evaluate_expression_sz(sz.Str('~0 == -1')) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str('(1 << 3) == 8')) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str('(8 >> 2) == 2')) == 1
+
+    def test_recursive_macro_expansion_sz(self):
+        """Test recursive macro expansion functionality with StringZilla"""
+        import stringzilla as sz
+        # Test simple case
+        result = self.processor._recursive_expand_macros_sz(sz.Str('VERSION'))
+        assert result == '3'
+
+        # Test recursive expansion
+        processor_with_recursive = SimplePreprocessor({
+            sz.Str('A'): sz.Str('B'),
+            sz.Str('B'): sz.Str('C'),
+            sz.Str('C'): sz.Str('42')
+        }, verbose=0)
+
+        result = processor_with_recursive._recursive_expand_macros_sz(sz.Str('A'))
+        assert result == '42'
+
+        # Test max iterations protection (prevent infinite loops)
+        processor_with_loop = SimplePreprocessor({
+            sz.Str('X'): sz.Str('Y'),
+            sz.Str('Y'): sz.Str('X')
+        }, verbose=0)
+
+        result = processor_with_loop._recursive_expand_macros_sz(sz.Str('X'), max_iterations=5)
+        # Should stop after max_iterations and return last value
+        assert result in ['X', 'Y']  # Could be either depending on iteration count
+
+    def test_comment_stripping_sz(self):
+        """Test C/C++ style comment stripping from StringZilla expressions"""
+        import stringzilla as sz
+        # Test basic line comment stripping
+        result = self.processor._strip_comments_sz(sz.Str('1 + 1 // this is a comment'))
+        assert result == '1 + 1'
+
+        # Test line comment at beginning
+        result = self.processor._strip_comments_sz(sz.Str('// comment only'))
+        assert result == ''
+
+        # Test block comment stripping
+        result = self.processor._strip_comments_sz(sz.Str('1 + /* block */ 1'))
+        assert result == '1 + 1'
+
+        # Test expression without comments
+        result = self.processor._strip_comments_sz(sz.Str('1 + 1'))
+        assert result == '1 + 1'
+
     def test_conditional_compilation_ifdef(self):
         """Test #ifdef handling"""
         text = dedent('''
@@ -350,47 +421,6 @@ class TestSimplePreprocessor:
         assert 3 in active_lines  # #include "linux_epoll_threading.hpp"
         assert 6 in active_lines  # #include "numa_threading.hpp"
 
-    def test_recursive_macro_expansion(self):
-        """Test recursive macro expansion functionality"""
-        # Test simple case
-        result = self.processor._recursive_expand_macros('VERSION')
-        assert result == '3'
-        
-        # Test recursive expansion
-        import stringzilla as sz
-        processor_with_recursive = SimplePreprocessor({
-            sz.Str('A'): sz.Str('B'),
-            sz.Str('B'): sz.Str('C'),
-            sz.Str('C'): sz.Str('42')
-        }, verbose=0)
-
-        result = processor_with_recursive._recursive_expand_macros('A')
-        assert result == '42'
-
-        # Test max iterations protection (prevent infinite loops)
-        processor_with_loop = SimplePreprocessor({
-            sz.Str('X'): sz.Str('Y'),
-            sz.Str('Y'): sz.Str('X')
-        }, verbose=0)
-        
-        result = processor_with_loop._recursive_expand_macros('X', max_iterations=5)
-        # Should stop after max_iterations and return last value
-        assert result in ['X', 'Y']  # Could be either depending on iteration count
-
-    def test_comment_stripping(self):
-        """Test C++ style comment stripping from expressions"""
-        # Test basic comment stripping
-        result = self.processor._strip_comments('1 + 1 // this is a comment')
-        assert result == '1 + 1'
-        
-        # Test expression without comments
-        result = self.processor._strip_comments('1 + 1')
-        assert result == '1 + 1'
-        
-        # Test comment at beginning
-        result = self.processor._strip_comments('// comment only')
-        assert result == ''
-
     def test_platform_macros(self):
         """Test platform-specific macro initialization via compiler_macros"""
         import compiletools.compiler_macros
@@ -448,22 +478,6 @@ class TestSimplePreprocessor:
         file_result = self._create_file_analysis_result(text)
         active_lines = self.processor.process_structured(file_result)
         assert 1 in active_lines
-
-    def test_numeric_literal_parsing(self):
-        """Test hex, binary, and octal numeric literals in expressions"""
-        assert self.processor._evaluate_expression('0x10 == 16') == 1
-        assert self.processor._evaluate_expression('0b1010 == 10') == 1
-        assert self.processor._evaluate_expression('010 == 8') == 1  # octal
-        assert self.processor._evaluate_expression('0 == 0') == 1
-
-    def test_bitwise_operators(self):
-        """Test bitwise and shift operators in expressions"""
-        assert self.processor._evaluate_expression('1 & 1') == 1
-        assert self.processor._evaluate_expression('1 | 0') == 1
-        assert self.processor._evaluate_expression('1 ^ 1') == 0
-        assert self.processor._evaluate_expression('~0 == -1') == 1
-        assert self.processor._evaluate_expression('(1 << 3) == 8') == 1
-        assert self.processor._evaluate_expression('(8 >> 2) == 2') == 1
 
 
 class TestMacroHashConsistency:
