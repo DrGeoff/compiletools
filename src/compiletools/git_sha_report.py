@@ -27,6 +27,8 @@ def run_git(cmd: str, input_data: str = None) -> str:
             error_msg = f"Git command failed: {cmd}\n"
             error_msg += f"Working directory: {git_root}\n"
             error_msg += f"Return code: {result.returncode}\n"
+            if input_data:
+                error_msg += f"Input data: {input_data[:500]}{'...' if len(input_data) > 500 else ''}\n"
             if result.stderr:
                 error_msg += f"Error output: {result.stderr}"
             raise RuntimeError(error_msg)
