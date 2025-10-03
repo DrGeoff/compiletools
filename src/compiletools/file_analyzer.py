@@ -407,17 +407,22 @@ def _read_file_with_strategy(filepath: str, strategy: str):
 
     if strategy == 'no_mmap':
         # Traditional file reading without mmap
-        with open(filepath, 'rb') as f:
+        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
             content = f.read()
-        # Decode with error handling - source files should be UTF-8
-        return Str(content.decode('utf-8', errors='replace'))
+        # Content is already a decoded Python string
+        return Str(content)
     elif strategy == 'fd_safe':
         # Str(File()) creates mmap view but keeps fd open until GC
-        # Convert to bytes to force copy, then decode with error handling
-        sz_mmap = Str(File(filepath))
-        data_bytes = bytes(sz_mmap)
-        # Decode with error handling - source files should be UTF-8
-        return Str(data_bytes.decode('utf-8', errors='replace'))
+        # Keep File object alive while copying data
+        file_obj = File(filepath)
+        sz_mmap = Str(file_obj)
+        # Force copy of mmap data before file_obj is GC'd
+        # Convert to Python string to ensure data is materialized
+        content = str(sz_mmap)
+        # Now file_obj can be GC'd and fd closed
+        del file_obj
+        del sz_mmap
+        return Str(content)
     else:  # 'normal'
         # Direct mmap, keep fd open (best performance)
         return Str(File(filepath))
