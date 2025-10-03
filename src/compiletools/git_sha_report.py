@@ -46,6 +46,7 @@ def get_index_hashes() -> Dict[Path, str]:
     Return blob hashes for all tracked files from git index:
     { path: blob_sha }
     Uses --stage without --debug to avoid opening all files.
+    Only includes files that actually exist on disk.
     """
     cmd = "git ls-files --stage"
     output = run_git(cmd)
@@ -63,8 +64,13 @@ def get_index_hashes() -> Dict[Path, str]:
         mode, blob_sha, stage, path_str = parts
         # Since we run git commands from git root, paths are relative to git root
         abs_path_str = os.path.join(git_root, path_str)
-        path = Path(wrappedos.realpath(abs_path_str))
-        hashes[path] = blob_sha
+        path = Path(abs_path_str)
+
+        # Skip files that have been deleted but not committed
+        if not path.exists():
+            continue
+
+        hashes[Path(wrappedos.realpath(abs_path_str))] = blob_sha
 
     return hashes
 
