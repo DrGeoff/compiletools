@@ -80,3 +80,81 @@ def join_sz(separator: str, items) -> str:
     with StringZilla.Str objects without manual conversion.
     """
     return separator.join(str(item) for item in items)
+
+
+def replace_sz(sz_str: 'stringzilla.Str', old: str, new: str) -> 'stringzilla.Str':
+    """Replace all occurrences of old with new in StringZilla.Str using SIMD operations.
+
+    Uses StringZilla's find() for SIMD-accelerated searching and concatenation
+    to build the result efficiently.
+    """
+    from stringzilla import Str
+
+    if not old:
+        return sz_str
+
+    parts = []
+    pos = 0
+    old_len = len(old)
+
+    while True:
+        found = sz_str.find(old, pos)
+        if found == -1:
+            parts.append(sz_str[pos:])
+            break
+        parts.append(sz_str[pos:found])
+        parts.append(Str(new))
+        pos = found + old_len
+
+    return concat_sz(*parts)
+
+
+def parse_d_flags_sz(sz_str: 'stringzilla.Str') -> List[tuple['stringzilla.Str', 'stringzilla.Str']]:
+    """Parse -D flags from compiler flags using StringZilla operations.
+
+    Extracts macro definitions in format: -D MACRONAME or -D MACRONAME=VALUE
+    Returns list of (macro_name, macro_value) tuples.
+    """
+    from stringzilla import Str
+
+    macros = []
+    pos = 0
+
+    while True:
+        # Find next -D flag
+        found = sz_str.find('-D', pos)
+        if found == -1:
+            break
+
+        # Skip -D and optional whitespace
+        start = found + 2
+        if start < len(sz_str):
+            # Skip whitespace after -D
+            first_non_ws = sz_str.find_first_not_of(' \t', start)
+            if first_non_ws != -1:
+                start = first_non_ws
+
+        # Find end of macro name (alphanumeric + underscore)
+        name_end = sz_str.find_first_not_of('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_', start)
+        if name_end == -1:
+            name_end = len(sz_str)
+
+        if name_end > start:
+            macro_name = sz_str[start:name_end]
+
+            # Check for =VALUE
+            if name_end < len(sz_str) and sz_str[name_end:name_end+1] == '=':
+                val_start = name_end + 1
+                # Find end of value (space, tab, or newline)
+                val_end = sz_str.find_first_of(' \t\n', val_start)
+                if val_end == -1:
+                    val_end = len(sz_str)
+                macro_value = sz_str[val_start:val_end]
+            else:
+                macro_value = Str("1")
+
+            macros.append((macro_name, macro_value))
+
+        pos = found + 2
+
+    return macros

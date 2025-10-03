@@ -185,7 +185,8 @@ class MagicFlagsBase:
         for pkg in flag.split():
             cflags_raw = cached_pkg_config_sz(pkg, "--cflags")
             # Replace -I flags with -isystem to help CppHeaderDeps avoid searching packages
-            cflags = sz.Str(str(cflags_raw).replace('-I', '-isystem'))
+            from compiletools.stringzilla_utils import replace_sz
+            cflags = replace_sz(cflags_raw, '-I', '-isystem')
             libs = cached_pkg_config_sz(pkg, "--libs")
 
             # Add cflags to all C/C++ flag categories
@@ -463,10 +464,9 @@ class DirectMagicFlags(MagicFlagsBase):
                 key = magic_flag['key']
                 value = magic_flag['value']
                 if key == sz.Str('CPPFLAGS') or key == sz.Str('CXXFLAGS'):
-                    # Extract -D macros
-                    for match in re.finditer(r'-D\s*(\w+)(?:=(\S+))?', str(value)):
-                        macro_name = sz.Str(match.group(1))
-                        macro_value = sz.Str(match.group(2)) if match.group(2) else sz.Str("1")
+                    # Extract -D macros using StringZilla operations
+                    from compiletools.stringzilla_utils import parse_d_flags_sz
+                    for macro_name, macro_value in parse_d_flags_sz(value):
                         if key == sz.Str('CPPFLAGS'):
                             cppflags_macros.append((macro_name, macro_value))
                         else:
