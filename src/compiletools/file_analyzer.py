@@ -381,8 +381,13 @@ def _read_file_with_strategy(filepath: str, strategy: str):
         stringzilla.Str object with file contents
     """
     from stringzilla import Str, File
+    import sys
 
     global _filesystem_override_strategy
+
+    # Debug: print strategy being used (can be disabled later)
+    if _analyzer_args and getattr(_analyzer_args, 'verbose', 0) >= 3:
+        print(f"DEBUG: _read_file_with_strategy({filepath}, strategy={strategy})", file=sys.stderr)
 
     # Check filesystem once per session for normal mode
     # Assumption: most projects are on a single filesystem
@@ -404,12 +409,15 @@ def _read_file_with_strategy(filepath: str, strategy: str):
         # Traditional file reading without mmap
         with open(filepath, 'rb') as f:
             content = f.read()
-        return Str(content)
+        # Decode with error handling - source files should be UTF-8
+        return Str(content.decode('utf-8', errors='replace'))
     elif strategy == 'fd_safe':
         # Str(File()) creates mmap view but keeps fd open until GC
-        # Convert to bytes via memoryview to force copy, then back to Str
+        # Convert to bytes to force copy, then decode with error handling
         sz_mmap = Str(File(filepath))
-        return Str(bytes(memoryview(sz_mmap)))
+        data_bytes = bytes(sz_mmap)
+        # Decode with error handling - source files should be UTF-8
+        return Str(data_bytes.decode('utf-8', errors='replace'))
     else:  # 'normal'
         # Direct mmap, keep fd open (best performance)
         return Str(File(filepath))
@@ -477,7 +485,15 @@ def analyze_file(content_hash: str) -> 'FileAnalysisResult':
         else:
             # Read limited amount using mmap for better performance
             text, bytes_analyzed, was_truncated = read_file_mmap(filepath, max_read_size)
-            str_text = Str(text)
+            try:
+                str_text = Str(text)
+            except UnicodeDecodeError as e:
+                # This shouldn't happen since read_file_mmap decodes with errors='ignore'
+                # But if it does, provide useful debugging info
+                print(f"ERROR: Failed to create Str from text in {filepath}", file=sys.stderr)
+                print(f"  text type: {type(text)}, len: {len(text)}", file=sys.stderr)
+                print(f"  First 100 chars: {repr(text[:100])}", file=sys.stderr)
+                raise
 
     # Use StringZilla's splitlines for optimal line processing
     lines = str_text.splitlines()
