@@ -125,10 +125,17 @@ def batch_hash_objects(paths) -> Dict[Path, str]:
     if not relative_paths:
         return {}
 
-    # Batch git hash-object calls to avoid exhausting file descriptors
-    # git hash-object opens all files simultaneously, so limit batch size
-    # to stay well under typical fd limits (1024)
-    batch_size = 1000
+    # Dynamically determine batch size based on system fd limit
+    # git hash-object opens all files simultaneously, so we need to stay under the limit
+    import resource
+    try:
+        soft_limit, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+        # Use 95% of soft limit, leaving some headroom for Python, git, and other processes
+        batch_size = int(soft_limit * 0.95)
+    except Exception:
+        # Fallback if we can't get the limit (non-Unix systems)
+        batch_size = 1000
+
     result = {}
 
     for i in range(0, len(relative_paths), batch_size):
@@ -154,6 +161,7 @@ def get_modified_but_unstaged_files() -> list[Path]:
     """
     Get list of tracked files that have been modified but not staged.
     Uses git diff-files which only reports changed files without opening them all.
+    Filters out deleted files since they can't be hashed.
     """
     cmd = "git diff-files --name-only"
     output = run_git(cmd)
@@ -161,7 +169,14 @@ def get_modified_but_unstaged_files() -> list[Path]:
         return []
 
     git_root = find_git_root()
-    return [Path(wrappedos.realpath(os.path.join(git_root, line))) for line in output.splitlines()]
+    # Only return files that actually exist (exclude deleted files)
+    result = []
+    for line in output.splitlines():
+        abs_path_str = os.path.join(git_root, line)
+        # Use cached isfile check to avoid repeated filesystem operations
+        if wrappedos.isfile(abs_path_str):
+            result.append(Path(wrappedos.realpath(abs_path_str)))
+    return result
 
 def get_complete_working_directory_hashes() -> Dict[Path, str]:
     """
