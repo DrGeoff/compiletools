@@ -132,14 +132,10 @@ class SimplePreprocessor:
                 i = after_defined
                 continue
 
-            # Skip whitespace after 'defined'
-            j = after_defined
-            while j < len(expr_sz):
-                ch = expr_sz[j:j+1]
-                if ch.find_first_not_of(' \t') == -1:  # All chars are whitespace
-                    j += 1
-                else:
-                    break
+            # Skip whitespace after 'defined' - vectorized
+            j = expr_sz.find_first_not_of(' \t', after_defined)
+            if j == -1:
+                j = len(expr_sz)
 
             if j >= len(expr_sz):
                 result_parts.append(expr_sz[defined_pos:])
@@ -153,29 +149,22 @@ class SimplePreprocessor:
             if len(ch) > 0 and ch[0] == '(':
                 # Find macro name inside parens
                 j += 1
-                # Skip whitespace
-                while j < len(expr_sz):
-                    ch = expr_sz[j:j+1]
-                    if ch.find_first_not_of(' \t') == -1:
-                        j += 1
-                    else:
-                        break
+                # Skip whitespace - vectorized
+                j = expr_sz.find_first_not_of(' \t', j)
+                if j == -1:
+                    j = len(expr_sz)
 
-                # Extract macro name
+                # Extract macro name - vectorized
                 if j < len(expr_sz) and is_alpha_or_underscore_sz(expr_sz, j):
                     macro_start = j
-                    while j < len(expr_sz) and (is_alpha_or_underscore_sz(expr_sz, j) or
-                                                 (j > macro_start and expr_sz[j:j+1].find_first_not_of('0123456789') == -1)):
-                        j += 1
+                    # Find end of identifier (alphanumeric + underscore)
+                    identifier_end = expr_sz.find_first_not_of('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_', macro_start)
+                    j = identifier_end if identifier_end != -1 else len(expr_sz)
                     macro_name = expr_sz[macro_start:j]
 
-                    # Skip whitespace before closing paren
-                    while j < len(expr_sz):
-                        ch = expr_sz[j:j+1]
-                        if ch.find_first_not_of(' \t') == -1:
-                            j += 1
-                        else:
-                            break
+                    # Skip whitespace before closing paren - vectorized
+                    next_non_ws = expr_sz.find_first_not_of(' \t', j)
+                    j = next_non_ws if next_non_ws != -1 else len(expr_sz)
 
                     # Check for closing paren
                     if j < len(expr_sz):
@@ -183,12 +172,12 @@ class SimplePreprocessor:
                         if len(ch) > 0 and ch[0] == ')':
                             end_pos = j + 1
             else:
-                # Space form: defined MACRO
+                # Space form: defined MACRO - vectorized
                 if is_alpha_or_underscore_sz(expr_sz, j):
                     macro_start = j
-                    while j < len(expr_sz) and (is_alpha_or_underscore_sz(expr_sz, j) or
-                                                 expr_sz[j:j+1].find_first_not_of('0123456789') == -1):
-                        j += 1
+                    # Find end of identifier (alphanumeric + underscore)
+                    identifier_end = expr_sz.find_first_not_of('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_', macro_start)
+                    j = identifier_end if identifier_end != -1 else len(expr_sz)
                     macro_name = expr_sz[macro_start:j]
                     end_pos = j
 
@@ -220,11 +209,10 @@ class SimplePreprocessor:
                 i += 1
                 continue
 
-            # Find the end of the identifier
+            # Find the end of the identifier - vectorized
             identifier_start = i
-            while i < len(result) and (is_alpha_or_underscore_sz(result, i) or
-                                     (i > identifier_start and result[i:i+1].find_first_not_of('0123456789') == -1)):
-                i += 1
+            identifier_end = result.find_first_not_of('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_', identifier_start)
+            i = identifier_end if identifier_end != -1 else len(result)
 
             # Extract the identifier
             identifier = result[identifier_start:i]

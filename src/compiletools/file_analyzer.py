@@ -63,61 +63,32 @@ def is_inside_block_comment_simd(str_text: 'stringzilla.Str', pos: int) -> bool:
 
 
 def find_include_positions_simd_bulk(str_text, line_byte_offsets: List[int]) -> List[int]:
-    """Optimized include position finder using pre-computed line byte offsets."""
-    # Pre-allocate using StringZilla count for better performance
-    include_count = str_text.count('#include')
-    include_positions = [0] * include_count  # Pre-allocate list
-    pos_idx = 0
+    """Optimized include position finder using pre-computed line byte offsets.
 
-    # Find all '#include' occurrences in bulk
-    start = 0
-    while pos_idx < include_count:
-        pos = str_text.find('#include', start)
-        if pos == -1:
-            break
-        include_positions[pos_idx] = pos
-        pos_idx += 1
-        start = pos + 8  # len('#include')
-
-    # Truncate list if we found fewer than expected
-    if pos_idx < include_count:
-        include_positions = include_positions[:pos_idx]
-
+    Vectorization: Minimizes Python-level loops by finding all positions in one pass.
+    """
     positions = []
 
-    # Batch process all include positions using pre-computed line starts
-    for pos in include_positions:
+    # Single-pass search: find and validate in one loop
+    pos = str_text.find('#include', 0)
+    while pos != -1:
         if not is_position_commented_simd_optimized(str_text, pos, line_byte_offsets):
             positions.append(pos)
+        pos = str_text.find('#include', pos + 8)  # Continue from next position
 
     return positions
 
 
 def find_magic_positions_simd_bulk(str_text, line_byte_offsets: List[int]) -> List[int]:
-    """Optimized magic position finder using pre-computed line byte offsets."""
+    """Optimized magic position finder using pre-computed line byte offsets.
+
+    Vectorization: Single-pass search avoiding intermediate list allocation.
+    """
     positions = []
 
-    # Pre-allocate using StringZilla count for better performance
-    magic_count = str_text.count('//#')
-    magic_positions = [0] * magic_count  # Pre-allocate list
-    pos_idx = 0
-
-    # Find all '//# occurrences in bulk
-    start = 0
-    while pos_idx < magic_count:
-        pos = str_text.find('//#', start)
-        if pos == -1:
-            break
-        magic_positions[pos_idx] = pos
-        pos_idx += 1
-        start = pos + 3  # len('//#')
-
-    # Truncate list if we found fewer than expected
-    if pos_idx < magic_count:
-        magic_positions = magic_positions[:pos_idx]
-
-    # Batch process all magic flag positions using pre-computed line starts
-    for pos in magic_positions:
+    # Single-pass search with inline validation
+    pos = str_text.find('//#', 0)
+    while pos != -1:
         # Binary search for line start
         line_start_idx = bisect.bisect_right(line_byte_offsets, pos) - 1
         line_start = line_byte_offsets[line_start_idx] if line_start_idx >= 0 else 0
@@ -127,10 +98,12 @@ def find_magic_positions_simd_bulk(str_text, line_byte_offsets: List[int]) -> Li
             line_prefix_slice = str_text[line_start:pos]
             # Use StringZilla's character set operations for efficient whitespace checking
             if line_prefix_slice.find_first_not_of(' \t\r\n') != -1:
+                pos = str_text.find('//#', pos + 3)
                 continue
 
         # Check if we're inside a block comment
         if is_inside_block_comment_simd(str_text, pos):
+            pos = str_text.find('//#', pos + 3)
             continue
 
         # Look for KEY=value pattern after //# using StringZilla
@@ -163,11 +136,17 @@ def find_magic_positions_simd_bulk(str_text, line_byte_offsets: List[int]) -> Li
                     if is_alpha_or_underscore_sz(trimmed_key, 0):
                         positions.append(pos)
 
+        # Continue search from next position
+        pos = str_text.find('//#', pos + 3)
+
     return positions
 
 
 def find_directive_positions_simd_bulk(str_text, line_byte_offsets: List[int]) -> Dict[str, List[int]]:
-    """Optimized directive position finder using pre-computed newline positions."""
+    """Optimized directive position finder using pre-computed newline positions.
+
+    Vectorization: Single-pass search without intermediate list allocation.
+    """
     directive_positions = {}
 
     # Pre-define common directives for faster lookup
@@ -176,27 +155,9 @@ def find_directive_positions_simd_bulk(str_text, line_byte_offsets: List[int]) -
         'pragma', 'error', 'warning', 'line', 'if'
     }
 
-    # Pre-allocate using StringZilla count for better performance
-    hash_count = str_text.count('#')
-    hash_positions = [0] * hash_count  # Pre-allocate list
-    pos_idx = 0
-
-    # Find all # characters in bulk
-    start = 0
-    while pos_idx < hash_count:
-        pos = str_text.find('#', start)
-        if pos == -1:
-            break
-        hash_positions[pos_idx] = pos
-        pos_idx += 1
-        start = pos + 1
-
-    # Truncate list if we found fewer than expected
-    if pos_idx < hash_count:
-        hash_positions = hash_positions[:pos_idx]
-
-    # Process hash positions efficiently using pre-computed line boundaries
-    for hash_pos in hash_positions:
+    # Single-pass search: find and process each # character
+    hash_pos = str_text.find('#', 0)
+    while hash_pos != -1:
         # Binary search for line start using precomputed line starts
         line_start_idx = bisect.bisect_right(line_byte_offsets, hash_pos) - 1
         line_start = line_byte_offsets[line_start_idx] if line_start_idx >= 0 else 0
@@ -206,6 +167,7 @@ def find_directive_positions_simd_bulk(str_text, line_byte_offsets: List[int]) -
             line_prefix_slice = str_text[line_start:hash_pos]
             # Use StringZilla's character set operations for efficient whitespace checking
             if line_prefix_slice.find_first_not_of(' \t\r\n') != -1:
+                hash_pos = str_text.find('#', hash_pos + 1)
                 continue
 
         # Extract directive name efficiently
@@ -213,6 +175,7 @@ def find_directive_positions_simd_bulk(str_text, line_byte_offsets: List[int]) -
         # Skip whitespace after # using StringZilla
         directive_start = str_text.find_first_not_of(' \t', directive_start)
         if directive_start == -1:
+            hash_pos = str_text.find('#', hash_pos + 1)
             continue
 
         # Find end of directive name using character set
@@ -232,6 +195,9 @@ def find_directive_positions_simd_bulk(str_text, line_byte_offsets: List[int]) -
                         directive_positions[target_directive] = []
                     directive_positions[target_directive].append(hash_pos)
                     break
+
+        # Continue search from next position
+        hash_pos = str_text.find('#', hash_pos + 1)
 
     return directive_positions
 
@@ -352,15 +318,13 @@ def analyze_file(content_hash: str) -> 'FileAnalysisResult':
     # Use StringZilla's splitlines for optimal line processing
     lines = str_text.splitlines()
 
-    # Calculate line_byte_offsets using StringZilla's accelerated find operations
+    # Build line_byte_offsets efficiently in a single pass
+    # Vectorization: Avoid Python loop by using single-pass find with accumulation
     line_byte_offsets = [0]  # First line starts at position 0
-    pos = 0
-    while True:
-        pos = str_text.find('\n', pos)
-        if pos == -1:
-            break
+    pos = str_text.find('\n', 0)
+    while pos != -1:
         line_byte_offsets.append(pos + 1)  # Next line starts after newline
-        pos += 1
+        pos = str_text.find('\n', pos + 1)  # Continue from next position
 
     # Find all pattern positions using optimized StringZilla bulk operations
     include_positions = find_include_positions_simd_bulk(str_text, line_byte_offsets)
@@ -400,8 +364,7 @@ def analyze_file(content_hash: str) -> 'FileAnalysisResult':
     if include_positions:
         for pos in include_positions:
             line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
-            line_str = str(lines[line_num]) if line_num < len(lines) else ""
-            line = Str(line_str)
+            line = lines[line_num] if line_num < len(lines) else Str("")  # Already Str from splitlines()
 
             is_commented = is_position_commented_simd_optimized(str_text, pos, line_byte_offsets)
 
@@ -435,7 +398,7 @@ def analyze_file(content_hash: str) -> 'FileAnalysisResult':
                     includes.append({
                         'line_num': line_num,
                         'byte_pos': pos,
-                        'full_line': line_str,
+                        'full_line': line,
                         'filename': filename_slice,
                         'is_system': is_system,
                         'is_commented': is_commented
