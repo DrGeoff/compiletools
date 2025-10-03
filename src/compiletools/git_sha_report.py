@@ -114,19 +114,30 @@ def batch_hash_objects(paths) -> Dict[Path, str]:
     # Convert absolute paths to relative paths for git hash-object
     # git hash-object --stdin-paths expects paths relative to cwd (which is git_root in run_git)
     relative_paths = []
+    path_mapping = []  # Track which original path maps to which relative path
+    
     for p in paths:
         abs_path = Path(p).resolve()
+        
+        # Skip directories - git hash-object only works on files
+        if abs_path.is_dir():
+            continue
+            
         try:
             rel_path = abs_path.relative_to(git_root)
             relative_paths.append(str(rel_path))
+            path_mapping.append(p)
         except ValueError:
-            # Path is outside git root, use absolute path as fallback
-            relative_paths.append(str(abs_path))
+            # Path is outside git root, skip it
+            continue
+    
+    if not relative_paths:
+        return {}
     
     input_data = "\n".join(relative_paths) + "\n"
     output = run_git("git hash-object --stdin-paths", input_data=input_data)
     shas = output.splitlines()
-    return dict(zip(paths, shas))
+    return dict(zip(path_mapping, shas))
 
 def get_current_blob_hashes() -> Dict[Path, str]:
     """
@@ -212,4 +223,5 @@ def main():
         blob_map = get_current_blob_hashes()
     
     for path, sha in sorted(blob_map.items()):
+        print(f"{sha}  {path}")
         print(f"{sha}  {path}")
