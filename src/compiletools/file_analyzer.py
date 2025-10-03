@@ -407,8 +407,9 @@ def _read_file_with_strategy(filepath: str, strategy: str):
         return Str(content)
     elif strategy == 'fd_safe':
         # Str(File()) creates mmap view but keeps fd open until GC
-        # Decode to str to force materialization/copy which closes the mmap fd immediately
-        return Str(Str(File(filepath)).decode('utf-8', errors='ignore'))
+        # Convert to bytes via memoryview to force copy, then back to Str
+        sz_mmap = Str(File(filepath))
+        return Str(bytes(memoryview(sz_mmap)))
     else:  # 'normal'
         # Direct mmap, keep fd open (best performance)
         return Str(File(filepath))
