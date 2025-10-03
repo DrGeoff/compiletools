@@ -83,10 +83,25 @@ def get_untracked_files() -> list[Path]:
 def batch_hash_objects(paths) -> Dict[Path, str]:
     """
     Given a list of paths, return { path: blob_sha } using one git call.
+    Converts absolute paths to relative paths (relative to git root) for git compatibility.
     """
     if not paths:
         return {}
-    input_data = "\n".join(str(p) for p in paths) + "\n"
+    
+    git_root = find_git_root()
+    # Convert absolute paths to relative paths for git hash-object
+    # git hash-object --stdin-paths expects paths relative to cwd (which is git_root in run_git)
+    relative_paths = []
+    for p in paths:
+        abs_path = Path(p).resolve()
+        try:
+            rel_path = abs_path.relative_to(git_root)
+            relative_paths.append(str(rel_path))
+        except ValueError:
+            # Path is outside git root, use absolute path as fallback
+            relative_paths.append(str(abs_path))
+    
+    input_data = "\n".join(relative_paths) + "\n"
     output = run_git("git hash-object --stdin-paths", input_data=input_data)
     shas = output.splitlines()
     return dict(zip(paths, shas))
