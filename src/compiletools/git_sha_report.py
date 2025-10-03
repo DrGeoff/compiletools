@@ -8,16 +8,36 @@ from compiletools.git_utils import find_git_root
 
 def run_git(cmd: str, input_data: str = None) -> str:
     """Run a git command from the repository root, optionally with stdin, and return stdout."""
-    git_root = find_git_root()
-    result = subprocess.run(
-        shlex.split(cmd),
-        input=input_data,
-        capture_output=True,
-        text=True,
-        check=True,
-        cwd=git_root  # Use cwd parameter instead of os.chdir()
-    )
-    return result.stdout.strip()
+    try:
+        git_root = find_git_root()
+    except Exception as e:
+        raise RuntimeError(f"Failed to find git repository root: {e}")
+    
+    try:
+        result = subprocess.run(
+            shlex.split(cmd),
+            input=input_data,
+            capture_output=True,
+            text=True,
+            check=False,  # Handle errors manually for better messages
+            cwd=git_root
+        )
+        
+        if result.returncode != 0:
+            error_msg = f"Git command failed: {cmd}\n"
+            error_msg += f"Working directory: {git_root}\n"
+            error_msg += f"Return code: {result.returncode}\n"
+            if result.stderr:
+                error_msg += f"Error output: {result.stderr}"
+            raise RuntimeError(error_msg)
+        
+        return result.stdout.strip()
+    except FileNotFoundError:
+        raise RuntimeError(f"Git executable not found. Make sure git is installed and in PATH.")
+    except Exception as e:
+        if isinstance(e, RuntimeError):
+            raise
+        raise RuntimeError(f"Unexpected error running git command '{cmd}': {e}")
 
 def get_index_metadata() -> Dict[Path, Tuple[str, int, int]]:
     """
