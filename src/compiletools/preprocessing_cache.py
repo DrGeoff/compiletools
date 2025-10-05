@@ -57,7 +57,7 @@ class MacroState:
     core: MacroDict  # Static: compiler + cmdline macros
     variable: MacroDict  # Dynamic: file #defines
     _cache_key: Optional[FrozenSet[Tuple[sz.Str, sz.Str]]]  # Cached frozenset for cache keys
-    _hash: Optional[int]  # Cached hash for convergence detection
+    _hash: Optional[str]  # Cached SHA1 hex digest for convergence detection
 
     def __init__(self, core: MacroDict, variable: Optional[MacroDict] = None):
         """Initialize macro state.
@@ -172,14 +172,27 @@ class MacroState:
 
         return self._cache_key
 
-    def get_hash(self) -> int:
-        """Get or compute hash of this MacroState for convergence detection.
+    def get_hash(self) -> str:
+        """Get or compute stable hash of this MacroState for convergence detection.
 
+        Returns a hex string of stable 64-bit hash (using stringzilla).
         Uses cached hash to avoid recomputation on repeated calls.
         Only hashes variable macros, ignoring static core macros.
         """
         if self._hash is None:
-            self._hash = hash(self.get_cache_key())
+            cache_key = self.get_cache_key()
+            if not cache_key:
+                # Empty macro state gets consistent hash
+                self._hash = format(sz.hash(b""), '016x')
+            else:
+                # Hash each (name, value) pair and combine the hashes
+                # Sort for deterministic ordering
+                combined = 0
+                for name, value in sorted(cache_key):
+                    # XOR hashes together for simple combination
+                    combined ^= sz.hash(bytes(name))
+                    combined ^= sz.hash(bytes(value))
+                self._hash = format(combined, '016x')
         return self._hash
 
 
