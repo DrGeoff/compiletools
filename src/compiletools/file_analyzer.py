@@ -396,10 +396,6 @@ def _read_file_with_strategy(filepath: str, strategy: str):
 
     global _filesystem_override_strategy
 
-    # Debug: print strategy being used (can be disabled later)
-    if _analyzer_args and getattr(_analyzer_args, 'verbose', 0) >= 3:
-        print(f"DEBUG: _read_file_with_strategy({filepath}, strategy={strategy})", file=sys.stderr)
-
     # Check filesystem once per session for mmap mode
     # Assumption: most projects are on a single filesystem
     if strategy == 'mmap':
