@@ -8,6 +8,8 @@ import subprocess
 from functools import lru_cache
 from typing import Dict
 
+import compiletools.utils
+
 
 @lru_cache(maxsize=32)
 def get_compiler_macros(compiler_path: str, verbose: int = 0) -> Dict[str, str]:
@@ -27,8 +29,9 @@ def get_compiler_macros(compiler_path: str, verbose: int = 0) -> Dict[str, str]:
     
     try:
         # Use -dM to dump macros, -E to preprocess only, - to read from stdin
+        # Split compiler_path to handle multi-word commands like "ccache g++"
         result = subprocess.run(
-            [compiler_path, '-dM', '-E', '-'],
+            compiletools.utils.split_command_cached(compiler_path) + ['-dM', '-E', '-'],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,

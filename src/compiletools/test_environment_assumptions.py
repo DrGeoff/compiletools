@@ -6,6 +6,7 @@ import pytest
 import compiletools.testhelper as uth
 import compiletools.configutils
 import compiletools.apptools
+import compiletools.utils
 
 
 @pytest.fixture
@@ -147,13 +148,18 @@ def test_linker_features(temp_dir):
         f.write('int main() { return 0; }')
     
     # Compile to object
-    result = subprocess.run([c_compiler, '-c', test_c, '-o', test_o], capture_output=True, text=True)
+    # Split c_compiler to handle multi-word commands like "ccache gcc"
+    result = subprocess.run(
+        compiletools.utils.split_command_cached(c_compiler) + ['-c', test_c, '-o', test_o],
+        capture_output=True, text=True
+    )
     assert result.returncode == 0, f"Failed to compile test object: {result.stderr}"
-    
+
     # Test linker with --build-id flag (used in config files)
-    result = subprocess.run([
-        c_compiler, '-Xlinker', '--build-id', test_o, '-o', test_exe
-    ], capture_output=True, text=True)
+    result = subprocess.run(
+        compiletools.utils.split_command_cached(c_compiler) + ['-Xlinker', '--build-id', test_o, '-o', test_exe],
+        capture_output=True, text=True
+    )
     assert result.returncode == 0, f"Linker does not support --build-id: {result.stderr}"
 
 
@@ -174,7 +180,10 @@ def test_fPIC_support(temp_dir):
         f.write('int test_function() { return 42; }')
     
     # Test functional compiler with -fPIC
-    result = subprocess.run([c_compiler, '-fPIC', '-c', test_c, '-o', test_o], capture_output=True, text=True)
+    result = subprocess.run(
+        compiletools.utils.split_command_cached(c_compiler) + ['-fPIC', '-c', test_c, '-o', test_o],
+        capture_output=True, text=True
+    )
     assert result.returncode == 0, f"Compiler does not support -fPIC: {result.stderr}"
 
 
