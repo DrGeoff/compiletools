@@ -412,9 +412,6 @@ class DirectMagicFlags(MagicFlagsBase):
         macro_state = MacroState(core={}, variable=macros)
         self.defined_macros.update(macro_state)
 
-        if self._args.verbose >= 9:
-            print(f"DirectMagicFlags: extracted {len(macros)} macros from magic flags: {macros}")
-
 
     @functools.lru_cache(maxsize=None)
     def _compute_file_processing_result(self, fname: str, macro_hash: int):
@@ -442,13 +439,8 @@ class DirectMagicFlags(MagicFlagsBase):
             return None
 
         # Process conditional compilation to get active lines using current macro state
-        if self._args.verbose >= 9:
-            print(f"DirectMagicFlags: Computing result for {fname} with macro hash {macro_hash}")
         result = get_or_compute_preprocessing(file_result, self.defined_macros, self._args.verbose)
         active_line_set = set(result.active_lines)
-
-        if self._args.verbose >= 9:
-            print(f"DirectMagicFlags: {fname} has {len(file_result.defines)} defines, {len(result.active_lines)} active lines")
 
         # Extract macros from active magic flag CPPFLAGS and CXXFLAGS
         active_magic_flags = [
@@ -507,23 +499,16 @@ class DirectMagicFlags(MagicFlagsBase):
 
         active_magic_flags, extracted_variable_macros, cppflags_macros, cxxflags_macros = cached_result
 
-        if self._args.verbose >= 9:
-            print(f"DirectMagicFlags: Applying cached result for {fname} (macro hash {macro_hash})")
-
         # Store active magic flags for this file to avoid redundant final pass
         self._stored_active_magic_flags[fname] = active_magic_flags
 
         # Apply extracted macros from magic flags to state
         for macro_name, macro_value in cppflags_macros + cxxflags_macros:
             self.defined_macros[macro_name] = macro_value
-            if self._args.verbose >= 9:
-                print(f"DirectMagicFlags: extracted macro {macro_name} = {macro_value} from magic flags in {fname}")
 
         # Apply extracted variable macros to state
         for macro_name, macro_value in extracted_variable_macros.items():
             self.defined_macros[macro_name] = macro_value
-            if self._args.verbose >= 9:
-                print(f"DirectMagicFlags: extracted macro {macro_name} = {macro_value} from {fname}")
 
     def _extract_macros_from_file(self, filename):
         """Extract #define macros from a file (unconditionally, no preprocessor evaluation)."""
@@ -560,10 +545,6 @@ class DirectMagicFlags(MagicFlagsBase):
         if cache_key not in self._structured_data_cache:
             return None
 
-        if self._args.verbose >= 7:
-            file_hash, input_macro_hash = cache_key
-            print(f"DirectMagicFlags: Early cache hit for {filename} (hash={file_hash[:8]}, macros={input_macro_hash[:8]})")
-
         # Restore macro state from previous convergence using absolute path
         abs_filename = compiletools.wrappedos.realpath(filename)
         if __debug__:
@@ -580,15 +561,10 @@ class DirectMagicFlags(MagicFlagsBase):
 
     def _setup_explicit_macro_files(self, all_source_files):
         """Collect and process READMACROS files."""
-        if self._args.verbose >= 9:
-            print(f"DirectMagicFlags: First pass - scanning {len(all_source_files)} files for READMACROS flags")
-
         self._explicit_macro_files = self._collect_explicit_macro_files(all_source_files)
 
         # Extract macros from explicitly specified files BEFORE processing conditional compilation
         for macro_file in self._explicit_macro_files:
-            if self._args.verbose >= 9:
-                print(f"DirectMagicFlags: extracting macros from READMACROS file {macro_file}")
             self._extract_macros_from_file(macro_file)
 
     def _converge_macro_state(self, all_files, max_iterations=5):
@@ -604,9 +580,6 @@ class DirectMagicFlags(MagicFlagsBase):
             current_macro_hash = self.defined_macros.get_hash()
             macro_count_before = len(self.defined_macros.variable)
 
-            if self._args.verbose >= 9:
-                print(f"DirectMagicFlags: Iteration {iteration}, {len(self.defined_macros)} known macros, hash={current_macro_hash}")
-
             # Determine which files need processing (those not yet processed with current macro state)
             files_to_process = [
                 fname for fname in all_files
@@ -614,40 +587,22 @@ class DirectMagicFlags(MagicFlagsBase):
             ]
 
             if not files_to_process:
-                if self._args.verbose >= 9:
-                    print(f"DirectMagicFlags: Converged - all {len(all_files)} files up-to-date with current macro state")
                 break
-
-            if self._args.verbose >= 9:
-                print(f"DirectMagicFlags: Processing {len(files_to_process)} files, skipping {len(all_files) - len(files_to_process)} up-to-date")
 
             # Process files that need reprocessing
             for fname in files_to_process:
-                if self._args.verbose >= 9:
-                    prev_hash = file_last_macro_hash.get(fname, "none")
-                    print(f"DirectMagicFlags: Processing {fname} (prev_hash={prev_hash}, current={current_macro_hash})")
                 self._process_file_for_macros(fname)
                 file_last_macro_hash[fname] = current_macro_hash
 
             # Check convergence - first cheap count check, then expensive hash
             macro_count_after = len(self.defined_macros.variable)
             if macro_count_after != macro_count_before:
-                if self._args.verbose >= 9:
-                    print(f"DirectMagicFlags: Not converged - macro count: {macro_count_before} → {macro_count_after}")
                 continue
 
             # Count unchanged, check for value-only changes with hash
             new_macro_hash = self.defined_macros.get_hash()
             if new_macro_hash == current_macro_hash:
-                if self._args.verbose >= 9:
-                    print("DirectMagicFlags: Converged - macro values unchanged")
                 break
-
-            if self._args.verbose >= 9:
-                print(f"DirectMagicFlags: Macro state changed: {current_macro_hash} → {new_macro_hash}")
-
-        if self._args.verbose >= 7:
-            print(f"DirectMagicFlags: Macro convergence after {iteration} iterations, {len(self.defined_macros)} macros")
 
         return iteration
 

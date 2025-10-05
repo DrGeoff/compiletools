@@ -3,6 +3,7 @@
 import sys
 import os
 from textwrap import dedent
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -390,6 +391,10 @@ class TestCacheManagement:
         assert stats['memory_bytes'] >= 0
         assert stats['memory_mb'] >= 0.0
 
+    @pytest.mark.skipif(
+        hasattr(sys, 'pypy_version_info'),
+        reason="tracemalloc not available in PyPy"
+    )
     def test_memory_usage_reasonable(self):
         """Test that cache memory usage stays reasonable."""
         import tracemalloc
