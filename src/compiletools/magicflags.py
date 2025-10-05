@@ -496,10 +496,10 @@ class DirectMagicFlags(MagicFlagsBase):
         Args:
             fname: File path to process
         """
-        # Compute hash for cache key (hashable int)
+        # Compute hash for cache key (stable hex string)
         macro_hash = self.defined_macros.get_hash()
 
-        # Use cached computation - pass hash (hashable), function accesses self.defined_macros
+        # Use cached computation - pass hash, function accesses self.defined_macros
         cached_result = self._compute_file_processing_result(fname, macro_hash)
 
         if cached_result is None:

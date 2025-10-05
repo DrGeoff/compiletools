@@ -499,7 +499,8 @@ class TestMacroHashConsistency:
         hash2 = macros.get_hash()
 
         assert hash1 == hash2, "Same macro state should produce same hash"
-        assert isinstance(hash1, int), "Hash should be an integer"
+        assert isinstance(hash1, str), "Hash should be a hex string"
+        assert len(hash1) == 16, "Hash should be 64-bit (16 hex chars)"
 
     def test_hash_ordering_independence(self):
         """Verify hash is same regardless of insertion order."""
@@ -562,7 +563,8 @@ class TestMacroHashConsistency:
         hash2 = empty2.get_hash()
 
         assert hash1 == hash2, "Empty macro states should have same hash"
-        assert isinstance(hash1, int), "Hash should be an integer"
+        assert isinstance(hash1, str), "Hash should be a hex string"
+        assert len(hash1) == 16, "Hash should be 64-bit (16 hex chars)"
 
     def test_hash_with_special_characters(self):
         """Verify hash handles special characters in macro values."""
@@ -582,7 +584,8 @@ class TestMacroHashConsistency:
         hash1 = macros1.get_hash()
         hash2 = macros2.get_hash()
 
-        assert isinstance(hash1, int), "Hash should be an integer"
+        assert isinstance(hash1, str), "Hash should be a hex string"
+        assert len(hash1) == 16, "Hash should be 64-bit (16 hex chars)"
         assert hash1 != hash2, "Different values with special chars should have different hashes"
 
     def test_hash_cross_module_consistency(self):
@@ -600,8 +603,9 @@ class TestMacroHashConsistency:
         # Hash computation (used by magicflags for convergence detection)
         hash_result = macros.get_hash()
 
-        # Verify hash type
-        assert isinstance(hash_result, int), "Hash should be an integer"
+        # Verify hash type is stable string (hex digest of 64-bit hash)
+        assert isinstance(hash_result, str), "Hash should be a hex digest string"
+        assert len(hash_result) == 16, "Hash should be 64-bit (16 hex chars)"
 
         # Verify it's deterministic
         hash_again = macros.get_hash()
