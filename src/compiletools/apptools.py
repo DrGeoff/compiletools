@@ -658,8 +658,9 @@ def _test_compiler_functionality(compiler_name):
     """
     try:
         # Test 1: Basic version check
+        # Split compiler_name to handle multi-word commands like "ccache g++"
         result = subprocess.run(
-            [compiler_name, '--version'],
+            split_command_cached(compiler_name) + ['--version'],
             capture_output=True,
             timeout=5,
             text=True
@@ -690,9 +691,10 @@ def _test_compiler_functionality(compiler_name):
             with tempfile.NamedTemporaryFile(suffix='.o', delete=False) as obj_file:
                 obj_path = obj_file.name
                 
-            result = subprocess.run([
-                compiler_name, '-std=c++20', '-c', test_cpp, '-o', obj_path
-            ], capture_output=True, timeout=10, text=True)
+            result = subprocess.run(
+                split_command_cached(compiler_name) + ['-std=c++20', '-c', test_cpp, '-o', obj_path],
+                capture_output=True, timeout=10, text=True
+            )
             
             success = result.returncode == 0
             
