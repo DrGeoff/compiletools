@@ -381,6 +381,10 @@ class TestCacheManagement:
         assert stats2['hits'] == 0
         assert stats2['misses'] == 0
 
+    @pytest.mark.skipif(
+        hasattr(sys, 'pypy_version_info'),
+        reason="sys.getsizeof not meaningful in PyPy"
+    )
     def test_get_cache_stats_memory(self):
         """Test that cache stats include memory information."""
         clear_cache()
