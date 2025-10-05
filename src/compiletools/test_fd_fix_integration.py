@@ -80,15 +80,14 @@ class TestFileReadingStrategy:
             'testmarkers': [],
             'librarymarkers': [],
             'use_mmap': True,
-            'fd_safe_file_reading': False,
-            'force_normal_mode': False,
+            'force_mmap': False,
             'suppress_fd_warnings': True,
             'suppress_filesystem_warnings': True,
         })()
 
         set_analyzer_args(args)
         strategy = _determine_file_reading_strategy()
-        assert strategy in ['normal', 'fd_safe', 'no_mmap']
+        assert strategy in ['mmap', 'no_mmap']
 
     def test_manual_override_no_use_mmap(self):
         """Test manual override to disable mmap (no_mmap mode)."""
@@ -99,8 +98,7 @@ class TestFileReadingStrategy:
             'testmarkers': [],
             'librarymarkers': [],
             'use_mmap': False,
-            'fd_safe_file_reading': False,
-            'force_normal_mode': False,
+            'force_mmap': False,
             'suppress_fd_warnings': True,
             'suppress_filesystem_warnings': True,
         })()
@@ -109,8 +107,8 @@ class TestFileReadingStrategy:
         strategy = _determine_file_reading_strategy()
         assert strategy == 'no_mmap'
 
-    def test_manual_override_fd_safe(self):
-        """Test manual override to fd_safe mode."""
+    def test_manual_override_force_mmap(self):
+        """Test manual override to force mmap mode."""
         args = type('Args', (), {
             'max_read_size': 0,
             'verbose': 0,
@@ -118,43 +116,23 @@ class TestFileReadingStrategy:
             'testmarkers': [],
             'librarymarkers': [],
             'use_mmap': True,
-            'fd_safe_file_reading': True,
-            'force_normal_mode': False,
+            'force_mmap': True,
             'suppress_fd_warnings': True,
             'suppress_filesystem_warnings': True,
         })()
 
         set_analyzer_args(args)
         strategy = _determine_file_reading_strategy()
-        assert strategy == 'fd_safe'
+        assert strategy == 'mmap'
 
-    def test_manual_override_force_normal(self):
-        """Test manual override to force normal mode."""
-        args = type('Args', (), {
-            'max_read_size': 0,
-            'verbose': 0,
-            'exemarkers': [],
-            'testmarkers': [],
-            'librarymarkers': [],
-            'use_mmap': True,
-            'fd_safe_file_reading': False,
-            'force_normal_mode': True,
-            'suppress_fd_warnings': True,
-            'suppress_filesystem_warnings': True,
-        })()
-
-        set_analyzer_args(args)
-        strategy = _determine_file_reading_strategy()
-        assert strategy == 'normal'
-
-    def test_low_ulimit_auto_fd_safe(self):
-        """Test that very low ulimit (< 100) automatically triggers fd_safe mode."""
+    def test_low_ulimit_auto_no_mmap(self):
+        """Test that very low ulimit (< 100) automatically triggers no_mmap mode."""
         # This test simulates the behavior, but can't actually change ulimit
         # The real test is that pytest -n auto works with ulimit 20
         import resource
         try:
             soft, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
-            # If we're running with low ulimit, verify fd_safe is used
+            # If we're running with low ulimit, verify no_mmap is used
             if soft < 100:
                 args = type('Args', (), {
                     'max_read_size': 0,
@@ -163,15 +141,14 @@ class TestFileReadingStrategy:
                     'testmarkers': [],
                     'librarymarkers': [],
                     'use_mmap': True,
-                    'fd_safe_file_reading': False,
-                    'force_normal_mode': False,
+                    'force_mmap': False,
                     'suppress_fd_warnings': True,
                     'suppress_filesystem_warnings': True,
                 })()
 
                 set_analyzer_args(args)
                 strategy = _determine_file_reading_strategy()
-                assert strategy == 'fd_safe', f"Expected fd_safe with ulimit {soft}, got {strategy}"
+                assert strategy == 'no_mmap', f"Expected no_mmap with ulimit {soft}, got {strategy}"
         except (OSError, AttributeError):
             pytest.skip("Cannot read ulimit on this system")
 
@@ -188,14 +165,14 @@ class TestFileAnalyzerArguments:
         args = cap.parse_args(['--no-use-mmap'])
         assert args.use_mmap is False
 
-    def test_add_arguments_fd_safe(self):
-        """Test that --fd-safe-file-reading argument works."""
+    def test_add_arguments_force_mmap(self):
+        """Test that --force-mmap argument works."""
         import configargparse
         cap = configargparse.ArgumentParser()
         FileAnalyzer.add_arguments(cap)
 
-        args = cap.parse_args(['--fd-safe-file-reading'])
-        assert args.fd_safe_file_reading is True
+        args = cap.parse_args(['--force-mmap'])
+        assert args.force_mmap is True
 
     def test_add_arguments_suppress_warnings(self):
         """Test that warning suppression arguments work."""
@@ -207,14 +184,6 @@ class TestFileAnalyzerArguments:
         assert args.suppress_fd_warnings is True
         assert args.suppress_filesystem_warnings is True
 
-    def test_add_arguments_force_normal(self):
-        """Test that --force-normal-mode argument works."""
-        import configargparse
-        cap = configargparse.ArgumentParser()
-        FileAnalyzer.add_arguments(cap)
-
-        args = cap.parse_args(['--force-normal-mode'])
-        assert args.force_normal_mode is True
 
 
 class TestFileReadingWithRealFiles:
@@ -227,8 +196,8 @@ class TestFileReadingWithRealFiles:
         compiletools.file_analyzer._analyzer_args = None
         compiletools.file_analyzer._filesystem_override_strategy = None
 
-    def test_fd_safe_mode_reads_real_file(self):
-        """Test that fd-safe mode actually reads and analyzes real files correctly."""
+    def test_no_mmap_mode_reads_real_file(self):
+        """Test that no_mmap mode actually reads and analyzes real files correctly."""
         from compiletools.global_hash_registry import load_hashes, get_file_hash
         import compiletools.wrappedos
 
@@ -244,23 +213,22 @@ class TestFileReadingWithRealFiles:
         load_hashes()
         content_hash = get_file_hash(sample_file)
 
-        # Configure fd-safe mode
+        # Configure no_mmap mode
         args = type('Args', (), {
             'max_read_size': 0,
             'verbose': 0,
             'exemarkers': ['int main'],
             'testmarkers': [],
             'librarymarkers': [],
-            'use_mmap': True,
-            'fd_safe_file_reading': True,
-            'force_normal_mode': False,
+            'use_mmap': False,
+            'force_mmap': False,
             'suppress_fd_warnings': True,
             'suppress_filesystem_warnings': True,
         })()
 
         set_analyzer_args(args)
         strategy = _determine_file_reading_strategy()
-        assert strategy == 'fd_safe'
+        assert strategy == 'no_mmap'
 
         # Analyze the file - this exercises _read_file_with_strategy
         from compiletools.file_analyzer import analyze_file
@@ -272,8 +240,8 @@ class TestFileReadingWithRealFiles:
         assert any('iostream' in str(inc['filename']) for inc in result.includes)
         assert result.bytes_analyzed > 0
 
-    def test_normal_mode_reads_real_file(self):
-        """Test that normal mode reads and analyzes real files correctly."""
+    def test_mmap_mode_reads_real_file(self):
+        """Test that mmap mode reads and analyzes real files correctly."""
         from compiletools.global_hash_registry import load_hashes, get_file_hash
         import compiletools.wrappedos
 
@@ -294,15 +262,14 @@ class TestFileReadingWithRealFiles:
             'testmarkers': [],
             'librarymarkers': [],
             'use_mmap': True,
-            'fd_safe_file_reading': False,
-            'force_normal_mode': True,
+            'force_mmap': True,
             'suppress_fd_warnings': True,
             'suppress_filesystem_warnings': True,
         })()
 
         set_analyzer_args(args)
         strategy = _determine_file_reading_strategy()
-        assert strategy == 'normal'
+        assert strategy == 'mmap'
 
         from compiletools.file_analyzer import analyze_file
         result = analyze_file(content_hash)
@@ -333,8 +300,7 @@ class TestFileReadingWithRealFiles:
             'testmarkers': [],
             'librarymarkers': [],
             'use_mmap': False,
-            'fd_safe_file_reading': False,
-            'force_normal_mode': False,
+            'force_mmap': False,
             'suppress_fd_warnings': True,
             'suppress_filesystem_warnings': True,
         })()

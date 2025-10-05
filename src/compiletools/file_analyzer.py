@@ -274,11 +274,11 @@ def _warn_low_ulimit(total_files: int, soft_limit: int):
     if _analyzer_args and getattr(_analyzer_args, 'suppress_fd_warnings', False):
         return
 
-    print(f"Warning: Low file descriptor limit detected (ulimit -n = {soft_limit})", file=sys.stderr)
-    print(f"  Total files in project: {total_files}, available FDs: {int(soft_limit * 0.9)}", file=sys.stderr)
-    print(f"  Using fd-safe file reading to avoid 'Too many open files' errors", file=sys.stderr)
-    print(f"  This adds ~0.03ms overhead per file", file=sys.stderr)
-    print(f"  To improve performance: increase ulimit (e.g., ulimit -n 4096)", file=sys.stderr)
+    print(f"Warning: File descriptor limit too low for mmap mode (ulimit -n = {soft_limit})", file=sys.stderr)
+    print(f"  Total files: {total_files}, available FDs (90% of limit): {int(soft_limit * 0.9)}", file=sys.stderr)
+    print(f"  Using traditional file I/O instead of mmap to avoid 'Too many open files' errors", file=sys.stderr)
+    print(f"  This is ~0.1-0.2ms slower per file but prevents EMFILE errors", file=sys.stderr)
+    print(f"  To use faster mmap mode: ulimit -n {total_files * 2}", file=sys.stderr)
     print(f"  To suppress this warning: add '--suppress-fd-warnings' flag or config", file=sys.stderr)
     _warned_low_ulimit = True
 
@@ -298,15 +298,30 @@ def _warn_filesystem_mmap_issue(fstype: str):
     _warned_filesystem.add(fstype)
 
 
+_warned_mmap_failure = False
+
+def _warn_mmap_failure(filepath: str, error: Exception):
+    """Warn once about unexpected mmap failure and fallback."""
+    global _warned_mmap_failure
+    if _warned_mmap_failure:
+        return
+    if _analyzer_args and getattr(_analyzer_args, 'suppress_fd_warnings', False):
+        return
+
+    print(f"Warning: mmap failed for {filepath}: {error}", file=sys.stderr)
+    print(f"  Falling back to traditional file reading for this and subsequent files", file=sys.stderr)
+    print(f"  To suppress this warning: add '--suppress-fd-warnings' flag or config", file=sys.stderr)
+    _warned_mmap_failure = True
+
+
 def _determine_file_reading_strategy() -> str:
     """Determine which file reading strategy to use for this session.
 
     Called once at file_analyzer initialization.
 
     Returns:
-        'normal' - Use Str(File(filepath)) directly (best performance)
-        'fd_safe' - Use Str(bytes(Str(File(filepath)))) to close FDs immediately
-        'no_mmap' - Use traditional open()/read() (for problematic filesystems)
+        'mmap' - Use Str(File(filepath)) directly (best performance)
+        'no_mmap' - Use traditional open()/read() (for low ulimit or problematic filesystems)
     """
     global _file_reading_strategy
     if _file_reading_strategy is not None:
@@ -319,12 +334,8 @@ def _determine_file_reading_strategy() -> str:
         _file_reading_strategy = 'no_mmap'
         return _file_reading_strategy
 
-    if args and getattr(args, 'fd_safe_file_reading', False):
-        _file_reading_strategy = 'fd_safe'
-        return _file_reading_strategy
-
-    if args and getattr(args, 'force_normal_mode', False):
-        _file_reading_strategy = 'normal'
+    if args and getattr(args, 'force_mmap', False):
+        _file_reading_strategy = 'mmap'
         return _file_reading_strategy
 
     # Get total file count from global hash registry
@@ -343,12 +354,12 @@ def _determine_file_reading_strategy() -> str:
     except (OSError, AttributeError):
         soft_limit = 1024  # Reasonable fallback
 
-    # If ulimit is dangerously low (< 100), always use fd_safe mode
+    # If ulimit is dangerously low (< 100), always use no_mmap mode
     # This handles shells with ulimit 20, test environments, etc.
     if soft_limit < 100:
         if total_files > 0:
             _warn_low_ulimit(total_files, soft_limit)
-        _file_reading_strategy = 'fd_safe'
+        _file_reading_strategy = 'no_mmap'
         return _file_reading_strategy
 
     # Check filesystem type (use first file's filesystem as representative)
@@ -360,12 +371,12 @@ def _determine_file_reading_strategy() -> str:
     safe_fd_limit = int(soft_limit * 0.9)
 
     if total_files > 0 and total_files > safe_fd_limit:
-        # Too many files for available fds - use copy trick
+        # Too many files for available fds - use traditional file I/O
         _warn_low_ulimit(total_files, soft_limit)
-        _file_reading_strategy = 'fd_safe'
+        _file_reading_strategy = 'no_mmap'
     else:
-        # Default to normal mode
-        _file_reading_strategy = 'normal'
+        # Default to mmap mode
+        _file_reading_strategy = 'mmap'
 
     return _file_reading_strategy
 
@@ -375,7 +386,7 @@ def _read_file_with_strategy(filepath: str, strategy: str):
 
     Args:
         filepath: Path to file to read
-        strategy: 'normal', 'fd_safe', or 'no_mmap'
+        strategy: 'mmap' or 'no_mmap'
 
     Returns:
         stringzilla.Str object with file contents
@@ -389,9 +400,9 @@ def _read_file_with_strategy(filepath: str, strategy: str):
     if _analyzer_args and getattr(_analyzer_args, 'verbose', 0) >= 3:
         print(f"DEBUG: _read_file_with_strategy({filepath}, strategy={strategy})", file=sys.stderr)
 
-    # Check filesystem once per session for normal mode
+    # Check filesystem once per session for mmap mode
     # Assumption: most projects are on a single filesystem
-    if strategy == 'normal':
+    if strategy == 'mmap':
         if _filesystem_override_strategy is None:
             # First file - check filesystem and cache result
             fstype = compiletools.filesystem_utils.get_filesystem_type(filepath)
@@ -399,7 +410,7 @@ def _read_file_with_strategy(filepath: str, strategy: str):
                 _warn_filesystem_mmap_issue(fstype)
                 _filesystem_override_strategy = 'no_mmap'
             else:
-                _filesystem_override_strategy = 'normal'
+                _filesystem_override_strategy = 'mmap'
 
         # Use cached filesystem check result
         if _filesystem_override_strategy == 'no_mmap':
@@ -411,21 +422,15 @@ def _read_file_with_strategy(filepath: str, strategy: str):
             content = f.read()
         # Content is already a decoded Python string
         return Str(content)
-    elif strategy == 'fd_safe':
-        # Str(File()) creates mmap view but keeps fd open until GC
-        # Keep File object alive while copying data
-        file_obj = File(filepath)
-        sz_mmap = Str(file_obj)
-        # Force copy of mmap data before file_obj is GC'd
-        # Convert to Python string to ensure data is materialized
-        content = str(sz_mmap)
-        # Now file_obj can be GC'd and fd closed
-        del file_obj
-        del sz_mmap
-        return Str(content)
-    else:  # 'normal'
+    else:  # 'mmap'
         # Direct mmap, keep fd open (best performance)
-        return Str(File(filepath))
+        try:
+            return Str(File(filepath))
+        except (OSError, IOError) as e:
+            # Unexpected mmap failure - fall back gracefully
+            _warn_mmap_failure(filepath, e)
+            with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                return Str(f.read())
 
 
 def set_analyzer_args(args):
@@ -1091,18 +1096,10 @@ class FileAnalyzer:
 
         compiletools.utils.add_flag_argument(
             parser=cap,
-            name="fd-safe-file-reading",
-            dest="fd_safe_file_reading",
+            name="force-mmap",
+            dest="force_mmap",
             default=False,
-            help="Always use fd-safe file reading (copy trick)"
-        )
-
-        compiletools.utils.add_flag_argument(
-            parser=cap,
-            name="force-normal-mode",
-            dest="force_normal_mode",
-            default=False,
-            help="Force normal mmap mode (for testing/debugging)"
+            help="Force mmap mode even on low ulimit systems (for testing/debugging)"
         )
 
         # Warning suppression
