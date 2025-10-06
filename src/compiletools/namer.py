@@ -64,30 +64,48 @@ class Namer(object):
         return self.args.objdir
 
     @functools.lru_cache(maxsize=None)
-    def object_name(self, sourcefilename, macro_hash=None):
-        """ Return the name (not the path) of the object file
-            for the given source.
-            
-            Args:
-                sourcefilename: Path to source file
-                macro_hash: Pre-computed hash of macro state (for shared objects)
+    def object_name(self, sourcefilename, macro_hash):
+        """Return the name (not the path) of the object file for the given source.
+
+        Naming scheme: {basename}_{file_hash_12}_{macro_hash_16}.o
+        - basename: filename without path or extension
+        - file_hash_12: 12-char hex from global hash registry (git convention)
+        - macro_hash_16: 16-char hex of full macro state (core + variable)
+
+        This naming scheme is content-addressable and safe for shared caching:
+        - Different file content → different file_hash
+        - Different macro state → different macro_hash
+        - Same basename in different dirs → different file_hash
+
+        Args:
+            sourcefilename: Path to source file
+            macro_hash: Required 16-char hex hash of full macro state (core + variable).
+                       No default - fail fast if not provided.
+
+        Returns:
+            Object filename like: file_a1b2c3d4e5f6_0123456789abcdef.o
         """
-        directory, name = os.path.split(sourcefilename)
+        from compiletools.global_hash_registry import get_file_hash
+
+        # Extract just the basename (no directory path)
+        _, name = os.path.split(sourcefilename)
         basename = os.path.splitext(name)[0]
-        base_name = "".join([directory.replace("/", "@@"), "@@", basename])
-        
-        # Check if shared objects mode is enabled
-        shared_objects = compiletools.configutils.extract_item_from_ct_conf(
-            'shared-objects', default='false'
-        ).lower() in ('true', '1', 'yes', 'on')
-        
-        if shared_objects and macro_hash:
-            return self._shared_object_name(sourcefilename, base_name, macro_hash)
-        else:
-            return base_name + ".o"
+
+        # Get file content hash (12 chars to match git short hash convention)
+        file_hash = get_file_hash(sourcefilename)
+        file_hash_short = file_hash[:12]
+
+        # Use full 16-char macro hash (macro_hash is already 16 chars)
+        return f"{basename}_{file_hash_short}_{macro_hash}.o"
 
     @functools.lru_cache(maxsize=None)
-    def object_pathname(self, sourcefilename, macro_hash=None):
+    def object_pathname(self, sourcefilename, macro_hash):
+        """Return full path to object file.
+
+        Args:
+            sourcefilename: Path to source file
+            macro_hash: Required 16-char hex hash (no default)
+        """
         return "".join(
             [self.object_dir(sourcefilename), "/", self.object_name(sourcefilename, macro_hash)]
         )
@@ -191,19 +209,6 @@ class Namer(object):
             }
             return list(alltestsexes)
         return []
-
-    def _shared_object_name(self, sourcefilename, base_name, macro_hash):
-        """Generate shared object name with file and macro state hashes."""
-        from compiletools.global_hash_registry import get_file_hash
-        
-        # Get file content hash
-        file_hash = get_file_hash(sourcefilename)
-        if not file_hash:
-            # Fallback for files not in git
-            file_hash = "unknown"
-        file_hash_short = file_hash[:12]
-        
-        return f"{base_name}_{file_hash_short}_{macro_hash}.o"
 
     def clear_cache(self):
         compiletools.wrappedos.clear_cache()

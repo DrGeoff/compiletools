@@ -105,19 +105,48 @@ class MagicFlagsBase:
             r"^[\s]*//#([\S]*?)[\s]*=[\s]*(.*)", re.MULTILINE
         )
 
-    def get_final_macro_hash(self, filename: str) -> Optional[str]:
-        """Get the final converged macro hash for a specific file.
+    def get_final_macro_hash(self, filename: str):
+        """Get the final converged macro cache key for a specific file.
+
+        Returns the frozenset cache key (variable macros only) for use in
+        dependency caching. For object file naming, use get_final_macro_hash_full().
 
         Args:
             filename: The file path to get the macro hash for
 
         Returns:
-            str: 16-character hash of the final macro state for this file,
-                 or None if the file hasn't been processed yet
+            frozenset: Cache key of variable macros
+
+        Raises:
+            KeyError: If file hasn't been processed yet
         """
-        # Normalize to absolute path for consistent lookups
         abs_filename = compiletools.wrappedos.realpath(filename)
-        return self._final_macro_hashes.get(abs_filename)
+        macro_state = self._final_macro_states.get(abs_filename)
+        if macro_state is None:
+            raise KeyError(f"No macro state found for {filename} - file not processed")
+        return macro_state.get_cache_key()
+
+    def get_final_macro_hash_full(self, filename: str) -> str:
+        """Get the full macro hash (core + variable) for object file naming.
+
+        This includes BOTH core macros (compiler built-ins + cmdline flags) AND
+        variable macros (from file #defines). Different compilers or cmdline flags
+        will produce different hashes, ensuring proper object file separation.
+
+        Args:
+            filename: The file path to get the full macro hash for
+
+        Returns:
+            str: 16-character hex hash of full macro state (core + variable)
+
+        Raises:
+            KeyError: If file hasn't been processed yet
+        """
+        abs_filename = compiletools.wrappedos.realpath(filename)
+        macro_state = self._final_macro_states.get(abs_filename)
+        if macro_state is None:
+            raise KeyError(f"No macro state found for {filename} - file not processed")
+        return macro_state.get_hash(include_core=True)
 
     def _get_file_analyzer_result(self, filename: str) -> FileAnalysisResult:
         """Get FileAnalysisResult for a file, using module-level cache.
@@ -361,13 +390,10 @@ class DirectMagicFlags(MagicFlagsBase):
         self.defined_macros = self._initial_macro_state.copy()
         # Track files specified by READMACROS magic flags
         self._explicit_macro_files = set()
-        # Store final converged macro hashes by filename
-        self._final_macro_hashes = {}
+        # Store final converged MacroState objects by filename
+        self._final_macro_states = {}
         # Cache structured data results by (file_hash, input_macro_hash) to avoid redundant convergence
         self._structured_data_cache = {}
-        # Store converged macro states by filename for verification
-        if __debug__:
-            self._verification_final_macro_hashes = {}
 
     def _initialize_macro_state(self) -> MacroState:
         """Initialize MacroState with command-line and compiler macros as core.
@@ -547,15 +573,25 @@ class DirectMagicFlags(MagicFlagsBase):
 
         # Restore macro state from previous convergence using absolute path
         abs_filename = compiletools.wrappedos.realpath(filename)
-        if __debug__:
-            if abs_filename in self._verification_final_macro_hashes:
-                self.defined_macros = self._verification_final_macro_hashes[abs_filename].copy()
 
-        # Ensure _final_macro_hashes is populated (required for hunter.macro_hash())
-        # The cache key is already computed and stored from first processing
-        if abs_filename not in self._final_macro_hashes:
-            # Should not happen, but compute from current state as fallback
-            self._final_macro_hashes[abs_filename] = self.defined_macros.get_cache_key()
+        # Ensure _final_macro_states is populated (required for hunter.macro_hash())
+        if abs_filename not in self._final_macro_states:
+            raise RuntimeError(
+                f"Cache hit for {filename} but _final_macro_states not populated. "
+                f"This indicates a bug in the caching logic."
+            )
+
+        # Restore the converged macro state
+        self.defined_macros = self._final_macro_states[abs_filename].copy()
+
+        # Verify state consistency in debug mode
+        if __debug__:
+            expected_key = self._final_macro_states[abs_filename].get_cache_key()
+            actual_key = self.defined_macros.get_cache_key()
+            assert expected_key == actual_key, (
+                f"Macro state restoration failed for {filename}: "
+                f"expected key {expected_key}, got {actual_key}"
+            )
 
         return self._structured_data_cache[cache_key]
 
@@ -607,18 +643,14 @@ class DirectMagicFlags(MagicFlagsBase):
         return iteration
 
     def _finalize_and_cache_result(self, filename, headers, cache_key):
-        """Store final macro key and build cached result."""
-        # Store final macro cache key using absolute path as key
-        final_macro_key = self.defined_macros.get_cache_key()
+        """Store final macro state and build cached result."""
+        # Store final converged MacroState (for both cache key and full hash)
         abs_filename = compiletools.wrappedos.realpath(filename)
-        self._final_macro_hashes[abs_filename] = final_macro_key
+        self._final_macro_states[abs_filename] = self.defined_macros.copy()
 
         if self._args.verbose >= 5:
+            final_macro_key = self.defined_macros.get_cache_key()
             print(f"DirectMagicFlags: Final converged macro key for {filename}: {final_macro_key}")
-
-        # Store converged macro state for verification
-        if __debug__:
-            self._verification_final_macro_hashes[abs_filename] = self.defined_macros.copy()
 
         # Build result from stored data
         all_files = self._build_all_files_list(filename, headers)
@@ -702,12 +734,13 @@ class DirectMagicFlags(MagicFlagsBase):
     # DirectMagicFlags doesn't implement readfile() - it uses structured data processing only
     # All processing goes through get_structured_data() -> FileAnalyzerResults
 
-    def _verify_macro_state_unchanged(self, context="unknown", filename=None):
+    def _verify_macro_state_unchanged(self, context, filename):
         """Verify that the macro state hasn't changed after convergence for a specific file."""
         if __debug__:
-            if filename and filename in self._verification_final_macro_hashes:
+            abs_filename = compiletools.wrappedos.realpath(filename)
+            if abs_filename in self._final_macro_states:
                 current_key = self.defined_macros.get_cache_key()
-                converged_macro_state = self._verification_final_macro_hashes[filename]
+                converged_macro_state = self._final_macro_states[abs_filename]
                 converged_key = converged_macro_state.get_cache_key()
                 assert current_key == converged_key, (
                     f"MACRO STATE CORRUPTION DETECTED in {context} for file {filename}!\n"

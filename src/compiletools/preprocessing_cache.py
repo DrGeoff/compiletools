@@ -61,7 +61,8 @@ class MacroState:
     core: MacroDict  # Static: compiler + cmdline macros
     variable: MacroDict  # Dynamic: file #defines
     _cache_key: Optional[FrozenSet[Tuple[sz.Str, sz.Str]]]  # Cached frozenset for cache keys
-    _hash: Optional[str]  # Cached SHA1 hex digest for convergence detection
+    _hash: Optional[str]  # Cached hex digest for convergence detection (variable only)
+    _hash_full: Optional[str]  # Cached hex digest including core + variable
 
     def __init__(self, core: MacroDict, variable: Optional[MacroDict] = None):
         """Initialize macro state.
@@ -73,7 +74,8 @@ class MacroState:
         self.core = core
         self.variable = variable if variable is not None else {}
         self._cache_key = None  # Lazy-computed cache key
-        self._hash = None  # Lazy-computed hash
+        self._hash = None  # Lazy-computed hash (variable only)
+        self._hash_full = None  # Lazy-computed hash (core + variable)
 
     def all_macros(self) -> MacroDict:
         """Get merged view of all macros (core + variable).
@@ -114,6 +116,7 @@ class MacroState:
         self.variable[key] = value
         self._cache_key = None  # Invalidate caches
         self._hash = None
+        self._hash_full = None  # Invalidate full hash too
 
     def __contains__(self, key) -> bool:
         """Check if macro key exists in either core or variable."""
@@ -158,6 +161,7 @@ class MacroState:
         self.variable.update(other.variable)
         self._cache_key = None
         self._hash = None
+        self._hash_full = None  # Invalidate full hash too
 
     def copy(self) -> 'MacroState':
         """Create shallow copy of this MacroState."""
@@ -176,29 +180,48 @@ class MacroState:
 
         return self._cache_key
 
-    def get_hash(self) -> str:
+    def get_hash(self, include_core=False) -> str:
         """Get or compute stable hash of this MacroState for convergence detection.
+
+        Args:
+            include_core: If True, include core macros in hash. If False (default),
+                         only hash variable macros for preprocessing cache compatibility.
 
         Returns a hex string of stable 64-bit hash using stringzilla's deterministic hash.
         Hash is deterministic across Python runs (suitable for disk caching).
         Uses cached hash to avoid recomputation on repeated calls.
-        Only hashes variable macros, ignoring static core macros.
 
         INVARIANT: equal cache keys produce equal hashes (1-to-1 mapping)
         Performance: O(n) with no sorting - XOR is commutative so order doesn't matter
         """
-        if self._hash is None:
-            cache_key = self.get_cache_key()
-            # XOR stringzilla hashes of each (name, value) pair
-            # No sorting needed - XOR is commutative (a^b == b^a)
-            # stringzilla.hash() is deterministic across Python runs
-            # Empty frozenset: XOR of 0 items = 0, format as '0000000000000000'
-            combined = 0
-            for name, value in cache_key:
-                combined ^= sz.hash(bytes(name))
-                combined ^= sz.hash(bytes(value))
-            self._hash = format(combined, '016x')
-        return self._hash
+        # Use separate cache attributes for variable-only vs full hash
+        cache_attr = '_hash_full' if include_core else '_hash'
+
+        cached_value = getattr(self, cache_attr, None)
+        if cached_value is not None:
+            return cached_value
+
+        # Determine which macros to hash
+        if include_core:
+            # Hash both core and variable macros
+            all_items = list(self.core.items()) + list(self.variable.items())
+            items_to_hash = frozenset(all_items)
+        else:
+            # Hash only variable macros (existing behavior for preprocessing cache)
+            items_to_hash = self.get_cache_key()
+
+        # XOR stringzilla hashes of each (name, value) pair
+        # No sorting needed - XOR is commutative (a^b == b^a)
+        # stringzilla.hash() is deterministic across Python runs
+        # Empty frozenset: XOR of 0 items = 0, format as '0000000000000000'
+        combined = 0
+        for name, value in items_to_hash:
+            combined ^= sz.hash(bytes(name))
+            combined ^= sz.hash(bytes(value))
+
+        result = format(combined, '016x')
+        setattr(self, cache_attr, result)
+        return result
 
 
 # Simple cache: if variable dict is empty, return cached empty frozenset
