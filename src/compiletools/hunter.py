@@ -52,8 +52,16 @@ class Hunter(object):
 
     def _extractSOURCE(self, realpath):
         import stringzilla as sz
-        result = self.magicparser.parse(realpath)
-        sources = result.get(sz.Str("SOURCE"), [])
+        # Call get_structured_data directly to leverage its cache (90%+ hit rate)
+        # without paying the cost of parse() transforming all flags
+        structured_data = self.magicparser.get_structured_data(realpath)
+
+        sources = []
+        for file_data in structured_data:
+            for magic_flag in file_data['active_magic_flags']:
+                if magic_flag['key'] == sz.Str("SOURCE"):
+                    sources.append(magic_flag['value'])
+
         cwd = compiletools.wrappedos.dirname(realpath)
         ess = {compiletools.wrappedos.realpath(os.path.join(cwd, str(es))) for es in sources}
         if self.args.verbose >= 2 and ess:
