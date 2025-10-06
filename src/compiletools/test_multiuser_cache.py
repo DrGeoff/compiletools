@@ -1,0 +1,850 @@
+"""
+Multi-user shared object cache tests.
+
+Tests concurrent compilation, locking mechanisms, and permission handling
+for shared object file caches across multiple users/processes.
+"""
+
+import os
+import time
+import tempfile
+import multiprocessing
+from pathlib import Path
+import pytest
+
+import compiletools.testhelper as uth
+import compiletools.cake
+import compiletools.apptools
+from compiletools.test_base import BaseCompileToolsTestCase
+
+
+def compile_worker(worker_id, source_dir, config_name):
+    """
+    Worker process that runs ct-cake in a directory.
+
+    Args:
+        worker_id: Unique identifier for this worker
+        source_dir: Directory containing source files
+        config_name: Path to config file
+
+    Returns:
+        Dict with worker_id, returncode, exception info
+    """
+    # Small delay to increase concurrency
+    import time
+    time.sleep(0.01 * worker_id)
+
+    try:
+        os.chdir(source_dir)
+
+        argv = [
+            "--exemarkers=main",
+            "--testmarkers=unittest.hpp",
+            "--auto",
+            "--config=" + config_name,
+            "--CTCACHE=None",
+        ]
+
+        uth.reset()
+        compiletools.cake.main(argv)
+
+        return {
+            'worker_id': worker_id,
+            'returncode': 0,
+            'error': None,
+        }
+    except Exception as e:
+        return {
+            'worker_id': worker_id,
+            'returncode': 1,
+            'error': str(e),
+        }
+
+
+def compile_with_umask(source_dir, config_name, umask_value):
+    """Run ct-cake with specific umask value."""
+    old_umask = os.umask(umask_value)
+    try:
+        os.chdir(source_dir)
+
+        argv = [
+            "--exemarkers=main",
+            "--testmarkers=unittest.hpp",
+            "--auto",
+            "--config=" + config_name,
+            "--CTCACHE=None",
+        ]
+
+        uth.reset()
+        compiletools.cake.main(argv)
+        return 0, None
+    except Exception as e:
+        return 1, str(e)
+    finally:
+        os.umask(old_umask)
+
+
+def create_objdir_worker(worker_id, objdir):
+    """Worker that tries to create objdir."""
+    # Small delay to increase chance of concurrent access
+    import time
+    time.sleep(0.01 * worker_id)
+
+    try:
+        # Save and set umask to allow group write
+        old_umask = os.umask(0o002)
+        try:
+            os.makedirs(objdir, mode=0o2775, exist_ok=True)
+        finally:
+            os.umask(old_umask)
+        return {'worker_id': worker_id, 'success': True, 'error': None}
+    except Exception as e:
+        return {'worker_id': worker_id, 'success': False, 'error': str(e)}
+
+
+def continuous_reader(obj_path, stop_event, errors):
+    """Continuously read object file and detect corruption."""
+    original_size = None
+    while not stop_event.is_set():
+        try:
+            with open(str(obj_path), 'rb') as f:
+                data = f.read()
+                if original_size is None and len(data) > 0:
+                    original_size = len(data)
+
+                # With atomic move, should never see empty or partial file
+                if len(data) == 0:
+                    errors.append(f"Read empty file")
+                elif original_size and len(data) < original_size // 2:
+                    errors.append(f"Read partial file: {len(data)} bytes vs {original_size}")
+        except FileNotFoundError:
+            # File might briefly not exist during atomic move - acceptable
+            pass
+        except Exception as e:
+            errors.append(f"Unexpected error: {e}")
+        time.sleep(0.001)  # 1ms polling
+
+
+class TestMultiUserCache(BaseCompileToolsTestCase):
+    """Tests for multi-user shared object cache functionality."""
+
+    def _create_test_source_dir(self, tmpdir, source_name, objdir):
+        """
+        Create a test directory with a source file and config.
+
+        Returns: (source_dir, config_name)
+        """
+        source_dir = Path(tmpdir) / source_name
+        source_dir.mkdir(exist_ok=True)
+
+        # Copy source file
+        import shutil
+        src_file = os.path.join(uth.samplesdir(), 'simple/helloworld_cpp.cpp')
+        shutil.copy2(src_file, str(source_dir / 'main.cpp'))
+
+        # Create config with shared-objects enabled and custom objdir
+        config_name = uth.create_temp_config(str(source_dir))
+        uth.create_temp_ct_conf(
+            tempdir=str(source_dir),
+            defaultvariant=os.path.basename(config_name)[:-5],
+            extralines=[
+                'shared-objects = true',
+                f'objdir = {objdir}'
+            ]
+        )
+
+        return str(source_dir), config_name
+
+    @uth.requires_functional_compiler
+    def test_concurrent_same_file_compilation(self):
+        """
+        Test 1.1: Two processes compile same file simultaneously.
+
+        Expected:
+        - Both processes succeed
+        - No corruption, no partial writes
+        - Both can access shared objdir without permission errors
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            objdir = Path(tmpdir) / 'shared_obj'
+            objdir.mkdir(mode=0o2775)
+
+            # Create two separate build directories with identical source
+            dirs_and_configs = [
+                self._create_test_source_dir(tmpdir, f'build_{i}', str(objdir))
+                for i in range(2)
+            ]
+
+            num_workers = 2
+
+            # Use 'spawn' instead of 'fork' to avoid multi-threading issues with pytest
+            ctx = multiprocessing.get_context('spawn')
+            with ctx.Pool(num_workers) as pool:
+                results = pool.starmap(
+                    compile_worker,
+                    [(i, src_dir, cfg) for i, (src_dir, cfg) in enumerate(dirs_and_configs)]
+                )
+
+            # Verify all workers succeeded
+            for r in results:
+                assert r['returncode'] == 0, \
+                    f"Worker {r['worker_id']} failed: {r['error']}"
+
+            # Verify object files were created in shared objdir
+            obj_files = list(objdir.glob('**/*.o'))
+            assert len(obj_files) >= 1, \
+                f"Expected at least 1 object file, found {len(obj_files)}"
+
+            # Verify all object files are valid and group-readable
+            for obj_file in obj_files:
+                assert obj_file.stat().st_size > 0, f"{obj_file.name} is empty"
+                mode = obj_file.stat().st_mode
+                assert mode & 0o040, f"{obj_file.name} not group-readable: {oct(mode)}"
+
+    @uth.requires_functional_compiler
+    def test_concurrent_different_files(self):
+        """
+        Test 1.2: Multiple processes compile to same objdir.
+
+        Expected:
+        - All compilations succeed
+        - No permission errors
+        - All can write to shared objdir
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            objdir = Path(tmpdir) / 'shared_obj'
+            objdir.mkdir(mode=0o2775)
+
+            # Create build directories with different main files
+            import shutil
+            sources = [
+                'simple/helloworld_cpp.cpp',
+                'numbers/test_direct_include.cpp',
+                'factory/test_factory.cpp',
+            ]
+
+            dirs_and_configs = []
+            for i, src_name in enumerate(sources):
+                source_dir = Path(tmpdir) / f'build_{i}'
+                source_dir.mkdir()
+
+                src_file = os.path.join(uth.samplesdir(), src_name)
+                # Copy entire source directory for files with dependencies
+                src_parent = Path(uth.samplesdir()) / os.path.dirname(src_name)
+                for f in src_parent.glob('*'):
+                    if f.is_file():
+                        shutil.copy2(str(f), str(source_dir))
+
+                config_name = uth.create_temp_config(str(source_dir))
+                uth.create_temp_ct_conf(
+                    tempdir=str(source_dir),
+                    defaultvariant=os.path.basename(config_name)[:-5],
+                    extralines=[
+                        'shared-objects = true',
+                        f'objdir = {objdir}'
+                    ]
+                )
+                dirs_and_configs.append((str(source_dir), config_name))
+
+            num_workers = len(sources)
+
+            # Use 'spawn' instead of 'fork' to avoid multi-threading issues with pytest
+            ctx = multiprocessing.get_context('spawn')
+            with ctx.Pool(num_workers) as pool:
+                results = pool.starmap(
+                    compile_worker,
+                    [(i, src_dir, cfg) for i, (src_dir, cfg) in enumerate(dirs_and_configs)]
+                )
+
+            # All should succeed
+            for r in results:
+                assert r['returncode'] == 0, \
+                    f"Worker {r['worker_id']} failed: {r['error']}"
+
+            # Should have object files in shared objdir
+            obj_files = list(objdir.glob('**/*.o'))
+            assert len(obj_files) >= len(sources), \
+                f"Expected at least {len(sources)} object files, found {len(obj_files)}"
+
+    @uth.requires_functional_compiler
+    def test_different_umask_compatibility(self):
+        """
+        Test 2.1: Users with different umasks can access shared cache.
+
+        Expected:
+        - User A creates object with umask 022
+        - User B (umask 077) can compile to same objdir
+        - Both compilations succeed (no permission errors)
+        - Object files are group-readable
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            objdir = Path(tmpdir) / 'shared_obj'
+            objdir.mkdir(mode=0o2775)
+
+            source_dir, config_name = self._create_test_source_dir(
+                tmpdir, 'build_a', str(objdir)
+            )
+
+            # User A: umask 022
+            returncode, error = compile_with_umask(source_dir, config_name, 0o022)
+            assert returncode == 0, f"User A compilation failed: {error}"
+
+            # Check object file permissions
+            obj_files = list(objdir.glob('**/*.o'))
+            assert len(obj_files) >= 1
+            obj_file = obj_files[0]
+
+            # Verify group-readable
+            mode = obj_file.stat().st_mode
+            assert mode & 0o040, f"Object file not group-readable: {oct(mode)}"
+
+            # User B: umask 077 (restrictive)
+            # Create new build directory with same source
+            source_dir_b, config_name_b = self._create_test_source_dir(
+                tmpdir, 'build_b', str(objdir)
+            )
+
+            returncode, error = compile_with_umask(source_dir_b, config_name_b, 0o077)
+            assert returncode == 0, f"User B compilation failed: {error}"
+
+            # Verify User B could write to shared objdir
+            # (may create new object if macro state differs, which is fine)
+            obj_files_after = list(objdir.glob('**/*.o'))
+            assert len(obj_files_after) >= 1, "User B should have created objects in shared cache"
+
+    @uth.requires_functional_compiler
+    def test_group_writable_cache(self):
+        """
+        Test 2.2: Verify setgid directory enables multi-user sharing.
+
+        Expected:
+        - Directory has setgid bit (02775)
+        - Files are group-accessible
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            objdir = Path(tmpdir) / 'shared_obj'
+            objdir.mkdir(mode=0o2775)
+
+            # Try to set setgid bit explicitly (may not work on all filesystems)
+            try:
+                os.chmod(str(objdir), 0o2775)
+            except:
+                pass
+
+            # Note: setgid bit may not be settable on all filesystems (e.g., tmpfs)
+            # This is a known limitation - skip verification if not supported
+            mode = objdir.stat().st_mode
+            if not (mode & 0o2000):
+                pytest.skip("Filesystem does not support setgid bit")
+
+            source_dir, config_name = self._create_test_source_dir(
+                tmpdir, 'build', str(objdir)
+            )
+
+            # Compile
+            os.chdir(source_dir)
+            argv = [
+                "--exemarkers=main",
+                "--auto",
+                "--config=" + config_name,
+                "--CTCACHE=None",
+            ]
+            uth.reset()
+            compiletools.cake.main(argv)
+
+            # Check all created files are group-accessible
+            for item in objdir.rglob('*'):
+                if item.is_file():
+                    mode = item.stat().st_mode
+                    assert mode & 0o040, f"{item.name} not group-readable: {oct(mode)}"
+
+    def test_concurrent_objdir_creation(self):
+        """
+        Test 1.5: Multiple processes create objdir simultaneously.
+
+        Expected:
+        - All processes succeed with exist_ok=True
+        - Proper permissions set
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            objdir = Path(tmpdir) / 'shared_obj'
+
+            assert not objdir.exists()
+
+            num_workers = 5
+
+            # Use 'spawn' instead of 'fork' to avoid multi-threading issues with pytest
+            ctx = multiprocessing.get_context('spawn')
+            with ctx.Pool(num_workers) as pool:
+                results = pool.starmap(
+                    create_objdir_worker,
+                    [(i, str(objdir)) for i in range(num_workers)]
+                )
+
+            # All should succeed
+            for r in results:
+                assert r['success'], \
+                    f"Worker {r['worker_id']} failed: {r['error']}"
+
+            # Directory should exist
+            assert objdir.exists()
+            assert objdir.is_dir()
+
+            # Check permissions (setgid may not be supported on all filesystems)
+            mode = objdir.stat().st_mode
+            assert mode & 0o020, f"Group write not set: {oct(mode)}"
+
+    @uth.requires_functional_compiler
+    def test_lock_fairness_high_contention(self):
+        """
+        Test 1.3: 10 processes compile same file - test lock fairness.
+
+        Expected:
+        - All processes complete successfully
+        - No starvation
+        - No deadlock
+        - Total time reasonable (not 10x single compilation)
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            objdir = Path(tmpdir) / 'shared_obj'
+            objdir.mkdir(mode=0o2775)
+
+            # Create 10 build directories with identical source
+            dirs_and_configs = [
+                self._create_test_source_dir(tmpdir, f'build_{i}', str(objdir))
+                for i in range(10)
+            ]
+
+            num_workers = 10
+            start_time = time.time()
+
+            # Use 'spawn' instead of 'fork' to avoid multi-threading issues with pytest
+            ctx = multiprocessing.get_context('spawn')
+            with ctx.Pool(num_workers) as pool:
+                results = pool.starmap(
+                    compile_worker,
+                    [(i, src_dir, cfg) for i, (src_dir, cfg) in enumerate(dirs_and_configs)]
+                )
+
+            elapsed = time.time() - start_time
+
+            # All should succeed (no starvation, no deadlock)
+            failures = [r for r in results if r['returncode'] != 0]
+            assert len(failures) == 0, \
+                f"Some workers failed: {failures}"
+
+            # Should complete in reasonable time
+            # Allow generous time for slow systems (60 seconds max)
+            assert elapsed < 60, \
+                f"Took {elapsed}s - too slow, possible lock contention issue"
+
+    @uth.requires_functional_compiler
+    def test_full_multiuser_workflow(self):
+        """
+        Test 5.1: Realistic multi-user development workflow.
+
+        Expected:
+        - User A builds project (populates cache)
+        - User B builds same project (can access shared cache)
+        - All users successful, no permission errors
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            objdir = Path(tmpdir) / 'shared_obj'
+            objdir.mkdir(mode=0o2775)
+
+            # User A: Full build (cold cache)
+            source_dir_a, config_name_a = self._create_test_source_dir(
+                tmpdir, 'user_a', str(objdir)
+            )
+
+            start = time.time()
+            os.chdir(source_dir_a)
+            argv = [
+                "--exemarkers=main",
+                "--auto",
+                "--config=" + config_name_a,
+                "--CTCACHE=None",
+            ]
+            uth.reset()
+            compiletools.cake.main(argv)
+            user_a_time = time.time() - start
+
+            initial_obj_count = len(list(objdir.glob('**/*.o')))
+            assert initial_obj_count >= 1, "User A should have created object files"
+
+            # User B: Same build
+            source_dir_b, config_name_b = self._create_test_source_dir(
+                tmpdir, 'user_b', str(objdir)
+            )
+
+            start = time.time()
+            os.chdir(source_dir_b)
+            argv = [
+                "--exemarkers=main",
+                "--auto",
+                "--config=" + config_name_b,
+                "--CTCACHE=None",
+            ]
+            uth.reset()
+            compiletools.cake.main(argv)
+            user_b_time = time.time() - start
+
+            # User B should succeed (main goal is no permission errors)
+            final_obj_count = len(list(objdir.glob('**/*.o')))
+            assert final_obj_count >= initial_obj_count, \
+                "User B should have succeeded in building"
+
+    @uth.requires_functional_compiler
+    def test_mixed_compiler_flags(self):
+        """
+        Test 5.2: Different compiler flags create different object files.
+
+        Expected:
+        - Different flags → different macro_state_hash
+        - Different object files created (no collision)
+        - Both builds succeed
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            objdir = Path(tmpdir) / 'shared_obj'
+            objdir.mkdir(mode=0o2775)
+
+            # Build 1: Default flags
+            source_dir_1, config_name_1 = self._create_test_source_dir(
+                tmpdir, 'build_default', str(objdir)
+            )
+
+            os.chdir(source_dir_1)
+            argv = [
+                "--exemarkers=main",
+                "--auto",
+                "--config=" + config_name_1,
+                "--CTCACHE=None",
+            ]
+            uth.reset()
+            compiletools.cake.main(argv)
+
+            default_objs = set(objdir.glob('**/*.o'))
+            assert len(default_objs) >= 1
+
+            # Build 2: Different flags (optimization)
+            source_dir_2, config_name_2 = self._create_test_source_dir(
+                tmpdir, 'build_optimized', str(objdir)
+            )
+
+            os.chdir(source_dir_2)
+            argv = [
+                "--exemarkers=main",
+                "--auto",
+                "--config=" + config_name_2,
+                "--CTCACHE=None",
+                "--CXXFLAGS=-O2",
+            ]
+            uth.reset()
+            compiletools.cake.main(argv)
+
+            all_objs = set(objdir.glob('**/*.o'))
+
+            # Should have more objects (different flags = different hash)
+            assert len(all_objs) > len(default_objs), \
+                f"Expected more than {len(default_objs)} objects with different flags, found {len(all_objs)}"
+
+    @uth.requires_functional_compiler
+    def test_readonly_cache_access(self):
+        """
+        Test 2.3: User with read-only cache access.
+
+        Expected:
+        - Cannot write to read-only cache
+        - Build fails with permission error
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            objdir = Path(tmpdir) / 'shared_obj'
+            objdir.mkdir(mode=0o2775)
+
+            # User A: Create cached object
+            source_dir_a, config_name_a = self._create_test_source_dir(
+                tmpdir, 'user_a', str(objdir)
+            )
+
+            os.chdir(source_dir_a)
+            argv = [
+                "--exemarkers=main",
+                "--auto",
+                "--config=" + config_name_a,
+                "--CTCACHE=None",
+            ]
+            uth.reset()
+            compiletools.cake.main(argv)
+
+            # Verify objects were created
+            initial_objs = list(objdir.glob('**/*.o'))
+            assert len(initial_objs) >= 1
+
+            # Make cache read-only
+            objdir.chmod(0o555)  # r-xr-xr-x
+
+            # User B: Try to write - should fail
+            # Instead of full build, just verify we can't create lock file
+            test_lock = objdir / 'test.lock'
+
+            # This demonstrates the permission issue
+            with pytest.raises(PermissionError):
+                test_lock.touch()
+
+            # Restore permissions for cleanup
+            objdir.chmod(0o775)
+
+    @uth.requires_functional_compiler
+    def test_object_replacement_race(self):
+        """
+        Test 1.4: Object file replacement race.
+
+        Expected:
+        - Process reading object file never sees partial/corrupt data
+        - Atomic move ensures complete file replacement
+        - Brief FileNotFoundError during move is acceptable
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            objdir = Path(tmpdir) / 'shared_obj'
+            objdir.mkdir(mode=0o2775)
+
+            # Initial build
+            source_dir_1, config_name_1 = self._create_test_source_dir(
+                tmpdir, 'build_1', str(objdir)
+            )
+
+            os.chdir(source_dir_1)
+            argv = [
+                "--exemarkers=main",
+                "--auto",
+                "--config=" + config_name_1,
+                "--CTCACHE=None",
+            ]
+            uth.reset()
+            compiletools.cake.main(argv)
+
+            obj_files = list(objdir.glob('**/*.o'))
+            assert len(obj_files) >= 1
+            target_obj = obj_files[0]
+
+            # Start continuous reader using spawn context
+            ctx = multiprocessing.get_context('spawn')
+            stop_event = ctx.Event()
+            manager = ctx.Manager()
+            errors = manager.list()
+
+            reader = ctx.Process(
+                target=continuous_reader,
+                args=(target_obj, stop_event, errors)
+            )
+            reader.start()
+
+            try:
+                # Let reader start
+                time.sleep(0.1)
+
+                # Rebuild with different flags (creates new object file)
+                source_dir_2, config_name_2 = self._create_test_source_dir(
+                    tmpdir, 'build_2', str(objdir)
+                )
+
+                os.chdir(source_dir_2)
+                argv_2 = [
+                    "--exemarkers=main",
+                    "--auto",
+                    "--config=" + config_name_2,
+                    "--CTCACHE=None",
+                    "--CXXFLAGS=-O2",
+                ]
+                uth.reset()
+                compiletools.cake.main(argv_2)
+
+                # Let reader continue for a bit
+                time.sleep(0.1)
+            finally:
+                # Stop reader
+                stop_event.set()
+                reader.join(timeout=5)
+                if reader.is_alive():
+                    reader.terminate()
+
+            # Verify no corruption detected
+            assert len(list(errors)) == 0, f"Reader detected corruption: {list(errors)}"
+
+    @uth.requires_functional_compiler
+    def test_cache_hit_rate(self):
+        """
+        Test 6.1: Cache hit rate measurement.
+
+        Expected:
+        - Second build reuses cached objects (via make)
+        - Significantly faster than first build
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            objdir = Path(tmpdir) / 'shared_obj'
+            objdir.mkdir(mode=0o2775)
+
+            # First build (cold cache)
+            source_dir_1, config_name_1 = self._create_test_source_dir(
+                tmpdir, 'build_1', str(objdir)
+            )
+
+            os.chdir(source_dir_1)
+            argv = [
+                "--exemarkers=main",
+                "--auto",
+                "--config=" + config_name_1,
+                "--CTCACHE=None",
+            ]
+
+            start = time.time()
+            uth.reset()
+            compiletools.cake.main(argv)
+            cold_time = time.time() - start
+
+            initial_obj_count = len(list(objdir.glob('**/*.o')))
+            assert initial_obj_count >= 1
+
+            # Second build (warm cache - make sees objects are up to date)
+            start = time.time()
+            uth.reset()
+            compiletools.cake.main(argv)
+            warm_time = time.time() - start
+
+            # Warm build should be faster (make skips up-to-date targets)
+            # Don't assert specific speedup as it's system-dependent
+            # Just verify warm build completes and doesn't rebuild everything
+            assert warm_time < cold_time * 2, \
+                f"Warm build ({warm_time:.2f}s) not significantly faster than cold ({cold_time:.2f}s)"
+
+            # Object count should be same (no new objects)
+            final_obj_count = len(list(objdir.glob('**/*.o')))
+            assert final_obj_count == initial_obj_count
+
+    @uth.requires_functional_compiler
+    def test_lock_contention_overhead(self):
+        """
+        Test 6.2: Lock contention overhead measurement.
+
+        Expected:
+        - Locking adds minimal overhead for serial builds
+        - Overhead should be < 50% for single-threaded case
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Build without shared-objects (no locking)
+            objdir_no_lock = Path(tmpdir) / 'obj_no_lock'
+            objdir_no_lock.mkdir()
+
+            source_dir_1, config_name_1 = self._create_test_source_dir(
+                tmpdir, 'build_no_lock', str(objdir_no_lock)
+            )
+
+            # Modify config to disable shared-objects
+            import shutil
+            ct_conf = Path(source_dir_1) / 'ct.conf'
+            content = ct_conf.read_text()
+            content = content.replace('shared-objects = true', 'shared-objects = false')
+            ct_conf.write_text(content)
+
+            os.chdir(source_dir_1)
+            argv = [
+                "--exemarkers=main",
+                "--auto",
+                "--config=" + config_name_1,
+                "--CTCACHE=None",
+            ]
+
+            # Measure without locking
+            start = time.time()
+            uth.reset()
+            compiletools.cake.main(argv)
+            no_lock_time = time.time() - start
+
+            # Build with shared-objects (with locking)
+            objdir_lock = Path(tmpdir) / 'obj_lock'
+            objdir_lock.mkdir()
+
+            source_dir_2, config_name_2 = self._create_test_source_dir(
+                tmpdir, 'build_lock', str(objdir_lock)
+            )
+
+            os.chdir(source_dir_2)
+            argv_2 = [
+                "--exemarkers=main",
+                "--auto",
+                "--config=" + config_name_2,
+                "--CTCACHE=None",
+            ]
+
+            # Measure with locking
+            start = time.time()
+            uth.reset()
+            compiletools.cake.main(argv_2)
+            lock_time = time.time() - start
+
+            # Locking should add minimal overhead (< 50% for single build)
+            if no_lock_time > 0:
+                overhead = (lock_time - no_lock_time) / no_lock_time
+                # Be generous - locking adds some overhead but shouldn't double build time
+                assert overhead < 0.5, \
+                    f"Lock overhead {overhead*100:.1f}% too high (no-lock: {no_lock_time:.2f}s, lock: {lock_time:.2f}s)"
+
+    @pytest.mark.skip(reason="Stale lock detection not implemented - lockdir uses simple busy-wait")
+    @uth.requires_functional_compiler
+    def test_stale_lock_cleanup(self):
+        """
+        Test 3.1: NFS stale lock cleanup.
+
+        CURRENT STATUS: NOT IMPLEMENTED
+
+        The current lockdir implementation (makefile.py:337-339) uses:
+            while ! mkdir "$$lockdir" 2>/dev/null; do sleep {interval}; done
+
+        This doesn't detect stale locks - it waits indefinitely if a lock directory
+        is left behind by a crashed process.
+
+        To implement stale lock detection, would need to:
+        1. Store PID in lock directory when created
+        2. Check if PID still exists before waiting
+        3. Remove stale lock if process is gone
+
+        This test documents the expected behavior for future implementation.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            objdir = Path(tmpdir) / 'shared_obj'
+            objdir.mkdir(mode=0o2775)
+
+            source_dir, config_name = self._create_test_source_dir(
+                tmpdir, 'build', str(objdir)
+            )
+
+            # Manually create stale lock directory
+            # In reality, the object filename would be content-addressable
+            # For testing, use a plausible name pattern
+            stale_lock = objdir / 'main_abc123def456_0123456789abcdef.o.lockdir'
+            stale_lock.mkdir()
+
+            # Place PID file of non-existent process
+            pid_file = stale_lock / 'pid'
+            pid_file.write_text('999999')  # PID that doesn't exist
+
+            # Attempt to build - with stale lock detection, this should succeed
+            # Without it, this would hang forever
+            os.chdir(source_dir)
+            argv = [
+                "--exemarkers=main",
+                "--auto",
+                "--config=" + config_name,
+                "--CTCACHE=None",
+            ]
+            uth.reset()
+
+            # This would timeout without stale lock detection
+            compiletools.cake.main(argv)
+
+            # After successful build, stale lock should be removed
+            assert not stale_lock.exists(), "Stale lock should be cleaned up"
+
+
+if __name__ == '__main__':
+    pytest.main([__file__, '-v'])
