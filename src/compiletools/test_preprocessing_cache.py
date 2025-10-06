@@ -108,6 +108,10 @@ class TestPreprocessingCache:
             conditional_macros=frozenset(conditional_macros)
         )
 
+    @pytest.mark.skipif(
+        hasattr(sys, 'pypy_version_info'),
+        reason="sys.getsizeof not meaningful in PyPy"
+    )
     def test_cache_basic_hit(self):
         """Test basic cache hit scenario."""
         text = dedent('''
@@ -135,6 +139,10 @@ class TestPreprocessingCache:
         assert stats['misses'] == 1
         assert stats['total_calls'] == 2
 
+    @pytest.mark.skipif(
+        hasattr(sys, 'pypy_version_info'),
+        reason="sys.getsizeof not meaningful in PyPy"
+    )
     def test_cache_macro_value_change(self):
         """Test that macro value changes produce different results."""
         text = dedent('''
@@ -159,6 +167,10 @@ class TestPreprocessingCache:
         stats = get_cache_stats()
         assert stats['misses'] == 2  # Both are misses
 
+    @pytest.mark.skipif(
+        hasattr(sys, 'pypy_version_info'),
+        reason="sys.getsizeof not meaningful in PyPy"
+    )
     def test_cache_macro_addition(self):
         """Test that adding macros creates different cache keys."""
         text = dedent('''
@@ -182,6 +194,10 @@ class TestPreprocessingCache:
         stats = get_cache_stats()
         assert stats['misses'] == 2
 
+    @pytest.mark.skipif(
+        hasattr(sys, 'pypy_version_info'),
+        reason="sys.getsizeof not meaningful in PyPy"
+    )
     def test_cache_macro_removal(self):
         """Test that removing macros creates different cache keys."""
         text = dedent('''
@@ -204,6 +220,10 @@ class TestPreprocessingCache:
         stats = get_cache_stats()
         assert stats['misses'] == 2
 
+    @pytest.mark.skipif(
+        hasattr(sys, 'pypy_version_info'),
+        reason="sys.getsizeof not meaningful in PyPy"
+    )
     def test_cache_file_change(self):
         """Test that file content changes create different cache keys."""
         text1 = dedent('''
@@ -286,6 +306,10 @@ class TestPreprocessingCache:
         # Verify initial_macros is unchanged (immutable input)
         assert sz.Str("NEW_MACRO") not in initial_macros
 
+    @pytest.mark.skipif(
+        hasattr(sys, 'pypy_version_info'),
+        reason="sys.getsizeof not meaningful in PyPy"
+    )
     def test_empty_macros(self):
         """Test cache behavior with empty macro state."""
         text = dedent('''
@@ -304,6 +328,10 @@ class TestPreprocessingCache:
         stats = get_cache_stats()
         assert stats['hits'] == 1
 
+    @pytest.mark.skipif(
+        hasattr(sys, 'pypy_version_info'),
+        reason="sys.getsizeof not meaningful in PyPy"
+    )
     def test_cache_stats_accuracy(self):
         """Test that cache statistics are accurate."""
         text = dedent('''
@@ -348,6 +376,10 @@ class TestCacheManagement:
         """Clear cache before each test."""
         clear_cache()
 
+    @pytest.mark.skipif(
+        hasattr(sys, 'pypy_version_info'),
+        reason="sys.getsizeof not meaningful in PyPy"
+    )
     def test_clear_cache(self):
         """Test cache clearing."""
         text = "#include \"test.h\""
