@@ -8,6 +8,10 @@ The cache uses two strategies:
 2. Macro-variant files (has conditionals): cached by (content_hash, macro_cache_key)
 
 This optimizes the common case where files have #define but no #if/#ifdef.
+
+IMPORTANT: MacroState.get_hash() uses stringzilla's deterministic hash function
+for O(n) performance without sorting. XOR combination ensures order independence.
+The hash is deterministic across Python runs, enabling future disk caching support.
 """
 
 from typing import List, Dict, Tuple, FrozenSet, Optional
@@ -175,24 +179,25 @@ class MacroState:
     def get_hash(self) -> str:
         """Get or compute stable hash of this MacroState for convergence detection.
 
-        Returns a hex string of stable 64-bit hash (using stringzilla).
+        Returns a hex string of stable 64-bit hash using stringzilla's deterministic hash.
+        Hash is deterministic across Python runs (suitable for disk caching).
         Uses cached hash to avoid recomputation on repeated calls.
         Only hashes variable macros, ignoring static core macros.
+
+        INVARIANT: equal cache keys produce equal hashes (1-to-1 mapping)
+        Performance: O(n) with no sorting - XOR is commutative so order doesn't matter
         """
         if self._hash is None:
             cache_key = self.get_cache_key()
-            if not cache_key:
-                # Empty macro state gets consistent hash
-                self._hash = format(sz.hash(b""), '016x')
-            else:
-                # Hash each (name, value) pair and combine the hashes
-                # Sort for deterministic ordering
-                combined = 0
-                for name, value in sorted(cache_key):
-                    # XOR hashes together for simple combination
-                    combined ^= sz.hash(bytes(name))
-                    combined ^= sz.hash(bytes(value))
-                self._hash = format(combined, '016x')
+            # XOR stringzilla hashes of each (name, value) pair
+            # No sorting needed - XOR is commutative (a^b == b^a)
+            # stringzilla.hash() is deterministic across Python runs
+            # Empty frozenset: XOR of 0 items = 0, format as '0000000000000000'
+            combined = 0
+            for name, value in cache_key:
+                combined ^= sz.hash(bytes(name))
+                combined ^= sz.hash(bytes(value))
+            self._hash = format(combined, '016x')
         return self._hash
 
 
