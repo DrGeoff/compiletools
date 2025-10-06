@@ -105,14 +105,14 @@ class MagicFlagsBase:
             r"^[\s]*//#([\S]*?)[\s]*=[\s]*(.*)", re.MULTILINE
         )
 
-    def get_final_macro_hash(self, filename: str):
-        """Get the final converged macro cache key for a specific file.
+    def get_final_macro_state_key(self, filename: str):
+        """Get the final converged macro state key for a specific file.
 
         Returns the frozenset cache key (variable macros only) for use in
-        dependency caching. For object file naming, use get_final_macro_hash_full().
+        dependency caching. For object file naming, use get_final_macro_state_hash().
 
         Args:
-            filename: The file path to get the macro hash for
+            filename: The file path to get the macro state key for
 
         Returns:
             frozenset: Cache key of variable macros
@@ -126,15 +126,15 @@ class MagicFlagsBase:
             raise KeyError(f"No macro state found for {filename} - file not processed")
         return macro_state.get_cache_key()
 
-    def get_final_macro_hash_full(self, filename: str) -> str:
-        """Get the full macro hash (core + variable) for object file naming.
+    def get_final_macro_state_hash(self, filename: str) -> str:
+        """Get the full macro state hash (core + variable) for object file naming.
 
         This includes BOTH core macros (compiler built-ins + cmdline flags) AND
         variable macros (from file #defines). Different compilers or cmdline flags
         will produce different hashes, ensuring proper object file separation.
 
         Args:
-            filename: The file path to get the full macro hash for
+            filename: The file path to get the full macro state hash for
 
         Returns:
             str: 16-character hex hash of full macro state (core + variable)
@@ -392,7 +392,7 @@ class DirectMagicFlags(MagicFlagsBase):
         self._explicit_macro_files = set()
         # Store final converged MacroState objects by filename
         self._final_macro_states = {}
-        # Cache structured data results by (file_hash, input_macro_hash) to avoid redundant convergence
+        # Cache structured data results by (file_hash, input_macro_state_key) to avoid redundant convergence
         self._structured_data_cache = {}
 
     def _initialize_macro_state(self) -> MacroState:
@@ -574,7 +574,7 @@ class DirectMagicFlags(MagicFlagsBase):
         # Restore macro state from previous convergence using absolute path
         abs_filename = compiletools.wrappedos.realpath(filename)
 
-        # Ensure _final_macro_states is populated (required for hunter.macro_hash())
+        # Ensure _final_macro_states is populated (required for hunter.macro_state_key())
         if abs_filename not in self._final_macro_states:
             raise RuntimeError(
                 f"Cache hit for {filename} but _final_macro_states not populated. "

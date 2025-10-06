@@ -69,14 +69,14 @@ class Hunter(object):
         return ess
 
     @functools.lru_cache(maxsize=None)
-    def _get_immediate_deps(self, realpath, macro_hash):
-        """Get immediate dependencies for a single file (cached by realpath + macro_hash).
+    def _get_immediate_deps(self, realpath, macro_state_key):
+        """Get immediate dependencies for a single file (cached by realpath + macro_state_key).
 
         Returns:
             Tuple of (headers, sources) where each is a tuple of absolute paths
         """
         if self.args.verbose >= 7:
-            print(f"Hunter::_get_immediate_deps for {realpath} (macro_hash={macro_hash})")
+            print(f"Hunter::_get_immediate_deps for {realpath} (macro_state_key={macro_state_key})")
 
         headers = tuple(self.headerdeps.process(realpath))
 
@@ -92,26 +92,26 @@ class Hunter(object):
 
         return (headers, sources)
 
-    def _expand_deps_recursive(self, realpath, macro_hash, processed):
+    def _expand_deps_recursive(self, realpath, macro_state_key, processed):
         """Recursively expand dependencies (internal helper)."""
         if realpath in processed:
             return
 
         processed.add(realpath)
-        headers, sources = self._get_immediate_deps(realpath, macro_hash)
+        headers, sources = self._get_immediate_deps(realpath, macro_state_key)
 
         for dep in headers + sources:
             if dep not in processed:
-                self._expand_deps_recursive(dep, macro_hash, processed)
+                self._expand_deps_recursive(dep, macro_state_key, processed)
 
     @functools.lru_cache(maxsize=None)
-    def _required_files_impl(self, realpath, macro_hash):
-        """Get all transitive dependencies for a file (cached by realpath + macro_hash)."""
+    def _required_files_impl(self, realpath, macro_state_key):
+        """Get all transitive dependencies for a file (cached by realpath + macro_state_key)."""
         if self.args.verbose >= 7:
             print(f"Hunter::_required_files_impl for {realpath}")
 
         processed = set()
-        self._expand_deps_recursive(realpath, macro_hash, processed)
+        self._expand_deps_recursive(realpath, macro_state_key, processed)
 
         if self.args.verbose >= 9:
             print(f"Hunter::_required_files_impl returning {len(processed)} files")
@@ -145,20 +145,20 @@ class Hunter(object):
 
         realpath = compiletools.wrappedos.realpath(filename)
 
-        # Ensure magic flags are processed to get macro hash
+        # Ensure magic flags are processed to get macro state key
         try:
             self.magicflags(filename)
-            macro_hash = self.macro_hash(filename)
+            macro_state_key = self.macro_state_key(filename)
         except RuntimeError as e:
             # This should not happen in normal usage - indicates magicflags() succeeded
-            # but macro_hash isn't available, suggesting a bug in our code
+            # but macro_state_key isn't available, suggesting a bug in our code
             print(f"ERROR in required_files: {e}")
             raise
 
         if self.args.verbose >= 8:
-            print(f"Hunter::required_files for {filename} (macro_hash={macro_hash})")
+            print(f"Hunter::required_files for {filename} (macro_state_key={macro_state_key})")
 
-        return self._required_files_impl(realpath, macro_hash)
+        return self._required_files_impl(realpath, macro_state_key)
 
     @staticmethod
     def clear_cache():
@@ -194,19 +194,19 @@ class Hunter(object):
         """Get magic flags dict from cached parse result."""
         return self._parse_magic(filename)
 
-    def macro_hash(self, filename):
-        """Get final converged macro cache key for the given file.
+    def macro_state_key(self, filename):
+        """Get final converged macro state key for the given file.
 
         Returns frozenset (variable macros only) for dependency caching.
-        For object file naming, use macro_hash_full().
+        For object file naming, use macro_state_hash().
 
         Raises:
             KeyError: If parse() hasn't been called for this file yet
         """
-        return self.magicparser.get_final_macro_hash(filename)
+        return self.magicparser.get_final_macro_state_key(filename)
 
-    def macro_hash_full(self, filename):
-        """Get full macro hash (core + variable) for object file naming.
+    def macro_state_hash(self, filename):
+        """Get full macro state hash (core + variable) for object file naming.
 
         Returns 16-character hex hash including both compiler/cmdline macros
         and file-defined macros. Different compilers or flags produce different hashes.
@@ -214,7 +214,7 @@ class Hunter(object):
         Raises:
             KeyError: If parse() hasn't been called for this file yet
         """
-        return self.magicparser.get_final_macro_hash_full(filename)
+        return self.magicparser.get_final_macro_state_hash(filename)
 
     def header_dependencies(self, source_filename):
         if self.args.verbose >= 8:

@@ -64,23 +64,23 @@ class Namer(object):
         return self.args.objdir
 
     @functools.lru_cache(maxsize=None)
-    def object_name(self, sourcefilename, macro_hash):
+    def object_name(self, sourcefilename, macro_state_hash):
         """Return the name (not the path) of the object file for the given source.
 
-        Naming scheme: {basename}_{file_hash_12}_{macro_hash_16}.o
+        Naming scheme: {basename}_{file_hash_12}_{macro_state_hash_16}.o
         - basename: filename without path or extension
         - file_hash_12: 12-char hex from global hash registry (git convention)
-        - macro_hash_16: 16-char hex of full macro state (core + variable)
+        - macro_state_hash_16: 16-char hex of full macro state (core + variable)
 
         This naming scheme is content-addressable and safe for shared caching:
         - Different file content → different file_hash
-        - Different macro state → different macro_hash
+        - Different macro state → different macro_state_hash
         - Same basename in different dirs → different file_hash
 
         Args:
             sourcefilename: Path to source file
-            macro_hash: Required 16-char hex hash of full macro state (core + variable).
-                       No default - fail fast if not provided.
+            macro_state_hash: Required 16-char hex hash of full macro state (core + variable).
+                             No default - fail fast if not provided.
 
         Returns:
             Object filename like: file_a1b2c3d4e5f6_0123456789abcdef.o
@@ -95,19 +95,19 @@ class Namer(object):
         file_hash = get_file_hash(sourcefilename)
         file_hash_short = file_hash[:12]
 
-        # Use full 16-char macro hash (macro_hash is already 16 chars)
-        return f"{basename}_{file_hash_short}_{macro_hash}.o"
+        # Use full 16-char macro state hash
+        return f"{basename}_{file_hash_short}_{macro_state_hash}.o"
 
     @functools.lru_cache(maxsize=None)
-    def object_pathname(self, sourcefilename, macro_hash):
+    def object_pathname(self, sourcefilename, macro_state_hash):
         """Return full path to object file.
 
         Args:
             sourcefilename: Path to source file
-            macro_hash: Required 16-char hex hash (no default)
+            macro_state_hash: Required 16-char hex hash (no default)
         """
         return "".join(
-            [self.object_dir(sourcefilename), "/", self.object_name(sourcefilename, macro_hash)]
+            [self.object_dir(sourcefilename), "/", self.object_name(sourcefilename, macro_state_hash)]
         )
 
     @functools.lru_cache(maxsize=None)
