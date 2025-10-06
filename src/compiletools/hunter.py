@@ -195,18 +195,26 @@ class Hunter(object):
         return self._parse_magic(filename)
 
     def macro_hash(self, filename):
-        """Get final converged macro hash for the given file.
+        """Get final converged macro cache key for the given file.
+
+        Returns frozenset (variable macros only) for dependency caching.
+        For object file naming, use macro_hash_full().
 
         Raises:
-            RuntimeError: If parse() hasn't been called for this file yet
+            KeyError: If parse() hasn't been called for this file yet
         """
-        final_hash = self.magicparser.get_final_macro_hash(filename)
-        if final_hash is None:
-            raise RuntimeError(
-                f"macro_hash() called for {filename} but parse() hasn't been called yet. "
-                f"Call magicflags() first to process the file."
-            )
-        return final_hash
+        return self.magicparser.get_final_macro_hash(filename)
+
+    def macro_hash_full(self, filename):
+        """Get full macro hash (core + variable) for object file naming.
+
+        Returns 16-character hex hash including both compiler/cmdline macros
+        and file-defined macros. Different compilers or flags produce different hashes.
+
+        Raises:
+            KeyError: If parse() hasn't been called for this file yet
+        """
+        return self.magicparser.get_final_macro_hash_full(filename)
 
     def header_dependencies(self, source_filename):
         if self.args.verbose >= 8:

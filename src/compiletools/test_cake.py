@@ -281,8 +281,16 @@ class TestCake(BaseCompileToolsTestCase):
             fnames.append(os.path.realpath("deeper.cpp"))
 
         # Add in the object filenames (only cpp have object files)
+        # Object files now have content-addressable names with hashes, so we glob for them
+        import glob
+        objdir = nmr.object_dir(fnames[0])
         for fname in [name for name in fnames if "cpp" in name]:
-            fnames.append(nmr.object_pathname(fname))
+            _, name = os.path.split(fname)
+            basename = os.path.splitext(name)[0]
+            # Find object files matching the pattern: basename_<file_hash>_<macro_hash>.o
+            pattern = os.path.join(objdir, f"{basename}_*_*.o")
+            matching_objs = glob.glob(pattern)
+            fnames.extend(matching_objs)
 
         # Add the executable name
         fnames.append(nmr.executable_pathname("main.cpp"))
@@ -294,17 +302,26 @@ class TestCake(BaseCompileToolsTestCase):
         return timestamps
 
     def _verify_timestamps(self, expected_changes, prets, postts):
-        """ Pass in the list of files that are expected to have newer 
-            timestamps, the pre compiling timestamps and the 
-            post compiling timestamps 
+        """ Pass in the list of files that are expected to have newer
+            timestamps, the pre compiling timestamps and the
+            post compiling timestamps
         """
         for fname in prets:
             # Due to the name munging it is slightly convoluted to
             # figure out if the filename is in the expected changes list
             expected_to_change = False
             for ec in expected_changes:
-                # make sure the mangled name ends in exactly something like "main.o"
-                if fname.endswith(ec):
+                # Handle both plain files and object files with hash-based names
+                # Object files now have format: basename_filehash_macrohash.o
+                if ec.endswith('.o'):
+                    # For object files, match basename prefix (e.g., "main.o" matches "main_*_*.o")
+                    basename = ec[:-2]  # Remove ".o"
+                    import os
+                    file_basename = os.path.basename(fname)
+                    if file_basename.startswith(basename + "_") and file_basename.endswith(".o"):
+                        expected_to_change = True
+                elif fname.endswith(ec):
+                    # For non-object files, use exact suffix match
                     expected_to_change = True
 
             if expected_to_change:
