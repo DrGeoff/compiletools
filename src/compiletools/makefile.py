@@ -101,9 +101,9 @@ class LinkRuleCreator(object):
             linkerflags = ""
 
         allprerequisites = " ".join(extraprereqs)
-        # Get macro hash for each source file (required for new naming scheme)
+        # Get macro state hash for each source file (required for new naming scheme)
         object_names = {
-            self.namer.object_pathname(source, self.hunter.macro_hash_full(source))
+            self.namer.object_pathname(source, self.hunter.macro_state_hash(source))
             for source in completesources
         }
         allprerequisites += " "
@@ -647,12 +647,12 @@ class MakefileCreator:
         deplist = self.hunter.header_dependencies(filename)
         prerequisites = [filename] + sorted([str(dep) for dep in deplist])
 
-        # Get magicflags and full macro hash (always required for new naming scheme)
+        # Get magicflags and full macro state hash (always required for new naming scheme)
         magicflags = self.hunter.magicflags(filename)
-        macro_hash = self.hunter.macro_hash_full(filename)
+        macro_state_hash = self.hunter.macro_state_hash(filename)
 
         self.object_directories.add(self.namer.object_dir(filename))
-        obj_name = self.namer.object_pathname(filename, macro_hash)
+        obj_name = self.namer.object_pathname(filename, macro_state_hash)
         self.objects.add(obj_name)
 
         recipe = ""

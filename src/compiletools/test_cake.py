@@ -287,7 +287,7 @@ class TestCake(BaseCompileToolsTestCase):
         for fname in [name for name in fnames if "cpp" in name]:
             _, name = os.path.split(fname)
             basename = os.path.splitext(name)[0]
-            # Find object files matching the pattern: basename_<file_hash>_<macro_hash>.o
+            # Find object files matching the pattern: basename_<file_hash>_<macro_state_hash>.o
             pattern = os.path.join(objdir, f"{basename}_*_*.o")
             matching_objs = glob.glob(pattern)
             fnames.extend(matching_objs)
@@ -312,7 +312,7 @@ class TestCake(BaseCompileToolsTestCase):
             expected_to_change = False
             for ec in expected_changes:
                 # Handle both plain files and object files with hash-based names
-                # Object files now have format: basename_filehash_macrohash.o
+                # Object files now have format: basename_filehash_macrostatehash.o
                 if ec.endswith('.o'):
                     # For object files, match basename prefix (e.g., "main.o" matches "main_*_*.o")
                     basename = ec[:-2]  # Remove ".o"
