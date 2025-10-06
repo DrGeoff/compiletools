@@ -473,7 +473,7 @@ def analyze_file(content_hash: str) -> 'FileAnalysisResult':
     test_markers = getattr(args, 'testmarkers', [])
     library_markers = getattr(args, 'librarymarkers', [])
 
-    file_size = os.path.getsize(filepath)
+    file_size = compiletools.wrappedos.getsize(filepath)
 
     # Determine file reading strategy
     strategy = _determine_file_reading_strategy()
@@ -835,7 +835,7 @@ def read_file_mmap(filepath, max_size=0):
         tuple: (text_content, bytes_analyzed, was_truncated)
     """
     try:
-        file_size = os.path.getsize(filepath)
+        file_size = compiletools.wrappedos.getsize(filepath)
         
         # Handle empty files (mmap fails on zero-byte files)
         if file_size == 0:
@@ -871,7 +871,7 @@ def read_file_traditional(filepath, max_size=0):
         tuple: (text_content, bytes_analyzed, was_truncated)
     """
     try:
-        file_size = os.path.getsize(filepath)
+        file_size = compiletools.wrappedos.getsize(filepath)
         
         with open(filepath, encoding="utf-8", errors="ignore") as f:
             if max_size > 0 and max_size < file_size:

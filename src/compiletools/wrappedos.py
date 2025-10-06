@@ -56,6 +56,11 @@ def isabs(path: str) -> bool:
     """Cached os.path.isabs for Python strings."""
     return os.path.isabs(path)
 
+@functools.lru_cache(maxsize=None)
+def getsize(path: str) -> int:
+    """Cached os.path.getsize for Python strings."""
+    return os.path.getsize(path)
+
 def join(path: str, *paths: str) -> str:
     """os.path.join for Python strings."""
     return os.path.join(path, *paths)
@@ -102,6 +107,11 @@ def isabs_sz(path: sz.Str) -> bool:
     """Cached isabs for StringZilla - leverages shared cache."""
     return isabs(path.decode('utf-8'))
 
+@functools.lru_cache(maxsize=None)
+def getsize_sz(path: sz.Str) -> int:
+    """Cached getsize for StringZilla - leverages shared cache."""
+    return getsize(path.decode('utf-8'))
+
 def join_sz(path: sz.Str, *paths: sz.Str) -> sz.Str:
     """os.path.join for StringZilla strings."""
     return sz.Str(join(path.decode('utf-8'), *(p.decode('utf-8') for p in paths)))
@@ -125,6 +135,7 @@ def clear_cache() -> None:
     isfile.cache_clear()
     isdir.cache_clear()
     isabs.cache_clear()
+    getsize.cache_clear()
 
     # StringZilla API caches
     realpath_sz.cache_clear()
@@ -135,3 +146,4 @@ def clear_cache() -> None:
     isfile_sz.cache_clear()
     isdir_sz.cache_clear()
     isabs_sz.cache_clear()
+    getsize_sz.cache_clear()

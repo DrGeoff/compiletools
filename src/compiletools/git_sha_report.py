@@ -64,10 +64,9 @@ def get_index_hashes() -> Dict[Path, str]:
         mode, blob_sha, stage, path_str = parts
         # Since we run git commands from git root, paths are relative to git root
         abs_path_str = os.path.join(git_root, path_str)
-        path = Path(abs_path_str)
 
         # Skip files that have been deleted but not committed
-        if not path.exists():
+        if not wrappedos.isfile(abs_path_str):
             continue
 
         hashes[Path(wrappedos.realpath(abs_path_str))] = blob_sha
