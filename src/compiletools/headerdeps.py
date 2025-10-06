@@ -262,17 +262,17 @@ class DirectHeaderDeps(HeaderDepsBase):
         return self._search_project_includes(include)
 
     @functools.lru_cache(maxsize=None)
-    def _process_impl(self, realpath, initial_macro_hash):
+    def _process_impl(self, realpath, initial_macro_key):
         """Process file with macro state in cache key.
 
         Args:
             realpath: File to process
-            initial_macro_hash: Hash of initial macro state (part of cache key)
+            initial_macro_key: Frozenset cache key of initial macro state (part of cache key)
 
         Note: Assumes caller has already initialized macro state via process()
         """
         if self.args.verbose >= 9:
-            print(f"DirectHeaderDeps::_process_impl: {realpath} (macro_hash={initial_macro_hash})")
+            print(f"DirectHeaderDeps::_process_impl: {realpath} (macro_key={initial_macro_key})")
 
         results_order = []
         results_set = set()
@@ -282,22 +282,22 @@ class DirectHeaderDeps(HeaderDepsBase):
         return results_order
 
     def process(self, filename):
-        """Override to compute and pass initial macro hash."""
+        """Override to compute and pass initial macro cache key."""
         realpath = compiletools.wrappedos.realpath(filename)
 
-        # Reset macro state to ensure consistent initial_macro_hash for LRU cache
-        # Without this, macro state from previous files pollutes the hash,
+        # Reset macro state to ensure consistent initial_macro_key for LRU cache
+        # Without this, macro state from previous files pollutes the key,
         # preventing cache hits when processing common headers
         self._initialize_includes_and_macros()
-        initial_macro_hash = self.defined_macros.get_hash()
+        initial_macro_key = self.defined_macros.get_cache_key()
 
         try:
-            result = self._process_impl(realpath, initial_macro_hash)
+            result = self._process_impl(realpath, initial_macro_key)
         except IOError:
             result = None
 
         if not result:
-            result = self._process_impl(realpath, initial_macro_hash)
+            result = self._process_impl(realpath, initial_macro_key)
 
         return result
 

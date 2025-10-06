@@ -414,18 +414,18 @@ class DirectMagicFlags(MagicFlagsBase):
 
 
     @functools.lru_cache(maxsize=None)
-    def _compute_file_processing_result(self, fname: str, macro_hash: int):
+    def _compute_file_processing_result(self, fname: str, macro_key):
         """Pure function: compute file processing result without mutating state.
 
-        Cacheable by (fname, macro_hash) to avoid reprocessing shared headers.
-        Uses macro_hash (int) as cache key since MacroState itself is not hashable.
+        Cacheable by (fname, macro_key) to avoid reprocessing shared headers.
+        Uses frozenset macro_key as cache key since it's hashable and more efficient.
 
         NOTE: This method accesses self.defined_macros to get the actual MacroState.
-        The macro_hash parameter is only used as a cache key for lru_cache.
+        The macro_key parameter is only used as a cache key for lru_cache.
 
         Args:
             fname: File path to process
-            macro_hash: Hash of current macro state (from MacroState.get_hash())
+            macro_key: Frozenset cache key of current macro state (from MacroState.get_cache_key())
 
         Returns:
             Tuple of (active_magic_flags, extracted_variable_macros_dict, cppflags_macros, cxxflags_macros)
@@ -488,11 +488,11 @@ class DirectMagicFlags(MagicFlagsBase):
         Args:
             fname: File path to process
         """
-        # Compute hash for cache key (stable hex string)
-        macro_hash = self.defined_macros.get_hash()
+        # Get cache key (frozenset) - more efficient than get_hash()
+        macro_key = self.defined_macros.get_cache_key()
 
-        # Use cached computation - pass hash, function accesses self.defined_macros
-        cached_result = self._compute_file_processing_result(fname, macro_hash)
+        # Use cached computation - pass key, function accesses self.defined_macros
+        cached_result = self._compute_file_processing_result(fname, macro_key)
 
         if cached_result is None:
             return
@@ -552,10 +552,10 @@ class DirectMagicFlags(MagicFlagsBase):
                 self.defined_macros = self._verification_final_macro_hashes[abs_filename].copy()
 
         # Ensure _final_macro_hashes is populated (required for hunter.macro_hash())
-        # The hash is already computed and stored from first processing
+        # The cache key is already computed and stored from first processing
         if abs_filename not in self._final_macro_hashes:
             # Should not happen, but compute from current state as fallback
-            self._final_macro_hashes[abs_filename] = self.defined_macros.get_hash()
+            self._final_macro_hashes[abs_filename] = self.defined_macros.get_cache_key()
 
         return self._structured_data_cache[cache_key]
 
@@ -572,18 +572,18 @@ class DirectMagicFlags(MagicFlagsBase):
 
         Returns: number of iterations taken
         """
-        file_last_macro_hash = {}
+        file_last_macro_key = {}
         iteration = 0
 
         while iteration < max_iterations:
             iteration += 1
-            current_macro_hash = self.defined_macros.get_hash()
+            current_macro_key = self.defined_macros.get_cache_key()
             macro_count_before = len(self.defined_macros.variable)
 
             # Determine which files need processing (those not yet processed with current macro state)
             files_to_process = [
                 fname for fname in all_files
-                if file_last_macro_hash.get(fname) != current_macro_hash
+                if file_last_macro_key.get(fname) != current_macro_key
             ]
 
             if not files_to_process:
@@ -592,29 +592,29 @@ class DirectMagicFlags(MagicFlagsBase):
             # Process files that need reprocessing
             for fname in files_to_process:
                 self._process_file_for_macros(fname)
-                file_last_macro_hash[fname] = current_macro_hash
+                file_last_macro_key[fname] = current_macro_key
 
-            # Check convergence - first cheap count check, then expensive hash
+            # Check convergence - first cheap count check, then cache key comparison
             macro_count_after = len(self.defined_macros.variable)
             if macro_count_after != macro_count_before:
                 continue
 
-            # Count unchanged, check for value-only changes with hash
-            new_macro_hash = self.defined_macros.get_hash()
-            if new_macro_hash == current_macro_hash:
+            # Count unchanged, check for value-only changes with cache key
+            new_macro_key = self.defined_macros.get_cache_key()
+            if new_macro_key == current_macro_key:
                 break
 
         return iteration
 
     def _finalize_and_cache_result(self, filename, headers, cache_key):
-        """Store final macro hash and build cached result."""
-        # Store final macro hash using absolute path as key
-        final_macro_hash = self.defined_macros.get_hash()
+        """Store final macro key and build cached result."""
+        # Store final macro cache key using absolute path as key
+        final_macro_key = self.defined_macros.get_cache_key()
         abs_filename = compiletools.wrappedos.realpath(filename)
-        self._final_macro_hashes[abs_filename] = final_macro_hash
+        self._final_macro_hashes[abs_filename] = final_macro_key
 
         if self._args.verbose >= 5:
-            print(f"DirectMagicFlags: Final converged macro hash for {filename}: {final_macro_hash}")
+            print(f"DirectMagicFlags: Final converged macro key for {filename}: {final_macro_key}")
 
         # Store converged macro state for verification
         if __debug__:
@@ -650,8 +650,8 @@ class DirectMagicFlags(MagicFlagsBase):
 
         # Check cache
         file_hash = get_file_hash(filename)
-        input_macro_hash = self.defined_macros.get_hash()
-        cache_key = (file_hash, input_macro_hash)
+        input_macro_key = self.defined_macros.get_cache_key()
+        cache_key = (file_hash, input_macro_key)
 
         cached_result = self._check_cache(filename, cache_key)
         if cached_result is not None:
@@ -706,13 +706,13 @@ class DirectMagicFlags(MagicFlagsBase):
         """Verify that the macro state hasn't changed after convergence for a specific file."""
         if __debug__:
             if filename and filename in self._verification_final_macro_hashes:
-                current_hash = self.defined_macros.get_hash()
+                current_key = self.defined_macros.get_cache_key()
                 converged_macro_state = self._verification_final_macro_hashes[filename]
-                converged_hash = converged_macro_state.get_hash()
-                assert current_hash == converged_hash, (
+                converged_key = converged_macro_state.get_cache_key()
+                assert current_key == converged_key, (
                     f"MACRO STATE CORRUPTION DETECTED in {context} for file {filename}!\n"
-                    f"Converged hash: {converged_hash}\n"
-                    f"Current hash:   {current_hash}\n"
+                    f"Converged key: {converged_key}\n"
+                    f"Current key:   {current_key}\n"
                     f"Converged macros: {set(converged_macro_state.keys())}\n"
                     f"Current macros:   {set(self.defined_macros.keys())}"
                 )
