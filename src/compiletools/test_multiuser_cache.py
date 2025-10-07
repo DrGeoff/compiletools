@@ -315,13 +315,14 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
     @uth.requires_functional_compiler
     def test_different_umask_compatibility(self):
         """
-        Test 2.1: Umask validation for shared-objects mode.
+        Test 2.1: Umask compatibility for shared-objects mode.
 
         Expected:
-        - User A with umask 0002 can compile successfully
-        - User B with umask 0022 gets validation error (blocks group write)
-        - User C with umask 0077 gets validation error (blocks group read/write)
-        - Error messages are clear and actionable
+        - User A with umask 0002 compiles successfully
+        - User B with umask 0022 compiles successfully (blocks group write)
+        - User C with umask 0077 compiles successfully (blocks group read/write)
+        - All succeed - restrictive umask is fine for single-user scenarios
+        - Warning only shown at verbose >= 1 for multi-user awareness
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             objdir = Path(tmpdir) / 'shared_obj'
@@ -331,9 +332,9 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 tmpdir, 'build_a', str(objdir)
             )
 
-            # User A: umask 0002 (group read/write) - should succeed
-            returncode, error = compile_with_umask(source_dir_a, config_name_a, 0o002)
-            assert returncode == 0, f"User A compilation failed: {error}"
+            # User A: umask 0002 (group read/write) - should succeed without warning
+            returncode, output = compile_with_umask(source_dir_a, config_name_a, 0o002)
+            assert returncode == 0, f"User A compilation failed: {output}"
 
             # Check object file permissions
             obj_files = list(objdir.glob('**/*.o'))
@@ -342,21 +343,19 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             mode = obj_file.stat().st_mode
             assert mode & 0o060, f"Object file not group read/write: {oct(mode)}"
 
-            # User B: umask 0022 (blocks group write) - should fail validation
+            # User B: umask 0022 (blocks group write) - should succeed (no warning at verbose=0)
             source_dir_b, config_name_b = self._create_test_source_dir(
                 tmpdir, 'build_b', str(objdir)
             )
-            returncode, error = compile_with_umask(source_dir_b, config_name_b, 0o022)
-            assert returncode != 0, "User B should fail with umask 0o022"
-            assert "group read/write" in str(error), "Error should mention group permissions"
+            returncode, output = compile_with_umask(source_dir_b, config_name_b, 0o022)
+            assert returncode == 0, f"User B should succeed: {output}"
 
-            # User C: umask 0077 (blocks all group) - should fail validation
+            # User C: umask 0077 (blocks all group) - should succeed (no warning at verbose=0)
             source_dir_c, config_name_c = self._create_test_source_dir(
                 tmpdir, 'build_c', str(objdir)
             )
-            returncode, error = compile_with_umask(source_dir_c, config_name_c, 0o077)
-            assert returncode != 0, "User C should fail with umask 0o077"
-            assert "group read/write" in str(error), "Error should mention group permissions"
+            returncode, output = compile_with_umask(source_dir_c, config_name_c, 0o077)
+            assert returncode == 0, f"User C should succeed: {output}"
 
     @uth.requires_functional_compiler
     def test_group_writable_cache(self):
