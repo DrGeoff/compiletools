@@ -3,6 +3,12 @@ Multi-user shared object cache tests.
 
 Tests concurrent compilation, locking mechanisms, and permission handling
 for shared object file caches across multiple users/processes.
+
+Filesystem Compatibility:
+- Most tests work with any locking strategy (flock, lockdir, cifs)
+- test_stale_lock_cleanup requires lockdir (NFS/GPFS/Lustre) and skips on flock filesystems
+- When run on GPFS/Lustre/NFS, all tests execute
+- When run on local filesystems (ext4/xfs), stale lock test skips with informative message
 """
 
 import os
@@ -789,27 +795,22 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 assert overhead < 0.5, \
                     f"Lock overhead {overhead*100:.1f}% too high (no-lock: {no_lock_time:.2f}s, lock: {lock_time:.2f}s)"
 
-    @pytest.mark.skip(reason="Stale lock detection not implemented - lockdir uses simple busy-wait")
+    @uth.requires_lockdir_filesystem
     @uth.requires_functional_compiler
     def test_stale_lock_cleanup(self):
         """
-        Test 3.1: NFS stale lock cleanup.
+        Test stale lock detection and automatic cleanup.
 
-        CURRENT STATUS: NOT IMPLEMENTED
+        Runs only on filesystems that use lockdir strategy (NFS, GPFS, Lustre).
+        Skipped on local filesystems (ext4, xfs, etc.) that use flock.
 
-        The current lockdir implementation (makefile.py:337-339) uses:
-            while ! mkdir "$$lockdir" 2>/dev/null; do sleep {interval}; done
-
-        This doesn't detect stale locks - it waits indefinitely if a lock directory
-        is left behind by a crashed process.
-
-        To implement stale lock detection, would need to:
-        1. Store PID in lock directory when created
-        2. Check if PID still exists before waiting
-        3. Remove stale lock if process is gone
-
-        This test documents the expected behavior for future implementation.
+        Verifies that:
+        1. Stale locks with hostname:PID format are detected
+        2. Same-host stale locks are automatically removed
+        3. Build succeeds after removing stale lock
         """
+        import socket
+
         with tempfile.TemporaryDirectory() as tmpdir:
             objdir = Path(tmpdir) / 'shared_obj'
             objdir.mkdir(mode=0o2775)
@@ -818,18 +819,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 tmpdir, 'build', str(objdir)
             )
 
-            # Manually create stale lock directory
-            # In reality, the object filename would be content-addressable
-            # For testing, use a plausible name pattern
-            stale_lock = objdir / 'main_abc123def456_0123456789abcdef.o.lockdir'
-            stale_lock.mkdir()
-
-            # Place PID file of non-existent process
-            pid_file = stale_lock / 'pid'
-            pid_file.write_text('999999')  # PID that doesn't exist
-
-            # Attempt to build - with stale lock detection, this should succeed
-            # Without it, this would hang forever
+            # First, do a build to find out what object file name is generated
             os.chdir(source_dir)
             argv = [
                 "--exemarkers=main",
@@ -838,12 +828,33 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 "--CTCACHE=None",
             ]
             uth.reset()
+            compiletools.cake.main(argv)
 
-            # This would timeout without stale lock detection
+            # Find the generated object file
+            obj_files = list(objdir.glob('*.o'))
+            assert len(obj_files) > 0, "Should have generated at least one object file"
+
+            # Clean the object file to force rebuild
+            obj_file = obj_files[0]
+            obj_file.unlink()
+
+            # Create stale lock for this specific object file
+            stale_lock = Path(str(obj_file) + '.lockdir')
+            stale_lock.mkdir()
+
+            # Place PID file with hostname:PID format from same host
+            pid_file = stale_lock / 'pid'
+            hostname = socket.gethostname()
+            pid_file.write_text(f'{hostname}:999999')  # PID that doesn't exist
+
+            # Rebuild - with stale lock detection, this should succeed
+            uth.reset()
             compiletools.cake.main(argv)
 
             # After successful build, stale lock should be removed
             assert not stale_lock.exists(), "Stale lock should be cleaned up"
+            # And object file should be rebuilt
+            assert obj_file.exists(), "Object file should be rebuilt"
 
 
 if __name__ == '__main__':

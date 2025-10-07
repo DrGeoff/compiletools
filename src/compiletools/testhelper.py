@@ -18,10 +18,10 @@ import subprocess
 
 def requires_functional_compiler(func):
     """Decorator to skip tests that require a functional C++ compiler.
-    
-    This decorator checks if a functional C++ compiler is available and 
+
+    This decorator checks if a functional C++ compiler is available and
     automatically skips the test with an appropriate message if none is found.
-    
+
     Usage:
         @requires_functional_compiler
         def test_something_that_needs_compiler(self):
@@ -32,6 +32,54 @@ def requires_functional_compiler(func):
     def wrapper(*args, **kwargs):
         if compiletools.apptools.get_functional_cxx_compiler() is None:
             pytest.skip("No functional C++ compiler detected")
+        return func(*args, **kwargs)
+    return wrapper
+
+
+def requires_lockdir_filesystem(func):
+    """Decorator to skip tests that require lockdir-based locking (NFS/GPFS/Lustre).
+
+    This decorator checks if the test tmpdir filesystem uses lockdir strategy
+    and automatically skips the test if it uses flock or cifs instead.
+
+    Usage:
+        @requires_lockdir_filesystem
+        def test_something_that_needs_lockdir(self):
+            # Test code that requires NFS/GPFS/Lustre filesystem
+            pass
+    """
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        import compiletools.filesystem_utils
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fstype = compiletools.filesystem_utils.get_filesystem_type(tmpdir)
+            strategy = compiletools.filesystem_utils.get_lock_strategy(fstype)
+            if strategy != 'lockdir':
+                pytest.skip(f"Filesystem {fstype} uses {strategy} (not lockdir) - test requires NFS/GPFS/Lustre")
+        return func(*args, **kwargs)
+    return wrapper
+
+
+def requires_flock_filesystem(func):
+    """Decorator to skip tests that require flock-based locking (local filesystems).
+
+    This decorator checks if the test tmpdir filesystem uses flock strategy
+    and automatically skips the test if it uses lockdir or cifs instead.
+
+    Usage:
+        @requires_flock_filesystem
+        def test_something_that_needs_flock(self):
+            # Test code that requires ext4/xfs/btrfs local filesystem
+            pass
+    """
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        import compiletools.filesystem_utils
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fstype = compiletools.filesystem_utils.get_filesystem_type(tmpdir)
+            strategy = compiletools.filesystem_utils.get_lock_strategy(fstype)
+            if strategy != 'flock':
+                pytest.skip(f"Filesystem {fstype} uses {strategy} (not flock) - test requires local filesystem (ext4/xfs/btrfs)")
         return func(*args, **kwargs)
     return wrapper
 
