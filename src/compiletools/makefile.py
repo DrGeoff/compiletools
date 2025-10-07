@@ -378,12 +378,13 @@ class MakefileCreator:
             lockdir="$@.lockdir"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
             \tcurrent_host=$$(uname -n); lock_warn_time=0; lock_escalate_time=0; \\
             \twhile ! mkdir "$$lockdir" 2>/dev/null; do \\
+            \t\tlock_host=""; lock_pid=""; \\
             \t\tif [ -f "$$lockdir/pid" ]; then \\
             \t\t\tlock_info=$$(cat "$$lockdir/pid" 2>/dev/null); \\
             \t\t\tif [ -n "$$lock_info" ]; then \\
             \t\t\t\tlock_host=$$${{lock_info%%:*}}; \\
             \t\t\t\tlock_pid=$$${{lock_info##*:}}; \\
-            \t\t\t\tif [ "$$lock_host" = "$$current_host" ]; then \\
+            \t\t\t\tif [ "$$lock_host" = "$$current_host" ] && [ -n "$$lock_pid" ]; then \\
             \t\t\t\t\tif ! kill -0 "$$lock_pid" 2>/dev/null; then \\
             \t\t\t\t\t\tkill_status=$$?; \\
             \t\t\t\t\t\tif [ $$kill_status -eq 1 ] && [ ! -e "/proc/$$lock_pid" ]; then \\
@@ -401,7 +402,7 @@ class MakefileCreator:
             \t\t\t\t\t\t\tfi; \\
             \t\t\t\t\t\tfi; \\
             \t\t\t\t\tfi; \\
-            \t\t\t\telse \\
+            \t\t\t\telif [ -n "$$lock_host" ] && [ -n "$$lock_pid" ]; then \\
             \t\t\t\t\tlock_mtime=$$(stat -c %Y "$$lockdir" 2>/dev/null || echo 0); \\
             \t\t\t\t\tcase "$$lock_mtime" in \\
             \t\t\t\t\t\t''|*[!0-9]*) lock_age_sec=0 ;; \\
@@ -439,12 +440,13 @@ class MakefileCreator:
             lockdir="$@.lockdir"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
             \tcurrent_host=$$(uname -n); lock_warn_time=0; lock_escalate_time=0; \\
             \twhile ! mkdir "$$lockdir" 2>/dev/null; do \\
+            \t\tlock_host=""; lock_pid=""; \\
             \t\tif [ -f "$$lockdir/pid" ]; then \\
             \t\t\tlock_info=$$(cat "$$lockdir/pid" 2>/dev/null); \\
             \t\t\tif [ -n "$$lock_info" ]; then \\
             \t\t\t\tlock_host=$$${{lock_info%%:*}}; \\
             \t\t\t\tlock_pid=$$${{lock_info##*:}}; \\
-            \t\t\t\tif [ "$$lock_host" = "$$current_host" ]; then \\
+            \t\t\t\tif [ "$$lock_host" = "$$current_host" ] && [ -n "$$lock_pid" ]; then \\
             \t\t\t\t\tif ! kill -0 "$$lock_pid" 2>/dev/null; then \\
             \t\t\t\t\t\tkill_status=$$?; \\
             \t\t\t\t\t\tif [ $$kill_status -eq 1 ]; then \\
@@ -462,7 +464,7 @@ class MakefileCreator:
             \t\t\t\t\t\t\tfi; \\
             \t\t\t\t\t\tfi; \\
             \t\t\t\t\tfi; \\
-            \t\t\t\telse \\
+            \t\t\t\telif [ -n "$$lock_host" ] && [ -n "$$lock_pid" ]; then \\
             \t\t\t\t\tlock_mtime=$$(stat -f %m "$$lockdir" 2>/dev/null || echo 0); \\
             \t\t\t\t\tcase "$$lock_mtime" in \\
             \t\t\t\t\t\t''|*[!0-9]*) lock_age_sec=0 ;; \\
