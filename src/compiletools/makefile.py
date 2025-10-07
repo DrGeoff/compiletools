@@ -221,11 +221,8 @@ class MakefileCreator:
         # Detect OS type once and cache it
         self._os_type = self._detect_os_type()
 
-        # Check if shared object mode is enabled
-        self._shared_objects = self._is_shared_objects_enabled()
-
         # Validate umask compatibility with shared-objects
-        if self._shared_objects:
+        if self.args.shared_objects:
             self._validate_umask_for_shared_objects()
 
     @staticmethod
@@ -244,6 +241,13 @@ class MakefileCreator:
         cap.add(
             "--build-only-changed",
             help="Only build the binaries depending on the source or header absolute filenames in this space-delimited list.",
+        )
+        compiletools.utils.add_boolean_argument(
+            parser=cap,
+            name="shared-objects",
+            dest="shared_objects",
+            default=False,
+            help="Enable shared object cache for multi-user/multi-host builds",
         )
         compiletools.utils.add_flag_argument(
             parser=cap,
@@ -271,12 +275,6 @@ class MakefileCreator:
         else:
             # Default to linux for unknown platforms
             return 'linux'
-
-    def _is_shared_objects_enabled(self):
-        """Check if shared object mode is enabled via config"""
-        return compiletools.configutils.extract_item_from_ct_conf(
-            'shared-objects', default='false', verbose=self.args.verbose
-        ).lower() in ('true', '1', 'yes', 'on')
 
     def _validate_umask_for_shared_objects(self):
         """Validate that umask allows group-readable files for shared-objects mode"""
@@ -358,7 +356,7 @@ class MakefileCreator:
 
     def _get_locking_recipe_prefix(self):
         """Generate filesystem-specific locking code prefix"""
-        if not self._shared_objects:
+        if not self.args.shared_objects:
             return ""
 
         strategy = compiletools.filesystem_utils.get_lock_strategy(self._filesystem_type)
@@ -523,7 +521,7 @@ class MakefileCreator:
 
     def _get_locking_recipe_suffix(self):
         """Generate filesystem-specific locking code suffix"""
-        if not self._shared_objects:
+        if not self.args.shared_objects:
             return ""
 
         strategy = compiletools.filesystem_utils.get_lock_strategy(self._filesystem_type)
@@ -835,7 +833,7 @@ class MakefileCreator:
             magic_cxx_flags = magicflags.get(sz.Str("CXXFLAGS"), [])
             compile_flags = [self.args.CXX, self.args.CXXFLAGS] + [str(flag) for flag in magic_cpp_flags] + [str(flag) for flag in magic_cxx_flags]
         
-        if self._shared_objects:
+        if self.args.shared_objects:
             # Use temporary file for atomic writes with locking
             compile_cmd = " ".join(compile_flags + ["-c", "-o", '"$$tmp"', filename])
             recipe += lock_prefix + compile_cmd + lock_suffix
