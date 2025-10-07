@@ -9,6 +9,11 @@ Filesystem Compatibility:
 - test_stale_lock_cleanup requires lockdir (NFS/GPFS/Lustre) and skips on flock filesystems
 - When run on GPFS/Lustre/NFS, all tests execute
 - When run on local filesystems (ext4/xfs), stale lock test skips with informative message
+
+Umask Requirements:
+- Tests temporarily set umask to 0o0002 to ensure group-writable permissions
+- This is required for multi-user cache functionality
+- Original umask is restored after each test
 """
 
 import os
@@ -133,6 +138,18 @@ def continuous_reader(obj_path, stop_event, errors):
 
 class TestMultiUserCache(BaseCompileToolsTestCase):
     """Tests for multi-user shared object cache functionality."""
+
+    def setUp(self):
+        """Set up test environment with appropriate umask."""
+        super().setUp()
+        # Save current umask and set to 0002 for tests
+        # This ensures group-writable permissions work correctly
+        self.old_umask = os.umask(0o0002)
+
+    def tearDown(self):
+        """Restore original umask."""
+        os.umask(self.old_umask)
+        super().tearDown()
 
     def _create_test_source_dir(self, tmpdir, source_name, objdir):
         """
