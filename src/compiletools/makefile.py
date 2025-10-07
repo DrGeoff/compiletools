@@ -277,25 +277,20 @@ class MakefileCreator:
             return 'linux'
 
     def _validate_umask_for_shared_objects(self):
-        """Validate that umask allows group-readable files for shared-objects mode"""
+        """Log warning if umask may affect multi-user shared-objects mode"""
         current_umask = os.umask(0)
         os.umask(current_umask)  # Restore immediately
 
-        # Shared-objects requires group read AND write:
-        # - Group read: so users can read each other's compiled objects
-        # - Group write: so users can remove each other's stale lock directories
-        if current_umask & 0o060:
-            raise RuntimeError(
-                f"ERROR: shared-objects mode requires umask that allows group read/write permissions\n"
-                f"Current umask: {oct(current_umask)}\n"
-                f"Shared object cache requires group collaboration (files like 0664, dirs like 0775)\n"
-                f"Your umask {oct(current_umask)} prevents group access\n\n"
-                f"Solutions:\n"
-                f"  1. Change umask: umask 0002 (allows group read/write)\n"
-                f"  2. Disable shared-objects in config file\n"
-                f"  3. Use private objdir (default behavior without shared-objects)\n\n"
-                f"Note: Your current umask {oct(current_umask)} is a security setting that prevents\n"
-                f"file sharing. This is incompatible with multi-user shared object cache."
+        # Check if umask blocks group read/write
+        # For single-user scenarios, restrictive umask is fine (user owns all files)
+        # For multi-user scenarios, group permissions are needed for cross-user cleanup
+        if (current_umask & 0o060) and self.args.verbose >= 1:
+            print(
+                f"Warning: shared-objects enabled with restrictive umask {oct(current_umask)}\n"
+                f"  Single-user mode: Works fine (you can always remove your own locks)\n"
+                f"  Multi-user mode: Requires umask 0002 or 0007 for cross-user lock cleanup\n"
+                f"  If using multi-user cache, set: umask 0002",
+                file=sys.stderr
             )
 
     def _uptodate(self):
