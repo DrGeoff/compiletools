@@ -402,7 +402,6 @@ class MakefileCreator:
             \t\t\t\t\t\t\tcontinue; \\
             \t\t\t\t\t\tfi; \\
             \t\t\t\t\tfi; \\
-            \t\t\t\tfi; \\
             \t\t\t\telif [ -n "$$lock_host" ] && [ -n "$$lock_pid" ]; then \\
             \t\t\t\t\tlock_mtime=$$(stat -c %Y "$$lockdir" 2>/dev/null || echo 0); \\
             \t\t\t\t\tcase "$$lock_mtime" in \\
@@ -465,7 +464,6 @@ class MakefileCreator:
             \t\t\t\t\t\t\tcontinue; \\
             \t\t\t\t\t\tfi; \\
             \t\t\t\t\tfi; \\
-            \t\t\t\tfi; \\
             \t\t\t\telif [ -n "$$lock_host" ] && [ -n "$$lock_pid" ]; then \\
             \t\t\t\t\tlock_mtime=$$(stat -f %m "$$lockdir" 2>/dev/null || echo 0); \\
             \t\t\t\t\tcase "$$lock_mtime" in \\
