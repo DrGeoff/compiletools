@@ -74,9 +74,20 @@ def compile_worker(worker_id, source_dir, config_name):
 
 def compile_with_umask(source_dir, config_name, umask_value):
     """Run ct-cake with specific umask value."""
+    import io
+    import sys
+
     old_umask = os.umask(umask_value)
+    # Capture both stdout and stderr to get error messages
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    stdout_capture = io.StringIO()
+    stderr_capture = io.StringIO()
+
     try:
         os.chdir(source_dir)
+        sys.stdout = stdout_capture
+        sys.stderr = stderr_capture
 
         argv = [
             "--exemarkers=main",
@@ -87,11 +98,17 @@ def compile_with_umask(source_dir, config_name, umask_value):
         ]
 
         uth.reset()
-        compiletools.cake.main(argv)
-        return 0, None
+        result = compiletools.cake.main(argv)
+        error_output = stdout_capture.getvalue() + stderr_capture.getvalue()
+        return result if result else 0, error_output if error_output else None
+    except SystemExit as e:
+        error_output = stdout_capture.getvalue() + stderr_capture.getvalue()
+        return e.code if e.code else 0, error_output or f"SystemExit: {e.code}"
     except Exception as e:
         return 1, str(e)
     finally:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
         os.umask(old_umask)
 
 
@@ -136,20 +153,9 @@ def continuous_reader(obj_path, stop_event, errors):
         time.sleep(0.001)  # 1ms polling
 
 
+@uth.with_group_writable_umask
 class TestMultiUserCache(BaseCompileToolsTestCase):
     """Tests for multi-user shared object cache functionality."""
-
-    def setUp(self):
-        """Set up test environment with appropriate umask."""
-        super().setUp()
-        # Save current umask and set to 0002 for tests
-        # This ensures group-writable permissions work correctly
-        self.old_umask = os.umask(0o0002)
-
-    def tearDown(self):
-        """Restore original umask."""
-        os.umask(self.old_umask)
-        super().tearDown()
 
     def _create_test_source_dir(self, tmpdir, source_name, objdir):
         """
@@ -292,48 +298,48 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
     @uth.requires_functional_compiler
     def test_different_umask_compatibility(self):
         """
-        Test 2.1: Users with different umasks can access shared cache.
+        Test 2.1: Umask validation for shared-objects mode.
 
         Expected:
-        - User A creates object with umask 022
-        - User B (umask 077) can compile to same objdir
-        - Both compilations succeed (no permission errors)
-        - Object files are group-readable
+        - User A with umask 0002 can compile successfully
+        - User B with umask 0022 gets validation error (blocks group write)
+        - User C with umask 0077 gets validation error (blocks group read/write)
+        - Error messages are clear and actionable
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             objdir = Path(tmpdir) / 'shared_obj'
             objdir.mkdir(mode=0o2775)
 
-            source_dir, config_name = self._create_test_source_dir(
+            source_dir_a, config_name_a = self._create_test_source_dir(
                 tmpdir, 'build_a', str(objdir)
             )
 
-            # User A: umask 022
-            returncode, error = compile_with_umask(source_dir, config_name, 0o022)
+            # User A: umask 0002 (group read/write) - should succeed
+            returncode, error = compile_with_umask(source_dir_a, config_name_a, 0o002)
             assert returncode == 0, f"User A compilation failed: {error}"
 
             # Check object file permissions
             obj_files = list(objdir.glob('**/*.o'))
             assert len(obj_files) >= 1
             obj_file = obj_files[0]
-
-            # Verify group-readable
             mode = obj_file.stat().st_mode
-            assert mode & 0o040, f"Object file not group-readable: {oct(mode)}"
+            assert mode & 0o060, f"Object file not group read/write: {oct(mode)}"
 
-            # User B: umask 077 (restrictive)
-            # Create new build directory with same source
+            # User B: umask 0022 (blocks group write) - should fail validation
             source_dir_b, config_name_b = self._create_test_source_dir(
                 tmpdir, 'build_b', str(objdir)
             )
+            returncode, error = compile_with_umask(source_dir_b, config_name_b, 0o022)
+            assert returncode != 0, "User B should fail with umask 0o022"
+            assert "group read/write" in str(error), "Error should mention group permissions"
 
-            returncode, error = compile_with_umask(source_dir_b, config_name_b, 0o077)
-            assert returncode == 0, f"User B compilation failed: {error}"
-
-            # Verify User B could write to shared objdir
-            # (may create new object if macro state differs, which is fine)
-            obj_files_after = list(objdir.glob('**/*.o'))
-            assert len(obj_files_after) >= 1, "User B should have created objects in shared cache"
+            # User C: umask 0077 (blocks all group) - should fail validation
+            source_dir_c, config_name_c = self._create_test_source_dir(
+                tmpdir, 'build_c', str(objdir)
+            )
+            returncode, error = compile_with_umask(source_dir_c, config_name_c, 0o077)
+            assert returncode != 0, "User C should fail with umask 0o077"
+            assert "group read/write" in str(error), "Error should mention group permissions"
 
     @uth.requires_functional_compiler
     def test_group_writable_cache(self):

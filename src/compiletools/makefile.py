@@ -224,6 +224,10 @@ class MakefileCreator:
         # Check if shared object mode is enabled
         self._shared_objects = self._is_shared_objects_enabled()
 
+        # Validate umask compatibility with shared-objects
+        if self._shared_objects:
+            self._validate_umask_for_shared_objects()
+
     @staticmethod
     def add_arguments(cap):
         compiletools.apptools.add_target_arguments_ex(cap)
@@ -273,6 +277,28 @@ class MakefileCreator:
         return compiletools.configutils.extract_item_from_ct_conf(
             'shared-objects', default='false', verbose=self.args.verbose
         ).lower() in ('true', '1', 'yes', 'on')
+
+    def _validate_umask_for_shared_objects(self):
+        """Validate that umask allows group-readable files for shared-objects mode"""
+        current_umask = os.umask(0)
+        os.umask(current_umask)  # Restore immediately
+
+        # Shared-objects requires group read AND write:
+        # - Group read: so users can read each other's compiled objects
+        # - Group write: so users can remove each other's stale lock directories
+        if current_umask & 0o060:
+            raise RuntimeError(
+                f"ERROR: shared-objects mode requires umask that allows group read/write permissions\n"
+                f"Current umask: {oct(current_umask)}\n"
+                f"Shared object cache requires group collaboration (files like 0664, dirs like 0775)\n"
+                f"Your umask {oct(current_umask)} prevents group access\n\n"
+                f"Solutions:\n"
+                f"  1. Change umask: umask 0002 (allows group read/write)\n"
+                f"  2. Disable shared-objects in config file\n"
+                f"  3. Use private objdir (default behavior without shared-objects)\n\n"
+                f"Note: Your current umask {oct(current_umask)} is a security setting that prevents\n"
+                f"file sharing. This is incompatible with multi-user shared object cache."
+            )
 
     def _uptodate(self):
         """Is the Makefile up to date?

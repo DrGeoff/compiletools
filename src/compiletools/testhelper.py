@@ -84,6 +84,47 @@ def requires_flock_filesystem(func):
     return wrapper
 
 
+def with_group_writable_umask(cls_or_func):
+    """Decorator to temporarily set group-writable umask for shared-objects tests.
+
+    This decorator temporarily sets umask to 0o002 (allow group read/write) for the
+    duration of the test, then restores the original umask.
+
+    Can be used on individual test methods or entire test classes.
+
+    Usage:
+        @with_group_writable_umask
+        def test_something_that_needs_shared_objects(self):
+            pass
+
+        @with_group_writable_umask
+        class TestSharedObjects:
+            pass
+    """
+    def with_umask(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            old_umask = os.umask(0o002)
+            try:
+                return func(*args, **kwargs)
+            finally:
+                os.umask(old_umask)
+        return wrapper
+
+    # If decorating a class
+    if isinstance(cls_or_func, type):
+        # Wrap all test methods
+        for attr_name in dir(cls_or_func):
+            if attr_name.startswith('test_'):
+                attr = getattr(cls_or_func, attr_name)
+                if callable(attr):
+                    setattr(cls_or_func, attr_name, with_umask(attr))
+        return cls_or_func
+    else:
+        # Decorating a function
+        return with_umask(cls_or_func)
+
+
 def requires_pkg_config(*packages):
     """Decorator to skip tests that require specific pkg-config packages.
     
