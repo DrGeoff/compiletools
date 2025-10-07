@@ -179,6 +179,16 @@ def reset():
     # Clear wrappedos caches to prevent test interactions
     import compiletools.wrappedos as wo
     wo.clear_cache()
+    # Clear git utils caches
+    import compiletools.git_utils as git_utils
+    git_utils.clear_cache()
+    # Clear global hash registry to prevent stale file hash lookups
+    from compiletools.global_hash_registry import clear_global_registry, get_file_hash
+    clear_global_registry()
+    get_file_hash.cache_clear()
+    # Clear file analyzer cache to prevent stale analysis results
+    from compiletools.file_analyzer import analyze_file
+    analyze_file.cache_clear()
 
 
 def delete_existing_parsers():
