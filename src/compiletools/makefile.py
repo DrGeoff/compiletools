@@ -374,7 +374,9 @@ class MakefileCreator:
 
     def _lockdir_prefix_linux(self, sleep_interval):
         """Linux variant with /proc support for EPERM detection"""
-        return textwrap.dedent(f'''
+        # NOTE: Using regular string (not f-string) to avoid escaping issues with shell ${var%%pattern}
+        # In Makefile recipes: $$ becomes $ in shell
+        return (textwrap.dedent('''
             lockdir="$@.lockdir"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
             \tcurrent_host=$$(uname -n); lock_warn_time=0; lock_escalate_time=0; \\
             \twhile ! mkdir "$$lockdir" 2>/dev/null; do \\
@@ -413,7 +415,7 @@ class MakefileCreator:
             \t\t\t\t\tif [ $$lock_age_sec -gt 0 ]; then \\
             \t\t\t\t\t\tnow=$$(date +%s); \\
             \t\t\t\t\t\tif [ $$lock_warn_time -eq 0 ] || [ $$((now - lock_warn_time)) -gt 60 ]; then \\
-            \t\t\t\t\t\t\techo "Warning: Lock held by $$lock_host:$$lock_pid (age: ${{lock_age_sec}}s, different host)" >&2; \\
+            \t\t\t\t\t\t\techo "Warning: Lock held by $$lock_host:$$lock_pid (age: $${lock_age_sec}s, different host)" >&2; \\
             \t\t\t\t\t\t\tlock_warn_time=$$now; \\
             \t\t\t\t\t\tfi; \\
             \t\t\t\t\t\tif [ $$lock_age_sec -gt 600 ] && [ $$lock_escalate_time -eq 0 ]; then \\
@@ -425,7 +427,7 @@ class MakefileCreator:
             \t\t\t\tfi; \\
             \t\t\tfi; \\
             \t\tfi; \\
-            \t\tsleep {sleep_interval}; \\
+            \t\tsleep ''' + str(sleep_interval) + '''; \\
             \tdone; \\
             \tchmod 775 "$$lockdir" 2>/dev/null || true; \\
             \tif [ -e "$@" ]; then \\
@@ -434,11 +436,13 @@ class MakefileCreator:
             \techo "$$current_host:$$$$" > "$$lockdir/pid.tmp"; \\
             \tmv "$$lockdir/pid.tmp" "$$lockdir/pid"; \\
             \tchmod 664 "$$lockdir/pid" 2>/dev/null || true; \\
-            \t''').strip()
+            \t''').strip())
 
     def _lockdir_prefix_bsd(self, sleep_interval):
         """macOS/BSD variant without /proc, conservative EPERM handling"""
-        return textwrap.dedent(f'''
+        # NOTE: Using regular string (not f-string) to avoid escaping issues with shell ${var%%pattern}
+        # In Makefile recipes: $$ becomes $ in shell
+        return (textwrap.dedent('''
             lockdir="$@.lockdir"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
             \tcurrent_host=$$(uname -n); lock_warn_time=0; lock_escalate_time=0; \\
             \twhile ! mkdir "$$lockdir" 2>/dev/null; do \\
@@ -475,7 +479,7 @@ class MakefileCreator:
             \t\t\t\t\tif [ $$lock_age_sec -gt 0 ]; then \\
             \t\t\t\t\t\tnow=$$(date +%s); \\
             \t\t\t\t\t\tif [ $$lock_warn_time -eq 0 ] || [ $$((now - lock_warn_time)) -gt 60 ]; then \\
-            \t\t\t\t\t\t\techo "Warning: Lock held by $$lock_host:$$lock_pid (age: ${{lock_age_sec}}s, different host)" >&2; \\
+            \t\t\t\t\t\t\techo "Warning: Lock held by $$lock_host:$$lock_pid (age: $${lock_age_sec}s, different host)" >&2; \\
             \t\t\t\t\t\t\tlock_warn_time=$$now; \\
             \t\t\t\t\t\tfi; \\
             \t\t\t\t\t\tif [ $$lock_age_sec -gt 600 ] && [ $$lock_escalate_time -eq 0 ]; then \\
@@ -487,7 +491,7 @@ class MakefileCreator:
             \t\t\t\tfi; \\
             \t\t\tfi; \\
             \t\tfi; \\
-            \t\tsleep {sleep_interval}; \\
+            \t\tsleep ''' + str(sleep_interval) + '''; \\
             \tdone; \\
             \tchmod 775 "$$lockdir" 2>/dev/null || true; \\
             \tif [ -e "$@" ]; then \\
@@ -496,7 +500,7 @@ class MakefileCreator:
             \techo "$$current_host:$$$$" > "$$lockdir/pid.tmp"; \\
             \tmv "$$lockdir/pid.tmp" "$$lockdir/pid"; \\
             \tchmod 664 "$$lockdir/pid" 2>/dev/null || true; \\
-            \t''').strip()
+            \t''').strip())
 
     def _cifs_lock_prefix(self):
         """CIFS/SMB specific locking with exclusive file creation"""
