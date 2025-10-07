@@ -5,13 +5,16 @@ import compiletools.listvariants
 
 
 def test_none_found():
-    # This test doesn't need the config file from CompileToolsTestContext, 
+    # This test doesn't need the config file from CompileToolsTestContext,
     # only temp directory and parser reset
     with uth.TempDirContextWithChange() as tempdir:
         with uth.ParserContext():
             # Create temp config with variant aliases
             compiletools.testhelper.create_temp_ct_conf(tempdir)
-            
+
+            # Resolve to real path to handle symlinks
+            tempdir_real = os.path.realpath(tempdir)
+
             # These values are deliberately chosen so that we can know that
             # no config files will be found except those in the temp directory
             ucd = "/home/dummy/.config/ct"
@@ -30,7 +33,7 @@ def test_none_found():
                 {1}
                     None found
                 """).format(
-                tempdir,
+                tempdir_real,
                 os.path.join(ecd, "ct", "ct.conf.d"),
             )
 
