@@ -383,20 +383,12 @@ class MakefileCreator:
             \t\tlock_host=""; lock_pid=""; \\
             \t\tif [ -f "$$lockdir/pid" ]; then \\
             \t\t\tlock_info=$$(cat "$$lockdir/pid" 2>/dev/null); \\
-            \t\t\techo "DEBUG: lock_info=[$$lock_info]" >&2; \\
             \t\t\tif [ -n "$$lock_info" ]; then \\
             \t\t\t\tlock_host=$${lock_info%%:*}; \\
             \t\t\t\tlock_pid=$${lock_info##*:}; \\
-            \t\t\t\techo "DEBUG: lock_host=[$$lock_host] lock_pid=[$$lock_pid] current_host=[$$current_host]" >&2; \\
-            \t\t\t\tif [ "$$lock_host" = "$$current_host" ]; then echo "DEBUG: Hosts MATCH" >&2; else echo "DEBUG: Hosts DIFFER" >&2; fi; \\
-            \t\t\t\tif [ -n "$$lock_pid" ]; then echo "DEBUG: PID non-empty" >&2; else echo "DEBUG: PID empty" >&2; fi; \\
             \t\t\t\tif [ "$$lock_host" = "$$current_host" ] && [ -n "$$lock_pid" ]; then \\
-            \t\t\t\t\techo "DEBUG: Hosts match, checking if PID $$lock_pid exists" >&2; \\
-            \t\t\t\t\tif ! kill -0 "$$lock_pid" 2>/dev/null; then \\
-            \t\t\t\t\t\tkill_status=$$?; \\
-            \t\t\t\t\t\techo "DEBUG: kill -0 failed with status $$kill_status, checking /proc/$$lock_pid" >&2; \\
-            \t\t\t\t\t\tif [ $$kill_status -eq 1 ] && [ ! -e "/proc/$$lock_pid" ]; then \\
-            \t\t\t\t\t\t\techo "DEBUG: Attempting to remove stale lock $$lockdir" >&2; \\
+            \t\t\t\t\tkill -0 "$$lock_pid" 2>/dev/null; kill_status=$$?; \\
+            \t\t\t\t\tif [ $$kill_status -ne 0 ] && [ ! -e "/proc/$$lock_pid" ]; then \\
             \t\t\t\t\t\t\tif rm -rf "$$lockdir" 2>/dev/null; then \\
             \t\t\t\t\t\t\t\techo "Removed stale lock from $$lock_host:$$lock_pid" >&2; \\
             \t\t\t\t\t\t\t\tcontinue; \\
@@ -458,9 +450,8 @@ class MakefileCreator:
             \t\t\t\tlock_host=$${lock_info%%:*}; \\
             \t\t\t\tlock_pid=$${lock_info##*:}; \\
             \t\t\t\tif [ "$$lock_host" = "$$current_host" ] && [ -n "$$lock_pid" ]; then \\
-            \t\t\t\t\tif ! kill -0 "$$lock_pid" 2>/dev/null; then \\
-            \t\t\t\t\t\tkill_status=$$?; \\
-            \t\t\t\t\t\tif [ $$kill_status -eq 1 ]; then \\
+            \t\t\t\t\tkill -0 "$$lock_pid" 2>/dev/null; kill_status=$$?; \\
+            \t\t\t\t\tif [ $$kill_status -ne 0 ]; then \\
             \t\t\t\t\t\t\tif rm -rf "$$lockdir" 2>/dev/null; then \\
             \t\t\t\t\t\t\t\techo "Removed stale lock from $$lock_host:$$lock_pid" >&2; \\
             \t\t\t\t\t\t\t\tcontinue; \\
