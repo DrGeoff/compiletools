@@ -389,20 +389,20 @@ class MakefileCreator:
             \t\t\t\tif [ "$$lock_host" = "$$current_host" ] && [ -n "$$lock_pid" ]; then \\
             \t\t\t\t\tkill -0 "$$lock_pid" 2>/dev/null; kill_status=$$?; \\
             \t\t\t\t\tif [ $$kill_status -ne 0 ] && [ ! -e "/proc/$$lock_pid" ]; then \\
-            \t\t\t\t\t\t\tif rm -rf "$$lockdir" 2>/dev/null; then \\
-            \t\t\t\t\t\t\t\techo "Removed stale lock from $$lock_host:$$lock_pid" >&2; \\
-            \t\t\t\t\t\t\t\tcontinue; \\
-            \t\t\t\t\t\t\telse \\
-            \t\t\t\t\t\t\t\tif [ -e "$$lockdir" ]; then \\
-            \t\t\t\t\t\t\t\t\techo "ERROR: Stale lock from $$lock_host:$$lock_pid cannot be removed" >&2; \\
-            \t\t\t\t\t\t\t\t\techo "ERROR: Check permissions on: $$lockdir" >&2; \\
-            \t\t\t\t\t\t\t\t\techo "ERROR: Parent directory should be SGID with group write permissions" >&2; \\
-            \t\t\t\t\t\t\t\t\texit 1; \\
-            \t\t\t\t\t\t\t\tfi; \\
-            \t\t\t\t\t\t\t\tcontinue; \\
+            \t\t\t\t\t\tif rm -rf "$$lockdir" 2>/dev/null; then \\
+            \t\t\t\t\t\t\techo "Removed stale lock from $$lock_host:$$lock_pid" >&2; \\
+            \t\t\t\t\t\t\tcontinue; \\
+            \t\t\t\t\t\telse \\
+            \t\t\t\t\t\t\tif [ -e "$$lockdir" ]; then \\
+            \t\t\t\t\t\t\t\techo "ERROR: Stale lock from $$lock_host:$$lock_pid cannot be removed" >&2; \\
+            \t\t\t\t\t\t\t\techo "ERROR: Check permissions on: $$lockdir" >&2; \\
+            \t\t\t\t\t\t\t\techo "ERROR: Parent directory should be SGID with group write permissions" >&2; \\
+            \t\t\t\t\t\t\t\texit 1; \\
             \t\t\t\t\t\t\tfi; \\
+            \t\t\t\t\t\t\tcontinue; \\
             \t\t\t\t\t\tfi; \\
             \t\t\t\t\tfi; \\
+            \t\t\t\tfi; \\
             \t\t\t\telif [ -n "$$lock_host" ] && [ -n "$$lock_pid" ]; then \\
             \t\t\t\t\tlock_mtime=$$(stat -c %Y "$$lockdir" 2>/dev/null || echo 0); \\
             \t\t\t\t\tcase "$$lock_mtime" in \\
@@ -452,20 +452,20 @@ class MakefileCreator:
             \t\t\t\tif [ "$$lock_host" = "$$current_host" ] && [ -n "$$lock_pid" ]; then \\
             \t\t\t\t\tkill -0 "$$lock_pid" 2>/dev/null; kill_status=$$?; \\
             \t\t\t\t\tif [ $$kill_status -ne 0 ]; then \\
-            \t\t\t\t\t\t\tif rm -rf "$$lockdir" 2>/dev/null; then \\
-            \t\t\t\t\t\t\t\techo "Removed stale lock from $$lock_host:$$lock_pid" >&2; \\
-            \t\t\t\t\t\t\t\tcontinue; \\
-            \t\t\t\t\t\t\telse \\
-            \t\t\t\t\t\t\t\tif [ -e "$$lockdir" ]; then \\
-            \t\t\t\t\t\t\t\t\techo "ERROR: Stale lock from $$lock_host:$$lock_pid cannot be removed" >&2; \\
-            \t\t\t\t\t\t\t\t\techo "ERROR: Check permissions on: $$lockdir" >&2; \\
-            \t\t\t\t\t\t\t\t\techo "ERROR: Parent directory should be SGID with group write permissions" >&2; \\
-            \t\t\t\t\t\t\t\t\texit 1; \\
-            \t\t\t\t\t\t\t\tfi; \\
-            \t\t\t\t\t\t\t\tcontinue; \\
+            \t\t\t\t\t\tif rm -rf "$$lockdir" 2>/dev/null; then \\
+            \t\t\t\t\t\t\techo "Removed stale lock from $$lock_host:$$lock_pid" >&2; \\
+            \t\t\t\t\t\t\tcontinue; \\
+            \t\t\t\t\t\telse \\
+            \t\t\t\t\t\t\tif [ -e "$$lockdir" ]; then \\
+            \t\t\t\t\t\t\t\techo "ERROR: Stale lock from $$lock_host:$$lock_pid cannot be removed" >&2; \\
+            \t\t\t\t\t\t\t\techo "ERROR: Check permissions on: $$lockdir" >&2; \\
+            \t\t\t\t\t\t\t\techo "ERROR: Parent directory should be SGID with group write permissions" >&2; \\
+            \t\t\t\t\t\t\t\texit 1; \\
             \t\t\t\t\t\t\tfi; \\
+            \t\t\t\t\t\t\tcontinue; \\
             \t\t\t\t\t\tfi; \\
             \t\t\t\t\tfi; \\
+            \t\t\t\tfi; \\
             \t\t\t\telif [ -n "$$lock_host" ] && [ -n "$$lock_pid" ]; then \\
             \t\t\t\t\tlock_mtime=$$(stat -f %m "$$lockdir" 2>/dev/null || echo 0); \\
             \t\t\t\t\tcase "$$lock_mtime" in \\
