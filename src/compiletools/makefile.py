@@ -383,8 +383,8 @@ class MakefileCreator:
             \t\t\tlock_info=$$(cat "$$lockdir/pid" 2>/dev/null); \\
             \t\t\techo "DEBUG: lock_info=[$$lock_info]" >&2; \\
             \t\t\tif [ -n "$$lock_info" ]; then \\
-            \t\t\t\tlock_host=$$${{lock_info%%:*}}; \\
-            \t\t\t\tlock_pid=$$${{lock_info##*:}}; \\
+            \t\t\t\tlock_host=$${lock_info%%:*}; \\
+            \t\t\t\tlock_pid=$${lock_info##*:}; \\
             \t\t\t\techo "DEBUG: lock_host=[$$lock_host] lock_pid=[$$lock_pid] current_host=[$$current_host]" >&2; \\
             \t\t\t\tif [ "$$lock_host" = "$$current_host" ] && [ -n "$$lock_pid" ]; then \\
             \t\t\t\t\tif ! kill -0 "$$lock_pid" 2>/dev/null; then \\
@@ -446,8 +446,8 @@ class MakefileCreator:
             \t\tif [ -f "$$lockdir/pid" ]; then \\
             \t\t\tlock_info=$$(cat "$$lockdir/pid" 2>/dev/null); \\
             \t\t\tif [ -n "$$lock_info" ]; then \\
-            \t\t\t\tlock_host=$$${{lock_info%%:*}}; \\
-            \t\t\t\tlock_pid=$$${{lock_info##*:}}; \\
+            \t\t\t\tlock_host=$${lock_info%%:*}; \\
+            \t\t\t\tlock_pid=$${lock_info##*:}; \\
             \t\t\t\tif [ "$$lock_host" = "$$current_host" ] && [ -n "$$lock_pid" ]; then \\
             \t\t\t\t\tif ! kill -0 "$$lock_pid" 2>/dev/null; then \\
             \t\t\t\t\t\tkill_status=$$?; \\
