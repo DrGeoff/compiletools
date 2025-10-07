@@ -38,7 +38,7 @@ def test_none_found():
             )
 
             output = compiletools.listvariants.find_possible_variants(
-                user_config_dir=ucd, system_config_dir=scd, exedir=ecd, verbose=9, gitroot=tempdir
+                user_config_dir=ucd, system_config_dir=scd, exedir=ecd, verbose=9, gitroot=tempdir_real
             )
             assert expected_output == output
 
