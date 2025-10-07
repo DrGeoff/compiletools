@@ -132,18 +132,31 @@ Performance
 
 Because ct-cake internally generates a makefile to build the C++ file, cake is
 about as fast as a handrolled Makefile that uses the same lazily generated
-dependencies. One particular example project took 0.04 seconds to build if 
+dependencies. One particular example project took 0.04 seconds to build if
 nothing is out of date, versus 2 seconds for, say, Boost.Build.
 
 ct-cake also eliminates the redundant generation of static archive files that
 a more hierarchical build process would generate as intermediaries, saving
 the cost of running 'ar'.
 
-Note that ct-cake doesn't build all cpp files that you have checked out, only 
+Note that ct-cake doesn't build all cpp files that you have checked out, only
 those
 strictly needed to build your particular binary, so you only pay for what
 you use. This difference alone should see a large improvement on most
 projects, especially for incremental rebuilds.
+
+Shared Object Cache
+-------------------
+
+ct-cake supports a shared object file cache that enables multiple users and build
+hosts to share compiled object files. This significantly speeds up builds in
+multi-developer and CI/CD environments by reusing object files across builds.
+
+Enable by setting ``shared-objects = true`` in your configuration file. The cache
+uses content-addressable storage (files named by hash of source + compiler flags)
+and includes safe concurrent access with automatic stale lock detection.
+
+See the main compiletools README for setup details.
 
 Selective build and test
 ========================

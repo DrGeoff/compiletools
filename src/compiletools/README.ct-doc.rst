@@ -66,6 +66,33 @@ For example,
     or 
     --append-CXXFLAGS='"-march=skylake"'
 
+SHARED OBJECT CACHE
+===================
+compiletools supports a shared object file cache for multi-user/multi-host
+environments. When enabled via ``shared-objects = true`` in ct.conf, object files
+are stored in a content-addressable cache that can be safely accessed concurrently
+by multiple users and build hosts.
+
+Key features:
+
+* **Content-addressable storage**: Object files named by source + flags hash
+* **Multi-user safe**: Group-writable cache with proper locking
+* **Cross-host compatible**: Works on NFS, GPFS, Lustre filesystems
+* **Stale lock detection**: Automatic cleanup of locks from crashed builds
+* **Minimal configuration**: Just set ``shared-objects = true`` in config
+
+Example setup for shared cache:
+
+.. code-block:: bash
+
+    # In ct.conf or variant config
+    shared-objects = true
+    objdir = /shared/nfs/build/cache
+
+    # Ensure cache directory is group-writable with SGID
+    mkdir -p /shared/nfs/build/cache
+    chmod 2775 /shared/nfs/build/cache
+
 Other notable tools are
 
 .. code-block:: text
