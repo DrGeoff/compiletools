@@ -217,7 +217,10 @@ class MakefileCreator:
         
         # Detect filesystem type once and cache it
         self._filesystem_type = self._detect_filesystem_type()
-        
+
+        # Detect OS type once and cache it
+        self._os_type = self._detect_os_type()
+
         # Check if shared object mode is enabled
         self._shared_objects = self._is_shared_objects_enabled()
 
@@ -252,6 +255,18 @@ class MakefileCreator:
         if self.args.verbose >= 3:
             print(f"Detected filesystem type: {fstype}")
         return fstype
+
+    def _detect_os_type(self):
+        """Detect OS type once for platform-specific code generation"""
+        import platform
+        system = platform.system().lower()
+        if 'linux' in system:
+            return 'linux'
+        elif 'darwin' in system or 'bsd' in system:
+            return 'bsd'
+        else:
+            # Default to linux for unknown platforms
+            return 'linux'
 
     def _is_shared_objects_enabled(self):
         """Check if shared object mode is enabled via config"""
@@ -330,12 +345,134 @@ class MakefileCreator:
             return self._posix_flock_prefix()
 
     def _lockdir_prefix(self):
-        """Common lockdir implementation for GPFS, Lustre, NFS"""
+        """Common lockdir implementation for GPFS, Lustre, NFS with stale lock detection"""
         sleep_interval = compiletools.filesystem_utils.get_lockdir_sleep_interval(self._filesystem_type)
 
+        if self._os_type == 'linux':
+            return self._lockdir_prefix_linux(sleep_interval)
+        else:
+            return self._lockdir_prefix_bsd(sleep_interval)
+
+    def _lockdir_prefix_linux(self, sleep_interval):
+        """Linux variant with /proc support for EPERM detection"""
         return textwrap.dedent(f'''
             lockdir="$@.lockdir"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
-            \twhile ! mkdir "$$lockdir" 2>/dev/null; do sleep {sleep_interval}; done; \\
+            \tcurrent_host=$$(uname -n); lock_warn_time=0; lock_escalate_time=0; \\
+            \twhile ! mkdir "$$lockdir" 2>/dev/null; do \\
+            \t\tif [ -f "$$lockdir/pid" ]; then \\
+            \t\t\tlock_info=$$(cat "$$lockdir/pid" 2>/dev/null); \\
+            \t\t\tif [ -n "$$lock_info" ]; then \\
+            \t\t\t\tlock_host=$$${{lock_info%%:*}}; \\
+            \t\t\t\tlock_pid=$$${{lock_info##*:}}; \\
+            \t\t\t\tif [ "$$lock_host" = "$$current_host" ]; then \\
+            \t\t\t\t\tif ! kill -0 "$$lock_pid" 2>/dev/null; then \\
+            \t\t\t\t\t\tkill_status=$$?; \\
+            \t\t\t\t\t\tif [ $$kill_status -eq 1 ] && [ ! -e "/proc/$$lock_pid" ]; then \\
+            \t\t\t\t\t\t\tif rm -rf "$$lockdir" 2>/dev/null; then \\
+            \t\t\t\t\t\t\t\techo "Removed stale lock from $$lock_host:$$lock_pid" >&2; \\
+            \t\t\t\t\t\t\t\tcontinue; \\
+            \t\t\t\t\t\t\telse \\
+            \t\t\t\t\t\t\t\tif [ -e "$$lockdir" ]; then \\
+            \t\t\t\t\t\t\t\t\techo "ERROR: Stale lock from $$lock_host:$$lock_pid cannot be removed" >&2; \\
+            \t\t\t\t\t\t\t\t\techo "ERROR: Check permissions on: $$lockdir" >&2; \\
+            \t\t\t\t\t\t\t\t\techo "ERROR: Parent directory should be SGID with group write permissions" >&2; \\
+            \t\t\t\t\t\t\t\t\texit 1; \\
+            \t\t\t\t\t\t\t\tfi; \\
+            \t\t\t\t\t\t\t\tcontinue; \\
+            \t\t\t\t\t\t\tfi; \\
+            \t\t\t\t\t\tfi; \\
+            \t\t\t\t\tfi; \\
+            \t\t\t\telse \\
+            \t\t\t\t\tlock_mtime=$$(stat -c %Y "$$lockdir" 2>/dev/null || echo 0); \\
+            \t\t\t\t\tcase "$$lock_mtime" in \\
+            \t\t\t\t\t\t''|*[!0-9]*) lock_age_sec=0 ;; \\
+            \t\t\t\t\t\t*) now=$$(date +%s); lock_age_sec=$$((now - lock_mtime)) ;; \\
+            \t\t\t\t\tesac; \\
+            \t\t\t\t\tif [ $$lock_age_sec -gt 0 ]; then \\
+            \t\t\t\t\t\tnow=$$(date +%s); \\
+            \t\t\t\t\t\tif [ $$lock_warn_time -eq 0 ] || [ $$((now - lock_warn_time)) -gt 60 ]; then \\
+            \t\t\t\t\t\t\techo "Warning: Lock held by $$lock_host:$$lock_pid (age: ${{lock_age_sec}}s, different host)" >&2; \\
+            \t\t\t\t\t\t\tlock_warn_time=$$now; \\
+            \t\t\t\t\t\tfi; \\
+            \t\t\t\t\t\tif [ $$lock_age_sec -gt 600 ] && [ $$lock_escalate_time -eq 0 ]; then \\
+            \t\t\t\t\t\t\techo "WARNING: Cross-host lock from $$lock_host:$$lock_pid age exceeds 10 minutes" >&2; \\
+            \t\t\t\t\t\t\techo "WARNING: If remote host crashed, admin must manually remove: $$lockdir" >&2; \\
+            \t\t\t\t\t\t\tlock_escalate_time=$$now; \\
+            \t\t\t\t\t\tfi; \\
+            \t\t\t\t\tfi; \\
+            \t\t\t\tfi; \\
+            \t\t\tfi; \\
+            \t\tfi; \\
+            \t\tsleep {sleep_interval}; \\
+            \tdone; \\
+            \tchmod 775 "$$lockdir" 2>/dev/null || true; \\
+            \tif [ -e "$@" ]; then \\
+            \t\tchgrp --reference="$@" "$$lockdir" 2>/dev/null || true; \\
+            \tfi; \\
+            \techo "$$current_host:$$$$" > "$$lockdir/pid.tmp"; \\
+            \tmv "$$lockdir/pid.tmp" "$$lockdir/pid"; \\
+            \tchmod 664 "$$lockdir/pid" 2>/dev/null || true; \\
+            \t''').strip()
+
+    def _lockdir_prefix_bsd(self, sleep_interval):
+        """macOS/BSD variant without /proc, conservative EPERM handling"""
+        return textwrap.dedent(f'''
+            lockdir="$@.lockdir"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
+            \tcurrent_host=$$(uname -n); lock_warn_time=0; lock_escalate_time=0; \\
+            \twhile ! mkdir "$$lockdir" 2>/dev/null; do \\
+            \t\tif [ -f "$$lockdir/pid" ]; then \\
+            \t\t\tlock_info=$$(cat "$$lockdir/pid" 2>/dev/null); \\
+            \t\t\tif [ -n "$$lock_info" ]; then \\
+            \t\t\t\tlock_host=$$${{lock_info%%:*}}; \\
+            \t\t\t\tlock_pid=$$${{lock_info##*:}}; \\
+            \t\t\t\tif [ "$$lock_host" = "$$current_host" ]; then \\
+            \t\t\t\t\tif ! kill -0 "$$lock_pid" 2>/dev/null; then \\
+            \t\t\t\t\t\tkill_status=$$?; \\
+            \t\t\t\t\t\tif [ $$kill_status -eq 1 ]; then \\
+            \t\t\t\t\t\t\tif rm -rf "$$lockdir" 2>/dev/null; then \\
+            \t\t\t\t\t\t\t\techo "Removed stale lock from $$lock_host:$$lock_pid" >&2; \\
+            \t\t\t\t\t\t\t\tcontinue; \\
+            \t\t\t\t\t\t\telse \\
+            \t\t\t\t\t\t\t\tif [ -e "$$lockdir" ]; then \\
+            \t\t\t\t\t\t\t\t\techo "ERROR: Stale lock from $$lock_host:$$lock_pid cannot be removed" >&2; \\
+            \t\t\t\t\t\t\t\t\techo "ERROR: Check permissions on: $$lockdir" >&2; \\
+            \t\t\t\t\t\t\t\t\techo "ERROR: Parent directory should be SGID with group write permissions" >&2; \\
+            \t\t\t\t\t\t\t\t\texit 1; \\
+            \t\t\t\t\t\t\t\tfi; \\
+            \t\t\t\t\t\t\t\tcontinue; \\
+            \t\t\t\t\t\t\tfi; \\
+            \t\t\t\t\t\tfi; \\
+            \t\t\t\t\tfi; \\
+            \t\t\t\telse \\
+            \t\t\t\t\tlock_mtime=$$(stat -f %m "$$lockdir" 2>/dev/null || echo 0); \\
+            \t\t\t\t\tcase "$$lock_mtime" in \\
+            \t\t\t\t\t\t''|*[!0-9]*) lock_age_sec=0 ;; \\
+            \t\t\t\t\t\t*) now=$$(date +%s); lock_age_sec=$$((now - lock_mtime)) ;; \\
+            \t\t\t\t\tesac; \\
+            \t\t\t\t\tif [ $$lock_age_sec -gt 0 ]; then \\
+            \t\t\t\t\t\tnow=$$(date +%s); \\
+            \t\t\t\t\t\tif [ $$lock_warn_time -eq 0 ] || [ $$((now - lock_warn_time)) -gt 60 ]; then \\
+            \t\t\t\t\t\t\techo "Warning: Lock held by $$lock_host:$$lock_pid (age: ${{lock_age_sec}}s, different host)" >&2; \\
+            \t\t\t\t\t\t\tlock_warn_time=$$now; \\
+            \t\t\t\t\t\tfi; \\
+            \t\t\t\t\t\tif [ $$lock_age_sec -gt 600 ] && [ $$lock_escalate_time -eq 0 ]; then \\
+            \t\t\t\t\t\t\techo "WARNING: Cross-host lock from $$lock_host:$$lock_pid age exceeds 10 minutes" >&2; \\
+            \t\t\t\t\t\t\techo "WARNING: If remote host crashed, admin must manually remove: $$lockdir" >&2; \\
+            \t\t\t\t\t\t\tlock_escalate_time=$$now; \\
+            \t\t\t\t\t\tfi; \\
+            \t\t\t\t\tfi; \\
+            \t\t\t\tfi; \\
+            \t\t\tfi; \\
+            \t\tfi; \\
+            \t\tsleep {sleep_interval}; \\
+            \tdone; \\
+            \tchmod 775 "$$lockdir" 2>/dev/null || true; \\
+            \tif [ -e "$@" ]; then \\
+            \t\tchgrp --reference="$@" "$$lockdir" 2>/dev/null || true; \\
+            \tfi; \\
+            \techo "$$current_host:$$$$" > "$$lockdir/pid.tmp"; \\
+            \tmv "$$lockdir/pid.tmp" "$$lockdir/pid"; \\
+            \tchmod 664 "$$lockdir/pid" 2>/dev/null || true; \\
             \t''').strip()
 
     def _cifs_lock_prefix(self):
@@ -366,7 +503,7 @@ class MakefileCreator:
         strategy = compiletools.filesystem_utils.get_lock_strategy(self._filesystem_type)
 
         if strategy == 'lockdir':
-            return '; mv "$$tmp" $@; rmdir "$$lockdir"'
+            return '; mv "$$tmp" $@; rm -f "$$lockdir/pid"; rmdir "$$lockdir"'
         elif strategy == 'cifs':
             return '; mv "$$tmp" $@; rm -f "$$lockfile" "$$lockfile.excl" 2>/dev/null'
         else:  # 'flock'
