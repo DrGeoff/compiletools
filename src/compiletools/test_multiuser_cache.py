@@ -130,6 +130,23 @@ def create_objdir_worker(worker_id, objdir):
         return {'worker_id': worker_id, 'success': False, 'error': str(e)}
 
 
+def build_subproject_worker(worker_id, source_dir, config_name):
+    """Build a subproject using ct-cake (module-level for multiprocessing)."""
+    try:
+        os.chdir(source_dir)
+        argv = [
+            "--exemarkers=main",
+            "--auto",
+            "--config=" + config_name,
+            "--CTCACHE=None",
+        ]
+        uth.reset()
+        compiletools.cake.main(argv)
+        return {'worker_id': worker_id, 'returncode': 0, 'error': None}
+    except Exception as e:
+        return {'worker_id': worker_id, 'returncode': 1, 'error': str(e)}
+
+
 def continuous_reader(obj_path, stop_event, errors):
     """Continuously read object file and detect corruption."""
     original_size = None
@@ -878,6 +895,92 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             assert not stale_lock.exists(), "Stale lock should be cleaned up"
             # And object file should be rebuilt
             assert obj_file.exists(), "Object file should be rebuilt"
+
+    @uth.requires_functional_compiler
+    def test_single_user_two_subprojects_concurrent(self):
+        """
+        Test single user building two subprojects concurrently with shared source.
+
+        Scenario:
+        - Same user, two terminal sessions
+        - Two different subprojects (numbers and factory samples)
+        - Both using same shared objdir
+        - May have shared dependencies
+
+        Expected:
+        - Both builds succeed without permission errors
+        - Lock contention is handled correctly (same UID, kill -0 works)
+        - No corruption of shared object files
+        - Stale lock cleanup works (same user can delete own files)
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            objdir = Path(tmpdir) / 'shared_obj'
+            objdir.mkdir(mode=0o2775)
+
+            # Create two subproject directories using different sample projects
+            import shutil
+
+            # Subproject A: numbers sample
+            subproject_a_dir = Path(tmpdir) / 'subproject_numbers'
+            subproject_a_dir.mkdir()
+            numbers_src = Path(uth.samplesdir()) / 'numbers'
+            for f in numbers_src.glob('*'):
+                if f.is_file():
+                    shutil.copy2(str(f), str(subproject_a_dir))
+
+            config_a = uth.create_temp_config(str(subproject_a_dir))
+            uth.create_temp_ct_conf(
+                tempdir=str(subproject_a_dir),
+                defaultvariant=os.path.basename(config_a)[:-5],
+                extralines=[
+                    'shared-objects = true',
+                    f'objdir = {objdir}'
+                ]
+            )
+
+            # Subproject B: factory sample
+            subproject_b_dir = Path(tmpdir) / 'subproject_factory'
+            subproject_b_dir.mkdir()
+            factory_src = Path(uth.samplesdir()) / 'factory'
+            for f in factory_src.glob('*'):
+                if f.is_file():
+                    shutil.copy2(str(f), str(subproject_b_dir))
+
+            config_b = uth.create_temp_config(str(subproject_b_dir))
+            uth.create_temp_ct_conf(
+                tempdir=str(subproject_b_dir),
+                defaultvariant=os.path.basename(config_b)[:-5],
+                extralines=[
+                    'shared-objects = true',
+                    f'objdir = {objdir}'
+                ]
+            )
+
+            # Build both subprojects concurrently
+            ctx = multiprocessing.get_context('spawn')
+            with ctx.Pool(2) as pool:
+                results = pool.starmap(
+                    build_subproject_worker,
+                    [
+                        (0, str(subproject_a_dir), config_a),
+                        (1, str(subproject_b_dir), config_b),
+                    ]
+                )
+
+            # Verify both builds succeeded
+            for r in results:
+                assert r['returncode'] == 0, \
+                    f"Worker {r['worker_id']} failed: {r['error']}"
+
+            # Verify object files were created in shared objdir
+            obj_files = list(objdir.glob('**/*.o'))
+            assert len(obj_files) >= 2, \
+                f"Expected at least 2 object files, found {len(obj_files)}"
+
+            # Verify no lock directories remain (all cleaned up)
+            lockdirs = list(objdir.glob('**/*.lockdir'))
+            assert len(lockdirs) == 0, \
+                f"Found stale lock directories: {lockdirs}"
 
 
 if __name__ == '__main__':
