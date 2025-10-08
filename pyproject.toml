@@ -99,9 +99,6 @@ filename = "src/compiletools/version.py"
 filename = "pyproject.toml"
 
 [[tool.bumpversion.files]]
-filename = "README.rst"
-
-[[tool.bumpversion.files]]
 filename = "src/compiletools/README.ct-doc.rst"
 
 [[tool.bumpversion.files]]
