@@ -29,7 +29,7 @@ def main(argv=None):
 
     results = []
     for fname in args.filename:
-        results.extend(hh.process(fname))
+        results.extend(hh.process(fname, frozenset()))
     results = compiletools.utils.ordered_unique(results)
 
     for dep in results:

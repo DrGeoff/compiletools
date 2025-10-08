@@ -305,7 +305,8 @@ class MagicFlagsBase:
         # When used in the "usual" fashion this is true.
         # However, it is possible to call directly so we must
         # ensure that the headerdeps exist manually.
-        self._headerdeps.process(filename)
+        # Pass empty frozenset since we haven't computed macros for this file yet
+        self._headerdeps.process(filename, frozenset())
 
         # Both DirectMagicFlags and CppMagicFlags now use structured data approach
         flagsforfilename = defaultdict(list)
@@ -691,7 +692,8 @@ class DirectMagicFlags(MagicFlagsBase):
             return cached_result
 
         # Get headers and setup
-        headers = self._headerdeps.process(filename)
+        # Pass empty frozenset - we're starting fresh analysis for this file
+        headers = self._headerdeps.process(filename, frozenset())
         if self._args.verbose >= 9:
             print(f"DirectMagicFlags: headers from headerdeps: {headers}")
 

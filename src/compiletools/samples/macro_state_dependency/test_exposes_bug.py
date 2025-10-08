@@ -53,13 +53,13 @@ def test_macro_state_pollution_bug():
         
         # First analysis: file WITH macro (should include module_b.h)
         # main.cpp defines FEATURE_A_ENABLED -> config.h defines FEATURE_B_ENABLED -> core.h includes module_b.h
-        deps_with_macro = headerdeps.process(str(file_with_macro))
+        deps_with_macro = headerdeps.process(str(file_with_macro), frozenset())
         has_conditional_with_macro = any('module_b.h' in dep for dep in deps_with_macro)
-        
+
         # Second analysis: file WITHOUT macro (should NOT include module_b.h)
         # clean_main.cpp doesn't define FEATURE_A_ENABLED -> no FEATURE_B_ENABLED -> no module_b.h inclusion
         # But due to macro state pollution, it might incorrectly include it
-        deps_without_macro = headerdeps.process(str(file_without_macro))
+        deps_without_macro = headerdeps.process(str(file_without_macro), frozenset())
         has_conditional_without_macro = any('module_b.h' in dep for dep in deps_without_macro)
         
         print(f"File WITH macro includes module_b.h: {has_conditional_with_macro}")

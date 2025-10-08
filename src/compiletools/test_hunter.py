@@ -15,7 +15,7 @@ def callprocess(headerobj, filenames):
     result = set()
     for filename in filenames:
         realpath = compiletools.wrappedos.realpath(filename)
-        result |= headerobj.process(realpath)
+        result |= set(headerobj.process(realpath, frozenset()))
     return result
 
 

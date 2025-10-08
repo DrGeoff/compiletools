@@ -466,7 +466,7 @@ def run_headerdeps(kind, filename, cppflags=None, cache="None", extra_args=None)
             argv.extend(extra_args)
             
         with HeaderDepsTestContext(argv, cache=cache) as hdeps:
-            return set(hdeps.process(filename))
+            return set(hdeps.process(filename, frozenset()))
 
 
 @contextlib.contextmanager
@@ -622,7 +622,7 @@ def headerdeps_result(filename, kind="direct", cppflags=None, include=None, extr
                     argv = ["--config=" + temp_config_name, f"--headerdeps={kind}", "--include", include] + extra_args
                     args = compiletools.apptools.parseargs(cap, argv)
                     h = compiletools.headerdeps.create(args)
-                    return set(h.process(filename))
+                    return set(h.process(filename, frozenset()))
     finally:
         # Restore original cache
         with EnvironmentContext({"CTCACHE": origcache}):

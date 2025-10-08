@@ -62,12 +62,18 @@ class HeaderDepsBase(object):
         # Set global analyzer args for FileAnalyzer caching
         set_analyzer_args(args)
 
-    def _process_impl(self, realpath):
+    def _process_impl(self, realpath, macro_state_key):
         """Derived classes implement this function"""
         raise NotImplementedError
 
-    def process(self, filename):
+    def process(self, filename, macro_state_key):
         """Return an ordered list of header dependencies for the given file.
+
+        Args:
+            filename: File to analyze for dependencies
+            macro_state_key: Frozenset of (macro_name, macro_value) tuples
+                            representing variable macros from parent file context.
+                            Pass frozenset() for no variable macros (core only).
 
         Notes:
                 - The list preserves discovery order (depth-first and preprocessor-respecting
@@ -78,14 +84,14 @@ class HeaderDepsBase(object):
         """
         realpath = compiletools.wrappedos.realpath(filename)
         try:
-            result = self._process_impl(realpath)
+            result = self._process_impl(realpath, macro_state_key)
         except IOError:
             # If there was any error the first time around, an error correcting removal would have occured
             # So strangely, the best thing to do is simply try again
             result = None
 
         if not result:
-            result = self._process_impl(realpath)
+            result = self._process_impl(realpath, macro_state_key)
 
         return result
 
@@ -202,12 +208,16 @@ class DirectHeaderDeps(HeaderDepsBase):
         self._includes = None
 
         # Initialize includes and macros
-        self._initialize_includes_and_macros()
-    
-    def _initialize_includes_and_macros(self):
+        self._initialize_includes_and_macros({})
+
+    def _initialize_includes_and_macros(self, variable_macros):
         """Initialize include paths and macro definitions from compile flags.
 
         Caches core macros and includes on first call for reuse across all files.
+
+        Args:
+            variable_macros: Dict of variable macros (from file #defines).
+                            Pass {} or None for no variable macros (core only).
         """
         # Cache core macros and includes - they never change for this instance
         if self._core_macros is None:
@@ -233,9 +243,9 @@ class DirectHeaderDeps(HeaderDepsBase):
             # Convert all keys and values to StringZilla.Str and place in core
             self._core_macros = {sz.Str(k): sz.Str(v) for k, v in raw_macros.items()}
 
-        # Set includes and reset macro state (reuse cached core, fresh variable dict)
+        # Set includes and reset macro state (reuse cached core, use provided variable dict)
         self.includes = self._includes
-        self.defined_macros = MacroState(self._core_macros, {})
+        self.defined_macros = MacroState(self._core_macros, variable_macros or {})
 
     @functools.lru_cache(maxsize=None)
     def _search_project_includes(self, include: sz.Str):
@@ -281,14 +291,31 @@ class DirectHeaderDeps(HeaderDepsBase):
             results_order.remove(realpath)
         return results_order
 
-    def process(self, filename):
-        """Override to compute and pass initial macro cache key."""
+    def process(self, filename, macro_state_key):
+        """Override to compute and pass initial macro cache key.
+
+        Args:
+            filename: File to analyze for dependencies
+            macro_state_key: Frozenset of (macro_name, macro_value) tuples
+                            representing variable macros from parent file context.
+                            Pass frozenset() for no variable macros (core only).
+        """
         realpath = compiletools.wrappedos.realpath(filename)
 
-        # Reset macro state to ensure consistent initial_macro_key for LRU cache
-        # Without this, macro state from previous files pollutes the key,
-        # preventing cache hits when processing common headers
-        self._initialize_includes_and_macros()
+        # Convert frozenset macro_state_key to dict for MacroState
+        # macro_state_key is frozenset of (sz.Str, sz.Str) tuples
+        # Coerce to sz.Str to handle tests/scripts passing plain Python strings
+        if macro_state_key:
+            variable_macros = {
+                (k if isinstance(k, sz.Str) else sz.Str(k)):
+                (v if isinstance(v, sz.Str) else sz.Str(v))
+                for k, v in macro_state_key
+            }
+        else:
+            variable_macros = {}
+
+        # Initialize with variable macros to ensure consistent initial_macro_key for LRU cache
+        self._initialize_includes_and_macros(variable_macros)
         initial_macro_key = self.defined_macros.get_cache_key()
 
         try:
@@ -440,7 +467,26 @@ class CppHeaderDeps(HeaderDepsBase):
         HeaderDepsBase.__init__(self, args)
         self.preprocessor = compiletools.preprocessor.PreProcessor(args)
 
-    def _process_impl(self, realpath):
+    def process(self, filename, macro_state_key):
+        """Process using cpp -MM (raises error if macro_state_key non-empty).
+
+        Args:
+            filename: File to analyze for dependencies
+            macro_state_key: Must be empty frozenset. CppHeaderDeps does not support
+                            file-level macro contexts (compiler determines macros).
+
+        Raises:
+            NotImplementedError: If macro_state_key is non-empty
+        """
+        if macro_state_key:
+            raise NotImplementedError(
+                "CppHeaderDeps does not support file-level macro contexts. "
+                "Use --headerdeps=direct (default) for macro-aware dependency analysis."
+            )
+        realpath = compiletools.wrappedos.realpath(filename)
+        return self._process_impl(realpath, macro_state_key)
+
+    def _process_impl(self, realpath, macro_state_key):
         """Use the -MM option to the compiler to generate the list of dependencies
         If you supply a header file rather than a source file then
         a dummy, blank, source file will be transparently provided

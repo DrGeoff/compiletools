@@ -205,8 +205,8 @@ def compare_direct_cpp_headers(test_case, filename, extraargs=None):
 
             hdirect = compiletools.headerdeps.create(argsdirect)
             hcpp = compiletools.headerdeps.create(argscpp)
-            hdirectresult = hdirect.process(realpath)
-            hcppresult = hcpp.process(realpath)
+            hdirectresult = hdirect.process(realpath, frozenset())
+            hcppresult = hcpp.process(realpath, frozenset())
             assert set(hdirectresult) == set(hcppresult)
             
         with uth.EnvironmentContext({"CTCACHE": origcache}):
