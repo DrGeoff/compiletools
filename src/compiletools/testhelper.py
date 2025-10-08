@@ -666,8 +666,20 @@ def touch(*paths):
         # Append a comment with timestamp to ensure content changes
         with open(path, 'a') as f:
             f.write(f"\n// touched at {time.time()}\n")
-    # Sleep to ensure subsequent rebuilds have detectably different timestamps
-    time.sleep(0.1)
+
+    # Clear all relevant caches to ensure modified files are detected
+    from compiletools.global_hash_registry import clear_global_registry, get_file_hash
+    clear_global_registry()
+    get_file_hash.cache_clear()
+
+    from compiletools.file_analyzer import analyze_file
+    analyze_file.cache_clear()
+
+    import compiletools.wrappedos as wo
+    wo.clear_cache()
+
+    # Brief sleep to ensure timestamp differences are detectable
+    time.sleep(0.01)
 
 
 def write_sources(mapping, target_dir=None):
