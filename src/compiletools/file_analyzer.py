@@ -293,7 +293,7 @@ def _warn_filesystem_mmap_issue(fstype: str):
 
     print(f"Warning: Detected {fstype} filesystem which has known mmap issues", file=sys.stderr)
     print(f"  Using traditional file reading instead of memory mapping", file=sys.stderr)
-    print(f"  This may be slightly slower but prevents data corruption", file=sys.stderr)
+    print(f"  This avoids subtle consistency, caching, and performance problems", file=sys.stderr)
     print(f"  To suppress this warning: add '--suppress-filesystem-warnings' flag or config", file=sys.stderr)
     _warned_filesystem.add(fstype)
 
