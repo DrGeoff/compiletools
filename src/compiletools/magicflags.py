@@ -611,37 +611,34 @@ class DirectMagicFlags(MagicFlagsBase):
 
         Returns: number of iterations taken
         """
-        file_last_macro_key = {}
+        file_last_macro_version = {}
         iteration = 0
 
         while iteration < max_iterations:
             iteration += 1
-            current_macro_key = self.defined_macros.get_cache_key()
-            macro_count_before = len(self.defined_macros.variable)
+            macro_version_before = self.defined_macros.get_version()
 
-            # Determine which files need processing (those not yet processed with current macro state)
+            # Determine which files need processing (those not yet processed with current macro version)
             files_to_process = [
                 fname for fname in all_files
-                if file_last_macro_key.get(fname) != current_macro_key
+                if file_last_macro_version.get(fname) != macro_version_before
             ]
 
             if not files_to_process:
                 break
 
             # Process files that need reprocessing
-            # Pass current_macro_key to avoid redundant get_cache_key() calls
+            # Pass cache key to avoid redundant get_cache_key() calls within file processing
+            current_macro_key = self.defined_macros.get_cache_key()
             for fname in files_to_process:
                 self._process_file_for_macros(fname, current_macro_key)
-                file_last_macro_key[fname] = current_macro_key
+                # Record current version to avoid reprocessing in next iteration
+                # (files that mutate macros are already cached by their input state)
+                file_last_macro_version[fname] = macro_version_before
 
-            # Check convergence - first cheap count check, then cache key comparison
-            macro_count_after = len(self.defined_macros.variable)
-            if macro_count_after != macro_count_before:
-                continue
-
-            # Count unchanged, check for value-only changes with cache key
-            new_macro_key = self.defined_macros.get_cache_key()
-            if new_macro_key == current_macro_key:
+            # Check convergence - version unchanged means macros converged
+            macro_version_after = self.defined_macros.get_version()
+            if macro_version_after == macro_version_before:
                 break
 
         return iteration

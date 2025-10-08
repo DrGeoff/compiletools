@@ -57,12 +57,16 @@ class MacroState:
               These never change during a build, so we exclude them from cache keys.
         variable: Dynamic macros accumulated from #define directives in files.
                   These grow as files are processed and determine cache behavior.
+        _version: Integer counter incremented on any mutation to variable macros.
+                  Used for fast convergence detection without expensive cache key comparisons.
+                  IMPORTANT: Any new mutation pathway must increment this counter.
     """
     core: MacroDict  # Static: compiler + cmdline macros
     variable: MacroDict  # Dynamic: file #defines
     _cache_key: Optional[FrozenSet[Tuple[sz.Str, sz.Str]]]  # Cached frozenset for cache keys
     _hash: Optional[str]  # Cached hex digest for convergence detection (variable only)
     _hash_full: Optional[str]  # Cached hex digest including core + variable
+    _version: int  # Version counter incremented on any mutation for fast equality checks
 
     def __init__(self, core: MacroDict, variable: Optional[MacroDict] = None):
         """Initialize macro state.
@@ -76,6 +80,7 @@ class MacroState:
         self._cache_key = None  # Lazy-computed cache key
         self._hash = None  # Lazy-computed hash (variable only)
         self._hash_full = None  # Lazy-computed hash (core + variable)
+        self._version = 0  # Increments on mutations for fast convergence detection
 
     def all_macros(self) -> MacroDict:
         """Get merged view of all macros (core + variable).
@@ -113,10 +118,13 @@ class MacroState:
 
     def __setitem__(self, key, value):
         """Set macro value. Always sets in variable dict."""
-        self.variable[key] = value
-        self._cache_key = None  # Invalidate caches
-        self._hash = None
-        self._hash_full = None  # Invalidate full hash too
+        # Only mutate and increment version if value actually changed
+        if key not in self.variable or self.variable[key] != value:
+            self.variable[key] = value
+            self._version += 1  # Increment version for convergence detection
+            self._cache_key = None  # Invalidate caches
+            self._hash = None
+            self._hash_full = None  # Invalidate full hash too
 
     def __contains__(self, key) -> bool:
         """Check if macro key exists in either core or variable."""
@@ -145,27 +153,57 @@ class MacroState:
     def update(self, other: 'MacroState'):
         """Update variable macros from another MacroState.
 
-        Optimized to skip redundant updates using cache key comparison.
-        Only invalidates cache when actual changes occur.
+        Optimized to skip redundant updates using version comparison.
+        Only increments version when actual changes occur.
         """
         # Early exit if nothing to update
         if not other.variable:
             return
 
-        # Optimization: if both have cache keys, compare them
-        if self._cache_key is not None and other._cache_key is not None:
-            if self._cache_key == other._cache_key:
-                return  # Identical, skip update
+        # Check if any actual changes would occur
+        has_changes = False
+        for key, value in other.variable.items():
+            if key not in self.variable or self.variable[key] != value:
+                has_changes = True
+                break
 
-        # Perform update and invalidate caches
+        if not has_changes:
+            return  # No changes, skip update
+
+        # Perform update and increment version
         self.variable.update(other.variable)
+        self._version += 1  # Increment version on mutation
         self._cache_key = None
         self._hash = None
         self._hash_full = None  # Invalidate full hash too
 
     def copy(self) -> 'MacroState':
         """Create shallow copy of this MacroState."""
-        return MacroState(self.core, self.variable.copy())
+        result = MacroState(self.core, self.variable.copy())
+        result._version = self._version  # Preserve version in copy
+        return result
+
+    def get_version(self) -> int:
+        """Get version counter for fast convergence detection.
+
+        The version increments whenever variable macros are modified.
+        Used to detect convergence without expensive cache key comparisons.
+
+        Returns:
+            Integer version counter (starts at 0, increments on mutations)
+        """
+        return self._version
+
+    def get_cached_key_if_available(self) -> Optional[FrozenSet[Tuple[sz.Str, sz.Str]]]:
+        """Get cache key if already computed, None otherwise.
+
+        Use this to avoid recomputing the cache key when it might already be available.
+        Useful in hot paths where you want to check before computing.
+
+        Returns:
+            Cached frozenset if available, None if not yet computed
+        """
+        return self._cache_key
 
     def get_cache_key(self) -> FrozenSet[Tuple[sz.Str, sz.Str]]:
         """Get or compute cache key for this MacroState.
@@ -337,7 +375,10 @@ def get_or_compute_preprocessing(
         _cache_stats['invariant_misses'] += 1
     else:
         # Macro-variant: cache key is (content_hash, macro_cache_key)
-        macro_key = input_macros.get_cache_key()
+        # Try to use cached key if available to avoid recomputation
+        macro_key = input_macros.get_cached_key_if_available()
+        if macro_key is None:
+            macro_key = input_macros.get_cache_key()
         cache_key = (content_hash, macro_key)
 
         if cache_key in _variant_cache:
