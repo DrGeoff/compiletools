@@ -504,7 +504,7 @@ class DirectMagicFlags(MagicFlagsBase):
 
         return (active_magic_flags, extracted_variable_macros, cppflags_macros, cxxflags_macros)
 
-    def _process_file_for_macros(self, fname: str) -> None:
+    def _process_file_for_macros(self, fname: str, macro_key=None) -> None:
         """Process a single file to extract macros and active magic flags (mutates state).
 
         Updates self.defined_macros and self._stored_active_magic_flags based on
@@ -513,9 +513,12 @@ class DirectMagicFlags(MagicFlagsBase):
 
         Args:
             fname: File path to process
+            macro_key: Optional pre-computed cache key for current macro state.
+                      If None, will compute from self.defined_macros.
         """
-        # Get cache key (frozenset) - more efficient than get_hash()
-        macro_key = self.defined_macros.get_cache_key()
+        # Get cache key (frozenset) - reuse if provided to avoid redundant computation
+        if macro_key is None:
+            macro_key = self.defined_macros.get_cache_key()
 
         # Use cached computation - pass key, function accesses self.defined_macros
         cached_result = self._compute_file_processing_result(fname, macro_key)
@@ -626,8 +629,9 @@ class DirectMagicFlags(MagicFlagsBase):
                 break
 
             # Process files that need reprocessing
+            # Pass current_macro_key to avoid redundant get_cache_key() calls
             for fname in files_to_process:
-                self._process_file_for_macros(fname)
+                self._process_file_for_macros(fname, current_macro_key)
                 file_last_macro_key[fname] = current_macro_key
 
             # Check convergence - first cheap count check, then cache key comparison
