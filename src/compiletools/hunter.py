@@ -1,6 +1,7 @@
 import os
 import functools
 
+import compiletools.apptools
 import compiletools.utils
 import compiletools.wrappedos
 import compiletools.headerdeps
