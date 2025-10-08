@@ -1,8 +1,6 @@
 """Tests for filesystem_utils module."""
 
-import os
 import tempfile
-import pytest
 from compiletools.filesystem_utils import (
     get_filesystem_type,
     get_lock_strategy,

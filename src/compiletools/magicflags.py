@@ -2,7 +2,7 @@ import sys
 import re
 import functools
 from collections import defaultdict
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Union
 from types import SimpleNamespace
 import argparse
 import stringzilla as sz
@@ -15,7 +15,7 @@ import compiletools.configutils
 import compiletools.apptools
 import compiletools.compiler_macros
 import compiletools.dirnamer
-from compiletools.preprocessing_cache import get_or_compute_preprocessing, MacroState, is_macro_invariant
+from compiletools.preprocessing_cache import get_or_compute_preprocessing, MacroState
 from compiletools.apptools import cached_pkg_config_sz
 from compiletools.stringzilla_utils import strip_sz
 from compiletools.file_analyzer import FileAnalysisResult

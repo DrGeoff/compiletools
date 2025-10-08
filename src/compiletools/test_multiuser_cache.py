@@ -159,7 +159,7 @@ def continuous_reader(obj_path, stop_event, errors):
 
                 # With atomic move, should never see empty or partial file
                 if len(data) == 0:
-                    errors.append(f"Read empty file")
+                    errors.append("Read empty file")
                 elif original_size and len(data) < original_size // 2:
                     errors.append(f"Read partial file: {len(data)} bytes vs {original_size}")
         except FileNotFoundError:
@@ -274,7 +274,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 source_dir = Path(tmpdir) / f'build_{i}'
                 source_dir.mkdir()
 
-                src_file = os.path.join(uth.samplesdir(), src_name)
                 # Copy entire source directory for files with dependencies
                 src_parent = Path(uth.samplesdir()) / os.path.dirname(src_name)
                 for f in src_parent.glob('*'):
@@ -373,7 +372,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             # Try to set setgid bit explicitly (may not work on all filesystems)
             try:
                 os.chmod(str(objdir), 0o2775)
-            except:
+            except OSError:
                 pass
 
             # Note: setgid bit may not be settable on all filesystems (e.g., tmpfs)
@@ -502,7 +501,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 tmpdir, 'user_a', str(objdir)
             )
 
-            start = time.time()
+            # start = time.time()  # Timing not currently used
             os.chdir(source_dir_a)
             argv = [
                 "--exemarkers=main",
@@ -512,7 +511,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             ]
             uth.reset()
             compiletools.cake.main(argv)
-            user_a_time = time.time() - start
+            # time.time() - start  # Timing not currently used
 
             initial_obj_count = len(list(objdir.glob('**/*.o')))
             assert initial_obj_count >= 1, "User A should have created object files"
@@ -522,7 +521,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 tmpdir, 'user_b', str(objdir)
             )
 
-            start = time.time()
+            # start = time.time()  # Timing not currently used
             os.chdir(source_dir_b)
             argv = [
                 "--exemarkers=main",
@@ -532,7 +531,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             ]
             uth.reset()
             compiletools.cake.main(argv)
-            user_b_time = time.time() - start
+            # time.time() - start  # Timing not currently used
 
             # User B should succeed (main goal is no permission errors)
             final_obj_count = len(list(objdir.glob('**/*.o')))
@@ -785,7 +784,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             )
 
             # Modify config to disable shared-objects
-            import shutil
             ct_conf = Path(source_dir_1) / 'ct.conf'
             content = ct_conf.read_text()
             content = content.replace('shared-objects = true', 'shared-objects = false')

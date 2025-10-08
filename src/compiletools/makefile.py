@@ -1,7 +1,6 @@
 # vim: set filetype=python:
 import os
 import sys
-import subprocess
 import textwrap
 from io import open
 

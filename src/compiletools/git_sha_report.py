@@ -35,7 +35,7 @@ def run_git(cmd: str, input_data: str = None) -> str:
         
         return result.stdout.strip()
     except FileNotFoundError:
-        raise RuntimeError(f"Git executable not found. Make sure git is installed and in PATH.")
+        raise RuntimeError("Git executable not found. Make sure git is installed and in PATH.")
     except Exception as e:
         if isinstance(e, RuntimeError):
             raise
