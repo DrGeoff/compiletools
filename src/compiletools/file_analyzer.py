@@ -4,13 +4,13 @@ This module provides SIMD-optimized file analysis with StringZilla when availabl
 falling back to traditional regex-based analysis for compatibility.
 """
 
-import os
 import mmap
 import bisect
 import resource
 import sys
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import lru_cache
 from typing import Dict, List, Optional, Set, FrozenSet
 from io import open
 
@@ -276,10 +276,10 @@ def _warn_low_ulimit(total_files: int, soft_limit: int):
 
     print(f"Warning: File descriptor limit too low for mmap mode (ulimit -n = {soft_limit})", file=sys.stderr)
     print(f"  Total files: {total_files}, available FDs (90% of limit): {int(soft_limit * 0.9)}", file=sys.stderr)
-    print(f"  Using traditional file I/O instead of mmap to avoid 'Too many open files' errors", file=sys.stderr)
-    print(f"  This is ~0.1-0.2ms slower per file but prevents EMFILE errors", file=sys.stderr)
+    print("  Using traditional file I/O instead of mmap to avoid 'Too many open files' errors", file=sys.stderr)
+    print("  This is ~0.1-0.2ms slower per file but prevents EMFILE errors", file=sys.stderr)
     print(f"  To use faster mmap mode: ulimit -n {total_files * 2}", file=sys.stderr)
-    print(f"  To suppress this warning: add '--suppress-fd-warnings' flag or config", file=sys.stderr)
+    print("  To suppress this warning: add '--suppress-fd-warnings' flag or config", file=sys.stderr)
     _warned_low_ulimit = True
 
 
@@ -292,9 +292,9 @@ def _warn_filesystem_mmap_issue(fstype: str):
         return
 
     print(f"Warning: Detected {fstype} filesystem which has known mmap issues", file=sys.stderr)
-    print(f"  Using traditional file reading instead of memory mapping", file=sys.stderr)
-    print(f"  This avoids subtle consistency, caching, and performance problems", file=sys.stderr)
-    print(f"  To suppress this warning: add '--suppress-filesystem-warnings' flag or config", file=sys.stderr)
+    print("  Using traditional file reading instead of memory mapping", file=sys.stderr)
+    print("  This avoids subtle consistency, caching, and performance problems", file=sys.stderr)
+    print("  To suppress this warning: add '--suppress-filesystem-warnings' flag or config", file=sys.stderr)
     _warned_filesystem.add(fstype)
 
 
@@ -309,8 +309,8 @@ def _warn_mmap_failure(filepath: str, error: Exception):
         return
 
     print(f"Warning: mmap failed for {filepath}: {error}", file=sys.stderr)
-    print(f"  Falling back to traditional file reading for this and subsequent files", file=sys.stderr)
-    print(f"  To suppress this warning: add '--suppress-fd-warnings' flag or config", file=sys.stderr)
+    print("  Falling back to traditional file reading for this and subsequent files", file=sys.stderr)
+    print("  To suppress this warning: add '--suppress-fd-warnings' flag or config", file=sys.stderr)
     _warned_mmap_failure = True
 
 
@@ -392,7 +392,6 @@ def _read_file_with_strategy(filepath: str, strategy: str):
         stringzilla.Str object with file contents
     """
     from stringzilla import Str, File
-    import sys
 
     global _filesystem_override_strategy
 
@@ -443,8 +442,6 @@ def set_analyzer_args(args):
     # Determine strategy with new args
     _determine_file_reading_strategy()
 
-from functools import lru_cache
-
 @lru_cache(maxsize=None)
 def analyze_file(content_hash: str) -> 'FileAnalysisResult':
     """Direct file analysis with LRU caching - content hash based.
@@ -465,7 +462,7 @@ def analyze_file(content_hash: str) -> 'FileAnalysisResult':
     from compiletools.global_hash_registry import get_filepath_by_hash
     filepath = get_filepath_by_hash(content_hash)
 
-    from stringzilla import Str, File
+    from stringzilla import Str
 
     # Extract parameters from args
     max_read_size = getattr(args, 'max_read_size', 0)
@@ -496,7 +493,7 @@ def analyze_file(content_hash: str) -> 'FileAnalysisResult':
             text, bytes_analyzed, was_truncated = read_file_mmap(filepath, max_read_size)
             try:
                 str_text = Str(text)
-            except UnicodeDecodeError as e:
+            except UnicodeDecodeError:
                 # This shouldn't happen since read_file_mmap decodes with errors='ignore'
                 # But if it does, provide useful debugging info
                 print(f"ERROR: Failed to create Str from text in {filepath}", file=sys.stderr)

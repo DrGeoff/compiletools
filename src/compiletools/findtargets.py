@@ -1,7 +1,6 @@
 import argparse
 import sys
 import os
-from io import open
 import compiletools.utils
 import compiletools.namer
 import compiletools.configutils

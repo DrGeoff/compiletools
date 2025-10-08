@@ -28,7 +28,7 @@ def get_filesystem_type(path: str) -> str:
             for line in f:
                 parts = line.split()
                 if len(parts) >= 3:
-                    device, mountpoint, fstype = parts[0], parts[1], parts[2]
+                    mountpoint, fstype = parts[1], parts[2]
                     # Unescape octal sequences in mount paths (spaces, etc)
                     mountpoint = mountpoint.replace('\\040', ' ')
                     mounts.append((mountpoint, fstype))
