@@ -319,8 +319,8 @@ def is_macro_invariant(file_result, input_macros: 'MacroState') -> bool:
 # 2. Cache key must be extracted from file_result and macros
 # 3. We need full objects to compute results, not just hashes
 # 4. Provides enhanced debugging (dump_cache_keys with file path resolution)
-_invariant_cache: Dict[str, ProcessingResult] = {}
-_variant_cache: Dict[Tuple[str, FrozenSet[Tuple[str, str]]], ProcessingResult] = {}
+_invariant_cache: Dict[str, ProcessingResult] = {}  # str = content_hash (SHA1)
+_variant_cache: Dict[Tuple[str, MacroCacheKey], ProcessingResult] = {}  # str = content_hash (SHA1)
 
 # Cache statistics
 _cache_stats = {
