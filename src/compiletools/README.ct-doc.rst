@@ -109,12 +109,13 @@ Configuration options in ct.conf:
 
 * ``max_file_read_size = 0`` - Bytes to read from files (0 = entire file)
 * ``shared-objects = true`` - Enable shared object cache
-Other notable tools are
 
-.. code-block:: text
+OTHER TOOLS
+===========
+Other notable tools are:
 
-    * ct-headertree: provides information about structure of the include files
-    * ct-filelist:   provides the list of files needed to be included in a tarball (e.g. for packaging)
+* ct-headertree: provides information about structure of the include files
+* ct-filelist: provides the list of files needed to be included in a tarball (e.g. for packaging)
 
 SEE ALSO
 ========
