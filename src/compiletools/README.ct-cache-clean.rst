@@ -9,7 +9,7 @@ Remove the current dependency cache
 :Author: drgeoffathome@gmail.com
 :Date:   2018-02-23
 :Copyright: Copyright (C) 2011-2018 Zomojo Pty Ltd
-:Version: 5.3.3
+:Version: 6.0.0
 :Manual section: 1
 :Manual group: developers
 
