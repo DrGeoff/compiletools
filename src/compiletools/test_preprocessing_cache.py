@@ -472,3 +472,86 @@ class TestCacheManagement:
         assert peak_mb < 20.0, f"Peak memory {peak_mb:.1f} MB exceeds 20 MB limit"
 
         clear_cache()
+
+
+class TestMacroStateVersion:
+    """Tests for MacroState version counter behavior."""
+
+    def test_version_increments_on_setitem_new_key(self):
+        """Version should increment when adding a new macro via __setitem__."""
+        state = MacroState(core={}, variable={})
+        assert state.get_version() == 0
+
+        state[sz.Str('FOO')] = sz.Str('1')
+        assert state.get_version() == 1
+
+        state[sz.Str('BAR')] = sz.Str('2')
+        assert state.get_version() == 2
+
+    def test_version_increments_on_setitem_value_change(self):
+        """Version should increment when changing an existing macro's value."""
+        state = MacroState(core={}, variable={sz.Str('FOO'): sz.Str('1')})
+        initial_version = state.get_version()
+
+        state[sz.Str('FOO')] = sz.Str('2')
+        assert state.get_version() == initial_version + 1
+
+    def test_version_unchanged_when_setting_same_value(self):
+        """Version should NOT increment when setting a macro to its existing value."""
+        state = MacroState(core={}, variable={sz.Str('FOO'): sz.Str('1')})
+        initial_version = state.get_version()
+
+        state[sz.Str('FOO')] = sz.Str('1')  # Same value
+        assert state.get_version() == initial_version  # No change
+
+    def test_version_increments_on_update_with_changes(self):
+        """Version should increment when update() makes actual changes."""
+        state1 = MacroState(core={}, variable={sz.Str('FOO'): sz.Str('1')})
+        state2 = MacroState(core={}, variable={sz.Str('BAR'): sz.Str('2')})
+        initial_version = state1.get_version()
+
+        state1.update(state2)
+        assert state1.get_version() == initial_version + 1
+        assert sz.Str('BAR') in state1.variable
+
+    def test_version_unchanged_on_update_with_no_changes(self):
+        """Version should NOT increment when update() doesn't change anything."""
+        state1 = MacroState(core={}, variable={sz.Str('FOO'): sz.Str('1')})
+        state2 = MacroState(core={}, variable={sz.Str('FOO'): sz.Str('1')})
+        initial_version = state1.get_version()
+
+        state1.update(state2)
+        assert state1.get_version() == initial_version  # No change
+
+    def test_version_unchanged_on_update_empty(self):
+        """Version should NOT increment when updating with empty variable dict."""
+        state1 = MacroState(core={}, variable={sz.Str('FOO'): sz.Str('1')})
+        state2 = MacroState(core={}, variable={})
+        initial_version = state1.get_version()
+
+        state1.update(state2)
+        assert state1.get_version() == initial_version  # No change
+
+    def test_version_preserved_in_copy(self):
+        """copy() should preserve the version counter."""
+        state = MacroState(core={}, variable={sz.Str('FOO'): sz.Str('1')})
+        state[sz.Str('BAR')] = sz.Str('2')  # Increment to version 1
+
+        copied = state.copy()
+        assert copied.get_version() == state.get_version()
+
+    def test_version_convergence_detection(self):
+        """Version can be used to detect convergence in iterative processing."""
+        state = MacroState(core={}, variable={})
+
+        # Iteration 1: add macros, version changes
+        version_before = state.get_version()
+        state[sz.Str('FOO')] = sz.Str('1')
+        version_after = state.get_version()
+        assert version_after != version_before  # Detected change
+
+        # Iteration 2: no changes, version stable
+        version_before = state.get_version()
+        # ... simulate processing that doesn't add macros ...
+        version_after = state.get_version()
+        assert version_after == version_before  # Detected convergence

@@ -311,10 +311,9 @@ class DirectHeaderDeps(HeaderDepsBase):
         content_hash = get_file_hash(realpath)
 
         # Check cache using content_hash + macro state
-        # Use cached _cache_key if available to avoid recomputation
-        if self.defined_macros._cache_key is not None:
-            macro_key = self.defined_macros._cache_key
-        else:
+        # Try to use cached key if available to avoid recomputation
+        macro_key = self.defined_macros.get_cached_key_if_available()
+        if macro_key is None:
             macro_key = self.defined_macros.get_cache_key()
 
         cache_key = (content_hash, macro_key)
