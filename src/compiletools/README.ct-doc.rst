@@ -22,20 +22,23 @@ SYNOPSIS
 
 DESCRIPTION
 ===========
-The various ct-* tools exist to build C/C++ executables with almost no 
+The various ct-* tools exist to build C/C++ executables with almost no
 configuration. For example, to build a C or C++ program, type
 
 .. code-block:: bash
 
-    ct-cake --auto
+    ct-cake
 
-which will try to determine the correct source files to generate executables
-from and also determine the tests to build and run.
+which will automatically determine the correct source files to generate executables
+from and also determine the tests to build and run. (The ``--auto`` flag is the
+default; use ``--no-auto`` to disable automatic target detection.)
 
 A variant is a configuration file that specifies various configurable settings
 like the compiler and compiler flags. Common variants are "debug" and "release".
 
-Options are parsed using python-configargparse.  This means they can be passed
+CONFIGURATION
+=============
+Options are parsed using the python package ConfigArgParse.  This means they can be passed
 in on the command line, as environment variables or in config files.
 Command-line values override environment variables which override config file 
 values which override defaults. Note that the environment variables are 
@@ -69,15 +72,24 @@ For example,
 SHARED OBJECT CACHE
 ===================
 compiletools supports a shared object file cache for multi-user/multi-host
-environments. When enabled via ``shared-objects = true`` in ct.conf, object files
-are stored in a content-addressable cache that can be safely accessed concurrently
-by multiple users and build hosts.
+environments. When enabled via ``shared-objects = true`` in ct.conf 
+(or via the command line or environment variable), the Makefile
+generation includes proper locking mechanisms to safely share object files across
+concurrent builds by multiple users and hosts. 
+
+Setting in ct.conf is the recommended way to enable this feature for teams so that 
+all users gain the locking without needing to set their own environment variables. 
+
+This feature can also be used by a single developer on a single machine to compile 
+different directories in parallel, sharing the same object file cache for objects 
+that are in common.
 
 Key features:
 
 * **Content-addressable storage**: Object files named by source + flags hash
-* **Multi-user safe**: Group-writable cache with proper locking
-* **Cross-host compatible**: Works on NFS, GPFS, Lustre filesystems
+* **Filesystem-aware locking**: Uses flock on local filesystems, atomic mkdir on network filesystems (NFS, GPFS, Lustre)
+* **Multi-user safe**: Group-writable cache with proper file permissions
+* **Cross-host compatible**: Automatic filesystem detection and appropriate locking strategy
 * **Stale lock detection**: Automatic cleanup of locks from crashed builds
 * **Minimal configuration**: Just set ``shared-objects = true`` in config
 
@@ -93,6 +105,10 @@ Example setup for shared cache:
     mkdir -p /shared/nfs/build/cache
     chmod 2775 /shared/nfs/build/cache
 
+Configuration options in ct.conf:
+
+* ``max_file_read_size = 0`` - Bytes to read from files (0 = entire file)
+* ``shared-objects = true`` - Enable shared object cache
 Other notable tools are
 
 .. code-block:: text
@@ -109,13 +125,14 @@ SEE ALSO
 * ct-cache-clean
 * ct-cake
 * ct-cmakelists
-* ct-commandline
+* ct-compilation-database
 * ct-config
 * ct-cppdeps
 * ct-create-cmakelists
 * ct-create-makefile
 * ct-filelist
 * ct-findtargets
+* ct-git-sha-report
 * ct-gitroot
 * ct-headertree
 * ct-jobs

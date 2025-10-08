@@ -33,13 +33,12 @@ other compiletools will be using as the magic flags.  A magic flag /
 magic comment is simply a C++ style comment that provides information
 required to complete the build process.
 
-compiletools works very differently to other build systems, because 
-compiletools expects that the compiler/link flags will be directly in the 
-source code. For example, if you have written your own "compress.hpp" that 
-requires linking against libzip you would normally specify "-lzip" in your 
-Makefile (or build system) on the link line.  However, compiletools based 
-applications add the following comment 
-in the first 8KB of the file the includes:
+compiletools works very differently to other build systems, because
+compiletools expects that the compiler/link flags will be directly in the
+source code. For example, if you have written your own "compress.hpp" that
+requires linking against libzip you would normally specify "-lzip" in your
+Makefile (or build system) on the link line.  However, compiletools based
+applications add the following comment in the file that includes:
 
 .. code-block:: cpp
 
@@ -67,6 +66,28 @@ would add something like:
 
 Because the code and build flags are defined so close to each other, it is
 much easier to tweak the compilation locally and allow for easier maintainence.
+
+Using PKG-CONFIG
+================
+Instead of manually specifying compiler and linker flags, you can use pkg-config
+to automatically extract the correct flags for a library. For example, with zlib:
+
+.. code-block:: cpp
+
+    //#PKG-CONFIG=zlib
+    #include <zlib.h>
+
+This single line automatically adds both the compilation flags (from ``pkg-config --cflags zlib``)
+and link flags (from ``pkg-config --libs zlib``) to your build. This approach is
+preferred over manual ``LDFLAGS`` because:
+
+* It's more portable across different systems and distributions
+* It automatically includes the correct include paths
+* It handles library dependencies correctly
+* It adapts to different installation locations
+
+The PKG-CONFIG magic flag works with any library that provides a .pc file,
+including common libraries like gtk+-3.0, libpng, libcurl, openssl, and many more.
 
 VALID MAGIC FLAGS
 =================
