@@ -36,7 +36,6 @@ dev = [
     "twine>=5.0.0",
     "pytest>=7.0.0",
     "pytest-xdist>=3.5",
-    "pytest-xdist>=3.0.0",
     "ruff>=0.12.9",
 ]
 
