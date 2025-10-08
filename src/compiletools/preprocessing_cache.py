@@ -38,8 +38,9 @@ class ProcessingResult:
     updated_macros: 'MacroState'  # Forward reference
 
 
-# Type alias for macro dictionaries
+# Type aliases for macro dictionaries and cache keys
 MacroDict = Dict[sz.Str, sz.Str]
+MacroCacheKey = FrozenSet[Tuple[sz.Str, sz.Str]]
 
 
 @dataclass
@@ -63,7 +64,7 @@ class MacroState:
     """
     core: MacroDict  # Static: compiler + cmdline macros
     variable: MacroDict  # Dynamic: file #defines
-    _cache_key: Optional[FrozenSet[Tuple[sz.Str, sz.Str]]]  # Cached frozenset for cache keys
+    _cache_key: Optional[MacroCacheKey]  # Cached frozenset for cache keys
     _hash: Optional[str]  # Cached hex digest for convergence detection (variable only)
     _hash_full: Optional[str]  # Cached hex digest including core + variable
     _version: int  # Version counter incremented on any mutation for fast equality checks
@@ -194,7 +195,7 @@ class MacroState:
         """
         return self._version
 
-    def get_cached_key_if_available(self) -> Optional[FrozenSet[Tuple[sz.Str, sz.Str]]]:
+    def get_cached_key_if_available(self) -> Optional[MacroCacheKey]:
         """Get cache key if already computed, None otherwise.
 
         Use this to avoid recomputing the cache key when it might already be available.
@@ -205,7 +206,7 @@ class MacroState:
         """
         return self._cache_key
 
-    def get_cache_key(self) -> FrozenSet[Tuple[sz.Str, sz.Str]]:
+    def get_cache_key(self) -> MacroCacheKey:
         """Get or compute cache key for this MacroState.
 
         Returns cached key if available, otherwise computes and caches it.
@@ -263,7 +264,7 @@ class MacroState:
 
 
 # Simple cache: if variable dict is empty, return cached empty frozenset
-_EMPTY_FROZENSET: FrozenSet[Tuple[sz.Str, sz.Str]] = frozenset()
+_EMPTY_FROZENSET: MacroCacheKey = frozenset()
 
 
 def is_permanently_invariant(file_result) -> bool:

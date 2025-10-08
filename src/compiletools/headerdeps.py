@@ -1,6 +1,7 @@
 import os
 import functools
 import stringzilla as sz
+from typing import List
 
 # At deep verbose levels pprint is used
 from pprint import pprint
@@ -13,7 +14,7 @@ import compiletools.tree as tree
 import compiletools.preprocessor
 import compiletools.compiler_macros
 import compiletools.file_analyzer
-from compiletools.preprocessing_cache import get_or_compute_preprocessing, MacroState
+from compiletools.preprocessing_cache import get_or_compute_preprocessing, MacroState, MacroDict, MacroCacheKey
 from compiletools.file_analyzer import analyze_file, set_analyzer_args
 
 # Cache for filtered include lists: (content_hash, macro_cache_key) -> list of includes
@@ -62,17 +63,16 @@ class HeaderDepsBase(object):
         # Set global analyzer args for FileAnalyzer caching
         set_analyzer_args(args)
 
-    def _process_impl(self, realpath, macro_state_key):
+    def _process_impl(self, realpath: str, macro_cache_key: MacroCacheKey) -> List[str]:
         """Derived classes implement this function"""
         raise NotImplementedError
 
-    def process(self, filename, macro_state_key):
+    def process(self, filename: str, macro_cache_key: MacroCacheKey) -> List[str]:
         """Return an ordered list of header dependencies for the given file.
 
         Args:
             filename: File to analyze for dependencies
-            macro_state_key: Frozenset of (macro_name, macro_value) tuples
-                            representing variable macros from parent file context.
+            macro_cache_key: Frozenset of (macro_name, macro_value) tuples for cache key.
                             Pass frozenset() for no variable macros (core only).
 
         Notes:
@@ -84,14 +84,14 @@ class HeaderDepsBase(object):
         """
         realpath = compiletools.wrappedos.realpath(filename)
         try:
-            result = self._process_impl(realpath, macro_state_key)
+            result = self._process_impl(realpath, macro_cache_key)
         except IOError:
             # If there was any error the first time around, an error correcting removal would have occured
             # So strangely, the best thing to do is simply try again
             result = None
 
         if not result:
-            result = self._process_impl(realpath, macro_state_key)
+            result = self._process_impl(realpath, macro_cache_key)
 
         return result
 
@@ -210,14 +210,14 @@ class DirectHeaderDeps(HeaderDepsBase):
         # Initialize includes and macros
         self._initialize_includes_and_macros({})
 
-    def _initialize_includes_and_macros(self, variable_macros):
+    def _initialize_includes_and_macros(self, variable_macros: MacroDict):
         """Initialize include paths and macro definitions from compile flags.
 
         Caches core macros and includes on first call for reuse across all files.
 
         Args:
             variable_macros: Dict of variable macros (from file #defines).
-                            Pass {} or None for no variable macros (core only).
+                            Pass {} for no variable macros (core only).
         """
         # Cache core macros and includes - they never change for this instance
         if self._core_macros is None:
@@ -245,7 +245,7 @@ class DirectHeaderDeps(HeaderDepsBase):
 
         # Set includes and reset macro state (reuse cached core, use provided variable dict)
         self.includes = self._includes
-        self.defined_macros = MacroState(self._core_macros, variable_macros or {})
+        self.defined_macros = MacroState(self._core_macros, variable_macros)
 
     @functools.lru_cache(maxsize=None)
     def _search_project_includes(self, include: sz.Str):
@@ -291,28 +291,22 @@ class DirectHeaderDeps(HeaderDepsBase):
             results_order.remove(realpath)
         return results_order
 
-    def process(self, filename, macro_state_key):
+    def process(self, filename: str, macro_cache_key: MacroCacheKey) -> List[str]:
         """Override to compute and pass initial macro cache key.
 
         Args:
             filename: File to analyze for dependencies
-            macro_state_key: Frozenset of (macro_name, macro_value) tuples
-                            representing variable macros from parent file context.
+            macro_cache_key: Frozenset of (macro_name, macro_value) tuples for cache key.
                             Pass frozenset() for no variable macros (core only).
         """
         realpath = compiletools.wrappedos.realpath(filename)
 
-        # Convert frozenset macro_state_key to dict for MacroState
-        # macro_state_key is frozenset of (sz.Str, sz.Str) tuples
-        # Coerce to sz.Str to handle tests/scripts passing plain Python strings
-        if macro_state_key:
-            variable_macros = {
-                (k if isinstance(k, sz.Str) else sz.Str(k)):
-                (v if isinstance(v, sz.Str) else sz.Str(v))
-                for k, v in macro_state_key
-            }
-        else:
-            variable_macros = {}
+        # Convert cache key frozenset to MacroDict for MacroState initialization
+        # Ensure all keys/values are sz.Str for consistency (MacroState uses stringzilla exclusively)
+        variable_macros: MacroDict = {
+            sz.Str(k): sz.Str(v)
+            for k, v in macro_cache_key
+        }
 
         # Initialize with variable macros to ensure consistent initial_macro_key for LRU cache
         self._initialize_includes_and_macros(variable_macros)
@@ -467,26 +461,26 @@ class CppHeaderDeps(HeaderDepsBase):
         HeaderDepsBase.__init__(self, args)
         self.preprocessor = compiletools.preprocessor.PreProcessor(args)
 
-    def process(self, filename, macro_state_key):
-        """Process using cpp -MM (raises error if macro_state_key non-empty).
+    def process(self, filename: str, macro_cache_key: MacroCacheKey) -> List[str]:
+        """Process using cpp -MM (raises error if macro_cache_key non-empty).
 
         Args:
             filename: File to analyze for dependencies
-            macro_state_key: Must be empty frozenset. CppHeaderDeps does not support
+            macro_cache_key: Must be empty frozenset(). CppHeaderDeps does not support
                             file-level macro contexts (compiler determines macros).
 
         Raises:
-            NotImplementedError: If macro_state_key is non-empty
+            NotImplementedError: If macro_cache_key is non-empty
         """
-        if macro_state_key:
+        if macro_cache_key:
             raise NotImplementedError(
                 "CppHeaderDeps does not support file-level macro contexts. "
                 "Use --headerdeps=direct (default) for macro-aware dependency analysis."
             )
         realpath = compiletools.wrappedos.realpath(filename)
-        return self._process_impl(realpath, macro_state_key)
+        return self._process_impl(realpath, macro_cache_key)
 
-    def _process_impl(self, realpath, macro_state_key):
+    def _process_impl(self, realpath: str, macro_cache_key: MacroCacheKey) -> List[str]:
         """Use the -MM option to the compiler to generate the list of dependencies
         If you supply a header file rather than a source file then
         a dummy, blank, source file will be transparently provided
