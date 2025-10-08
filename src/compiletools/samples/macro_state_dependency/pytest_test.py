@@ -43,17 +43,17 @@ def test_sequential_dependency_analysis_consistency():
         
         # First analysis: main.cpp (defines FEATURE_A_ENABLED -> FEATURE_B_ENABLED)
         # This should include module_b.h via config.h -> core.h chain
-        main_deps_1 = headerdeps.process('main.cpp')
+        main_deps_1 = headerdeps.process('main.cpp', frozenset())
         main_has_module_b_1 = any('module_b.h' in dep for dep in main_deps_1)
-        
-        # Second analysis: clean_main.cpp (no FEATURE_A_ENABLED) 
+
+        # Second analysis: clean_main.cpp (no FEATURE_A_ENABLED)
         # This should NOT include module_b.h
         # But macro state pollution could cause it to be included incorrectly
-        clean_deps = headerdeps.process('clean_main.cpp')
+        clean_deps = headerdeps.process('clean_main.cpp', frozenset())
         clean_has_module_b = any('module_b.h' in dep for dep in clean_deps)
-        
+
         # Third analysis: main.cpp again (should be consistent with first)
-        main_deps_2 = headerdeps.process('main.cpp')
+        main_deps_2 = headerdeps.process('main.cpp', frozenset())
         main_has_module_b_2 = any('module_b.h' in dep for dep in main_deps_2)
         
         # The critical assertion: results should be consistent

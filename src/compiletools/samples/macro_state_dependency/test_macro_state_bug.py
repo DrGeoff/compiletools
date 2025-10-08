@@ -79,13 +79,13 @@ def test_macro_state_pollution_bug(temp_sample_dir):
         
         # First analysis: file WITH macro
         # Should include enabled_feature.h
-        with_macro_deps = headerdeps.process('with_macro.cpp')
+        with_macro_deps = headerdeps.process('with_macro.cpp', frozenset())
         has_feature_with_macro = any('enabled_feature.h' in dep for dep in with_macro_deps)
-        
-        # Second analysis: file WITHOUT macro  
+
+        # Second analysis: file WITHOUT macro
         # Should NOT include enabled_feature.h
         # But macro state pollution might cause incorrect inclusion
-        without_macro_deps = headerdeps.process('without_macro.cpp')
+        without_macro_deps = headerdeps.process('without_macro.cpp', frozenset())
         has_feature_without_macro = any('enabled_feature.h' in dep for dep in without_macro_deps)
         
         # Debug output

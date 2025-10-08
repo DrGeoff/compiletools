@@ -79,7 +79,8 @@ class Hunter(object):
         if self.args.verbose >= 7:
             print(f"Hunter::_get_immediate_deps for {realpath} (macro_state_key={macro_state_key})")
 
-        headers = tuple(self.headerdeps.process(realpath))
+        # Pass macro_state_key to preserve file-level macro context when analyzing headers
+        headers = tuple(self.headerdeps.process(realpath, macro_state_key))
 
         sources = ()
         if self.args.allow_magic_source_in_header or compiletools.utils.is_source(realpath):
@@ -88,7 +89,8 @@ class Hunter(object):
         # Check for implied source (e.g., .cpp for .h)
         implied = compiletools.utils.implied_source(realpath)
         if implied:
-            implied_headers = tuple(self.headerdeps.process(implied))
+            # Pass macro_state_key for implied source too
+            implied_headers = tuple(self.headerdeps.process(implied, macro_state_key))
             headers = headers + (implied,) + implied_headers
 
         return (headers, sources)
@@ -218,9 +220,19 @@ class Hunter(object):
         return self.magicparser.get_final_macro_state_hash(filename)
 
     def header_dependencies(self, source_filename):
+        """Get header dependencies for a file with proper macro context.
+
+        This is a public API method - ensure we compute macro state first
+        so conditional includes are resolved correctly.
+        """
         if self.args.verbose >= 8:
             print("Hunter asking for header dependencies for ", source_filename)
-        return self.headerdeps.process(source_filename)
+
+        # Compute macro state for this file first to get correct conditional includes
+        self.magicflags(source_filename)
+        macro_state_key = self.macro_state_key(source_filename)
+
+        return self.headerdeps.process(source_filename, macro_state_key)
 
     def huntsource(self):
         """Discover all source files from command line arguments and their dependencies.

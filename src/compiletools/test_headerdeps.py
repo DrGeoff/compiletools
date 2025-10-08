@@ -65,7 +65,7 @@ def _callprocess(headerobj, filenames):
     result = []
     for filename in filenames:
         realpath = compiletools.wrappedos.realpath(filename)
-        result.extend(headerobj.process(realpath))
+        result.extend(headerobj.process(realpath, frozenset()))
     return compiletools.utils.ordered_unique(result)
 
 

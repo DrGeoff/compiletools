@@ -37,7 +37,7 @@ def test_macro_state_dependency_is_fixed():
     preprocessing_cache.clear_cache()
 
     deps1 = headerdeps.DirectHeaderDeps(args)
-    includes1 = set(deps1.process(str(test_cpp)))
+    includes1 = set(deps1.process(str(test_cpp), frozenset()))
     
     has_release = any("release.h" in str(inc) for inc in includes1)
     has_debug = any("debug.h" in str(inc) for inc in includes1)
@@ -63,8 +63,8 @@ def test_macro_state_dependency_is_fixed():
     preprocessing_cache.clear_cache()
 
     deps2 = headerdeps.DirectHeaderDeps(args2)
-    
-    includes2 = set(deps2.process(str(test_cpp)))
+
+    includes2 = set(deps2.process(str(test_cpp), frozenset()))
     
     has_release2 = any("release.h" in str(inc) for inc in includes2)
     has_debug2 = any("debug.h" in str(inc) for inc in includes2)
