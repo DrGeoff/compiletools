@@ -306,29 +306,61 @@ class TestCake(BaseCompileToolsTestCase):
             timestamps, the pre compiling timestamps and the
             post compiling timestamps
         """
+        import os
+
+        # For files in prets that still exist in postts, verify they changed or didn't as expected
         for fname in prets:
+            # Skip files that no longer exist (e.g., old object files with different content hashes)
+            if fname not in postts:
+                continue
+
             # Due to the name munging it is slightly convoluted to
             # figure out if the filename is in the expected changes list
             expected_to_change = False
+            is_object_file = False
+            source_file_changed = False
             for ec in expected_changes:
                 # Handle both plain files and object files with hash-based names
                 # Object files now have format: basename_filehash_macrostatehash.o
                 if ec.endswith('.o'):
                     # For object files, match basename prefix (e.g., "main.o" matches "main_*_*.o")
                     basename = ec[:-2]  # Remove ".o"
-                    import os
                     file_basename = os.path.basename(fname)
                     if file_basename.startswith(basename + "_") and file_basename.endswith(".o"):
                         expected_to_change = True
+                        is_object_file = True
+                        # Check if the corresponding source file also changed
+                        source_file_changed = basename + '.cpp' in expected_changes
                 elif fname.endswith(ec):
                     # For non-object files, use exact suffix match
                     expected_to_change = True
 
-            if expected_to_change:
+            if expected_to_change and is_object_file and source_file_changed:
+                # Source file changed → new object file created with different file hash.
+                # The old object file remains unchanged. We verify new object file
+                # creation separately below, so skip timestamp check here.
+                pass
+            elif expected_to_change:
+                # For files expected to change (including object files when only headers changed),
+                # check that timestamp increased
                 assert postts[fname] > prets[fname]
             else:
+                # File not expected to change - verify timestamp is the same
                 print("verify " + fname)
                 assert round(abs(postts[fname]-prets[fname]), 7) == 0
+
+        # For object files whose source file changed, verify a new one was created
+        for ec in expected_changes:
+            if ec.endswith('.o'):
+                basename = ec[:-2]
+                # Only check for new object file if the source file also changed
+                if basename + '.cpp' in expected_changes:
+                    # Find new object files in postts that weren't in prets
+                    new_objs = [f for f in postts if f not in prets and
+                               os.path.basename(f).startswith(basename + "_") and
+                               os.path.basename(f).endswith(".o")]
+                    # At least one new object file should have been created for this source
+                    assert len(new_objs) > 0, f"Expected new object file for {ec} but none found"
 
     def _compile_edit_compile(
         self, files_to_edit, expected_changes, deeper_is_included=False
