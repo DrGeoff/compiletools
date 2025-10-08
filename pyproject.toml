@@ -99,6 +99,9 @@ filename = "src/compiletools/version.py"
 filename = "pyproject.toml"
 
 [[tool.bumpversion.files]]
+filename = "README.rst"
+
+[[tool.bumpversion.files]]
 filename = "src/compiletools/README.ct-doc.rst"
 
 [[tool.bumpversion.files]]
@@ -114,7 +117,13 @@ filename = "src/compiletools/README.ct-cake.rst"
 filename = "src/compiletools/README.ct-commandline.rst"
 
 [[tool.bumpversion.files]]
+filename = "src/compiletools/README.ct-compilation-database.rst"
+
+[[tool.bumpversion.files]]
 filename = "src/compiletools/README.ct-config.rst"
+
+[[tool.bumpversion.files]]
+filename = "src/compiletools/README.ct-cppdeps.rst"
 
 [[tool.bumpversion.files]]
 filename = "src/compiletools/README.ct-findtargets.rst"

@@ -23,18 +23,19 @@ ct-cake is the Swiss army knife of build tools that combines many of the
 compiletools into one uber-tool. For many C/C++ projects you can compile
 simply using
 
-    ``ct-cake --auto``
+    ``ct-cake``
 
-ct-cake will try to determine the correct source files to generate executables
+ct-cake will automatically determine the correct source files to generate executables
 from and also determine the tests to build and run. It works by spidering over
-the source code to determine what implementation files to build, what libraries 
+the source code to determine what implementation files to build, what libraries
 to link against and what compiler flags to set. Only build what you
 need, and throw out your Makefiles.
 
-The --auto flag tells ct-cake to search for files that will be the "main" file.  
+By default (``--auto``), ct-cake searches for files that will be the "main" file.
 From that set of files, ct-cake then uses the header includes to
-determine what implementation (cpp) files are also required to be built and 
-linked into the final executable/s.
+determine what implementation (cpp) files are also required to be built and
+linked into the final executable/s. Use ``--no-auto`` to disable automatic
+target detection and specify files explicitly.
 
 Cake works off the same principles as Ruby on Rails. It will make your life
 easy if you don't arbitrarily name things. The main rules are:
@@ -75,10 +76,9 @@ testing, but it's not essential.
 
 The basic workflow is to simply type:
 
-    ``ct-cake --auto``
+    ``ct-cake``
 
-If there are multiple executables that --auto finds and you only want to build 
-one specific one:
+If there are multiple executables found and you only want to build one specific one:
 
     ``ct-cake path/to/src/app.cpp``
 
@@ -94,15 +94,15 @@ How it Works
 ============
 
 ct-cake generates the header dependencies for the "main.cpp"
-file you specify at the command line by either examining the "#include" lines in 
-the source code (or by executing "gcc -MM -MF" if you use the --preprocess flag).  
+file you specify at the command line by either examining the "#include" lines in
+the source code (or by executing "gcc -MM -MF" if you use the --preprocess flag).
 For each header file found in the source file, it looks for
-an underlying implementation (c,cpp,cc,cxx,etc) file with the same name, and 
-adds that implementation file to the build.  ct-cake also reads the first 8KB
-of each file for special comments
+an underlying implementation (c,cpp,cc,cxx,etc) file with the same name, and
+adds that implementation file to the build.  ct-cake also reads the entire file
+(configurable via --max-file-read-size) for special comments
 that indicate needed link and compile flags.  Then it recurses through the
 dependencies of the cpp file, and uses this spidering to generate complete
-dependency information for the application. A Makefile is generated and finally 
+dependency information for the application. A Makefile is generated and finally
 it calls make.
 
 Magic Comments / Magic Flags
@@ -152,9 +152,11 @@ ct-cake supports a shared object file cache that enables multiple users and buil
 hosts to share compiled object files. This significantly speeds up builds in
 multi-developer and CI/CD environments by reusing object files across builds.
 
-Enable by setting ``shared-objects = true`` in your configuration file. The cache
-uses content-addressable storage (files named by hash of source + compiler flags)
-and includes safe concurrent access with automatic stale lock detection.
+Enable by setting ``shared-objects = true`` in your configuration file. This adds
+filesystem-aware locking to ensure safe concurrent access (flock on local filesystems,
+atomic mkdir on network filesystems). The cache uses content-addressable storage
+(files named by hash of source + compiler flags) and includes automatic stale lock
+detection for crashed builds.
 
 See the main compiletools README for setup details.
 
@@ -167,7 +169,7 @@ limiting building and testing in a Continuous Integration pipeline to only
 source that has changed from master.
 
 ``changed_source=git diff --name-only master | sed "s,^,$(git rev-parse --show-toplevel)/,"
-ct-cake --auto --build-only-changed \"$changed_source\"``
+ct-cake --build-only-changed \"$changed_source\"``
 
 Configuration
 =============
@@ -288,7 +290,7 @@ the build.sh, before cake runs.
     #!/bin/sh
     set -e
     python fancypythoncodegenerator.py
-    ct-cake --auto "$@"
+    ct-cake "$@"
 
 
 The special *"$@"* marker is the recommended way
