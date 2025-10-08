@@ -281,7 +281,7 @@ class Cake(object):
             )
             recreateobjs = True
 
-        if self.args.auto:
+        if self.args.auto and not any([self.args.filename, self.args.static, self.args.dynamic, self.args.tests]):
             findtargets = compiletools.findtargets.FindTargets(self.args)
             findtargets.process(self.args)
             recreateobjs = True

@@ -35,7 +35,7 @@ def add_arguments(cap):
     compiletools.utils.add_flag_argument(
         parser=cap,
         name="auto",
-        default=False,
+        default=True,
         help="Search the filesystem from the current working directory to find all the C/C++ files with main functions and unit tests",
     )
 
