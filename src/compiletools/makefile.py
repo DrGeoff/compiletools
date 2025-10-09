@@ -410,7 +410,8 @@ class MakefileCreator:
             \t\t\t\t\tif [ $$lock_age_sec -gt 0 ]; then \\
             \t\t\t\t\t\tnow=$$(date +%s); \\
             \t\t\t\t\t\tif [ $$lock_warn_time -eq 0 ] || [ $$((now - lock_warn_time)) -gt 60 ]; then \\
-            \t\t\t\t\t\t\techo "Warning: Lock held by $$lock_host:$$lock_pid (age: $${lock_age_sec}s, different host)" >&2; \\
+            \t\t\t\t\t\t\techo "Warning: Waiting for lock held by $$lock_host:$$lock_pid (age: $${lock_age_sec}s)" >&2; \\
+            \t\t\t\t\t\t\techo "         Current host: $$current_host, Lock location: $$lockdir" >&2; \\
             \t\t\t\t\t\t\tlock_warn_time=$$now; \\
             \t\t\t\t\t\tfi; \\
             \t\t\t\t\t\tif [ $$lock_age_sec -gt 600 ] && [ $$lock_escalate_time -eq 0 ]; then \\
@@ -472,7 +473,8 @@ class MakefileCreator:
             \t\t\t\t\tif [ $$lock_age_sec -gt 0 ]; then \\
             \t\t\t\t\t\tnow=$$(date +%s); \\
             \t\t\t\t\t\tif [ $$lock_warn_time -eq 0 ] || [ $$((now - lock_warn_time)) -gt 60 ]; then \\
-            \t\t\t\t\t\t\techo "Warning: Lock held by $$lock_host:$$lock_pid (age: $${lock_age_sec}s, different host)" >&2; \\
+            \t\t\t\t\t\t\techo "Warning: Waiting for lock held by $$lock_host:$$lock_pid (age: $${lock_age_sec}s)" >&2; \\
+            \t\t\t\t\t\t\techo "         Current host: $$current_host, Lock location: $$lockdir" >&2; \\
             \t\t\t\t\t\t\tlock_warn_time=$$now; \\
             \t\t\t\t\t\tfi; \\
             \t\t\t\t\t\tif [ $$lock_age_sec -gt 600 ] && [ $$lock_escalate_time -eq 0 ]; then \\
