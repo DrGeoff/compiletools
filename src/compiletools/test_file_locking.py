@@ -265,6 +265,25 @@ class TestFlockLock:
         lock.release()
         # Lockfile may still exist but should be unlocked
 
+    def test_windows_compatibility_fallback(self, temp_lock_file, mock_args):
+        """Test that FlockLock works without fcntl (Windows simulation)."""
+        # Simulate Windows by temporarily hiding fcntl
+        original_has_fcntl = compiletools.locking.HAS_FCNTL
+        try:
+            compiletools.locking.HAS_FCNTL = False
+
+            lock = compiletools.locking.FlockLock(temp_lock_file, mock_args)
+            lock.acquire()
+
+            # Should use fallback mechanism (O_EXCL polling)
+            assert lock.use_flock is False
+            assert os.path.exists(lock.lockfile_pid)
+
+            lock.release()
+            assert not os.path.exists(lock.lockfile_pid)
+        finally:
+            compiletools.locking.HAS_FCNTL = original_has_fcntl
+
     def test_context_manager(self, temp_lock_file, mock_args):
         """Test FileLock context manager with flock strategy."""
         with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"):
