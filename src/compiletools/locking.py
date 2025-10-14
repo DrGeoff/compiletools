@@ -30,7 +30,20 @@ class LockdirLock:
         self.pid = os.getpid()
         self.cross_host_timeout = args.lock_cross_host_timeout
         self.warn_interval = args.lock_warn_interval
-        self.sleep_interval = args.sleep_interval_lockdir
+
+        # Auto-detect optimal sleep interval based on filesystem, allow user override
+        if args.sleep_interval_lockdir is not None:
+            self.sleep_interval = args.sleep_interval_lockdir
+        else:
+            # Detect filesystem type for auto-tuning
+            target_dir = compiletools.wrappedos.dirname(self.target_file) or "."
+            try:
+                fstype = compiletools.filesystem_utils.get_filesystem_type(target_dir)
+                self.sleep_interval = compiletools.filesystem_utils.get_lockdir_sleep_interval(fstype)
+            except Exception:
+                # Fallback to conservative default if detection fails
+                self.sleep_interval = 0.05
+
         self.platform = platform.system().lower()
 
     def _set_lockdir_permissions(self):
