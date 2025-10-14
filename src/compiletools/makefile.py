@@ -374,10 +374,18 @@ class MakefileCreator:
     def _get_lockdir_sleep_interval(self):
         """Get sleep interval for lockdir polling.
 
+        Auto-detects optimal interval based on filesystem type, but allows
+        user override via --sleep-interval-lockdir.
+
         Returns:
             float: Sleep interval (only used by lockdir strategy for NFS/GPFS/Lustre)
         """
-        return self.args.sleep_interval_lockdir
+        # If user explicitly set the interval, use it
+        if self.args.sleep_interval_lockdir is not None:
+            return self.args.sleep_interval_lockdir
+
+        # Otherwise auto-detect based on filesystem type
+        return compiletools.filesystem_utils.get_lockdir_sleep_interval(self._filesystem_type)
 
     def _lockdir_prefix_linux(self, sleep_interval):
         """Linux variant with /proc support for EPERM detection"""
