@@ -10,10 +10,16 @@ import time
 import socket
 import platform
 import shutil
-import fcntl
 import psutil
 import compiletools.filesystem_utils
 import compiletools.wrappedos
+
+# fcntl only available on Unix (not Windows)
+try:
+    import fcntl
+    HAS_FCNTL = True
+except ImportError:
+    HAS_FCNTL = False
 
 
 class LockdirLock:
@@ -359,14 +365,18 @@ class FlockLock:
         # Open lockfile
         self.fd = os.open(self.lockfile, os.O_CREAT | os.O_WRONLY, 0o666)
 
-        # Try flock first
-        try:
-            fcntl.flock(self.fd, fcntl.LOCK_EX)
-            self.use_flock = True
-            return
-        except (OSError, IOError):
-            # flock not available, use fallback
-            self.use_flock = False
+        # Try flock first (only on Unix)
+        if HAS_FCNTL:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX)
+                self.use_flock = True
+                return
+            except (OSError, IOError):
+                # flock failed, fall through to polling fallback
+                pass
+
+        # flock not available or failed, use fallback
+        self.use_flock = False
 
         # Fallback: polling with O_EXCL
         while True:
@@ -383,7 +393,7 @@ class FlockLock:
     def release(self):
         """Release flock."""
         try:
-            if self.use_flock:
+            if self.use_flock and HAS_FCNTL:
                 if self.fd is not None:
                     fcntl.flock(self.fd, fcntl.LOCK_UN)
                     os.close(self.fd)
