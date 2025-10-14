@@ -155,6 +155,23 @@ class TestLockdirLock:
             # Lock released after context
             assert not os.path.exists(lockdir)
 
+    def test_nonexistent_directory(self, mock_args):
+        """Test that lock creation works when parent directory doesn't exist."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create path in nonexistent subdirectory
+            lock_file = os.path.join(tmpdir, "subdir", "nested", "file.txt")
+
+            lock = compiletools.locking.LockdirLock(lock_file, mock_args)
+
+            # Should create parent directories and acquire lock
+            lock.acquire()
+            assert os.path.exists(lock.lockdir)
+            assert os.path.exists(lock.pid_file)
+
+            # Cleanup
+            lock.release()
+            assert not os.path.exists(lock.lockdir)
+
 
 class TestCIFSLock:
     """Tests for CIFS/SMB locking."""
@@ -193,6 +210,18 @@ class TestCIFSLock:
 
             assert not os.path.exists(lockfile_excl)
 
+    def test_nonexistent_directory(self, mock_args):
+        """Test that CIFS lock works when parent directory doesn't exist."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            lock_file = os.path.join(tmpdir, "subdir", "nested", "file.txt")
+            lock = compiletools.locking.CIFSLock(lock_file, mock_args)
+
+            lock.acquire()
+            assert os.path.exists(lock.lockfile_excl)
+
+            lock.release()
+            assert not os.path.exists(lock.lockfile_excl)
+
 
 class TestFlockLock:
     """Tests for POSIX flock locking."""
@@ -213,6 +242,17 @@ class TestFlockLock:
             with compiletools.locking.FileLock(temp_lock_file, mock_args) as lock:
                 lockfile = temp_lock_file + ".lock"
                 assert os.path.exists(lockfile)
+
+    def test_nonexistent_directory(self, mock_args):
+        """Test that flock works when parent directory doesn't exist."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            lock_file = os.path.join(tmpdir, "subdir", "nested", "file.txt")
+            lock = compiletools.locking.FlockLock(lock_file, mock_args)
+
+            lock.acquire()
+            assert os.path.exists(lock.lockfile)
+
+            lock.release()
 
 
 class TestFileLock:
