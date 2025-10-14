@@ -33,6 +33,34 @@ class LockdirLock:
         self.sleep_interval = args.sleep_interval_lockdir
         self.platform = platform.system().lower()
 
+    def _set_lockdir_permissions(self):
+        """Set lockdir permissions for multi-user shared-objects mode.
+
+        Mirrors shell behavior:
+        - chmod 775 lockdir (group-writable)
+        - chgrp --reference=target_file lockdir (match target file's group)
+        """
+        try:
+            # Set directory to 775 (rwxrwxr-x) - group-writable
+            os.chmod(self.lockdir, 0o775)
+
+            # Set group to match target file (if it exists)
+            # Shell: chgrp --reference="$@" "$$lockdir"
+            if os.path.exists(self.target_file):
+                stat_info = os.stat(self.target_file)
+                try:
+                    os.chown(self.lockdir, -1, stat_info.st_gid)
+                except PermissionError:
+                    # Can't change group - not fatal, continue
+                    pass
+        except OSError as e:
+            # Permission errors here are not fatal (same as shell || true)
+            if self.args.verbose >= 2:
+                print(
+                    f"Warning: Could not set lockdir permissions: {e}",
+                    file=sys.stderr,
+                )
+
     def _get_lock_age_seconds(self):
         """Get lock age (MUST use uncached mtime - lock can be recreated).
 
@@ -184,9 +212,13 @@ class LockdirLock:
         while True:
             try:
                 os.mkdir(self.lockdir)
-                # Lock acquired, write pid file
+                # Lock acquired - set multi-user permissions (mirrors shell behavior)
+                self._set_lockdir_permissions()
+                # Write pid file
                 with open(self.pid_file, "w") as f:
                     f.write(f"{self.hostname}:{self.pid}\n")
+                # Set pid file permissions for multi-user access
+                os.chmod(self.pid_file, 0o664)
                 return
             except FileExistsError:
                 # Lock exists, check if stale

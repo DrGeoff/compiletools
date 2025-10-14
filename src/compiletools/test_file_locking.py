@@ -172,6 +172,35 @@ class TestLockdirLock:
             lock.release()
             assert not os.path.exists(lock.lockdir)
 
+    def test_multiuser_permissions(self, mock_args):
+        """Test that lockdir and pid file have correct permissions for multi-user mode."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            lock_file = os.path.join(tmpdir, "file.txt")
+
+            # Create target file first so group can be copied
+            with open(lock_file, "w") as f:
+                f.write("test")
+
+            lock = compiletools.locking.LockdirLock(lock_file, mock_args)
+            lock.acquire()
+
+            # Verify lockdir permissions (should be 775 = rwxrwxr-x)
+            lockdir_stat = os.stat(lock.lockdir)
+            lockdir_mode = lockdir_stat.st_mode & 0o777
+            assert lockdir_mode == 0o775, f"Expected 0o775, got {oct(lockdir_mode)}"
+
+            # Verify pid file permissions (should be 664 = rw-rw-r--)
+            pid_stat = os.stat(lock.pid_file)
+            pid_mode = pid_stat.st_mode & 0o777
+            assert pid_mode == 0o664, f"Expected 0o664, got {oct(pid_mode)}"
+
+            # Verify lockdir group matches target file group
+            target_stat = os.stat(lock_file)
+            assert lockdir_stat.st_gid == target_stat.st_gid, \
+                "Lockdir group should match target file group"
+
+            lock.release()
+
 
 class TestCIFSLock:
     """Tests for CIFS/SMB locking."""
