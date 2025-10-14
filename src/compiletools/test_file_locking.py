@@ -322,6 +322,20 @@ class TestFileLock:
             lockdir = temp_lock_file + ".lockdir"
             assert not os.path.exists(lockdir)
 
+    def test_creates_output_directory(self, mock_args):
+        """Test that FileLock creates output directory if it doesn't exist."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Path with nonexistent subdirectories
+            output_file = os.path.join(tmpdir, "build", "subdir", "compile_commands.json")
+
+            # FileLock should create the parent directory
+            with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"):
+                with compiletools.locking.FileLock(output_file, mock_args):
+                    # Directory should exist
+                    parent_dir = os.path.dirname(output_file)
+                    assert os.path.exists(parent_dir)
+                    assert os.path.isdir(parent_dir)
+
 
 def _concurrent_lock_worker(queue, temp_file, args_dict, worker_id, strategy):
     """Worker process for concurrent lock testing."""
