@@ -173,6 +173,11 @@ class LockdirLock:
         Raises:
             PermissionError: If stale lock cannot be removed (fatal)
         """
+        # Ensure parent directory exists before attempting lock
+        parent_dir = compiletools.wrappedos.dirname(self.lockdir)
+        if parent_dir and not os.path.exists(parent_dir):
+            os.makedirs(parent_dir, exist_ok=True)
+
         last_warn_time = 0
         escalated = False
 
@@ -248,6 +253,11 @@ class CIFSLock:
 
         Algorithm mirrors makefile.py _cifs_lock_prefix.
         """
+        # Ensure parent directory exists
+        parent_dir = os.path.dirname(self.lockfile)
+        if parent_dir and not os.path.exists(parent_dir):
+            os.makedirs(parent_dir, exist_ok=True)
+
         # Open base lockfile (non-exclusive, for reference)
         self.fd = os.open(self.lockfile, os.O_CREAT | os.O_WRONLY, 0o666)
 
@@ -296,6 +306,11 @@ class FlockLock:
         Algorithm mirrors makefile.py _posix_flock_prefix.
         Try fcntl.flock() first, fallback to O_EXCL polling.
         """
+        # Ensure parent directory exists
+        parent_dir = os.path.dirname(self.lockfile)
+        if parent_dir and not os.path.exists(parent_dir):
+            os.makedirs(parent_dir, exist_ok=True)
+
         # Open lockfile
         self.fd = os.open(self.lockfile, os.O_CREAT | os.O_WRONLY, 0o666)
 
