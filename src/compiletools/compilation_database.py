@@ -11,6 +11,7 @@ import compiletools.hunter
 import compiletools.namer
 import compiletools.configutils
 import compiletools.wrappedos
+from compiletools.locking import FileLock
 
 
 class CompilationDatabaseCreator:
@@ -43,6 +44,14 @@ class CompilationDatabaseCreator:
             dest="compilation_database_relative",
             action="store_true",
             help="Use relative paths instead of absolute paths"
+        )
+
+        compiletools.utils.add_boolean_argument(
+            parser=cap,
+            name="shared-objects",
+            dest="shared_objects",
+            default=False,
+            help="Enable file locking for concurrent compilation database writes",
         )
 
     def _get_compiler_command(self, source_file: str) -> List[str]:
@@ -164,13 +173,20 @@ class CompilationDatabaseCreator:
 
     def write_compilation_database(self, output_file: str = None):
         """Write the compilation database to file with incremental update support"""
-        
+
         if output_file is None:
             output_file = self.namer.compilation_database_pathname()
-            
+
+        # Use same --shared-objects flag as makefile.py
+        # FileLock is no-op if args.shared_objects is False
+        with FileLock(output_file, self.args):
+            self._write_database_impl(output_file)
+
+    def _write_database_impl(self, output_file: str):
+        """Implementation of database write (extracted for locking)"""
         # Create the command objects for current files
         new_commands = self.create_compilation_database()
-        
+
         # For incremental updates: read existing database and merge using StringZilla
         existing_commands = []
         if os.path.exists(output_file):
@@ -189,10 +205,10 @@ class CompilationDatabaseCreator:
                     print(f"Warning: Could not read existing compilation database: {e}")
                 existing_commands = []
 
-        
+
         # Merge: Keep existing entries for files we're not updating using StringZilla operations
         merged_commands = []
-        
+
         # Use StringZilla for optimal path processing performance
         # Build set of normalized file paths from new commands
         new_files_normalized = set()
@@ -209,10 +225,10 @@ class CompilationDatabaseCreator:
             existing_normalized_sz = compiletools.wrappedos.realpath_sz(existing_file_sz)
             if str(existing_normalized_sz) not in new_files_normalized:
                 merged_commands.append(existing_cmd)
-        
+
         # Add all new/updated entries
         merged_commands.extend(new_commands)
-        
+
         # Write merged JSON file
         try:
             # Ensure the output directory exists
@@ -223,12 +239,12 @@ class CompilationDatabaseCreator:
             # Use StringZilla Str.write_to for faster file writing - no GIL, no copies
             json_content = json.dumps(merged_commands, indent=2, ensure_ascii=False)
             sz.Str(json_content).write_to(output_file)
-                
+
             if self.args.verbose:
                 print(f"Written compilation database with {len(merged_commands)} entries to {output_file}")
                 print(f"  Updated: {len(new_commands)} entries")
                 print(f"  Preserved: {len(merged_commands) - len(new_commands)} entries")
-                
+
         except Exception as e:
             print(f"Error writing compilation database: {e}")
             raise

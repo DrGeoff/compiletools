@@ -174,6 +174,41 @@ def add_common_arguments(cap, argv=None, variant=None):
     )
     compiletools.git_utils.NameAdjuster.add_arguments(cap)
     _add_xxpend_arguments(cap, xxpendableargs=("include", "cppflags", "cflags", "cxxflags"))
+    add_locking_arguments(cap)
+
+
+def add_locking_arguments(cap):
+    """Add file locking configuration arguments"""
+    cap.add(
+        "--lock-cross-host-timeout",
+        type=int,
+        default=600,
+        help="Timeout in seconds for cross-host locks before escalating warnings (default: 600 = 10 min)",
+    )
+    cap.add(
+        "--lock-warn-interval",
+        type=int,
+        default=60,
+        help="Interval in seconds between lock wait warnings (default: 60)",
+    )
+    cap.add(
+        "--sleep-interval-lockdir",
+        type=float,
+        default=0.1,
+        help="Sleep interval for lockdir polling (NFS/GPFS/Lustre) (default: 0.1)",
+    )
+    cap.add(
+        "--sleep-interval-cifs",
+        type=float,
+        default=0.2,
+        help="Sleep interval for CIFS lock polling (default: 0.2)",
+    )
+    cap.add(
+        "--sleep-interval-flock-fallback",
+        type=float,
+        default=0.1,
+        help="Sleep interval for flock fallback polling (default: 0.1)",
+    )
 
 
 def add_link_arguments(cap):

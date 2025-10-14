@@ -806,3 +806,126 @@ class TestCompilationDatabase:
                         print(f"  System include paths: {isystem_paths}")
 
                     print("✓ All compile_commands.json format compliance tests passed!")
+
+
+def _concurrent_write_worker(work_queue, result_queue, source_file, output_file):
+    """Worker process for concurrent compilation database writes.
+
+    Uses queues for deterministic coordination to avoid flaky tests.
+    """
+    import compiletools.compilation_database
+    import compiletools.hunter
+    import compiletools.apptools
+
+    # Wait for signal to start (all workers ready)
+    work_queue.get()
+
+    try:
+        # Create args object
+        with uth.ParserContext():
+            cap = compiletools.apptools.create_parser("test")
+            compiletools.compilation_database.CompilationDatabaseCreator.add_arguments(cap)
+            compiletools.hunter.add_arguments(cap)
+            args = compiletools.apptools.parseargs(
+                cap, ["--shared-objects", "--compilation-database-output=" + output_file, source_file]
+            )
+
+            # Write compilation database
+            creator = compiletools.compilation_database.CompilationDatabaseCreator(args)
+            creator.write_compilation_database()
+
+            result_queue.put(("success", source_file))
+    except Exception as e:
+        result_queue.put(("error", str(e)))
+
+
+class TestConcurrentCompilationDatabase:
+    """Tests for concurrent compilation database writes."""
+
+    def setup_method(self):
+        uth.reset()
+
+    @uth.requires_functional_compiler
+    def test_concurrent_compilation_database_writes(self):
+        """Test that concurrent writes don't corrupt compile_commands.json.
+
+        Uses multiprocessing with barriers to ensure deterministic timing
+        and avoid flaky test failures in CI.
+        """
+        import multiprocessing
+
+        # Use spawn method to avoid fork() deprecation warnings
+        ctx = multiprocessing.get_context('spawn')
+
+        with uth.TempDirContext():
+            # Create test source files
+            source1 = "test1.cpp"
+            source2 = "test2.cpp"
+            with open(source1, "w") as f:
+                f.write("int main() { return 1; }\n")
+            with open(source2, "w") as f:
+                f.write("int main() { return 2; }\n")
+
+            output_file = "compile_commands.json"
+
+            # Coordination queues for deterministic test execution
+            work_queue = ctx.Queue()
+            result_queue = ctx.Queue()
+
+            # Launch worker processes
+            num_workers = 2
+            processes = []
+            for source in [source1, source2]:
+                p = ctx.Process(
+                    target=_concurrent_write_worker,
+                    args=(work_queue, result_queue, source, output_file),
+                )
+                p.start()
+                processes.append(p)
+
+            # Signal all workers to start simultaneously (barrier pattern)
+            for _ in range(num_workers):
+                work_queue.put("start")
+
+            # Collect results with timeout to avoid CI hangs
+            results = []
+            for _ in range(num_workers):
+                try:
+                    result = result_queue.get(timeout=30)
+                    results.append(result)
+                except:
+                    # Timeout - kill all processes
+                    for p in processes:
+                        if p.is_alive():
+                            p.terminate()
+                    assert False, "Worker timeout - possible deadlock in locking code"
+
+            # Wait for processes to complete
+            for p in processes:
+                p.join(timeout=5)
+                if p.is_alive():
+                    p.terminate()
+                    assert False, "Worker process didn't terminate - possible lock leak"
+
+            # Verify all workers succeeded
+            for status, info in results:
+                assert status == "success", f"Worker failed: {info}"
+
+            # Verify compile_commands.json is valid JSON (not corrupted)
+            assert os.path.exists(output_file), "compile_commands.json was not created"
+            with open(output_file, "r") as f:
+                compile_commands = json.load(f)
+
+            # Verify it contains entries for both source files
+            files_in_db = {entry["file"] for entry in compile_commands}
+            assert source1 in files_in_db or os.path.abspath(source1) in files_in_db, \
+                f"{source1} not found in compilation database"
+            assert source2 in files_in_db or os.path.abspath(source2) in files_in_db, \
+                f"{source2} not found in compilation database"
+
+            # Verify no duplicate entries (corruption symptom)
+            assert len(compile_commands) == len(files_in_db), \
+                f"Duplicate entries found - possible write corruption. " \
+                f"Entries: {len(compile_commands)}, Unique files: {len(files_in_db)}"
+
+            print(f"✓ Concurrent write test passed with {len(compile_commands)} entries")
