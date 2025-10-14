@@ -371,9 +371,12 @@ class FileLock:
             self.lock = None
             return
 
+        # Ensure parent directory exists before filesystem detection and lock creation
+        target_dir = compiletools.wrappedos.dirname(target_file) or "."
+        if not os.path.exists(target_dir):
+            os.makedirs(target_dir, exist_ok=True)
+
         try:
-            # Use wrappedos for path computation (pure string op, cacheable)
-            target_dir = compiletools.wrappedos.dirname(target_file) or "."
             # Filesystem detection does I/O but result is stable for a given dir
             fstype = compiletools.filesystem_utils.get_filesystem_type(target_dir)
             strategy = compiletools.filesystem_utils.get_lock_strategy(fstype)
