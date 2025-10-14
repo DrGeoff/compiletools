@@ -364,18 +364,28 @@ class MakefileCreator:
 
     def _lockdir_prefix(self):
         """Common lockdir implementation for GPFS, Lustre, NFS with stale lock detection"""
-        sleep_interval = compiletools.filesystem_utils.get_lockdir_sleep_interval(self._filesystem_type)
+        sleep_interval = self._get_lockdir_sleep_interval()
 
         if self._os_type == 'linux':
             return self._lockdir_prefix_linux(sleep_interval)
         else:
             return self._lockdir_prefix_bsd(sleep_interval)
 
+    def _get_lockdir_sleep_interval(self):
+        """Get sleep interval for lockdir polling.
+
+        Returns:
+            float: Sleep interval (only used by lockdir strategy for NFS/GPFS/Lustre)
+        """
+        return self.args.sleep_interval_lockdir
+
     def _lockdir_prefix_linux(self, sleep_interval):
         """Linux variant with /proc support for EPERM detection"""
         # NOTE: Using regular string (not f-string) to avoid escaping issues with shell ${var%%pattern}
         # In Makefile recipes: $$ becomes $ in shell
-        return (textwrap.dedent('''
+        warn_interval = self.args.lock_warn_interval
+        timeout = self.args.lock_cross_host_timeout
+        return (textwrap.dedent(f'''
             lockdir="$@.lockdir"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
             \tcurrent_host=$$(uname -n); lock_warn_time=0; lock_escalate_time=0; \\
             \twhile ! mkdir "$$lockdir" 2>/dev/null; do \\
@@ -383,8 +393,8 @@ class MakefileCreator:
             \t\tif [ -f "$$lockdir/pid" ]; then \\
             \t\t\tlock_info=$$(cat "$$lockdir/pid" 2>/dev/null); \\
             \t\t\tif [ -n "$$lock_info" ]; then \\
-            \t\t\t\tlock_host=$${lock_info%%:*}; \\
-            \t\t\t\tlock_pid=$${lock_info##*:}; \\
+            \t\t\t\tlock_host=$$${{lock_info%%:*}}; \\
+            \t\t\t\tlock_pid=$$${{lock_info##*:}}; \\
             \t\t\t\tif [ "$$lock_host" = "$$current_host" ] && [ -n "$$lock_pid" ]; then \\
             \t\t\t\t\tkill -0 "$$lock_pid" 2>/dev/null; kill_status=$$?; \\
             \t\t\t\t\tif [ $$kill_status -ne 0 ] && [ ! -e "/proc/$$lock_pid" ]; then \\
@@ -409,13 +419,13 @@ class MakefileCreator:
             \t\t\t\t\tesac; \\
             \t\t\t\t\tif [ $$lock_age_sec -gt 0 ]; then \\
             \t\t\t\t\t\tnow=$$(date +%s); \\
-            \t\t\t\t\t\tif [ $$lock_warn_time -eq 0 ] || [ $$((now - lock_warn_time)) -gt 60 ]; then \\
-            \t\t\t\t\t\t\techo "Warning: Waiting for lock held by $$lock_host:$$lock_pid (age: $${lock_age_sec}s)" >&2; \\
+            \t\t\t\t\t\tif [ $$lock_warn_time -eq 0 ] || [ $$((now - lock_warn_time)) -gt {warn_interval} ]; then \\
+            \t\t\t\t\t\t\techo "Warning: Waiting for lock held by $$lock_host:$$lock_pid (age: $$${{lock_age_sec}}s)" >&2; \\
             \t\t\t\t\t\t\techo "         Current host: $$current_host, Lock location: $$lockdir" >&2; \\
             \t\t\t\t\t\t\tlock_warn_time=$$now; \\
             \t\t\t\t\t\tfi; \\
-            \t\t\t\t\t\tif [ $$lock_age_sec -gt 600 ] && [ $$lock_escalate_time -eq 0 ]; then \\
-            \t\t\t\t\t\t\techo "WARNING: Cross-host lock from $$lock_host:$$lock_pid age exceeds 10 minutes" >&2; \\
+            \t\t\t\t\t\tif [ $$lock_age_sec -gt {timeout} ] && [ $$lock_escalate_time -eq 0 ]; then \\
+            \t\t\t\t\t\t\techo "WARNING: Cross-host lock from $$lock_host:$$lock_pid age exceeds {timeout} seconds" >&2; \\
             \t\t\t\t\t\t\techo "WARNING: If remote host crashed, admin must manually remove: $$lockdir" >&2; \\
             \t\t\t\t\t\t\tlock_escalate_time=$$now; \\
             \t\t\t\t\t\tfi; \\
@@ -423,7 +433,7 @@ class MakefileCreator:
             \t\t\t\tfi; \\
             \t\t\tfi; \\
             \t\tfi; \\
-            \t\tsleep ''' + str(sleep_interval) + '''; \\
+            \t\tsleep {sleep_interval}; \\
             \tdone; \\
             \tchmod 775 "$$lockdir" 2>/dev/null || true; \\
             \tif [ -e "$@" ]; then \\
@@ -438,7 +448,9 @@ class MakefileCreator:
         """macOS/BSD variant without /proc, conservative EPERM handling"""
         # NOTE: Using regular string (not f-string) to avoid escaping issues with shell ${var%%pattern}
         # In Makefile recipes: $$ becomes $ in shell
-        return (textwrap.dedent('''
+        warn_interval = self.args.lock_warn_interval
+        timeout = self.args.lock_cross_host_timeout
+        return (textwrap.dedent(f'''
             lockdir="$@.lockdir"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
             \tcurrent_host=$$(uname -n); lock_warn_time=0; lock_escalate_time=0; \\
             \twhile ! mkdir "$$lockdir" 2>/dev/null; do \\
@@ -446,8 +458,8 @@ class MakefileCreator:
             \t\tif [ -f "$$lockdir/pid" ]; then \\
             \t\t\tlock_info=$$(cat "$$lockdir/pid" 2>/dev/null); \\
             \t\t\tif [ -n "$$lock_info" ]; then \\
-            \t\t\t\tlock_host=$${lock_info%%:*}; \\
-            \t\t\t\tlock_pid=$${lock_info##*:}; \\
+            \t\t\t\tlock_host=$$${{lock_info%%:*}}; \\
+            \t\t\t\tlock_pid=$$${{lock_info##*:}}; \\
             \t\t\t\tif [ "$$lock_host" = "$$current_host" ] && [ -n "$$lock_pid" ]; then \\
             \t\t\t\t\tkill -0 "$$lock_pid" 2>/dev/null; kill_status=$$?; \\
             \t\t\t\t\tif [ $$kill_status -ne 0 ]; then \\
@@ -472,13 +484,13 @@ class MakefileCreator:
             \t\t\t\t\tesac; \\
             \t\t\t\t\tif [ $$lock_age_sec -gt 0 ]; then \\
             \t\t\t\t\t\tnow=$$(date +%s); \\
-            \t\t\t\t\t\tif [ $$lock_warn_time -eq 0 ] || [ $$((now - lock_warn_time)) -gt 60 ]; then \\
-            \t\t\t\t\t\t\techo "Warning: Waiting for lock held by $$lock_host:$$lock_pid (age: $${lock_age_sec}s)" >&2; \\
+            \t\t\t\t\t\tif [ $$lock_warn_time -eq 0 ] || [ $$((now - lock_warn_time)) -gt {warn_interval} ]; then \\
+            \t\t\t\t\t\t\techo "Warning: Waiting for lock held by $$lock_host:$$lock_pid (age: $$${{lock_age_sec}}s)" >&2; \\
             \t\t\t\t\t\t\techo "         Current host: $$current_host, Lock location: $$lockdir" >&2; \\
             \t\t\t\t\t\t\tlock_warn_time=$$now; \\
             \t\t\t\t\t\tfi; \\
-            \t\t\t\t\t\tif [ $$lock_age_sec -gt 600 ] && [ $$lock_escalate_time -eq 0 ]; then \\
-            \t\t\t\t\t\t\techo "WARNING: Cross-host lock from $$lock_host:$$lock_pid age exceeds 10 minutes" >&2; \\
+            \t\t\t\t\t\tif [ $$lock_age_sec -gt {timeout} ] && [ $$lock_escalate_time -eq 0 ]; then \\
+            \t\t\t\t\t\t\techo "WARNING: Cross-host lock from $$lock_host:$$lock_pid age exceeds {timeout} seconds" >&2; \\
             \t\t\t\t\t\t\techo "WARNING: If remote host crashed, admin must manually remove: $$lockdir" >&2; \\
             \t\t\t\t\t\t\tlock_escalate_time=$$now; \\
             \t\t\t\t\t\tfi; \\
@@ -486,7 +498,7 @@ class MakefileCreator:
             \t\t\t\tfi; \\
             \t\t\tfi; \\
             \t\tfi; \\
-            \t\tsleep ''' + str(sleep_interval) + '''; \\
+            \t\tsleep {sleep_interval}; \\
             \tdone; \\
             \tchmod 775 "$$lockdir" 2>/dev/null || true; \\
             \tif [ -e "$@" ]; then \\
@@ -499,20 +511,22 @@ class MakefileCreator:
 
     def _cifs_lock_prefix(self):
         """CIFS/SMB specific locking with exclusive file creation"""
-        return textwrap.dedent('''
+        sleep_interval = self.args.sleep_interval_cifs
+        return textwrap.dedent(f'''
             lockfile="$@.lock"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
             \texec 9> "$$lockfile"; \\
-            \twhile ! (set -C; echo $$$$ > "$$lockfile.excl") 2>/dev/null; do sleep 0.2; done; \\
+            \twhile ! (set -C; echo $$$$ > "$$lockfile.excl") 2>/dev/null; do sleep {sleep_interval}; done; \\
             \ttrap 'rm -f "$$lockfile.excl"' EXIT; \\
             \t''').strip()
 
     def _posix_flock_prefix(self):
         """POSIX flock implementation for standard filesystems"""
-        return textwrap.dedent('''
+        sleep_interval = self.args.sleep_interval_flock_fallback
+        return textwrap.dedent(f'''
             lockfile="$@.lock"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
             \texec 9> "$$lockfile"; \\
             \tif command -v flock >/dev/null 2>&1; then flock 9; else \\
-            \t\twhile ! (set -C; echo $$$$ > "$$lockfile.pid") 2>/dev/null; do sleep 0.1; done; \\
+            \t\twhile ! (set -C; echo $$$$ > "$$lockfile.pid") 2>/dev/null; do sleep {sleep_interval}; done; \\
             \t\ttrap 'rm -f "$$lockfile.pid"' EXIT; \\
             \tfi; \\
             \t''').strip()
