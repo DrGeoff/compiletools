@@ -200,7 +200,7 @@ class LockdirLock:
                 print(f"Removed stale lock from {lock_info}", file=sys.stderr)
             return True
 
-        except Exception as e:
+        except Exception:
             if os.path.exists(self.lockdir):
                 # Still exists, this is a fatal error
                 raise
