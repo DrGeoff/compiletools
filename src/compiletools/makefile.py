@@ -394,7 +394,7 @@ class MakefileCreator:
         warn_interval = self.args.lock_warn_interval
         timeout = self.args.lock_cross_host_timeout
         return (textwrap.dedent(f'''
-            lockdir="$@.lockdir"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
+            set -e; lockdir="$@.lockdir"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
             \tcurrent_host=$$(uname -n); lock_warn_time=0; lock_escalate_time=0; \\
             \twhile ! mkdir "$$lockdir" 2>/dev/null; do \\
             \t\tlock_host=""; lock_pid=""; \\
@@ -459,7 +459,7 @@ class MakefileCreator:
         warn_interval = self.args.lock_warn_interval
         timeout = self.args.lock_cross_host_timeout
         return (textwrap.dedent(f'''
-            lockdir="$@.lockdir"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
+            set -e; lockdir="$@.lockdir"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
             \tcurrent_host=$$(uname -n); lock_warn_time=0; lock_escalate_time=0; \\
             \twhile ! mkdir "$$lockdir" 2>/dev/null; do \\
             \t\tlock_host=""; lock_pid=""; \\
@@ -521,7 +521,7 @@ class MakefileCreator:
         """CIFS/SMB specific locking with exclusive file creation"""
         sleep_interval = self.args.sleep_interval_cifs
         return textwrap.dedent(f'''
-            lockfile="$@.lock"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
+            set -e; lockfile="$@.lock"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
             \texec 9> "$$lockfile"; \\
             \twhile ! (set -C; echo $$$$ > "$$lockfile.excl") 2>/dev/null; do sleep {sleep_interval}; done; \\
             \ttrap 'rm -f "$$lockfile.excl"' EXIT; \\
@@ -531,7 +531,7 @@ class MakefileCreator:
         """POSIX flock implementation for standard filesystems"""
         sleep_interval = self.args.sleep_interval_flock_fallback
         return textwrap.dedent(f'''
-            lockfile="$@.lock"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
+            set -e; lockfile="$@.lock"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
             \texec 9> "$$lockfile"; \\
             \tif command -v flock >/dev/null 2>&1; then flock 9; else \\
             \t\twhile ! (set -C; echo $$$$ > "$$lockfile.pid") 2>/dev/null; do sleep {sleep_interval}; done; \\

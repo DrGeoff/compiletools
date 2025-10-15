@@ -61,6 +61,60 @@ class TestMakefile:
     def test_dynamic_library(self):
         _test_library("--dynamic")
 
+    @uth.requires_functional_compiler
+    def test_shared_objects_propagates_compiler_errors(self):
+        """Test that compiler errors fail the build when using --shared-objects.
+
+        Regression test for bug where set -e was missing from locking recipes,
+        causing compiler failures to be silently ignored.
+        """
+        samplesdir = uth.samplesdir()
+
+        with uth.TempDirContextWithChange() as tempdir:
+            # Create a source file with intentional syntax error
+            bad_source = os.path.join(tempdir, "test_syntax_error.cpp")
+            with open(bad_source, "w") as f:
+                f.write("""
+// ct-exemarker
+int main() {
+    this_is_a_syntax_error;  // Intentional error
+    return 0;
+}
+""")
+
+            with uth.TempConfigContext(tempdir=tempdir) as temp_config_name:
+                with uth.ParserContext():
+                    # Generate Makefile with --shared-objects enabled
+                    compiletools.makefile.main([
+                        "--config=" + temp_config_name,
+                        bad_source,
+                        "--shared-objects"
+                    ])
+
+                # Find generated Makefile
+                filelist = os.listdir(".")
+                makefilename = [ff for ff in filelist if ff.startswith("Makefile")]
+                assert makefilename, "Makefile should have been generated"
+
+                # Verify Makefile contains set -e in locking recipe
+                with open(makefilename[0], "r") as f:
+                    makefile_content = f.read()
+                    assert "set -e;" in makefile_content, \
+                        "Makefile should contain 'set -e;' to propagate errors"
+
+                # Attempt to build - this MUST fail
+                cmd = ["make", "-f"] + makefilename
+                result = subprocess.run(cmd, capture_output=True, text=True)
+
+                # Verify build failed (non-zero exit code)
+                assert result.returncode != 0, \
+                    "Build should fail with non-zero exit code when compiler errors occur"
+
+                # Verify error message is visible
+                combined_output = result.stdout + result.stderr
+                assert "error" in combined_output.lower(), \
+                    "Compiler error message should be visible in output"
+
     def teardown_method(self):
         uth.reset()
 
