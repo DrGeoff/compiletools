@@ -333,6 +333,9 @@ class CIFSLock:
             if self.fd is not None:
                 os.close(self.fd)
                 self.fd = None
+            # Clean up base lockfile to match Makefile suffix behavior
+            if os.path.exists(self.lockfile):
+                os.unlink(self.lockfile)
         except OSError as e:
             if self.args.verbose >= 2:
                 print(
@@ -404,6 +407,9 @@ class FlockLock:
                 if self.fd is not None:
                     os.close(self.fd)
                     self.fd = None
+            # Clean up base lockfile to match Makefile suffix behavior
+            if os.path.exists(self.lockfile):
+                os.unlink(self.lockfile)
         except OSError as e:
             if self.args.verbose >= 2:
                 print(f"Warning: Failed to release flock: {e}", file=sys.stderr)
