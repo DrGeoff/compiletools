@@ -893,7 +893,7 @@ class TestConcurrentCompilationDatabase:
                 try:
                     result = result_queue.get(timeout=30)
                     results.append(result)
-                except:
+                except Exception:
                     # Timeout - kill all processes
                     for p in processes:
                         if p.is_alive():

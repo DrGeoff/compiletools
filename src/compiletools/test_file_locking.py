@@ -5,8 +5,7 @@ import tempfile
 import multiprocessing
 import time
 import os
-import sys
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 import compiletools.locking
 import compiletools.apptools
 
@@ -40,7 +39,7 @@ def temp_lock_file():
                 shutil.rmtree(path)
             elif os.path.exists(path):
                 os.unlink(path)
-        except:
+        except OSError:
             pass
 
 
@@ -148,7 +147,7 @@ class TestLockdirLock:
     def test_context_manager(self, temp_lock_file, mock_args):
         """Test FileLock context manager with lockdir strategy."""
         with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="lockdir"):
-            with compiletools.locking.FileLock(temp_lock_file, mock_args) as lock:
+            with compiletools.locking.FileLock(temp_lock_file, mock_args):
                 lockdir = temp_lock_file + ".lockdir"
                 assert os.path.exists(lockdir)
 
@@ -233,7 +232,7 @@ class TestCIFSLock:
     def test_context_manager(self, temp_lock_file, mock_args):
         """Test FileLock context manager with CIFS strategy."""
         with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="cifs"):
-            with compiletools.locking.FileLock(temp_lock_file, mock_args) as lock:
+            with compiletools.locking.FileLock(temp_lock_file, mock_args):
                 lockfile_excl = temp_lock_file + ".lock.excl"
                 assert os.path.exists(lockfile_excl)
 
@@ -287,7 +286,7 @@ class TestFlockLock:
     def test_context_manager(self, temp_lock_file, mock_args):
         """Test FileLock context manager with flock strategy."""
         with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"):
-            with compiletools.locking.FileLock(temp_lock_file, mock_args) as lock:
+            with compiletools.locking.FileLock(temp_lock_file, mock_args):
                 lockfile = temp_lock_file + ".lock"
                 assert os.path.exists(lockfile)
 
@@ -445,7 +444,7 @@ class TestConcurrentLocking:
             try:
                 result = queue.get(timeout=0.1)
                 results.append(result)
-            except:
+            except Exception:
                 pass
 
         # Wait for processes

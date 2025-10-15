@@ -111,7 +111,7 @@ if __name__ == '__main__':
         print("\n✅ Test passed - Hunter macro propagation works correctly!")
         sys.exit(0)
     except AssertionError as e:
-        print(f"\n❌ Test FAILED - Hunter macro propagation bug detected!")
+        print("\n❌ Test FAILED - Hunter macro propagation bug detected!")
         print(f"\nAssertion Error: {e}")
         print("\n🔍 ROOT CAUSE:")
         print("   Hunter._get_immediate_deps(realpath, macro_state_key) calls headerdeps.process(realpath),")
