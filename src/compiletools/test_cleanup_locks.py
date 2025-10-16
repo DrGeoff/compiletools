@@ -17,6 +17,7 @@ import socket
 from unittest.mock import Mock, patch
 import compiletools.cleanup_locks
 import compiletools.cleanup_locks_main
+import compiletools.git_utils
 
 
 @pytest.fixture
@@ -473,7 +474,7 @@ class TestCleanupLocksMain:
             capture_output=True,
             text=True,
             timeout=10,
-            cwd='/home/gericksson/compiletools'
+            cwd=compiletools.git_utils.find_git_root()
         )
 
         # Dry run should succeed
@@ -489,7 +490,7 @@ class TestCleanupLocksMain:
             capture_output=True,
             text=True,
             timeout=10,
-            cwd='/home/gericksson/compiletools'
+            cwd=compiletools.git_utils.find_git_root()
         )
 
         assert result.returncode == 0
