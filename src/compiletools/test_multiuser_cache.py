@@ -834,7 +834,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
 
     @uth.requires_lockdir_filesystem
     @uth.requires_functional_compiler
-    def test_stale_lock_cleanup(self):
+    def test_lockdir_stale_lock_cleanup(self):
         """
         Test stale lock detection and automatic cleanup.
 
