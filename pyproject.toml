@@ -62,6 +62,7 @@ ct-jobs = "compiletools.jobs:main"
 ct-list-variants = "compiletools.listvariants:main"
 ct-magicflags = "compiletools.magicflags:main"
 ct-compilation-database = "compiletools.compilation_database:main"
+ct-cleanup-locks = "compiletools.cleanup_locks_main:main"
 
 [tool.pytest.ini_options]
 testpaths = ["src/compiletools"]
@@ -142,4 +143,7 @@ filename = "src/compiletools/README.ct-list-variants.rst"
 
 [[tool.bumpversion.files]]
 filename = "src/compiletools/README.ct-magicflags.rst"
+
+[[tool.bumpversion.files]]
+filename = "src/compiletools/README.ct-cleanup-locks.rst"
 
