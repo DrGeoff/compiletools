@@ -312,17 +312,21 @@ class TestLockCleanerIntegration:
 
         with patch('subprocess.run') as mock_run:
             # 4. Active remote lock
-            mock_run.return_value = Mock(returncode=0)
             create_old_lockdir(tmpdir_with_locks, "remote-active", "remote1", 12345, 100)
 
             # 5. Stale remote lock
             stale_remote_lockdir = create_old_lockdir(tmpdir_with_locks, "remote-stale", "remote2", 12346, 100)
 
-            # Make second remote call return "not found"
-            mock_run.side_effect = [
-                Mock(returncode=0),  # remote-active
-                Mock(returncode=1),  # remote-stale
-            ]
+            # Use function-based side_effect to handle non-deterministic os.walk ordering
+            def ssh_side_effect(cmd, **kwargs):
+                cmd_str = ' '.join(cmd)
+                if 'remote1' in cmd_str:  # remote-active
+                    return Mock(returncode=0)  # process exists
+                elif 'remote2' in cmd_str:  # remote-stale
+                    return Mock(returncode=1)  # process not found
+                return Mock(returncode=255)  # unexpected
+
+            mock_run.side_effect = ssh_side_effect
 
             stats = cleaner.scan_and_cleanup(tmpdir_with_locks)
 
