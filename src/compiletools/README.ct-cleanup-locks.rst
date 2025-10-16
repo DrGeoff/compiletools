@@ -1,13 +1,24 @@
+==================
 ct-cleanup-locks
-================
+==================
 
-Purpose
--------
+-------------------------------------------------------------------------
+Clean up stale lock directories in shared object caches
+-------------------------------------------------------------------------
+
+:Author: drgeoffathome@gmail.com
+:Date:   2025-10-16
+:Version: 6.0.2
+:Manual section: 1
+:Manual group: developers
+
+DESCRIPTION
+===========
 Clean up stale lock directories in shared object caches from crashed builds,
 network failures, or terminated processes.
 
-When to Use
------------
+WHEN TO USE
+===========
 - After system crashes or power failures
 - When builds hang waiting for locks
 - Periodic maintenance of shared build caches (cron)
@@ -15,8 +26,8 @@ When to Use
 
 **Warning**: Only run when no builds are actively running, or use ``--dry-run`` first.
 
-Usage
------
+USAGE
+=====
 ::
 
     # Preview what would be removed
@@ -31,16 +42,16 @@ Usage
     # Increase verbosity
     ct-cleanup-locks --verbose 2
 
-Configuration
--------------
+CONFIGURATION
+=============
 Respects settings from ct.conf:
 
 - ``objdir``: Object directory to scan (default from configuration)
 - ``lock-cross-host-timeout``: Minimum lock age before considering stale
 - Uses same timeout policy as build system for consistency
 
-Options
--------
+OPTIONS
+=======
 ``--dry-run``
     Show what would be removed without actually removing locks
 
@@ -56,23 +67,23 @@ Options
 ``--verbose LEVEL``
     Increase output verbosity (0=minimal, 1=standard, 2=debug)
 
-How It Works
-------------
+HOW IT WORKS
+============
 1. Scans objdir for .lockdir directories
 2. Reads hostname:pid from each lock
 3. For local locks: checks if process still exists
 4. For remote locks: SSHs to host and checks if process exists
 5. Removes locks where process is dead or very old
 
-Lock Age Policy
----------------
+LOCK AGE POLICY
+===============
 Locks younger than ``min-lock-age`` are always preserved, even if the
 process appears dead. This protects against clock skew between hosts.
 
 Default: Uses ``lock-cross-host-timeout`` from ct.conf (typically 600s)
 
-Multi-User Shared Caches
--------------------------
+MULTI-USER SHARED CACHES
+=========================
 Safe for multi-user environments. Only removes locks where:
 
 - Process is confirmed dead (local) or
@@ -81,15 +92,15 @@ Safe for multi-user environments. Only removes locks where:
 
 Active locks and locks that can't be verified (SSH failures) are preserved.
 
-Exit Codes
-----------
+EXIT CODES
+==========
 0
     Success - all stale locks removed or none found
 1
     Failure - some stale locks could not be removed (check permissions)
 
-Examples
---------
+EXAMPLES
+========
 **Daily cron job for shared cache maintenance**::
 
     #!/bin/bash
@@ -111,8 +122,8 @@ Examples
 
     ct-cleanup-locks --objdir=/mnt/shared/build/.objects
 
-Lock Format
------------
+LOCK FORMAT
+===========
 Locks are directories named ``<filename>.lockdir`` containing a ``pid`` file
 with the format::
 
@@ -124,8 +135,8 @@ For example::
 
 The tool uses this information to determine if the process is still running.
 
-SSH Requirements
-----------------
+SSH REQUIREMENTS
+================
 For remote lock verification, the tool requires:
 
 - SSH access to remote hosts (passwordless)
@@ -134,8 +145,8 @@ For remote lock verification, the tool requires:
 
 If SSH fails, the lock is preserved as unknown status.
 
-Troubleshooting
----------------
+TROUBLESHOOTING
+===============
 **Locks not being removed**
 
 - Check lock age with ``--verbose 2``
@@ -155,8 +166,6 @@ Troubleshooting
 - Check SSH configuration (BatchMode, keys)
 - Verify remote hosts are reachable
 
-See Also
---------
-- ct.conf: Configuration file for lock timeout settings
-- Locking documentation in compiletools
-- Multi-user shared cache documentation
+SEE ALSO
+========
+``compiletools`` (1), ``ct-cake`` (1), ``ct-config`` (1)
