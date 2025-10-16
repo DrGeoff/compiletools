@@ -1,16 +1,11 @@
-#!/usr/bin/env python3
 """
 Test case for the macro state dependency bug found in ct-cake workflow.
 
-This test demonstrates the specific bug where DirectHeaderDeps returned 
+This test demonstrates the specific bug where DirectHeaderDeps returned
 inconsistent results due to macro state pollution between calls.
 """
 import os
-import sys
 from pathlib import Path
-
-# Add compiletools to path  
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import compiletools.headerdeps
 from types import SimpleNamespace
@@ -18,13 +13,14 @@ from types import SimpleNamespace
 def test_sequential_dependency_analysis_consistency():
     """
     Test that demonstrates the macro state pollution bug discovered in ct-cake.
-    
+
     This test simulates the ct-cake workflow where multiple files are processed
     sequentially, and macro state changes can affect subsequent analyses.
     """
     # Setup directory and change to sample directory
-    sample_dir = Path(__file__).parent
-    original_cwd = os.getcwd() 
+    from compiletools.testhelper import samplesdir
+    sample_dir = Path(samplesdir()) / "macro_state_dependency"
+    original_cwd = os.getcwd()
     os.chdir(sample_dir)
     
     try:
@@ -76,5 +72,3 @@ def test_sequential_dependency_analysis_consistency():
     finally:
         os.chdir(original_cwd)
 
-if __name__ == '__main__':
-    test_sequential_dependency_analysis_consistency()

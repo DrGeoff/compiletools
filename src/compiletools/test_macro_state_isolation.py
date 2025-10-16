@@ -1,19 +1,15 @@
-#!/usr/bin/env python3
 """
-Pytest test case that exposes the macro state dependency bug.
+Test macro state isolation using temporary isolated test files.
 
-This test demonstrates the bug where DirectHeaderDeps returns inconsistent
-results when macro state gets polluted between analyses.
+This test creates its own isolated temporary project to verify that DirectHeaderDeps
+properly isolates macro state between different file analyses. Uses a simple
+ENABLE_FEATURE macro to test conditional header inclusion.
 """
 import pytest
 import os
-import sys
 from pathlib import Path
 import tempfile
 import shutil
-
-# Add compiletools to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import compiletools.headerdeps
 from types import SimpleNamespace
@@ -51,10 +47,13 @@ void feature_function();
     # Cleanup
     shutil.rmtree(temp_dir)
 
-def test_macro_state_pollution_bug(temp_sample_dir):
+def test_macro_state_isolation_with_temp_files(temp_sample_dir):
     """
-    Test that exposes the macro state dependency bug in DirectHeaderDeps.
-    
+    Test macro state isolation using temporary isolated test files.
+
+    This test creates its own minimal project to verify that macro state
+    doesn't bleed between analyses of different files.
+
     This test should FAIL when the bug is present (macro state pollution)
     and PASS when the bug is fixed (proper macro state isolation).
     """
@@ -106,35 +105,3 @@ def test_macro_state_pollution_bug(temp_sample_dir):
     finally:
         os.chdir(original_cwd)
 
-if __name__ == '__main__':
-    # Run the test standalone
-    import tempfile
-    import shutil
-    
-    temp_dir = Path(tempfile.mkdtemp())
-    try:
-        # Create test files
-        (temp_dir / "with_macro.cpp").write_text("""#define ENABLE_FEATURE
-#include "feature.h"
-int main() { return 0; }
-""")
-        (temp_dir / "without_macro.cpp").write_text("""// ENABLE_FEATURE not defined
-#include "feature.h"
-int main() { return 0; }
-""")
-        (temp_dir / "feature.h").write_text("""#ifdef ENABLE_FEATURE
-#include "enabled_feature.h"
-#endif
-""")
-        (temp_dir / "enabled_feature.h").write_text("""// Only included when ENABLE_FEATURE is defined
-void feature_function();
-""")
-        
-        test_macro_state_pollution_bug(temp_dir)
-        print("✅ Test passed - macro state bug is fixed!")
-        
-    except AssertionError as e:
-        print(f"❌ Test failed - macro state bug detected: {e}")
-        sys.exit(1)
-    finally:
-        shutil.rmtree(temp_dir)

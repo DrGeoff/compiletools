@@ -9,8 +9,7 @@ import os
 import sys
 from pathlib import Path
 
-# Add compiletools to path
-sys.path.insert(0, '/home/gericksson/compiletools/src')
+# compiletools is in path
 
 import compiletools.headerdeps
 from types import SimpleNamespace
@@ -20,16 +19,17 @@ def test_macro_state_pollution_bug():
     This test exposes the macro state pollution bug where DirectHeaderDeps
     returns inconsistent results when the same instance is used to analyze
     multiple files with different macro contexts.
-    
+
     Expected behavior:
     - main.cpp defines FEATURE_A_ENABLED, so module_b.h should be included via config.h -> core.h
     - clean_main.cpp does NOT define FEATURE_A_ENABLED, so module_b.h should NOT be included
-    
+
     Bug behavior:
     - Both files include module_b.h due to macro state pollution
     """
-    
-    sample_dir = Path(__file__).parent
+
+    from compiletools.testhelper import samplesdir
+    sample_dir = Path(samplesdir()) / "macro_state_dependency"
     file_with_macro = sample_dir / "main.cpp"
     file_without_macro = sample_dir / "clean_main.cpp"
     
