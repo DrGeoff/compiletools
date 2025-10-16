@@ -76,44 +76,42 @@ def test_cake_auto_opens_files_once(sample_dir):
         os.chdir(test_dir)
 
         # Track file opens during cake execution
-        with FileOpenTracker() as tracker:
-            # Create argument parser and run cake
-            cap = compiletools.apptools.create_parser("Test ct-cake file efficiency")
-            compiletools.cake.Cake.add_arguments(cap)
+        with uth.ParserContext():
+            with FileOpenTracker() as tracker:
+                # Create argument parser and run cake
+                cap = compiletools.apptools.create_parser("Test ct-cake file efficiency")
+                compiletools.cake.Cake.add_arguments(cap)
 
-            # Use --auto to trigger dependency analysis and --file-list to avoid compilation
-            # This runs the full dependency analysis without invoking the compiler
-            argv = ['--auto', '--file-list']
-            args = compiletools.apptools.parseargs(cap, argv=argv)
+                # Use --auto to trigger dependency analysis and --file-list to avoid compilation
+                # This runs the full dependency analysis without invoking the compiler
+                argv = ['--auto', '--file-list']
+                args = compiletools.apptools.parseargs(cap, argv=argv)
 
-            try:
-                cake = compiletools.cake.Cake(args)
-                cake.process()
-            except SystemExit:
-                pass  # May exit early if no targets found
+                try:
+                    cake = compiletools.cake.Cake(args)
+                    cake.process()
+                except SystemExit:
+                    pass  # May exit early if no targets found
 
-        # Check for multiple opens
-        multiple_opens = tracker.get_multiple_opens()
+            # Check for multiple opens
+            multiple_opens = tracker.get_multiple_opens()
 
-        if multiple_opens:
-            # Create detailed failure message
-            msg_parts = [
-                f"\n{len(multiple_opens)} source files were opened multiple times in {sample_dir}:"
-            ]
-            for path, count in sorted(multiple_opens.items(), key=lambda x: -x[1]):
-                msg_parts.append(f"  {count}x: {os.path.basename(path)}")
-            msg_parts.append("\nAll file opens:")
-            for path, count in sorted(tracker.counter.items()):
-                msg_parts.append(f"  {count}x: {os.path.basename(path)}")
+            if multiple_opens:
+                # Create detailed failure message
+                msg_parts = [
+                    f"\n{len(multiple_opens)} source files were opened multiple times in {sample_dir}:"
+                ]
+                for path, count in sorted(multiple_opens.items(), key=lambda x: -x[1]):
+                    msg_parts.append(f"  {count}x: {os.path.basename(path)}")
+                msg_parts.append("\nAll file opens:")
+                for path, count in sorted(tracker.counter.items()):
+                    msg_parts.append(f"  {count}x: {os.path.basename(path)}")
 
-            pytest.fail("\n".join(msg_parts))
+                pytest.fail("\n".join(msg_parts))
 
-        # Success: all files opened at most once
-        assert len(multiple_opens) == 0, "All source files should be opened at most once"
+            # Success: all files opened at most once
+            assert len(multiple_opens) == 0, "All source files should be opened at most once"
 
     finally:
         # Restore original directory
         os.chdir(original_dir)
-        # Clean up any parser state
-        uth.delete_existing_parsers()
-        compiletools.apptools.resetcallbacks()
