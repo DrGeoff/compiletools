@@ -1,6 +1,24 @@
 #!/bin/bash
+# DEPRECATED: This script is deprecated in favor of ct-cleanup-locks
+#
+# Please use the new Python-based tool instead:
+#   ct-cleanup-locks [--dry-run] [--objdir=/path/to/objects]
+#
+# The new tool:
+# - Integrates with ct.conf configuration (respects lock timeouts, objdir settings)
+# - Uses the same lock detection logic as the build system
+# - Provides better error handling and reporting
+# - Supports all the same features as this script
+#
+# This script will be removed in a future release.
+# -----------------------------------------------------------------------------
+
 # Script to check and clean up stale lockdirs on remote hosts
 # Usage: ./cleanup_remote_locks.sh <shared_object_directory>
+
+echo "WARNING: This script is deprecated. Use 'ct-cleanup-locks' instead." >&2
+echo "         Run 'ct-cleanup-locks --help' for more information." >&2
+echo "" >&2
 
 set -e
 

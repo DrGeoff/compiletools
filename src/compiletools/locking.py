@@ -10,9 +10,9 @@ import time
 import socket
 import platform
 import shutil
-import psutil
 import compiletools.filesystem_utils
 import compiletools.wrappedos
+import compiletools.lock_utils
 
 # fcntl only available on Unix (not Windows)
 try:
@@ -81,56 +81,26 @@ class LockdirLock:
                 )
 
     def _get_lock_age_seconds(self):
-        """Get lock age (MUST use uncached mtime - lock can be recreated).
+        """Get lock age (uses shared lock_utils, uncached mtime).
 
         Returns:
             float: Age in seconds, or 0 if lock doesn't exist or has future mtime
         """
-        try:
-            # CRITICAL: Use os.path.getmtime, NOT wrappedos.getmtime
-            # Caching would return stale mtime if lock removed/recreated
-            lock_mtime = os.path.getmtime(self.lockdir)
-            now = time.time()
-
-            # Handle future mtime (clock skew between hosts)
-            if lock_mtime > now:
-                if self.args.verbose >= 2:
-                    print(
-                        f"Warning: Lock mtime in future (clock skew): {self.lockdir}",
-                        file=sys.stderr,
-                    )
-                return 0
-
-            return now - lock_mtime
-        except OSError:
-            return 0
+        return compiletools.lock_utils.get_lock_age_seconds(
+            self.lockdir,
+            getattr(self.args, 'verbose', 0)
+        )
 
     def _read_lock_info(self):
-        """Read hostname:pid from lock file.
+        """Read hostname:pid from lock file (uses shared lock_utils).
 
         Returns:
             tuple: (hostname, pid) or (None, None) if unreadable
         """
-        try:
-            # CRITICAL: Use os.path.exists, NOT wrappedos (if it had exists())
-            # Caching would be WRONG - pid_file appears/disappears as locks acquired/released
-            if not os.path.exists(self.pid_file):
-                return None, None
-
-            with open(self.pid_file, "r") as f:
-                lock_info = f.read().strip()
-
-            if ":" not in lock_info:
-                return None, None
-
-            lock_host, lock_pid = lock_info.split(":", 1)
-            return lock_host, int(lock_pid)
-
-        except (OSError, ValueError):
-            return None, None
+        return compiletools.lock_utils.read_lock_info(self.lockdir)
 
     def _is_process_alive_same_host(self, pid):
-        """Check if process is alive on same host.
+        """Check if process is alive on same host (uses shared lock_utils).
 
         Uses psutil (required dependency) for robust cross-platform checking.
         Equivalent to shell's "kill -0 $pid" + "/proc check" but more reliable.
@@ -141,7 +111,7 @@ class LockdirLock:
         Returns:
             bool: True if process exists, False otherwise
         """
-        return psutil.pid_exists(pid)
+        return compiletools.lock_utils.is_process_alive_local(pid)
 
     def _is_lock_stale(self):
         """Check if lock is stale (same algorithm as makefile.py).
