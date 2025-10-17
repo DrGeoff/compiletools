@@ -96,11 +96,11 @@ int main() {
                 makefilename = [ff for ff in filelist if ff.startswith("Makefile")]
                 assert makefilename, "Makefile should have been generated"
 
-                # Verify Makefile contains set -e in locking recipe
+                # Verify Makefile uses ct-lock-helper for error propagation
                 with open(makefilename[0], "r") as f:
                     makefile_content = f.read()
-                    assert "set -e;" in makefile_content, \
-                        "Makefile should contain 'set -e;' to propagate errors"
+                    assert "ct-lock-helper" in makefile_content, \
+                        "Makefile should use ct-lock-helper (which has set -euo pipefail)"
 
                 # Attempt to build - this MUST fail
                 cmd = ["make", "-f"] + makefilename

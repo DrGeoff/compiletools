@@ -1,6 +1,7 @@
 """File locking for concurrent builds.
 
-Python implementation of the same locking algorithms used in makefile.py shell code.
+Python implementation of the same locking algorithms used in ct-lock-helper shell script.
+Both this module and ct-lock-helper use identical algorithms for lock acquisition/release.
 All policies (timeouts, sleep intervals) are configured via args object from apptools.py.
 """
 
@@ -180,7 +181,7 @@ class LockdirLock:
     def acquire(self):
         """Acquire lock using mkdir (atomic on all filesystems).
 
-        Algorithm mirrors makefile.py _lockdir_prefix_linux/bsd:
+        Algorithm mirrors ct-lock-helper lockdir strategy:
         1. Try mkdir (atomic)
         2. If fails, check if stale (same-host process check)
         3. If stale, remove with verification and retry immediately
@@ -272,7 +273,7 @@ class CIFSLock:
     def acquire(self):
         """Acquire lock using exclusive file creation (CIFS-safe).
 
-        Algorithm mirrors makefile.py _cifs_lock_prefix.
+        Algorithm mirrors ct-lock-helper cifs strategy.
         """
         # Ensure parent directory exists
         parent_dir = os.path.dirname(self.lockfile)
@@ -327,7 +328,7 @@ class FlockLock:
     def acquire(self):
         """Acquire lock using POSIX flock with fallback.
 
-        Algorithm mirrors makefile.py _posix_flock_prefix.
+        Algorithm mirrors ct-lock-helper flock strategy.
         Try fcntl.flock() first, fallback to O_EXCL polling.
         """
         # Ensure parent directory exists
