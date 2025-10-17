@@ -204,8 +204,8 @@ class LockdirLock:
                 os.mkdir(self.lockdir)
                 # Lock acquired - set multi-user permissions (mirrors shell behavior)
                 self._set_lockdir_permissions()
-                # Write pid file
-                with open(self.pid_file, "w") as f:
+                # Write pid file atomically to prevent races during stale lock detection
+                with compiletools.filesystem_utils.atomic_output_file(self.pid_file, "w") as f:
                     f.write(f"{self.hostname}:{self.pid}\n")
                 # Set pid file permissions for multi-user access
                 os.chmod(self.pid_file, 0o664)

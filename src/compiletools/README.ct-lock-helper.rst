@@ -126,16 +126,52 @@ Uses POSIX ``flock()`` when available, falls back to ``O_EXCL`` polling.
     target.o.lock        # Lockfile (fd 9)
     target.o.lock.pid    # PID marker (fallback only)
 
-Performance
------------
+Implementations
+---------------
 
-**Overhead:**
+Two implementations are available:
 
-Process spawn adds ~13-17ms per compilation. Negligible when:
+**ct-lock-helper** (bash - default):
+- Overhead: ~12-18ms per compilation
+- Requires bash
+- Faster for simple operations
+
+**ct-lock-helper-py** (Python - alternative):
+- Overhead: ~45-52ms per compilation
+- Python 3.9+ required
+- Better error handling
+- Cross-platform (Windows compatible)
+- Reuses tested locking.py code
+
+Performance Comparison
+^^^^^^^^^^^^^^^^^^^^^^
+
+Measured overhead (vs direct gcc, 100 iterations):
+
++-----------+---------------+----------------+---------------+
+| Strategy  | Bash          | Python         | Difference    |
++===========+===============+================+===============+
+| flock     | 12.9ms        | 52.6ms         | **4.1x**      |
++-----------+---------------+----------------+---------------+
+| lockdir   | 18.5ms        | 45.7ms         | **2.5x**      |
++-----------+---------------+----------------+---------------+
+| cifs      | 11.9ms        | 47.5ms         | **4.0x**      |
++-----------+---------------+----------------+---------------+
+
+**Verdict:** Bash is **2.5-4x faster** than Python.
+
+**When the overhead doesn't matter:**
 
 - Real C/C++ compilation (typically 100ms-10s per file)
 - Parallel builds (``make -j8`` amortizes overhead)
-- Network filesystems (NFS latency >> 17ms)
+- Network filesystems (NFS latency >> 50ms)
+
+**When to use Python version:**
+
+- Windows or non-bash environments
+- Better error messages/debugging needed
+- Cross-platform consistency required
+- Overhead is acceptable (< 50% of compile time)
 
 **When shared objects are beneficial:**
 
@@ -146,12 +182,20 @@ Process spawn adds ~13-17ms per compilation. Negligible when:
 **When to skip:**
 
 - Fast local single-threaded builds
+- Many tiny files (<100ms compile time each)
 - Use ``--no-shared-objects`` to disable
 
 **Filesystem detection:**
 
 Strategy is determined once in Python and baked into Makefile.
 No per-compilation filesystem detection overhead.
+
+**Benchmark:**
+
+Run your own performance comparison::
+
+    # Available after installation
+    benchmark_lock_implementations.sh
 
 Troubleshooting
 ---------------

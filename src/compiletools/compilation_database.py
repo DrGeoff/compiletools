@@ -11,6 +11,7 @@ import compiletools.hunter
 import compiletools.namer
 import compiletools.configutils
 import compiletools.wrappedos
+import compiletools.filesystem_utils
 from compiletools.locking import FileLock
 
 
@@ -177,27 +178,37 @@ class CompilationDatabaseCreator:
         if output_file is None:
             output_file = self.namer.compilation_database_pathname()
 
-        # Use same --shared-objects flag as makefile.py
-        # FileLock is no-op if args.shared_objects is False
-        with FileLock(output_file, self.args):
-            self._write_database_impl(output_file)
-
-    def _write_database_impl(self, output_file: str):
-        """Implementation of database write (extracted for locking)"""
-        # Create the command objects for current files
+        # Create new commands OUTSIDE lock - this is expensive (source hunting, parsing)
+        # Only need lock for the actual read-merge-write operation
         new_commands = self.create_compilation_database()
 
-        # For incremental updates: read existing database and merge using StringZilla
+        # Use same --shared-objects flag as makefile.py
+        # FileLock is no-op if args.shared_objects is False
+        # Lock held only for quick read-merge-write to minimize blocking
+        with FileLock(output_file, self.args):
+            self._write_database_impl(output_file, new_commands)
+
+    def _write_database_impl(self, output_file: str, new_commands: List[Dict[str, Any]]):
+        """Implementation of database write (extracted for locking)
+
+        Args:
+            output_file: Path to compile_commands.json
+            new_commands: Pre-computed command objects (created outside lock)
+        """
+        # For incremental updates: read existing database and merge
         existing_commands = []
         if os.path.exists(output_file):
             try:
-                # Use StringZilla memory-mapped file reading
-                file_content = sz.Str(sz.File(output_file))
-                # JSON parsing requires conversion only at the boundary
-                if len(file_content) > 0:
-                    existing_commands = json.loads(file_content.decode('utf-8'))
+                # Use filesystem-safe reading (mmap on local, regular I/O on network filesystems)
+                # No need for respect_locks since we're already inside FileLock context
+                content_str = compiletools.filesystem_utils.safe_read_text_file(
+                    output_file,
+                    encoding='utf-8'
+                )
+                if len(content_str) > 0:
+                    existing_commands = json.loads(str(content_str))
                     if self.args.verbose:
-                        print(f"Loaded existing compilation database with StringZilla: {len(existing_commands)} entries")
+                        print(f"Loaded existing compilation database: {len(existing_commands)} entries")
                 else:
                     existing_commands = []
             except Exception as e:
@@ -236,9 +247,9 @@ class CompilationDatabaseCreator:
             if output_dir and not compiletools.wrappedos.isdir(output_dir):
                 os.makedirs(output_dir, exist_ok=True)
 
-            # Use StringZilla Str.write_to for faster file writing - no GIL, no copies
+            # Use atomic write to prevent SIGBUS for concurrent mmap readers (e.g., clangd)
             json_content = json.dumps(merged_commands, indent=2, ensure_ascii=False)
-            sz.Str(json_content).write_to(output_file)
+            compiletools.filesystem_utils.atomic_write(output_file, json_content)
 
             if self.args.verbose:
                 print(f"Written compilation database with {len(merged_commands)} entries to {output_file}")
