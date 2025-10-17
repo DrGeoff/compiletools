@@ -14,24 +14,6 @@ import shutil
 import sys
 
 
-@pytest.fixture(scope="session", autouse=True)
-def ensure_ct_lock_helper_in_path():
-    """Ensure ct-lock-helper is available in PATH for all tests."""
-    import shutil as sh
-    if not sh.which('ct-lock-helper'):
-        # Try to find it in common locations
-        test_dir = os.path.dirname(__file__)
-        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(test_dir)))
-        helper_path = os.path.join(repo_root, 'ct-lock-helper')
-
-        if os.path.exists(helper_path):
-            # Add repo root to PATH for tests
-            os.environ['PATH'] = repo_root + os.pathsep + os.environ.get('PATH', '')
-            print(f"\nAdded {repo_root} to PATH for ct-lock-helper", file=sys.stderr)
-        else:
-            pytest.skip("ct-lock-helper not found in PATH or repository root")
-
-
 @pytest.fixture
 def temp_target():
     """Create temporary target file for lock testing."""
