@@ -17,6 +17,9 @@ DESCRIPTION
 Clean up stale lock directories in shared object caches from crashed builds,
 network failures, or terminated processes.
 
+These locks are created by ``ct-lock-helper`` during compilation with
+``--shared-objects``. See ``README.ct-lock-helper.rst`` for lock details.
+
 WHEN TO USE
 ===========
 - After system crashes or power failures

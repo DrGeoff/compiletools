@@ -213,7 +213,23 @@ class MakefileCreator:
 
         self.namer = compiletools.namer.Namer(args)
         self.hunter = hunter
-        
+
+        # Check if ct-lock-helper is available when using shared_objects
+        if args.shared_objects:
+            import shutil
+            if not shutil.which('ct-lock-helper'):
+                print("ERROR: ct-lock-helper not found in PATH", file=sys.stderr)
+                print("", file=sys.stderr)
+                print("The --shared-objects flag requires ct-lock-helper to be installed.", file=sys.stderr)
+                print("", file=sys.stderr)
+                print("Solutions:", file=sys.stderr)
+                print("  1. Install compiletools: pip install compiletools", file=sys.stderr)
+                print("  2. Install from source: pip install -e .", file=sys.stderr)
+                print("  3. Add ct-lock-helper to your PATH", file=sys.stderr)
+                print("", file=sys.stderr)
+                print("Or disable shared objects with: --no-shared-objects", file=sys.stderr)
+                sys.exit(1)
+
         # Detect filesystem type once and cache it
         self._filesystem_type = self._detect_filesystem_type()
 
@@ -348,28 +364,44 @@ class MakefileCreator:
 
         return True
 
-    def _get_locking_recipe_prefix(self):
-        """Generate filesystem-specific locking code prefix"""
+    def _wrap_compile_with_lock(self, compile_cmd, target):
+        """Wrap compile command with ct-lock-helper for locking.
+
+        Args:
+            compile_cmd: Compile command without -o flag (e.g., "gcc -c file.c")
+            target: Target file (e.g., "$@")
+
+        Returns:
+            Complete command with locking (e.g., "ct-lock-helper compile --target=$@ --strategy=lockdir -- gcc -c file.c")
+        """
         if not self.args.shared_objects:
-            return ""
+            return compile_cmd + " -o " + target
 
         strategy = compiletools.filesystem_utils.get_lock_strategy(self._filesystem_type)
 
+        # Build environment variables for lock configuration
+        env_vars = []
+
         if strategy == 'lockdir':
-            return self._lockdir_prefix()
+            sleep_interval = self._get_lockdir_sleep_interval()
+            env_vars.append(f'CT_LOCK_SLEEP_INTERVAL={sleep_interval}')
         elif strategy == 'cifs':
-            return self._cifs_lock_prefix()
-        else:  # 'flock'
-            return self._posix_flock_prefix()
+            env_vars.append(f'CT_LOCK_SLEEP_INTERVAL_CIFS={self.args.sleep_interval_cifs}')
+        else:  # flock
+            env_vars.append(f'CT_LOCK_SLEEP_INTERVAL_FLOCK={self.args.sleep_interval_flock_fallback}')
 
-    def _lockdir_prefix(self):
-        """Common lockdir implementation for GPFS, Lustre, NFS with stale lock detection"""
-        sleep_interval = self._get_lockdir_sleep_interval()
+        env_vars.append(f'CT_LOCK_WARN_INTERVAL={self.args.lock_warn_interval}')
+        env_vars.append(f'CT_LOCK_TIMEOUT={self.args.lock_cross_host_timeout}')
 
-        if self._os_type == 'linux':
-            return self._lockdir_prefix_linux(sleep_interval)
-        else:
-            return self._lockdir_prefix_bsd(sleep_interval)
+        env_prefix = " ".join(env_vars) + " " if env_vars else ""
+
+        return f'{env_prefix}ct-lock-helper compile --target={target} --strategy={strategy} -- {compile_cmd}'
+
+    def _get_locking_recipe_prefix(self):
+        """Generate filesystem-specific locking code prefix (deprecated, use _wrap_compile_with_lock)"""
+        # Kept for backward compatibility, but now returns empty
+        # New code should use _wrap_compile_with_lock() instead
+        return ""
 
     def _get_lockdir_sleep_interval(self):
         """Get sleep interval for lockdir polling.
@@ -387,171 +419,10 @@ class MakefileCreator:
         # Otherwise auto-detect based on filesystem type
         return compiletools.filesystem_utils.get_lockdir_sleep_interval(self._filesystem_type)
 
-    def _lockdir_prefix_linux(self, sleep_interval):
-        """Linux variant with /proc support for EPERM detection"""
-        # NOTE: Using regular string (not f-string) to avoid escaping issues with shell ${var%%pattern}
-        # In Makefile recipes: $$ becomes $ in shell
-        warn_interval = self.args.lock_warn_interval
-        timeout = self.args.lock_cross_host_timeout
-        return (textwrap.dedent(f'''
-            set -e; lockdir="$@.lockdir"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
-            \tcurrent_host=$$(uname -n); lock_warn_time=0; lock_escalate_time=0; \\
-            \twhile ! mkdir "$$lockdir" 2>/dev/null; do \\
-            \t\tlock_host=""; lock_pid=""; \\
-            \t\tif [ -f "$$lockdir/pid" ]; then \\
-            \t\t\tlock_info=$$(cat "$$lockdir/pid" 2>/dev/null); \\
-            \t\t\tif [ -n "$$lock_info" ]; then \\
-            \t\t\t\tlock_host=$$${{lock_info%%:*}}; \\
-            \t\t\t\tlock_pid=$$${{lock_info##*:}}; \\
-            \t\t\t\tif [ "$$lock_host" = "$$current_host" ] && [ -n "$$lock_pid" ]; then \\
-            \t\t\t\t\tkill -0 "$$lock_pid" 2>/dev/null; kill_status=$$?; \\
-            \t\t\t\t\tif [ $$kill_status -ne 0 ] && [ ! -e "/proc/$$lock_pid" ]; then \\
-            \t\t\t\t\t\tif rm -rf "$$lockdir" 2>/dev/null; then \\
-            \t\t\t\t\t\t\techo "Removed stale lock from $$lock_host:$$lock_pid" >&2; \\
-            \t\t\t\t\t\t\tcontinue; \\
-            \t\t\t\t\t\telse \\
-            \t\t\t\t\t\t\tif [ -e "$$lockdir" ]; then \\
-            \t\t\t\t\t\t\t\techo "ERROR: Stale lock from $$lock_host:$$lock_pid cannot be removed" >&2; \\
-            \t\t\t\t\t\t\t\techo "ERROR: Check permissions on: $$lockdir" >&2; \\
-            \t\t\t\t\t\t\t\techo "ERROR: Parent directory should be SGID with group write permissions" >&2; \\
-            \t\t\t\t\t\t\t\texit 1; \\
-            \t\t\t\t\t\t\tfi; \\
-            \t\t\t\t\t\t\tcontinue; \\
-            \t\t\t\t\t\tfi; \\
-            \t\t\t\t\tfi; \\
-            \t\t\t\telif [ -n "$$lock_host" ] && [ -n "$$lock_pid" ]; then \\
-            \t\t\t\t\tlock_mtime=$$(stat -c %Y "$$lockdir" 2>/dev/null || echo 0); \\
-            \t\t\t\t\tcase "$$lock_mtime" in \\
-            \t\t\t\t\t\t''|*[!0-9]*) lock_age_sec=0 ;; \\
-            \t\t\t\t\t\t*) now=$$(date +%s); lock_age_sec=$$((now - lock_mtime)) ;; \\
-            \t\t\t\t\tesac; \\
-            \t\t\t\t\tif [ $$lock_age_sec -gt 0 ]; then \\
-            \t\t\t\t\t\tnow=$$(date +%s); \\
-            \t\t\t\t\t\tif [ $$lock_warn_time -eq 0 ] || [ $$((now - lock_warn_time)) -gt {warn_interval} ]; then \\
-            \t\t\t\t\t\t\techo "Warning: Waiting for lock held by $$lock_host:$$lock_pid (age: $$${{lock_age_sec}}s)" >&2; \\
-            \t\t\t\t\t\t\techo "         Current host: $$current_host, Lock location: $$lockdir" >&2; \\
-            \t\t\t\t\t\t\tlock_warn_time=$$now; \\
-            \t\t\t\t\t\tfi; \\
-            \t\t\t\t\t\tif [ $$lock_age_sec -gt {timeout} ] && [ $$lock_escalate_time -eq 0 ]; then \\
-            \t\t\t\t\t\t\techo "WARNING: Cross-host lock from $$lock_host:$$lock_pid age exceeds {timeout} seconds" >&2; \\
-            \t\t\t\t\t\t\techo "WARNING: If remote host crashed, admin must manually remove: $$lockdir" >&2; \\
-            \t\t\t\t\t\t\tlock_escalate_time=$$now; \\
-            \t\t\t\t\t\tfi; \\
-            \t\t\t\t\tfi; \\
-            \t\t\t\tfi; \\
-            \t\t\tfi; \\
-            \t\tfi; \\
-            \t\tsleep {sleep_interval}; \\
-            \tdone; \\
-            \tchmod 775 "$$lockdir" 2>/dev/null || true; \\
-            \tif [ -e "$@" ]; then \\
-            \t\tchgrp --reference="$@" "$$lockdir" 2>/dev/null || true; \\
-            \tfi; \\
-            \techo "$$current_host:$$$$" > "$$lockdir/pid.tmp"; \\
-            \tmv "$$lockdir/pid.tmp" "$$lockdir/pid"; \\
-            \tchmod 664 "$$lockdir/pid" 2>/dev/null || true; \\
-            \t''').strip())
-
-    def _lockdir_prefix_bsd(self, sleep_interval):
-        """macOS/BSD variant without /proc, conservative EPERM handling"""
-        # NOTE: Using regular string (not f-string) to avoid escaping issues with shell ${var%%pattern}
-        # In Makefile recipes: $$ becomes $ in shell
-        warn_interval = self.args.lock_warn_interval
-        timeout = self.args.lock_cross_host_timeout
-        return (textwrap.dedent(f'''
-            set -e; lockdir="$@.lockdir"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
-            \tcurrent_host=$$(uname -n); lock_warn_time=0; lock_escalate_time=0; \\
-            \twhile ! mkdir "$$lockdir" 2>/dev/null; do \\
-            \t\tlock_host=""; lock_pid=""; \\
-            \t\tif [ -f "$$lockdir/pid" ]; then \\
-            \t\t\tlock_info=$$(cat "$$lockdir/pid" 2>/dev/null); \\
-            \t\t\tif [ -n "$$lock_info" ]; then \\
-            \t\t\t\tlock_host=$$${{lock_info%%:*}}; \\
-            \t\t\t\tlock_pid=$$${{lock_info##*:}}; \\
-            \t\t\t\tif [ "$$lock_host" = "$$current_host" ] && [ -n "$$lock_pid" ]; then \\
-            \t\t\t\t\tkill -0 "$$lock_pid" 2>/dev/null; kill_status=$$?; \\
-            \t\t\t\t\tif [ $$kill_status -ne 0 ]; then \\
-            \t\t\t\t\t\tif rm -rf "$$lockdir" 2>/dev/null; then \\
-            \t\t\t\t\t\t\techo "Removed stale lock from $$lock_host:$$lock_pid" >&2; \\
-            \t\t\t\t\t\t\tcontinue; \\
-            \t\t\t\t\t\telse \\
-            \t\t\t\t\t\t\tif [ -e "$$lockdir" ]; then \\
-            \t\t\t\t\t\t\t\techo "ERROR: Stale lock from $$lock_host:$$lock_pid cannot be removed" >&2; \\
-            \t\t\t\t\t\t\t\techo "ERROR: Check permissions on: $$lockdir" >&2; \\
-            \t\t\t\t\t\t\t\techo "ERROR: Parent directory should be SGID with group write permissions" >&2; \\
-            \t\t\t\t\t\t\t\texit 1; \\
-            \t\t\t\t\t\t\tfi; \\
-            \t\t\t\t\t\t\tcontinue; \\
-            \t\t\t\t\t\tfi; \\
-            \t\t\t\t\tfi; \\
-            \t\t\t\telif [ -n "$$lock_host" ] && [ -n "$$lock_pid" ]; then \\
-            \t\t\t\t\tlock_mtime=$$(stat -f %m "$$lockdir" 2>/dev/null || echo 0); \\
-            \t\t\t\t\tcase "$$lock_mtime" in \\
-            \t\t\t\t\t\t''|*[!0-9]*) lock_age_sec=0 ;; \\
-            \t\t\t\t\t\t*) now=$$(date +%s); lock_age_sec=$$((now - lock_mtime)) ;; \\
-            \t\t\t\t\tesac; \\
-            \t\t\t\t\tif [ $$lock_age_sec -gt 0 ]; then \\
-            \t\t\t\t\t\tnow=$$(date +%s); \\
-            \t\t\t\t\t\tif [ $$lock_warn_time -eq 0 ] || [ $$((now - lock_warn_time)) -gt {warn_interval} ]; then \\
-            \t\t\t\t\t\t\techo "Warning: Waiting for lock held by $$lock_host:$$lock_pid (age: $$${{lock_age_sec}}s)" >&2; \\
-            \t\t\t\t\t\t\techo "         Current host: $$current_host, Lock location: $$lockdir" >&2; \\
-            \t\t\t\t\t\t\tlock_warn_time=$$now; \\
-            \t\t\t\t\t\tfi; \\
-            \t\t\t\t\t\tif [ $$lock_age_sec -gt {timeout} ] && [ $$lock_escalate_time -eq 0 ]; then \\
-            \t\t\t\t\t\t\techo "WARNING: Cross-host lock from $$lock_host:$$lock_pid age exceeds {timeout} seconds" >&2; \\
-            \t\t\t\t\t\t\techo "WARNING: If remote host crashed, admin must manually remove: $$lockdir" >&2; \\
-            \t\t\t\t\t\t\tlock_escalate_time=$$now; \\
-            \t\t\t\t\t\tfi; \\
-            \t\t\t\t\tfi; \\
-            \t\t\t\tfi; \\
-            \t\t\tfi; \\
-            \t\tfi; \\
-            \t\tsleep {sleep_interval}; \\
-            \tdone; \\
-            \tchmod 775 "$$lockdir" 2>/dev/null || true; \\
-            \tif [ -e "$@" ]; then \\
-            \t\tchgrp --reference="$@" "$$lockdir" 2>/dev/null || true; \\
-            \tfi; \\
-            \techo "$$current_host:$$$$" > "$$lockdir/pid.tmp"; \\
-            \tmv "$$lockdir/pid.tmp" "$$lockdir/pid"; \\
-            \tchmod 664 "$$lockdir/pid" 2>/dev/null || true; \\
-            \t''').strip())
-
-    def _cifs_lock_prefix(self):
-        """CIFS/SMB specific locking with exclusive file creation"""
-        sleep_interval = self.args.sleep_interval_cifs
-        return textwrap.dedent(f'''
-            set -e; lockfile="$@.lock"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
-            \texec 9> "$$lockfile"; \\
-            \twhile ! (set -C; echo $$$$ > "$$lockfile.excl") 2>/dev/null; do sleep {sleep_interval}; done; \\
-            \ttrap 'rm -f "$$lockfile.excl"' EXIT; \\
-            \t''').strip()
-
-    def _posix_flock_prefix(self):
-        """POSIX flock implementation for standard filesystems"""
-        sleep_interval = self.args.sleep_interval_flock_fallback
-        return textwrap.dedent(f'''
-            set -e; lockfile="$@.lock"; tmp="$@.$$.$(shell echo $$RANDOM).tmp"; \\
-            \texec 9> "$$lockfile"; \\
-            \tif command -v flock >/dev/null 2>&1; then flock 9; else \\
-            \t\twhile ! (set -C; echo $$$$ > "$$lockfile.pid") 2>/dev/null; do sleep {sleep_interval}; done; \\
-            \t\ttrap 'rm -f "$$lockfile.pid"' EXIT; \\
-            \tfi; \\
-            \t''').strip()
-
     def _get_locking_recipe_suffix(self):
-        """Generate filesystem-specific locking code suffix"""
-        if not self.args.shared_objects:
-            return ""
-
-        strategy = compiletools.filesystem_utils.get_lock_strategy(self._filesystem_type)
-
-        if strategy == 'lockdir':
-            return '; mv "$$tmp" $@; rm -f "$$lockdir/pid"; rmdir "$$lockdir"'
-        elif strategy == 'cifs':
-            return '; mv "$$tmp" $@; rm -f "$$lockfile" "$$lockfile.excl" 2>/dev/null'
-        else:  # 'flock'
-            return '; mv "$$tmp" $@; rm -f "$$lockfile" "$$lockfile.pid" 2>/dev/null'
+        """Generate filesystem-specific locking code suffix (deprecated)"""
+        # Lock cleanup now handled by ct-lock-helper
+        return ""
 
     def _create_all_rule(self):
         """Create the rule that in depends on all build products"""
@@ -840,11 +711,7 @@ class MakefileCreator:
         
         if self.args.verbose >= 1:
             recipe = " ".join(["@echo ...", filename, ";"])
-        
-        # Get locking prefix and suffix for shared objects
-        lock_prefix = self._get_locking_recipe_prefix()
-        lock_suffix = self._get_locking_recipe_suffix()
-        
+
         magic_cpp_flags = magicflags.get(sz.Str("CPPFLAGS"), [])
         if compiletools.utils.is_c_source(filename):
             magic_c_flags = magicflags.get(sz.Str("CFLAGS"), [])
@@ -852,15 +719,13 @@ class MakefileCreator:
         else:
             magic_cxx_flags = magicflags.get(sz.Str("CXXFLAGS"), [])
             compile_flags = [self.args.CXX, self.args.CXXFLAGS] + [str(flag) for flag in magic_cpp_flags] + [str(flag) for flag in magic_cxx_flags]
-        
-        if self.args.shared_objects:
-            # Use temporary file for atomic writes with locking
-            compile_cmd = " ".join(compile_flags + ["-c", "-o", '"$$tmp"', filename])
-            recipe += lock_prefix + compile_cmd + lock_suffix
-        else:
-            # Direct compilation to final object
-            compile_cmd = " ".join(compile_flags + ["-c", "-o", obj_name, filename])
-            recipe += compile_cmd
+
+        # Build compile command without -o flag (ct-lock-helper adds it)
+        compile_cmd_base = " ".join(compile_flags + ["-c", filename])
+
+        # Wrap with locking if shared_objects enabled
+        compile_cmd = self._wrap_compile_with_lock(compile_cmd_base, obj_name)
+        recipe += compile_cmd
 
         if self.args.verbose >= 3:
             print("Creating rule for ", obj_name)

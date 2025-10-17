@@ -76,9 +76,10 @@ build-backend = "uv_build"
 [tool.uv_build]
 include = [
     "ct-build",
-    "ct-build-dynamic-library", 
+    "ct-build-dynamic-library",
     "ct-build-static-library",
     "ct-cmakelists",
+    "ct-lock-helper",
     "ct-release",
     "ct-watch-build",
 ]

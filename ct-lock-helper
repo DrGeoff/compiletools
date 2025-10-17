@@ -1,0 +1,449 @@
+#!/usr/bin/env bash
+#
+# ct-lock-helper - File locking helper for concurrent builds
+#
+# Manages file locks during compilation to enable safe shared object caching.
+# Implements three locking strategies matching locking.py Python implementation.
+#
+
+set -euo pipefail
+
+# === Configuration ===
+SLEEP_INTERVAL_LOCKDIR=${CT_LOCK_SLEEP_INTERVAL:-0.05}
+SLEEP_INTERVAL_CIFS=${CT_LOCK_SLEEP_INTERVAL_CIFS:-0.1}
+SLEEP_INTERVAL_FLOCK=${CT_LOCK_SLEEP_INTERVAL_FLOCK:-0.1}
+WARN_INTERVAL=${CT_LOCK_WARN_INTERVAL:-30}
+CROSS_HOST_TIMEOUT=${CT_LOCK_TIMEOUT:-600}
+VERBOSE=${CT_LOCK_VERBOSE:-0}
+
+# === State ===
+STRATEGY=""
+TARGET=""
+LOCKPATH=""
+TEMPFILE=""
+LOCK_ACQUIRED=false
+PLATFORM=$(uname -s)
+
+# === Cleanup ===
+cleanup() {
+    local exit_code=$?
+    if [ "$LOCK_ACQUIRED" = true ]; then
+        release_lock
+    fi
+    # Clean up temp file if it exists
+    if [ -n "$TEMPFILE" ] && [ -f "$TEMPFILE" ]; then
+        rm -f "$TEMPFILE" 2>/dev/null || true
+    fi
+    exit $exit_code
+}
+
+trap cleanup EXIT INT TERM HUP
+
+# === Usage ===
+usage() {
+    cat <<EOF
+Usage: ct-lock-helper compile --target=FILE --strategy=STRATEGY [OPTIONS] -- COMMAND...
+
+Manages file locking during compilation for safe shared object caching.
+
+Arguments:
+  --target=FILE        Target output file (e.g., file.o)
+  --strategy=STRATEGY  Lock strategy: lockdir, cifs, or flock
+  --                   Separator before compile command
+
+Options (via environment):
+  CT_LOCK_SLEEP_INTERVAL       Sleep between lock attempts (default: 0.05)
+  CT_LOCK_WARN_INTERVAL        Seconds between wait warnings (default: 30)
+  CT_LOCK_TIMEOUT              Cross-host lock timeout (default: 600)
+  CT_LOCK_VERBOSE              Verbosity level (default: 0)
+
+Lock Strategies:
+  lockdir  NFS, GPFS, Lustre (mkdir-based, stale detection)
+  cifs     CIFS/SMB (exclusive file creation)
+  flock    Local filesystems (POSIX flock with fallback)
+
+Example:
+  ct-lock-helper compile --target=file.o --strategy=lockdir -- gcc -c file.c
+
+The helper will:
+  1. Acquire lock based on strategy
+  2. Create temp file (file.o.$$.$$RANDOM.tmp)
+  3. Execute: gcc -c file.c -o file.o.$$.$$RANDOM.tmp
+  4. Move temp to target: mv file.o.$$.$$RANDOM.tmp file.o
+  5. Release lock
+EOF
+}
+
+# === Lock Strategy: lockdir ===
+
+# Platform-specific get_mtime
+get_mtime() {
+    local path="$1"
+    if [ "$PLATFORM" = "Linux" ]; then
+        stat -c %Y "$path" 2>/dev/null || echo 0
+    else
+        # BSD/macOS
+        stat -f %m "$path" 2>/dev/null || echo 0
+    fi
+}
+
+# Read hostname:pid from lockdir/pid file
+read_lock_info() {
+    local lockdir="$1"
+    local pid_file="$lockdir/pid"
+
+    if [ ! -f "$pid_file" ]; then
+        echo ":"
+        return
+    fi
+
+    local lock_info
+    lock_info=$(cat "$pid_file" 2>/dev/null || echo ":")
+    echo "$lock_info"
+}
+
+# Check if process alive on same host
+is_process_alive() {
+    local pid="$1"
+
+    # Try kill -0 first (works everywhere)
+    if kill -0 "$pid" 2>/dev/null; then
+        return 0  # alive
+    fi
+
+    # On Linux, also check /proc for EPERM case
+    # (kill -0 returns 1 for EPERM, but process exists)
+    if [ "$PLATFORM" = "Linux" ] && [ -e "/proc/$pid" ]; then
+        return 0  # alive
+    fi
+
+    return 1  # dead
+}
+
+# Check if lock is stale (same-host only)
+is_lock_stale() {
+    local lockdir="$1"
+    local current_host="$2"
+
+    local lock_info
+    lock_info=$(read_lock_info "$lockdir")
+
+    # Parse hostname:pid
+    local lock_host lock_pid
+    lock_host="${lock_info%%:*}"
+    lock_pid="${lock_info##*:}"
+
+    # Empty or malformed
+    if [ -z "$lock_host" ] || [ -z "$lock_pid" ]; then
+        return 0  # stale
+    fi
+
+    # Cross-host - not stale (can't check remote process)
+    if [ "$lock_host" != "$current_host" ]; then
+        return 1  # not stale
+    fi
+
+    # Same host - check if process alive
+    if is_process_alive "$lock_pid"; then
+        return 1  # not stale
+    else
+        return 0  # stale
+    fi
+}
+
+acquire_lock_lockdir() {
+    local lockdir="$1"
+    local current_host
+    current_host=$(uname -n)
+    local lock_warn_time=0
+    local lock_escalate_time=0
+
+    while ! mkdir "$lockdir" 2>/dev/null; do
+        # Check if stale
+        if is_lock_stale "$lockdir" "$current_host"; then
+            # Remove stale lock
+            local lock_info
+            lock_info=$(read_lock_info "$lockdir")
+
+            if rm -rf "$lockdir" 2>/dev/null; then
+                if [ "$VERBOSE" -ge 1 ]; then
+                    echo "Removed stale lock from $lock_info" >&2
+                fi
+                continue  # Retry immediately
+            else
+                # Failed to remove - check if it still exists
+                if [ -e "$lockdir" ]; then
+                    echo "ERROR: Stale lock from $lock_info cannot be removed" >&2
+                    echo "ERROR: Check permissions on: $lockdir" >&2
+                    echo "ERROR: Parent directory should be SGID with group write permissions" >&2
+                    exit 1
+                fi
+                # Removed by someone else, retry
+                continue
+            fi
+        fi
+
+        # Not stale - must wait
+        local lock_info now lock_age_sec
+        lock_info=$(read_lock_info "$lockdir")
+        local lock_host lock_pid
+        lock_host="${lock_info%%:*}"
+        lock_pid="${lock_info##*:}"
+
+        # Get lock age
+        local lock_mtime
+        lock_mtime=$(get_mtime "$lockdir")
+        if [ "$lock_mtime" = "0" ] || ! [[ "$lock_mtime" =~ ^[0-9]+$ ]]; then
+            lock_age_sec=0
+        else
+            now=$(date +%s)
+            lock_age_sec=$((now - lock_mtime))
+
+            # Handle future mtime (clock skew)
+            if [ $lock_age_sec -lt 0 ]; then
+                lock_age_sec=0
+            fi
+        fi
+
+        # Periodic warnings
+        if [ $lock_age_sec -gt 0 ]; then
+            now=$(date +%s)
+            if [ $lock_warn_time -eq 0 ] || [ $((now - lock_warn_time)) -gt $WARN_INTERVAL ]; then
+                echo "Warning: Waiting for lock held by $lock_host:$lock_pid (age: ${lock_age_sec}s)" >&2
+                echo "         Current host: $current_host, Lock location: $lockdir" >&2
+                lock_warn_time=$now
+            fi
+
+            # Escalate at timeout threshold
+            if [ $lock_age_sec -gt $CROSS_HOST_TIMEOUT ] && [ $lock_escalate_time -eq 0 ]; then
+                echo "WARNING: Cross-host lock from $lock_host:$lock_pid age exceeds $CROSS_HOST_TIMEOUT seconds" >&2
+                echo "WARNING: If remote host crashed, admin must manually remove: $lockdir" >&2
+                lock_escalate_time=$now
+            fi
+        fi
+
+        sleep "$SLEEP_INTERVAL_LOCKDIR"
+    done
+
+    # Lock acquired - set permissions
+    chmod 775 "$lockdir" 2>/dev/null || true
+
+    # Set group to match target if it exists
+    if [ -e "$TARGET" ]; then
+        chgrp --reference="$TARGET" "$lockdir" 2>/dev/null || true
+    fi
+
+    # Write hostname:pid atomically
+    local pid_file="$lockdir/pid"
+    echo "$current_host:$$" > "$pid_file.tmp"
+    mv "$pid_file.tmp" "$pid_file"
+    chmod 664 "$pid_file" 2>/dev/null || true
+}
+
+release_lock_lockdir() {
+    local lockdir="$1"
+    local pid_file="$lockdir/pid"
+
+    rm -f "$pid_file" 2>/dev/null || true
+    rmdir "$lockdir" 2>/dev/null || true
+}
+
+# === Lock Strategy: cifs ===
+
+acquire_lock_cifs() {
+    local lockfile="$1"
+    local lockfile_excl="$lockfile.excl"
+
+    # Open base lockfile (for fd 9)
+    exec 9> "$lockfile"
+
+    # Acquire exclusive lock
+    while ! (set -C; echo $$ > "$lockfile_excl") 2>/dev/null; do
+        sleep "$SLEEP_INTERVAL_CIFS"
+    done
+}
+
+release_lock_cifs() {
+    local lockfile="$1"
+    local lockfile_excl="$lockfile.excl"
+
+    rm -f "$lockfile_excl" 2>/dev/null || true
+    exec 9>&- 2>/dev/null || true
+    rm -f "$lockfile" 2>/dev/null || true
+}
+
+# === Lock Strategy: flock ===
+
+acquire_lock_flock() {
+    local lockfile="$1"
+    local lockfile_pid="$lockfile.pid"
+
+    # Open lockfile on fd 9
+    exec 9> "$lockfile"
+
+    # Try flock first
+    if command -v flock >/dev/null 2>&1; then
+        if flock 9 2>/dev/null; then
+            return 0
+        fi
+    fi
+
+    # Fallback: polling with O_EXCL
+    while ! (set -C; echo $$ > "$lockfile_pid") 2>/dev/null; do
+        sleep "$SLEEP_INTERVAL_FLOCK"
+    done
+}
+
+release_lock_flock() {
+    local lockfile="$1"
+    local lockfile_pid="$lockfile.pid"
+
+    # Close fd 9 (releases flock if used)
+    exec 9>&- 2>/dev/null || true
+
+    rm -f "$lockfile_pid" 2>/dev/null || true
+    rm -f "$lockfile" 2>/dev/null || true
+}
+
+# === Generic Lock Interface ===
+
+acquire_lock() {
+    case "$STRATEGY" in
+        lockdir)
+            acquire_lock_lockdir "$LOCKPATH"
+            ;;
+        cifs)
+            acquire_lock_cifs "$LOCKPATH"
+            ;;
+        flock)
+            acquire_lock_flock "$LOCKPATH"
+            ;;
+        *)
+            echo "ERROR: Unknown lock strategy: $STRATEGY" >&2
+            exit 1
+            ;;
+    esac
+    LOCK_ACQUIRED=true
+}
+
+release_lock() {
+    case "$STRATEGY" in
+        lockdir)
+            release_lock_lockdir "$LOCKPATH"
+            ;;
+        cifs)
+            release_lock_cifs "$LOCKPATH"
+            ;;
+        flock)
+            release_lock_flock "$LOCKPATH"
+            ;;
+    esac
+    LOCK_ACQUIRED=false
+}
+
+# === Main Command ===
+
+cmd_compile() {
+    # Parse arguments
+    local compile_args=()
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --target=*)
+                TARGET="${1#*=}"
+                ;;
+            --strategy=*)
+                STRATEGY="${1#*=}"
+                ;;
+            --)
+                shift
+                compile_args=("$@")
+                break
+                ;;
+            *)
+                echo "ERROR: Unknown option: $1" >&2
+                usage
+                exit 1
+                ;;
+        esac
+        shift
+    done
+
+    # Validate required arguments
+    if [ -z "$TARGET" ]; then
+        echo "ERROR: --target is required" >&2
+        usage
+        exit 1
+    fi
+
+    if [ -z "$STRATEGY" ]; then
+        echo "ERROR: --strategy is required" >&2
+        usage
+        exit 1
+    fi
+
+    if [ ${#compile_args[@]} -eq 0 ]; then
+        echo "ERROR: Compile command is required after --" >&2
+        usage
+        exit 1
+    fi
+
+    # Set lock path based on strategy
+    case "$STRATEGY" in
+        lockdir)
+            LOCKPATH="$TARGET.lockdir"
+            ;;
+        cifs|flock)
+            LOCKPATH="$TARGET.lock"
+            ;;
+        *)
+            echo "ERROR: Invalid strategy: $STRATEGY (must be lockdir, cifs, or flock)" >&2
+            exit 1
+            ;;
+    esac
+
+    # Create temp file name
+    TEMPFILE="$TARGET.$$.$RANDOM.tmp"
+
+    # Ensure parent directory exists
+    local parent_dir
+    parent_dir=$(dirname "$TARGET")
+    if [ ! -d "$parent_dir" ]; then
+        mkdir -p "$parent_dir"
+    fi
+
+    # Acquire lock
+    acquire_lock
+
+    # Execute compile command with -o $TEMPFILE
+    "${compile_args[@]}" -o "$TEMPFILE"
+
+    # Move temp to target atomically
+    mv "$TEMPFILE" "$TARGET"
+
+    # Release lock (also done by trap on exit)
+    release_lock
+}
+
+# === Entry Point ===
+
+if [ $# -eq 0 ]; then
+    usage
+    exit 1
+fi
+
+case "$1" in
+    compile)
+        shift
+        cmd_compile "$@"
+        ;;
+    help|--help|-h)
+        usage
+        exit 0
+        ;;
+    *)
+        echo "ERROR: Unknown command: $1" >&2
+        usage
+        exit 1
+        ;;
+esac
