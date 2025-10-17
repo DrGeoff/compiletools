@@ -22,6 +22,7 @@ def mock_args():
     args.shared_objects = True
     args.lock_cross_host_timeout = 600
     args.lock_warn_interval = 60
+    args.lock_creation_grace_period = 2
     args.sleep_interval_lockdir = 0.01
     args.sleep_interval_cifs = 0.01
     args.sleep_interval_flock_fallback = 0.01
@@ -133,44 +134,71 @@ class TestLockdirLockContract:
         assert is_stale is False, "Expected remote lock to not be stale"
 
     def test_stale_detection_missing_pid_file(self, temp_lockdir, mock_args):
-        """Contract: Lockdir without pid file is stale."""
+        """Contract: Fresh lockdir without pid file is NOT stale (grace period)."""
         lock = compiletools.locking.LockdirLock(temp_lockdir, mock_args)
 
-        # Create lockdir but no pid file
+        # Create fresh lockdir but no pid file (simulates creation race)
         os.makedirs(lock.lockdir)
 
         is_stale = lock._is_lock_stale()
 
-        # Contract: Missing pid file means stale
-        assert is_stale is True, "Expected lockdir without pid file to be stale"
+        # Contract: Fresh lock without PID is NOT stale (within grace period)
+        assert is_stale is False, "Expected fresh lockdir without pid file to not be stale"
+
+        # Make lock old (older than cross_host_timeout)
+        old_time = time.time() - 700
+        os.utime(lock.lockdir, (old_time, old_time))
+
+        is_stale = lock._is_lock_stale()
+
+        # Contract: Old lock without PID IS stale (exceeded timeout)
+        assert is_stale is True, "Expected old lockdir without pid file to be stale"
 
     def test_stale_detection_malformed_pid_file(self, temp_lockdir, mock_args):
-        """Contract: Malformed pid file (no colon) is stale."""
+        """Contract: Fresh malformed pid file is NOT stale (grace period)."""
         lock = compiletools.locking.LockdirLock(temp_lockdir, mock_args)
 
-        # Create lockdir with malformed pid file
+        # Create fresh lockdir with malformed pid file
         os.makedirs(lock.lockdir)
         with open(lock.pid_file, 'w') as f:
             f.write("invalid-no-colon\n")
 
         is_stale = lock._is_lock_stale()
 
-        # Contract: Malformed lock info means stale
-        assert is_stale is True, "Expected malformed pid file to be stale"
+        # Contract: Fresh malformed lock is NOT stale (within grace period)
+        assert is_stale is False, "Expected fresh malformed pid file to not be stale"
+
+        # Make lock old
+        old_time = time.time() - 700
+        os.utime(lock.lockdir, (old_time, old_time))
+
+        is_stale = lock._is_lock_stale()
+
+        # Contract: Old malformed lock IS stale
+        assert is_stale is True, "Expected old malformed pid file to be stale"
 
     def test_stale_detection_empty_pid_file(self, temp_lockdir, mock_args):
-        """Contract: Empty pid file is stale."""
+        """Contract: Fresh empty pid file is NOT stale (grace period)."""
         lock = compiletools.locking.LockdirLock(temp_lockdir, mock_args)
 
-        # Create lockdir with empty pid file
+        # Create fresh lockdir with empty pid file
         os.makedirs(lock.lockdir)
         with open(lock.pid_file, 'w') as f:
             f.write("")
 
         is_stale = lock._is_lock_stale()
 
-        # Contract: Empty pid file means stale
-        assert is_stale is True, "Expected empty pid file to be stale"
+        # Contract: Fresh empty pid file is NOT stale (within grace period)
+        assert is_stale is False, "Expected fresh empty pid file to not be stale"
+
+        # Make lock old
+        old_time = time.time() - 700
+        os.utime(lock.lockdir, (old_time, old_time))
+
+        is_stale = lock._is_lock_stale()
+
+        # Contract: Old empty pid file IS stale
+        assert is_stale is True, "Expected old empty pid file to be stale"
 
 
 class TestLockBehaviorContract:
