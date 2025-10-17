@@ -37,6 +37,7 @@ class LockdirLock:
         self.pid = os.getpid()
         self.cross_host_timeout = args.lock_cross_host_timeout
         self.warn_interval = args.lock_warn_interval
+        self.creation_grace_period = getattr(args, 'lock_creation_grace_period', 2)
 
         # Auto-detect optimal sleep interval based on filesystem, allow user override
         if args.sleep_interval_lockdir is not None:
@@ -115,16 +116,37 @@ class LockdirLock:
         return compiletools.lock_utils.is_process_alive_local(pid)
 
     def _is_lock_stale(self):
-        """Check if lock is stale (same algorithm as makefile.py).
+        """Check if lock is stale.
+
+        A lock without a PID file could be in one of three states:
+        1. Being created right now (NOT stale - use grace period)
+        2. Very old and abandoned (IS stale - use cross_host_timeout)
+        3. In-between (conservative: NOT stale, wait for it)
+
+        For locks with PID files:
+        - Same-host: check if process is alive
+        - Cross-host: cannot verify, assume NOT stale
 
         Returns:
-            bool: True if lock is stale and can be removed
+            bool: True if lock is stale and should be removed
         """
         lock_host, lock_pid = self._read_lock_info()
 
         if lock_host is None:
-            # Couldn't read lock info, assume stale
-            return True
+            # No PID file - use age-based detection to handle creation race
+            age = self._get_lock_age_seconds()
+
+            if age < self.creation_grace_period:
+                # Fresh lock being created - NOT stale
+                return False
+
+            if age > self.cross_host_timeout:
+                # Legitimately abandoned - IS stale
+                return True
+
+            # Middle ground: lock exists, no PID, not yet timed out
+            # Conservative: don't remove (wait for timeout or grace period)
+            return False
 
         if lock_host != self.hostname:
             # Cross-host lock, not stale (can't verify remote process)

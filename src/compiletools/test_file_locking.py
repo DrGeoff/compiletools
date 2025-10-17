@@ -17,6 +17,7 @@ def mock_args():
     args.shared_objects = True
     args.lock_cross_host_timeout = 600
     args.lock_warn_interval = 60
+    args.lock_creation_grace_period = 2
     args.sleep_interval_lockdir = 0.01  # Fast for tests
     args.sleep_interval_cifs = 0.01
     args.sleep_interval_flock_fallback = 0.01
@@ -134,14 +135,21 @@ class TestLockdirLock:
         age = lock._get_lock_age_seconds()
         assert age == 0
 
-    def test_unreadable_lock_info_is_stale(self, temp_lock_file, mock_args):
-        """Test that locks with unreadable info are considered stale."""
+    def test_unreadable_lock_info_grace_period(self, temp_lock_file, mock_args):
+        """Test grace period for locks without PID file during creation."""
         lock = compiletools.locking.LockdirLock(temp_lock_file, mock_args)
 
-        # Create lock without pid file
+        # Create lock without pid file (simulates creation race)
         os.mkdir(lock.lockdir)
 
-        # Should be stale (no pid info)
+        # Should NOT be stale immediately (within grace period)
+        assert not lock._is_lock_stale()
+
+        # Make lock old by setting ancient mtime (older than cross_host_timeout)
+        old_time = time.time() - 700  # Older than 600s timeout
+        os.utime(lock.lockdir, (old_time, old_time))
+
+        # Should be stale now (exceeded timeout)
         assert lock._is_lock_stale()
 
     def test_context_manager(self, temp_lock_file, mock_args):
@@ -418,6 +426,7 @@ class TestConcurrentLocking:
             "shared_objects": True,
             "lock_cross_host_timeout": 600,
             "lock_warn_interval": 60,
+            "lock_creation_grace_period": 2,
             "sleep_interval_lockdir": 0.01,
             "sleep_interval_cifs": 0.01,
             "sleep_interval_flock_fallback": 0.01,
