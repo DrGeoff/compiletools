@@ -75,11 +75,13 @@ build-backend = "uv_build"
 
 [tool.uv_build]
 include = [
+    "benchmark_lock_implementations.sh",
     "ct-build",
     "ct-build-dynamic-library",
     "ct-build-static-library",
     "ct-cmakelists",
     "ct-lock-helper",
+    "ct-lock-helper-py",
     "ct-release",
     "ct-watch-build",
 ]

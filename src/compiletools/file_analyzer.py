@@ -261,9 +261,7 @@ _analyzer_args = None
 
 # Module-level warning flags for one-time warnings
 _warned_low_ulimit = False
-_warned_filesystem = set()
 _file_reading_strategy = None  # Cache the chosen strategy
-_filesystem_override_strategy = None  # Cache filesystem-based strategy override
 
 
 def _warn_low_ulimit(total_files: int, soft_limit: int):
@@ -281,21 +279,6 @@ def _warn_low_ulimit(total_files: int, soft_limit: int):
     print(f"  To use faster mmap mode: ulimit -n {total_files * 2}", file=sys.stderr)
     print("  To suppress this warning: add '--suppress-fd-warnings' flag or config", file=sys.stderr)
     _warned_low_ulimit = True
-
-
-def _warn_filesystem_mmap_issue(fstype: str):
-    """Warn once per filesystem type about mmap issues."""
-    global _warned_filesystem
-    if fstype in _warned_filesystem:
-        return
-    if _analyzer_args and getattr(_analyzer_args, 'suppress_filesystem_warnings', False):
-        return
-
-    print(f"Warning: Detected {fstype} filesystem which has known mmap issues", file=sys.stderr)
-    print("  Using traditional file reading instead of memory mapping", file=sys.stderr)
-    print("  This avoids subtle consistency, caching, and performance problems", file=sys.stderr)
-    print("  To suppress this warning: add '--suppress-filesystem-warnings' flag or config", file=sys.stderr)
-    _warned_filesystem.add(fstype)
 
 
 _warned_mmap_failure = False
@@ -386,46 +369,28 @@ def _read_file_with_strategy(filepath: str, strategy: str):
 
     Args:
         filepath: Path to file to read
-        strategy: 'mmap' or 'no_mmap'
+        strategy: 'mmap' or 'no_mmap' (based on ulimit/file count)
 
     Returns:
         stringzilla.Str object with file contents
     """
-    from stringzilla import Str, File
+    from stringzilla import Str
 
-    global _filesystem_override_strategy
+    # Strategy is about ulimit/resource constraints
+    # Filesystem safety is handled by safe_read_text_file
+    force_no_mmap = (strategy == 'no_mmap')
 
-    # Check filesystem once per session for mmap mode
-    # Assumption: most projects are on a single filesystem
-    if strategy == 'mmap':
-        if _filesystem_override_strategy is None:
-            # First file - check filesystem and cache result
-            fstype = compiletools.filesystem_utils.get_filesystem_type(filepath)
-            if not compiletools.filesystem_utils.supports_mmap_safely(fstype):
-                _warn_filesystem_mmap_issue(fstype)
-                _filesystem_override_strategy = 'no_mmap'
-            else:
-                _filesystem_override_strategy = 'mmap'
-
-        # Use cached filesystem check result
-        if _filesystem_override_strategy == 'no_mmap':
-            strategy = 'no_mmap'
-
-    if strategy == 'no_mmap':
-        # Traditional file reading without mmap
+    try:
+        return compiletools.filesystem_utils.safe_read_text_file(
+            filepath,
+            encoding='utf-8',
+            force_no_mmap=force_no_mmap
+        )
+    except (OSError, IOError) as e:
+        # Last resort fallback
+        _warn_mmap_failure(filepath, e)
         with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-            content = f.read()
-        # Content is already a decoded Python string
-        return Str(content)
-    else:  # 'mmap'
-        # Direct mmap, keep fd open (best performance)
-        try:
-            return Str(File(filepath))
-        except (OSError, IOError) as e:
-            # Unexpected mmap failure - fall back gracefully
-            _warn_mmap_failure(filepath, e)
-            with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-                return Str(f.read())
+            return Str(f.read())
 
 
 def set_analyzer_args(args):
