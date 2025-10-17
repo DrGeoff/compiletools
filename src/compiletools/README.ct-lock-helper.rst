@@ -126,6 +126,33 @@ Uses POSIX ``flock()`` when available, falls back to ``O_EXCL`` polling.
     target.o.lock        # Lockfile (fd 9)
     target.o.lock.pid    # PID marker (fallback only)
 
+Performance
+-----------
+
+**Overhead:**
+
+Process spawn adds ~13-17ms per compilation. Negligible when:
+
+- Real C/C++ compilation (typically 100ms-10s per file)
+- Parallel builds (``make -j8`` amortizes overhead)
+- Network filesystems (NFS latency >> 17ms)
+
+**When shared objects are beneficial:**
+
+- Multi-user team builds with shared cache
+- Parallel builds on NFS/GPFS/Lustre
+- CI/CD with persistent object directories
+
+**When to skip:**
+
+- Fast local single-threaded builds
+- Use ``--no-shared-objects`` to disable
+
+**Filesystem detection:**
+
+Strategy is determined once in Python and baked into Makefile.
+No per-compilation filesystem detection overhead.
+
 Troubleshooting
 ---------------
 
@@ -148,10 +175,18 @@ Check for:
 
 **Slow builds with locking**
 
-Try adjusting sleep intervals::
+ct-lock-helper adds ~13-17ms overhead per compilation due to process spawn.
+This is negligible for real C/C++ files (100ms-10s compile time) but may be
+noticeable for many tiny files.
+
+Solutions:
+
+- Adjust sleep intervals::
 
     export CT_LOCK_SLEEP_INTERVAL=0.01  # For fast local/Lustre
     export CT_LOCK_SLEEP_INTERVAL=0.2   # For slow NFS
+
+- For very fast local-only builds, consider ``--no-shared-objects``
 
 **Cross-host lock stuck**
 
