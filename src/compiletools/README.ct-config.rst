@@ -9,7 +9,7 @@ Helper tool for examining ct-* configuration
 :Author: drgeoffathome@gmail.com
 :Date:   2016-08-16
 :Copyright: Copyright (C) 2011-2016 Zomojo Pty Ltd
-:Version: 6.1.0
+:Version: 6.1.1
 :Manual section: 1
 :Manual group: developers
 
