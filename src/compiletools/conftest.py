@@ -38,17 +38,18 @@ def ensure_lock_helpers_in_path():
     helpers_to_check = ['ct-lock-helper', 'ct-lock-helper-py']
     helpers_found = []
 
-    # Check each helper and add repo root to PATH if any are found there
+    # Check each helper and add scripts/ directory to PATH if any are found there
+    scripts_dir = os.path.join(repo_root, 'scripts')
     path_modified = False
     for helper in helpers_to_check:
         if not shutil.which(helper):
-            helper_path = os.path.join(repo_root, helper)
+            helper_path = os.path.join(scripts_dir, helper)
             if os.path.exists(helper_path):
                 helpers_found.append(helper)
                 if not path_modified:
                     # Only modify PATH once, even if multiple helpers found
-                    os.environ['PATH'] = repo_root + os.pathsep + os.environ.get('PATH', '')
+                    os.environ['PATH'] = scripts_dir + os.pathsep + os.environ.get('PATH', '')
                     path_modified = True
 
     if helpers_found:
-        print(f"\nAdded {repo_root} to PATH for: {', '.join(helpers_found)}", file=sys.stderr)
+        print(f"\nAdded {scripts_dir} to PATH for: {', '.join(helpers_found)}", file=sys.stderr)
