@@ -929,3 +929,75 @@ class TestConcurrentCompilationDatabase:
                 f"Entries: {len(compile_commands)}, Unique files: {len(files_in_db)}"
 
             print(f"✓ Concurrent write test passed with {len(compile_commands)} entries")
+
+    @uth.requires_functional_compiler
+    def test_merge_respects_existing_directory_field(self):
+        """Test that merge resolves relative paths against their "directory" field, not cwd"""
+
+        with uth.TempDirContext():
+            # TempDirContext changes to the temp directory
+            tmpdir = os.getcwd()
+
+            # Create a different working directory to expose the bug
+            other_dir = os.path.join(tmpdir, "other_location")
+            os.makedirs(other_dir)
+
+            # Create a fake existing compile_commands.json with relative paths
+            # simulating what another tool or previous run might have created
+            existing_db_path = os.path.join(tmpdir, "compile_commands.json")
+            existing_db = [
+                {
+                    "directory": "/some/other/project",
+                    "file": "src/foo.cpp",  # Relative path
+                    "arguments": ["g++", "-c", "src/foo.cpp"]
+                },
+                {
+                    "directory": "/another/project",
+                    "file": "lib/bar.cpp",  # Relative path
+                    "arguments": ["g++", "-c", "lib/bar.cpp"]
+                }
+            ]
+            with open(existing_db_path, 'w') as f:
+                json.dump(existing_db, f)
+
+            # Now create a new entry from a different directory
+            samplesdir = uth.samplesdir()
+            test_file = os.path.join(samplesdir, "simple/helloworld_cpp.cpp")
+
+            with uth.TempConfigContext(tempdir=tmpdir) as temp_config_name:
+                with uth.ParserContext():
+                    # Change to other_dir to make cwd different from existing entries
+                    old_cwd = os.getcwd()
+                    try:
+                        os.chdir(other_dir)
+
+                        # Update compilation database with new file
+                        compiletools.compilation_database.main([
+                            "--config=" + temp_config_name,
+                            "--compilation-database-output=" + existing_db_path,
+                            test_file
+                        ])
+
+                        # Read the merged database
+                        with open(existing_db_path, 'r') as f:
+                            merged_db = json.load(f)
+
+                        # Critical: existing entries should be preserved
+                        # Bug would cause them to be lost due to incorrect path resolution
+                        assert len(merged_db) == 3, \
+                            f"Expected 3 entries (2 old + 1 new), got {len(merged_db)}"
+
+                        # Verify the old entries are still there with correct paths
+                        files_in_db = {cmd["file"] for cmd in merged_db}
+                        assert "src/foo.cpp" in files_in_db, \
+                            "Relative path src/foo.cpp should be preserved"
+                        assert "lib/bar.cpp" in files_in_db, \
+                            "Relative path lib/bar.cpp should be preserved"
+
+                        # Verify directories are preserved
+                        dirs_in_db = {cmd["directory"] for cmd in merged_db}
+                        assert "/some/other/project" in dirs_in_db
+                        assert "/another/project" in dirs_in_db
+
+                    finally:
+                        os.chdir(old_cwd)
