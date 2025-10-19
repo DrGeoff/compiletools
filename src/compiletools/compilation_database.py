@@ -231,8 +231,15 @@ class CompilationDatabaseCreator:
 
         # Process existing commands with StringZilla optimization
         for existing_cmd in existing_commands:
+            existing_file = existing_cmd["file"]
+
+            # Resolve relative paths against their "directory" context, not cwd
+            if not os.path.isabs(existing_file):
+                base_dir = existing_cmd.get("directory", os.getcwd())
+                existing_file = os.path.join(base_dir, existing_file)
+
             # Convert to StringZilla for consistent processing
-            existing_file_sz = sz.Str(existing_cmd["file"])
+            existing_file_sz = sz.Str(existing_file)
             existing_normalized_sz = compiletools.wrappedos.realpath_sz(existing_file_sz)
             if str(existing_normalized_sz) not in new_files_normalized:
                 merged_commands.append(existing_cmd)
