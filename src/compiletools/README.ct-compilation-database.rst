@@ -9,7 +9,7 @@ Generate compile_commands.json for clang tooling and IDE integration
 :Author: drgeoffathome@gmail.com
 :Date:   2025-10-08
 :Copyright: Copyright (C) 2011-2025 Zomojo Pty Ltd
-:Version: 6.1.0
+:Version: 6.1.1
 :Manual section: 1
 :Manual group: developers
 
