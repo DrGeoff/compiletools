@@ -8,7 +8,7 @@ Clean up stale lock directories in shared object caches
 
 :Author: drgeoffathome@gmail.com
 :Date:   2025-10-16
-:Version: 6.1.1
+:Version: 6.1.2
 :Manual section: 1
 :Manual group: developers
 
