@@ -73,17 +73,12 @@ addopts = "-v"
 requires = ["uv_build>=0.8.4,<0.9.0"]
 build-backend = "uv_build"
 
+[tool.uv.build-backend]
+data = { scripts = "scripts" }
+
 [tool.uv_build]
 include = [
     "benchmark_lock_implementations.sh",
-    "ct-build",
-    "ct-build-dynamic-library",
-    "ct-build-static-library",
-    "ct-cmakelists",
-    "ct-lock-helper",
-    "ct-lock-helper-py",
-    "ct-release",
-    "ct-watch-build",
 ]
 
 [tool.bumpversion]
