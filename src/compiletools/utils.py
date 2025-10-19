@@ -6,7 +6,8 @@ import functools
 import shlex
 import argparse
 from pathlib import Path
-from typing import Any, Iterable, Union
+from typing import Any, Union
+from collections.abc import Iterable
 from itertools import chain
 import compiletools.wrappedos
 
@@ -63,9 +64,9 @@ def is_non_string_iterable(obj: Any) -> bool:
         obj: Object to check
 
     Returns:
-        True if object is iterable but not a string
+        True if object is iterable but not a string-like type
     """
-    return not isinstance(obj, str) and hasattr(obj, "__iter__")
+    return isinstance(obj, Iterable) and not isinstance(obj, (str, bytes, bytearray))
 
 @functools.lru_cache(maxsize=None)
 def split_command_cached(command_line: str) -> list[str]:
