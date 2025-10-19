@@ -242,7 +242,8 @@ def add_boolean_argument(
     """
     dest = dest or name
     group = parser.add_mutually_exclusive_group()
-    bool_help = f"{help} Use --no-{name} to turn the feature off."
+    suffix = f"Use --no-{name} to turn the feature off."
+    bool_help = f"{help} {suffix}" if help else suffix
 
     if allow_value_conversion:
         group.add_argument(
