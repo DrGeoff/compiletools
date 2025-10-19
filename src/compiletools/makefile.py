@@ -101,10 +101,10 @@ class LinkRuleCreator(object):
 
         allprerequisites = " ".join(extraprereqs)
         # Get macro state hash for each source file (required for new naming scheme)
-        object_names = {
+        object_names = compiletools.utils.ordered_unique([
             self.namer.object_pathname(source, self.hunter.macro_state_hash(source))
             for source in completesources
-        }
+        ])
         allprerequisites += " "
         allprerequisites += " ".join(object_names)
 
