@@ -1,6 +1,7 @@
 import os
 import functools
 import stringzilla as sz
+from pathlib import Path
 from typing import List
 
 # At deep verbose levels pprint is used
@@ -492,7 +493,8 @@ class CppHeaderDeps(HeaderDepsBase):
         # Use proper shell parsing instead of regex to handle quoted paths with spaces
         isystem_paths = self._extract_isystem_paths_from_flags(self.args.CPPFLAGS)
         system_paths = tuple(item for pth in isystem_paths for item in (pth, compiletools.wrappedos.realpath(pth)))
-        if realpath.startswith(system_paths):
+        realpath_obj = Path(realpath)
+        if any(realpath_obj.is_relative_to(syspath) for syspath in system_paths):
             return []
 
         output = self.preprocessor.process(realpath, extraargs="-MM")
@@ -513,7 +515,7 @@ class CppHeaderDeps(HeaderDepsBase):
             [
                 compiletools.wrappedos.realpath(x)
                 for x in deplist.split()
-                if x.strip("\\\t\n\r") and x not in [realpath, "/dev/null"] and not x.startswith(system_paths)
+                if x.strip("\\\t\n\r") and x not in [realpath, "/dev/null"] and not any(Path(x).is_relative_to(syspath) for syspath in system_paths)
             ]
         )
 

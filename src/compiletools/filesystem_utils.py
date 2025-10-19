@@ -8,6 +8,7 @@ This module provides filesystem type detection and policy decisions for:
 
 from functools import lru_cache
 import os
+from pathlib import Path
 
 
 @lru_cache(maxsize=128)
@@ -37,8 +38,9 @@ def get_filesystem_type(path: str) -> str:
         mounts.sort(key=lambda x: len(x[0]), reverse=True)
 
         # Find matching mount point
+        path_obj = Path(path)
         for mountpoint, fstype in mounts:
-            if path.startswith(mountpoint):
+            if path_obj.is_relative_to(mountpoint):
                 return fstype
 
     except (FileNotFoundError, PermissionError, OSError):
