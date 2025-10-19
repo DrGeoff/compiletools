@@ -333,7 +333,8 @@ def deduplicate_compiler_flags(flags: list[str]) -> list[str]:
         return flags
 
     # Flags that take arguments (both separate and combined forms)
-    FLAG_WITH_ARGS = frozenset({'-I', '-isystem', '-L', '-l', '-D', '-U', '-F', '-framework'})
+    # Ordered longest-first to ensure correct prefix matching (-framework before -F)
+    FLAG_WITH_ARGS = ('-framework', '-isystem', '-I', '-L', '-l', '-D', '-U', '-F')
 
     deduplicated = []
     seen_flag_args = {}  # flag -> set of seen arguments
