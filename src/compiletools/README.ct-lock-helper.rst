@@ -46,11 +46,17 @@ Configuration
 Environment variables control lock behavior:
 
 **CT_LOCK_SLEEP_INTERVAL**
-    Seconds to sleep between lock acquisition attempts (default: 0.05 for lockdir, 0.1 for cifs/flock)
+    Seconds to sleep between lock acquisition attempts for lockdir strategy (default: 0.05)
 
     - Lustre filesystems: 0.01 (fast parallel filesystem)
     - NFS filesystems: 0.1 (network latency)
     - GPFS and others: 0.05 (balanced)
+
+**CT_LOCK_SLEEP_INTERVAL_CIFS**
+    Seconds to sleep between lock acquisition attempts for CIFS strategy (default: 0.1)
+
+**CT_LOCK_SLEEP_INTERVAL_FLOCK**
+    Seconds to sleep between lock acquisition attempts for flock strategy (default: 0.1)
 
 **CT_LOCK_WARN_INTERVAL**
     Seconds between lock wait warnings (default: 30)
@@ -227,8 +233,9 @@ Solutions:
 
 - Adjust sleep intervals::
 
-    export CT_LOCK_SLEEP_INTERVAL=0.01  # For fast local/Lustre
-    export CT_LOCK_SLEEP_INTERVAL=0.2   # For slow NFS
+    export CT_LOCK_SLEEP_INTERVAL=0.01      # For lockdir on Lustre
+    export CT_LOCK_SLEEP_INTERVAL_CIFS=0.05 # For CIFS strategy
+    export CT_LOCK_SLEEP_INTERVAL_FLOCK=0.05 # For flock strategy
 
 - For very fast local-only builds, consider ``--no-shared-objects``
 
