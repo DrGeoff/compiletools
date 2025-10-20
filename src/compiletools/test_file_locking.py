@@ -208,6 +208,80 @@ class TestLockdirLock:
 
             lock.release()
 
+    def test_lockdir_removed_during_pid_write_retry(self, temp_lock_file, mock_args):
+        """Test retry mechanism when lockdir removed during pid write.
+
+        This tests the fix for the race condition where:
+        1. Process A: mkdir succeeds, begins pid file write
+        2. Process B: Sees lockdir without pid, treats as stale after grace period
+        3. Process B: Removes lockdir
+        4. Process A: Fails to write pid file, retries acquisition
+        """
+        import shutil
+
+        lock = compiletools.locking.LockdirLock(temp_lock_file, mock_args)
+
+        # Track attempts
+        attempt_count = {'value': 0}
+        original_atomic = compiletools.filesystem_utils.atomic_output_file
+
+        def failing_atomic(target_path, *args, **kwargs):
+            """Simulate lockdir removal on first attempt."""
+            attempt_count['value'] += 1
+
+            if attempt_count['value'] == 1:
+                # Simulate concurrent process removing lockdir during pid write
+                if os.path.exists(lock.lockdir):
+                    shutil.rmtree(lock.lockdir)
+                # Raise the error that would occur when lockdir is gone
+                raise FileNotFoundError(f"No such file or directory: '{lock.lockdir}'")
+
+            # Subsequent attempts succeed normally
+            return original_atomic(target_path, *args, **kwargs)
+
+        # Patch atomic_output_file to simulate race condition
+        with patch('compiletools.filesystem_utils.atomic_output_file', side_effect=failing_atomic):
+            # Should retry and succeed on second attempt
+            lock.acquire()
+
+            # Verify lock acquired successfully
+            assert os.path.exists(lock.lockdir), "Lockdir should exist after retry"
+            assert os.path.exists(lock.pid_file), "PID file should exist after retry"
+
+            # Verify we retried (2 attempts: 1 failed + 1 succeeded)
+            assert attempt_count['value'] == 2, f"Expected 2 attempts, got {attempt_count['value']}"
+
+            # Verify pid file has correct content
+            with open(lock.pid_file, 'r') as f:
+                content = f.read().strip()
+            assert ':' in content, "PID file should have hostname:pid format"
+            _, pid = content.split(':', 1)
+            assert int(pid) == os.getpid(), "PID file should contain our PID"
+
+            lock.release()
+            assert not os.path.exists(lock.lockdir), "Lockdir should be removed after release"
+
+    def test_lockdir_removed_max_retries_exceeded(self, temp_lock_file, mock_args):
+        """Test that acquisition fails after 3 retry attempts."""
+        import shutil
+
+        lock = compiletools.locking.LockdirLock(temp_lock_file, mock_args)
+
+        # Make atomic_output_file always fail
+        def always_failing_atomic(target_path, *args, **kwargs):
+            """Always remove lockdir to force continuous failures."""
+            if os.path.exists(lock.lockdir):
+                shutil.rmtree(lock.lockdir)
+            raise FileNotFoundError(f"No such file or directory: '{lock.lockdir}'")
+
+        with patch('compiletools.filesystem_utils.atomic_output_file', side_effect=always_failing_atomic):
+            # Should fail after 3 attempts
+            with pytest.raises(RuntimeError, match="Failed to acquire lock after 3 attempts"):
+                lock.acquire()
+
+            # Lockdir should not exist (cleaned up after final failure)
+            assert not os.path.exists(lock.lockdir), "Lockdir should be cleaned up after failed attempts"
+
 
 class TestCIFSLock:
     """Tests for CIFS/SMB locking."""
