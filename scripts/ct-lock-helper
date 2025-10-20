@@ -133,9 +133,25 @@ is_lock_stale() {
     lock_host="${lock_info%%:*}"
     lock_pid="${lock_info##*:}"
 
-    # Empty or malformed
+    # Empty or malformed - grace period for pid file creation
     if [ -z "$lock_host" ] || [ -z "$lock_pid" ]; then
-        return 0  # stale
+        local lock_mtime
+        lock_mtime=$(get_mtime "$lockdir")
+
+        # Can't determine age - conservatively treat as NOT stale
+        if [ "$lock_mtime" = "0" ] || ! [[ "$lock_mtime" =~ ^[0-9]+$ ]]; then
+            return 1  # not stale
+        fi
+
+        local now lock_age
+        now=$(date +%s)
+        lock_age=$((now - lock_mtime))
+        [ $lock_age -lt 0 ] && lock_age=0  # clock skew
+
+        # Grace period: lockdir might be actively being created
+        [ $lock_age -lt 2 ] && return 1  # not stale
+
+        return 0  # stale: old enough and still no pid
     fi
 
     # Cross-host - not stale (can't check remote process)
@@ -155,89 +171,113 @@ acquire_lock_lockdir() {
     local lockdir="$1"
     local current_host
     current_host=$(uname -n)
-    local lock_warn_time=0
-    local lock_escalate_time=0
 
-    while ! mkdir "$lockdir" 2>/dev/null; do
-        # Check if stale
-        if is_lock_stale "$lockdir" "$current_host"; then
-            # Remove stale lock
-            local lock_info
+    local attempt
+    for attempt in 1 2 3; do
+        local lock_warn_time=0
+        local lock_escalate_time=0
+
+        # === ACQUISITION LOOP ===
+        while ! mkdir "$lockdir" 2>/dev/null; do
+            # Check if stale
+            if is_lock_stale "$lockdir" "$current_host"; then
+                # Remove stale lock
+                local lock_info
+                lock_info=$(read_lock_info "$lockdir")
+
+                if rm -rf "$lockdir" 2>/dev/null; then
+                    if [ "$VERBOSE" -ge 1 ]; then
+                        echo "Removed stale lock from $lock_info" >&2
+                    fi
+                    continue  # Retry immediately
+                else
+                    # Failed to remove - check if it still exists
+                    if [ -e "$lockdir" ]; then
+                        echo "ERROR: Stale lock from $lock_info cannot be removed" >&2
+                        echo "ERROR: Check permissions on: $lockdir" >&2
+                        echo "ERROR: Parent directory should be SGID with group write permissions" >&2
+                        exit 1
+                    fi
+                    # Removed by someone else, retry
+                    continue
+                fi
+            fi
+
+            # Not stale - must wait
+            local lock_info now lock_age_sec
             lock_info=$(read_lock_info "$lockdir")
+            local lock_host lock_pid
+            lock_host="${lock_info%%:*}"
+            lock_pid="${lock_info##*:}"
 
-            if rm -rf "$lockdir" 2>/dev/null; then
-                if [ "$VERBOSE" -ge 1 ]; then
-                    echo "Removed stale lock from $lock_info" >&2
-                fi
-                continue  # Retry immediately
-            else
-                # Failed to remove - check if it still exists
-                if [ -e "$lockdir" ]; then
-                    echo "ERROR: Stale lock from $lock_info cannot be removed" >&2
-                    echo "ERROR: Check permissions on: $lockdir" >&2
-                    echo "ERROR: Parent directory should be SGID with group write permissions" >&2
-                    exit 1
-                fi
-                # Removed by someone else, retry
-                continue
-            fi
-        fi
-
-        # Not stale - must wait
-        local lock_info now lock_age_sec
-        lock_info=$(read_lock_info "$lockdir")
-        local lock_host lock_pid
-        lock_host="${lock_info%%:*}"
-        lock_pid="${lock_info##*:}"
-
-        # Get lock age
-        local lock_mtime
-        lock_mtime=$(get_mtime "$lockdir")
-        if [ "$lock_mtime" = "0" ] || ! [[ "$lock_mtime" =~ ^[0-9]+$ ]]; then
-            lock_age_sec=0
-        else
-            now=$(date +%s)
-            lock_age_sec=$((now - lock_mtime))
-
-            # Handle future mtime (clock skew)
-            if [ $lock_age_sec -lt 0 ]; then
+            # Get lock age
+            local lock_mtime
+            lock_mtime=$(get_mtime "$lockdir")
+            if [ "$lock_mtime" = "0" ] || ! [[ "$lock_mtime" =~ ^[0-9]+$ ]]; then
                 lock_age_sec=0
-            fi
-        fi
+            else
+                now=$(date +%s)
+                lock_age_sec=$((now - lock_mtime))
 
-        # Periodic warnings
-        if [ $lock_age_sec -gt 0 ]; then
-            now=$(date +%s)
-            if [ $lock_warn_time -eq 0 ] || [ $((now - lock_warn_time)) -gt $WARN_INTERVAL ]; then
-                echo "Warning: Waiting for lock held by $lock_host:$lock_pid (age: ${lock_age_sec}s)" >&2
-                echo "         Current host: $current_host, Lock location: $lockdir" >&2
-                lock_warn_time=$now
+                # Handle future mtime (clock skew)
+                if [ $lock_age_sec -lt 0 ]; then
+                    lock_age_sec=0
+                fi
             fi
 
-            # Escalate at timeout threshold
-            if [ $lock_age_sec -gt $CROSS_HOST_TIMEOUT ] && [ $lock_escalate_time -eq 0 ]; then
-                echo "WARNING: Cross-host lock from $lock_host:$lock_pid age exceeds $CROSS_HOST_TIMEOUT seconds" >&2
-                echo "WARNING: If remote host crashed, admin must manually remove: $lockdir" >&2
-                lock_escalate_time=$now
+            # Periodic warnings
+            if [ $lock_age_sec -gt 0 ]; then
+                now=$(date +%s)
+                if [ $lock_warn_time -eq 0 ] || [ $((now - lock_warn_time)) -gt $WARN_INTERVAL ]; then
+                    echo "Warning: Waiting for lock held by $lock_host:$lock_pid (age: ${lock_age_sec}s)" >&2
+                    echo "         Current host: $current_host, Lock location: $lockdir" >&2
+                    lock_warn_time=$now
+                fi
+
+                # Escalate at timeout threshold
+                if [ $lock_age_sec -gt $CROSS_HOST_TIMEOUT ] && [ $lock_escalate_time -eq 0 ]; then
+                    echo "WARNING: Cross-host lock from $lock_host:$lock_pid age exceeds $CROSS_HOST_TIMEOUT seconds" >&2
+                    echo "WARNING: If remote host crashed, admin must manually remove: $lockdir" >&2
+                    lock_escalate_time=$now
+                fi
             fi
+
+            sleep "$SLEEP_INTERVAL_LOCKDIR"
+        done
+
+        # Lock acquired - set permissions
+        chmod 775 "$lockdir" 2>/dev/null || true
+
+        # Set group to match target if it exists
+        if [ -e "$TARGET" ]; then
+            chgrp --reference="$TARGET" "$lockdir" 2>/dev/null || true
         fi
+
+        # Write hostname:pid atomically (may fail if lockdir removed)
+        local pid_file="$lockdir/pid"
+        local pid_tmp="$pid_file.tmp"
+
+        if echo "$current_host:$$" > "$pid_tmp" 2>/dev/null && \
+           mv "$pid_tmp" "$pid_file" 2>/dev/null; then
+            chmod 664 "$pid_file" 2>/dev/null || true
+            return 0  # SUCCESS
+        fi
+
+        # FAILURE: lockdir removed during acquisition
+        rm -f "$pid_tmp" 2>/dev/null || true
+        rmdir "$lockdir" 2>/dev/null || true
+
+        if [ $attempt -eq 3 ]; then
+            echo "ERROR: Failed to acquire lock after 3 attempts" >&2
+            echo "ERROR: Lock directory: $lockdir" >&2
+            exit 1
+        fi
+
+        [ "$VERBOSE" -ge 1 ] && \
+            echo "Lock removed during acquisition, retrying (attempt $attempt/3)..." >&2
 
         sleep "$SLEEP_INTERVAL_LOCKDIR"
     done
-
-    # Lock acquired - set permissions
-    chmod 775 "$lockdir" 2>/dev/null || true
-
-    # Set group to match target if it exists
-    if [ -e "$TARGET" ]; then
-        chgrp --reference="$TARGET" "$lockdir" 2>/dev/null || true
-    fi
-
-    # Write hostname:pid atomically
-    local pid_file="$lockdir/pid"
-    echo "$current_host:$$" > "$pid_file.tmp"
-    mv "$pid_file.tmp" "$pid_file"
-    chmod 664 "$pid_file" 2>/dev/null || true
 }
 
 release_lock_lockdir() {

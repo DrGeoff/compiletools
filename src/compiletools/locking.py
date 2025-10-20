@@ -209,61 +209,84 @@ class LockdirLock:
         3. If stale, remove with verification and retry immediately
         4. If not stale, wait with periodic warnings
         5. Write hostname:pid to lockdir/pid file
+        6. If lockdir removed during pid write, retry up to 3 times
 
         Raises:
             PermissionError: If stale lock cannot be removed (fatal)
+            RuntimeError: If lock acquisition fails after 3 retries
         """
         # Ensure parent directory exists before attempting lock
         parent_dir = compiletools.wrappedos.dirname(self.lockdir)
         if parent_dir and not os.path.exists(parent_dir):
             os.makedirs(parent_dir, exist_ok=True)
 
-        last_warn_time = 0
-        escalated = False
+        for attempt in range(1, 4):
+            last_warn_time = 0
+            escalated = False
 
-        while True:
-            try:
-                os.mkdir(self.lockdir)
-                # Lock acquired - set multi-user permissions (mirrors shell behavior)
-                self._set_lockdir_permissions()
-                # Write pid file atomically to prevent races during stale lock detection
-                with compiletools.filesystem_utils.atomic_output_file(self.pid_file, "w") as f:
-                    f.write(f"{self.hostname}:{self.pid}\n")
-                # Set pid file permissions for multi-user access
-                os.chmod(self.pid_file, 0o664)
-                return
-            except FileExistsError:
-                # Lock exists, check if stale
-                if self._is_lock_stale():
-                    # Stale lock - remove with verification (may raise PermissionError)
-                    self._remove_stale_lock()
-                    # Shell does: continue (retry immediately, no sleep)
-                    continue
+            while True:
+                try:
+                    os.mkdir(self.lockdir)
+                    # Lock acquired - set multi-user permissions (mirrors shell behavior)
+                    self._set_lockdir_permissions()
+                    # Write pid file atomically to prevent races during stale lock detection
+                    with compiletools.filesystem_utils.atomic_output_file(self.pid_file, "w") as f:
+                        f.write(f"{self.hostname}:{self.pid}\n")
+                    # Set pid file permissions for multi-user access
+                    os.chmod(self.pid_file, 0o664)
+                    return  # SUCCESS
+                except FileExistsError:
+                    # Lock exists, check if stale
+                    if self._is_lock_stale():
+                        # Stale lock - remove with verification (may raise PermissionError)
+                        self._remove_stale_lock()
+                        # Shell does: continue (retry immediately, no sleep)
+                        continue
 
-                # Not stale, must wait
-                lock_age = self._get_lock_age_seconds()
-                now = time.time()
+                    # Not stale, must wait
+                    lock_age = self._get_lock_age_seconds()
+                    now = time.time()
 
-                # Periodic warnings (same as makefile.py)
-                if now - last_warn_time > self.warn_interval:
-                    lock_host, lock_pid = self._read_lock_info()
-                    print(
-                        f"Waiting for lock: {self.lockdir} (held by {lock_host}:{lock_pid})",
-                        file=sys.stderr,
-                    )
-                    last_warn_time = now
+                    # Periodic warnings (same as makefile.py)
+                    if now - last_warn_time > self.warn_interval:
+                        lock_host, lock_pid = self._read_lock_info()
+                        print(
+                            f"Waiting for lock: {self.lockdir} (held by {lock_host}:{lock_pid})",
+                            file=sys.stderr,
+                        )
+                        last_warn_time = now
 
-                # Escalate warning at timeout threshold
-                if lock_age > self.cross_host_timeout and not escalated:
-                    lock_host, lock_pid = self._read_lock_info()
-                    print(
-                        f"WARNING: Lock held for {lock_age:.0f}s (timeout: {self.cross_host_timeout}s)",
-                        file=sys.stderr,
-                    )
-                    print(f"Lock holder: {lock_host}:{lock_pid}", file=sys.stderr)
-                    escalated = True
+                    # Escalate warning at timeout threshold
+                    if lock_age > self.cross_host_timeout and not escalated:
+                        lock_host, lock_pid = self._read_lock_info()
+                        print(
+                            f"WARNING: Lock held for {lock_age:.0f}s (timeout: {self.cross_host_timeout}s)",
+                            file=sys.stderr,
+                        )
+                        print(f"Lock holder: {lock_host}:{lock_pid}", file=sys.stderr)
+                        escalated = True
 
-                time.sleep(self.sleep_interval)
+                    time.sleep(self.sleep_interval)
+                except FileNotFoundError as e:
+                    # Lockdir removed during pid write - clean up and retry
+                    try:
+                        os.rmdir(self.lockdir)
+                    except OSError:
+                        pass  # Best effort, may already be gone
+
+                    if attempt == 3:
+                        raise RuntimeError(
+                            f"Failed to acquire lock after 3 attempts: {self.lockdir}"
+                        ) from e
+
+                    if self.args.verbose >= 1:
+                        print(
+                            f"Lock removed during acquisition, retrying (attempt {attempt}/3)...",
+                            file=sys.stderr,
+                        )
+
+                    time.sleep(self.sleep_interval)
+                    break  # Exit inner while, retry outer for loop
 
     def release(self):
         """Release lock by removing pid file and lockdir."""
