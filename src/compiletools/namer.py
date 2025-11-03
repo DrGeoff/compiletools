@@ -63,17 +63,74 @@ class Namer(object):
         """
         return self.args.objdir
 
+    def compute_dep_hash(self, header_list):
+        """Compute 14-char hash of header dependencies.
+
+        Uses XOR of header content hashes for order-independent,
+        deterministic hash. Leverages global_hash_registry.
+
+        This is a PUBLIC method so callers can compute the hash once
+        and pass it to multiple methods (object_name, object_pathname).
+
+        Args:
+            header_list: List of header file paths (strings, stringzilla.Str, or Path objects)
+
+        Returns:
+            14-character hex string representing dependency set
+
+        Notes:
+            - Missing files (e.g., generated headers) are treated as zero hash
+            - XOR with 0 is no-op, so missing files don't corrupt the hash
+            - When generated file appears, next build will pick up correct hash
+        """
+        from compiletools.global_hash_registry import get_file_hash
+
+        if not header_list:
+            return '0' * 14  # No dependencies
+
+        # Coerce to str (handles str, stringzilla.Str, Path objects)
+        # Use str() not os.fspath() - stringzilla.Str is not os.PathLike
+        header_paths = [str(h) for h in header_list]
+
+        # Defensive: deduplicate in case caller didn't (should already be unique)
+        unique_paths = list(dict.fromkeys(header_paths))  # Preserve order
+
+        if len(unique_paths) != len(header_paths) and self.args.verbose >= 5:
+            # Log if duplicates detected (shouldn't happen with proper callers)
+            import sys
+            print(f"Warning: Duplicate headers in dep hash computation", file=sys.stderr)
+
+        # XOR all header hashes (order-independent via sorting)
+        combined = 0
+        for header_path in sorted(unique_paths):
+            try:
+                file_hash = get_file_hash(header_path)
+                # Use first 56 bits (14 hex chars)
+                combined ^= int(file_hash[:14], 16)
+            except FileNotFoundError:
+                # Generated header doesn't exist yet - treat as zero hash
+                # XOR with 0 is identity operation, so combined remains unchanged
+                if self.args.verbose >= 5:
+                    import sys
+                    print(f"Warning: Header not found (generated?): {header_path}", file=sys.stderr)
+                # Explicitly pass (XOR with 0 would be: combined ^= 0)
+                pass
+
+        return format(combined, '014x')
+
     @functools.lru_cache(maxsize=None)
-    def object_name(self, sourcefilename, macro_state_hash):
+    def object_name(self, sourcefilename, macro_state_hash, dep_hash):
         """Return the name (not the path) of the object file for the given source.
 
-        Naming scheme: {basename}_{file_hash_12}_{macro_state_hash_16}.o
+        Naming scheme: {basename}_{file_hash_12}_{dep_hash_14}_{macro_state_hash_16}.o
         - basename: filename without path or extension
-        - file_hash_12: 12-char hex from global hash registry (git convention)
+        - file_hash_12: 12-char hex from global hash registry (source file)
+        - dep_hash_14: 14-char hex XOR of header dependencies (MIDDLE POSITION)
         - macro_state_hash_16: 16-char hex of full macro state (core + variable)
 
         This naming scheme is content-addressable and safe for shared caching:
         - Different file content → different file_hash
+        - Different dependencies → different dep_hash
         - Different macro state → different macro_state_hash
         - Same basename in different dirs → different file_hash
 
@@ -81,9 +138,10 @@ class Namer(object):
             sourcefilename: Path to source file
             macro_state_hash: Required 16-char hex hash of full macro state (core + variable).
                              No default - fail fast if not provided.
+            dep_hash: Required 14-char hex hash of dependencies (precomputed via compute_dep_hash)
 
         Returns:
-            Object filename like: file_a1b2c3d4e5f6_0123456789abcdef.o
+            Object filename like: file_a1b2c3d4e5f6_1234567890abcd_0123456789abcdef.o
         """
         from compiletools.global_hash_registry import get_file_hash
 
@@ -95,19 +153,27 @@ class Namer(object):
         file_hash = get_file_hash(sourcefilename)
         file_hash_short = file_hash[:12]
 
+        # Use precomputed dependency hash (14 chars) - MIDDLE POSITION
+        # Passed as parameter (not computed here) to keep lru_cache working
+
         # Use full 16-char macro state hash
-        return f"{basename}_{file_hash_short}_{macro_state_hash}.o"
+        return f"{basename}_{file_hash_short}_{dep_hash}_{macro_state_hash}.o"
 
     @functools.lru_cache(maxsize=None)
-    def object_pathname(self, sourcefilename, macro_state_hash):
+    def object_pathname(self, sourcefilename, macro_state_hash, dep_hash):
         """Return full path to object file.
 
         Args:
             sourcefilename: Path to source file
             macro_state_hash: Required 16-char hex hash (no default)
+            dep_hash: Required 14-char hex hash of dependencies (precomputed)
         """
         return "".join(
-            [self.object_dir(sourcefilename), "/", self.object_name(sourcefilename, macro_state_hash)]
+            [
+                self.object_dir(sourcefilename),
+                os.sep,
+                self.object_name(sourcefilename, macro_state_hash, dep_hash),
+            ]
         )
 
     @functools.lru_cache(maxsize=None)

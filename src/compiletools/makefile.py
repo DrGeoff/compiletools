@@ -100,9 +100,13 @@ class LinkRuleCreator(object):
             linkerflags = ""
 
         allprerequisites = " ".join(extraprereqs)
-        # Get macro state hash for each source file (required for new naming scheme)
+        # Get macro state hash and dep hash for each source file (required for new naming scheme)
         object_names = compiletools.utils.ordered_unique([
-            self.namer.object_pathname(source, self.hunter.macro_state_hash(source))
+            self.namer.object_pathname(
+                source,
+                self.hunter.macro_state_hash(source),
+                self.namer.compute_dep_hash(self.hunter.header_dependencies(source))
+            )
             for source in completesources
         ])
         allprerequisites += " "
@@ -703,8 +707,12 @@ class MakefileCreator:
         magicflags = self.hunter.magicflags(filename)
         macro_state_hash = self.hunter.macro_state_hash(filename)
 
+        # Compute dependency hash for object naming
+        dep_hash = self.namer.compute_dep_hash(deplist)
+
         self.object_directories.add(self.namer.object_dir(filename))
-        obj_name = self.namer.object_pathname(filename, macro_state_hash)
+        # Pass precomputed dep_hash (not list) to keep lru_cache working
+        obj_name = self.namer.object_pathname(filename, macro_state_hash, dep_hash)
         self.objects.add(obj_name)
 
         recipe = ""

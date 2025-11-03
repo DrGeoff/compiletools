@@ -287,7 +287,8 @@ class TestCake(BaseCompileToolsTestCase):
         for fname in [name for name in fnames if "cpp" in name]:
             _, name = os.path.split(fname)
             basename = os.path.splitext(name)[0]
-            # Find object files matching the pattern: basename_<file_hash>_<macro_state_hash>.o
+            # Find object files matching the pattern: basename_<file_hash>_<dep_hash>_<macro_state_hash>.o
+            # Pattern {basename}_*_*.o matches both old (2 underscores) and new (3 underscores) formats
             pattern = os.path.join(objdir, f"{basename}_*_*.o")
             matching_objs = glob.glob(pattern)
             fnames.extend(matching_objs)
@@ -340,9 +341,13 @@ class TestCake(BaseCompileToolsTestCase):
                 # The old object file remains unchanged. We verify new object file
                 # creation separately below, so skip timestamp check here.
                 pass
+            elif expected_to_change and is_object_file:
+                # Only header changed (not source) → new object file created with different dep_hash.
+                # The old object file remains unchanged. We verify new object file
+                # creation separately below, so skip timestamp check here.
+                pass
             elif expected_to_change:
-                # For files expected to change (including object files when only headers changed),
-                # check that timestamp increased
+                # For non-object files expected to change, check that timestamp increased
                 assert postts[fname] > prets[fname]
             else:
                 # File not expected to change - verify timestamp is the same
