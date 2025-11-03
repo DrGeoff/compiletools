@@ -241,6 +241,13 @@ class TestSharedCacheLowMtimeResolution(BaseCompileToolsTestCase):
             assert len(new_parts[2]) == 14, f"Dep hash should be 14 chars: {new_parts[2]}"
             assert new_parts[2] != '00000000000000', "Dep hash should not be zero (has dependencies)"
 
+            # Additional verification: Ensure hashes are valid hex (algorithm correctness)
+            try:
+                int(old_parts[2], 16)
+                int(new_parts[2], 16)
+            except ValueError as e:
+                assert False, f"Dep hash must be valid hex: {e}"
+
             # Both objects should coexist in shared cache
             assert len(obj_files_after) == 2, f"Expected both old and new objects, found {len(obj_files_after)}"
             assert obj_file_before in obj_files_after, "Old object should still exist"
