@@ -151,17 +151,19 @@ class TestSharedCacheLowMtimeResolution(BaseCompileToolsTestCase):
             # User A: Initial build
             self._run_cake_build(main_repo, config_name)
 
-            obj_files = list(shared_objdir.glob("*.o"))
-            assert len(obj_files) == 1, f"Expected 1 object file, found {len(obj_files)}"
+            # Capture object files BEFORE header change
+            obj_files_before = list(shared_objdir.glob("*.o"))
+            assert len(obj_files_before) == 1, f"Expected 1 object file, found {len(obj_files_before)}"
 
-            obj_file = obj_files[0]
-            obj_size_before = obj_file.stat().st_size
+            obj_file_before = obj_files_before[0]
+            obj_name_before = obj_file_before.name
+            obj_size_before = obj_file_before.stat().st_size
             assert obj_size_before > 0, "Object file should not be empty"
 
             # CRITICAL: Set object mtime to same timestamp as sources
             # This simulates low-resolution filesystem or fast build
-            set_mtime_to_second(obj_file, base_timestamp)
-            obj_mtime = os.path.getmtime(obj_file)
+            set_mtime_to_second(obj_file_before, base_timestamp)
+            obj_mtime = os.path.getmtime(obj_file_before)
 
             # User B: Edit renderer.h
             renderer_h = Path(worktree) / "renderer.h"
@@ -205,34 +207,40 @@ class TestSharedCacheLowMtimeResolution(BaseCompileToolsTestCase):
             # User B: Build after editing renderer.h
             self._run_cake_build(worktree, config_name)
 
-            # Check if object was rebuilt
-            obj_mtime_after = os.path.getmtime(obj_file)
-            obj_size_after = obj_file.stat().st_size
+            # Capture object files AFTER rebuild
+            obj_files_after = list(shared_objdir.glob("*.o"))
 
-            # The test: Was the object file rebuilt?
-            if obj_size_after == obj_size_before and int(obj_mtime_after) == int(obj_mtime):
-                # BUG EXPOSED: Object was not rebuilt despite header change
-                # This fails the test and documents the bug
+            # The test: Was a NEW object created with different name?
+            new_obj_files = [f for f in obj_files_after if f.name != obj_name_before]
+
+            if not new_obj_files:
+                # BUG NOT FIXED: Still using old object name
                 assert False, (
-                    f"BUG: Object file was NOT rebuilt despite renderer.h changing!\n"
-                    f"Object mtime: {int(obj_mtime)} (before) vs {int(obj_mtime_after)} (after)\n"
-                    f"Header mtime: {int(header_mtime)}\n"
-                    f"Object size: {obj_size_before} (before) vs {obj_size_after} (after)\n"
-                    f"Make saw: object_mtime ({int(obj_mtime)}) >= header_mtime ({int(header_mtime)})\n"
-                    f"Make skipped rebuild because timestamps are equal.\n"
-                    f"\n"
-                    f"Root cause:\n"
-                    f"1. Object naming doesn't include header content hashes\n"
-                    f"2. Make's timestamp-based checking fails on low-resolution filesystems\n"
-                    f"3. User B got User A's stale object file\n"
-                    f"\n"
-                    f"This bug occurs on:\n"
-                    f"- FAT32 (2-second mtime resolution)\n"
-                    f"- Some NFS configurations (1-second resolution)\n"
-                    f"- Fast builds completing in < 1 second\n"
-                    f"- CI/CD shared build caches\n"
+                    f"BUG: No new object created despite header change!\n"
+                    f"Old object: {obj_name_before}\n"
+                    f"All objects: {[f.name for f in obj_files_after]}\n"
+                    f"Expected: New object with different dependency hash\n"
                 )
-            else:
-                # Object was rebuilt - test passes (bug not exposed this time)
-                # This can happen if make runs fast enough or filesystem has high resolution
-                pass
+
+            # SUCCESS: New object created
+            assert len(new_obj_files) == 1, f"Expected 1 new object, found {len(new_obj_files)}"
+            new_obj = new_obj_files[0]
+
+            # Verify new object has different hash in middle position (dep_hash changed)
+            old_parts = obj_name_before.replace('.o', '').split('_')
+            new_parts = new_obj.name.replace('.o', '').split('_')
+
+            # Both should have new format (4 parts) since our fix is already applied
+            assert len(old_parts) == 4, f"Should have 4 parts: {old_parts}"
+            assert len(new_parts) == 4, f"Should have 4 parts: {new_parts}"
+
+            assert new_parts[0] == old_parts[0], "Basename should match"
+            assert new_parts[1] == old_parts[1], "File hash should match (source unchanged)"
+            # The key test: dep_hash (middle position) should be DIFFERENT
+            assert new_parts[2] != old_parts[2], f"Dep hash should differ: {old_parts[2]} vs {new_parts[2]}"
+            assert len(new_parts[2]) == 14, f"Dep hash should be 14 chars: {new_parts[2]}"
+            assert new_parts[2] != '00000000000000', "Dep hash should not be zero (has dependencies)"
+
+            # Both objects should coexist in shared cache
+            assert len(obj_files_after) == 2, f"Expected both old and new objects, found {len(obj_files_after)}"
+            assert obj_file_before in obj_files_after, "Old object should still exist"
