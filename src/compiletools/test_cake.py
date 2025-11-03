@@ -358,8 +358,9 @@ class TestCake(BaseCompileToolsTestCase):
         for ec in expected_changes:
             if ec.endswith('.o'):
                 basename = ec[:-2]
-                # Only check for new object file if the source file also changed
-                if basename + '.cpp' in expected_changes:
+                # Check for new object file if source OR object file changed
+                # (headers trigger new objects via dep_hash, sources via file_hash)
+                if basename + '.cpp' in expected_changes or ec in expected_changes:
                     # Find new object files in postts that weren't in prets
                     new_objs = [f for f in postts if f not in prets and
                                os.path.basename(f).startswith(basename + "_") and
