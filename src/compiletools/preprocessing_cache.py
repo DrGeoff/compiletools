@@ -525,9 +525,9 @@ def clear_cache():
     analyze_file.cache_clear()
 
     # Clear global hash registry to prevent stale hash lookups in tests
-    from compiletools.global_hash_registry import clear_global_registry, get_file_hash
+    from compiletools.global_hash_registry import clear_global_registry, _get_file_hash_impl
     clear_global_registry()
-    get_file_hash.cache_clear()
+    _get_file_hash_impl.cache_clear()
 
 
 def print_preprocessing_stats():

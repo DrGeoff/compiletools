@@ -81,7 +81,6 @@ def load_hashes(verbose: int = 0) -> None:
             _REVERSE_HASHES = {}
 
 
-@lru_cache(maxsize=None)
 def get_file_hash(filepath: str) -> str:
     """Get hash for a file, loading hashes on first call.
 
@@ -97,42 +96,45 @@ def get_file_hash(filepath: str) -> str:
     Raises:
         FileNotFoundError: If filepath does not exist
     """
+    # Normalize path before caching to ensure cache hits for equivalent paths
+    # E.g., "test.c", "./test.c", and "/abs/path/test.c" should all cache as same key
+    abs_path = wrappedos.realpath(filepath)
+    return _get_file_hash_impl(abs_path)
+
+
+@lru_cache(maxsize=None)
+def _get_file_hash_impl(abs_path: str) -> str:
+    """Internal implementation that operates on normalized absolute paths.
+
+    Args:
+        abs_path: Absolute normalized path (from wrappedos.realpath)
+
+    Returns:
+        Git blob hash
+    """
     # Ensure hashes are loaded
     if _HASHES is None:
         load_hashes()
 
-    # Convert to absolute path for consistent lookup
-    # If path is relative, first try relative to current directory
-    abs_path = wrappedos.realpath(filepath)
+    # Lookup in registry using normalized path
     result = _HASHES.get(abs_path)
 
     if result is not None:
         global _hash_ops
         _hash_ops['registry_hits'] += 1
+        return result
 
-    # If not found and path was relative, try relative to git root
-    if result is None and not os.path.isabs(filepath):
-        try:
-            from compiletools.git_utils import find_git_root
-            git_root = find_git_root()
-            git_relative_path = os.path.join(git_root, filepath)
-            abs_git_path = wrappedos.realpath(git_relative_path)
-            result = _HASHES.get(abs_git_path)
-        except Exception:
-            pass  # Git root not available, stick with original result
+    # If not found in registry, check if file exists and compute hash on-demand
+    if not os.path.exists(abs_path):
+        raise FileNotFoundError(f"global_hash_registry encountered File not found: {abs_path}")
 
-    # If still not found, check if file exists and compute hash on-demand
-    if result is None:
-        if not os.path.exists(abs_path):
-            raise FileNotFoundError(f"global_hash_registry encountered File not found: {filepath}")
-
-        result = _compute_external_file_hash(abs_path)
-        if result:
-            # Cache the computed hash for future lookups (both forward and reverse)
-            _HASHES[abs_path] = result
-            _REVERSE_HASHES[result] = abs_path
-        else:
-            raise FileNotFoundError(f"global_hash_registry encountered Failed to compute hash for file: {filepath}")
+    result = _compute_external_file_hash(abs_path)
+    if result:
+        # Cache the computed hash for future lookups (both forward and reverse)
+        _HASHES[abs_path] = result
+        _REVERSE_HASHES[result] = abs_path
+    else:
+        raise FileNotFoundError(f"global_hash_registry encountered Failed to compute hash for file: {abs_path}")
 
     return result
 

@@ -183,9 +183,9 @@ def reset():
     import compiletools.git_utils as git_utils
     git_utils.clear_cache()
     # Clear global hash registry to prevent stale file hash lookups
-    from compiletools.global_hash_registry import clear_global_registry, get_file_hash
+    from compiletools.global_hash_registry import clear_global_registry, _get_file_hash_impl
     clear_global_registry()
-    get_file_hash.cache_clear()
+    _get_file_hash_impl.cache_clear()
     # Clear file analyzer cache to prevent stale analysis results
     from compiletools.file_analyzer import analyze_file
     analyze_file.cache_clear()
@@ -668,9 +668,9 @@ def touch(*paths):
             f.write(f"\n// touched at {time.time()}\n")
 
     # Clear all relevant caches to ensure modified files are detected
-    from compiletools.global_hash_registry import clear_global_registry, get_file_hash
+    from compiletools.global_hash_registry import clear_global_registry, _get_file_hash_impl
     clear_global_registry()
-    get_file_hash.cache_clear()
+    _get_file_hash_impl.cache_clear()
 
     from compiletools.file_analyzer import analyze_file
     analyze_file.cache_clear()
