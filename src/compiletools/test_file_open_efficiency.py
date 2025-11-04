@@ -74,11 +74,14 @@ def test_cake_auto_opens_files_once(sample_dir):
     original_dir = os.getcwd()
 
     # CRITICAL FIX: Ensure git registry loads from repository root, not from test subdirectory
-    # In xdist workers, the cwd might be a subdirectory when registry first loads,
-    # causing it to only index that subdirectory's files instead of the whole repo.
-    # Load it explicitly from the repo root before changing to test directory.
+    # In xdist workers, the registry may have already loaded from a subdirectory.
+    # Clear it and force reload from the repo root.
     import compiletools.global_hash_registry as ghr
     import compiletools.git_utils
+
+    # Clear any existing registry that may have loaded from wrong location
+    ghr.clear_global_registry()
+
     saved_cwd = os.getcwd()
     try:
         repo_root = compiletools.git_utils.find_git_root()
