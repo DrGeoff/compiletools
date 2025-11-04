@@ -292,6 +292,12 @@ class TestLockdirStrategy:
 
         lockdir = temp_target + ".lockdir"
 
+        # Create wrapper script that accepts -o argument
+        wrapper = temp_target.replace(".o", "_compile.sh")
+        with open(wrapper, "w") as f:
+            f.write(f"#!/bin/bash\nsleep 0.5\nexec gcc -c {source} \"$@\"\n")
+        os.chmod(wrapper, 0o755)
+
         try:
             # Run in background
             proc = subprocess.Popen(
@@ -300,7 +306,7 @@ class TestLockdirStrategy:
                     f"--target={temp_target}",
                     "--strategy=lockdir",
                     "--",
-                    "sh", "-c", f"sleep 0.5 && gcc -c {source}"
+                    wrapper
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE
@@ -320,6 +326,8 @@ class TestLockdirStrategy:
         finally:
             if os.path.exists(source):
                 os.unlink(source)
+            if os.path.exists(wrapper):
+                os.unlink(wrapper)
             if proc.poll() is None:
                 proc.kill()
 
