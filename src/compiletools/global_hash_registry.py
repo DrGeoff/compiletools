@@ -24,17 +24,8 @@ _hash_ops = {'registry_hits': 0, 'computed_hashes': 0}
 
 def _compute_external_file_hash(filepath: str) -> Optional[str]:
     """Compute git blob hash for a file using git's algorithm."""
-    import sys
     global _hash_ops
     _hash_ops['computed_hashes'] += 1
-
-    # DEBUG: Log when we fall back to computing hash
-    if os.environ.get('DEBUG_DOUBLE_OPEN'):
-        registry_size = len(_HASHES) if _HASHES else 0
-        print(f"[HASH_COMPUTE] Computing hash for: {os.path.basename(filepath)}", file=sys.stderr)
-        print(f"[HASH_COMPUTE] Registry has {registry_size} files", file=sys.stderr)
-        print(f"[HASH_COMPUTE] Filepath: {filepath}", file=sys.stderr)
-
     try:
         with open(filepath, 'rb') as f:
             content = f.read()
@@ -53,20 +44,9 @@ def load_hashes(verbose: int = 0) -> None:
         verbose: Verbosity level (0 = silent, higher = more output)
     """
     import gc
-    import sys
     global _HASHES, _REVERSE_HASHES
 
-    # DEBUG: Log when registry loading is attempted
-    if os.environ.get('DEBUG_DOUBLE_OPEN'):
-        import traceback
-        print(f"[REGISTRY] load_hashes() called", file=sys.stderr)
-        print(f"[REGISTRY] Call stack:", file=sys.stderr)
-        for line in traceback.format_stack()[:-1]:
-            print(f"  {line.strip()}", file=sys.stderr)
-
     if _HASHES is not None:
-        if os.environ.get('DEBUG_DOUBLE_OPEN'):
-            print(f"[REGISTRY] Already loaded with {len(_HASHES)} files", file=sys.stderr)
         return  # Already loaded
 
     with _lock:
@@ -85,14 +65,8 @@ def load_hashes(verbose: int = 0) -> None:
             # Build reverse lookup cache: hash -> filepath
             _REVERSE_HASHES = {sha: str(path) for path, sha in all_hashes.items()}
 
-            if verbose >= 3 or os.environ.get('DEBUG_DOUBLE_OPEN'):
+            if verbose >= 3:
                 print(f"GlobalHashRegistry: Loaded {len(_HASHES)} file hashes from git")
-                if os.environ.get('DEBUG_DOUBLE_OPEN'):
-                    # Show sample of files in registry
-                    sample_files = list(_HASHES.keys())[:5]
-                    print(f"[REGISTRY] Sample files in registry:", file=sys.stderr)
-                    for f in sample_files:
-                        print(f"  {f}", file=sys.stderr)
 
             # Explicitly clean up Path objects and force garbage collection
             # to ensure file descriptors are released
@@ -138,12 +112,8 @@ def _get_file_hash_impl(abs_path: str) -> str:
     Returns:
         Git blob hash
     """
-    import sys
-
     # Ensure hashes are loaded
     if _HASHES is None:
-        if os.environ.get('DEBUG_DOUBLE_OPEN'):
-            print(f"[HASH_IMPL] Registry not loaded, loading now for: {os.path.basename(abs_path)}", file=sys.stderr)
         load_hashes()
 
     # Lookup in registry using normalized path
@@ -152,27 +122,9 @@ def _get_file_hash_impl(abs_path: str) -> str:
     if result is not None:
         global _hash_ops
         _hash_ops['registry_hits'] += 1
-        if os.environ.get('DEBUG_DOUBLE_OPEN'):
-            print(f"[HASH_IMPL] Registry HIT for: {os.path.basename(abs_path)}", file=sys.stderr)
         return result
 
     # If not found in registry, check if file exists and compute hash on-demand
-    if os.environ.get('DEBUG_DOUBLE_OPEN'):
-        print(f"[HASH_IMPL] Registry MISS for: {os.path.basename(abs_path)}", file=sys.stderr)
-        if _HASHES is not None:
-            print(f"[HASH_IMPL] Registry has {len(_HASHES)} files total", file=sys.stderr)
-            # Check if any similar paths exist
-            basename = os.path.basename(abs_path)
-            matching = [p for p in _HASHES.keys() if basename in p]
-            if matching:
-                print(f"[HASH_IMPL] Found {len(matching)} files with basename '{basename}':", file=sys.stderr)
-                for m in matching[:3]:
-                    print(f"  {m}", file=sys.stderr)
-            else:
-                print(f"[HASH_IMPL] No files with basename '{basename}' in registry", file=sys.stderr)
-        else:
-            print(f"[HASH_IMPL] Registry is None (not loaded)", file=sys.stderr)
-
     if not os.path.exists(abs_path):
         raise FileNotFoundError(f"global_hash_registry encountered File not found: {abs_path}")
 

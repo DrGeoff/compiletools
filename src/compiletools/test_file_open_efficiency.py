@@ -70,18 +70,22 @@ def test_cake_auto_opens_files_once(sample_dir):
     if not os.path.exists(test_dir):
         pytest.skip(f"Sample directory not found: {test_dir}")
 
-    # DEBUG: Log test start
-    if os.environ.get('DEBUG_DOUBLE_OPEN'):
-        print(f"\n[TEST] Starting test for sample_dir: {sample_dir}", file=sys.stderr)
-        print(f"[TEST] Test directory: {test_dir}", file=sys.stderr)
-
-        # Check initial registry state
-        import compiletools.global_hash_registry as ghr
-        stats = ghr.get_registry_stats()
-        print(f"[TEST] Initial registry state: loaded={stats['is_loaded']}, files={stats['total_files']}", file=sys.stderr)
-
     # Save current directory to restore later
     original_dir = os.getcwd()
+
+    # CRITICAL FIX: Ensure git registry loads from repository root, not from test subdirectory
+    # In xdist workers, the cwd might be a subdirectory when registry first loads,
+    # causing it to only index that subdirectory's files instead of the whole repo.
+    # Load it explicitly from the repo root before changing to test directory.
+    import compiletools.global_hash_registry as ghr
+    import compiletools.git_utils
+    saved_cwd = os.getcwd()
+    try:
+        repo_root = compiletools.git_utils.find_git_root()
+        os.chdir(repo_root)
+        ghr.load_hashes()
+    finally:
+        os.chdir(saved_cwd)
 
     try:
         # Change to test directory
@@ -89,13 +93,7 @@ def test_cake_auto_opens_files_once(sample_dir):
 
         # Track file opens during cake execution
         with uth.ParserContext():
-            if os.environ.get('DEBUG_DOUBLE_OPEN'):
-                print(f"[TEST] Entering ParserContext", file=sys.stderr)
-
             with FileOpenTracker() as tracker:
-                if os.environ.get('DEBUG_DOUBLE_OPEN'):
-                    print(f"[TEST] FileOpenTracker activated", file=sys.stderr)
-
                 # Create argument parser and run cake
                 cap = compiletools.apptools.create_parser("Test ct-cake file efficiency")
                 compiletools.cake.Cake.add_arguments(cap)
@@ -105,35 +103,14 @@ def test_cake_auto_opens_files_once(sample_dir):
                 argv = ['--auto', '--file-list']
                 args = compiletools.apptools.parseargs(cap, argv=argv)
 
-                if os.environ.get('DEBUG_DOUBLE_OPEN'):
-                    print(f"[TEST] About to create Cake and process", file=sys.stderr)
-
                 try:
                     cake = compiletools.cake.Cake(args)
                     cake.process()
                 except SystemExit:
                     pass  # May exit early if no targets found
 
-                if os.environ.get('DEBUG_DOUBLE_OPEN'):
-                    print(f"[TEST] Cake processing complete", file=sys.stderr)
-
             # Check for multiple opens
             multiple_opens = tracker.get_multiple_opens()
-
-            if os.environ.get('DEBUG_DOUBLE_OPEN'):
-                print(f"[TEST] File open summary:", file=sys.stderr)
-                print(f"[TEST]   Total files tracked: {len(tracker.counter)}", file=sys.stderr)
-                print(f"[TEST]   Files opened >1 time: {len(multiple_opens)}", file=sys.stderr)
-                if tracker.counter:
-                    print(f"[TEST] All opens:", file=sys.stderr)
-                    for path, count in sorted(tracker.counter.items()):
-                        print(f"[TEST]   {count}x: {os.path.basename(path)}", file=sys.stderr)
-
-                # Final registry check
-                import compiletools.global_hash_registry as ghr
-                final_stats = ghr.get_registry_stats()
-                print(f"[TEST] Final registry state: loaded={final_stats['is_loaded']}, files={final_stats['total_files']}", file=sys.stderr)
-                print(f"[TEST] Registry stats: hits={final_stats.get('registry_hits', 0)}, computed={final_stats.get('computed_hashes', 0)}", file=sys.stderr)
 
             if multiple_opens:
                 # Create detailed failure message
