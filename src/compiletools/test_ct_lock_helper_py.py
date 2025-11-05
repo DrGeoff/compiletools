@@ -9,7 +9,6 @@ import subprocess
 import tempfile
 import os
 import shutil
-import sys
 
 
 @pytest.fixture

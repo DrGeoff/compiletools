@@ -98,7 +98,7 @@ class Namer(object):
         if len(unique_paths) != len(header_paths) and self.args.verbose >= 5:
             # Log if duplicates detected (shouldn't happen with proper callers)
             import sys
-            print(f"Warning: Duplicate headers in dep hash computation", file=sys.stderr)
+            print("Warning: Duplicate headers in dep hash computation", file=sys.stderr)
 
         # XOR all header hashes (order-independent via sorting)
         combined = 0
@@ -108,13 +108,10 @@ class Namer(object):
                 # Use first 56 bits (14 hex chars)
                 combined ^= int(file_hash[:14], 16)
             except FileNotFoundError:
-                # Generated header doesn't exist yet - treat as zero hash
-                # XOR with 0 is identity operation, so combined remains unchanged
+                # Generated header doesn't exist yet - treat as zero hash (XOR with 0 is identity)
                 if self.args.verbose >= 5:
                     import sys
                     print(f"Warning: Header not found (generated?): {header_path}", file=sys.stderr)
-                # Explicitly pass (XOR with 0 would be: combined ^= 0)
-                pass
 
         return format(combined, '014x')
 

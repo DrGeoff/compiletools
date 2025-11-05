@@ -1,7 +1,6 @@
 # vim: set filetype=python:
 import os
 import sys
-import textwrap
 from io import open
 
 import stringzilla as sz

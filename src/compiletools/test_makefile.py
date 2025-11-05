@@ -68,8 +68,6 @@ class TestMakefile:
         Regression test for bug where set -e was missing from locking recipes,
         causing compiler failures to be silently ignored.
         """
-        samplesdir = uth.samplesdir()
-
         with uth.TempDirContextWithChange() as tempdir:
             # Create a source file with intentional syntax error
             bad_source = os.path.join(tempdir, "test_syntax_error.cpp")

@@ -11,7 +11,6 @@ import time
 import os
 import socket
 import shutil
-import sys
 
 
 @pytest.fixture
