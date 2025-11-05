@@ -380,17 +380,11 @@ def _read_file_with_strategy(filepath: str, strategy: str):
     # Filesystem safety is handled by safe_read_text_file
     force_no_mmap = (strategy == 'no_mmap')
 
-    try:
-        return compiletools.filesystem_utils.safe_read_text_file(
-            filepath,
-            encoding='utf-8',
-            force_no_mmap=force_no_mmap
-        )
-    except (OSError, IOError) as e:
-        # Last resort fallback
-        _warn_mmap_failure(filepath, e)
-        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-            return Str(f.read())
+    return compiletools.filesystem_utils.safe_read_text_file(
+        filepath,
+        encoding='utf-8',
+        force_no_mmap=force_no_mmap
+    )
 
 
 def set_analyzer_args(args):
