@@ -9,7 +9,7 @@ git-sha-report functionality efficiently.
 from typing import Dict, Optional
 import threading
 import os
-import hashlib
+import subprocess
 from functools import lru_cache
 from compiletools import wrappedos
 
@@ -22,19 +22,44 @@ _lock = threading.Lock()
 _hash_ops = {'registry_hits': 0, 'computed_hashes': 0}
 
 
-def _compute_external_file_hash(filepath: str) -> Optional[str]:
-    """Compute git blob hash for a file using git's algorithm."""
+def _compute_external_file_hash(filepath: str) -> str:
+    """Compute git blob hash using git hash-object.
+
+    Uses git subprocess to compute hash without reading file in Python.
+    This avoids duplicate file reads when git registry isn't available.
+
+    Args:
+        filepath: Path to file
+
+    Returns:
+        Git blob hash (40-char hex string)
+
+    Raises:
+        FileNotFoundError: If filepath does not exist
+        RuntimeError: If git hash-object fails
+    """
     global _hash_ops
     _hash_ops['computed_hashes'] += 1
-    try:
-        with open(filepath, 'rb') as f:
-            content = f.read()
 
-        # Git blob hash: sha1("blob {size}\0{content}")
-        blob_data = f"blob {len(content)}\0".encode() + content
-        return hashlib.sha1(blob_data).hexdigest()
-    except (OSError, IOError):
-        return None
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"File not found: {filepath}")
+
+    try:
+        result = subprocess.run(
+            ['git', 'hash-object', filepath],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5
+        )
+        return result.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.strip() if e.stderr else "unknown error"
+        raise RuntimeError(f"git hash-object failed for {filepath}: {stderr}")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"git hash-object timed out for {filepath}")
+    except FileNotFoundError:
+        raise RuntimeError("git executable not found in PATH")
 
 
 def load_hashes(verbose: int = 0) -> None:
@@ -116,6 +141,10 @@ def _get_file_hash_impl(abs_path: str) -> str:
     if _HASHES is None:
         load_hashes()
 
+    # Type narrowing: load_hashes() guarantees both are dicts
+    assert _HASHES is not None
+    assert _REVERSE_HASHES is not None
+
     # Lookup in registry using normalized path
     result = _HASHES.get(abs_path)
 
@@ -124,17 +153,13 @@ def _get_file_hash_impl(abs_path: str) -> str:
         _hash_ops['registry_hits'] += 1
         return result
 
-    # If not found in registry, check if file exists and compute hash on-demand
-    if not os.path.exists(abs_path):
-        raise FileNotFoundError(f"global_hash_registry encountered File not found: {abs_path}")
-
+    # If not found in registry, compute hash on-demand using git hash-object
+    # This raises FileNotFoundError or RuntimeError if it fails
     result = _compute_external_file_hash(abs_path)
-    if result:
-        # Cache the computed hash for future lookups (both forward and reverse)
-        _HASHES[abs_path] = result
-        _REVERSE_HASHES[result] = abs_path
-    else:
-        raise FileNotFoundError(f"global_hash_registry encountered Failed to compute hash for file: {abs_path}")
+
+    # Cache the computed hash for future lookups (both forward and reverse)
+    _HASHES[abs_path] = result
+    _REVERSE_HASHES[result] = abs_path
 
     return result
 
