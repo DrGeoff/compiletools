@@ -161,6 +161,8 @@ def clear_global_registry() -> None:
     with _lock:
         _HASHES = None
         _REVERSE_HASHES = None
+        # Clear path cache to prevent CWD-dependent stale results in test environments
+        wrappedos.realpath.cache_clear()
 
 
 def get_filepath_by_hash(file_hash: str) -> Optional[str]:
