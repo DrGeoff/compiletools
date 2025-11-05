@@ -38,18 +38,12 @@ class Hunter(object):
         self.magicparser = magicparser
         # Clear lru_cache on instance methods to prevent stale cache across builds
         # The cache is bound to the method, not the instance, so it persists
-        try:
+        if hasattr(Hunter, '_get_immediate_deps'):
             Hunter._get_immediate_deps.cache_clear()
-        except AttributeError:
-            pass  # Method doesn't exist yet (first instantiation)
-        try:
+        if hasattr(Hunter, '_parse_magic'):
             Hunter._parse_magic.cache_clear()
-        except AttributeError:
-            pass  # Method doesn't exist yet (first instantiation)
-        try:
+        if hasattr(Hunter, '_required_files_impl'):
             Hunter._required_files_impl.cache_clear()
-        except AttributeError:
-            pass  # Method doesn't exist yet (first instantiation)
 
     def _extractSOURCE(self, realpath):
         import stringzilla as sz

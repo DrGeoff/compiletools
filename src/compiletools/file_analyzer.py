@@ -374,8 +374,6 @@ def _read_file_with_strategy(filepath: str, strategy: str):
     Returns:
         stringzilla.Str object with file contents
     """
-    from stringzilla import Str
-
     # Strategy is about ulimit/resource constraints
     # Filesystem safety is handled by safe_read_text_file
     force_no_mmap = (strategy == 'no_mmap')

@@ -6,7 +6,6 @@ appropriate function: standard versions for Python str, _sz versions for StringZ
 Optimized for speed over memory - uses separate caches to avoid conversions.
 """
 import os
-import shutil
 import functools
 from typing import Union
 import stringzilla as sz
@@ -115,13 +114,6 @@ def getsize_sz(path: sz.Str) -> int:
 def join_sz(path: sz.Str, *paths: sz.Str) -> sz.Str:
     """os.path.join for StringZilla strings."""
     return sz.Str(join(path.decode('utf-8'), *(p.decode('utf-8') for p in paths)))
-
-def copy(src: str, dest: str) -> None:
-    """Copy src to dest with error handling."""
-    try:
-        shutil.copy2(src, dest)
-    except IOError as err:
-        print(f"Unable to copy file: {err}")
 
 
 def clear_cache() -> None:

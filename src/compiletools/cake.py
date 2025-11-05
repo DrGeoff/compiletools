@@ -2,6 +2,7 @@ import signal
 import sys
 import subprocess
 import os
+import shutil
 import compiletools.utils
 import compiletools.apptools
 import compiletools.configutils
@@ -156,14 +157,14 @@ class Cake(object):
             if self.args.verbose > 0:
                 print(self.args.output)
             if self.args.filename:
-                compiletools.wrappedos.copy(
+                shutil.copy2(
                     self.namer.executable_pathname(self.args.filename[0]),
                     self.args.output,
                 )
             if self.args.static:
-                compiletools.wrappedos.copy(self.namer.staticlibrary_pathname(), self.args.output)
+                shutil.copy2(self.namer.staticlibrary_pathname(), self.args.output)
             if self.args.dynamic:
-                compiletools.wrappedos.copy(
+                shutil.copy2(
                     self.namer.dynamiclibrary_pathname(), self.args.output
                 )
         else:
@@ -175,7 +176,7 @@ class Cake(object):
                 if compiletools.utils.is_executable(srcexe) and srcexe != destexe:
                     if self.args.verbose > 0:
                         print("".join([outputdir, base]))
-                    compiletools.wrappedos.copy(srcexe, outputdir)
+                    shutil.copy2(srcexe, outputdir)
 
             if self.args.static:
                 src = self.namer.staticlibrary_pathname()
@@ -184,7 +185,7 @@ class Cake(object):
                 if src != dest:
                     if self.args.verbose > 0:
                         print(os.path.join(outputdir, filename))
-                    compiletools.wrappedos.copy(src, outputdir)
+                    shutil.copy2(src, outputdir)
 
             if self.args.dynamic:
                 src = self.namer.dynamiclibrary_pathname()
@@ -193,7 +194,7 @@ class Cake(object):
                 if src != dest:
                     if self.args.verbose > 0:
                         print(os.path.join(outputdir, filename))
-                    compiletools.wrappedos.copy(src, outputdir)
+                    shutil.copy2(src, outputdir)
 
     def _callmakefile(self):
         makefile_creator = compiletools.makefile.MakefileCreator(self.args, self.hunter)
