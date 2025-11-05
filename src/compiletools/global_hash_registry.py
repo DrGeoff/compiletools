@@ -59,11 +59,11 @@ def load_hashes(verbose: int = 0) -> None:
             # Single call to get all file hashes
             all_hashes = get_complete_working_directory_hashes()
 
-            # Convert Path keys to string keys for easier lookup
-            _HASHES = {str(path): sha for path, sha in all_hashes.items()}
+            # Convert Path keys to normalized string keys for consistent lookup across Python versions
+            _HASHES = {wrappedos.realpath(str(path)): sha for path, sha in all_hashes.items()}
 
-            # Build reverse lookup cache: hash -> filepath
-            _REVERSE_HASHES = {sha: str(path) for path, sha in all_hashes.items()}
+            # Build reverse lookup cache: hash -> filepath (also normalized)
+            _REVERSE_HASHES = {sha: wrappedos.realpath(str(path)) for path, sha in all_hashes.items()}
 
             if verbose >= 3:
                 print(f"GlobalHashRegistry: Loaded {len(_HASHES)} file hashes from git")
