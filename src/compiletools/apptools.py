@@ -813,35 +813,34 @@ def _set_project_version(args):
     Otherwise execute projectversioncmd to determine projectversion.
     In the completely unspecified case, use the zero version.
     """
-    if hasattr(args, "projectversion") and args.projectversion:
-        return
-
-    try:
-        args.projectversion = (
-            subprocess.check_output(args.projectversioncmd.split(), universal_newlines=True).strip("\n").split()[0]
-        )
-        if args.verbose >= 6:
-            print("Used projectversioncmd to set projectversion")
-    except (subprocess.CalledProcessError, OSError) as err:
-        sys.stderr.write(
-            " ".join(
-                [
-                    "Could not use projectversioncmd =",
-                    args.projectversioncmd,
-                    "to set projectversion.\n",
-                ]
+    # Only try to determine version if not already set
+    if not (hasattr(args, "projectversion") and args.projectversion):
+        try:
+            args.projectversion = (
+                subprocess.check_output(args.projectversioncmd.split(), universal_newlines=True).strip("\n").split()[0]
             )
-        )
-        if args.verbose <= 2:
-            sys.stderr.write(str(err) + "\n")
-            sys.exit(1)
-        else:
-            raise
-    except AttributeError:
-        if args.verbose >= 6:
-            print(
-                "Could not use projectversioncmd to set projectversion. Will use either existing projectversion or the zero version."
+            if args.verbose >= 6:
+                print("Used projectversioncmd to set projectversion")
+        except (subprocess.CalledProcessError, OSError) as err:
+            sys.stderr.write(
+                " ".join(
+                    [
+                        "Could not use projectversioncmd =",
+                        args.projectversioncmd,
+                        "to set projectversion.\n",
+                    ]
+                )
             )
+            if args.verbose <= 2:
+                sys.stderr.write(str(err) + "\n")
+                sys.exit(1)
+            else:
+                raise
+        except AttributeError:
+            if args.verbose >= 6:
+                print(
+                    "Could not use projectversioncmd to set projectversion. Will use either existing projectversion or the zero version."
+                )
 
     try:
         if not args.projectversion:
@@ -849,12 +848,15 @@ def _set_project_version(args):
             if args.verbose >= 5:
                 print("Set projectversion to the zero version")
 
+        # Escape for C string literal (backslashes and double quotes)
+        version_escaped = args.projectversion.replace('\\', '\\\\').replace('"', '\\"')
+
         if "-DCAKE_PROJECT_VERSION" not in args.CPPFLAGS:
-            args.CPPFLAGS += ' -DCAKE_PROJECT_VERSION=' + shlex.quote(args.projectversion)
+            args.CPPFLAGS += ' -DCAKE_PROJECT_VERSION=' + shlex.quote(f'"{version_escaped}"')
         if "-DCAKE_PROJECT_VERSION" not in args.CFLAGS:
-            args.CFLAGS += ' -DCAKE_PROJECT_VERSION=' + shlex.quote(args.projectversion)
+            args.CFLAGS += ' -DCAKE_PROJECT_VERSION=' + shlex.quote(f'"{version_escaped}"')
         if "-DCAKE_PROJECT_VERSION" not in args.CXXFLAGS:
-            args.CXXFLAGS += ' -DCAKE_PROJECT_VERSION=' + shlex.quote(args.projectversion)
+            args.CXXFLAGS += ' -DCAKE_PROJECT_VERSION=' + shlex.quote(f'"{version_escaped}"')
 
         if args.verbose >= 6:
             print("*FLAG variables have been modified with the project version:")
