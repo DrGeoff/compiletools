@@ -18,6 +18,16 @@ class TestLibrary:
                 mylibdir = os.path.join(tmpdir, "mylib")
                 shutil.copytree(os.path.join(uth.samplesdir(), "library/mylib"), mylibdir)
 
+                # Add unique comments to copied files to avoid hash collision with originals
+                for root, dirs, files in os.walk(mylibdir):
+                    for filename in files:
+                        if filename.endswith(('.cpp', '.hpp')):
+                            filepath = os.path.join(root, filename)
+                            with open(filepath, 'r') as f:
+                                content = f.read()
+                            with open(filepath, 'w') as f:
+                                f.write(f'// Test copy: {filename}\n{content}')
+
                 # Build the library
                 temp_config_name = uth.create_temp_config(tmpdir)
                 uth.create_temp_ct_conf(tmpdir, defaultvariant=temp_config_name[:-5])

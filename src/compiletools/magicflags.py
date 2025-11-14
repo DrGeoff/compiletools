@@ -309,14 +309,17 @@ class MagicFlagsBase:
         self._headerdeps.process(filename, frozenset())
 
         # Both DirectMagicFlags and CppMagicFlags now use structured data approach
+        from compiletools.global_hash_registry import get_filepath_by_hash
+
         flagsforfilename = defaultdict(list)
-        
+
         file_analysis_data = self.get_structured_data(filename)
-        
+
         for file_data in file_analysis_data:
-            filepath = file_data['filepath']
+            content_hash = file_data['content_hash']
+            filepath = get_filepath_by_hash(content_hash)
             active_magic_flags = file_data['active_magic_flags']
-            
+
             for magic_flag in active_magic_flags:
                 magic = magic_flag['key']
                 flag = magic_flag['value']
@@ -715,8 +718,10 @@ class DirectMagicFlags(MagicFlagsBase):
             stored_active_flags: Dict mapping filepath -> list of active magic flags
 
         Returns:
-            list: Structured result with filepath and active_magic_flags for each file
+            list: Structured result with content_hash and active_magic_flags for each file
         """
+        from compiletools.global_hash_registry import get_file_hash
+
         if self._args.verbose >= 7:
             print(f"DirectMagicFlags: Building result from {len(all_files)} stored files")
 
@@ -727,8 +732,9 @@ class DirectMagicFlags(MagicFlagsBase):
             if self._args.verbose >= 9:
                 print(f"DirectMagicFlags: Using stored magic flags for {filepath}: {len(active_magic_flags)} active")
 
+            content_hash = get_file_hash(filepath)
             result.append({
-                'filepath': filepath,
+                'content_hash': content_hash,
                 'active_magic_flags': active_magic_flags
             })
 
@@ -793,7 +799,7 @@ class CppMagicFlags(MagicFlagsBase):
         """Get magic flags directly from preprocessed text using StringZilla SIMD operations.
 
         Returns:
-            List of dicts with structure: [{'filepath': str, 'active_magic_flags': List[Dict]}]
+            List of dicts with structure: [{'content_hash': str, 'active_magic_flags': List[Dict]}]
             See MagicFlagsBase docstring for magic flag dict structure.
         """
         
@@ -857,9 +863,12 @@ class CppMagicFlags(MagicFlagsBase):
         
         if self._args.verbose >= 9:
             print(f"CppMagicFlags: Found {len(magic_flags)} magic flags in preprocessed output")
-        
+
+        from compiletools.global_hash_registry import get_file_hash
+        content_hash = get_file_hash(filename)
+
         return [{
-            'filepath': filename,
+            'content_hash': content_hash,
             'active_magic_flags': magic_flags
         }]
 
