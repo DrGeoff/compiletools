@@ -256,13 +256,7 @@ class SimplePreprocessor:
         """
         # Lookup filepath from content hash for logging
         from compiletools.global_hash_registry import get_filepath_by_hash
-        filepath = '<unknown>'
-        if file_result.content_hash:
-            try:
-                filepath = get_filepath_by_hash(file_result.content_hash)
-            except FileNotFoundError:
-                # File deleted or moved - use fallback for logging
-                filepath = '<unknown>'
+        filepath = get_filepath_by_hash(file_result.content_hash)
 
         # Track statistics
         _stats['call_count'] += 1

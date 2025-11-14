@@ -4,6 +4,7 @@ import sys
 import os
 from textwrap import dedent
 import pytest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -23,6 +24,15 @@ class TestPreprocessingCache:
     def setup_method(self):
         """Clear cache before each test."""
         clear_cache()
+
+        # Mock get_filepath_by_hash since tests don't have real files in registry
+        self.patcher = patch('compiletools.global_hash_registry.get_filepath_by_hash')
+        self.mock_get_filepath = self.patcher.start()
+        self.mock_get_filepath.return_value = '<test-file>'
+
+    def teardown_method(self):
+        """Clean up after each test method."""
+        self.patcher.stop()
 
     def _create_simple_file_result(self, text: str, content_hash: str = "test_hash_001") -> FileAnalysisResult:
         """Helper to create FileAnalysisResult for testing."""
@@ -375,6 +385,15 @@ class TestCacheManagement:
     def setup_method(self):
         """Clear cache before each test."""
         clear_cache()
+
+        # Mock get_filepath_by_hash since tests don't have real files in registry
+        self.patcher = patch('compiletools.global_hash_registry.get_filepath_by_hash')
+        self.mock_get_filepath = self.patcher.start()
+        self.mock_get_filepath.return_value = '<test-file>'
+
+    def teardown_method(self):
+        """Clean up after each test method."""
+        self.patcher.stop()
 
     @pytest.mark.skipif(
         hasattr(sys, 'pypy_version_info'),

@@ -31,8 +31,8 @@ class TestGlobalHashRegistry:
         with pytest.raises(FileNotFoundError):
             analyze_file(fake_hash)
 
-    def test_simple_preprocessor_handles_missing_gracefully(self):
-        """Verify simple_preprocessor handles missing file gracefully for logging."""
+    def test_simple_preprocessor_raises_on_missing(self):
+        """Verify simple_preprocessor fails fast when file missing from registry."""
         import stringzilla as sz
         from compiletools.simple_preprocessor import SimplePreprocessor
         from compiletools.file_analyzer import FileAnalysisResult
@@ -58,8 +58,6 @@ class TestGlobalHashRegistry:
             content_hash=fake_hash
         )
 
-        # Should handle missing file gracefully (uses '<unknown>' for logging)
-        # and not raise exception since filepath is only used for logging/stats
-        result = preprocessor.process_structured(file_result)
-        # Should return all lines as active (no directives to process)
-        assert result == list(range(10))
+        # Should raise FileNotFoundError when looking up filepath from fake hash
+        with pytest.raises(FileNotFoundError, match="not found in working directory"):
+            preprocessor.process_structured(file_result)
