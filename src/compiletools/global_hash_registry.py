@@ -6,7 +6,7 @@ This eliminates the need for individual hashlib calls and leverages the
 git-sha-report functionality efficiently.
 """
 
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 import threading
 import os
 import hashlib
@@ -15,7 +15,7 @@ from compiletools import wrappedos
 
 # Module-level cache: None = not loaded, Dict = loaded hashes
 _HASHES: Optional[Dict[str, str]] = None
-_REVERSE_HASHES: Optional[Dict[str, str]] = None  # hash -> filepath cache
+_REVERSE_HASHES: Optional[Dict[str, List[str]]] = None  # hash -> list of filepaths cache
 _lock = threading.Lock()
 
 # Hash operation counters
@@ -62,8 +62,13 @@ def load_hashes(verbose: int = 0) -> None:
             # Convert Path keys to string keys for easier lookup
             _HASHES = {str(path): sha for path, sha in all_hashes.items()}
 
-            # Build reverse lookup cache: hash -> filepath
-            _REVERSE_HASHES = {sha: str(path) for path, sha in all_hashes.items()}
+            # Build reverse lookup cache: hash -> list of filepaths
+            _REVERSE_HASHES = {}
+            for path, sha in all_hashes.items():
+                filepath = str(path)
+                if sha not in _REVERSE_HASHES:
+                    _REVERSE_HASHES[sha] = []
+                _REVERSE_HASHES[sha].append(filepath)
 
             if verbose >= 3:
                 print(f"GlobalHashRegistry: Loaded {len(_HASHES)} file hashes from git")
@@ -130,7 +135,11 @@ def get_file_hash(filepath: str) -> str:
         if result:
             # Cache the computed hash for future lookups (both forward and reverse)
             _HASHES[abs_path] = result
-            _REVERSE_HASHES[result] = abs_path
+            # _REVERSE_HASHES is guaranteed to be initialized by load_hashes()
+            assert _REVERSE_HASHES is not None
+            if result not in _REVERSE_HASHES:
+                _REVERSE_HASHES[result] = []
+            _REVERSE_HASHES[result].append(abs_path)
         else:
             raise FileNotFoundError(f"global_hash_registry encountered Failed to compute hash for file: {filepath}")
 
@@ -172,17 +181,24 @@ def get_filepath_by_hash(file_hash: str) -> str:
 
     Raises:
         FileNotFoundError: If hash not found in registry (file deleted/moved outside git)
+        RuntimeError: If hash maps to multiple files (duplicate content detected)
     """
     if _REVERSE_HASHES is None:
         load_hashes()
 
     # load_hashes() always sets _REVERSE_HASHES to a dict (empty or populated)
     assert _REVERSE_HASHES is not None
-    filepath = _REVERSE_HASHES.get(file_hash)
-    if filepath is None:
+    filepaths = _REVERSE_HASHES.get(file_hash)
+    if filepaths is None:
         raise FileNotFoundError(
             f"File with hash {file_hash} not found in working directory. "
             f"File may have been deleted or moved outside git working tree."
         )
 
-    return filepath
+    if len(filepaths) > 1:
+        raise RuntimeError(
+            f"Hash {file_hash} maps to {len(filepaths)} files with identical content: "
+            f"{', '.join(filepaths)}. Cannot determine which file to use."
+        )
+
+    return filepaths[0]
