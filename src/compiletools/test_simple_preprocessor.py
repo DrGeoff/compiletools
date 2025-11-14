@@ -2,6 +2,7 @@ import sys
 import os
 import re
 from textwrap import dedent
+from unittest.mock import patch
 
 # Add the parent directory to sys.path so we can import ct modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -21,6 +22,11 @@ class TestSimplePreprocessor:
         from compiletools.preprocessing_cache import clear_cache
         clear_cache()
 
+        # Mock get_filepath_by_hash since tests don't have real files in registry
+        self.patcher = patch('compiletools.global_hash_registry.get_filepath_by_hash')
+        self.mock_get_filepath = self.patcher.start()
+        self.mock_get_filepath.return_value = '<test-file>'
+
         self.macros = {
             sz.Str('TEST_MACRO'): sz.Str('1'),
             sz.Str('FEATURE_A'): sz.Str('1'),
@@ -28,6 +34,10 @@ class TestSimplePreprocessor:
             sz.Str('COUNT'): sz.Str('5')
         }
         self.processor = SimplePreprocessor(self.macros, verbose=0)
+
+    def teardown_method(self):
+        """Clean up after each test method."""
+        self.patcher.stop()
     
     def _create_file_analysis_result(self, text):
         """Helper to create FileAnalysisResult for testing"""
