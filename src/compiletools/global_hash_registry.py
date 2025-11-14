@@ -161,17 +161,28 @@ def clear_global_registry() -> None:
         _REVERSE_HASHES = None
 
 
-def get_filepath_by_hash(file_hash: str) -> Optional[str]:
+def get_filepath_by_hash(file_hash: str) -> str:
     """Reverse lookup: get filepath from hash.
 
     Args:
         file_hash: Git blob hash
 
     Returns:
-        Absolute realpath if found, None otherwise (already normalized in registry)
+        Absolute realpath (already normalized in registry)
+
+    Raises:
+        FileNotFoundError: If hash not found in registry (file deleted/moved outside git)
     """
     if _REVERSE_HASHES is None:
         load_hashes()
 
-    # Paths in registry are already realpath from git_sha_report
-    return _REVERSE_HASHES.get(file_hash)
+    # load_hashes() always sets _REVERSE_HASHES to a dict (empty or populated)
+    assert _REVERSE_HASHES is not None
+    filepath = _REVERSE_HASHES.get(file_hash)
+    if filepath is None:
+        raise FileNotFoundError(
+            f"File with hash {file_hash} not found in working directory. "
+            f"File may have been deleted or moved outside git working tree."
+        )
+
+    return filepath
