@@ -15,6 +15,7 @@ import compiletools.configutils
 import compiletools.apptools
 import compiletools.compiler_macros
 import compiletools.dirnamer
+import compiletools.namer
 from compiletools.preprocessing_cache import get_or_compute_preprocessing, MacroState
 from compiletools.apptools import cached_pkg_config_sz
 from compiletools.stringzilla_utils import strip_sz
@@ -387,6 +388,8 @@ class MagicFlagsBase:
 class DirectMagicFlags(MagicFlagsBase):
     def __init__(self, args, headerdeps):
         MagicFlagsBase.__init__(self, args, headerdeps)
+        # Create namer instance for dependency hash computation
+        self._namer = compiletools.namer.Namer(args)
         # Compute initial macro state once (compiler built-ins + command-line macros)
         # This is computed once and reused via copy() to avoid redundant initialization
         self._initial_macro_state = self._initialize_macro_state()
@@ -396,7 +399,7 @@ class DirectMagicFlags(MagicFlagsBase):
         self._explicit_macro_files = set()
         # Store final converged MacroState objects by filename
         self._final_macro_states = {}
-        # Cache structured data results by (file_hash, input_macro_state_key) to avoid redundant convergence
+        # Cache structured data results by (file_hash, input_macro_state_key, deps_hash) to avoid redundant convergence
         self._structured_data_cache = {}
 
     def _initialize_macro_state(self) -> MacroState:
@@ -685,23 +688,38 @@ class DirectMagicFlags(MagicFlagsBase):
         # Reset state
         self._reset_state()
 
-        # Check cache
+        # Get file hash and initial macro state
         file_hash = get_file_hash(filename)
         input_macro_key = self.defined_macros.get_cache_key()
-        cache_key = (file_hash, input_macro_key)
 
-        cached_result = self._check_cache(filename, cache_key)
-        if cached_result is not None:
-            return cached_result
-
-        # Get headers and setup
-        # Pass empty frozenset - we're starting fresh analysis for this file
+        # Get ALL dependency PATHS before cache check (no macro extraction yet)
         headers = self._headerdeps.process(filename, frozenset())
         if self._args.verbose >= 9:
             print(f"DirectMagicFlags: headers from headerdeps: {headers}")
 
         all_source_files = [filename] + headers
-        self._setup_explicit_macro_files(all_source_files)
+
+        # Collect READMACROS file paths (doesn't extract macros yet - just scans for paths)
+        self._explicit_macro_files = self._collect_explicit_macro_files(all_source_files)
+
+        # Compute complete dependency hash (headers + READMACROS)
+        all_deps = sorted(set(headers) | self._explicit_macro_files)
+        deps_hash = self._namer.compute_dep_hash(all_deps)
+
+        if self._args.verbose >= 5:
+            print(f"DirectMagicFlags: deps_hash={deps_hash} from {len(all_deps)} dependency files")
+
+        # Build complete 3-part cache key
+        cache_key = (file_hash, input_macro_key, deps_hash)
+
+        # NOW check cache with complete key
+        cached_result = self._check_cache(filename, cache_key)
+        if cached_result is not None:
+            return cached_result
+
+        # Cache miss - extract macros from READMACROS files
+        for macro_file in self._explicit_macro_files:
+            self._extract_macros_from_file(macro_file)
 
         # Converge macro state
         all_files = self._build_all_files_list(filename, headers)
