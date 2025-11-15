@@ -560,3 +560,126 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
         print("✓ LDFLAGS and LINKFLAGS deduplication test passed!")
 
+    def test_cache_invalidates_on_header_magic_change(self):
+        """Verify cache invalidates when header magic flags change."""
+        import stringzilla as sz
+        import compiletools.magicflags
+        from compiletools.global_hash_registry import clear_global_registry, get_file_hash
+        from compiletools.file_analyzer import analyze_file
+
+        # Clear all caches for test isolation
+        compiletools.magicflags.MagicFlagsBase.clear_cache()
+
+        # Create source and header
+        files = uth.write_sources({
+            "test.cpp": '#include "test.h"\nint main() {}',
+            "test.h": "//#LDFLAGS=-lversion1\n"
+        })
+        source_file = str(files["test.cpp"])
+
+        # Create properly initialized parser using test helper
+        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir)
+
+        # First pass
+        result1 = mf.parse(source_file)
+        assert sz.Str('-lversion1') in result1.get(sz.Str("LDFLAGS"), [])
+
+        # Modify header
+        uth.write_sources({"test.h": "//#LDFLAGS=-lversion2\n"})
+
+        # CRITICAL: Clear all caches after file modification
+        # Without this, cached data returns stale results
+        clear_global_registry()
+        get_file_hash.cache_clear()
+        analyze_file.cache_clear()
+        # Clear headerdeps caches
+        import compiletools.headerdeps
+        compiletools.headerdeps.HeaderDepsBase.clear_cache()
+        # Clear DirectMagicFlags LRU cache
+        compiletools.magicflags.DirectMagicFlags._compute_file_processing_result.cache_clear()
+        # Clear instance caches (these persist across static clear_cache() calls)
+        mf._headerdeps.clear_instance_cache()
+        mf._structured_data_cache.clear()
+
+        # Second pass - should see new flags (cache invalidated)
+        result2 = mf.parse(source_file)
+        assert sz.Str('-lversion2') in result2.get(sz.Str("LDFLAGS"), [])
+        assert sz.Str('-lversion1') not in result2.get(sz.Str("LDFLAGS"), [])
+
+    def test_cache_invalidates_on_readmacros_change(self):
+        """Verify cache invalidates when READMACROS file changes."""
+        import stringzilla as sz
+        import compiletools.magicflags
+        from compiletools.global_hash_registry import clear_global_registry, get_file_hash
+        from compiletools.file_analyzer import analyze_file
+
+        # Clear all caches for test isolation
+        compiletools.magicflags.MagicFlagsBase.clear_cache()
+
+        # Create source and READMACROS file
+        files = uth.write_sources({
+            "test.cpp": '//#READMACROS=macros.h\nint main() {}',
+            "macros.h": "#define FOO 1\n//#LDFLAGS=-lfoo1\n"
+        })
+        source_file = str(files["test.cpp"])
+
+        # Create properly initialized parser
+        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir)
+
+        # First pass
+        result1 = mf.parse(source_file)
+        assert sz.Str('-lfoo1') in result1.get(sz.Str("LDFLAGS"), [])
+
+        # Modify macros file
+        uth.write_sources({"macros.h": "#define FOO 2\n//#LDFLAGS=-lfoo2\n"})
+
+        # CRITICAL: Clear all caches after file modification
+        clear_global_registry()
+        get_file_hash.cache_clear()
+        analyze_file.cache_clear()
+        # Clear headerdeps caches
+        import compiletools.headerdeps
+        compiletools.headerdeps.HeaderDepsBase.clear_cache()
+        # Clear DirectMagicFlags LRU cache
+        compiletools.magicflags.DirectMagicFlags._compute_file_processing_result.cache_clear()
+        # Clear instance caches
+        mf._headerdeps.clear_instance_cache()
+        mf._structured_data_cache.clear()
+
+        # Second pass - should reprocess (cache invalidated)
+        result2 = mf.parse(source_file)
+
+        # Results should show new LDFLAGS (cache miss occurred)
+        assert sz.Str('-lfoo2') in result2.get(sz.Str("LDFLAGS"), [])
+        assert sz.Str('-lfoo1') not in result2.get(sz.Str("LDFLAGS"), [])
+
+    def test_cache_hit_when_deps_unchanged(self):
+        """Verify cache hits when source and dependencies unchanged."""
+        import stringzilla as sz
+        import compiletools.magicflags
+
+        # Clear all caches for test isolation
+        compiletools.magicflags.MagicFlagsBase.clear_cache()
+
+        # Create source with header and READMACROS dependencies
+        files = uth.write_sources({
+            "test.cpp": '#include "test.h"\n//#READMACROS=macros.h\nint main() {}',
+            "test.h": "//#LDFLAGS=-ltest\n",
+            "macros.h": "#define VERSION 1\n"
+        })
+        source_file = str(files["test.cpp"])
+
+        # Create properly initialized parser
+        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir)
+
+        # First parse - cache miss
+        result1 = mf.parse(source_file)
+        assert sz.Str('-ltest') in result1.get(sz.Str("LDFLAGS"), [])
+
+        # Second parse - should be cache hit (nothing changed)
+        result2 = mf.parse(source_file)
+        assert result1 == result2
+
+        # Verify results are identical
+        assert sz.Str('-ltest') in result2.get(sz.Str("LDFLAGS"), [])
+
