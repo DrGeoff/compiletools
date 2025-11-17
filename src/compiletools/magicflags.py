@@ -399,7 +399,9 @@ class DirectMagicFlags(MagicFlagsBase):
         self._explicit_macro_files = set()
         # Store final converged MacroState objects by filename
         self._final_macro_states = {}
-        # Cache structured data results by (file_hash, input_macro_state_key, deps_hash) to avoid redundant convergence
+        # Cache structured data results by (file_hash, input_macro_key, deps_hash) to avoid redundant convergence
+        # deps_hash: XOR of dependency file content hashes (headers + READMACROS)
+        # Cached result stores content_hash (not filepath) - current paths resolved via global hash registry
         self._structured_data_cache = {}
 
     def _initialize_macro_state(self) -> MacroState:
@@ -676,8 +678,19 @@ class DirectMagicFlags(MagicFlagsBase):
     def get_structured_data(self, filename: str) -> List[Dict[str, Union[str, sz.Str, List[Dict[str, Union[int, sz.Str]]]]]]:
         """Override to handle DirectMagicFlags complex macro processing.
 
+        Cache key: (file_hash, input_macro_key, deps_hash) where:
+        - file_hash: SHA1 of source file content (40-char hex)
+        - input_macro_key: Initial macro state frozenset
+        - deps_hash: 14-char hex hash of dependencies via namer.compute_dep_hash()
+
+        Cached result structure:
+            List of dicts: [{'content_hash': str, 'active_magic_flags': List[Dict]}]
+
+            Note: Result stores content_hash (not filepath). Use global_hash_registry.get_filepath_by_hash()
+            to resolve current file paths when processing magic flags.
+
         Returns:
-            List of dicts with structure: [{'filepath': str, 'active_magic_flags': List[Dict]}]
+            List of dicts with structure per file (see above)
             See MagicFlagsBase docstring for magic flag dict structure.
         """
         from compiletools.global_hash_registry import get_file_hash
@@ -693,6 +706,7 @@ class DirectMagicFlags(MagicFlagsBase):
         input_macro_key = self.defined_macros.get_cache_key()
 
         # Get ALL dependency PATHS before cache check (no macro extraction yet)
+        # This is fast because both operations use sub-caches
         headers = self._headerdeps.process(filename, frozenset())
         if self._args.verbose >= 9:
             print(f"DirectMagicFlags: headers from headerdeps: {headers}")
@@ -700,9 +714,12 @@ class DirectMagicFlags(MagicFlagsBase):
         all_source_files = [filename] + headers
 
         # Collect READMACROS file paths (doesn't extract macros yet - just scans for paths)
+        # Macro extraction is deferred until after cache check (only on miss)
         self._explicit_macro_files = self._collect_explicit_macro_files(all_source_files)
 
         # Compute complete dependency hash (headers + READMACROS)
+        # Uses namer.compute_dep_hash() for consistency with object file naming
+        # Returns 14-char hex hash via XOR of dependency content hashes
         all_deps = sorted(set(headers) | self._explicit_macro_files)
         deps_hash = self._namer.compute_dep_hash(all_deps)
 
@@ -710,6 +727,7 @@ class DirectMagicFlags(MagicFlagsBase):
             print(f"DirectMagicFlags: deps_hash={deps_hash} from {len(all_deps)} dependency files")
 
         # Build complete 3-part cache key
+        # Includes deps_hash to invalidate when dependencies change
         cache_key = (file_hash, input_macro_key, deps_hash)
 
         # NOW check cache with complete key
@@ -718,6 +736,7 @@ class DirectMagicFlags(MagicFlagsBase):
             return cached_result
 
         # Cache miss - extract macros from READMACROS files
+        # Deferred until now to avoid wasted work on cache hits
         for macro_file in self._explicit_macro_files:
             self._extract_macros_from_file(macro_file)
 
@@ -737,6 +756,11 @@ class DirectMagicFlags(MagicFlagsBase):
 
         Returns:
             list: Structured result with content_hash and active_magic_flags for each file
+                  [{'content_hash': str, 'active_magic_flags': List[Dict]}]
+
+        Note:
+            Stores content_hash (not filepath) to prevent path staleness. Current file paths
+            can be resolved via global_hash_registry.get_filepath_by_hash(content_hash).
         """
         from compiletools.global_hash_registry import get_file_hash
 
