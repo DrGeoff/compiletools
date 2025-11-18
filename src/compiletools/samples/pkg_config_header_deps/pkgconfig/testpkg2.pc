@@ -1,0 +1,5 @@
+Name: TestPackage2
+Description: Second test package
+Version: 2.0.0
+Cflags: -I/usr/local/include/testpkg2 -DTEST_PKG2_ENABLED
+Libs: -L/usr/local/lib -ltestpkg2

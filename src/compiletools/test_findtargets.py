@@ -43,6 +43,9 @@ class TestFindTargetsModule:
             "simple/helloworld_cpp.cpp",
             "calculator/main.cpp",
             "duplicate_flags/main.cpp",
+            "empty_macro_bug/libs/main.cpp",
+            "parse_order_macro_bug/libs/entry_point_1.cpp",
+            "parse_order_macro_bug/libs/entry_point_2.cpp",
         }
         relativeexpectedtests = {
             "cross_platform/test_source.cpp",
@@ -55,6 +58,7 @@ class TestFindTargetsModule:
             "serialise_tests/test_flock_2.cpp",
             "version_dependent_api/test_main.cpp",
             "version_dependent_api/test_main_new.cpp",
+            "pkg_config_header_deps/src/test.cpp",
         }
 
         expectedexes = set()

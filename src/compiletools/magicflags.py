@@ -698,54 +698,99 @@ class DirectMagicFlags(MagicFlagsBase):
         if self._args.verbose >= 4:
             print("DirectMagicFlags: Setting up structured data with macro processing")
 
-        # Reset state
+        # Reset state to initial (core) macros
         self._reset_state()
 
         # Get file hash and initial macro state
         file_hash = get_file_hash(filename)
         input_macro_key = self.defined_macros.get_cache_key()
 
-        # Get ALL dependency PATHS before cache check (no macro extraction yet)
-        # This is fast because both operations use sub-caches
-        headers = self._headerdeps.process(filename, frozenset())
+        # PASS 1: Initial discovery with core macros (compiler built-ins + command-line)
+        headers = self._headerdeps.process(filename, input_macro_key)
+
         if self._args.verbose >= 9:
-            print(f"DirectMagicFlags: headers from headerdeps: {headers}")
+            print(f"DirectMagicFlags: PASS 1 headers from headerdeps: {headers}")
 
         all_source_files = [filename] + headers
 
-        # Collect READMACROS file paths (doesn't extract macros yet - just scans for paths)
-        # Macro extraction is deferred until after cache check (only on miss)
-        self._explicit_macro_files = self._collect_explicit_macro_files(all_source_files)
+        # Collect READMACROS file paths from Pass 1 headers
+        explicit_macro_files = self._collect_explicit_macro_files(all_source_files)
 
-        # Compute complete dependency hash (headers + READMACROS)
-        # Uses namer.compute_dep_hash() for consistency with object file naming
-        # Returns 14-char hex hash via XOR of dependency content hashes
-        all_deps = sorted(set(headers) | self._explicit_macro_files)
+        # CRITICAL: Store to instance var - _build_all_files_list() reads from self._explicit_macro_files
+        self._explicit_macro_files = explicit_macro_files
+
+        # Check cache with initial deps (optimistic - may be incomplete if Pass 2 needed)
+        all_deps = sorted(set(headers) | explicit_macro_files)
         deps_hash = self._namer.compute_dep_hash(all_deps)
-
-        if self._args.verbose >= 5:
-            print(f"DirectMagicFlags: deps_hash={deps_hash} from {len(all_deps)} dependency files")
-
-        # Build complete 3-part cache key
-        # Includes deps_hash to invalidate when dependencies change
         cache_key = (file_hash, input_macro_key, deps_hash)
 
-        # NOW check cache with complete key
+        if self._args.verbose >= 5:
+            print(f"DirectMagicFlags: PASS 1 deps_hash={deps_hash} from {len(all_deps)} dependency files")
+
         cached_result = self._check_cache(filename, cache_key)
         if cached_result is not None:
             return cached_result
 
         # Cache miss - extract macros from READMACROS files
-        # Deferred until now to avoid wasted work on cache hits
-        for macro_file in self._explicit_macro_files:
+        for macro_file in explicit_macro_files:
             self._extract_macros_from_file(macro_file)
 
-        # Converge macro state
+        # Converge macro state with Pass 1 file set
         all_files = self._build_all_files_list(filename, headers)
         self._converge_macro_state(all_files)
 
-        # Finalize and return
-        return self._finalize_and_cache_result(filename, headers, cache_key)
+        # PASS 2: Re-discover if macros changed during convergence
+        pass1_macro_key = self.defined_macros.get_cache_key()
+        if pass1_macro_key != input_macro_key:
+            if self._args.verbose >= 5:
+                print(f"DirectMagicFlags: Macros changed during convergence, re-discovering headers (Pass 2)")
+                print(f"DirectMagicFlags: input_macro_key had {len(input_macro_key)} macros")
+                print(f"DirectMagicFlags: pass1_macro_key has {len(pass1_macro_key)} macros")
+                if len(pass1_macro_key) <= 10:
+                    for k, v in sorted(pass1_macro_key)[:10]:
+                        print(f"DirectMagicFlags:   {k} = {v}")
+
+            # CRITICAL: Clear ALL caches to ensure Pass 2 isn't using Pass 1 cached results
+            # Even though caches use macro_key, we need to ensure fresh evaluation
+            if self._args.verbose >= 7:
+                print(f"DirectMagicFlags: Clearing all caches before Pass 2")
+            import compiletools.headerdeps
+            import compiletools.preprocessing_cache
+            compiletools.headerdeps._include_list_cache.clear()
+            compiletools.preprocessing_cache._variant_cache.clear()
+            compiletools.preprocessing_cache._invariant_cache.clear()
+
+            # Re-discover headers with converged macros (includes file-defined macros)
+            headers = self._headerdeps.process(filename, pass1_macro_key)
+
+            if self._args.verbose >= 9:
+                print(f"DirectMagicFlags: PASS 2 headers from headerdeps: {headers}")
+
+            all_source_files = [filename] + headers
+
+            # Re-collect READMACROS with expanded header set
+            explicit_macro_files = self._collect_explicit_macro_files(all_source_files)
+
+            # CRITICAL: Update instance var with expanded READMACROS set
+            self._explicit_macro_files = explicit_macro_files
+
+            # Re-extract macros from any new READMACROS files
+            for macro_file in explicit_macro_files:
+                self._extract_macros_from_file(macro_file)
+
+            # Re-converge with expanded file set
+            all_files = self._build_all_files_list(filename, headers)
+            self._converge_macro_state(all_files)
+
+        # Finalize with FINAL dependency list
+        final_all_deps = sorted(set(headers) | self._explicit_macro_files)
+        final_deps_hash = self._namer.compute_dep_hash(final_all_deps)
+        final_cache_key = (file_hash, input_macro_key, final_deps_hash)
+
+        if self._args.verbose >= 5:
+            print(f"DirectMagicFlags: Final deps_hash={final_deps_hash} from {len(final_all_deps)} dependency files")
+
+        return self._finalize_and_cache_result(filename, headers, final_cache_key)
 
     def _build_structured_result(self, all_files: List[str], stored_active_flags: dict) -> list:
         """Build final structured result from stored active magic flags (pure data transformation).
