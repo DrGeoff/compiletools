@@ -7,7 +7,7 @@
 //#LDFLAGS=-lm
 
 // Edge cases for magic flag pattern testing
-//#PKG-CONFIG=zlib
+//#PKG-CONFIG=nested
 // Invalid patterns that should NOT be detected:
 // #LIBS=not_magic (space before #)
 /* //#LIBS=commented_out */

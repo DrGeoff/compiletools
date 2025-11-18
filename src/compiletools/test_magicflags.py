@@ -62,29 +62,27 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert self._check_flags(result, "CFLAGS", ["-std=gnu99"], [])
 
     @uth.requires_functional_compiler
-    @uth.requires_pkg_config("zlib")
-    def test_lotsofmagic(self):
+    def test_lotsofmagic(self, pkgconfig_env):
         """Test parsing multiple magic flags from a complex file"""
         result = self._parse_with_magic("cpp", "lotsofmagic/lotsofmagic.cpp")
-        
+
         # Check that basic magic flags are present
         import stringzilla as sz
         assert sz.Str("F1") in result and str(result[sz.Str("F1")]) == str([sz.Str("1")])
         assert sz.Str("F2") in result and str(result[sz.Str("F2")]) == str([sz.Str("2")])
         assert sz.Str("F3") in result and str(result[sz.Str("F3")]) == str([sz.Str("3")])
         assert sz.Str("LDFLAGS") in result and "-lpcap" in str(result[sz.Str("LDFLAGS")])
-        assert sz.Str("PKG-CONFIG") in result and str(result[sz.Str("PKG-CONFIG")]) == str([sz.Str("zlib")])
+        assert sz.Str("PKG-CONFIG") in result and str(result[sz.Str("PKG-CONFIG")]) == str([sz.Str("nested")])
 
         # Check that PKG-CONFIG processing adds flags to LDFLAGS
         assert sz.Str("LDFLAGS") in result
         ldflags = result[sz.Str("LDFLAGS")]
         assert "-lm" in str(ldflags)  # From explicit //#LDFLAGS=-lm
-        
-        # Check that pkg-config flags were added (if pkg-config available)
-        zlib_libs = compiletools.apptools.cached_pkg_config("zlib", "--libs")
-        if zlib_libs:
-            # The entire pkg-config output should be in LDFLAGS as a single item
-            assert zlib_libs in ldflags, f"Expected '{zlib_libs}' from pkg-config to be in LDFLAGS"
+
+        # Check that fake pkg-config flags were added
+        # nested.pc has: -L/usr/local/lib -ltestpkg1
+        ldflags_str = " ".join(str(f) for f in ldflags)
+        assert "-ltestpkg1" in ldflags_str, f"Expected '-ltestpkg1' from nested.pc to be in LDFLAGS"
             
         # Check that PKG-CONFIG processing adds empty entries for flag types
         assert sz.Str("CPPFLAGS") in result
