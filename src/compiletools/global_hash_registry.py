@@ -163,11 +163,19 @@ def get_registry_stats() -> Dict[str, int]:
 
 
 def clear_global_registry() -> None:
-    """Clear the global registry (mainly for testing)."""
+    """Clear the global registry (mainly for testing).
+
+    Also clears the LRU cache on get_file_hash() to ensure consistency.
+    When the registry is cleared, cached hash values would be stale because
+    they wouldn't be in _REVERSE_HASHES for reverse lookups.
+    """
     global _HASHES, _REVERSE_HASHES
     with _lock:
         _HASHES = None
         _REVERSE_HASHES = None
+    # Clear the LRU cache on get_file_hash() to prevent stale hash lookups
+    # Without this, get_file_hash() returns cached hashes that aren't in _REVERSE_HASHES
+    get_file_hash.cache_clear()
 
 
 def get_filepath_by_hash(file_hash: str) -> str:

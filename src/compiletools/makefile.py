@@ -715,7 +715,7 @@ class MakefileCreator:
         self.objects.add(obj_name)
 
         recipe = ""
-        
+
         if self.args.verbose >= 1:
             recipe = " ".join(["@echo ...", filename, ";"])
 

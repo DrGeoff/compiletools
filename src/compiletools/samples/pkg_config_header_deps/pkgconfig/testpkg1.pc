@@ -1,0 +1,5 @@
+Name: TestPackage1
+Description: First test package
+Version: 1.0.0
+Cflags: -I/usr/local/include/testpkg1 -DTEST_PKG1_ENABLED
+Libs: -L/usr/local/lib -ltestpkg1

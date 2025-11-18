@@ -422,7 +422,11 @@ def get_or_compute_preprocessing(
         if k not in input_macros.core:
             new_variable_macros[k] = v
 
-    updated_macro_state = MacroState(input_macros.core, new_variable_macros)
+    # CRITICAL: Use with_updates to preserve existing variable macros during traversal
+    # Creates MacroState with input_macros.variable + new_variable_macros
+    # This ensures macros from previously processed files (e.g., base.hpp) are preserved
+    # when processing subsequent files (e.g., conditional.hpp)
+    updated_macro_state = input_macros.with_updates(new_variable_macros)
 
     # Create result
     result = ProcessingResult(

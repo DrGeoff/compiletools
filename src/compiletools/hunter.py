@@ -226,7 +226,9 @@ class Hunter(object):
         self.magicflags(source_filename)
         macro_state_key = self.macro_state_key(source_filename)
 
-        return self.headerdeps.process(source_filename, macro_state_key)
+        headers = self.headerdeps.process(source_filename, macro_state_key)
+
+        return headers
 
     def huntsource(self):
         """Discover all source files from command line arguments and their dependencies.
