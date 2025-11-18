@@ -34,6 +34,7 @@ class TestFindTargetsModule:
             "magic_processing_order/complex_test.cpp",
             "magicinclude/main.cpp",
             "magicpkgconfig/main.cpp",
+            "magicpkgconfig_fake/main.cpp",
             "magicsourceinheader/main.cpp",
             "movingheaders/main.cpp",
             "nestedconfig/nc.cpp",

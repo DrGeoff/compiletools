@@ -3,8 +3,7 @@
 //#CXXFLAGS=-std=c++17
 #include <cstring>
 #include <zlib.h>
-// The libcrypto is here to make sure multiple packages on one line are OK
-//#PKG-CONFIG=zlib libcrypt
+//#PKG-CONFIG=zlib
 
 int main(int argc, char* argv[])
 {

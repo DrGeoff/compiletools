@@ -49,10 +49,6 @@ class TestParseOrderMacroBug(BaseCompileToolsTestCase):
         self.libs_dir = self.test_dir / "libs"
         shutil.copytree(sample_src / "libs", self.libs_dir)
 
-        # Copy pkgconfig directory
-        self.pkgconfig_dir = self.test_dir / "pkgconfig"
-        shutil.copytree(sample_src / "pkgconfig", self.pkgconfig_dir)
-
         # Set up file references
         self.hash_map_hpp = self.libs_dir / "hash_map.hpp"
         self.conditional_include_hpp = self.libs_dir / "conditional_include.hpp"
@@ -64,13 +60,6 @@ class TestParseOrderMacroBug(BaseCompileToolsTestCase):
 
     def teardown_method(self):
         """Clean up test environment."""
-        # Restore original PKG_CONFIG_PATH
-        if hasattr(self, '_original_pkg_config_path'):
-            if self._original_pkg_config_path is None:
-                os.environ.pop('PKG_CONFIG_PATH', None)
-            else:
-                os.environ['PKG_CONFIG_PATH'] = self._original_pkg_config_path
-
         if hasattr(self, 'test_dir') and self.test_dir.exists():
             shutil.rmtree(self.test_dir)
         super().teardown_method()
@@ -93,7 +82,7 @@ class TestParseOrderMacroBug(BaseCompileToolsTestCase):
 
         return hunter, args
 
-    def test_parse_order_affects_macro_state(self):
+    def test_parse_order_affects_macro_state(self, pkgconfig_env):
         """Test that parse order doesn't affect macro state and dependencies.
 
         This test documents the EXPECTED behavior where the same file (common_file.cpp)
@@ -120,9 +109,7 @@ class TestParseOrderMacroBug(BaseCompileToolsTestCase):
         2. A regression test once the bug is fixed
         3. A framework for future parse-order bug investigations
         """
-        # Set up fake pkg-config path
-        self._original_pkg_config_path = os.environ.get('PKG_CONFIG_PATH')
-        os.environ['PKG_CONFIG_PATH'] = str(self.pkgconfig_dir)
+        # pkgconfig_env fixture already set PKG_CONFIG_PATH to samples/pkgs/
 
         # Test entry point 1: Process common_file directly (should find all headers)
         hunter1, args1 = self._create_hunter([str(self.entry_point_1_cpp)], parser_name="test_parser_1")

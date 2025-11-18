@@ -19,7 +19,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
 
 
     @uth.requires_functional_compiler
-    @uth.requires_pkg_config("zlib", "libcrypt")
+    @uth.requires_pkg_config("zlib")
     def test_magicpkgconfig(self):
         # This test is to ensure that the //#PKG-CONFIG magic flag 
         # correctly acquires extra cflags and libs
@@ -72,12 +72,11 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
             self._verify_one_exe_per_main(relativepaths, search_dir=tmpdir)
 
     @uth.requires_functional_compiler
-    @uth.requires_pkg_config("zlib", "libcrypt")
-    def test_magicpkgconfig_flags_discovery(self):
+    def test_magicpkgconfig_flags_discovery(self, pkgconfig_env):
         with uth.CompileToolsTestContext() as (tmpdir, config_path):
-            # Copy the magicpkgconfig test files to the temp directory
-            tmpmagicpkgconfig = os.path.join(tmpdir, "magicpkgconfig")
-            shutil.copytree(self._get_sample_path("magicpkgconfig"), tmpmagicpkgconfig)
+            # Copy the magicpkgconfig_fake test files to the temp directory
+            tmpmagicpkgconfig = os.path.join(tmpdir, "magicpkgconfig_fake")
+            shutil.copytree(self._get_sample_path("magicpkgconfig_fake"), tmpmagicpkgconfig)
             
             with uth.DirectoryContext(tmpmagicpkgconfig):
                 # Create a minimal args object for testing
@@ -100,9 +99,9 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                 headerdeps = compiletools.headerdeps.create(args)
                 magicparser = compiletools.magicflags.create(args, headerdeps)
                 
-                # Test the sample file that contains //#PKG-CONFIG=zlib libcrypt
+                # Test the sample file that contains //#PKG-CONFIG=conditional nested
                 sample_file = os.path.join(tmpmagicpkgconfig, "main.cpp")
-                
+
                 # Parse the magic flags
                 try:
                     parsed_flags = magicparser.parse(sample_file)
@@ -111,50 +110,41 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                         pytest.skip("No functional C++ compiler detected")
                     else:
                         raise
-                
+
                 # Verify PKG-CONFIG flag was found
                 assert sz.Str("PKG-CONFIG") in parsed_flags
                 pkgconfig_flags = [str(x) for x in parsed_flags[sz.Str("PKG-CONFIG")]]
                 assert len(pkgconfig_flags) == 2
-                assert "zlib" in pkgconfig_flags
-                assert "libcrypt" in pkgconfig_flags
-                
-                # Verify CXXFLAGS were extracted (should contain zlib and libcrypt cflags)
+                assert "conditional" in pkgconfig_flags
+                assert "nested" in pkgconfig_flags
+
+                # Verify CXXFLAGS were extracted (should contain conditional and nested cflags)
                 assert sz.Str("CXXFLAGS") in parsed_flags
                 cxxflags = " ".join(str(x) for x in parsed_flags[sz.Str("CXXFLAGS")])
-                
-                # Check that pkg-config results are present (basic validation)
-                zlib_cflags = compiletools.apptools.cached_pkg_config("zlib", "--cflags").replace("-I", "-isystem ")
-                libcrypt_cflags = compiletools.apptools.cached_pkg_config("libcrypt", "--cflags").replace("-I", "-isystem ")
-                
-                # Verify the parsed flags contain the expected pkg-config results
-                if zlib_cflags:
-                    assert zlib_cflags in cxxflags
-                if libcrypt_cflags:
-                    assert libcrypt_cflags in cxxflags
-                
-                # Verify LDFLAGS were extracted 
+
+                # Check that fake pkg-config results are present
+                # conditional.pc has: -I/usr/local/include/testpkg -DTEST_PKG_ENABLED
+                # nested.pc has: -I/usr/local/include/testpkg1 -DTEST_PKG1_ENABLED
+                assert "-isystem /usr/local/include/testpkg" in cxxflags or "TEST_PKG_ENABLED" in cxxflags
+                assert "-isystem /usr/local/include/testpkg1" in cxxflags or "TEST_PKG1_ENABLED" in cxxflags
+
+                # Verify LDFLAGS were extracted
                 assert sz.Str("LDFLAGS") in parsed_flags
                 ldflags = " ".join(str(x) for x in parsed_flags[sz.Str("LDFLAGS")])
-                
-                zlib_libs = compiletools.apptools.cached_pkg_config("zlib", "--libs")
-                libcrypt_libs = compiletools.apptools.cached_pkg_config("libcrypt", "--libs")
-                
-                # Verify the parsed flags contain the expected pkg-config results
-                if zlib_libs:
-                    assert zlib_libs in ldflags
-                if libcrypt_libs:
-                    assert libcrypt_libs in ldflags
+
+                # conditional.pc has: -L/usr/local/lib -ltestpkg
+                # nested.pc has: -L/usr/local/lib -ltestpkg1
+                assert "-ltestpkg" in ldflags
+                assert "-ltestpkg1" in ldflags
 
 
     @uth.requires_functional_compiler
-    @uth.requires_pkg_config("zlib", "libcrypt")
-    def test_pkg_config_transformation_in_actual_parsing(self):
+    def test_pkg_config_transformation_in_actual_parsing(self, pkgconfig_env):
         """Test that the -I to -isystem transformation occurs during actual magic flag parsing using sample code"""
         with uth.CompileToolsTestContext() as (tmpdir, config_path):
-            # Copy the magicpkgconfig sample to the temp directory
-            tmpmagicpkgconfig = os.path.join(tmpdir, "magicpkgconfig")
-            shutil.copytree(self._get_sample_path("magicpkgconfig"), tmpmagicpkgconfig)
+            # Copy the magicpkgconfig_fake sample to the temp directory
+            tmpmagicpkgconfig = os.path.join(tmpdir, "magicpkgconfig_fake")
+            shutil.copytree(self._get_sample_path("magicpkgconfig_fake"), tmpmagicpkgconfig)
             
             # Create minimal args object
             class MockArgs:
@@ -183,12 +173,12 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
             try:
                 parsed_flags = magicparser.parse(sample_file)
                 
-                # Verify PKG-CONFIG flag was found (should contain "zlib libcrypt")
+                # Verify PKG-CONFIG flag was found (should contain "conditional nested")
                 assert sz.Str("PKG-CONFIG") in parsed_flags, "PKG-CONFIG directive should be parsed"
                 pkgconfig_flags = [str(x) for x in parsed_flags[sz.Str("PKG-CONFIG")]]
                 assert len(pkgconfig_flags) == 2
-                assert "zlib" in pkgconfig_flags
-                assert "libcrypt" in pkgconfig_flags
+                assert "conditional" in pkgconfig_flags
+                assert "nested" in pkgconfig_flags
                 
                 # Check CXXFLAGS for the presence of -isystem transformations
                 if sz.Str("CXXFLAGS") in parsed_flags:
