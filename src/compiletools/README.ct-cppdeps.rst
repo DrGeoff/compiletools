@@ -9,7 +9,7 @@ What
 :Author: drgeoffathome@gmail.com
 :Date:   2022-06-05
 :Copyright: Copyright (C) Geoffery Ericksson
-:Version: 6.1.4
+:Version: 6.1.5
 :Manual section: 1
 :Manual group: developers
 
