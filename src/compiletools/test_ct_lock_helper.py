@@ -151,8 +151,12 @@ class TestLockdirStrategy:
                 stderr=subprocess.PIPE
             )
 
-            # Wait for lock to be acquired
-            time.sleep(0.1)
+            # Wait for lock to be acquired (polling with timeout)
+            start_time = time.time()
+            while time.time() - start_time < 2.0:
+                if os.path.exists(lockdir) and os.path.exists(pid_file):
+                    break
+                time.sleep(0.01)
 
             # Verify lockdir exists
             assert os.path.exists(lockdir), "Lockdir not created"
