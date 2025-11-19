@@ -13,6 +13,8 @@ from collections import Counter
 import compiletools.apptools
 import compiletools.cake
 import compiletools.testhelper as uth
+import compiletools.global_hash_registry
+import compiletools.file_analyzer
 
 
 class FileOpenTracker:
@@ -49,69 +51,55 @@ class FileOpenTracker:
         return {path: count for path, count in self.counter.items() if count > 1}
 
 
-@pytest.mark.parametrize("sample_dir", [
-    "simple",
-    "factory",
-    "magicinclude",
-])
-def test_cake_auto_opens_files_once(sample_dir):
-    """Test that ct-cake --auto opens each source file at most once.
+from compiletools.test_base import BaseCompileToolsTestCase
 
-    This test verifies the efficiency of file I/O operations during the build
-    process. Opening files multiple times is wasteful and indicates potential
-    optimization issues in the dependency analysis code.
-    """
-    # Get the sample directory path
-    samples_base = uth.samplesdir()
-    test_dir = os.path.join(samples_base, sample_dir)
+class TestFileOpenEfficiency(BaseCompileToolsTestCase):
+    @pytest.mark.parametrize("sample_dir", [
+        "simple",
+        "factory",
+        "magicinclude",
+    ])
+    def test_cake_auto_opens_files_once(self, sample_dir):
+        """Test that ct-cake --auto opens each source file at most once.
 
-    if not os.path.exists(test_dir):
-        pytest.skip(f"Sample directory not found: {test_dir}")
+        This test verifies the efficiency of file I/O operations during the build
+        process. Opening files multiple times is wasteful and indicates potential
+        optimization issues in the dependency analysis code.
+        """
+        # Get the sample directory path
+        samples_base = uth.samplesdir()
+        test_dir = os.path.join(samples_base, sample_dir)
 
-    # Save current directory to restore later
-    original_dir = os.getcwd()
+        if not os.path.exists(test_dir):
+            pytest.skip(f"Sample directory not found: {test_dir}")
 
-    try:
-        # Change to test directory
-        os.chdir(test_dir)
+        # Save current directory to restore later
+        original_dir = os.getcwd()
 
-        # Track file opens during cake execution
-        with uth.ParserContext():
-            with FileOpenTracker() as tracker:
-                # Create argument parser and run cake
-                cap = compiletools.apptools.create_parser("Test ct-cake file efficiency")
-                compiletools.cake.Cake.add_arguments(cap)
+        try:
+            # Change to test directory
+            os.chdir(test_dir)
 
-                # Use --auto to trigger dependency analysis and --file-list to avoid compilation
-                # This runs the full dependency analysis without invoking the compiler
-                argv = ['--auto', '--file-list']
-                args = compiletools.apptools.parseargs(cap, argv=argv)
+            # Track file opens during cake execution
+            with uth.ParserContext():
+                with FileOpenTracker() as tracker:
+                    # Create argument parser and run cake
+                    cap = compiletools.apptools.create_parser("Test ct-cake file efficiency")
+                    compiletools.cake.Cake.add_arguments(cap)
 
-                try:
+                    # Use --auto to trigger dependency analysis and --file-list to avoid compilation
+                    # This runs the full dependency analysis without invoking the compiler
+                    argv = ['--auto', '--file-list']
+                    args = compiletools.apptools.parseargs(cap, argv=argv)
+
+                    # Run the dependency analysis
                     cake = compiletools.cake.Cake(args)
                     cake.process()
-                except SystemExit:
-                    pass  # May exit early if no targets found
-
-            # Check for multiple opens
-            multiple_opens = tracker.get_multiple_opens()
-
-            if multiple_opens:
-                # Create detailed failure message
-                msg_parts = [
-                    f"\n{len(multiple_opens)} source files were opened multiple times in {sample_dir}:"
-                ]
-                for path, count in sorted(multiple_opens.items(), key=lambda x: -x[1]):
-                    msg_parts.append(f"  {count}x: {os.path.basename(path)}")
-                msg_parts.append("\nAll file opens:")
-                for path, count in sorted(tracker.counter.items()):
-                    msg_parts.append(f"  {count}x: {os.path.basename(path)}")
-
-                pytest.fail("\n".join(msg_parts))
 
             # Success: all files opened at most once
-            assert len(multiple_opens) == 0, "All source files should be opened at most once"
+            multiple_opens = tracker.get_multiple_opens()
+            assert len(multiple_opens) == 0, f"Files opened multiple times: {multiple_opens}"
 
-    finally:
-        # Restore original directory
-        os.chdir(original_dir)
+        finally:
+            # Restore original directory
+            os.chdir(original_dir)
