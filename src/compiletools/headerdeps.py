@@ -22,6 +22,13 @@ from compiletools.file_analyzer import analyze_file, set_analyzer_args
 _include_list_cache = {}
 
 
+def clear_include_list_cache():
+    """Clear the include list cache.
+
+    Used during two-pass header discovery to ensure Pass 2 gets fresh results.
+    """
+    _include_list_cache.clear()
+
 
 def create(args):
     """HeaderDeps Factory"""
@@ -190,7 +197,7 @@ class HeaderDepsBase(object):
         # print("HeaderDepsBase::clear_cache")
         import compiletools.apptools
         compiletools.apptools.clear_cache()
-        _include_list_cache.clear()
+        clear_include_list_cache()
         DirectHeaderDeps.clear_cache()
         CppHeaderDeps.clear_cache()
 

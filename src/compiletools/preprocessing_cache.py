@@ -370,7 +370,29 @@ def get_or_compute_preprocessing(
         if content_hash in _invariant_cache:
             _cache_stats['hits'] += 1
             _cache_stats['invariant_hits'] += 1
-            return _invariant_cache[content_hash]
+            cached_result = _invariant_cache[content_hash]
+
+            # IMPORTANT: Recompute updated_macros with current input_macros
+            # The cached result's updated_macros was computed with the input_macros
+            # from when it was first cached. If input_macros has evolved (e.g., during
+            # Pass 2 after macro convergence), we must merge the file's defines with
+            # the CURRENT input state, not the stale cached state.
+            if cached_result.active_defines:
+                # File defines macros - merge with current input state
+                defines_dict = {d['name']: d['value'] for d in cached_result.active_defines}
+                updated_macros = input_macros.with_updates(defines_dict)
+            else:
+                # File has no defines - input macros unchanged
+                updated_macros = input_macros
+
+            # Return result with recomputed updated_macros
+            return ProcessingResult(
+                active_lines=cached_result.active_lines,
+                active_includes=cached_result.active_includes,
+                active_magic_flags=cached_result.active_magic_flags,
+                active_defines=cached_result.active_defines,
+                updated_macros=updated_macros
+            )
 
         _cache_stats['misses'] += 1
         _cache_stats['invariant_misses'] += 1
@@ -499,6 +521,19 @@ def get_cache_stats() -> dict:
         'memory_bytes': total_size,
         'memory_mb': total_size / (1024 * 1024)
     }
+
+
+def clear_variant_cache():
+    """Clear only the macro-variant preprocessing cache.
+
+    Used during two-pass header discovery to ensure Pass 2 gets fresh results
+    with converged macros. The invariant cache is preserved since those files
+    have no conditionals and their results are truly macro-independent.
+
+    This is more efficient than clearing all caches because it avoids clearing
+    the invariant cache unnecessarily - those results are reusable across passes.
+    """
+    _variant_cache.clear()
 
 
 def clear_cache():
