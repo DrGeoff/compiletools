@@ -122,8 +122,6 @@ SEE ALSO
 * ct-build
 * ct-build-dynamic-library
 * ct-build-static-library
-* ct-cache
-* ct-cache-clean
 * ct-cake
 * ct-cmakelists
 * ct-compilation-database
