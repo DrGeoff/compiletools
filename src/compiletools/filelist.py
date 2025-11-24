@@ -5,6 +5,9 @@ import compiletools.utils
 import compiletools.git_utils
 import compiletools.wrappedos
 import compiletools.apptools
+import compiletools.hunter
+import compiletools.headerdeps
+import compiletools.magicflags
 
 
 class FlatStyle(compiletools.git_utils.NameAdjuster):
