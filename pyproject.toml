@@ -46,8 +46,6 @@ Download = "https://github.com/DrGeoff/compiletools/archive/v{version}.tar.gz"
 [project.scripts]
 # Python-based scripts (entry points to Python modules)
 ct-cake = "compiletools.cake:main"
-ct-cache = "compiletools.dirnamer:main"
-ct-cache-clean = "compiletools.dirnamer:main_clean"
 ct-config = "compiletools.config:main"
 ct-cppdeps = "compiletools.cppdeps:main"
 ct-create-cmakelists = "compiletools.create_cmakelists:main"
@@ -99,12 +97,6 @@ filename = "pyproject.toml"
 
 [[tool.bumpversion.files]]
 filename = "src/compiletools/README.ct-doc.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-cache.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-cache-clean.rst"
 
 [[tool.bumpversion.files]]
 filename = "src/compiletools/README.ct-cake.rst"

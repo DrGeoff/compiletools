@@ -1,5 +1,10 @@
-""" Wrapper around appdirs that intercepts user_cache_dir 
-    and uses the CTCACHE environment variable and other ct config files 
+""" Wrapper around appdirs that intercepts user_cache_dir
+    and uses the CTCACHE environment variable and other ct config files.
+
+    NOTE: The ct-cache and ct-cache-clean command-line tools have been deprecated
+    and removed from pyproject.toml entry points. The dependency cache system is
+    no longer used by compiletools. The --CTCACHE option remains in tools for
+    backward compatibility but is ignored.
 """
 import sys
 import os
@@ -101,6 +106,19 @@ def user_cache_dir(
 
 
 def main(argv=None):
+    """DEPRECATED: ct-cache tool has been removed as the cache system is no longer used.
+
+    This function is kept for backward compatibility but should not be called.
+    Entry point removed from pyproject.toml.
+    """
+    import warnings
+    warnings.warn(
+        "ct-cache is deprecated and has been removed. The dependency cache system "
+        "is no longer used by compiletools.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+
     cap = compiletools.apptools.create_parser("Cache directory management tool", argv=argv, include_config=False)
     add_arguments(cap)
     cap.add_argument(
@@ -124,7 +142,19 @@ def main(argv=None):
 
 
 def main_clean(argv=None):
-    """Entry point for ct-cache-clean command (synonym for ct-cache --clean)."""
+    """DEPRECATED: ct-cache-clean tool has been removed as the cache system is no longer used.
+
+    This function is kept for backward compatibility but should not be called.
+    Entry point removed from pyproject.toml.
+    """
+    import warnings
+    warnings.warn(
+        "ct-cache-clean is deprecated and has been removed. The dependency cache system "
+        "is no longer used by compiletools.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+
     if argv is None:
         argv = sys.argv[1:]
     # Add --clean to the arguments if not already present
