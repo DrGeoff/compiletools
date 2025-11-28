@@ -228,4 +228,3 @@ def main():
     
     for path, sha in sorted(blob_map.items()):
         print(f"{sha}  {path}")
-        print(f"{sha}  {path}")
