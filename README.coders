@@ -1,4 +1,5 @@
-This file contains notes to coders who want to contribute to the project
+This file contains notes to coders who want to contribute to the project. 
+It is aspirational as the original author still breaks the guidelines.
 
 #
 # Code Style
@@ -14,8 +15,6 @@ ruff format src/compiletools/
 
 # Lint code  
 ruff check src/compiletools/
-
-
 
 #
 # Running tests
@@ -39,103 +38,37 @@ pytest src/compiletools/test_utils.py
 pytest src/compiletools -v
 
 #
-# Test Style Guidelines
-#
-All tests should follow pytest conventions. Prefer function-based style over class-based:
-
-# Preferred (function-based)
-def test_something():
-    assert my_function() == expected_result
-
-# Acceptable (class-based for complex tests with shared setup)
-class TestComplexFeature:
-    def setup_method(self):
-        # setup code
-        
-    def test_feature_behavior(self):
-        assert feature.behavior() == expected
-
-Simple tests with single test methods should use function-based style.
-Use class-based style only when tests share complex setup/teardown logic.
-
-#
-# pytest Features and Best Practices
-#
-pytest provides powerful features for testing:
-
-**Fixtures**: Use fixtures for reusable setup and teardown
-def test_with_temp_dir(tmp_path):
-    # tmp_path is a pytest built-in fixture providing temp directory
-    test_file = tmp_path / "test.txt"
-    test_file.write_text("content")
-    assert test_file.exists()
-
-**Parametrization**: Test multiple inputs with single test function
-@pytest.mark.parametrize("input,expected", [
-    (2, 4),
-    (3, 9),
-    (4, 16),
-])
-def test_square(input, expected):
-    assert input ** 2 == expected
-
-**Markers**: Mark tests for selective execution
-@pytest.mark.slow
-def test_slow_operation():
-    # Run with: pytest -m "not slow" to skip slow tests
-    pass
-
-**Assertions**: Use simple assert statements
-def test_equality():
-    assert result == expected  # pytest provides detailed failure messages
-
-**Mocking**: unittest.mock works seamlessly with pytest
-from unittest.mock import Mock, patch
-
-def test_with_mock():
-    mock_obj = Mock(return_value=42)
-    assert mock_obj() == 42
-
-**Test Discovery**: pytest automatically discovers tests
-- Files matching test_*.py or *_test.py
-- Functions named test_*
-- Classes named Test* with test_* methods
-
-#
 # Caches/Performance
 #
-When you are doing performance testing there are 3 caches you need to be aware of
+When you are doing performance testing there are 2 caches you need to be aware of
 
 1) ccache:  This can be cleaned by ccache -C
-2) cake:    The default is for any caches to be kept in the bin directory.  rm -rf bin 
-3) ct-*:    The default cache is supplied by the appdirs module.  
-            So on linux that means the XDG user cache directory which defaults to $HOME/.cache/ct.  
-                rm -rf ~/.cache/ct
-            Note that it obeys the XDG variables.  Alter XDG_CACHE_HOME if you need to move the cache.
-            ct-cache-clean will correctly remove the cache as specified by the XDG_CACHE_HOME
-            It is possible to override the above by specifying the CTCACHE environment variable.
-            CTCACHE=None turns off diskcaching
+2) cake:    Object files go to objdir (default: bin/<variant>/obj/).
+            Executables go to bindir (default: bin/<variant>/).
+            To clear: rm -rf bin
+            With --shared-objects enabled, objdir may be a shared location
+            (e.g., <gitroot>/obj or /some/path/to/obj).
 
 #
 # Profiling
 #
 To profile the ct-cake build process:
 
-source $HOME/.venv312/bin/activate && python -m cProfile -s cumulative $(which ct-cake) --auto
+source <compiletoolsrepo>/.venv/bin/activate && python -m cProfile -s cumulative $(which ct-cake)
 
 #
 # Gotchas
 #
-If you encounter cache-related issues, clear the cache using:
-ct-cache-clean
+If you encounter any weird build issues (say due to a currently unknown bug in compiletools), then first try:
+rm -rf bin
 
 #
 # Package Structure
 #
-src/compiletools/     - Main package code (moved from ct/)
-ct-*                  - Command-line scripts  
+src/compiletools/     - Main package code
+scripts/              - Shell script wrappers (ct-build, ct-release, etc.)
+ct-*                  - Command-line entry points
 pyproject.toml        - Modern Python packaging configuration
-CLAUDE.md            - Project documentation and build instructions
 
 #
 # Development Setup
@@ -143,30 +76,9 @@ CLAUDE.md            - Project documentation and build instructions
 # Install development dependencies
 uv pip install -e ".[dev]"
 
-# or manually install dev tools
-pip install bump-my-version twine
-
 #
 # Making a release
 #
-The ct-release script automates the release process, or you can do it manually:
-
-# Increase the version number using bump-my-version
-# Configuration is in pyproject.toml [tool.bumpversion] section
-bump-my-version bump patch
-# or
-bump-my-version bump minor  
-# or
-bump-my-version bump major
-
-git push
-git push --tags
-
-# Build and upload to PyPI
-uv build
-twine upload dist/* -r pypi
-
-# Test installation
-pip install compiletools
+The ct-release script automates the release process.  Read that script if you want to do each step manually.
 
 
