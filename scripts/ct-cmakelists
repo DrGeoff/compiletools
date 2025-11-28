@@ -1,8 +1,0 @@
-#!/usr/bin/bash
-set -euo pipefail
-
-all=$(ct-findtargets --style=args $@)
-cmd="ct-create-cmakelists ${all} $@"
-echo $cmd
-eval $cmd
-
