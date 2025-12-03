@@ -12,6 +12,10 @@ Clean up stale lock directories in shared object caches
 :Manual section: 1
 :Manual group: developers
 
+SYNOPSIS
+========
+ct-cleanup-locks [--dry-run] [--objdir PATH] [--min-lock-age SECONDS] [-v] [-vv]
+
 DESCRIPTION
 ===========
 Clean up stale lock directories in shared object caches from crashed builds,
@@ -43,7 +47,7 @@ USAGE
     ct-cleanup-locks --objdir=/shared/build/cache
 
     # Increase verbosity
-    ct-cleanup-locks --verbose 2
+    ct-cleanup-locks -vv
 
 CONFIGURATION
 =============
@@ -55,11 +59,17 @@ Respects settings from ct.conf:
 
 OPTIONS
 =======
+
+Cleanup Options
+---------------
 ``--dry-run``
     Show what would be removed without actually removing locks
 
 ``--objdir PATH``
-    Override object directory from configuration
+    Override object directory from configuration (default: bin/<variant>/obj)
+
+``--bindir PATH``
+    Output directory for executables (default: bin/<variant>)
 
 ``--min-lock-age SECONDS``
     Only check locks older than this (default: lock-cross-host-timeout)
@@ -67,8 +77,43 @@ OPTIONS
 ``--ssh-timeout SECONDS``
     SSH connection timeout for remote process checks (default: 5)
 
-``--verbose LEVEL``
-    Increase output verbosity (0=minimal, 1=standard, 2=debug)
+Lock Configuration
+------------------
+``--lock-cross-host-timeout SECONDS``
+    Timeout before escalating warnings for cross-host locks (default: 600)
+
+``--lock-warn-interval SECONDS``
+    Interval between lock wait warnings (default: 60)
+
+``--sleep-interval-lockdir SECONDS``
+    Sleep interval for lockdir polling on NFS/GPFS/Lustre (default: auto-detect)
+
+``--sleep-interval-cifs SECONDS``
+    Sleep interval for CIFS lock polling (default: 0.2)
+
+``--sleep-interval-flock-fallback SECONDS``
+    Sleep interval for flock fallback polling (default: 0.1)
+
+General Options
+---------------
+``--variant VARIANT``
+    Build variant to use for configuration (default: blank)
+
+``-v, --verbose``
+    Increase output verbosity. Use ``-v`` for standard output,
+    ``-vv`` for debug output.
+
+``-q, --quiet``
+    Decrease verbosity
+
+``-c, --config FILE``
+    Specify a configuration file
+
+``--version``
+    Show version and exit
+
+``--man, --doc``
+    Show the full documentation/manual page
 
 HOW IT WORKS
 ============
@@ -118,7 +163,7 @@ EXAMPLES
 
 **Debug stuck lock**::
 
-    ct-cleanup-locks --verbose 2 --dry-run
+    ct-cleanup-locks -vv --dry-run
     # Shows detailed info about each lock
 
 **Cleanup specific directory**::

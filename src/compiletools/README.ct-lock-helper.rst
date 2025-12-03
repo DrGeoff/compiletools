@@ -1,10 +1,23 @@
+==============
 ct-lock-helper
 ==============
 
-Helper script for file locking during concurrent compilation.
+------------------------------------------------------------
+Helper script for file locking during concurrent compilation
+------------------------------------------------------------
 
-Overview
---------
+:Author: drgeoffathome@gmail.com
+:Date:   2024-01-01
+:Version: 6.1.5
+:Manual section: 1
+:Manual group: developers
+
+SYNOPSIS
+========
+ct-lock-helper compile --target=OUTPUT --strategy=STRATEGY -- COMMAND
+
+DESCRIPTION
+===========
 
 ``ct-lock-helper`` manages file locks when building with shared object caching
 (``--shared-objects`` flag). It wraps compilation commands to ensure atomic
