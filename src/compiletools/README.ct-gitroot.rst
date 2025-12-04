@@ -3,7 +3,7 @@ ct-gitroot
 ================
 
 ------------------------------------------------------------
-What directory is the root of the git repository?
+Display the git repository root directory
 ------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
@@ -34,7 +34,15 @@ using the ``--no-git-root`` option.
 EXAMPLES
 ========
 
-ct-gitroot
+Display the git root::
+
+    $ ct-gitroot
+    /home/user/myproject
+
+Use in scripts::
+
+    cd $(ct-gitroot)
+    ct-cake
 
 SEE ALSO
 ========
