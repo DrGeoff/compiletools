@@ -92,7 +92,7 @@ Example::
 
     export CT_LOCK_WARN_INTERVAL=10
     export CT_LOCK_TIMEOUT=300
-    ct-cake --auto --shared-objects
+    ct-cake --shared-objects
 
 Lock Strategies
 ---------------
@@ -275,7 +275,7 @@ For team environments with shared object directories:
 
 2. Configure compiletools::
 
-    ct-cake --auto --shared-objects --objdir=/shared/build/cache
+    ct-cake --shared-objects --objdir=/shared/build/cache
 
 **Lock permissions:**
 
@@ -345,7 +345,7 @@ Examples
 ::
 
     # Verbose output
-    CT_LOCK_VERBOSE=1 CT_LOCK_WARN_INTERVAL=5 ct-cake --auto --shared-objects
+    CT_LOCK_VERBOSE=1 CT_LOCK_WARN_INTERVAL=5 ct-cake --shared-objects
 
 **Testing lock strategies:**
 
