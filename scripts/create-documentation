@@ -1,65 +1,56 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_NAME=$(basename "$0")
+
+# Find README: check installed location first, then development location
+if [[ -f "/usr/share/doc/compiletools/README.${SCRIPT_NAME}.rst" ]]; then
+    README_PATH="/usr/share/doc/compiletools/README.${SCRIPT_NAME}.rst"
+else
+    README_PATH="$(dirname "$(readlink -f "$0")")/../src/compiletools/README.${SCRIPT_NAME}.rst"
+fi
+
+show_help() {
+    echo "Usage: ${SCRIPT_NAME} [OPTIONS]"
+    echo ""
+    if [[ -f "$README_PATH" ]]; then
+        cat "$README_PATH"
+    else
+        echo "No documentation available for ${SCRIPT_NAME}"
+        echo "See: https://github.com/drgeoffathome/compiletools"
+    fi
+    exit 0
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        --help|-h) show_help ;;
+    esac
+done
+
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
 DOC_ROOT="${REPO_ROOT}/src/compiletools"
 MAN_DIR="${REPO_ROOT}/man1"
 
-# On Fedora 30 and CentOS 8 we need rst2man-3, otherwise rst2man works.
-CONV=rst2man
-if [[ -f /etc/os-release ]]; then
-    # shellcheck disable=SC1091
-    source /etc/os-release
-    if [[ ${ID:-} == fedora ]] && (( ${VERSION_ID:-0} < 30 )); then
-        CONV=rst2man-3
-    fi
-    if [[ ${ID:-} == centos ]] && (( ${VERSION_ID:-0} < 8 )); then
-        CONV=rst2man-3
-    fi
-fi
-
 mkdir -p "${MAN_DIR}"
 rm -f "${MAN_DIR}"/*.1
 
-declare -a DOCS=(
-    "README.ct-cake.rst:ct-cake.1"
-    "README.ct-cleanup-locks.rst:ct-cleanup-locks.1"
-    "README.ct-commandline.rst:ct-commandline.1"
-    "README.ct-compilation-database.rst:ct-compilation-database.1"
-    "README.ct-config.rst:ct-config.1"
-    "README.ct-cppdeps.rst:ct-cppdeps.1"
-    "README.ct-create-makefile.rst:ct-create-makefile.1"
-    "README.ct-doc.rst:compiletools.1"
-    "README.ct-filelist.rst:ct-filelist.1"
-    "README.ct-findtargets.rst:ct-findtargets.1"
-    "README.ct-gitroot.rst:ct-gitroot.1"
-    "README.ct-git-sha-report.rst:ct-git-sha-report.1"
-    "README.ct-headertree.rst:ct-headertree.1"
-    "README.ct-jobs.rst:ct-jobs.1"
-    "README.ct-list-variants.rst:ct-list-variants.1"
-    "README.ct-lock-helper.rst:ct-lock-helper.1"
-    "README.ct-magicflags.rst:ct-magicflags.1"
-    "README.ct-build.rst:ct-build.1"
-    "README.ct-build-static-library.rst:ct-build-static-library.1"
-    "README.ct-build-dynamic-library.rst:ct-build-dynamic-library.1"
-    "README.ct-watch-build.rst:ct-watch-build.1"
-    "README.ct-release.rst:ct-release.1"
-    "README.cleanup-remote-locks.rst:cleanup-remote-locks.1"
-    "README.create-documentation.rst:create-documentation.1"
-    "README.profile_ct_cake_worktree.rst:profile_ct_cake_worktree.1"
-)
+for src in "${DOC_ROOT}"/README.*.rst; do
+    [[ -f "${src}" ]] || continue
 
-for entry in "${DOCS[@]}"; do
-    IFS=":" read -r rst_file man_file <<<"${entry}"
-    src="${DOC_ROOT}/${rst_file}"
-    dst="${MAN_DIR}/${man_file}"
+    # Extract base name: README.foo.rst -> foo
+    base=$(basename "${src}" .rst)
+    base=${base#README.}
 
-    if [[ ! -f "${src}" ]]; then
-        echo "Warning: documentation source not found: ${src}" >&2
-        continue
+    # Special case: ct-doc -> compiletools
+    if [[ "${base}" == "ct-doc" ]]; then
+        man_file="compiletools.1"
+    else
+        man_file="${base}.1"
     fi
 
-    echo "Generating ${dst} from ${rst_file}"
-    "${CONV}" "${src}" "${dst}"
+    dst="${MAN_DIR}/${man_file}"
+    echo "Generating ${dst} from $(basename "${src}")"
+    rst2man "${src}" "${dst}"
 done
