@@ -3,7 +3,7 @@ ct-cppdeps
 ================
 
 ------------------------------------------------------------
-What 
+C/C++ dependency analysis using the preprocessor
 ------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
@@ -15,9 +15,9 @@ What
 
 SYNOPSIS
 ========
-ct-cppdeps [-h] [-c CONFIG_FILE] [--variant VARIANT] [-v] [-q] 
-[--version] [-?] [--man] 
-[--CTCACHE CTCACHE] [--ID ID] 
+ct-cppdeps [-h] [-c CONFIG_FILE] [--variant VARIANT] [-v] [-q]
+[--version] [-?] [--man]
+[--ID ID] 
 [--CPP CPP] [--CC CC] [--CXX CXX] 
 [--CPPFLAGS CPPFLAGS] [--CXXFLAGS CXXFLAGS] 
 [--CFLAGS CFLAGS] 
@@ -41,13 +41,13 @@ command line.  There are two possible methodologys:
 * "--headerdeps=cpp" executes "$CPP -MM -MF" which is slower but guarantees correctness.  
 
 
-For each header file found in the source file, it looks for
-an underlying implementation (c,cpp,cc,cxx,etc) file with the same name, and
-adds that implementation file to the build.
-ct-cppdeps also reads the entire file (configurable via --max-file-read-size)
-for special comments that indicate needed link and compile flags.  Then it
-recurses through the dependencies of the cpp file, and uses this spidering to
-generate complete dependency information for the application. 
+The tool recursively follows #include directives to discover all header files
+that the specified source file depends upon, either directly or transitively.
+The output is a list of header file paths, one per line.
+
+Note: ct-cppdeps only reports header dependencies. For build automation that
+also discovers implementation files and processes magic flag comments, see
+ct-cake or ct-build. 
 
 EXAMPLES
 ========
