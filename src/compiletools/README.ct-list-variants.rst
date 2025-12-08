@@ -3,7 +3,7 @@ ct-list-variants
 ================
 
 ------------------------------------------------------------
-Locates available variants for use by the ct-* applications
+List available build variants
 ------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
@@ -15,7 +15,7 @@ Locates available variants for use by the ct-* applications
 
 SYNOPSIS
 ========
-ct-list-variants
+ct-list-variants [--configname] [--repoonly] [--shorten] [--style STYLE]
 
 DESCRIPTION
 ===========
@@ -46,9 +46,52 @@ If any config value is specified in more than one way then
 
 * command line > environment variables > config file values > defaults
 
-ct-list-variants shows the variant aliases defined on the system, the various 
+ct-list-variants shows the variant aliases defined on the system, the various
 variant configs available, and the ordering in which the configs will be called
 if there is any duplication in configuration filenames.
+
+OPTIONS
+=======
+--configname / --no-configname
+    Include the ``.conf`` extension in variant names. Default: off.
+
+--repoonly / --no-repoonly
+    Restrict results to config files in the local repository only.
+    Default: off (show all config directories).
+
+--shorten / --no-shorten
+    Shorten full paths to just the variant name. Default: on.
+
+--style STYLE
+    Output formatting style. Choices:
+
+    * ``pretty`` - Human-readable format with headers (default)
+    * ``flat`` - Space-separated list on one line
+    * ``filelist`` - One variant per line, no headers
+
+EXAMPLES
+========
+
+List all available variants::
+
+    $ ct-list-variants
+    Variant aliases are:
+        debug=blank
+        release=blank.release
+    From highest to lowest priority configuration directories, the possible variants are:
+    /home/user/.config/ct
+        None found
+    /etc/xdg/ct
+        blank
+        blank.release
+
+Get variants as a simple list::
+
+    ct-list-variants --style=filelist
+
+Show only repository-local variants::
+
+    ct-list-variants --repoonly
 
 SEE ALSO
 ========
