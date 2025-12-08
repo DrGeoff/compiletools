@@ -3,7 +3,7 @@ ct-jobs
 ================
 
 ------------------------------------------------------------
-How many jobs to run concurrently by the ct-* applications.  
+Determine optimal parallel job count for builds
 ------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
@@ -15,23 +15,42 @@ How many jobs to run concurrently by the ct-* applications.
 
 SYNOPSIS
 ========
-ct-jobs [--variant=<VARIANT>] [--config=<CONFIG>] [--jobs=<num>]
+ct-jobs [-j NUM] [--jobs NUM] [--parallel NUM] [--variant VARIANT]
 
 DESCRIPTION
 ===========
-ct-jobs uses the given variants/configs, command line arguments
-and environment variables to determine how many jobs the user 
-wants to run concurrently. The default is to use the number
-of cores available (which can be restricted using taskset on linux).
+ct-jobs determines how many jobs should run concurrently during builds.
+It outputs a single number suitable for use with ``make -j``.
+
+The default is to use the number of CPU cores available to the process.
+On Linux, this respects CPU affinity set via ``taskset``. On macOS, it
+uses ``sysctl hw.ncpu``. On Termux, it uses ``nproc``.
+
+OPTIONS
+=======
+-j NUM, --jobs NUM, --parallel NUM, --CAKE_PARALLEL NUM
+    Explicitly set the number of parallel jobs. If not specified,
+    defaults to the number of available CPU cores.
 
 EXAMPLES
 ========
 
-ct-jobs
+Display default job count::
 
-ct-jobs --variant=release
+    $ ct-jobs
+    8
 
-taskset -c 1-3 ct-jobs
+Use in a build command::
+
+    make -j$(ct-jobs)
+
+Override with explicit value::
+
+    ct-jobs --jobs 4
+
+Respect CPU affinity on Linux::
+
+    taskset -c 0-3 ct-jobs  # Returns 4
 
 SEE ALSO
 ========
