@@ -30,14 +30,19 @@ Configuration parsing is done using python-configargparse which automatically
 handles environment variables, command line arguments, system configs
 and user configs.  
 
-Specifically, the config files are searched for in the following 
+Specifically, the config files are searched for in the following
 locations (from lowest to highest priority):
-* same path as exe,
-* system config (XDG compliant, so usually /etc/xdg/ct)
-* python virtual environment system configs (${python-site-packages}/etc/xdg/ct)
-* user config   (XDG compliant, so usually ~/.config/ct)
-* gitroot
-* current working directory
+
+1. Executable directory config: <exedir>/ct/ct.conf.d
+2. System config: /etc/xdg/ct (XDG compliant)
+3. Python virtual environment configs: ${python-site-packages}/ct/ct.conf.d
+4. Package bundled config: <installed-package>/ct.conf.d
+5. User config: ~/.config/ct (XDG compliant)
+6. Project-level config: <gitroot>/ct.conf.d (for project-specific settings)
+7. Git repository root directory
+8. Current working directory
+9. Environment variables (override config files)
+10. Command line arguments (highest priority, override everything)
 
 The ct-* applications are aware of two levels of configs.  
 There is a base level ct.conf that contains the basic variables that apply no 
@@ -46,19 +51,34 @@ ct.conf defines the following variables:
 
 .. code-block:: ini
 
-    CTCACHE = None
     variant = debug
-    variantaliases = {'debug':'gcc.debug', 'release':'gcc.release'}
+    variantaliases = {'debug':'blank', 'release':'blank.release'}
     exemarkers = [main(,main (,wxIMPLEMENT_APP,g_main_loop_new]
     testmarkers = unit_test.hpp
+    max_file_read_size = 0
 
-The second layer of config files are the variant configs that contain the 
-details for the debug/release/etc.  The variant names are simply a config file 
-name but without the .conf. There are also variant aliases to make for less 
-typing. So --variant=debug looks up the variant alias (specified in ct.conf) 
-and notices that "debug" really means "gcc.debug".  So the config file that 
-gets opened is "gcc.debug.conf".  The default gcc.debug.conf defines the 
-following variables:
+The second layer of config files are the variant configs that contain the
+details for the debug/release/etc.  The variant names are simply a config file
+name but without the .conf. There are also variant aliases to make for less
+typing. So ``--variant=debug`` looks up the variant alias (specified in ct.conf)
+and notices that "debug" really means "blank".  So the config file that
+gets opened is ``blank.conf``.
+
+The ``blank.conf`` file is intentionally empty, inheriting all settings from the
+environment or parent configs. This allows environment variables (CC, CXX,
+CFLAGS, etc.) to control the build without explicit config file settings.
+When no environment variables are set, the built-in defaults apply (gcc with
+debug flags).
+
+To use explicit compiler configs, either specify them directly
+(``--variant=gcc.debug``) or customize the aliases in your
+``~/.config/ct/ct.conf``:
+
+.. code-block:: ini
+
+    variantaliases = {'debug':'gcc.debug', 'release':'gcc.release'}
+
+For reference, the ``gcc.debug.conf`` variant defines:
 
 .. code-block:: ini
 
@@ -67,10 +87,10 @@ following variables:
     CXX=g++
     LD=g++
     CFLAGS=-fPIC -g -Wall
-    CXXFLAGS=-std=c++11 -fPIC -g -Wall
+    CXXFLAGS=-std=c++17 -fPIC -g -Wall
     LDFLAGS=-fPIC -Wall -Werror -Xlinker --build-id
 
-If any config value is specified in more than one way then the following 
+If any config value is specified in more than one way then the following
 hierarchy is used to overwrite the final value
 
 * command line > environment variables > config file values > defaults
@@ -87,14 +107,93 @@ simply by using the ``-w`` flag.
 OPTIONS
 =======
 
---verbose, -v  Output verbosity. Add more v's to make it more verbose (default: 0)
+--verbose, -v  Output verbosity. Add more v's to make it more verbose (default: 0). Note: Use -vvv to see configuration values.
 --version      Show program's version number and exit
 --help, -h     Show help and exit
---variant VARIANT  Specifies which variant of the config should be used. Use the config name without the .conf (default: gcc.debug)
+--variant VARIANT  Specifies which variant of the config should be used. Use the config name without the .conf (default: blank)
 --write-out-config-file OUTPUT_PATH, -w OUTPUT_PATH  takes the current command line args and writes them out to a config file at the given path, then exits (default: None)
 
 ``compilation args``
     Any of the standard compilation arguments you want to go into the config.
+
+CONFIGURATION FILE FORMAT
+=========================
+
+Configuration files use INI-style syntax parsed by ConfigArgParse. The format
+supports the following features:
+
+**Basic Syntax**
+
+.. code-block:: ini
+
+    # Comments start with hash
+    key = value
+    key=value          # Spaces around = are optional
+    key = value with spaces
+
+**Data Types**
+
+* **Strings**: Values are strings by default. No quotes needed unless preserving whitespace.
+* **Booleans**: Use ``true``/``false`` (case-insensitive)
+* **Numbers**: Integer or floating-point values
+* **Python Literals**: Dicts and lists use Python syntax and are evaluated with ``ast.literal_eval()``
+
+.. code-block:: ini
+
+    # String
+    CC = gcc
+
+    # Boolean
+    shared-objects = true
+
+    # Number
+    max_file_read_size = 0
+
+    # Python dict (for variant aliases)
+    variantaliases = {'debug':'blank', 'release':'blank.release'}
+
+    # Python list (for markers)
+    exemarkers = [main(,main (,wxIMPLEMENT_APP]
+
+**Environment Variable Mapping**
+
+Command-line options automatically map to environment variables by:
+
+1. Removing leading dashes
+2. Converting to uppercase
+3. Replacing dashes with underscores
+
+.. code-block:: bash
+
+    --variant=release    -> VARIANT=release
+    --shared-objects     -> SHARED_OBJECTS=true
+    --append-CXXFLAGS    -> APPEND_CXXFLAGS="-O2"
+
+**Common Configuration Options**
+
+Base configuration (ct.conf):
+
+.. code-block:: ini
+
+    variant = debug                                    # Default variant
+    variantaliases = {'debug':'blank', 'release':'blank.release'}
+    exemarkers = [main(,main (,wxIMPLEMENT_APP,g_main_loop_new]
+    testmarkers = unit_test.hpp
+    max_file_read_size = 0                            # 0 = read entire file
+    # shared-objects = true                           # Enable shared object cache
+    # objdir = /path/to/cache                         # Object file cache location
+
+Variant configuration (e.g., gcc.debug.conf):
+
+.. code-block:: ini
+
+    ID = GNU                                          # Compiler identifier
+    CC = gcc                                          # C compiler
+    CXX = g++                                         # C++ compiler
+    LD = g++                                          # Linker
+    CFLAGS = -fPIC -g -Wall                          # C compiler flags
+    CXXFLAGS = -std=c++17 -fPIC -g -Wall             # C++ compiler flags
+    LDFLAGS = -fPIC -Wall -Werror                    # Linker flags
 
 EXAMPLE
 =======
