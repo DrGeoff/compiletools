@@ -3,7 +3,7 @@ ct-findtargets
 ================
 
 ------------------------------------------------------------
-What 
+Find executable and test targets in a C/C++ project
 ------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
@@ -16,7 +16,7 @@ What
 SYNOPSIS
 ========
 ct-findtargets [-h] [-c CONFIG_FILE] [--variant VARIANT] [-v] [-q]
-                    [--version] [-?] [--CTCACHE CTCACHE] [--ID ID]
+                    [--version] [-?] [--ID ID]
                     [--CPP CPP] [--CC CC] [--CXX CXX] [--CPPFLAGS CPPFLAGS]
                     [--CXXFLAGS CXXFLAGS] [--CFLAGS CFLAGS]
                     [--git-root | --no-git-root]
