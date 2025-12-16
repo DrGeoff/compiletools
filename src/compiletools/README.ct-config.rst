@@ -33,7 +33,7 @@ and user configs.
 Specifically, the config files are searched for in the following
 locations (from lowest to highest priority):
 
-1. Executable directory config: <exedir>/ct/ct.conf.d
+1. ct/ct.conf.d subdirectory alongside the ct-* executable
 2. System config: /etc/xdg/ct (XDG compliant)
 3. Python virtual environment configs: ${python-site-packages}/ct/ct.conf.d
 4. Package bundled config: <installed-package>/ct.conf.d
