@@ -37,17 +37,19 @@ determine what implementation (cpp) files are also required to be built and
 linked into the final executable/s. Use ``--no-auto`` to disable automatic
 target detection and specify files explicitly.
 
-Cake works off the same principles as Ruby on Rails. It will make your life
-easy if you don't arbitrarily name things. The main rules are:
+ct-cake will make your life easy if you don't arbitrarily name things. 
+The main rules are:
 
    * ct-cake only builds C and C++. Everything can be done just fine with 
      other tools, so there's no point reinventing them. Anyway, it's easy to 
-     embed cake into other toolchains, see the last section.
+     embed ct-cake into other toolchains, see the last section.
    * All binaries end up in the bin directory, with the same base name as 
      their source filename. You can override this at the command-line, but it's 
      against the spirit of the tool.
-   * The implementation file for point.hpp should be called point.cpp. This 
-     is so ct-cake can compile it and recursively hunt down its dependencies.
+   * The implementation file for point.hpp should be called point.cpp. ct-cake
+     supports common C/C++ extensions for headers (.h, .hpp, .hxx, .hh) and
+     implementation files (.cpp, .cxx, .cc, .c). This naming convention allows
+     ct-cake to compile files and recursively hunt down their dependencies.
    * If a header or implementation file will not work without being linked 
      with a certain flag, add a //#LDFLAGS=myflag directly to the source code.
    * Likewise, if a special compiler option is needed, use //#CXXFLAGS=myflag.
@@ -99,7 +101,7 @@ the source code (or by executing "gcc -MM -MF" if you use the --preprocess flag)
 For each header file found in the source file, it looks for
 an underlying implementation (c,cpp,cc,cxx,etc) file with the same name, and
 adds that implementation file to the build.  ct-cake also reads the entire file
-(configurable via --max-file-read-size) for special comments
+(configurable via --max-file-read-size) for "magic flags" (//#KEY=VALUE)
 that indicate needed link and compile flags.  Then it recurses through the
 dependencies of the cpp file, and uses this spidering to generate complete
 dependency information for the application. A Makefile is generated and finally
@@ -111,7 +113,7 @@ Magic Comments / Magic Flags
 ct-cake works very differently to other build systems, which specify a hierarchy
 of link flags and compile options, because ct-cake ties the compiler flags
 directly to the source code. If you have compress.hpp that requires "-lzip"
-on the link line, add the following comment in the first 8KB of the header file:
+on the link line, add the following comment into the header file:
 
 ``//#LDFLAGS=-lzip``
 
@@ -130,9 +132,9 @@ much easier to tweak the compilation locally.
 Performance
 ===========
 
-Because ct-cake internally generates a makefile to build the C++ file, cake is
+Because ct-cake internally generates a Makefile to build the C++ file, ct-cake is
 about as fast as a handrolled Makefile that uses the same lazily generated
-dependencies. One particular example project took 0.04 seconds to build if
+dependencies. One particular (old) example project took 0.04 seconds to build if
 nothing is out of date, versus 2 seconds for, say, Boost.Build.
 
 ct-cake also eliminates the redundant generation of static archive files that
@@ -140,8 +142,7 @@ a more hierarchical build process would generate as intermediaries, saving
 the cost of running 'ar'.
 
 Note that ct-cake doesn't build all cpp files that you have checked out, only
-those
-strictly needed to build your particular binary, so you only pay for what
+those strictly needed to build your particular binary, so you only pay for what
 you use. This difference alone should see a large improvement on most
 projects, especially for incremental rebuilds.
 
@@ -175,37 +176,55 @@ Configuration
 =============
 
 The compiletools programs require *almost* no configuration. However, it is 
-still
-useful to have some shortcut build templates such as 'release',
+still useful to have some shortcut build templates such as 'release',
 'profile' etc.
 
 Config files for the ct-* applications are programmatically located using 
-python-appdirs, which on linux is a wrapper around the XDG specification.  Thus 
-default locations are /etc/xdb/ct/ and $HOME/.config/ct/.  Configuration parsing 
+python-appdirs, which on linux is a wrapper around the XDG specification.  Thus
+default locations are /etc/xdg/ct/ and $HOME/.config/ct/.  Configuration parsing 
 is done using python-configargparse which automatically handles environment 
 variables, command line arguments, system configs
 and user configs.  
 
-Specifically, the config files are searched for in the following locations (from 
+Specifically, the config files are searched for in the following locations (from
 lowest to highest priority):
 
-    * same path as exe,
+    * ct/ct.conf.d subdirectory alongside the ct-* executable
     * system config (XDG compliant, so usually /etc/xdg/ct)
-    * python virtual environment system configs 
-      (${python-site-packages}/etc/xdg/ct)
-    * user config   (XDG compliant, so usually ~/.config/ct)
+    * python virtual environment configs (${python-site-packages}/ct/ct.conf.d)
+    * package bundled config (<installed-package>/ct.conf.d)
+    * user config (XDG compliant, so usually ~/.config/ct)
+    * project config (<gitroot>/ct.conf.d)
+    * gitroot directory
+    * current working directory
+    * environment variables
+    * command line arguments
 
 The ct-* applications are aware of two levels of configs.  There is a base level 
 ct.conf that contains the basic variables that apply no  matter what variant 
 (i.e, debug/release/etc) is being built. 
 
-The second layer of config files are the variant configs that contain the 
-details for the debug/release/etc.  The variant names are simply a config file 
-name but without the .conf. There are also variant aliases to make for less 
-typing. So --variant=debug looks up the variant alias (specified in ct.conf) and 
-notices that "debug" really means "gcc.debug".  So the config file that gets 
-opened is "gcc.debug.conf".  If any config value is specified in more than one 
-way then the following hierarchy is used
+The second layer of config files are the variant configs that contain the
+details for the debug/release/etc.  The variant names are simply a config file
+name but without the .conf. There are also variant aliases to make for less
+typing. So ``--variant=debug`` looks up the variant alias (specified in ct.conf).
+The default aliases are ``{'debug':'blank', 'release':'blank.release'}``, so
+"debug" maps to "blank" and uses ``blank.conf``.
+
+The ``blank.conf`` file is intentionally empty, inheriting all settings from the
+environment or parent configs. This allows environment variables (CC, CXX,
+CFLAGS, etc.) to control the build without explicit config file settings.
+
+To use explicit compiler configs, either specify them directly
+(``--variant=gcc.debug``) or customize the aliases in your
+``~/.config/ct/ct.conf``:
+
+.. code-block:: ini
+
+    variantaliases = {'debug':'gcc.debug', 'release':'gcc.release'}
+
+If any config value is specified in more than one way then the following
+hierarchy is used
 
 * command line > environment variables > config file values > defaults 
 
@@ -251,17 +270,23 @@ follows:
 Unit Tests
 ==========
 
-ct-cake integrates with unit tests in a fairly simple (and perhaps simplistic) 
+ct-cake integrates with unit tests in a fairly simple (and perhaps simplistic)
 way.
 
-ct-cake allows you to specify multiple build targets on each line,
-so the following is valid and useful:
+By default, ``ct-cake`` automatically builds all executables and unit tests,
+then runs the unit tests. This automatic behavior happens when you run
+``ct-cake`` without arguments (equivalent to ``ct-cake --auto``). To disable
+automatic test discovery and execution, use ``--no-auto``.
 
-    ``$ ct-cake utilities/*.cpp    # builds all apps and places them under bin/``
+If you would prefer to be explicity, ct-cake allows you to specify multiple 
+build targets on each line, so the following is valid and useful:
 
-Unit tests are executables that are generated, that create an additional
-build step. They must run and return an exit code of 0 as part of the build
-process. To specify that executables are unit tests, use the --tests flag.
+    ``$ ct-cake utilities/*.cpp  # builds specified apps into bin/``
+
+To explicitly specify build targets and unit tests to be generated and run
+use the following example.  Unit tests are built and when run must return 
+an exit code of 0 otherwise this will become a build failure. The flag used 
+to specify that executables are unit tests is --tests.
 
     ``$ ct-cake utilities/*.cpp --tests tests/*.cpp``
 
@@ -272,6 +297,44 @@ all unit tests with a code purifying tool. For example:
 
 will cause all unit tests to only pass if they run through valgrind with no
 memory errors.
+
+Common Options
+==============
+
+**--auto / --no-auto**
+    Enable or disable automatic target detection. ``--auto`` is the default.
+    When enabled, ct-cake searches for source files containing exemarkers
+    (like ``main(``) and testmarkers (like ``unit_test.hpp``).
+
+**--disable-tests**
+    When ``--auto`` is specified, skip automatic building and running of tests.
+    Useful when you only want to build executables.
+
+**--disable-exes**
+    When ``--auto`` is specified, skip automatic building of executables.
+    Useful when you only want to build and run tests.
+
+**-o, --output**
+    When building a single target, rename the output to this name.
+    Example: ``ct-cake main.cpp -o myapp``
+
+**--clean**
+    Remove all build artifacts by running ``make realclean``.
+
+**-j, --parallel**
+    Number of parallel jobs for make. Defaults to the output of ``ct-jobs``
+    (typically the number of CPU cores).
+
+**--compilation-database / --no-compilation-database**
+    Generate a ``compile_commands.json`` file for clang tooling. Enabled by
+    default. The file is placed in the git root directory.
+
+**--compilation-database-output**
+    Custom output path for the compilation database.
+
+**--static / --dynamic**
+    Build a static or dynamic library instead of an executable.
+    Example: ``ct-cake --static mylib.cpp``
 
 Putting it all together - a typical build setup
 ===============================================
