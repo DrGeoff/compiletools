@@ -12,6 +12,7 @@ import compiletools.namer
 import compiletools.configutils
 import compiletools.wrappedos
 import compiletools.filesystem_utils
+import compiletools.findtargets
 from compiletools.locking import FileLock
 
 
@@ -270,23 +271,35 @@ class CompilationDatabaseCreator:
 
 def main(argv=None):
     """Main entry point for ct-compilation-database"""
-    
+
     cap = compiletools.apptools.create_parser(
         "Generate compile_commands.json for clang tooling", argv=argv
     )
-    
+
     # Add compilation database specific arguments
     CompilationDatabaseCreator.add_arguments(cap)
-    
-    # Add standard compiletools arguments  
+
+    # Add standard compiletools arguments
     compiletools.hunter.add_arguments(cap)
-    
+
+    # Add findtargets arguments to support --auto mode
+    compiletools.findtargets.add_arguments(cap)
+
     # Parse arguments
     args = compiletools.apptools.parseargs(cap, argv)
-    
+
+    # Handle --auto mode: discover targets if no explicit targets provided
+    if args.auto and not any([args.filename, args.static, args.dynamic, args.tests]):
+        if args.verbose >= 2:
+            print("Auto-detecting targets...")
+        findtargets = compiletools.findtargets.FindTargets(args)
+        findtargets.process(args)
+        # Re-run substitutions after targets are discovered
+        compiletools.apptools.substitutions(args, verbose=0)
+
     # Create and run the compilation database creator
     creator = CompilationDatabaseCreator(args)
     creator.write_compilation_database()
-    
+
     return 0
 
