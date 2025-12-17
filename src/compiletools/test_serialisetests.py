@@ -23,8 +23,7 @@ class TestSerialiseTests:
                 argv = [
                     "--exemarkers=main",
                     "--testmarkers=gtest.hpp",
-                    "--CTCACHE=None",
-                    "--quiet",
+                                        "--quiet",
                     "--auto",
                     "--serialise-tests",
                     "--config=" + temp_config_name,

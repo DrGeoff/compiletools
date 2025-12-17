@@ -110,8 +110,7 @@ class TestSharedCacheLowMtimeResolution(BaseCompileToolsTestCase):
             "--exemarkers=main",
             "--auto",
             "--config=" + config_name,
-            "--CTCACHE=None",
-            "--project-version=test-1.0.0",  # Fixed version for same macro hash
+                        "--project-version=test-1.0.0",  # Fixed version for same macro hash
         ]
         uth.reset()
         compiletools.cake.main(argv)
