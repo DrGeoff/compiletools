@@ -53,7 +53,6 @@ def compile_worker(worker_id, source_dir, config_name):
             "--testmarkers=unittest.hpp",
             "--auto",
             "--config=" + config_name,
-            "--CTCACHE=None",
         ]
 
         uth.reset()
@@ -94,7 +93,6 @@ def compile_with_umask(source_dir, config_name, umask_value):
             "--testmarkers=unittest.hpp",
             "--auto",
             "--config=" + config_name,
-            "--CTCACHE=None",
         ]
 
         uth.reset()
@@ -138,7 +136,6 @@ def build_subproject_worker(worker_id, source_dir, config_name):
             "--exemarkers=main",
             "--auto",
             "--config=" + config_name,
-            "--CTCACHE=None",
         ]
         uth.reset()
         compiletools.cake.main(argv)
@@ -391,8 +388,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 "--exemarkers=main",
                 "--auto",
                 "--config=" + config_name,
-                "--CTCACHE=None",
-            ]
+                ]
             uth.reset()
             compiletools.cake.main(argv)
 
@@ -507,8 +503,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 "--exemarkers=main",
                 "--auto",
                 "--config=" + config_name_a,
-                "--CTCACHE=None",
-            ]
+                ]
             uth.reset()
             compiletools.cake.main(argv)
             # time.time() - start  # Timing not currently used
@@ -527,8 +522,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 "--exemarkers=main",
                 "--auto",
                 "--config=" + config_name_b,
-                "--CTCACHE=None",
-            ]
+                ]
             uth.reset()
             compiletools.cake.main(argv)
             # time.time() - start  # Timing not currently used
@@ -562,8 +556,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 "--exemarkers=main",
                 "--auto",
                 "--config=" + config_name_1,
-                "--CTCACHE=None",
-            ]
+                ]
             uth.reset()
             compiletools.cake.main(argv)
 
@@ -580,8 +573,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 "--exemarkers=main",
                 "--auto",
                 "--config=" + config_name_2,
-                "--CTCACHE=None",
-                "--CXXFLAGS=-O2",
+                    "--CXXFLAGS=-O2",
             ]
             uth.reset()
             compiletools.cake.main(argv)
@@ -615,8 +607,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 "--exemarkers=main",
                 "--auto",
                 "--config=" + config_name_a,
-                "--CTCACHE=None",
-            ]
+                ]
             uth.reset()
             compiletools.cake.main(argv)
 
@@ -662,8 +653,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 "--exemarkers=main",
                 "--auto",
                 "--config=" + config_name_1,
-                "--CTCACHE=None",
-            ]
+                ]
             uth.reset()
             compiletools.cake.main(argv)
 
@@ -697,8 +687,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                     "--exemarkers=main",
                     "--auto",
                     "--config=" + config_name_2,
-                    "--CTCACHE=None",
-                    "--CXXFLAGS=-O2",
+                            "--CXXFLAGS=-O2",
                 ]
                 uth.reset()
                 compiletools.cake.main(argv_2)
@@ -738,8 +727,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 "--exemarkers=main",
                 "--auto",
                 "--config=" + config_name_1,
-                "--CTCACHE=None",
-            ]
+                ]
 
             start = time.time()
             uth.reset()
@@ -794,8 +782,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 "--exemarkers=main",
                 "--auto",
                 "--config=" + config_name_1,
-                "--CTCACHE=None",
-            ]
+                ]
 
             # Measure without locking
             start = time.time()
@@ -816,8 +803,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 "--exemarkers=main",
                 "--auto",
                 "--config=" + config_name_2,
-                "--CTCACHE=None",
-            ]
+                ]
 
             # Measure with locking
             start = time.time()
@@ -862,8 +848,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 "--exemarkers=main",
                 "--auto",
                 "--config=" + config_name,
-                "--CTCACHE=None",
-            ]
+                ]
             uth.reset()
             compiletools.cake.main(argv)
 

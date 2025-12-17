@@ -4,8 +4,6 @@ import os
 import argparse  # Used for the parse_args test
 import configargparse
 
-from importlib import reload
-
 
 class FakeNamespace(object):
     def __init__(self):
@@ -267,10 +265,6 @@ class TestConfig:
         command-line values override environment variables which override config file values which override defaults.
         If variable_handling_method is set to "append" then variables are appended.
         """
-        with uth.EnvironmentContext({"CTCACHE": "None"}):
-            reload(compiletools.dirnamer)
-            reload(compiletools.apptools)
-
         with uth.TempDirContext(), uth.EnvironmentContext(
             {"CXXFLAGS": "-fdiagnostics-color=always -DVARFROMENV"}
         ):
@@ -314,10 +308,6 @@ class TestConfig:
         self._test_variable_handling_method(variable_handling_method="append")
 
     def test_user_config_append_cxxflags(self):
-        with uth.EnvironmentContext({"CTCACHE": "None"}):
-            reload(compiletools.dirnamer)
-            reload(compiletools.apptools)
-
         with uth.TempDirContext():
             uth.create_temp_ct_conf(os.getcwd())
             cfgfile = "foo.dbg.conf"

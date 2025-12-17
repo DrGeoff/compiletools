@@ -33,8 +33,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                 argv = [
                     "--exemarkers=main",
                     "--testmarkers=gtest.hpp",
-                    "--CTCACHE=None",
-                    "--quiet",
+                                        "--quiet",
                     "--auto",
                     "--config=" + config_path,
                 ]
@@ -59,8 +58,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                 argv = [
                     "--exemarkers=main",
                     "--testmarkers=gtest.hpp",
-                    "--CTCACHE=None",
-                    "--quiet",
+                                        "--quiet",
                     "--auto",
                     "--pkg-config=zlib",
                     "--config=" + config_path,
@@ -87,7 +85,6 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                         self.variant = 'debug'
                         self.verbose = 0
                         self.quiet = True
-                        self.CTCACHE = 'None'
                         self.magic = 'direct'
                         self.headerdeps = 'direct'
                         self.CPPFLAGS = ''
@@ -153,7 +150,6 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                     self.variant = 'debug'
                     self.verbose = 0
                     self.quiet = True
-                    self.CTCACHE = 'None'
                     self.magic = 'direct'
                     self.headerdeps = 'direct'
                     self.CPPFLAGS = ''

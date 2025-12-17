@@ -3,9 +3,6 @@ import sys
 import configargparse
 import compiletools.test_base as tb
 
-from importlib import reload
-
-import compiletools.dirnamer
 import compiletools.headerdeps
 import compiletools.apptools
 import compiletools.testhelper as uth
@@ -51,16 +48,6 @@ def _run_scenario_test(filename, scenarios):
         uth.compare_headerdeps_kinds(filename, cppflags=cleaned_cppflags, scenario_name=name)
 
 
-def _reload_ct_with_cache(cache_home):
-    """ Set the CTCACHE environment variable to cache_home
-        and reload the compiletools.hunter module
-    """
-    with uth.EnvironmentContext({"CTCACHE": cache_home}):
-        reload(compiletools.dirnamer)
-        reload(compiletools.headerdeps)
-        return cache_home
-
-
 def _callprocess(headerobj, filenames):
     result = []
     for filename in filenames:
@@ -72,34 +59,22 @@ def _callprocess(headerobj, filenames):
 def _generatecache(tempdir, name, realpaths, extraargs=None):
     if extraargs is None:
         extraargs = []
-    
-    # Save original cache state for proper cleanup
-    origcache = compiletools.dirnamer.user_cache_dir()
-    
-    try:
-        with uth.TempConfigContext(tempdir=tempdir) as temp_config_name:
-            argv = [
-                "--headerdeps",
-                name,
-                "--include",
-                uth.ctdir(),
-                "-c",
-                temp_config_name,
-            ] + extraargs
-            cachename = os.path.join(tempdir, name)
-            with uth.EnvironmentContext({"CTCACHE": cachename}):
-                reload(compiletools.dirnamer)
-                reload(compiletools.headerdeps)
-            cap = configargparse.getArgumentParser()
-            compiletools.headerdeps.add_arguments(cap)
-            args = compiletools.apptools.parseargs(cap, argv)
-            headerdeps = compiletools.headerdeps.create(args)
-            return cachename, _callprocess(headerdeps, realpaths)
-    finally:
-        # Properly restore module state
-        with uth.EnvironmentContext({"CTCACHE": origcache}):
-            reload(compiletools.dirnamer)
-            reload(compiletools.headerdeps)
+
+    with uth.TempConfigContext(tempdir=tempdir) as temp_config_name:
+        argv = [
+            "--headerdeps",
+            name,
+            "--include",
+            uth.ctdir(),
+            "-c",
+            temp_config_name,
+        ] + extraargs
+        cachename = os.path.join(tempdir, name)
+        cap = configargparse.getArgumentParser()
+        compiletools.headerdeps.add_arguments(cap)
+        args = compiletools.apptools.parseargs(cap, argv)
+        headerdeps = compiletools.headerdeps.create(args)
+        return cachename, _callprocess(headerdeps, realpaths)
 
 
 class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):

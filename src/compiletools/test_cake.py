@@ -8,7 +8,6 @@ import configargparse
 import compiletools.testhelper as uth
 import compiletools.cake
 import compiletools.apptools
-import compiletools.dirnamer
 import compiletools.namer
 from compiletools.test_base import BaseCompileToolsTestCase
 
@@ -20,20 +19,18 @@ class TestCake(BaseCompileToolsTestCase):
         super().setup_method()  # Call base class setup to clear caches
         self._config_name = None
 
-    def _create_argv(self, cache_home="None"):
+    def _create_argv(self):
         assert self._config_name is not None
         return [
             "--exemarkers=main",
             "--testmarkers=unittest.hpp",
             "--auto",
             "--config=" + self._config_name,
-            "--CTCACHE=" + cache_home,
         ]
 
-    def _call_ct_cake(self, extraargv=[], cache_home="None"):
-        assert cache_home is not None  # Note object None is not string 'None'
+    def _call_ct_cake(self, extraargv=[]):
         uth.reset()
-        compiletools.cake.main(self._create_argv(cache_home) + extraargv)
+        compiletools.cake.main(self._create_argv() + extraargv)
 
 
     @uth.requires_functional_compiler
