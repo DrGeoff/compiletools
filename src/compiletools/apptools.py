@@ -16,8 +16,6 @@ import compiletools.git_utils
 import compiletools.configutils
 import compiletools.utils
 from compiletools.utils import split_command_cached
-import compiletools.dirnamer
-
 try:
     from rich_rst import RestructuredText
 
@@ -127,7 +125,6 @@ def _add_xxpend_arguments(cap, xxpendableargs):
 def add_common_arguments(cap, argv=None, variant=None):
     """Insert common arguments into the configargparse object"""
     add_base_arguments(cap, argv=argv, variant=variant)
-    compiletools.dirnamer.add_arguments(cap)
     cap.add(
         "--variable-handling-method",
         dest="variable_handling_method",
