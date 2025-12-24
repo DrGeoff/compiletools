@@ -1,6 +1,6 @@
 [project]
 name = "compiletools"
-version = "6.1.5"
+version = "7.0.0"
 description = "Tools to make compiling C/C++ projects easy"
 readme = "src/compiletools/README.ct-doc.rst"
 requires-python = ">=3.9"
@@ -79,7 +79,7 @@ include = [
 ]
 
 [tool.bumpversion]
-current_version = "6.1.5"
+current_version = "7.0.0"
 parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
 serialize = ["{major}.{minor}.{patch}"]
 search = "{current_version}"
