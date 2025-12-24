@@ -9,7 +9,7 @@ Create a tree of header dependencies starting at the given C/C++ file
 :Author: drgeoffathome@gmail.com
 :Date:   2018-07-26
 :Copyright: Copyright (C) 2011-2018 Zomojo Pty Ltd
-:Version: 6.1.5
+:Version: 7.0.0
 :Manual section: 1
 :Manual group: developers
 

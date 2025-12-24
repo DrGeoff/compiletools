@@ -9,7 +9,7 @@ C/C++ dependency analysis using the preprocessor
 :Author: drgeoffathome@gmail.com
 :Date:   2022-06-05
 :Copyright: Copyright (C) Geoffery Ericksson
-:Version: 6.1.5
+:Version: 7.0.0
 :Manual section: 1
 :Manual group: developers
 
