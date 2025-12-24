@@ -15,9 +15,14 @@ The hash is deterministic across Python runs, enabling future disk caching suppo
 """
 
 from typing import List, Dict, Tuple, FrozenSet, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import sys
 import stringzilla as sz
+
+
+# Type aliases for macro dictionaries and cache keys
+MacroDict = Dict[sz.Str, sz.Str]
+MacroCacheKey = FrozenSet[Tuple[sz.Str, sz.Str]]
 
 
 @dataclass
@@ -30,17 +35,14 @@ class ProcessingResult:
         active_magic_flags: List of active magic flags with metadata
         active_defines: List of active #define directives with metadata
         updated_macros: Macro state after processing (input + defines - undefs)
+        file_defines: Macros defined BY this file only (for cache reconstruction)
     """
     active_lines: List[int]
     active_includes: List[dict]
     active_magic_flags: List[dict]
     active_defines: List[dict]
     updated_macros: 'MacroState'  # Forward reference
-
-
-# Type aliases for macro dictionaries and cache keys
-MacroDict = Dict[sz.Str, sz.Str]
-MacroCacheKey = FrozenSet[Tuple[sz.Str, sz.Str]]
+    file_defines: MacroDict = field(default_factory=dict)
 
 
 @dataclass
@@ -370,7 +372,18 @@ def get_or_compute_preprocessing(
         if content_hash in _invariant_cache:
             _cache_stats['hits'] += 1
             _cache_stats['invariant_hits'] += 1
-            return _invariant_cache[content_hash]
+            cached = _invariant_cache[content_hash]
+            # CRITICAL FIX: Reconstruct updated_macros from caller's input + file's defines
+            # This prevents stale macro pollution from first caller's context
+            reconstructed_macros = input_macros.with_updates(cached.file_defines)
+            return ProcessingResult(
+                active_lines=cached.active_lines,
+                active_includes=cached.active_includes,
+                active_magic_flags=cached.active_magic_flags,
+                active_defines=cached.active_defines,
+                updated_macros=reconstructed_macros,
+                file_defines=cached.file_defines
+            )
 
         _cache_stats['misses'] += 1
         _cache_stats['invariant_misses'] += 1
@@ -385,7 +398,17 @@ def get_or_compute_preprocessing(
         if cache_key in _variant_cache:
             _cache_stats['hits'] += 1
             _cache_stats['variant_hits'] += 1
-            return _variant_cache[cache_key]
+            cached = _variant_cache[cache_key]
+            # Apply same reconstruction pattern for consistency
+            reconstructed_macros = input_macros.with_updates(cached.file_defines)
+            return ProcessingResult(
+                active_lines=cached.active_lines,
+                active_includes=cached.active_includes,
+                active_magic_flags=cached.active_magic_flags,
+                active_defines=cached.active_defines,
+                updated_macros=reconstructed_macros,
+                file_defines=cached.file_defines
+            )
 
         _cache_stats['misses'] += 1
         _cache_stats['variant_misses'] += 1
@@ -422,6 +445,13 @@ def get_or_compute_preprocessing(
         if k not in input_macros.core:
             new_variable_macros[k] = v
 
+    # Store file-specific defines for cache reconstruction
+    # file_defines should ONLY contain macros defined BY this file (not inherited from input)
+    file_defines: MacroDict = {}
+    for k, v in new_variable_macros.items():
+        if k not in input_macros.variable:
+            file_defines[k] = v
+
     # CRITICAL: Use with_updates to preserve existing variable macros during traversal
     # Creates MacroState with input_macros.variable + new_variable_macros
     # This ensures macros from previously processed files (e.g., base.hpp) are preserved
@@ -434,7 +464,8 @@ def get_or_compute_preprocessing(
         active_includes=active_includes,
         active_magic_flags=active_magic_flags,
         active_defines=active_defines,
-        updated_macros=updated_macro_state
+        updated_macros=updated_macro_state,
+        file_defines=file_defines
     )
 
     # Store in appropriate cache

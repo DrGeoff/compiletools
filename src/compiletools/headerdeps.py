@@ -341,8 +341,9 @@ class DirectHeaderDeps(HeaderDepsBase):
         cache_key = (content_hash, macro_key)
 
         if cache_key in _include_list_cache:
-            cached_includes, cached_updated_macros = _include_list_cache[cache_key]
-            self.defined_macros = cached_updated_macros
+            cached_includes, cached_file_defines = _include_list_cache[cache_key]
+            # Reconstruct updated_macros from current input + file's defines
+            self.defined_macros = self.defined_macros.with_updates(cached_file_defines)
             return cached_includes
 
         # Cache miss - compute the include list
@@ -368,8 +369,9 @@ class DirectHeaderDeps(HeaderDepsBase):
         # we preserve the cached key and avoid recomputation during traversal.
         self.defined_macros = result.updated_macros
 
-        # Cache the result
-        _include_list_cache[cache_key] = (include_list, result.updated_macros)
+        # Cache the result - store file_defines instead of updated_macros
+        # This prevents macro pollution across different traversal contexts
+        _include_list_cache[cache_key] = (include_list, result.file_defines)
 
         return include_list
 
