@@ -18,6 +18,7 @@ Real-world scenario (game engine themed, sanitized from production code):
 """
 
 import os
+import shutil
 import pytest
 import configargparse
 import compiletools.test_base as tb
@@ -25,6 +26,7 @@ import compiletools.headerdeps
 import compiletools.magicflags
 import compiletools.hunter
 import compiletools.apptools
+import compiletools.cake
 import compiletools.testhelper as uth
 
 
@@ -274,6 +276,81 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
             f"  Processed second: {sorted([os.path.basename(f) for f in result1_audio])}\n"
             f"  Difference: {sorted([os.path.basename(f) for f in result1_audio ^ result2_audio])}"
         )
+
+    @uth.requires_functional_compiler
+    def test_ct_cake_integration_build(self):
+        """
+        Full ct-cake integration test - CI-style end-to-end verification.
+
+        This test runs the complete ct-cake --auto workflow on the transitive_cache_bug sample:
+        1. Copies sample files to temp directory
+        2. Runs ct-cake --auto to discover executables (a-game, b-game) and build them
+        3. Verifies both executables were built successfully
+
+        If the cache bug is present:
+        - memory_buffer.hpp will be missing from b-game's dependencies
+        - -lz will NOT be in the link command (internally in generated Makefile)
+        - Build will fail: "undefined reference to compressBound"
+        - ct-cake will raise exception with compiler/linker error
+        - Test will fail with clear error message
+
+        This is a comprehensive integration test that validates the fix at the
+        user-facing level (actual ct-cake --auto usage, not just Makefile generation).
+        """
+        sample_dir = os.path.join(uth.samplesdir(), "transitive_cache_bug")
+        engine_dir = os.path.join(sample_dir, "engine")
+
+        # Use temp directory for the build
+        with uth.TempDirContextWithChange() as tempdir:
+            # Copy sample files to temp directory
+            temp_engine = os.path.join(tempdir, "engine")
+            shutil.copytree(engine_dir, temp_engine)
+
+            # Change to engine directory for build
+            os.chdir(temp_engine)
+
+            # Setup paths for includes
+            with uth.TempConfigContext(tempdir=temp_engine) as temp_config_name:
+                # Create ct.conf to specify exemarkers
+                uth.create_temp_ct_conf(
+                    tempdir=temp_engine,
+                    defaultvariant=os.path.basename(temp_config_name)[:-5],
+                )
+
+                with uth.ParserContext():
+                    # Clear all caches before running ct-cake
+                    compiletools.headerdeps.HeaderDepsBase.clear_cache()
+                    compiletools.magicflags.MagicFlagsBase.clear_cache()
+
+                    # Run ct-cake with --auto to automatically discover and build executables
+                    argv = [
+                        "--config=" + temp_config_name,
+                        "--INCLUDE", temp_engine,
+                        "--auto",
+                        "--exemarkers=main",  # Find executables by looking for main()
+                    ]
+
+                    # ct-cake will discover both a-game.cpp and b-game.cpp,
+                    # generate Makefile, and build them.
+                    # If the bug is present, build will fail with:
+                    # "undefined reference to compressBound"
+                    compiletools.cake.main(argv)
+
+            # If we get here, build succeeded - verify executables were created
+            expected_exes = {'a-game', 'b-game'}
+            actual_exes = set()
+            for root, dirs, files in os.walk(temp_engine):
+                for ff in files:
+                    full_path = os.path.join(root, ff)
+                    if os.access(full_path, os.X_OK) and os.path.isfile(full_path):
+                        # Check if it's one of our executables (not a directory or script)
+                        if any(exe_name in ff for exe_name in expected_exes):
+                            actual_exes.add(ff)
+
+            assert expected_exes.issubset(actual_exes), (
+                f"Expected executables {expected_exes} but found {actual_exes}.\n"
+                f"Build succeeded but executables were not created."
+            )
 
 
 if __name__ == "__main__":
