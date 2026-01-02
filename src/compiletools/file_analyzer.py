@@ -594,8 +594,13 @@ def analyze_file(content_hash: str) -> 'FileAnalysisResult':
                                     'value': value_trimmed
                                 })
 
+    # Sort directives by line number for correct guard detection
+    # The directives list is built by iterating directive_positions.items()
+    # which processes by directive TYPE, not line number order
+    directives_sorted = sorted(directives, key=lambda d: d.line_num)
+
     # Detect include guard first so we can exclude it from defines
-    include_guard = detect_include_guard(directives)
+    include_guard = detect_include_guard(directives_sorted)
 
     # Extract defines with full information (excluding include guard)
     defines = []
@@ -922,14 +927,16 @@ def detect_include_guard(directives: List[PreprocessorDirective]) -> Optional['s
 
             guard_candidate = directive.macro_name
 
-            # Check if the next directive is #define with the same name
-            if (i + 1 < len(directives) and
-                directives[i + 1].directive_type == 'define' and
-                directives[i + 1].macro_name and
-                directives[i + 1].macro_name == guard_candidate):
+            # Look ahead up to 5 positions for the matching #define
+            # This handles cases where comments or other directives appear between
+            # the #ifndef and the matching #define
+            for j in range(i + 1, min(i + 6, len(directives))):
+                if (directives[j].directive_type == 'define' and
+                    directives[j].macro_name and
+                    directives[j].macro_name == guard_candidate):
 
-                # guard_candidate is already sz.Str from PreprocessorDirective.macro_name
-                return guard_candidate
+                    # guard_candidate is already sz.Str from PreprocessorDirective.macro_name
+                    return guard_candidate
 
     return None
 
