@@ -681,3 +681,49 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         # Verify results are identical
         assert sz.Str('-ltest') in result2.get(sz.Str("LDFLAGS"), [])
 
+    def test_header_guard_bug_transitive_magic_flags(self):
+        """Test for include guard detection with non-standard guard patterns.
+
+        This test verifies the fix for a bug where include guards were not detected
+        when other directives appeared between #ifndef and #define. The sample uses
+        header_a.hpp with a non-standard pattern:
+            #ifndef HEADER_A_HPP_GUARD
+            #define SOME_OTHER_MACRO 1  // Breaks simple sequential detection
+            #define HEADER_A_HPP_GUARD
+
+        File structure:
+            main.cpp -> header_a.hpp (non-standard guard) -> header_b.hpp (has magic flags)
+
+        The bug: directives were processed by TYPE (all #ifndef, then all #define, etc.)
+        rather than by LINE NUMBER, causing guard detection to fail. This resulted in:
+        - Guard macro incorrectly included in defines list
+        - Transitive dependencies possibly missing due to stale guard macros in cache
+
+        Fixed in file_analyzer.py by:
+        - Sorting directives by line number before guard detection (line 597-603)
+        - Robust lookahead pattern (up to 5 directives) instead of strict next-directive check
+
+        This test now passes and validates magic flags are correctly discovered from
+        transitive headers even with non-standard guard patterns.
+        """
+
+        source_file = "header_guard_bug/main.cpp"
+
+        # Parse with DirectMagicFlags
+        result = self._parse_with_magic("direct", source_file)
+
+        # Verify magic flags from transitive header (header_b.hpp) are discovered
+        assert sz.Str("PKG-CONFIG") in result, \
+            "PKG-CONFIG not found - transitive header magic flags not discovered"
+
+        pkg_config_values = [str(x) for x in result.get(sz.Str("PKG-CONFIG"), [])]
+        assert "zlib" in pkg_config_values, \
+            f"Expected zlib in PKG-CONFIG from header_b.hpp, got: {pkg_config_values}"
+
+        assert sz.Str("LDFLAGS") in result, \
+            "LDFLAGS not found - transitive header magic flags not discovered"
+
+        ldflags_values = [str(x) for x in result.get(sz.Str("LDFLAGS"), [])]
+        assert "-lm" in ldflags_values, \
+            f"Expected -lm in LDFLAGS from header_b.hpp, got: {ldflags_values}"
+

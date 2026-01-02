@@ -49,6 +49,7 @@ class TestFindTargetsModule:
             "parse_order_macro_bug/libs/entry_point_2.cpp",
             "transitive_cache_bug/engine/a-game.cpp",
             "transitive_cache_bug/engine/b-game.cpp",
+            "header_guard_bug/main.cpp",
         }
         relativeexpectedtests = {
             "cross_platform/test_source.cpp",
