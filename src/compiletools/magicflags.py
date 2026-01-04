@@ -1,4 +1,5 @@
 import sys
+import os
 import re
 import functools
 from collections import defaultdict
@@ -16,7 +17,6 @@ import compiletools.apptools
 import compiletools.compiler_macros
 import compiletools.namer
 from compiletools.preprocessing_cache import get_or_compute_preprocessing, MacroState
-from compiletools.apptools import cached_pkg_config_sz
 from compiletools.stringzilla_utils import strip_sz
 from compiletools.file_analyzer import FileAnalysisResult
 
@@ -211,12 +211,20 @@ class MagicFlagsBase:
 
     def _handle_pkg_config(self, flag):
         flagsforfilename = defaultdict(list)
-        for pkg in flag.split():
-            cflags_raw = cached_pkg_config_sz(pkg, "--cflags")
-            # Replace -I flags with -isystem to help CppHeaderDeps avoid searching packages
-            from compiletools.stringzilla_utils import replace_sz
-            cflags = replace_sz(cflags_raw, '-I', '-isystem')
-            libs = cached_pkg_config_sz(pkg, "--libs")
+        
+        # Convert to string for splitting, as we need to iterate over packages
+        flag_str = str(flag)
+
+        for pkg in flag_str.split():
+            # pkg is str. Call cached_pkg_config directly to avoid unnecessary sz conversions
+            cflags_raw = compiletools.apptools.cached_pkg_config(pkg, "--cflags")
+            
+            # Use the shared filtering logic from apptools
+            cflags_str = compiletools.apptools.filter_pkg_config_cflags(cflags_raw, self._args.verbose)
+            cflags = sz.Str(cflags_str)
+            
+            libs_raw = compiletools.apptools.cached_pkg_config(pkg, "--libs")
+            libs = sz.Str(libs_raw)
 
             # Add cflags to all C/C++ flag categories
             for key in (sz.Str("CPPFLAGS"), sz.Str("CFLAGS"), sz.Str("CXXFLAGS")):
