@@ -1,5 +1,5 @@
-#include <crypt.h>
+#include <vector>
 
 void feature_y_function() {
-    // Implementation using libcrypt
+    // Implementation using nested package
 }

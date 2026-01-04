@@ -1,4 +1,4 @@
-//#PKG-CONFIG=zlib libcrypt
+//#PKG-CONFIG=zlib nested
 
 #include "complex_header.h"
 #include <iostream>

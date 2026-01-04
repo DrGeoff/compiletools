@@ -90,7 +90,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert sz.Str("CXXFLAGS") in result
 
     @uth.requires_functional_compiler
-    def test_direct_and_cpp_magic_generate_same_results(self):
+    def test_direct_and_cpp_magic_generate_same_results(self, pkgconfig_env):
         """Test that DirectMagicFlags and CppMagicFlags produce identical results on conditional compilation samples"""
 
         # Test files with optional expected values for correctness verification
@@ -156,7 +156,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
                 fail_msg = "\n\nDirectMagicFlags vs CppMagicFlags equivalence failures:\n" + "\n".join(failures)
                 assert False, fail_msg
 
-    def test_macro_deps_cross_file(self):
+    def test_macro_deps_cross_file(self, pkgconfig_env):
         """Test that macros defined in source files affect header magic flags"""
         source_file = "macro_deps/main.cpp"
         
@@ -169,7 +169,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         # Should only contain feature X dependencies, not feature Y
         assert sz.Str("PKG-CONFIG") in result_direct
         assert "zlib" in [str(x) for x in result_direct[sz.Str("PKG-CONFIG")]]
-        assert "libcrypt" not in [str(x) for x in result_direct.get(sz.Str("PKG-CONFIG"), [])]
+        assert "nested" not in [str(x) for x in result_direct.get(sz.Str("PKG-CONFIG"), [])]
         
         assert sz.Str("SOURCE") in result_direct
         feature_x_source = self._get_sample_path("macro_deps/feature_x_impl.cpp")
@@ -256,7 +256,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
                 "All versions should have common MYAPP flags"
 
     @uth.requires_functional_compiler
-    def test_magic_processing_order_bug(self):
+    def test_magic_processing_order_bug(self, pkgconfig_env):
         """Test that DirectMagicFlags and CppMagicFlags produce identical results - should expose the processing order bug"""
         
         source_file = "magic_processing_order/complex_test.cpp"
@@ -282,7 +282,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
             f"This indicates a magic processing order bug in DirectMagicFlags!"
 
     @uth.requires_functional_compiler
-    def test_conditional_magic_comments_with_complex_headers(self):
+    def test_conditional_magic_comments_with_complex_headers(self, pkgconfig_env):
         """Test conditional magic comments work correctly with header dependencies"""
         
         source_file = "magic_processing_order/complex_test.cpp"
