@@ -579,7 +579,6 @@ def extract_command_line_macros_sz(args, flag_sources_sz, verbose=0):
 def clear_cache():
     """Clear any caches for macro extraction and pkg-config."""
     cached_pkg_config.cache_clear()
-    cached_pkg_config_sz.cache_clear()
     _get_functional_cxx_compiler_cached.cache_clear()
 
 
@@ -772,20 +771,73 @@ def cached_pkg_config(package, option):
     return result.stdout.rstrip()
 
 
-@functools.lru_cache(maxsize=None)
-def cached_pkg_config_sz(package_sz, option):
-    """StringZilla-aware version of cached_pkg_config with separate cache"""
-    import stringzilla as sz
-    result = cached_pkg_config(package_sz.decode('utf-8'), option)
-    return sz.Str(result)
+def filter_pkg_config_cflags(cflags_str, verbose=0):
+    """
+    Process pkg-config cflags output.
+    Converts -I to -isystem, except for default system include paths
+    which are dropped to prevent include order issues (e.g. with libc++).
+    Uses shlex for robust shell tokenization and quoting.
+    """
+    if not cflags_str:
+        return ""
+
+    # Standard system include paths
+    system_include_paths = set(['/usr/include'])
+    prefix = os.environ.get('PREFIX')
+    if prefix:
+        system_include_paths.add(os.path.normpath(os.path.join(prefix, 'include')))
+
+    # Use shlex to correctly handle quoted paths in flags
+    try:
+        flags = split_command_cached(cflags_str)
+    except ValueError:
+        # Fallback for malformed strings
+        flags = cflags_str.split()
+
+    flag_iter = iter(flags)
+    processed_flags = []
+
+    for flag in flag_iter:
+        if flag.startswith("-I"):
+            path = None
+            if flag == "-I":
+                # Detached -I
+                try:
+                    path = next(flag_iter)
+                except StopIteration:
+                    # Trailing -I at end of string, preserve as-is
+                    processed_flags.append(shlex.quote(flag))
+                    break
+            else:
+                # Attached -Ipath
+                path = flag[2:]
+
+            # Normalize and check
+            normalized_path = os.path.normpath(path)
+            is_system = False
+            for sys_path in system_include_paths:
+                if normalized_path == sys_path:
+                    is_system = True
+                    break
+
+            if is_system:
+                if verbose >= 6:
+                    print(f"Dropping default system include path from pkg-config: {path}")
+                continue
+
+            # Reconstruct as -isystem, quoting path for shell safety
+            processed_flags.append(f"-isystem {shlex.quote(path)}")
+        else:
+            # Re-quote other flags to preserve them correctly in the output string
+            processed_flags.append(shlex.quote(flag))
+
+    return " ".join(processed_flags)
 
 
 def _add_flags_from_pkg_config(args):
     for pkg in args.pkg_config:
-        cflags = (
-            cached_pkg_config(pkg, "--cflags")
-            .replace("-I", "-isystem ")
-        )  # This helps the CppHeaderDeps avoid searching packages
+        raw_cflags = cached_pkg_config(pkg, "--cflags")
+        cflags = filter_pkg_config_cflags(raw_cflags, args.verbose)
 
         if cflags:
             args.CPPFLAGS += f" {cflags}"
