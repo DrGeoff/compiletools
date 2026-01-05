@@ -9,7 +9,7 @@ Find executable and test targets in a C/C++ project
 :Author: drgeoffathome@gmail.com
 :Date:   2018-04-17
 :Copyright: Copyright (C) 2011-2018 Zomojo Pty Ltd
-:Version: 7.0.1
+:Version: 7.0.2
 :Manual section: 1
 :Manual group: developers
 
