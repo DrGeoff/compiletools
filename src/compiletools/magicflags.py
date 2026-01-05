@@ -221,20 +221,20 @@ class MagicFlagsBase:
             
             # Use the shared filtering logic from apptools
             cflags_str = compiletools.apptools.filter_pkg_config_cflags(cflags_raw, self._args.verbose)
-            cflags = sz.Str(cflags_str)
+            cflags_list = compiletools.utils.split_command_cached_sz(sz.Str(cflags_str))
             
             libs_raw = compiletools.apptools.cached_pkg_config(pkg, "--libs")
-            libs = sz.Str(libs_raw)
+            libs_list = compiletools.utils.split_command_cached_sz(sz.Str(libs_raw))
 
             # Add cflags to all C/C++ flag categories
             for key in (sz.Str("CPPFLAGS"), sz.Str("CFLAGS"), sz.Str("CXXFLAGS")):
-                flagsforfilename[key].append(cflags)
-            flagsforfilename[sz.Str("LDFLAGS")].append(libs)
+                flagsforfilename[key].extend(cflags_list)
+            flagsforfilename[sz.Str("LDFLAGS")].extend(libs_list)
 
             if self._args.verbose >= 9:
                 print(f"Magic PKG-CONFIG = {pkg}:")
-                print(f"\tadded {cflags} to CPPFLAGS, CFLAGS, and CXXFLAGS")
-                print(f"\tadded {libs} to LDFLAGS")
+                print(f"\tadded {cflags_list} to CPPFLAGS, CFLAGS, and CXXFLAGS")
+                print(f"\tadded {libs_list} to LDFLAGS")
         return flagsforfilename
 
     def _resolve_readmacros_path(self, flag, source_filename):

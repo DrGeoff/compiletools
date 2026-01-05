@@ -200,5 +200,57 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                 # The important thing is that the transformation logic is in place
                 pass
 
+    @uth.requires_functional_compiler
+    def test_pkg_config_flags_are_split(self, pkgconfig_env):
+        """Test that pkg-config output is split into individual flags.
+        
+        This test ensures that flags returned by pkg-config (e.g. "-I/path -Dflag")
+        are correctly split into a list of separate flags (["-I/path", "-Dflag"])
+        rather than being treated as a single string argument.
+        """
+        
+        # Create a source file that requests the 'nested' package
+        # nested.pc has:
+        # Cflags: -I/usr/local/include/testpkg1 -DTEST_PKG1_ENABLED
+        # Libs: -L/usr/local/lib -ltestpkg1
+        
+        files = uth.write_sources({
+            "test.cpp": "//#PKG-CONFIG=nested\nint main() {}"
+        })
+        source_file = str(files["test.cpp"])
+        
+        # Create parser
+        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir)
+        
+        # Parse
+        result = mf.parse(source_file)
+        
+        # Check CPPFLAGS (from Cflags)
+        assert sz.Str("CPPFLAGS") in result
+        cppflags = result[sz.Str("CPPFLAGS")]
+        
+        # Convert to python strings for easier assertion
+        cppflags_str_list = [str(f) for f in cppflags]
+        
+        # We expect at least two distinct flags. 
+        # If the bug were present, len(cppflags_str_list) would be 1 (containing the concatenated string)
+        assert len(cppflags_str_list) >= 2, f"Expected multiple CPPFLAGS, got: {cppflags_str_list}"
+        
+        # Note: compiletools may convert -I to -isystem and split the flag and path
+        # So we check for the presence of the path and the define
+        assert any("/usr/local/include/testpkg1" in f for f in cppflags_str_list)
+        assert "-DTEST_PKG1_ENABLED" in cppflags_str_list
+        
+        # Check LDFLAGS (from Libs)
+        assert sz.Str("LDFLAGS") in result
+        ldflags = result[sz.Str("LDFLAGS")]
+        
+        ldflags_str_list = [str(f) for f in ldflags]
+        
+        # We expect at least two distinct flags
+        assert len(ldflags_str_list) >= 2, f"Expected multiple LDFLAGS, got: {ldflags_str_list}"
+        assert "-L/usr/local/lib" in ldflags_str_list
+        assert "-ltestpkg1" in ldflags_str_list
+
 
 
