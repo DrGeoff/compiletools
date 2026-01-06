@@ -105,6 +105,10 @@ class MagicFlagsBase:
             r"^[\s]*//#([\S]*?)[\s]*=[\s]*(.*)", re.MULTILINE
         )
 
+        # Store final converged MacroState objects by filename
+        # This is used by Hunter for dependency graph caching
+        self._final_macro_states = {}
+
     def get_final_macro_state_key(self, filename: str):
         """Get the final converged macro state key for a specific file.
 
@@ -404,8 +408,6 @@ class DirectMagicFlags(MagicFlagsBase):
         self.defined_macros = self._initial_macro_state.copy()
         # Track files specified by READMACROS magic flags
         self._explicit_macro_files = set()
-        # Store final converged MacroState objects by filename
-        self._final_macro_states = {}
         # Cache structured data results by (file_hash, input_macro_key, deps_hash) to avoid redundant convergence
         # deps_hash: XOR of dependency file content hashes (headers + READMACROS)
         # Cached result stores content_hash (not filepath) - current paths resolved via global hash registry
@@ -881,6 +883,87 @@ class CppMagicFlags(MagicFlagsBase):
             self.preprocessor = headerdeps.preprocessor
         else:
             self.preprocessor = compiletools.preprocessor.PreProcessor(args)
+            
+        # Compute initial macro state once (compiler built-ins + command-line macros)
+        self._initial_macro_state = self._initialize_macro_state()
+
+    def _initialize_macro_state(self) -> MacroState:
+        """Initialize MacroState with command-line and compiler macros as core."""
+        core_macros = {}
+
+        # Get compiler built-in macros - these are the stable base (~378 macros)
+        compiler_macros = compiletools.compiler_macros.get_compiler_macros(self._args.CXX, self._args.verbose)
+        core_macros.update({sz.Str(k): sz.Str(v) for k, v in compiler_macros.items()})
+
+        # Add command-line macros to core - they're also static for the entire build
+        cmd_macros = compiletools.apptools.extract_command_line_macros(
+            self._args,
+            flag_sources=['CPPFLAGS', 'CXXFLAGS'],
+            include_compiler_macros=False,
+            verbose=self._args.verbose
+        )
+        core_macros.update({sz.Str(k): sz.Str(v) for k, v in cmd_macros.items()})
+
+        # Create MacroState with core macros, empty variable macros
+        return MacroState(core_macros, {})
+
+    def _extract_macros_from_preprocessor(self, filename: str) -> MacroState:
+        """Extract all macro definitions from preprocessor using -dM flag.
+
+        Uses g++ -dM -E to dump all macro definitions after preprocessing.
+        This includes compiler built-ins and file-defined macros.
+
+        Args:
+            filename: Path to file to process
+
+        Returns:
+            MacroState with core (compiler+cmdline) and variable (file-defined) macros
+        """
+        # Run preprocessor with -dM -E to dump macros
+        extraargs = "-dM -E"
+        macro_dump = self.preprocessor.process(
+            realpath=filename, extraargs=extraargs, redirect_stderr_to_stdout=True
+        )
+
+        # Parse lines like: #define MACRO_NAME value
+        variable_macros = {}
+        for line in macro_dump.split('\n'):
+            if not line.startswith('#define '):
+                continue
+
+            # Extract macro name and value
+            after_define = line[8:]  # Skip '#define '
+
+            # Split on first whitespace to separate name from value
+            parts = after_define.split(maxsplit=1)
+            if len(parts) < 1:
+                continue
+
+            macro_name_str = parts[0]
+
+            # Skip function-like macros (have '(' immediately after name)
+            if '(' in macro_name_str and macro_name_str.index('(') == len(macro_name_str.rstrip('()')):
+                # This is tricky - need to check if '(' is part of the name (function-like)
+                # Function-like: FOO(a,b) - '(' immediately follows name
+                # Object-like with paren in value: FOO (x) - space before '('
+                paren_idx = macro_name_str.find('(')
+                if paren_idx > 0 and paren_idx == len(macro_name_str) - 1:
+                    # Name ends with '(' - this is function-like
+                    continue
+                elif '(' in macro_name_str:
+                    # '(' is in the middle - function-like macro
+                    continue
+
+            macro_name = sz.Str(macro_name_str)
+            macro_value = sz.Str(parts[1]) if len(parts) > 1 else sz.Str("1")
+
+            # Skip compiler built-ins (already in core)
+            if macro_name not in self._initial_macro_state.core:
+                variable_macros[macro_name] = macro_value
+
+        # Return MacroState with variable macros (core already initialized)
+        return MacroState(core=self._initial_macro_state.core.copy(),
+                         variable=variable_macros)
 
     def _readfile(self, filename):
         """Preprocess the given filename but leave comments"""
@@ -899,6 +982,12 @@ class CppMagicFlags(MagicFlagsBase):
         
         if self._args.verbose >= 4:
             print("CppMagicFlags: Getting structured data from preprocessed C++ output")
+
+        # Extract final macro state from preprocessor (includes file-defined macros)
+        abs_filename = compiletools.wrappedos.realpath(filename)
+        if abs_filename not in self._final_macro_states:
+            final_macro_state = self._extract_macros_from_preprocessor(filename)
+            self._final_macro_states[abs_filename] = final_macro_state
 
         # Get preprocessed text (existing logic)
         preprocessed_text = self._readfile(filename)
