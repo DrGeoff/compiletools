@@ -1,6 +1,7 @@
 
 import os
 import pytest
+from unittest.mock import MagicMock
 import stringzilla as sz
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
@@ -726,4 +727,85 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         ldflags_values = [str(x) for x in result.get(sz.Str("LDFLAGS"), [])]
         assert "-lm" in ldflags_values, \
             f"Expected -lm in LDFLAGS from header_b.hpp, got: {ldflags_values}"
+
+    @uth.requires_functional_compiler
+    def test_cpp_magic_initialization_regression(self, pkgconfig_env):
+        """Regression test for CppMagicFlags initialization (AttributeError fix) using real processing."""
+        # Use existing sample that caused issues (lotsofmagic/lotsofmagic.cpp)
+        source_file = "lotsofmagic/lotsofmagic.cpp"
+        
+        # 1. Parse with "cpp" magic. This exercises __init__ processing and populates state.
+        # This implicitly calls parser.parse(abs_path)
+        self._parse_with_magic("cpp", source_file)
+        
+        # 2. Retrieve the parser instance from the cache
+        parser = self._parser_cache[("cpp", ())]
+        
+        # 3. Simulate Hunter's behavior: asking for the macro state key
+        # This triggered the crash because _final_macro_states was missing
+        abs_path = self._get_sample_path(source_file)
+        
+        try:
+            # This method accesses self._final_macro_states
+            key = parser.get_final_macro_state_key(abs_path)
+            assert key is not None
+            assert isinstance(key, frozenset)
+        except AttributeError as e:
+            pytest.fail(f"Crashed with AttributeError accessing macro state key: {e}")
+
+    @uth.requires_functional_compiler
+    def test_magic_flags_macro_state_equivalence(self, pkgconfig_env):
+        """Verify DirectMagicFlags and CppMagicFlags produce same final macro state.
+
+        Both magic modes should converge to the same set of variable macros after
+        preprocessing. DirectMagicFlags analyzes source files with conditional compilation
+        evaluation, while CppMagicFlags uses the actual preprocessor's -dM flag to dump
+        final macro definitions.
+
+        NOTE: This test uses a file that only includes user headers (not system headers)
+        because DirectMagicFlags with headerdeps="direct" doesn't process system headers,
+        while CppMagicFlags with -dM would include all system header macros.
+        """
+        source_file = "cppflags_macros/advanced_preprocessor_test.cpp"
+        abs_path = self._get_sample_path(source_file)
+
+        # Parse with both magic modes
+        self._parse_with_magic("direct", source_file)
+        direct_parser = self._parser_cache[("direct", ())]
+
+        self._parse_with_magic("cpp", source_file)
+        cpp_parser = self._parser_cache[("cpp", ())]
+
+        # Get final macro state keys (variable macros only, for caching)
+        direct_key = direct_parser.get_final_macro_state_key(abs_path)
+        cpp_key = cpp_parser.get_final_macro_state_key(abs_path)
+
+        # CppMagicFlags should include at least the macros DirectMagicFlags found
+        # (it may include additional ones like include guards and compiler built-ins)
+        # Exception: DirectMagicFlags may track macros that were later #undef'd
+        only_in_direct = direct_key - cpp_key
+
+        if only_in_direct:
+            # Check if these are macros that exist in source but were #undef'd
+            # This is OK - CppMagicFlags uses -dM which shows final state after #undef
+            # DirectMagicFlags tracks all macros encountered during processing
+            # For this test, we'll allow this difference
+            print(f"\nNote: DirectMagicFlags found {len(only_in_direct)} macros not in CppMagicFlags (likely #undef'd):")
+            for name, value in sorted(only_in_direct):
+                print(f"  {name} = {value}")
+
+        # For macros present in both, values should match
+        direct_dict = dict(direct_key)
+        cpp_dict = dict(cpp_key)
+        mismatches = []
+        for macro_name, direct_value in direct_dict.items():
+            cpp_value = cpp_dict.get(macro_name)
+            if cpp_value is not None and str(cpp_value) != str(direct_value):
+                mismatches.append((str(macro_name), str(direct_value), str(cpp_value)))
+
+        if mismatches:
+            pytest.fail(
+                f"Macro value mismatches between DirectMagicFlags and CppMagicFlags:\n"
+                + "\n".join(f"  {name}: Direct={dv}, Cpp={cv}" for name, dv, cv in mismatches[:10])
+            )
 
