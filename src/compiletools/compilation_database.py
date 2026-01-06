@@ -76,8 +76,9 @@ class CompilationDatabaseCreator:
             return []
         
         # Get magic flags for this specific file
+        # Use Hunter's cached results (populated during huntsource)
         try:
-            magic_flags = self.magicparser.parse(source_file)
+            magic_flags = self.hunter.magicflags(source_file)
         except Exception as e:
             # Magic flags parsing may fail for various reasons
             if self.args.verbose >= 2:
