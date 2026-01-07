@@ -86,7 +86,6 @@ class CompilationDatabaseCreator:
             magic_flags = {}
 
         # Combine and deduplicate all flag sources
-        import stringzilla as sz
         if compiletools.utils.is_cpp_source(source_file):
             # C++ source: combine CPPFLAGS + CXXFLAGS from both args and magic flags
             combined_flags = compiletools.utils.combine_and_deduplicate_compiler_flags(
