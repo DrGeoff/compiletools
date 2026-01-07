@@ -20,6 +20,9 @@ _RE_HEX_LITERAL = re.compile(r'\b0[xX][0-9A-Fa-f]+\b')
 _RE_BIN_LITERAL = re.compile(r'\b0[bB][01]+\b')
 _RE_OCT_LITERAL = re.compile(r'\b0[0-7]+\b')
 
+# Reserved words that should not be treated as macros
+_RESERVED_WORDS = frozenset([sz.Str("and"), sz.Str("or"), sz.Str("not")])
+
 # Global statistics for profiling
 _stats: Dict[str, Any] = {
     'call_count': 0,
@@ -210,27 +213,27 @@ class SimplePreprocessor:
         # First handle defined() expressions to avoid expanding macros inside them
         result = self._expand_defined_sz(expr_sz)
 
-        reserved = {sz.Str("and"), sz.Str("or"), sz.Str("not")}
-
         # Start from the beginning and find identifier patterns
         i = 0
+        result_len = len(result)
 
-        while i < len(result):
-            # Skip non-identifier characters
-            if not is_alpha_or_underscore_sz(result, i):
+        while i < result_len:
+            # Skip non-identifier characters (inlined is_alpha_or_underscore_sz for performance)
+            ch = result[i]
+            if not (ch == '_' or ('a' <= ch <= 'z') or ('A' <= ch <= 'Z')):
                 i += 1
                 continue
 
             # Find the end of the identifier - vectorized
             identifier_start = i
             identifier_end = result.find_first_not_of('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_', identifier_start)
-            i = identifier_end if identifier_end != -1 else len(result)
+            i = identifier_end if identifier_end != -1 else result_len
 
             # Extract the identifier
             identifier = result[identifier_start:i]
 
             # Skip reserved words
-            if identifier in reserved:
+            if identifier in _RESERVED_WORDS:
                 continue
 
             # Check if it's a macro and replace it
@@ -240,8 +243,9 @@ class SimplePreprocessor:
                 before = result[:identifier_start]
                 after = result[i:]
                 result = before + value + after
-                # Adjust position to account for replacement
+                # Adjust position and length to account for replacement
                 i = identifier_start + len(value)
+                result_len = len(result)
 
         return result
 
