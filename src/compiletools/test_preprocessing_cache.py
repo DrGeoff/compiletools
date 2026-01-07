@@ -493,84 +493,58 @@ class TestCacheManagement:
         clear_cache()
 
 
-class TestMacroStateVersion:
-    """Tests for MacroState version counter behavior."""
+class TestMacroStateImmutability:
+    """Tests for MacroState immutability and with_updates behavior."""
 
-    def test_version_increments_on_setitem_new_key(self):
-        """Version should increment when adding a new macro via __setitem__."""
+    def test_with_updates_returns_new_instance_on_change(self):
+        """with_updates should return a new instance when actual changes occur."""
         state = MacroState(core={}, variable={})
-        assert state.get_version() == 0
+        
+        # Add new macro
+        new_state = state.with_updates({sz.Str('FOO'): sz.Str('1')})
+        assert new_state is not state
+        assert sz.Str('FOO') in new_state.variable
+        assert sz.Str('FOO') not in state.variable  # Original unchanged
 
-        state[sz.Str('FOO')] = sz.Str('1')
-        assert state.get_version() == 1
-
-        state[sz.Str('BAR')] = sz.Str('2')
-        assert state.get_version() == 2
-
-    def test_version_increments_on_setitem_value_change(self):
-        """Version should increment when changing an existing macro's value."""
+    def test_with_updates_returns_self_on_no_change(self):
+        """with_updates should return self when updates don't change state."""
         state = MacroState(core={}, variable={sz.Str('FOO'): sz.Str('1')})
-        initial_version = state.get_version()
 
-        state[sz.Str('FOO')] = sz.Str('2')
-        assert state.get_version() == initial_version + 1
+        # Update with same value
+        new_state = state.with_updates({sz.Str('FOO'): sz.Str('1')})
+        assert new_state is state  # Identity equality
 
-    def test_version_unchanged_when_setting_same_value(self):
-        """Version should NOT increment when setting a macro to its existing value."""
+        # Update with empty dict
+        new_state_empty = state.with_updates({})
+        assert new_state_empty is state
+
+    def test_with_updates_returns_new_instance_value_change(self):
+        """with_updates should return new instance on value change."""
         state = MacroState(core={}, variable={sz.Str('FOO'): sz.Str('1')})
-        initial_version = state.get_version()
 
-        state[sz.Str('FOO')] = sz.Str('1')  # Same value
-        assert state.get_version() == initial_version  # No change
+        # Update with different value
+        new_state = state.with_updates({sz.Str('FOO'): sz.Str('2')})
+        assert new_state is not state
+        assert new_state.variable[sz.Str('FOO')] == sz.Str('2')
+        assert state.variable[sz.Str('FOO')] == sz.Str('1')
 
-    def test_version_increments_on_update_with_changes(self):
-        """Version should increment when update() makes actual changes."""
-        state1 = MacroState(core={}, variable={sz.Str('FOO'): sz.Str('1')})
-        state2 = MacroState(core={}, variable={sz.Str('BAR'): sz.Str('2')})
-        initial_version = state1.get_version()
-
-        state1.update(state2)
-        assert state1.get_version() == initial_version + 1
-        assert sz.Str('BAR') in state1.variable
-
-    def test_version_unchanged_on_update_with_no_changes(self):
-        """Version should NOT increment when update() doesn't change anything."""
-        state1 = MacroState(core={}, variable={sz.Str('FOO'): sz.Str('1')})
-        state2 = MacroState(core={}, variable={sz.Str('FOO'): sz.Str('1')})
-        initial_version = state1.get_version()
-
-        state1.update(state2)
-        assert state1.get_version() == initial_version  # No change
-
-    def test_version_unchanged_on_update_empty(self):
-        """Version should NOT increment when updating with empty variable dict."""
-        state1 = MacroState(core={}, variable={sz.Str('FOO'): sz.Str('1')})
-        state2 = MacroState(core={}, variable={})
-        initial_version = state1.get_version()
-
-        state1.update(state2)
-        assert state1.get_version() == initial_version  # No change
-
-    def test_version_preserved_in_copy(self):
-        """copy() should preserve the version counter."""
+    def test_copy_returns_self(self):
+        """copy() should return self for immutable object."""
         state = MacroState(core={}, variable={sz.Str('FOO'): sz.Str('1')})
-        state[sz.Str('BAR')] = sz.Str('2')  # Increment to version 1
-
         copied = state.copy()
-        assert copied.get_version() == state.get_version()
+        assert copied is state
 
-    def test_version_convergence_detection(self):
-        """Version can be used to detect convergence in iterative processing."""
+    def test_immutability_enforced(self):
+        """Verify that mutation methods are gone."""
         state = MacroState(core={}, variable={})
+        
+        # Check that setters raise AttributeError (methods removed)
+        try:
+            state[sz.Str('FOO')] = sz.Str('1')
+            assert False, "__setitem__ should not exist"
+        except TypeError:
+            pass # 'MacroState' object does not support item assignment
+            
+        assert not hasattr(state, 'update'), "update method should not exist"
+        assert not hasattr(state, 'get_version'), "get_version method should not exist"
 
-        # Iteration 1: add macros, version changes
-        version_before = state.get_version()
-        state[sz.Str('FOO')] = sz.Str('1')
-        version_after = state.get_version()
-        assert version_after != version_before  # Detected change
-
-        # Iteration 2: no changes, version stable
-        version_before = state.get_version()
-        # ... simulate processing that doesn't add macros ...
-        version_after = state.get_version()
-        assert version_after == version_before  # Detected convergence

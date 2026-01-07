@@ -451,10 +451,8 @@ class DirectMagicFlags(MagicFlagsBase):
             verbose=self._args.verbose
         )
 
-        # Wrap dict in MacroState for update (use empty core since these are variable macros)
-        from compiletools.preprocessing_cache import MacroState
-        macro_state = MacroState(core={}, variable=macros)
-        self.defined_macros.update(macro_state)
+        # Update macro state immutably (use empty core since these are variable macros)
+        self.defined_macros = self.defined_macros.with_updates(macros)
 
 
     @functools.lru_cache(maxsize=None)
@@ -549,13 +547,17 @@ class DirectMagicFlags(MagicFlagsBase):
         # Store active magic flags for this file to avoid redundant final pass
         self._stored_active_magic_flags[fname] = active_magic_flags
 
+        # Collect updates
+        updates = {}
         # Apply extracted macros from magic flags to state
         for macro_name, macro_value in cppflags_macros + cxxflags_macros:
-            self.defined_macros[macro_name] = macro_value
+            updates[macro_name] = macro_value
 
         # Apply extracted variable macros to state
-        for macro_name, macro_value in extracted_variable_macros.items():
-            self.defined_macros[macro_name] = macro_value
+        updates.update(extracted_variable_macros)
+
+        # Update state immutably
+        self.defined_macros = self.defined_macros.with_updates(updates)
 
     def _extract_macros_from_file(self, filename):
         """Extract #define macros from a file (unconditionally, no preprocessor evaluation)."""
@@ -566,6 +568,7 @@ class DirectMagicFlags(MagicFlagsBase):
                 print(f"DirectMagicFlags warning: could not extract macros from {filename}: {e}")
             return
 
+        updates = {}
         # Extract macros directly from FileAnalyzer's structured defines data
         for define_info in file_result.defines:
             if define_info['is_function_like']:
@@ -573,7 +576,10 @@ class DirectMagicFlags(MagicFlagsBase):
 
             macro_name = define_info['name']
             macro_value = define_info['value'] if define_info['value'] is not None else sz.Str("1")
-            self.defined_macros[macro_name] = macro_value
+            updates[macro_name] = macro_value
+
+        if updates:
+            self.defined_macros = self.defined_macros.with_updates(updates)
 
     def _build_all_files_list(self, filename, headers):
         """Build deduplicated list of all files to process (explicit macros + main + headers)."""
@@ -634,29 +640,32 @@ class DirectMagicFlags(MagicFlagsBase):
 
         while iteration < max_iterations:
             iteration += 1
-            macro_version_before = self.defined_macros.get_version()
+            # Track state object identity to detect convergence
+            # with_updates() returns self if no effective changes occur
+            macro_state_before = self.defined_macros
 
-            # Determine which files need processing (those not yet processed with current macro version)
+            # Determine which files need processing (those not yet processed with current macro state)
+            # Use cache key as proxy for version since immutable state usually means different cache key
+            current_macro_key = self.defined_macros.get_cache_key()
+            
             files_to_process = [
                 fname for fname in all_files
-                if file_last_macro_version.get(fname) != macro_version_before
+                if file_last_macro_version.get(fname) != current_macro_key
             ]
 
             if not files_to_process:
                 break
 
             # Process files that need reprocessing
-            # Pass cache key to avoid redundant get_cache_key() calls within file processing
-            current_macro_key = self.defined_macros.get_cache_key()
             for fname in files_to_process:
                 self._process_file_for_macros(fname, current_macro_key)
-                # Record current version to avoid reprocessing in next iteration
+                # Record current key to avoid reprocessing in next iteration
                 # (files that mutate macros are already cached by their input state)
-                file_last_macro_version[fname] = macro_version_before
+                file_last_macro_version[fname] = current_macro_key
 
-            # Check convergence - version unchanged means macros converged
-            macro_version_after = self.defined_macros.get_version()
-            if macro_version_after == macro_version_before:
+            # Check convergence - identity check works because with_updates returns
+            # self if no changes occurred
+            if self.defined_macros is macro_state_before:
                 break
 
         return iteration
