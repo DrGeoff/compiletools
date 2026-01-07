@@ -1,12 +1,24 @@
 """Simple C preprocessor for handling conditional compilation directives."""
 
 from typing import List, Dict, Tuple, Any, TYPE_CHECKING
+import re
 import stringzilla as sz
 from compiletools.stringzilla_utils import is_alpha_or_underscore_sz
 from collections import Counter
 
 if TYPE_CHECKING:
     from compiletools.file_analyzer import PreprocessorDirective, FileAnalysisResult
+
+# Precompiled regex patterns for _safe_eval
+_RE_BACKSLASH_WHITESPACE = re.compile(r'\\\s*')
+_RE_MALFORMED_NUMBERS = re.compile(r'(\d+)\s*\(\s*(\d+)\s*\)')
+_RE_INTEGER_SUFFIXES = re.compile(r'(\d+)[LlUu]+\b')
+_RE_SAFE_EXPR = re.compile(r'^[0-9\s\+\-\*\/\%\(\)\<\>\=\!&\|\^~andortnot ]+$')
+
+# Precompiled regex patterns for _normalize_numeric_literals
+_RE_HEX_LITERAL = re.compile(r'\b0[xX][0-9A-Fa-f]+\b')
+_RE_BIN_LITERAL = re.compile(r'\b0[bB][01]+\b')
+_RE_OCT_LITERAL = re.compile(r'\b0[0-7]+\b')
 
 # Global statistics for profiling
 _stats: Dict[str, Any] = {
@@ -454,48 +466,47 @@ class SimplePreprocessor:
         """Safely evaluate a numeric expression"""
         # Clean up the expression
         expr = expr.strip()
-        
+
         # Remove trailing backslashes from multiline directives and normalize whitespace
-        import re
         # Remove backslashes followed by whitespace (multiline continuations)
-        expr = re.sub(r'\\\s*', ' ', expr)
+        expr = _RE_BACKSLASH_WHITESPACE.sub(' ', expr)
         # Remove any remaining trailing backslashes
         expr = expr.rstrip('\\').strip()
-        
+
         # First clean up any malformed expressions from macro replacement
         # Fix cases like "0(0)" which occur when macros expand to adjacent numbers
-        expr = re.sub(r'(\d+)\s*\(\s*(\d+)\s*\)', r'\1 * \2', expr)
-        
+        expr = _RE_MALFORMED_NUMBERS.sub(r'\1 * \2', expr)
+
         # Remove C-style integer suffixes (L, UL, LL, ULL, etc.)
-        expr = re.sub(r'(\d+)[LlUu]+\b', r'\1', expr)
+        expr = _RE_INTEGER_SUFFIXES.sub(r'\1', expr)
 
         # Normalize C-style numeric literals to Python ints (hex, bin, octal)
         expr = self._normalize_numeric_literals(expr)
-        
+
         # Convert C operators to Python equivalents
         # Handle comparison operators first (before replacing ! with not)
         # Use temporary placeholders to protect != from being affected by ! replacement
         expr = expr.replace('!=', '__NE__')  # Temporarily replace != with placeholder
         expr = expr.replace('>=', '__GE__')  # Also protect >= from > replacement
         expr = expr.replace('<=', '__LE__')  # Also protect <= from < replacement
-        
+
         # Now handle logical operators (! is safe to replace now)
         expr = expr.replace('&&', ' and ')
         expr = expr.replace('||', ' or ')
         expr = expr.replace('!', ' not ')
-        
+
         # Now restore comparison operators as Python equivalents
         expr = expr.replace('__NE__', '!=')
         expr = expr.replace('__GE__', '>=')
         expr = expr.replace('__LE__', '<=')
         # Note: ==, >, < are already correct for Python and need no conversion
-        
+
         # Clean up any remaining whitespace issues
         expr = expr.strip()
-        
+
         # Only allow safe characters and words
         # Allow bitwise ops (&, |, ^, ~), shifts (<<, >>) and letters for 'and', 'or', 'not'
-        if not re.match(r'^[0-9\s\+\-\*\/\%\(\)\<\>\=\!&\|\^~andortnot ]+$', expr):
+        if not _RE_SAFE_EXPR.match(expr):
             raise ValueError(f"Unsafe expression: {expr}")
         
         try:
@@ -516,8 +527,6 @@ class SimplePreprocessor:
         - 0b... or 0B... -> decimal
         - 0... (octal) -> decimal, but leave single '0' as is and ignore 0x/0b prefixes
         """
-        import re
-
         def repl_hex(m: re.Match[str]) -> str:
             return str(int(m.group(0), 16))
 
@@ -532,11 +541,11 @@ class SimplePreprocessor:
             return str(int(s, 8))
 
         # Replace hex first
-        expr = re.sub(r'\b0[xX][0-9A-Fa-f]+\b', repl_hex, expr)
+        expr = _RE_HEX_LITERAL.sub(repl_hex, expr)
         # Replace binary
-        expr = re.sub(r'\b0[bB][01]+\b', repl_bin, expr)
+        expr = _RE_BIN_LITERAL.sub(repl_bin, expr)
         # Replace octal: leading 0 followed by one or more octal digits, not 0x/0b already handled
-        expr = re.sub(r'\b0[0-7]+\b', repl_oct, expr)
+        expr = _RE_OCT_LITERAL.sub(repl_oct, expr)
         return expr
 
 
