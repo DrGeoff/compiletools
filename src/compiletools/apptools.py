@@ -147,7 +147,7 @@ def add_common_arguments(cap, argv=None, variant=None):
         default="unsupplied_implies_use_CXXFLAGS",
     )
     cap.add("--CXXFLAGS", nargs="+", help="C++ compiler flags (override)", default="-fPIC -g -Wall")
-    cap.add("--CFLAGS", help="C compiler flags (override)", default="-fPIC -g -Wall")
+    cap.add("--CFLAGS", nargs="+", help="C compiler flags (override)", default="-fPIC -g -Wall")
     compiletools.utils.add_flag_argument(
         parser=cap,
         name="git-root",
@@ -159,8 +159,9 @@ def add_common_arguments(cap, argv=None, variant=None):
         "--INCLUDE",
         "--include",
         dest="INCLUDE",
-        help="Extra path(s) to add to the list of include paths. (override)",
+        nargs="+",
         default="",
+        help="Extra path(s) to add to the list of include paths (override)",
     )
     cap.add(
         "--pkg-config",
@@ -1045,8 +1046,8 @@ def _flatten_variables(args):
     """Most of the code base was written to expect CXXFLAGS are a single string with space separation.
     However, around 20240920 we allowed some variables to be lists of those strings.  To allow this
     change to slip in with minimal code changes, we flatten out the list into a single string."""
-    for varname in ("CPPFLAGS", "CFLAGS", "CXXFLAGS"):
-        if isinstance(getattr(args, varname), list):
+    for varname in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "INCLUDE"):
+        if isinstance(getattr(args, varname, None), list):
             setattr(args, varname, " ".join(getattr(args, varname)))
 
 
