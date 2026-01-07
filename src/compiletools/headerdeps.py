@@ -17,6 +17,7 @@ import compiletools.compiler_macros
 import compiletools.file_analyzer
 from compiletools.preprocessing_cache import get_or_compute_preprocessing, MacroState, MacroDict, MacroCacheKey
 from compiletools.file_analyzer import analyze_file, set_analyzer_args
+from compiletools.global_hash_registry import get_file_hash
 
 # Cache for filtered include lists: (content_hash, macro_cache_key) -> list of includes
 _include_list_cache = {}
@@ -329,7 +330,6 @@ class DirectHeaderDeps(HeaderDepsBase):
         Caches filtered include lists to avoid redundant processing when the same
         file is encountered with the same macro state across different traversals.
         """
-        from compiletools.global_hash_registry import get_file_hash
         content_hash = get_file_hash(realpath)
 
         # Check cache using content_hash + macro state
