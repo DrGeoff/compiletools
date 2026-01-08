@@ -378,11 +378,8 @@ class DirectHeaderDeps(HeaderDepsBase):
             _invariant_include_cache[content_hash] = (include_list, result.file_defines)
             return include_list
 
-        # Variant file - use full (content_hash, macro_key) as cache key
-        macro_key = self.defined_macros.get_cached_key_if_available()
-        if macro_key is None:
-            macro_key = self.defined_macros.get_cache_key()
-
+        # Variant file - use file-specific macro key (only macros that affect this file)
+        macro_key = self.defined_macros.get_relevant_key(analysis_result.conditional_macros)
         cache_key = (content_hash, macro_key)
 
         if cache_key in _include_list_cache:
