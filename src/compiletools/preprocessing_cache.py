@@ -335,7 +335,11 @@ def get_or_compute_preprocessing(
             cached = _invariant_cache[content_hash]
             # CRITICAL FIX: Reconstruct updated_macros from caller's input + file's defines
             # This prevents stale macro pollution from first caller's context
-            reconstructed_macros = input_macros.with_updates(cached.file_defines)
+            # Fast path: if file defines nothing, no reconstruction needed
+            if cached.file_defines:
+                reconstructed_macros = input_macros.with_updates(cached.file_defines)
+            else:
+                reconstructed_macros = input_macros
             return ProcessingResult(
                 active_lines=cached.active_lines,
                 active_includes=cached.active_includes,
@@ -360,7 +364,11 @@ def get_or_compute_preprocessing(
             _cache_stats['variant_hits'] += 1
             cached = _variant_cache[cache_key]
             # Apply same reconstruction pattern for consistency
-            reconstructed_macros = input_macros.with_updates(cached.file_defines)
+            # Fast path: if file defines nothing, no reconstruction needed
+            if cached.file_defines:
+                reconstructed_macros = input_macros.with_updates(cached.file_defines)
+            else:
+                reconstructed_macros = input_macros
             return ProcessingResult(
                 active_lines=cached.active_lines,
                 active_includes=cached.active_includes,

@@ -23,6 +23,19 @@ _RE_OCT_LITERAL = re.compile(r'\b0[0-7]+\b')
 # Reserved words that should not be treated as macros
 _RESERVED_WORDS = frozenset([sz.Str("and"), sz.Str("or"), sz.Str("not")])
 
+# Dispatch table for preprocessor directives (performance optimization)
+# Maps directive type to (handler_method_name, needs_directive_arg)
+_DIRECTIVE_DISPATCH = {
+    'define': ('_handle_define_structured', True),
+    'undef': ('_handle_undef_structured', True),
+    'ifdef': ('_handle_ifdef_structured', True),
+    'ifndef': ('_handle_ifndef_structured', True),
+    'if': ('_handle_if_structured', True),
+    'elif': ('_handle_elif_structured', True),
+    'else': ('_handle_else', False),
+    'endif': ('_handle_endif', False),
+}
+
 # Global statistics for profiling
 _stats: Dict[str, Any] = {
     'call_count': 0,
@@ -105,10 +118,12 @@ class SimplePreprocessor:
 
     def _evaluate_expression_sz(self, expr_sz: sz.Str) -> int:
         """Evaluate a StringZilla expression using native StringZilla operations"""
-        # Use StringZilla-native RECURSIVE macro expansion for better performance
-        expanded_sz = self._recursive_expand_macros_sz(expr_sz)
-        # Strip comments AFTER macro expansion to handle cases where comments were preserved through expansion
-        final_sz = self._strip_comments_sz(expanded_sz)
+        # Strip comments FIRST (faster - avoids expanding macros inside comments)
+        stripped_sz = self._strip_comments_sz(expr_sz)
+        # Then expand macros
+        expanded_sz = self._recursive_expand_macros_sz(stripped_sz)
+        # Final result (no need to strip again since comments already removed)
+        final_sz = expanded_sz
         # For now, convert final expression to str for safe_eval, but this could be optimized
         expr_str = str(final_sz)
         result = self._safe_eval(expr_str)
@@ -327,38 +342,20 @@ class SimplePreprocessor:
 
     def _handle_directive_structured(self, directive: 'PreprocessorDirective', condition_stack: List[Tuple[bool, bool, bool]], line_num: int) -> bool:
         """Handle a specific preprocessor directive using structured data"""
-        dtype = directive.directive_type
-        
-        if dtype == 'define':
-            self._handle_define_structured(directive, condition_stack)
+        dispatch_info = _DIRECTIVE_DISPATCH.get(directive.directive_type)
+        if dispatch_info:
+            handler_name, needs_directive = dispatch_info
+            handler = getattr(self, handler_name)
+            if needs_directive:
+                handler(directive, condition_stack)
+            else:
+                handler(condition_stack)
             return True
-        elif dtype == 'undef':
-            self._handle_undef_structured(directive, condition_stack)
-            return True
-        elif dtype == 'ifdef':
-            self._handle_ifdef_structured(directive, condition_stack)
-            return True
-        elif dtype == 'ifndef':
-            self._handle_ifndef_structured(directive, condition_stack)
-            return True
-        elif dtype == 'if':
-            self._handle_if_structured(directive, condition_stack)
-            return True
-        elif dtype == 'elif':
-            self._handle_elif_structured(directive, condition_stack)
-            return True
-        elif dtype == 'else':
-            self._handle_else(condition_stack)
-            return True
-        elif dtype == 'endif':
-            self._handle_endif(condition_stack)
-            return True
-        else:
-            # Unknown directive - ignore but don't consume the line
-            # This allows #include and other directives to be processed normally
-            if self.verbose >= 8:
-                print(f"SimplePreprocessor: Ignoring unknown directive #{dtype}")
-            return False  # Indicate that this directive wasn't handled
+        # Unknown directive - ignore but don't consume the line
+        # This allows #include and other directives to be processed normally
+        if self.verbose >= 8:
+            print(f"SimplePreprocessor: Ignoring unknown directive #{directive.directive_type}")
+        return False
 
     def _handle_else(self, condition_stack: List[Tuple[bool, bool, bool]]) -> None:
         """Handle #else directive"""

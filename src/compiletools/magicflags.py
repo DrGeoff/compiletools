@@ -768,15 +768,16 @@ class DirectMagicFlags(MagicFlagsBase):
                     for k, v in sorted(pass1_macro_key)[:10]:
                         print(f"DirectMagicFlags:   {k} = {v}")
 
-            # CRITICAL: Clear ALL caches to ensure Pass 2 isn't using Pass 1 cached results
-            # Even though caches use macro_key, we need to ensure fresh evaluation
+            # Clear caches that depend on macro state for Pass 2
+            # NOTE: _invariant_cache is NOT cleared because invariant files
+            # (those without conditionals) produce the same result regardless of macro state
             if self._args.verbose >= 7:
-                print(f"DirectMagicFlags: Clearing all caches before Pass 2")
+                print(f"DirectMagicFlags: Clearing macro-dependent caches before Pass 2")
             import compiletools.headerdeps
             import compiletools.preprocessing_cache
             compiletools.headerdeps._include_list_cache.clear()
             compiletools.preprocessing_cache._variant_cache.clear()
-            compiletools.preprocessing_cache._invariant_cache.clear()
+            # DON'T clear _invariant_cache - invariant files don't depend on macro state
 
             # Re-discover headers with converged macros (includes file-defined macros)
             headers = self._headerdeps.process(filename, pass1_macro_key)
