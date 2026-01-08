@@ -116,7 +116,19 @@ class MacroState:
 
         updated_variable = self.variable.copy()
         updated_variable.update(actual_updates)
-        return MacroState(self.core, updated_variable)
+        new_state = MacroState(self.core, updated_variable)
+
+        # Optimization: incrementally compute cache key when possible
+        # Only for pure additions (no key overwrites) since frozenset union
+        # doesn't replace - it adds. Macro definitions are typically additive
+        # (include guards, feature flags), so pure additions are the common case.
+        if self._cache_key is not None:
+            overwrites = any(k in self.variable for k in actual_updates)
+            if not overwrites:
+                # Pure addition - O(k) frozenset union instead of O(n) rebuild
+                new_state._cache_key = self._cache_key | frozenset(actual_updates.items())
+
+        return new_state
 
     # Dict-like interface for easy drop-in replacement
     def __len__(self) -> int:

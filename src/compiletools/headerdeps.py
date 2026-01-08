@@ -343,7 +343,9 @@ class DirectHeaderDeps(HeaderDepsBase):
         if cache_key in _include_list_cache:
             cached_includes, cached_file_defines = _include_list_cache[cache_key]
             # Reconstruct updated_macros from current input + file's defines
-            self.defined_macros = self.defined_macros.with_updates(cached_file_defines)
+            # Fast path: skip with_updates call for files that define no macros
+            if cached_file_defines:
+                self.defined_macros = self.defined_macros.with_updates(cached_file_defines)
             return cached_includes
 
         # Cache miss - compute the include list
