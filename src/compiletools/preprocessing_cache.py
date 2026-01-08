@@ -427,6 +427,7 @@ def get_or_compute_preprocessing(
 
     # Store file-specific defines for cache reconstruction
     # file_defines should ONLY contain macros defined BY this file (not inherited from input)
+    # Note: Include guards are already excluded by SimplePreprocessor._handle_define_structured()
     file_defines: MacroDict = {}
     for k, v in new_variable_macros.items():
         if k not in input_macros.variable:
