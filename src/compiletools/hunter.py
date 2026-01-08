@@ -38,13 +38,12 @@ class Hunter(object):
         self.magicparser = magicparser
         # Clear lru_cache on instance methods to prevent stale cache across builds
         # The cache is bound to the method, not the instance, so it persists
-        if hasattr(Hunter, '_get_immediate_deps'):
-            Hunter._get_immediate_deps.cache_clear()
-        if hasattr(Hunter, '_parse_magic'):
-            Hunter._parse_magic.cache_clear()
-        if hasattr(Hunter, '_required_files_impl'):
-            Hunter._required_files_impl.cache_clear()
+        Hunter._get_immediate_deps.cache_clear()
+        Hunter._parse_magic.cache_clear()
+        Hunter._required_files_impl.cache_clear()
+        Hunter._extractSOURCE.cache_clear()
 
+    @functools.lru_cache(maxsize=None)
     def _extractSOURCE(self, realpath):
         import stringzilla as sz
         # Call get_structured_data directly to leverage its cache (90%+ hit rate)
@@ -58,7 +57,7 @@ class Hunter(object):
                     sources.append(magic_flag['value'])
 
         cwd = compiletools.wrappedos.dirname(realpath)
-        ess = {compiletools.wrappedos.realpath(os.path.join(cwd, str(es))) for es in sources}
+        ess = frozenset(compiletools.wrappedos.realpath(os.path.join(cwd, str(es))) for es in sources)
         if self.args.verbose >= 2 and ess:
             print("Hunter::_extractSOURCE. realpath=", realpath, " SOURCE flag:", ess)
         return ess
@@ -170,13 +169,11 @@ class Hunter(object):
 
     def clear_instance_cache(self):
         """Clear this instance's caches."""
-        if hasattr(self, '_parse_magic'):
-            self._parse_magic.cache_clear()
-        if hasattr(self, '_get_immediate_deps'):
-            self._get_immediate_deps.cache_clear()
-        if hasattr(self, '_required_files_impl'):
-            self._required_files_impl.cache_clear()
-        # Clear project-level source discovery caches
+        self._parse_magic.cache_clear()
+        self._get_immediate_deps.cache_clear()
+        self._required_files_impl.cache_clear()
+        self._extractSOURCE.cache_clear()
+        # Clear project-level source discovery caches (these are set dynamically)
         if hasattr(self, '_hunted_sources'):
             del self._hunted_sources
         if hasattr(self, '_test_sources'):
