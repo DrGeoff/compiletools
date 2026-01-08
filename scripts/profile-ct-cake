@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""Profile ct-cake performance on an arbitrary directory.
+
+Usage:
+    scripts/profile-ct-cake --directory /path/to/project
+    scripts/profile-ct-cake --directory /path/to/project --profile-output project.prof
+    scripts/profile-ct-cake --directory /path/to/project -- --include "platform/linuxbsd thirdparty/libogg"
+"""
+import argparse
+import cProfile
+import pstats
+import tempfile
+import time
+import os
+import sys
+from pathlib import Path
+
+
+def extract_performance_metrics(ps: pstats.Stats) -> dict:
+    """Extract key performance metrics from pstats."""
+    total_calls = ps.total_calls
+    total_time = ps.total_tt
+
+    # Get top functions by cumulative time
+    top_functions = []
+    compiletools_functions = {}
+
+    for func, (cc, nc, tt, ct, callers) in ps.stats.items():
+        if ct > 0.001:  # Only include functions with significant time
+            filename, lineno, funcname = func
+            if filename.startswith('/'):
+                filename = filename.split('/')[-1]
+            func_name = f"{filename}:{lineno}({funcname})"
+
+            func_data = {
+                'ncalls': f"{cc}/{nc}" if cc != nc else str(nc),
+                'tottime': tt,
+                'cumtime': ct,
+                'function': func_name
+            }
+            top_functions.append(func_data)
+
+            if 'compiletools' in str(func[0]):
+                key = func_name
+                compiletools_functions[key] = {
+                    'ncalls': func_data['ncalls'],
+                    'tottime': func_data['tottime'],
+                    'cumtime': func_data['cumtime']
+                }
+
+    # Sort by cumulative time
+    top_functions.sort(key=lambda x: x['cumtime'], reverse=True)
+
+    return {
+        'total_calls': total_calls,
+        'total_time': total_time,
+        'top_functions': top_functions[:20],
+        'compiletools_functions': compiletools_functions
+    }
+
+
+def print_metrics(metrics: dict, wall_time: float) -> None:
+    """Print performance metrics in a readable format."""
+    print("\n" + "=" * 80)
+    print("PERFORMANCE SUMMARY")
+    print("=" * 80)
+    print(f"Wall-clock time: {wall_time:.3f}s")
+    print(f"CPU time: {metrics['total_time']:.3f}s")
+    print(f"Total function calls: {metrics['total_calls']:,}")
+
+    print("\n" + "-" * 80)
+    print("TOP 20 FUNCTIONS BY CUMULATIVE TIME")
+    print("-" * 80)
+    print(f"{'Function':<55} {'Calls':<12} {'CumTime':<10}")
+    print("-" * 80)
+
+    for func in metrics['top_functions']:
+        display_name = func['function'][:52] + "..." if len(func['function']) > 55 else func['function']
+        print(f"{display_name:<55} {func['ncalls']:<12} {func['cumtime']:.3f}s")
+
+    # Show compiletools-specific functions sorted by cumtime
+    ct_funcs = sorted(
+        metrics['compiletools_functions'].items(),
+        key=lambda x: x[1]['cumtime'],
+        reverse=True
+    )[:15]
+
+    if ct_funcs:
+        print("\n" + "-" * 80)
+        print("TOP COMPILETOOLS FUNCTIONS")
+        print("-" * 80)
+        print(f"{'Function':<55} {'Calls':<12} {'CumTime':<10}")
+        print("-" * 80)
+
+        for func_name, data in ct_funcs:
+            display_name = func_name[:52] + "..." if len(func_name) > 55 else func_name
+            print(f"{display_name:<55} {data['ncalls']:<12} {data['cumtime']:.3f}s")
+
+
+def run_profiling(directory: str, profile_output: str = None, verbose: int = 0,
+                  extra_args: list = None, no_build: bool = False) -> tuple:
+    """Run ct-cake under cProfile.
+
+    Args:
+        directory: Directory to run ct-cake in
+        profile_output: Optional path to save .prof file
+        verbose: Verbosity level for ct-cake
+        extra_args: Additional arguments to pass to ct-cake
+        no_build: Skip the actual make invocation (profile analysis only)
+
+    Returns:
+        tuple of (metrics dict, wall_time)
+    """
+    # Add src to path for imports
+    src_path = Path(__file__).parent.parent / "src"
+    sys.path.insert(0, str(src_path))
+
+    from compiletools import cake
+
+    # Create temp directory for output to avoid polluting target project
+    with tempfile.TemporaryDirectory() as tmpdir:
+        makefile = os.path.join(tmpdir, "Makefile")
+        objdir = os.path.join(tmpdir, "obj")
+        bindir = os.path.join(tmpdir, "bin")
+
+        # Build argv for ct-cake
+        argv = [
+            "--auto",
+            "--makefilename", makefile,
+            "--objdir", objdir,
+            "--bindir", bindir,
+        ]
+        if verbose:
+            argv.extend(["--verbose"] * verbose)
+        if no_build:
+            # Use --file-list to skip build and just do analysis
+            argv.append("--file-list")
+
+        # Add any extra arguments
+        if extra_args:
+            argv.extend(extra_args)
+
+        # Change to target directory
+        original_cwd = os.getcwd()
+        os.chdir(directory)
+
+        try:
+            # Profile the execution
+            profiler = cProfile.Profile()
+
+            start_time = time.perf_counter()
+            profiler.enable()
+
+            # Redirect stdout to suppress file list output when using --file-list
+            if no_build:
+                original_stdout = sys.stdout
+                sys.stdout = open(os.devnull, 'w')
+            try:
+                cake.main(argv)
+            finally:
+                if no_build:
+                    sys.stdout.close()
+                    sys.stdout = original_stdout
+
+            profiler.disable()
+            end_time = time.perf_counter()
+
+            wall_time = end_time - start_time
+
+            # Save profile if requested
+            if profile_output:
+                profiler.dump_stats(profile_output)
+                print(f"Profile saved to: {profile_output}")
+
+            # Extract and return metrics
+            ps = pstats.Stats(profiler)
+            ps.sort_stats('cumulative')
+            metrics = extract_performance_metrics(ps)
+
+            return metrics, wall_time
+
+        finally:
+            os.chdir(original_cwd)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Profile ct-cake performance",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    parser.add_argument(
+        "--directory", "-d",
+        default=".",
+        help="Directory to run ct-cake in"
+    )
+    parser.add_argument(
+        "--profile-output", "-o",
+        help="Save profile data to this file for detailed analysis"
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="count",
+        default=0,
+        help="Increase verbosity (can be repeated)"
+    )
+    parser.add_argument(
+        "--no-build",
+        action="store_true",
+        help="Skip the actual make invocation (profile analysis only)"
+    )
+    parser.add_argument(
+        "extra_args",
+        nargs="*",
+        help="Additional arguments to pass to ct-cake (after --)"
+    )
+
+    args = parser.parse_args()
+
+    directory = os.path.abspath(args.directory)
+    if not os.path.isdir(directory):
+        print(f"Error: {directory} is not a directory")
+        return 1
+
+    print(f"Profiling ct-cake in: {directory}")
+    if args.no_build:
+        print("Skipping build (analysis only)")
+    if args.extra_args:
+        print(f"Extra ct-cake arguments: {args.extra_args}")
+
+    metrics, wall_time = run_profiling(
+        directory,
+        profile_output=args.profile_output,
+        verbose=args.verbose,
+        extra_args=args.extra_args,
+        no_build=args.no_build
+    )
+
+    print_metrics(metrics, wall_time)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
