@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
-"""Profile ct-cake performance on an arbitrary directory.
+"""Generic profiler for any ct-* command.
 
 Usage:
-    scripts/profile-ct-cake --directory /path/to/project
-    scripts/profile-ct-cake --directory /path/to/project --profile-output project.prof
-    scripts/profile-ct-cake --directory /path/to/project -- --include "platform/linuxbsd thirdparty/libogg"
+    scripts/profile-ct ct-cake --directory /path/to/project
+    scripts/profile-ct ct-compilation-database -d /path/to/project -- --include "dir1 dir2"
+    scripts/profile-ct ct-cake -d /path/to/project -o profile.prof -- --include "$(ls -d thirdparty/*/)"
+
+Examples:
+    # Profile ct-cake with extra includes
+    scripts/profile-ct ct-cake -d ~/godot -- --include "platform/linuxbsd $(ls -d thirdparty/*/)"
+
+    # Profile ct-compilation-database
+    scripts/profile-ct ct-compilation-database -d ~/myproject
+
+    # Save profile for detailed analysis
+    scripts/profile-ct ct-cake -d ~/project -o cake.prof -- --auto
 """
 import argparse
 import cProfile
@@ -15,18 +25,30 @@ import os
 import sys
 from pathlib import Path
 
+# Map command names to module names and their main functions
+COMMAND_MODULE_MAP = {
+    'ct-cake': ('cake', 'main'),
+    'ct-compilation-database': ('compilation_database', 'main'),
+    'ct-build': ('makefile', 'main'),
+    'ct-headertree': ('headertree', 'main'),
+    'ct-filelist': ('filelist', 'main'),
+    'ct-findtargets': ('findtargets', 'main'),
+    'ct-cppdeps': ('cppdeps', 'main'),
+    'ct-magicflags': ('magicflags', 'main'),
+    'ct-cleanup-locks': ('cleanup_locks_main', 'main'),
+}
+
 
 def extract_performance_metrics(ps: pstats.Stats) -> dict:
     """Extract key performance metrics from pstats."""
     total_calls = ps.total_calls
     total_time = ps.total_tt
 
-    # Get top functions by cumulative time
     top_functions = []
     compiletools_functions = {}
 
     for func, (cc, nc, tt, ct, callers) in ps.stats.items():
-        if ct > 0.001:  # Only include functions with significant time
+        if ct > 0.001:
             filename, lineno, funcname = func
             if filename.startswith('/'):
                 filename = filename.split('/')[-1]
@@ -41,14 +63,12 @@ def extract_performance_metrics(ps: pstats.Stats) -> dict:
             top_functions.append(func_data)
 
             if 'compiletools' in str(func[0]):
-                key = func_name
-                compiletools_functions[key] = {
+                compiletools_functions[func_name] = {
                     'ncalls': func_data['ncalls'],
                     'tottime': func_data['tottime'],
                     'cumtime': func_data['cumtime']
                 }
 
-    # Sort by cumulative time
     top_functions.sort(key=lambda x: x['cumtime'], reverse=True)
 
     return {
@@ -78,7 +98,6 @@ def print_metrics(metrics: dict, wall_time: float) -> None:
         display_name = func['function'][:52] + "..." if len(func['function']) > 55 else func['function']
         print(f"{display_name:<55} {func['ncalls']:<12} {func['cumtime']:.3f}s")
 
-    # Show compiletools-specific functions sorted by cumtime
     ct_funcs = sorted(
         metrics['compiletools_functions'].items(),
         key=lambda x: x[1]['cumtime'],
@@ -97,44 +116,60 @@ def print_metrics(metrics: dict, wall_time: float) -> None:
             print(f"{display_name:<55} {data['ncalls']:<12} {data['cumtime']:.3f}s")
 
 
-def run_profiling(directory: str, profile_output: str = None, verbose: int = 0,
-                  extra_args: list = None, no_build: bool = False) -> tuple:
-    """Run ct-cake under cProfile.
+def run_profiling(command: str, directory: str, profile_output: str = None,
+                  verbose: int = 0, extra_args: list = None) -> tuple:
+    """Run a ct-* command under cProfile.
 
     Args:
-        directory: Directory to run ct-cake in
+        command: The ct-* command name (e.g., 'ct-cake')
+        directory: Directory to run the command in
         profile_output: Optional path to save .prof file
-        verbose: Verbosity level for ct-cake
-        extra_args: Additional arguments to pass to ct-cake
-        no_build: Skip the actual make invocation (profile analysis only)
+        verbose: Verbosity level
+        extra_args: Additional arguments to pass to the command
 
     Returns:
         tuple of (metrics dict, wall_time)
     """
+    if command not in COMMAND_MODULE_MAP:
+        available = ', '.join(sorted(COMMAND_MODULE_MAP.keys()))
+        raise ValueError(f"Unknown command: {command}. Available: {available}")
+
+    module_name, func_name = COMMAND_MODULE_MAP[command]
+
     # Add src to path for imports
     src_path = Path(__file__).parent.parent / "src"
     sys.path.insert(0, str(src_path))
 
-    from compiletools import cake
+    # Import the module dynamically
+    module = __import__(f'compiletools.{module_name}', fromlist=[func_name])
+    main_func = getattr(module, func_name)
 
     # Create temp directory for output to avoid polluting target project
     with tempfile.TemporaryDirectory() as tmpdir:
-        makefile = os.path.join(tmpdir, "Makefile")
-        objdir = os.path.join(tmpdir, "obj")
-        bindir = os.path.join(tmpdir, "bin")
+        # Build argv based on command type
+        argv = []
 
-        # Build argv for ct-cake
-        argv = [
-            "--auto",
-            "--makefilename", makefile,
-            "--objdir", objdir,
-            "--bindir", bindir,
-        ]
+        # Add --auto for commands that support it
+        if command in ('ct-cake', 'ct-compilation-database'):
+            argv.append("--auto")
+
+        # Add temp output locations for ct-cake
+        if command == 'ct-cake':
+            argv.extend([
+                "--makefilename", os.path.join(tmpdir, "Makefile"),
+                "--objdir", os.path.join(tmpdir, "obj"),
+                "--bindir", os.path.join(tmpdir, "bin"),
+            ])
+
+        # Add temp output for ct-compilation-database
+        if command == 'ct-compilation-database':
+            argv.extend([
+                "--compilation-database-output", os.path.join(tmpdir, "compile_commands.json"),
+            ])
+
+        # Add verbosity
         if verbose:
             argv.extend(["--verbose"] * verbose)
-        if no_build:
-            # Use --file-list to skip build and just do analysis
-            argv.append("--file-list")
 
         # Add any extra arguments
         if extra_args:
@@ -145,34 +180,22 @@ def run_profiling(directory: str, profile_output: str = None, verbose: int = 0,
         os.chdir(directory)
 
         try:
-            # Profile the execution
             profiler = cProfile.Profile()
 
             start_time = time.perf_counter()
             profiler.enable()
 
-            # Redirect stdout to suppress file list output when using --file-list
-            if no_build:
-                original_stdout = sys.stdout
-                sys.stdout = open(os.devnull, 'w')
-            try:
-                cake.main(argv)
-            finally:
-                if no_build:
-                    sys.stdout.close()
-                    sys.stdout = original_stdout
+            main_func(argv)
 
             profiler.disable()
             end_time = time.perf_counter()
 
             wall_time = end_time - start_time
 
-            # Save profile if requested
             if profile_output:
                 profiler.dump_stats(profile_output)
                 print(f"Profile saved to: {profile_output}")
 
-            # Extract and return metrics
             ps = pstats.Stats(profiler)
             ps.sort_stats('cumulative')
             metrics = extract_performance_metrics(ps)
@@ -185,13 +208,24 @@ def run_profiling(directory: str, profile_output: str = None, verbose: int = 0,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Profile ct-cake performance",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        description="Profile any ct-* command performance",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s ct-cake -d ~/project
+  %(prog)s ct-compilation-database -d ~/project -- --include "dir1 dir2"
+  %(prog)s ct-cake -d ~/godot -- --include "platform/linuxbsd $(ls -d thirdparty/*/)"
+"""
+    )
+    parser.add_argument(
+        "command",
+        choices=sorted(COMMAND_MODULE_MAP.keys()),
+        help="The ct-* command to profile"
     )
     parser.add_argument(
         "--directory", "-d",
         default=".",
-        help="Directory to run ct-cake in"
+        help="Directory to run the command in (default: .)"
     )
     parser.add_argument(
         "--profile-output", "-o",
@@ -204,14 +238,9 @@ def main():
         help="Increase verbosity (can be repeated)"
     )
     parser.add_argument(
-        "--no-build",
-        action="store_true",
-        help="Skip the actual make invocation (profile analysis only)"
-    )
-    parser.add_argument(
         "extra_args",
         nargs="*",
-        help="Additional arguments to pass to ct-cake (after --)"
+        help="Additional arguments to pass to the command (after --)"
     )
 
     args = parser.parse_args()
@@ -221,21 +250,24 @@ def main():
         print(f"Error: {directory} is not a directory")
         return 1
 
-    print(f"Profiling ct-cake in: {directory}")
-    if args.no_build:
-        print("Skipping build (analysis only)")
+    print(f"Profiling {args.command} in: {directory}")
     if args.extra_args:
-        print(f"Extra ct-cake arguments: {args.extra_args}")
+        print(f"Extra arguments: {args.extra_args}")
 
-    metrics, wall_time = run_profiling(
-        directory,
-        profile_output=args.profile_output,
-        verbose=args.verbose,
-        extra_args=args.extra_args,
-        no_build=args.no_build
-    )
+    try:
+        metrics, wall_time = run_profiling(
+            args.command,
+            directory,
+            profile_output=args.profile_output,
+            verbose=args.verbose,
+            extra_args=args.extra_args
+        )
 
-    print_metrics(metrics, wall_time)
+        print_metrics(metrics, wall_time)
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
 
     return 0
 
