@@ -29,6 +29,12 @@ _include_list_cache = {}
 _invariant_include_cache = {}
 
 
+def clear_caches():
+    """Clear all module-level caches. Used by test framework between tests."""
+    global _include_list_cache, _invariant_include_cache
+    _include_list_cache = {}
+    _invariant_include_cache = {}
+
 
 def create(args):
     """HeaderDeps Factory"""

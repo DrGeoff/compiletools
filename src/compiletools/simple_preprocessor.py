@@ -61,6 +61,8 @@ class SimplePreprocessor:
         # Caller must provide dict with sz.Str keys and values - no type conversion needed
         self.macros = defined_macros.copy()
         self.verbose = verbose
+        # Include guard to skip when processing #define (set by process_structured)
+        self._include_guard = None
 
     def _strip_comments_sz(self, expr_sz: sz.Str) -> sz.Str:
         """Strip C/C++ style comments from StringZilla expressions."""
@@ -289,6 +291,11 @@ class SimplePreprocessor:
         from compiletools.global_hash_registry import get_filepath_by_hash
         filepath = get_filepath_by_hash(file_result.content_hash)
 
+        # Store include guard so _handle_define_structured can skip it
+        # Include guards should not be added to macro state as they only prevent
+        # re-inclusion and don't affect which includes are active
+        self._include_guard = file_result.include_guard
+
         # Track statistics
         _stats['call_count'] += 1
         _stats['files_processed'][filepath] += 1
@@ -383,8 +390,15 @@ class SimplePreprocessor:
         """Handle #define directive using structured data"""
         if not condition_stack[-1][0]:
             return  # Not in active context
-            
+
         if directive.macro_name:
+            # Skip include guard - it only prevents re-inclusion and should not
+            # pollute the macro state used for cache keys
+            if self._include_guard is not None and directive.macro_name == self._include_guard:
+                if self.verbose >= 9:
+                    print(f"SimplePreprocessor: skipping include guard {directive.macro_name}")
+                return
+
             macro_value = directive.macro_value if directive.macro_value is not None else "1"
             self.macros[directive.macro_name] = macro_value
             if self.verbose >= 9:

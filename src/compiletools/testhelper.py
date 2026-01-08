@@ -189,6 +189,12 @@ def reset():
     # Clear file analyzer cache to prevent stale analysis results
     from compiletools.file_analyzer import analyze_file
     analyze_file.cache_clear()
+    # Clear preprocessing cache to prevent stale preprocessing results
+    from compiletools.preprocessing_cache import clear_cache as clear_preprocessing_cache
+    clear_preprocessing_cache()
+    # Clear headerdeps caches to prevent stale include list results
+    import compiletools.headerdeps as headerdeps
+    headerdeps.clear_caches()
 
 
 def delete_existing_parsers():
