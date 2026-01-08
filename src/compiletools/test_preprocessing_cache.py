@@ -181,8 +181,8 @@ class TestPreprocessingCache:
         hasattr(sys, 'pypy_version_info'),
         reason="sys.getsizeof not meaningful in PyPy"
     )
-    def test_cache_macro_addition(self):
-        """Test that adding macros creates different cache keys."""
+    def test_cache_irrelevant_macro_addition(self):
+        """Test that adding irrelevant macros results in cache HIT (optimization)."""
         text = dedent('''
             #ifdef FOO
             #include "foo.h"
@@ -200,16 +200,18 @@ class TestPreprocessingCache:
         assert result1.active_lines == result2.active_lines
         assert 1 in result1.active_lines  # #include line is active
 
-        # Different macro sets = different cache keys = both misses
+        # BAR is not in conditional_macros, so it's ignored in cache key
+        # Second call should be a cache HIT (optimization working)
         stats = get_cache_stats()
-        assert stats['misses'] == 2
+        assert stats['misses'] == 1  # Only first call is a miss
+        assert stats['hits'] == 1    # Second call is a hit (same relevant macros)
 
     @pytest.mark.skipif(
         hasattr(sys, 'pypy_version_info'),
         reason="sys.getsizeof not meaningful in PyPy"
     )
-    def test_cache_macro_removal(self):
-        """Test that removing macros creates different cache keys."""
+    def test_cache_irrelevant_macro_removal(self):
+        """Test that removing irrelevant macros results in cache HIT (optimization)."""
         text = dedent('''
             #ifdef FOO
             #include "foo.h"
@@ -223,10 +225,45 @@ class TestPreprocessingCache:
         result1 = get_or_compute_preprocessing(file_result, macros1, 0)
         result2 = get_or_compute_preprocessing(file_result, macros2, 0)
 
-        # Different macro sets = different results
-        assert result1.active_lines == result2.active_lines  # Same active lines
+        # Same active lines (FOO unchanged)
+        assert result1.active_lines == result2.active_lines
 
-        # But different cache keys
+        # BAR is not in conditional_macros, so it's ignored in cache key
+        # Second call should be a cache HIT (optimization working)
+        stats = get_cache_stats()
+        assert stats['misses'] == 1  # Only first call is a miss
+        assert stats['hits'] == 1    # Second call is a hit (same relevant macros)
+
+    @pytest.mark.skipif(
+        hasattr(sys, 'pypy_version_info'),
+        reason="sys.getsizeof not meaningful in PyPy"
+    )
+    def test_cache_relevant_macro_change(self):
+        """Test that changing relevant macros creates different cache keys."""
+        text = dedent('''
+            #ifdef FOO
+            #include "foo.h"
+            #endif
+            #ifdef BAR
+            #include "bar.h"
+            #endif
+        ''').strip()
+
+        file_result = self._create_simple_file_result(text, "hash_003b")
+        # Both FOO and BAR are in conditional_macros for this file
+        macros1 = MacroState({}, {sz.Str("FOO"): sz.Str("1")})
+        macros2 = MacroState({}, {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("1")})
+
+        result1 = get_or_compute_preprocessing(file_result, macros1, 0)
+        result2 = get_or_compute_preprocessing(file_result, macros2, 0)
+
+        # Different active lines (BAR adds the second include)
+        assert result1.active_lines != result2.active_lines
+        assert len(result1.active_includes) == 1  # Only foo.h
+        assert len(result2.active_includes) == 2  # foo.h and bar.h
+
+        # BAR IS in conditional_macros, so it creates a different cache key
+        # Both calls should be misses
         stats = get_cache_stats()
         assert stats['misses'] == 2
 

@@ -193,6 +193,30 @@ class MacroState:
 
         return self._cache_key
 
+    def get_relevant_key(self, relevant_macros: FrozenSet[sz.Str]) -> MacroCacheKey:
+        """Get cache key filtered to only macros that affect the target file.
+
+        For variant caching, only macros referenced in conditionals (#ifdef, #if, etc.)
+        can affect preprocessing. Other macros in the state are irrelevant for this file
+        and should not create unique cache keys.
+
+        Args:
+            relevant_macros: Set of macro names from file_result.conditional_macros
+
+        Returns:
+            Frozenset of (name, value) pairs for only the relevant variable macros
+        """
+        if not relevant_macros:
+            return _EMPTY_FROZENSET
+
+        # Build filtered key - only include variable macros that matter
+        relevant_items = tuple(
+            (m, self.variable[m])
+            for m in relevant_macros
+            if m in self.variable
+        )
+        return frozenset(relevant_items) if relevant_items else _EMPTY_FROZENSET
+
     def get_hash(self, include_core=False) -> str:
         """Get or compute stable hash of this MacroState for convergence detection.
 
@@ -364,11 +388,9 @@ def get_or_compute_preprocessing(
         _cache_stats['misses'] += 1
         _cache_stats['invariant_misses'] += 1
     else:
-        # Macro-variant: cache key is (content_hash, macro_cache_key)
-        # Try to use cached key if available to avoid recomputation
-        macro_key = input_macros.get_cached_key_if_available()
-        if macro_key is None:
-            macro_key = input_macros.get_cache_key()
+        # Macro-variant: cache key is (content_hash, file_specific_macro_key)
+        # Use file-specific key: only macros that affect this file's conditionals
+        macro_key = input_macros.get_relevant_key(file_result.conditional_macros)
         cache_key = (content_hash, macro_key)
 
         if cache_key in _variant_cache:
