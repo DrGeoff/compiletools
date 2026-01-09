@@ -989,15 +989,18 @@ class CppMagicFlags(MagicFlagsBase):
             List of dicts with structure: [{'content_hash': str, 'active_magic_flags': List[Dict]}]
             See MagicFlagsBase docstring for magic flag dict structure.
         """
-        
+
         if self._args.verbose >= 4:
             print("CppMagicFlags: Getting structured data from preprocessed C++ output")
 
-        # Extract final macro state from preprocessor (includes file-defined macros)
+        # Use initial macro state (core macros only) for CppMagicFlags.
+        # In cpp mode, the C++ preprocessor handles all conditional compilation,
+        # so we don't need to track variable macros. The magic flags are extracted
+        # from preprocessed output where all conditionals are already resolved.
+        # This avoids an expensive additional preprocessor call (-dM -E).
         abs_filename = compiletools.wrappedos.realpath(filename)
         if abs_filename not in self._final_macro_states:
-            final_macro_state = self._extract_macros_from_preprocessor(filename)
-            self._final_macro_states[abs_filename] = final_macro_state
+            self._final_macro_states[abs_filename] = self._initial_macro_state.copy()
 
         # Get preprocessed text (existing logic)
         preprocessed_text = self._readfile(filename)
