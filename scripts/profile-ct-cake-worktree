@@ -96,10 +96,24 @@ def profile_ct_cake_in_worktree(worktree_path: Path, sample_dir: str,
                 timeout=60  # 60 second timeout
             )
             
-            if result.returncode != 0:
+            # Note: cProfile masks exit codes - check stdout/stderr for error messages
+            # Look for common error patterns that indicate a failure
+            error_indicators = [
+                'AttributeError', 'KeyError', 'TypeError', 'ValueError', 'RuntimeError',
+                'has no attribute', 'Traceback (most recent call last)',
+                'Error:', 'Exception:', 'FAILED'
+            ]
+            has_error_in_output = any(err in (result.stdout or '') or err in (result.stderr or '')
+                                     for err in error_indicators)
+
+            if result.returncode != 0 or has_error_in_output:
                 print(f"    ct-cake failed with return code {result.returncode}")
                 if result.stderr:
                     print(f"    stderr: {result.stderr[:200]}...")
+                if has_error_in_output and result.stdout:
+                    # Extract first line of error
+                    first_line = result.stdout.split('\n')[0]
+                    print(f"    error: {first_line[:100]}...")
                 success = False
             else:
                 # Load and analyze the profile
@@ -107,7 +121,7 @@ def profile_ct_cake_in_worktree(worktree_path: Path, sample_dir: str,
                     ps = pstats.Stats(profile_file)
                     ps.sort_stats('cumulative')
                     stats_data = extract_performance_metrics(ps)
-                    
+
                 else:
                     print(f"    Profile file not created: {profile_file}")
                     success = False
