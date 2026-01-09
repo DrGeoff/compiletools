@@ -73,8 +73,10 @@ def profile_ct_cake_in_worktree(worktree_path: Path, sample_dir: str,
                 return {}, False
             
             # Prepare ct-cake command with profiling
+            # Use the worktree's venv Python to avoid version mismatches
+            venv_python = str(worktree_path / ".venv" / "bin" / "python")
             cmd = [
-                "python", "-m", "cProfile", "-o", profile_file,
+                venv_python, "-m", "cProfile", "-o", profile_file,
                 str(ct_cake_path),
                 "--auto",
                 "--magic", magic_mode,
