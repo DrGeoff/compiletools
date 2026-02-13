@@ -170,6 +170,13 @@ def add_common_arguments(cap, argv=None, variant=None):
         action="append",
         default=[],
     )
+    compiletools.utils.add_flag_argument(
+        parser=cap,
+        name="separate-flags-CPP-CXX",
+        dest="separate_flags_CPP_CXX",
+        default=False,
+        help="Keep CPPFLAGS and CXXFLAGS separate instead of unified.",
+    )
     compiletools.git_utils.NameAdjuster.add_arguments(cap)
     _add_xxpend_arguments(cap, xxpendableargs=("include", "cppflags", "cflags", "cxxflags"))
     add_locking_arguments(cap)
@@ -944,6 +951,22 @@ def _do_xxpend(args, name):
             setattr(args, name, attr)
 
 
+def _unify_cpp_cxx_flags(args):
+    """Combine CPPFLAGS and CXXFLAGS into a single deduplicated value.
+
+    Skipped when --separate-flags-CPP-CXX is set.
+    """
+    if getattr(args, 'separate_flags_CPP_CXX', False):
+        return
+    unified = " ".join(
+        compiletools.utils.combine_and_deduplicate_compiler_flags(
+            args.CPPFLAGS, args.CXXFLAGS
+        )
+    )
+    args.CPPFLAGS = unified
+    args.CXXFLAGS = unified
+
+
 def _deduplicate_all_flags(args):
     """Deduplicate all compiler and linker flags after all processing is complete"""
     flaglist = ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS")
@@ -1071,6 +1094,7 @@ def _commonsubstitutions(args):
     _add_include_paths_to_flags(args)
     _add_flags_from_pkg_config(args)
     _set_project_version(args)
+    _unify_cpp_cxx_flags(args)
 
     try:
         # If the user didn't explicitly supply a bindir then modify the bindir to use the variant name

@@ -809,3 +809,50 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
                 + "\n".join(f"  {name}: Direct={dv}, Cpp={cv}" for name, dv, cv in mismatches[:10])
             )
 
+    def test_magic_cppflags_unified_with_cxxflags(self):
+        """Magic CPPFLAGS appear in CXXFLAGS (and vice versa) when unified."""
+        files = uth.write_sources({
+            "test_unified.cpp": '//#CPPFLAGS=-DFROMCPP\nint main() { return 0; }\n',
+        })
+        source_file = str(files["test_unified.cpp"])
+
+        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir)
+        result = mf.parse(source_file)
+
+        cpp_flags = [str(f) for f in result.get(sz.Str("CPPFLAGS"), [])]
+        cxx_flags = [str(f) for f in result.get(sz.Str("CXXFLAGS"), [])]
+        assert "-DFROMCPP" in cpp_flags, f"Expected -DFROMCPP in CPPFLAGS, got {cpp_flags}"
+        assert "-DFROMCPP" in cxx_flags, f"Expected -DFROMCPP in CXXFLAGS, got {cxx_flags}"
+
+    def test_magic_cxxflags_unified_with_cppflags(self):
+        """Magic CXXFLAGS appear in CPPFLAGS when unified."""
+        files = uth.write_sources({
+            "test_unified2.cpp": '//#CXXFLAGS=-DFROMCXX\nint main() { return 0; }\n',
+        })
+        source_file = str(files["test_unified2.cpp"])
+
+        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir)
+        result = mf.parse(source_file)
+
+        cpp_flags = [str(f) for f in result.get(sz.Str("CPPFLAGS"), [])]
+        cxx_flags = [str(f) for f in result.get(sz.Str("CXXFLAGS"), [])]
+        assert "-DFROMCXX" in cpp_flags, f"Expected -DFROMCXX in CPPFLAGS, got {cpp_flags}"
+        assert "-DFROMCXX" in cxx_flags, f"Expected -DFROMCXX in CXXFLAGS, got {cxx_flags}"
+
+    def test_magic_flags_separate_mode(self):
+        """Magic CPPFLAGS stay separate from CXXFLAGS with --separate-flags-CPP-CXX."""
+        files = uth.write_sources({
+            "test_separate.cpp": '//#CPPFLAGS=-DFROMCPP\n//#CXXFLAGS=-DFROMCXX\nint main() { return 0; }\n',
+        })
+        source_file = str(files["test_separate.cpp"])
+
+        mf = tb.create_magic_parser(["--magic=direct", "--separate-flags-CPP-CXX"], tempdir=self._tmpdir)
+        result = mf.parse(source_file)
+
+        cpp_flags = [str(f) for f in result.get(sz.Str("CPPFLAGS"), [])]
+        cxx_flags = [str(f) for f in result.get(sz.Str("CXXFLAGS"), [])]
+        assert "-DFROMCPP" in cpp_flags
+        assert "-DFROMCXX" not in cpp_flags, f"CPPFLAGS should not contain -DFROMCXX in separate mode, got {cpp_flags}"
+        assert "-DFROMCXX" in cxx_flags
+        assert "-DFROMCPP" not in cxx_flags, f"CXXFLAGS should not contain -DFROMCPP in separate mode, got {cxx_flags}"
+
