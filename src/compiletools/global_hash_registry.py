@@ -172,6 +172,13 @@ def get_file_hash(filepath: str) -> str:
 
 
 
+def get_tracked_files() -> Dict[str, str]:
+    """Get all file paths and their hashes from the registry."""
+    if _HASHES is None:
+        load_hashes()
+    return _HASHES
+
+
 def get_registry_stats() -> Dict[str, int]:
     """Get global registry statistics."""
     if _HASHES is None:
