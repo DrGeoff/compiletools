@@ -1,9 +1,31 @@
 """Global hash registry for efficient file content hashing.
 
-This module provides a simple module-level cache that computes Git blob hashes 
+This module provides a simple module-level cache that computes Git blob hashes
 for all files once on first use, then serves hash lookups for cache operations.
-This eliminates the need for individual hashlib calls and leverages the 
+This eliminates the need for individual hashlib calls and leverages the
 git-sha-report functionality efficiently.
+
+DUPLICATE HASH DETECTION:
+
+By design, compiletools treats duplicate SHA1 hashes as bugs that need fixing.
+If two files have identical content (same SHA1), an error is raised when attempting
+reverse lookup (get_filepath_by_hash). This is intentional and helps catch:
+
+* Accidental file copies that should be removed
+* Zero-byte placeholder files that need proper initialization
+* Configuration mistakes or build artifacts that shouldn't be committed
+
+Duplicate content often masks real issues in the build system or test setup.
+
+WORKAROUND:
+
+If you intentionally need multiple files with identical or near-identical content,
+add a unique comment to each file explaining its purpose. For example:
+
+    // Placeholder stub for test scenario A
+    // See docs/test-scenarios.md for details
+
+This makes each file's purpose explicit and ensures each has a unique hash.
 """
 
 from typing import Dict, Optional, List
@@ -148,6 +170,13 @@ def get_file_hash(filepath: str) -> str:
 
 # Public API functions for compatibility
 
+
+
+def get_tracked_files() -> Dict[str, str]:
+    """Get all file paths and their hashes from the registry."""
+    if _HASHES is None:
+        load_hashes()
+    return _HASHES
 
 
 def get_registry_stats() -> Dict[str, int]:

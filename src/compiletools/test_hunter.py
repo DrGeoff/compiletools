@@ -2,8 +2,6 @@ import os
 import configargparse
 import compiletools.testhelper
 
-from importlib import reload
-
 import compiletools.testhelper as uth
 import compiletools.wrappedos
 import compiletools.headerdeps
@@ -19,17 +17,6 @@ def callprocess(headerobj, filenames):
     return result
 
 
-def _reload_ct_with_cache(cache_home):
-    """ Set the CTCACHE environment variable to cache_home
-        and reload the compiletools.* modules
-    """
-    with uth.EnvironmentContext({"CTCACHE": cache_home}):
-        reload(compiletools.headerdeps)
-        reload(compiletools.magicflags)
-        reload(compiletools.hunter)
-        return cache_home
-
-
 class TestHunterModule:
     def setup_method(self):
         uth.reset()
@@ -41,13 +28,7 @@ class TestHunterModule:
         )
 
     def test_hunter_follows_source_files_from_header(self):
-        origcache = compiletools.dirnamer.user_cache_dir("ct")
         with uth.TempDirContextNoChange() as tempdir:
-            with uth.EnvironmentContext({"CTCACHE": tempdir}):
-                reload(compiletools.headerdeps)
-                reload(compiletools.magicflags)
-                reload(compiletools.hunter)
-
             with uth.TempConfigContext() as temp_config:
                 argv = ["-c", temp_config, "--include", uth.ctdir()]
                 cap = configargparse.getArgumentParser()
@@ -62,11 +43,6 @@ class TestHunterModule:
                 filesfromheader = hntr.required_source_files(realpath)
                 filesfromsource = hntr.required_source_files(compiletools.utils.implied_source(realpath))
                 assert set(filesfromheader) == set(filesfromsource)
-        
-        with uth.EnvironmentContext({"CTCACHE": origcache}):
-            reload(compiletools.headerdeps)
-            reload(compiletools.magicflags)
-            reload(compiletools.hunter)
 
     @staticmethod
     def _hunter_is_not_order_dependent(precall):
@@ -99,13 +75,7 @@ class TestHunterModule:
             return result
 
     def test_hunter_is_not_order_dependent(self):
-        origcache = compiletools.dirnamer.user_cache_dir("ct")
         with uth.TempDirContextNoChange() as tempdir:
-            with uth.EnvironmentContext({"CTCACHE": tempdir}):
-                reload(compiletools.headerdeps)
-                reload(compiletools.magicflags)
-                reload(compiletools.hunter)
-
             result2 = self._hunter_is_not_order_dependent(True)
             result1 = self._hunter_is_not_order_dependent(False)
             result3 = self._hunter_is_not_order_dependent(False)
@@ -114,11 +84,6 @@ class TestHunterModule:
             assert set(result1) == set(result2)
             assert set(result3) == set(result2)
             assert set(result4) == set(result2)
-
-        with uth.EnvironmentContext({"CTCACHE": origcache}):
-            reload(compiletools.headerdeps)
-            reload(compiletools.magicflags)
-            reload(compiletools.hunter)
 
     def teardown_method(self):
         uth.reset()

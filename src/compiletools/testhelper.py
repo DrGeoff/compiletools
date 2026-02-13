@@ -189,6 +189,12 @@ def reset():
     # Clear file analyzer cache to prevent stale analysis results
     from compiletools.file_analyzer import analyze_file
     analyze_file.cache_clear()
+    # Clear preprocessing cache to prevent stale preprocessing results
+    from compiletools.preprocessing_cache import clear_cache as clear_preprocessing_cache
+    clear_preprocessing_cache()
+    # Clear headerdeps caches to prevent stale include list results
+    import compiletools.headerdeps as headerdeps
+    headerdeps.clear_caches()
 
 
 def delete_existing_parsers():
@@ -252,8 +258,6 @@ def create_temp_ct_conf(tempdir, defaultvariant="dbg", extralines=[]):
     they are finished
     """
     with open(os.path.join(tempdir, "ct.conf"), "w") as ff:
-        # ff.write('CTCACHE = ' + os.path.join(tempdir,'ct-unittest-cache' + '\n'))
-        # ff.write('CTCACHE = None' + '\n')
         ff.write(f"variant = {defaultvariant}\n")
         ff.write("variantaliases = {'dbg':'foo.debug', 'rls':'foo.release'}\n")
         ff.write("exemarkers = [main]\n")
@@ -398,57 +402,51 @@ def TempConfigContext(tempdir=None, filename=None, extralines=None):
 
 
 @contextlib.contextmanager
-def CompileToolsTestContext(ctcache=None, reload_modules=None, config_extralines=None):
+def CompileToolsTestContext(reload_modules=None, config_extralines=None):
     """A higher-level context manager for compiletools tests.
-    
+
     This combines the most common testing patterns:
     - TempDirContextWithChange: Creates temp directory and changes to it
     - TempConfigContext: Creates temporary config file with cleanup
-    - EnvironmentContext: Sets CTCACHE environment variable  
     - ParserContext: Provides isolated parser state
     - Module reloads: Reloads specified modules to pick up changes
-    
+
     Args:
-        ctcache: CTCACHE value (default: "None" to disable caching)
         reload_modules: List of modules to reload (e.g., [compiletools.headerdeps])
         config_extralines: Additional lines to add to temp config file
-        
+
     Returns:
         tuple: (tempdir, config_path) for use in test
     """
     import importlib
-    
+
     reload_modules = reload_modules or []
-    ctcache = ctcache or "None"
-    
+
     with TempDirContextWithChange() as tempdir:
         with TempConfigContext(tempdir=tempdir, extralines=config_extralines) as config_path:
-            with EnvironmentContext({"CTCACHE": ctcache}):
-                with ParserContext():
-                    # Reload specified modules
-                    for module in reload_modules:
-                        importlib.reload(module)
-                    
-                    yield (tempdir, config_path)
+            with ParserContext():
+                # Reload specified modules
+                for module in reload_modules:
+                    importlib.reload(module)
+
+                yield (tempdir, config_path)
 
 
-def run_headerdeps(kind, filename, cppflags=None, cache="None", extra_args=None):
+def run_headerdeps(kind, filename, cppflags=None, extra_args=None):
     """Helper function to run headerdeps analysis and return result set.
-    
+
     Eliminates the repetitive pattern of:
     - Creating config
-    - Setting up environment  
     - Creating parser
     - Running analysis
     - Converting to set
-    
+
     Args:
         kind: HeaderDeps kind ("direct" or "cpp")
         filename: File to analyze
         cppflags: Optional CPPFLAGS string
-        cache: CTCACHE value (default "None")
         extra_args: Additional command line arguments
-        
+
     Returns:
         set: Set of header dependencies found
     """
@@ -458,96 +456,72 @@ def run_headerdeps(kind, filename, cppflags=None, cache="None", extra_args=None)
             f"--headerdeps={kind}",
             "--include", samplesdir(),
         ]
-        
+
         if cppflags:
             argv.extend(["--CPPFLAGS", f"-I{samplesdir()} {cppflags}"])
-            
+
         if extra_args:
             argv.extend(extra_args)
-            
-        with HeaderDepsTestContext(argv, cache=cache) as hdeps:
+
+        with HeaderDepsTestContext(argv) as hdeps:
             return set(hdeps.process(filename, frozenset()))
 
 
 @contextlib.contextmanager
-def HeaderDepsTestContext(argv, cache="None", config_extralines=None):
+def HeaderDepsTestContext(argv, config_extralines=None):
     """Context manager for headerdeps tests that handles the common boilerplate pattern.
-    
+
     Encapsulates the repeated pattern of:
-    - Save original cache
-    - Set CTCACHE environment 
-    - Reload modules
     - Create and configure parser
     - Parse arguments
     - Create headerdeps object
-    - Restore cache on exit
-    
+
     Args:
         argv: Command line arguments for headerdeps
-        cache: CTCACHE value (default: "None" to disable caching)
         config_extralines: Additional config file lines if needed
-        
+
     Yields:
         headerdeps: Configured HeaderDeps object ready for testing
     """
     import configargparse
-    import compiletools.dirnamer
     import compiletools.headerdeps
     import compiletools.apptools
-    from importlib import reload
-    
-    # Save original cache setting
-    origcache = compiletools.dirnamer.user_cache_dir()
-    
-    try:
-        # Set up test environment
-        with EnvironmentContext({"CTCACHE": cache}):
-            reload(compiletools.dirnamer)
-            reload(compiletools.headerdeps)
-            
-            # Create and configure parser
-            cap = configargparse.getArgumentParser()
-            compiletools.headerdeps.add_arguments(cap)
-            args = compiletools.apptools.parseargs(cap, argv)
-            
-            # Create headerdeps object
-            headerdeps = compiletools.headerdeps.create(args)
-            yield headerdeps
-            
-    finally:
-        # Restore original cache
-        with EnvironmentContext({"CTCACHE": origcache}):
-            reload(compiletools.dirnamer)
-            reload(compiletools.headerdeps)
+
+    # Create and configure parser
+    cap = configargparse.getArgumentParser()
+    compiletools.headerdeps.add_arguments(cap)
+    args = compiletools.apptools.parseargs(cap, argv)
+
+    # Create headerdeps object
+    headerdeps = compiletools.headerdeps.create(args)
+    yield headerdeps
 
 
 @contextlib.contextmanager
-def CPPDepsTestContext(variant_configs=None, reload_modules=None, ctcache=None):
+def CPPDepsTestContext(variant_configs=None, reload_modules=None):
     """A context manager for tests that call main() functions requiring configuration.
-    
+
     Currently used by test_cppdeps. This combines:
     - TempDirContext: Creates temp directory and changes to it
     - Config file setup: Copies ct.conf and specified variant config files
-    - EnvironmentContext: Sets CTCACHE to current directory or custom value
-    - Module reloads: Reloads specified modules to pick up new cache
+    - Module reloads: Reloads specified modules to pick up changes
     - Parser cleanup: Resets configargparse state
-    
+
     Args:
         variant_configs: List of config files to copy (e.g., ['gcc.debug.conf'])
         reload_modules: List of modules to reload (e.g., [compiletools.headerdeps])
-        ctcache: Override CTCACHE value (default: current working directory, can be "None" to disable)
     """
     import importlib
-    
+
     variant_configs = variant_configs or ['blank.conf']
     reload_modules = reload_modules or []
-    
+
     # Use our refactored context managers in a nested fashion
     with TempDirContext() as temp_context:
         # Copy config files to test environment
         ct_conf_dir = os.path.join(os.getcwd(), "ct.conf.d")
         os.makedirs(ct_conf_dir, exist_ok=True)
-        
+
         src_config_dir = ctconfdir()
         # Always copy ct.conf
         config_files = ['ct.conf'] + variant_configs
@@ -556,88 +530,70 @@ def CPPDepsTestContext(variant_configs=None, reload_modules=None, ctcache=None):
             dst_path = os.path.join(ct_conf_dir, config_file)
             if os.path.exists(src_path):
                 shutil.copy2(src_path, dst_path)
-        
-        # Set up environment with CTCACHE
-        ctcache_value = ctcache if ctcache is not None else os.getcwd()
-        with EnvironmentContext({"CTCACHE": ctcache_value}):
-            # Reload specified modules
-            for module in reload_modules:
-                importlib.reload(module)
-                
-            # Reset parser state
+
+        # Reload specified modules
+        for module in reload_modules:
+            importlib.reload(module)
+
+        # Reset parser state
+        reset()
+
+        try:
+            yield temp_context
+        finally:
             reset()
-            
-            try:
-                yield temp_context
-            finally:
-                reset()
 
 
-def headerdeps_result(filename, kind="direct", cppflags=None, include=None, extra_args=None, cache="None"):
+def headerdeps_result(filename, kind="direct", cppflags=None, include=None, extra_args=None):
     """Return set of headers for given filename using specified headerdeps kind.
-    Provides full isolation (TempConfig, Environment, Parser).
+    Provides full isolation (TempConfig, Parser).
     Args:
         filename: Path to file to analyse (can be relative; will be realpathed by headerdeps)
         kind: 'direct' or 'cpp'
         cppflags: Raw CPPFLAGS string (pass full string, do NOT auto-prepend -I)
         include: Directory to use with --include (defaults to samplesdir())
         extra_args: List of extra CLI args (e.g., ["--something", "value"])
-        cache: CTCACHE value (default 'None' for disabling disk cache)
     Returns: set of header paths
     """
     include = include or samplesdir()
     if extra_args is None:
         extra_args = []
-    from importlib import reload
     import compiletools.headerdeps
-    import compiletools.dirnamer
-    
-    # Save original cache setting
-    origcache = compiletools.dirnamer.user_cache_dir()
-    
-    try:
-        # Create config with custom CPPFLAGS if needed
-        config_extralines = []
-        if cppflags:
-            config_extralines.append(f'CPPFLAGS="-std=c++20 {cppflags}"')
-        
-        with TempConfigContext(extralines=config_extralines) as temp_config_name:
-            with EnvironmentContext({"CTCACHE": cache}):
-                reload(compiletools.dirnamer)
-                reload(compiletools.headerdeps)
 
-                # Clear preprocessing cache for test isolation
-                import compiletools.preprocessing_cache
-                compiletools.preprocessing_cache.clear_cache()
+    # Create config with custom CPPFLAGS if needed
+    config_extralines = []
+    if cppflags:
+        config_extralines.append(f'CPPFLAGS="-std=c++20 {cppflags}"')
 
-                # Create fresh parser with complete isolation
-                with ParserContext():
-                    cap = configargparse.ArgumentParser(
-                        description="HeaderDeps test parser",
-                        formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-                        args_for_setting_config_path=["-c", "--config"],
-                        ignore_unknown_config_file_keys=False,
-                    )
-                    compiletools.headerdeps.add_arguments(cap)
-                    argv = ["--config=" + temp_config_name, f"--headerdeps={kind}", "--include", include] + extra_args
-                    args = compiletools.apptools.parseargs(cap, argv)
-                    h = compiletools.headerdeps.create(args)
-                    return set(h.process(filename, frozenset()))
-    finally:
-        # Restore original cache
-        with EnvironmentContext({"CTCACHE": origcache}):
-            reload(compiletools.dirnamer)
-            reload(compiletools.headerdeps)
+    with TempConfigContext(extralines=config_extralines) as temp_config_name:
+        # Clear all caches for test isolation
+        import compiletools.preprocessing_cache
+        compiletools.preprocessing_cache.clear_cache()
+        compiletools.headerdeps.HeaderDepsBase.clear_cache()
+
+        # Create fresh parser with complete isolation
+        with ParserContext():
+            cap = configargparse.ArgumentParser(
+                description="HeaderDeps test parser",
+                formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+                args_for_setting_config_path=["-c", "--config"],
+                ignore_unknown_config_file_keys=False,
+            )
+            compiletools.headerdeps.add_arguments(cap)
+            argv = ["--config=" + temp_config_name, f"--headerdeps={kind}", "--include", include] + extra_args
+            args = compiletools.apptools.parseargs(cap, argv)
+            h = compiletools.headerdeps.create(args)
+            return set(h.process(filename, frozenset()))
 
 
-def compare_headerdeps_kinds(filename, cppflags=None, kinds=("direct", "cpp"), include=None, extra_args=None, cache="None", scenario_name=None):
+def compare_headerdeps_kinds(filename, cppflags=None, kinds=("direct", "cpp"), include=None, extra_args=None, scenario_name=None):
     """Run multiple headerdeps kinds and assert their results match (if >1 kinds).
     Returns dict kind->set.
     scenario_name included in assertion message if provided.
     """
     results = {}
     for kind in kinds:
-        results[kind] = headerdeps_result(filename, kind=kind, cppflags=cppflags, include=include, extra_args=extra_args, cache=cache)
+        results[kind] = headerdeps_result(filename, kind=kind, cppflags=cppflags, include=include, extra_args=extra_args)
     if len(kinds) > 1:
         baseline = results[kinds[0]]
         for kind in kinds[1:]:

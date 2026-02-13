@@ -1,6 +1,33 @@
 #!/usr/bin/bash
 set -euo pipefail
 
+SCRIPT_NAME=$(basename "$0")
+
+# Find README: check installed location first, then development location
+if [[ -f "/usr/share/doc/compiletools/README.${SCRIPT_NAME}.rst" ]]; then
+    README_PATH="/usr/share/doc/compiletools/README.${SCRIPT_NAME}.rst"
+else
+    README_PATH="$(dirname "$(readlink -f "$0")")/../src/compiletools/README.${SCRIPT_NAME}.rst"
+fi
+
+show_help() {
+    echo "Usage: ${SCRIPT_NAME} {major|minor|patch}"
+    echo ""
+    if [[ -f "$README_PATH" ]]; then
+        cat "$README_PATH"
+    else
+        echo "No documentation available for ${SCRIPT_NAME}"
+        echo "See: https://github.com/drgeoffathome/compiletools"
+    fi
+    exit 0
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        --help|-h) show_help ;;
+    esac
+done
+
 # Ensure required tools exist
 require_cmd() {
     command -v "$1" >/dev/null 2>&1 || { echo "Error: required tool not found: $1" >&2; exit 1; };

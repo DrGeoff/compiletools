@@ -2,7 +2,6 @@ import os
 import pytest
 import configargparse
 import compiletools.testhelper as uth
-import compiletools.dirnamer
 import compiletools.apptools
 import compiletools.headerdeps
 import compiletools.magicflags
@@ -11,8 +10,6 @@ import compiletools.configutils
 import compiletools.wrappedos
 import compiletools.git_utils
 import compiletools.compiler_macros
-
-from importlib import reload
 
 
 class BaseCompileToolsTestCase:
@@ -68,23 +65,17 @@ class BaseCompileToolsTestCase:
         return os.path.join(uth.samplesdir(), relative_path)
 
 
-def create_magic_parser(extraargs=None, cache_home="None", tempdir=None):
+def create_magic_parser(extraargs=None, tempdir=None):
     """Factory function for creating magic flag parsers"""
     if not extraargs:
         extraargs = []
     temp_config_name = uth.create_temp_config(tempdir)
     argv = ["--config=" + temp_config_name] + extraargs
-    
-    with uth.EnvironmentContext({"CTCACHE": cache_home}):
-        reload(compiletools.dirnamer)
-        reload(compiletools.apptools)
-        reload(compiletools.headerdeps)
-        reload(compiletools.magicflags)
-    
+
     config_files = compiletools.configutils.config_files_from_variant(
         argv=argv, exedir=uth.cakedir()
     )
-    
+
     # Check if parser already exists and use it, otherwise create new one
     try:
         cap = configargparse.getArgumentParser(
@@ -97,9 +88,8 @@ def create_magic_parser(extraargs=None, cache_home="None", tempdir=None):
     except ValueError:
         # Parser already exists, get it without parameters
         cap = configargparse.getArgumentParser()
-        
+
     compiletools.apptools.add_common_arguments(cap)
-    compiletools.dirnamer.add_arguments(cap)
     compiletools.headerdeps.add_arguments(cap)
     compiletools.magicflags.add_arguments(cap)
     args = compiletools.apptools.parseargs(cap, argv)
@@ -185,30 +175,20 @@ def compare_direct_cpp_headers(test_case, filename, extraargs=None):
     if extraargs is None:
         extraargs = []
     realpath = compiletools.wrappedos.realpath(filename)
-    
+
     with uth.TempConfigContext() as temp_config_name:
         argv = ["--config=" + temp_config_name] + extraargs
 
-        # Turn off diskcaching so that we can't just read up a prior result
-        origcache = compiletools.dirnamer.user_cache_dir()
-        with uth.EnvironmentContext({"CTCACHE": "None"}):
-            reload(compiletools.dirnamer)
-            reload(compiletools.headerdeps)
-            
-            cap = configargparse.getArgumentParser()
-            compiletools.headerdeps.add_arguments(cap)
-            argvdirect = argv + ["--headerdeps=direct"]
-            argsdirect = compiletools.apptools.parseargs(cap, argvdirect)
+        cap = configargparse.getArgumentParser()
+        compiletools.headerdeps.add_arguments(cap)
+        argvdirect = argv + ["--headerdeps=direct"]
+        argsdirect = compiletools.apptools.parseargs(cap, argvdirect)
 
-            argvcpp = argv + ["--headerdeps", "cpp"]
-            argscpp = compiletools.apptools.parseargs(cap, argvcpp)
+        argvcpp = argv + ["--headerdeps", "cpp"]
+        argscpp = compiletools.apptools.parseargs(cap, argvcpp)
 
-            hdirect = compiletools.headerdeps.create(argsdirect)
-            hcpp = compiletools.headerdeps.create(argscpp)
-            hdirectresult = hdirect.process(realpath, frozenset())
-            hcppresult = hcpp.process(realpath, frozenset())
-            assert set(hdirectresult) == set(hcppresult)
-            
-        with uth.EnvironmentContext({"CTCACHE": origcache}):
-            reload(compiletools.dirnamer)
-            reload(compiletools.headerdeps)
+        hdirect = compiletools.headerdeps.create(argsdirect)
+        hcpp = compiletools.headerdeps.create(argscpp)
+        hdirectresult = hdirect.process(realpath, frozenset())
+        hcppresult = hcpp.process(realpath, frozenset())
+        assert set(hdirectresult) == set(hcppresult)

@@ -120,7 +120,7 @@ class Cake(object):
             help="Deprecated. Synonym for preprocess",
         )
 
-        cap.add("--clean", action="store_true", help="Agressively cleanup.")
+        cap.add("--clean", action="store_true", help="Aggressively cleanup.")
 
         cap.add(
             "-o",

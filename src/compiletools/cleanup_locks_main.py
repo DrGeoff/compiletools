@@ -19,6 +19,7 @@ The tool will:
 import sys
 import compiletools.apptools
 import compiletools.cleanup_locks
+import compiletools.configutils
 import compiletools.namer
 
 
@@ -75,11 +76,15 @@ def main(argv=None):
         # Add cleanup-specific arguments
         add_arguments(cap)
 
-        # Add namer arguments to get objdir configuration
-        compiletools.namer.Namer.add_arguments(cap, argv=argv)
+        # Add only the arguments needed for cleanup-locks (not full compiler args)
+        variant = compiletools.configutils.extract_variant(argv=argv)
+        compiletools.apptools.add_base_arguments(cap, argv=argv, variant=variant)
+        compiletools.apptools.add_locking_arguments(cap)
+        compiletools.apptools.add_output_directory_arguments(cap, variant)
 
-        # Parse arguments
-        args = compiletools.apptools.parseargs(cap, argv)
+        # Parse arguments (use parse_args directly, we don't need compiler substitutions)
+        args = cap.parse_args(args=argv)
+        args.verbose -= args.quiet  # Apply quiet adjustment
 
         # If min_lock_age not specified, use lock_cross_host_timeout
         if args.min_lock_age is None:

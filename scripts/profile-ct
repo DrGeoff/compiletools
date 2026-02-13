@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""Generic profiler for any ct-* command.
+
+Usage:
+    scripts/profile-ct ct-cake --directory /path/to/project
+    scripts/profile-ct ct-compilation-database -d /path/to/project -- --include "dir1 dir2"
+    scripts/profile-ct ct-cake -d /path/to/project -o profile.prof -- --include "$(ls -d thirdparty/*/)"
+
+Examples:
+    # Profile ct-cake with extra includes
+    scripts/profile-ct ct-cake -d ~/godot -- --include "platform/linuxbsd $(ls -d thirdparty/*/)"
+
+    # Profile ct-compilation-database
+    scripts/profile-ct ct-compilation-database -d ~/myproject
+
+    # Save profile for detailed analysis
+    scripts/profile-ct ct-cake -d ~/project -o cake.prof -- --auto
+"""
+import argparse
+import cProfile
+import pstats
+import tempfile
+import time
+import os
+import sys
+from pathlib import Path
+
+# Map command names to module names and their main functions
+COMMAND_MODULE_MAP = {
+    'ct-cake': ('cake', 'main'),
+    'ct-compilation-database': ('compilation_database', 'main'),
+    'ct-build': ('makefile', 'main'),
+    'ct-headertree': ('headertree', 'main'),
+    'ct-filelist': ('filelist', 'main'),
+    'ct-findtargets': ('findtargets', 'main'),
+    'ct-cppdeps': ('cppdeps', 'main'),
+    'ct-magicflags': ('magicflags', 'main'),
+    'ct-cleanup-locks': ('cleanup_locks_main', 'main'),
+}
+
+
+def extract_performance_metrics(ps: pstats.Stats) -> dict:
+    """Extract key performance metrics from pstats."""
+    total_calls = ps.total_calls
+    total_time = ps.total_tt
+
+    top_functions = []
+    compiletools_functions = {}
+
+    for func, (cc, nc, tt, ct, callers) in ps.stats.items():
+        if ct > 0.001:
+            filename, lineno, funcname = func
+            if filename.startswith('/'):
+                filename = filename.split('/')[-1]
+            func_name = f"{filename}:{lineno}({funcname})"
+
+            func_data = {
+                'ncalls': f"{cc}/{nc}" if cc != nc else str(nc),
+                'tottime': tt,
+                'cumtime': ct,
+                'function': func_name
+            }
+            top_functions.append(func_data)
+
+            if 'compiletools' in str(func[0]):
+                compiletools_functions[func_name] = {
+                    'ncalls': func_data['ncalls'],
+                    'tottime': func_data['tottime'],
+                    'cumtime': func_data['cumtime']
+                }
+
+    top_functions.sort(key=lambda x: x['cumtime'], reverse=True)
+
+    return {
+        'total_calls': total_calls,
+        'total_time': total_time,
+        'top_functions': top_functions[:20],
+        'compiletools_functions': compiletools_functions
+    }
+
+
+def print_metrics(metrics: dict, wall_time: float) -> None:
+    """Print performance metrics in a readable format."""
+    print("\n" + "=" * 80)
+    print("PERFORMANCE SUMMARY")
+    print("=" * 80)
+    print(f"Wall-clock time: {wall_time:.3f}s")
+    print(f"CPU time: {metrics['total_time']:.3f}s")
+    print(f"Total function calls: {metrics['total_calls']:,}")
+
+    print("\n" + "-" * 80)
+    print("TOP 20 FUNCTIONS BY CUMULATIVE TIME")
+    print("-" * 80)
+    print(f"{'Function':<55} {'Calls':<12} {'CumTime':<10}")
+    print("-" * 80)
+
+    for func in metrics['top_functions']:
+        display_name = func['function'][:52] + "..." if len(func['function']) > 55 else func['function']
+        print(f"{display_name:<55} {func['ncalls']:<12} {func['cumtime']:.3f}s")
+
+    ct_funcs = sorted(
+        metrics['compiletools_functions'].items(),
+        key=lambda x: x[1]['cumtime'],
+        reverse=True
+    )[:15]
+
+    if ct_funcs:
+        print("\n" + "-" * 80)
+        print("TOP COMPILETOOLS FUNCTIONS")
+        print("-" * 80)
+        print(f"{'Function':<55} {'Calls':<12} {'CumTime':<10}")
+        print("-" * 80)
+
+        for func_name, data in ct_funcs:
+            display_name = func_name[:52] + "..." if len(func_name) > 55 else func_name
+            print(f"{display_name:<55} {data['ncalls']:<12} {data['cumtime']:.3f}s")
+
+
+def run_profiling(command: str, directory: str, profile_output: str = None,
+                  verbose: int = 0, extra_args: list = None) -> tuple:
+    """Run a ct-* command under cProfile.
+
+    Args:
+        command: The ct-* command name (e.g., 'ct-cake')
+        directory: Directory to run the command in
+        profile_output: Optional path to save .prof file
+        verbose: Verbosity level
+        extra_args: Additional arguments to pass to the command
+
+    Returns:
+        tuple of (metrics dict, wall_time)
+    """
+    if command not in COMMAND_MODULE_MAP:
+        available = ', '.join(sorted(COMMAND_MODULE_MAP.keys()))
+        raise ValueError(f"Unknown command: {command}. Available: {available}")
+
+    module_name, func_name = COMMAND_MODULE_MAP[command]
+
+    # Add src to path for imports
+    src_path = Path(__file__).parent.parent / "src"
+    sys.path.insert(0, str(src_path))
+
+    # Import the module dynamically
+    module = __import__(f'compiletools.{module_name}', fromlist=[func_name])
+    main_func = getattr(module, func_name)
+
+    # Create temp directory for output to avoid polluting target project
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Build argv based on command type
+        argv = []
+
+        # Add --auto for commands that support it
+        if command in ('ct-cake', 'ct-compilation-database'):
+            argv.append("--auto")
+
+        # Add temp output locations for ct-cake
+        if command == 'ct-cake':
+            argv.extend([
+                "--makefilename", os.path.join(tmpdir, "Makefile"),
+                "--objdir", os.path.join(tmpdir, "obj"),
+                "--bindir", os.path.join(tmpdir, "bin"),
+            ])
+
+        # Add temp output for ct-compilation-database
+        if command == 'ct-compilation-database':
+            argv.extend([
+                "--compilation-database-output", os.path.join(tmpdir, "compile_commands.json"),
+            ])
+
+        # Add verbosity
+        if verbose:
+            argv.extend(["--verbose"] * verbose)
+
+        # Add any extra arguments
+        if extra_args:
+            argv.extend(extra_args)
+
+        # Change to target directory
+        original_cwd = os.getcwd()
+        os.chdir(directory)
+
+        try:
+            profiler = cProfile.Profile()
+
+            start_time = time.perf_counter()
+            profiler.enable()
+
+            main_func(argv)
+
+            profiler.disable()
+            end_time = time.perf_counter()
+
+            wall_time = end_time - start_time
+
+            if profile_output:
+                profiler.dump_stats(profile_output)
+                print(f"Profile saved to: {profile_output}")
+
+            ps = pstats.Stats(profiler)
+            ps.sort_stats('cumulative')
+            metrics = extract_performance_metrics(ps)
+
+            return metrics, wall_time
+
+        finally:
+            os.chdir(original_cwd)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Profile any ct-* command performance",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s ct-cake -d ~/project
+  %(prog)s ct-compilation-database -d ~/project -- --include "dir1 dir2"
+  %(prog)s ct-cake -d ~/godot -- --include "platform/linuxbsd $(ls -d thirdparty/*/)"
+"""
+    )
+    parser.add_argument(
+        "command",
+        choices=sorted(COMMAND_MODULE_MAP.keys()),
+        help="The ct-* command to profile"
+    )
+    parser.add_argument(
+        "--directory", "-d",
+        default=".",
+        help="Directory to run the command in (default: .)"
+    )
+    parser.add_argument(
+        "--profile-output", "-o",
+        help="Save profile data to this file for detailed analysis"
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="count",
+        default=0,
+        help="Increase verbosity (can be repeated)"
+    )
+    parser.add_argument(
+        "extra_args",
+        nargs="*",
+        help="Additional arguments to pass to the command (after --)"
+    )
+
+    args = parser.parse_args()
+
+    directory = os.path.abspath(args.directory)
+    if not os.path.isdir(directory):
+        print(f"Error: {directory} is not a directory")
+        return 1
+
+    print(f"Profiling {args.command} in: {directory}")
+    if args.extra_args:
+        print(f"Extra arguments: {args.extra_args}")
+
+    try:
+        metrics, wall_time = run_profiling(
+            args.command,
+            directory,
+            profile_output=args.profile_output,
+            verbose=args.verbose,
+            extra_args=args.extra_args
+        )
+
+        print_metrics(metrics, wall_time)
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

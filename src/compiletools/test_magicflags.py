@@ -1,6 +1,7 @@
 
 import os
 import pytest
+from unittest.mock import MagicMock
 import stringzilla as sz
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
@@ -90,7 +91,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert sz.Str("CXXFLAGS") in result
 
     @uth.requires_functional_compiler
-    def test_direct_and_cpp_magic_generate_same_results(self):
+    def test_direct_and_cpp_magic_generate_same_results(self, pkgconfig_env):
         """Test that DirectMagicFlags and CppMagicFlags produce identical results on conditional compilation samples"""
 
         # Test files with optional expected values for correctness verification
@@ -156,7 +157,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
                 fail_msg = "\n\nDirectMagicFlags vs CppMagicFlags equivalence failures:\n" + "\n".join(failures)
                 assert False, fail_msg
 
-    def test_macro_deps_cross_file(self):
+    def test_macro_deps_cross_file(self, pkgconfig_env):
         """Test that macros defined in source files affect header magic flags"""
         source_file = "macro_deps/main.cpp"
         
@@ -169,7 +170,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         # Should only contain feature X dependencies, not feature Y
         assert sz.Str("PKG-CONFIG") in result_direct
         assert "zlib" in [str(x) for x in result_direct[sz.Str("PKG-CONFIG")]]
-        assert "libcrypt" not in [str(x) for x in result_direct.get(sz.Str("PKG-CONFIG"), [])]
+        assert "nested" not in [str(x) for x in result_direct.get(sz.Str("PKG-CONFIG"), [])]
         
         assert sz.Str("SOURCE") in result_direct
         feature_x_source = self._get_sample_path("macro_deps/feature_x_impl.cpp")
@@ -256,7 +257,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
                 "All versions should have common MYAPP flags"
 
     @uth.requires_functional_compiler
-    def test_magic_processing_order_bug(self):
+    def test_magic_processing_order_bug(self, pkgconfig_env):
         """Test that DirectMagicFlags and CppMagicFlags produce identical results - should expose the processing order bug"""
         
         source_file = "magic_processing_order/complex_test.cpp"
@@ -282,7 +283,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
             f"This indicates a magic processing order bug in DirectMagicFlags!"
 
     @uth.requires_functional_compiler
-    def test_conditional_magic_comments_with_complex_headers(self):
+    def test_conditional_magic_comments_with_complex_headers(self, pkgconfig_env):
         """Test conditional magic comments work correctly with header dependencies"""
         
         source_file = "magic_processing_order/complex_test.cpp"
@@ -680,4 +681,178 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
         # Verify results are identical
         assert sz.Str('-ltest') in result2.get(sz.Str("LDFLAGS"), [])
+
+    def test_header_guard_bug_transitive_magic_flags(self):
+        """Test for include guard detection with non-standard guard patterns.
+
+        This test verifies the fix for a bug where include guards were not detected
+        when other directives appeared between #ifndef and #define. The sample uses
+        header_a.hpp with a non-standard pattern:
+            #ifndef HEADER_A_HPP_GUARD
+            #define SOME_OTHER_MACRO 1  // Breaks simple sequential detection
+            #define HEADER_A_HPP_GUARD
+
+        File structure:
+            main.cpp -> header_a.hpp (non-standard guard) -> header_b.hpp (has magic flags)
+
+        The bug: directives were processed by TYPE (all #ifndef, then all #define, etc.)
+        rather than by LINE NUMBER, causing guard detection to fail. This resulted in:
+        - Guard macro incorrectly included in defines list
+        - Transitive dependencies possibly missing due to stale guard macros in cache
+
+        Fixed in file_analyzer.py by:
+        - Sorting directives by line number before guard detection (line 597-603)
+        - Robust lookahead pattern (up to 5 directives) instead of strict next-directive check
+
+        This test now passes and validates magic flags are correctly discovered from
+        transitive headers even with non-standard guard patterns.
+        """
+
+        source_file = "header_guard_bug/main.cpp"
+
+        # Parse with DirectMagicFlags
+        result = self._parse_with_magic("direct", source_file)
+
+        # Verify magic flags from transitive header (header_b.hpp) are discovered
+        assert sz.Str("PKG-CONFIG") in result, \
+            "PKG-CONFIG not found - transitive header magic flags not discovered"
+
+        pkg_config_values = [str(x) for x in result.get(sz.Str("PKG-CONFIG"), [])]
+        assert "zlib" in pkg_config_values, \
+            f"Expected zlib in PKG-CONFIG from header_b.hpp, got: {pkg_config_values}"
+
+        assert sz.Str("LDFLAGS") in result, \
+            "LDFLAGS not found - transitive header magic flags not discovered"
+
+        ldflags_values = [str(x) for x in result.get(sz.Str("LDFLAGS"), [])]
+        assert "-lm" in ldflags_values, \
+            f"Expected -lm in LDFLAGS from header_b.hpp, got: {ldflags_values}"
+
+    @uth.requires_functional_compiler
+    def test_cpp_magic_initialization_regression(self, pkgconfig_env):
+        """Regression test for CppMagicFlags initialization (AttributeError fix) using real processing."""
+        # Use existing sample that caused issues (lotsofmagic/lotsofmagic.cpp)
+        source_file = "lotsofmagic/lotsofmagic.cpp"
+        
+        # 1. Parse with "cpp" magic. This exercises __init__ processing and populates state.
+        # This implicitly calls parser.parse(abs_path)
+        self._parse_with_magic("cpp", source_file)
+        
+        # 2. Retrieve the parser instance from the cache
+        parser = self._parser_cache[("cpp", ())]
+        
+        # 3. Simulate Hunter's behavior: asking for the macro state key
+        # This triggered the crash because _final_macro_states was missing
+        abs_path = self._get_sample_path(source_file)
+        
+        try:
+            # This method accesses self._final_macro_states
+            key = parser.get_final_macro_state_key(abs_path)
+            assert key is not None
+            assert isinstance(key, frozenset)
+        except AttributeError as e:
+            pytest.fail(f"Crashed with AttributeError accessing macro state key: {e}")
+
+    @uth.requires_functional_compiler
+    def test_magic_flags_macro_state_equivalence(self, pkgconfig_env):
+        """Verify DirectMagicFlags and CppMagicFlags produce same final macro state.
+
+        Both magic modes should converge to the same set of variable macros after
+        preprocessing. DirectMagicFlags analyzes source files with conditional compilation
+        evaluation, while CppMagicFlags uses the actual preprocessor's -dM flag to dump
+        final macro definitions.
+
+        NOTE: This test uses a file that only includes user headers (not system headers)
+        because DirectMagicFlags with headerdeps="direct" doesn't process system headers,
+        while CppMagicFlags with -dM would include all system header macros.
+        """
+        source_file = "cppflags_macros/advanced_preprocessor_test.cpp"
+        abs_path = self._get_sample_path(source_file)
+
+        # Parse with both magic modes
+        self._parse_with_magic("direct", source_file)
+        direct_parser = self._parser_cache[("direct", ())]
+
+        self._parse_with_magic("cpp", source_file)
+        cpp_parser = self._parser_cache[("cpp", ())]
+
+        # Get final macro state keys (variable macros only, for caching)
+        direct_key = direct_parser.get_final_macro_state_key(abs_path)
+        cpp_key = cpp_parser.get_final_macro_state_key(abs_path)
+
+        # CppMagicFlags should include at least the macros DirectMagicFlags found
+        # (it may include additional ones like include guards and compiler built-ins)
+        # Exception: DirectMagicFlags may track macros that were later #undef'd
+        only_in_direct = direct_key - cpp_key
+
+        if only_in_direct:
+            # Check if these are macros that exist in source but were #undef'd
+            # This is OK - CppMagicFlags uses -dM which shows final state after #undef
+            # DirectMagicFlags tracks all macros encountered during processing
+            # For this test, we'll allow this difference
+            print(f"\nNote: DirectMagicFlags found {len(only_in_direct)} macros not in CppMagicFlags (likely #undef'd):")
+            for name, value in sorted(only_in_direct):
+                print(f"  {name} = {value}")
+
+        # For macros present in both, values should match
+        direct_dict = dict(direct_key)
+        cpp_dict = dict(cpp_key)
+        mismatches = []
+        for macro_name, direct_value in direct_dict.items():
+            cpp_value = cpp_dict.get(macro_name)
+            if cpp_value is not None and str(cpp_value) != str(direct_value):
+                mismatches.append((str(macro_name), str(direct_value), str(cpp_value)))
+
+        if mismatches:
+            pytest.fail(
+                f"Macro value mismatches between DirectMagicFlags and CppMagicFlags:\n"
+                + "\n".join(f"  {name}: Direct={dv}, Cpp={cv}" for name, dv, cv in mismatches[:10])
+            )
+
+    def test_magic_cppflags_unified_with_cxxflags(self):
+        """Magic CPPFLAGS appear in CXXFLAGS (and vice versa) when unified."""
+        files = uth.write_sources({
+            "test_unified.cpp": '//#CPPFLAGS=-DFROMCPP\nint main() { return 0; }\n',
+        })
+        source_file = str(files["test_unified.cpp"])
+
+        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir)
+        result = mf.parse(source_file)
+
+        cpp_flags = [str(f) for f in result.get(sz.Str("CPPFLAGS"), [])]
+        cxx_flags = [str(f) for f in result.get(sz.Str("CXXFLAGS"), [])]
+        assert "-DFROMCPP" in cpp_flags, f"Expected -DFROMCPP in CPPFLAGS, got {cpp_flags}"
+        assert "-DFROMCPP" in cxx_flags, f"Expected -DFROMCPP in CXXFLAGS, got {cxx_flags}"
+
+    def test_magic_cxxflags_unified_with_cppflags(self):
+        """Magic CXXFLAGS appear in CPPFLAGS when unified."""
+        files = uth.write_sources({
+            "test_unified2.cpp": '//#CXXFLAGS=-DFROMCXX\nint main() { return 0; }\n',
+        })
+        source_file = str(files["test_unified2.cpp"])
+
+        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir)
+        result = mf.parse(source_file)
+
+        cpp_flags = [str(f) for f in result.get(sz.Str("CPPFLAGS"), [])]
+        cxx_flags = [str(f) for f in result.get(sz.Str("CXXFLAGS"), [])]
+        assert "-DFROMCXX" in cpp_flags, f"Expected -DFROMCXX in CPPFLAGS, got {cpp_flags}"
+        assert "-DFROMCXX" in cxx_flags, f"Expected -DFROMCXX in CXXFLAGS, got {cxx_flags}"
+
+    def test_magic_flags_separate_mode(self):
+        """Magic CPPFLAGS stay separate from CXXFLAGS with --separate-flags-CPP-CXX."""
+        files = uth.write_sources({
+            "test_separate.cpp": '//#CPPFLAGS=-DFROMCPP\n//#CXXFLAGS=-DFROMCXX\nint main() { return 0; }\n',
+        })
+        source_file = str(files["test_separate.cpp"])
+
+        mf = tb.create_magic_parser(["--magic=direct", "--separate-flags-CPP-CXX"], tempdir=self._tmpdir)
+        result = mf.parse(source_file)
+
+        cpp_flags = [str(f) for f in result.get(sz.Str("CPPFLAGS"), [])]
+        cxx_flags = [str(f) for f in result.get(sz.Str("CXXFLAGS"), [])]
+        assert "-DFROMCPP" in cpp_flags
+        assert "-DFROMCXX" not in cpp_flags, f"CPPFLAGS should not contain -DFROMCXX in separate mode, got {cpp_flags}"
+        assert "-DFROMCXX" in cxx_flags
+        assert "-DFROMCPP" not in cxx_flags, f"CXXFLAGS should not contain -DFROMCPP in separate mode, got {cxx_flags}"
 

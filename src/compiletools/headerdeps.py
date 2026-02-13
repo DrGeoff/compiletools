@@ -15,12 +15,25 @@ import compiletools.tree as tree
 import compiletools.preprocessor
 import compiletools.compiler_macros
 import compiletools.file_analyzer
-from compiletools.preprocessing_cache import get_or_compute_preprocessing, MacroState, MacroDict, MacroCacheKey
+from compiletools.preprocessing_cache import get_or_compute_preprocessing, MacroState, MacroDict, MacroCacheKey, is_permanently_invariant
 from compiletools.file_analyzer import analyze_file, set_analyzer_args
+from compiletools.global_hash_registry import get_file_hash
 
-# Cache for filtered include lists: (content_hash, macro_cache_key) -> list of includes
+# Cache for filtered include lists
+# Variant cache: (content_hash, macro_cache_key) -> (includes, file_defines)
+# Used for files with conditionals that depend on macro state
 _include_list_cache = {}
 
+# Invariant cache: content_hash -> (includes, file_defines)
+# Used for files without conditionals - much higher hit rate
+_invariant_include_cache = {}
+
+
+def clear_caches():
+    """Clear all module-level caches. Used by test framework between tests."""
+    global _include_list_cache, _invariant_include_cache
+    _include_list_cache = {}
+    _invariant_include_cache = {}
 
 def clear_include_list_cache():
     """Clear the include list cache.
@@ -335,48 +348,67 @@ class DirectHeaderDeps(HeaderDepsBase):
 
         Caches filtered include lists to avoid redundant processing when the same
         file is encountered with the same macro state across different traversals.
+
+        Uses two-level caching:
+        - Invariant cache: For files without conditionals, keyed by content_hash only
+        - Variant cache: For files with conditionals, keyed by (content_hash, macro_key)
+
+        This dramatically improves cache hit rate since most files are invariant.
         """
-        from compiletools.global_hash_registry import get_file_hash
         content_hash = get_file_hash(realpath)
 
-        # Check cache using content_hash + macro state
-        # Try to use cached key if available to avoid recomputation
-        macro_key = self.defined_macros.get_cached_key_if_available()
-        if macro_key is None:
-            macro_key = self.defined_macros.get_cache_key()
+        # Get analysis result first - needed for invariant check
+        analysis_result = analyze_file(content_hash)
 
+        # Check if file is permanently invariant (no conditionals at all)
+        # This is a fast check based on file content, not macro state
+        if is_permanently_invariant(analysis_result):
+            # Invariant file - use content_hash only as cache key
+            if content_hash in _invariant_include_cache:
+                cached_includes, cached_file_defines = _invariant_include_cache[content_hash]
+                if cached_file_defines:
+                    self.defined_macros = self.defined_macros.with_updates(cached_file_defines)
+                return cached_includes
+
+            # Cache miss for invariant file - compute and store
+            result = get_or_compute_preprocessing(analysis_result, self.defined_macros, self.args.verbose)
+            active_line_set = set(result.active_lines)
+
+            include_list = [
+                sz.Str(inc['filename'])
+                for inc in analysis_result.includes
+                if inc['line_num'] in active_line_set and not inc['is_commented']
+            ]
+
+            self.defined_macros = result.updated_macros
+            _invariant_include_cache[content_hash] = (include_list, result.file_defines)
+            return include_list
+
+        # Variant file - use file-specific macro key (only macros that affect this file)
+        macro_key = self.defined_macros.get_relevant_key(analysis_result.conditional_macros)
         cache_key = (content_hash, macro_key)
 
         if cache_key in _include_list_cache:
-            cached_includes, cached_updated_macros = _include_list_cache[cache_key]
-            self.defined_macros = cached_updated_macros
+            cached_includes, cached_file_defines = _include_list_cache[cache_key]
+            if cached_file_defines:
+                self.defined_macros = self.defined_macros.with_updates(cached_file_defines)
             return cached_includes
 
-        # Cache miss - compute the include list
-        analysis_result = analyze_file(content_hash)
-
+        # Cache miss for variant file - compute and store
         if self.args.verbose >= 9 and analysis_result.include_positions:
             print(f"DirectHeaderDeps::analyze - FileAnalyzer pre-found {len(analysis_result.include_positions)} includes in {realpath}")
 
-        # Use unified preprocessing cache for active line detection
         result = get_or_compute_preprocessing(analysis_result, self.defined_macros, self.args.verbose)
         active_line_set = set(result.active_lines)
 
-        # Extract active includes from FileAnalyzer's structured results
         include_list = [
             sz.Str(inc['filename'])
             for inc in analysis_result.includes
             if inc['line_num'] in active_line_set and not inc['is_commented']
         ]
 
-        # Replace macro state instead of mutating it.
-        # result.updated_macros comes from preprocessing cache and may already have
-        # its cache key computed. By replacing instead of mutating via update(),
-        # we preserve the cached key and avoid recomputation during traversal.
         self.defined_macros = result.updated_macros
-
-        # Cache the result
-        _include_list_cache[cache_key] = (include_list, result.updated_macros)
+        _include_list_cache[cache_key] = (include_list, result.file_defines)
 
         return include_list
 

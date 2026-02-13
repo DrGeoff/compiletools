@@ -1,12 +1,40 @@
 """Simple C preprocessor for handling conditional compilation directives."""
 
 from typing import List, Dict, Tuple, Any, TYPE_CHECKING
+import re
 import stringzilla as sz
 from compiletools.stringzilla_utils import is_alpha_or_underscore_sz
 from collections import Counter
 
 if TYPE_CHECKING:
     from compiletools.file_analyzer import PreprocessorDirective, FileAnalysisResult
+
+# Precompiled regex patterns for _safe_eval
+_RE_BACKSLASH_WHITESPACE = re.compile(r'\\\s*')
+_RE_MALFORMED_NUMBERS = re.compile(r'(\d+)\s*\(\s*(\d+)\s*\)')
+_RE_INTEGER_SUFFIXES = re.compile(r'(\d+)[LlUu]+\b')
+_RE_SAFE_EXPR = re.compile(r'^[0-9\s\+\-\*\/\%\(\)\<\>\=\!&\|\^~andortnot ]+$')
+
+# Precompiled regex patterns for _normalize_numeric_literals
+_RE_HEX_LITERAL = re.compile(r'\b0[xX][0-9A-Fa-f]+\b')
+_RE_BIN_LITERAL = re.compile(r'\b0[bB][01]+\b')
+_RE_OCT_LITERAL = re.compile(r'\b0[0-7]+\b')
+
+# Reserved words that should not be treated as macros
+_RESERVED_WORDS = frozenset([sz.Str("and"), sz.Str("or"), sz.Str("not")])
+
+# Dispatch table for preprocessor directives (performance optimization)
+# Maps directive type to (handler_method_name, needs_directive_arg)
+_DIRECTIVE_DISPATCH = {
+    'define': ('_handle_define_structured', True),
+    'undef': ('_handle_undef_structured', True),
+    'ifdef': ('_handle_ifdef_structured', True),
+    'ifndef': ('_handle_ifndef_structured', True),
+    'if': ('_handle_if_structured', True),
+    'elif': ('_handle_elif_structured', True),
+    'else': ('_handle_else', False),
+    'endif': ('_handle_endif', False),
+}
 
 # Global statistics for profiling
 _stats: Dict[str, Any] = {
@@ -33,6 +61,8 @@ class SimplePreprocessor:
         # Caller must provide dict with sz.Str keys and values - no type conversion needed
         self.macros = defined_macros.copy()
         self.verbose = verbose
+        # Include guard to skip when processing #define (set by process_structured)
+        self._include_guard = None
 
     def _strip_comments_sz(self, expr_sz: sz.Str) -> sz.Str:
         """Strip C/C++ style comments from StringZilla expressions."""
@@ -90,10 +120,12 @@ class SimplePreprocessor:
 
     def _evaluate_expression_sz(self, expr_sz: sz.Str) -> int:
         """Evaluate a StringZilla expression using native StringZilla operations"""
-        # Use StringZilla-native RECURSIVE macro expansion for better performance
-        expanded_sz = self._recursive_expand_macros_sz(expr_sz)
-        # Strip comments AFTER macro expansion to handle cases where comments were preserved through expansion
-        final_sz = self._strip_comments_sz(expanded_sz)
+        # Strip comments FIRST (faster - avoids expanding macros inside comments)
+        stripped_sz = self._strip_comments_sz(expr_sz)
+        # Then expand macros
+        expanded_sz = self._recursive_expand_macros_sz(stripped_sz)
+        # Final result (no need to strip again since comments already removed)
+        final_sz = expanded_sz
         # For now, convert final expression to str for safe_eval, but this could be optimized
         expr_str = str(final_sz)
         result = self._safe_eval(expr_str)
@@ -198,27 +230,27 @@ class SimplePreprocessor:
         # First handle defined() expressions to avoid expanding macros inside them
         result = self._expand_defined_sz(expr_sz)
 
-        reserved = {sz.Str("and"), sz.Str("or"), sz.Str("not")}
-
         # Start from the beginning and find identifier patterns
         i = 0
+        result_len = len(result)
 
-        while i < len(result):
-            # Skip non-identifier characters
-            if not is_alpha_or_underscore_sz(result, i):
+        while i < result_len:
+            # Skip non-identifier characters (inlined is_alpha_or_underscore_sz for performance)
+            ch = result[i]
+            if not (ch == '_' or ('a' <= ch <= 'z') or ('A' <= ch <= 'Z')):
                 i += 1
                 continue
 
             # Find the end of the identifier - vectorized
             identifier_start = i
             identifier_end = result.find_first_not_of('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_', identifier_start)
-            i = identifier_end if identifier_end != -1 else len(result)
+            i = identifier_end if identifier_end != -1 else result_len
 
             # Extract the identifier
             identifier = result[identifier_start:i]
 
             # Skip reserved words
-            if identifier in reserved:
+            if identifier in _RESERVED_WORDS:
                 continue
 
             # Check if it's a macro and replace it
@@ -228,8 +260,9 @@ class SimplePreprocessor:
                 before = result[:identifier_start]
                 after = result[i:]
                 result = before + value + after
-                # Adjust position to account for replacement
+                # Adjust position and length to account for replacement
                 i = identifier_start + len(value)
+                result_len = len(result)
 
         return result
 
@@ -257,6 +290,11 @@ class SimplePreprocessor:
         # Lookup filepath from content hash for logging
         from compiletools.global_hash_registry import get_filepath_by_hash
         filepath = get_filepath_by_hash(file_result.content_hash)
+
+        # Store include guard so _handle_define_structured can skip it
+        # Include guards should not be added to macro state as they only prevent
+        # re-inclusion and don't affect which includes are active
+        self._include_guard = file_result.include_guard
 
         # Track statistics
         _stats['call_count'] += 1
@@ -311,38 +349,20 @@ class SimplePreprocessor:
 
     def _handle_directive_structured(self, directive: 'PreprocessorDirective', condition_stack: List[Tuple[bool, bool, bool]], line_num: int) -> bool:
         """Handle a specific preprocessor directive using structured data"""
-        dtype = directive.directive_type
-        
-        if dtype == 'define':
-            self._handle_define_structured(directive, condition_stack)
+        dispatch_info = _DIRECTIVE_DISPATCH.get(directive.directive_type)
+        if dispatch_info:
+            handler_name, needs_directive = dispatch_info
+            handler = getattr(self, handler_name)
+            if needs_directive:
+                handler(directive, condition_stack)
+            else:
+                handler(condition_stack)
             return True
-        elif dtype == 'undef':
-            self._handle_undef_structured(directive, condition_stack)
-            return True
-        elif dtype == 'ifdef':
-            self._handle_ifdef_structured(directive, condition_stack)
-            return True
-        elif dtype == 'ifndef':
-            self._handle_ifndef_structured(directive, condition_stack)
-            return True
-        elif dtype == 'if':
-            self._handle_if_structured(directive, condition_stack)
-            return True
-        elif dtype == 'elif':
-            self._handle_elif_structured(directive, condition_stack)
-            return True
-        elif dtype == 'else':
-            self._handle_else(condition_stack)
-            return True
-        elif dtype == 'endif':
-            self._handle_endif(condition_stack)
-            return True
-        else:
-            # Unknown directive - ignore but don't consume the line
-            # This allows #include and other directives to be processed normally
-            if self.verbose >= 8:
-                print(f"SimplePreprocessor: Ignoring unknown directive #{dtype}")
-            return False  # Indicate that this directive wasn't handled
+        # Unknown directive - ignore but don't consume the line
+        # This allows #include and other directives to be processed normally
+        if self.verbose >= 8:
+            print(f"SimplePreprocessor: Ignoring unknown directive #{directive.directive_type}")
+        return False
 
     def _handle_else(self, condition_stack: List[Tuple[bool, bool, bool]]) -> None:
         """Handle #else directive"""
@@ -370,8 +390,15 @@ class SimplePreprocessor:
         """Handle #define directive using structured data"""
         if not condition_stack[-1][0]:
             return  # Not in active context
-            
+
         if directive.macro_name:
+            # Skip include guard - it only prevents re-inclusion and should not
+            # pollute the macro state used for cache keys
+            if self._include_guard is not None and directive.macro_name == self._include_guard:
+                if self.verbose >= 9:
+                    print(f"SimplePreprocessor: skipping include guard {directive.macro_name}")
+                return
+
             macro_value = directive.macro_value if directive.macro_value is not None else "1"
             self.macros[directive.macro_name] = macro_value
             if self.verbose >= 9:
@@ -454,48 +481,47 @@ class SimplePreprocessor:
         """Safely evaluate a numeric expression"""
         # Clean up the expression
         expr = expr.strip()
-        
+
         # Remove trailing backslashes from multiline directives and normalize whitespace
-        import re
         # Remove backslashes followed by whitespace (multiline continuations)
-        expr = re.sub(r'\\\s*', ' ', expr)
+        expr = _RE_BACKSLASH_WHITESPACE.sub(' ', expr)
         # Remove any remaining trailing backslashes
         expr = expr.rstrip('\\').strip()
-        
+
         # First clean up any malformed expressions from macro replacement
         # Fix cases like "0(0)" which occur when macros expand to adjacent numbers
-        expr = re.sub(r'(\d+)\s*\(\s*(\d+)\s*\)', r'\1 * \2', expr)
-        
+        expr = _RE_MALFORMED_NUMBERS.sub(r'\1 * \2', expr)
+
         # Remove C-style integer suffixes (L, UL, LL, ULL, etc.)
-        expr = re.sub(r'(\d+)[LlUu]+\b', r'\1', expr)
+        expr = _RE_INTEGER_SUFFIXES.sub(r'\1', expr)
 
         # Normalize C-style numeric literals to Python ints (hex, bin, octal)
         expr = self._normalize_numeric_literals(expr)
-        
+
         # Convert C operators to Python equivalents
         # Handle comparison operators first (before replacing ! with not)
         # Use temporary placeholders to protect != from being affected by ! replacement
         expr = expr.replace('!=', '__NE__')  # Temporarily replace != with placeholder
         expr = expr.replace('>=', '__GE__')  # Also protect >= from > replacement
         expr = expr.replace('<=', '__LE__')  # Also protect <= from < replacement
-        
+
         # Now handle logical operators (! is safe to replace now)
         expr = expr.replace('&&', ' and ')
         expr = expr.replace('||', ' or ')
         expr = expr.replace('!', ' not ')
-        
+
         # Now restore comparison operators as Python equivalents
         expr = expr.replace('__NE__', '!=')
         expr = expr.replace('__GE__', '>=')
         expr = expr.replace('__LE__', '<=')
         # Note: ==, >, < are already correct for Python and need no conversion
-        
+
         # Clean up any remaining whitespace issues
         expr = expr.strip()
-        
+
         # Only allow safe characters and words
         # Allow bitwise ops (&, |, ^, ~), shifts (<<, >>) and letters for 'and', 'or', 'not'
-        if not re.match(r'^[0-9\s\+\-\*\/\%\(\)\<\>\=\!&\|\^~andortnot ]+$', expr):
+        if not _RE_SAFE_EXPR.match(expr):
             raise ValueError(f"Unsafe expression: {expr}")
         
         try:
@@ -516,8 +542,6 @@ class SimplePreprocessor:
         - 0b... or 0B... -> decimal
         - 0... (octal) -> decimal, but leave single '0' as is and ignore 0x/0b prefixes
         """
-        import re
-
         def repl_hex(m: re.Match[str]) -> str:
             return str(int(m.group(0), 16))
 
@@ -532,11 +556,11 @@ class SimplePreprocessor:
             return str(int(s, 8))
 
         # Replace hex first
-        expr = re.sub(r'\b0[xX][0-9A-Fa-f]+\b', repl_hex, expr)
+        expr = _RE_HEX_LITERAL.sub(repl_hex, expr)
         # Replace binary
-        expr = re.sub(r'\b0[bB][01]+\b', repl_bin, expr)
+        expr = _RE_BIN_LITERAL.sub(repl_bin, expr)
         # Replace octal: leading 0 followed by one or more octal digits, not 0x/0b already handled
-        expr = re.sub(r'\b0[0-7]+\b', repl_oct, expr)
+        expr = _RE_OCT_LITERAL.sub(repl_oct, expr)
         return expr
 
 

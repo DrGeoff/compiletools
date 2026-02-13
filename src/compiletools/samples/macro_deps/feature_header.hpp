@@ -4,6 +4,6 @@
 #endif
 
 #ifdef USE_FEATURE_Y
-//#PKG-CONFIG=libcrypt
+//#PKG-CONFIG=nested
 //#SOURCE=feature_y_impl.cpp
 #endif

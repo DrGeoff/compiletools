@@ -3,20 +3,20 @@ ct-findtargets
 ================
 
 ------------------------------------------------------------
-What 
+Find executable and test targets in a C/C++ project
 ------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
 :Date:   2018-04-17
 :Copyright: Copyright (C) 2011-2018 Zomojo Pty Ltd
-:Version: 6.1.5
+:Version: 7.0.2
 :Manual section: 1
 :Manual group: developers
 
 SYNOPSIS
 ========
 ct-findtargets [-h] [-c CONFIG_FILE] [--variant VARIANT] [-v] [-q]
-                    [--version] [-?] [--CTCACHE CTCACHE] [--ID ID]
+                    [--version] [-?] [--ID ID]
                     [--CPP CPP] [--CC CC] [--CXX CXX] [--CPPFLAGS CPPFLAGS]
                     [--CXXFLAGS CXXFLAGS] [--CFLAGS CFLAGS]
                     [--git-root | --no-git-root]
