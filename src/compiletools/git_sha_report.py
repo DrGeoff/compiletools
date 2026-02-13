@@ -197,8 +197,14 @@ def get_complete_working_directory_hashes() -> Dict[Path, str]:
         modified_hashes = batch_hash_objects(modified_files)
         tracked_hashes.update(modified_hashes)
 
-    # Get all untracked files and hash them in batches
-    untracked_files = get_untracked_files()
+    # Get untracked source/header files and hash them in batches.
+    # Filter to relevant extensions to avoid reading large binary files
+    # (e.g. core dumps) that would never be used by the build system.
+    from compiletools.utils import is_source, is_header
+    untracked_files = [
+        f for f in get_untracked_files()
+        if is_source(str(f)) or is_header(str(f))
+    ]
     if untracked_files:
         untracked_hashes = batch_hash_objects(untracked_files)
     else:
