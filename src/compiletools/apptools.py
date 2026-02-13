@@ -16,8 +16,6 @@ import compiletools.git_utils
 import compiletools.configutils
 import compiletools.utils
 from compiletools.utils import split_command_cached
-import compiletools.dirnamer
-
 try:
     from rich_rst import RestructuredText
 
@@ -127,7 +125,6 @@ def _add_xxpend_arguments(cap, xxpendableargs):
 def add_common_arguments(cap, argv=None, variant=None):
     """Insert common arguments into the configargparse object"""
     add_base_arguments(cap, argv=argv, variant=variant)
-    compiletools.dirnamer.add_arguments(cap)
     cap.add(
         "--variable-handling-method",
         dest="variable_handling_method",
@@ -150,7 +147,7 @@ def add_common_arguments(cap, argv=None, variant=None):
         default="unsupplied_implies_use_CXXFLAGS",
     )
     cap.add("--CXXFLAGS", nargs="+", help="C++ compiler flags (override)", default="-fPIC -g -Wall")
-    cap.add("--CFLAGS", help="C compiler flags (override)", default="-fPIC -g -Wall")
+    cap.add("--CFLAGS", nargs="+", help="C compiler flags (override)", default="-fPIC -g -Wall")
     compiletools.utils.add_flag_argument(
         parser=cap,
         name="git-root",
@@ -162,8 +159,9 @@ def add_common_arguments(cap, argv=None, variant=None):
         "--INCLUDE",
         "--include",
         dest="INCLUDE",
-        help="Extra path(s) to add to the list of include paths. (override)",
+        nargs="+",
         default="",
+        help="Extra path(s) to add to the list of include paths (override)",
     )
     cap.add(
         "--pkg-config",
@@ -171,6 +169,13 @@ def add_common_arguments(cap, argv=None, variant=None):
         help="Query pkg-config to obtain libs and flags for these packages.",
         action="append",
         default=[],
+    )
+    compiletools.utils.add_flag_argument(
+        parser=cap,
+        name="separate-flags-CPP-CXX",
+        dest="separate_flags_CPP_CXX",
+        default=False,
+        help="Keep CPPFLAGS and CXXFLAGS separate instead of unified.",
     )
     compiletools.git_utils.NameAdjuster.add_arguments(cap)
     _add_xxpend_arguments(cap, xxpendableargs=("include", "cppflags", "cflags", "cxxflags"))
@@ -582,7 +587,6 @@ def extract_command_line_macros_sz(args, flag_sources_sz, verbose=0):
 def clear_cache():
     """Clear any caches for macro extraction and pkg-config."""
     cached_pkg_config.cache_clear()
-    cached_pkg_config_sz.cache_clear()
     _get_functional_cxx_compiler_cached.cache_clear()
 
 
@@ -775,20 +779,73 @@ def cached_pkg_config(package, option):
     return result.stdout.rstrip()
 
 
-@functools.lru_cache(maxsize=None)
-def cached_pkg_config_sz(package_sz, option):
-    """StringZilla-aware version of cached_pkg_config with separate cache"""
-    import stringzilla as sz
-    result = cached_pkg_config(package_sz.decode('utf-8'), option)
-    return sz.Str(result)
+def filter_pkg_config_cflags(cflags_str, verbose=0):
+    """
+    Process pkg-config cflags output.
+    Converts -I to -isystem, except for default system include paths
+    which are dropped to prevent include order issues (e.g. with libc++).
+    Uses shlex for robust shell tokenization and quoting.
+    """
+    if not cflags_str:
+        return ""
+
+    # Standard system include paths
+    system_include_paths = set(['/usr/include'])
+    prefix = os.environ.get('PREFIX')
+    if prefix:
+        system_include_paths.add(os.path.normpath(os.path.join(prefix, 'include')))
+
+    # Use shlex to correctly handle quoted paths in flags
+    try:
+        flags = split_command_cached(cflags_str)
+    except ValueError:
+        # Fallback for malformed strings
+        flags = cflags_str.split()
+
+    flag_iter = iter(flags)
+    processed_flags = []
+
+    for flag in flag_iter:
+        if flag.startswith("-I"):
+            path = None
+            if flag == "-I":
+                # Detached -I
+                try:
+                    path = next(flag_iter)
+                except StopIteration:
+                    # Trailing -I at end of string, preserve as-is
+                    processed_flags.append(shlex.quote(flag))
+                    break
+            else:
+                # Attached -Ipath
+                path = flag[2:]
+
+            # Normalize and check
+            normalized_path = os.path.normpath(path)
+            is_system = False
+            for sys_path in system_include_paths:
+                if normalized_path == sys_path:
+                    is_system = True
+                    break
+
+            if is_system:
+                if verbose >= 6:
+                    print(f"Dropping default system include path from pkg-config: {path}")
+                continue
+
+            # Reconstruct as -isystem, quoting path for shell safety
+            processed_flags.append(f"-isystem {shlex.quote(path)}")
+        else:
+            # Re-quote other flags to preserve them correctly in the output string
+            processed_flags.append(shlex.quote(flag))
+
+    return " ".join(processed_flags)
 
 
 def _add_flags_from_pkg_config(args):
     for pkg in args.pkg_config:
-        cflags = (
-            cached_pkg_config(pkg, "--cflags")
-            .replace("-I", "-isystem ")
-        )  # This helps the CppHeaderDeps avoid searching packages
+        raw_cflags = cached_pkg_config(pkg, "--cflags")
+        cflags = filter_pkg_config_cflags(raw_cflags, args.verbose)
 
         if cflags:
             args.CPPFLAGS += f" {cflags}"
@@ -894,6 +951,22 @@ def _do_xxpend(args, name):
             setattr(args, name, attr)
 
 
+def _unify_cpp_cxx_flags(args):
+    """Combine CPPFLAGS and CXXFLAGS into a single deduplicated value.
+
+    Skipped when --separate-flags-CPP-CXX is set.
+    """
+    if getattr(args, 'separate_flags_CPP_CXX', False):
+        return
+    unified = " ".join(
+        compiletools.utils.combine_and_deduplicate_compiler_flags(
+            args.CPPFLAGS, args.CXXFLAGS
+        )
+    )
+    args.CPPFLAGS = unified
+    args.CXXFLAGS = unified
+
+
 def _deduplicate_all_flags(args):
     """Deduplicate all compiler and linker flags after all processing is complete"""
     flaglist = ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS")
@@ -996,8 +1069,8 @@ def _flatten_variables(args):
     """Most of the code base was written to expect CXXFLAGS are a single string with space separation.
     However, around 20240920 we allowed some variables to be lists of those strings.  To allow this
     change to slip in with minimal code changes, we flatten out the list into a single string."""
-    for varname in ("CPPFLAGS", "CFLAGS", "CXXFLAGS"):
-        if isinstance(getattr(args, varname), list):
+    for varname in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "INCLUDE"):
+        if isinstance(getattr(args, varname, None), list):
             setattr(args, varname, " ".join(getattr(args, varname)))
 
 
@@ -1021,6 +1094,7 @@ def _commonsubstitutions(args):
     _add_include_paths_to_flags(args)
     _add_flags_from_pkg_config(args)
     _set_project_version(args)
+    _unify_cpp_cxx_flags(args)
 
     try:
         # If the user didn't explicitly supply a bindir then modify the bindir to use the variant name

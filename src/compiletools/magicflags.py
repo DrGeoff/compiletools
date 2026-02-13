@@ -1,4 +1,5 @@
 import sys
+import os
 import re
 import functools
 from collections import defaultdict
@@ -14,10 +15,8 @@ import compiletools.wrappedos
 import compiletools.configutils
 import compiletools.apptools
 import compiletools.compiler_macros
-import compiletools.dirnamer
 import compiletools.namer
 from compiletools.preprocessing_cache import get_or_compute_preprocessing, MacroState
-from compiletools.apptools import cached_pkg_config_sz
 from compiletools.stringzilla_utils import strip_sz
 from compiletools.file_analyzer import FileAnalysisResult
 
@@ -105,6 +104,10 @@ class MagicFlagsBase:
         self.magicpattern = re.compile(
             r"^[\s]*//#([\S]*?)[\s]*=[\s]*(.*)", re.MULTILINE
         )
+
+        # Store final converged MacroState objects by filename
+        # This is used by Hunter for dependency graph caching
+        self._final_macro_states = {}
 
     def get_final_macro_state_key(self, filename: str):
         """Get the final converged macro state key for a specific file.
@@ -212,22 +215,30 @@ class MagicFlagsBase:
 
     def _handle_pkg_config(self, flag):
         flagsforfilename = defaultdict(list)
-        for pkg in flag.split():
-            cflags_raw = cached_pkg_config_sz(pkg, "--cflags")
-            # Replace -I flags with -isystem to help CppHeaderDeps avoid searching packages
-            from compiletools.stringzilla_utils import replace_sz
-            cflags = replace_sz(cflags_raw, '-I', '-isystem')
-            libs = cached_pkg_config_sz(pkg, "--libs")
+        
+        # Convert to string for splitting, as we need to iterate over packages
+        flag_str = str(flag)
+
+        for pkg in flag_str.split():
+            # pkg is str. Call cached_pkg_config directly to avoid unnecessary sz conversions
+            cflags_raw = compiletools.apptools.cached_pkg_config(pkg, "--cflags")
+            
+            # Use the shared filtering logic from apptools
+            cflags_str = compiletools.apptools.filter_pkg_config_cflags(cflags_raw, self._args.verbose)
+            cflags_list = compiletools.utils.split_command_cached_sz(sz.Str(cflags_str))
+            
+            libs_raw = compiletools.apptools.cached_pkg_config(pkg, "--libs")
+            libs_list = compiletools.utils.split_command_cached_sz(sz.Str(libs_raw))
 
             # Add cflags to all C/C++ flag categories
             for key in (sz.Str("CPPFLAGS"), sz.Str("CFLAGS"), sz.Str("CXXFLAGS")):
-                flagsforfilename[key].append(cflags)
-            flagsforfilename[sz.Str("LDFLAGS")].append(libs)
+                flagsforfilename[key].extend(cflags_list)
+            flagsforfilename[sz.Str("LDFLAGS")].extend(libs_list)
 
             if self._args.verbose >= 9:
                 print(f"Magic PKG-CONFIG = {pkg}:")
-                print(f"\tadded {cflags} to CPPFLAGS, CFLAGS, and CXXFLAGS")
-                print(f"\tadded {libs} to LDFLAGS")
+                print(f"\tadded {cflags_list} to CPPFLAGS, CFLAGS, and CXXFLAGS")
+                print(f"\tadded {libs_list} to LDFLAGS")
         return flagsforfilename
 
     def _resolve_readmacros_path(self, flag, source_filename):
@@ -332,6 +343,15 @@ class MagicFlagsBase:
             flagsforfilename[sz.Str("LDFLAGS")].extend(flagsforfilename[sz.Str("LINKFLAGS")])
             del flagsforfilename[sz.Str("LINKFLAGS")]
 
+        # Unify CPPFLAGS and CXXFLAGS in magic flags (unless opted out)
+        if not getattr(self._args, 'separate_flags_CPP_CXX', False):
+            cpp_key = sz.Str("CPPFLAGS")
+            cxx_key = sz.Str("CXXFLAGS")
+            if cpp_key in flagsforfilename or cxx_key in flagsforfilename:
+                combined = flagsforfilename[cpp_key] + flagsforfilename[cxx_key]
+                flagsforfilename[cpp_key] = list(combined)
+                flagsforfilename[cxx_key] = list(combined)
+
         # Deduplicate all flags while preserving order, with smart compiler flag handling
         for key in flagsforfilename:
             flagsforfilename[key] = compiletools.utils.deduplicate_compiler_flags(flagsforfilename[key])
@@ -397,8 +417,6 @@ class DirectMagicFlags(MagicFlagsBase):
         self.defined_macros = self._initial_macro_state.copy()
         # Track files specified by READMACROS magic flags
         self._explicit_macro_files = set()
-        # Store final converged MacroState objects by filename
-        self._final_macro_states = {}
         # Cache structured data results by (file_hash, input_macro_key, deps_hash) to avoid redundant convergence
         # deps_hash: XOR of dependency file content hashes (headers + READMACROS)
         # Cached result stores content_hash (not filepath) - current paths resolved via global hash registry
@@ -442,10 +460,8 @@ class DirectMagicFlags(MagicFlagsBase):
             verbose=self._args.verbose
         )
 
-        # Wrap dict in MacroState for update (use empty core since these are variable macros)
-        from compiletools.preprocessing_cache import MacroState
-        macro_state = MacroState(core={}, variable=macros)
-        self.defined_macros.update(macro_state)
+        # Update macro state immutably (use empty core since these are variable macros)
+        self.defined_macros = self.defined_macros.with_updates(macros)
 
 
     @functools.lru_cache(maxsize=None)
@@ -540,13 +556,17 @@ class DirectMagicFlags(MagicFlagsBase):
         # Store active magic flags for this file to avoid redundant final pass
         self._stored_active_magic_flags[fname] = active_magic_flags
 
+        # Collect updates
+        updates = {}
         # Apply extracted macros from magic flags to state
         for macro_name, macro_value in cppflags_macros + cxxflags_macros:
-            self.defined_macros[macro_name] = macro_value
+            updates[macro_name] = macro_value
 
         # Apply extracted variable macros to state
-        for macro_name, macro_value in extracted_variable_macros.items():
-            self.defined_macros[macro_name] = macro_value
+        updates.update(extracted_variable_macros)
+
+        # Update state immutably
+        self.defined_macros = self.defined_macros.with_updates(updates)
 
     def _extract_macros_from_file(self, filename):
         """Extract #define macros from a file (unconditionally, no preprocessor evaluation)."""
@@ -557,6 +577,7 @@ class DirectMagicFlags(MagicFlagsBase):
                 print(f"DirectMagicFlags warning: could not extract macros from {filename}: {e}")
             return
 
+        updates = {}
         # Extract macros directly from FileAnalyzer's structured defines data
         for define_info in file_result.defines:
             if define_info['is_function_like']:
@@ -564,7 +585,10 @@ class DirectMagicFlags(MagicFlagsBase):
 
             macro_name = define_info['name']
             macro_value = define_info['value'] if define_info['value'] is not None else sz.Str("1")
-            self.defined_macros[macro_name] = macro_value
+            updates[macro_name] = macro_value
+
+        if updates:
+            self.defined_macros = self.defined_macros.with_updates(updates)
 
     def _build_all_files_list(self, filename, headers):
         """Build deduplicated list of all files to process (explicit macros + main + headers)."""
@@ -625,29 +649,32 @@ class DirectMagicFlags(MagicFlagsBase):
 
         while iteration < max_iterations:
             iteration += 1
-            macro_version_before = self.defined_macros.get_version()
+            # Track state object identity to detect convergence
+            # with_updates() returns self if no effective changes occur
+            macro_state_before = self.defined_macros
 
-            # Determine which files need processing (those not yet processed with current macro version)
+            # Determine which files need processing (those not yet processed with current macro state)
+            # Use cache key as proxy for version since immutable state usually means different cache key
+            current_macro_key = self.defined_macros.get_cache_key()
+            
             files_to_process = [
                 fname for fname in all_files
-                if file_last_macro_version.get(fname) != macro_version_before
+                if file_last_macro_version.get(fname) != current_macro_key
             ]
 
             if not files_to_process:
                 break
 
             # Process files that need reprocessing
-            # Pass cache key to avoid redundant get_cache_key() calls within file processing
-            current_macro_key = self.defined_macros.get_cache_key()
             for fname in files_to_process:
                 self._process_file_for_macros(fname, current_macro_key)
-                # Record current version to avoid reprocessing in next iteration
+                # Record current key to avoid reprocessing in next iteration
                 # (files that mutate macros are already cached by their input state)
-                file_last_macro_version[fname] = macro_version_before
+                file_last_macro_version[fname] = current_macro_key
 
-            # Check convergence - version unchanged means macros converged
-            macro_version_after = self.defined_macros.get_version()
-            if macro_version_after == macro_version_before:
+            # Check convergence - identity check works because with_updates returns
+            # self if no changes occurred
+            if self.defined_macros is macro_state_before:
                 break
 
         return iteration
@@ -750,10 +777,8 @@ class DirectMagicFlags(MagicFlagsBase):
                     for k, v in sorted(pass1_macro_key)[:10]:
                         print(f"DirectMagicFlags:   {k} = {v}")
 
-            # CRITICAL: Clear macro-variant caches to ensure Pass 2 gets fresh results
-            # Don't clear invariant cache - those files have no conditionals so their
-            # active lines/includes/defines are truly macro-independent and reusable.
-            # The preprocessing cache correctly recomputes updated_macros on cache hits.
+            # Clear caches that depend on macro state for Pass 2
+            # Invariant caches are preserved - those files have no conditionals
             if self._args.verbose >= 7:
                 print(f"DirectMagicFlags: Clearing variant caches before Pass 2")
             import compiletools.headerdeps
@@ -875,6 +900,87 @@ class CppMagicFlags(MagicFlagsBase):
             self.preprocessor = headerdeps.preprocessor
         else:
             self.preprocessor = compiletools.preprocessor.PreProcessor(args)
+            
+        # Compute initial macro state once (compiler built-ins + command-line macros)
+        self._initial_macro_state = self._initialize_macro_state()
+
+    def _initialize_macro_state(self) -> MacroState:
+        """Initialize MacroState with command-line and compiler macros as core."""
+        core_macros = {}
+
+        # Get compiler built-in macros - these are the stable base (~378 macros)
+        compiler_macros = compiletools.compiler_macros.get_compiler_macros(self._args.CXX, self._args.verbose)
+        core_macros.update({sz.Str(k): sz.Str(v) for k, v in compiler_macros.items()})
+
+        # Add command-line macros to core - they're also static for the entire build
+        cmd_macros = compiletools.apptools.extract_command_line_macros(
+            self._args,
+            flag_sources=['CPPFLAGS', 'CXXFLAGS'],
+            include_compiler_macros=False,
+            verbose=self._args.verbose
+        )
+        core_macros.update({sz.Str(k): sz.Str(v) for k, v in cmd_macros.items()})
+
+        # Create MacroState with core macros, empty variable macros
+        return MacroState(core_macros, {})
+
+    def _extract_macros_from_preprocessor(self, filename: str) -> MacroState:
+        """Extract all macro definitions from preprocessor using -dM flag.
+
+        Uses g++ -dM -E to dump all macro definitions after preprocessing.
+        This includes compiler built-ins and file-defined macros.
+
+        Args:
+            filename: Path to file to process
+
+        Returns:
+            MacroState with core (compiler+cmdline) and variable (file-defined) macros
+        """
+        # Run preprocessor with -dM -E to dump macros
+        extraargs = "-dM -E"
+        macro_dump = self.preprocessor.process(
+            realpath=filename, extraargs=extraargs, redirect_stderr_to_stdout=True
+        )
+
+        # Parse lines like: #define MACRO_NAME value
+        variable_macros = {}
+        for line in macro_dump.split('\n'):
+            if not line.startswith('#define '):
+                continue
+
+            # Extract macro name and value
+            after_define = line[8:]  # Skip '#define '
+
+            # Split on first whitespace to separate name from value
+            parts = after_define.split(maxsplit=1)
+            if len(parts) < 1:
+                continue
+
+            macro_name_str = parts[0]
+
+            # Skip function-like macros (have '(' immediately after name)
+            if '(' in macro_name_str and macro_name_str.index('(') == len(macro_name_str.rstrip('()')):
+                # This is tricky - need to check if '(' is part of the name (function-like)
+                # Function-like: FOO(a,b) - '(' immediately follows name
+                # Object-like with paren in value: FOO (x) - space before '('
+                paren_idx = macro_name_str.find('(')
+                if paren_idx > 0 and paren_idx == len(macro_name_str) - 1:
+                    # Name ends with '(' - this is function-like
+                    continue
+                elif '(' in macro_name_str:
+                    # '(' is in the middle - function-like macro
+                    continue
+
+            macro_name = sz.Str(macro_name_str)
+            macro_value = sz.Str(parts[1]) if len(parts) > 1 else sz.Str("1")
+
+            # Skip compiler built-ins (already in core)
+            if macro_name not in self._initial_macro_state.core:
+                variable_macros[macro_name] = macro_value
+
+        # Return MacroState with variable macros (core already initialized)
+        return MacroState(core=self._initial_macro_state.core.copy(),
+                         variable=variable_macros)
 
     def _readfile(self, filename):
         """Preprocess the given filename but leave comments"""
@@ -890,9 +996,18 @@ class CppMagicFlags(MagicFlagsBase):
             List of dicts with structure: [{'content_hash': str, 'active_magic_flags': List[Dict]}]
             See MagicFlagsBase docstring for magic flag dict structure.
         """
-        
+
         if self._args.verbose >= 4:
             print("CppMagicFlags: Getting structured data from preprocessed C++ output")
+
+        # Use initial macro state (core macros only) for CppMagicFlags.
+        # In cpp mode, the C++ preprocessor handles all conditional compilation,
+        # so we don't need to track variable macros. The magic flags are extracted
+        # from preprocessed output where all conditionals are already resolved.
+        # This avoids an expensive additional preprocessor call (-dM -E).
+        abs_filename = compiletools.wrappedos.realpath(filename)
+        if abs_filename not in self._final_macro_states:
+            self._final_macro_states[abs_filename] = self._initial_macro_state.copy()
 
         # Get preprocessed text (existing logic)
         preprocessed_text = self._readfile(filename)

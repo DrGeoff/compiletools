@@ -8,8 +8,7 @@ Generate compile_commands.json for clang tooling and IDE integration
 
 :Author: drgeoffathome@gmail.com
 :Date:   2025-10-08
-:Copyright: Copyright (C) 2011-2025 Zomojo Pty Ltd
-:Version: 6.1.5
+:Version: 7.0.2
 :Manual section: 1
 :Manual group: developers
 
@@ -17,7 +16,7 @@ SYNOPSIS
 ========
 ct-compilation-database [-h] [-c CONFIG_FILE] [--variant VARIANT] [-v] [-q]
                         [--version] [--compilation-database-output OUTPUT]
-                        [--relative-paths]
+                        [--relative-paths] [--shared-objects]
                         [filename ...]
 
 DESCRIPTION
@@ -68,6 +67,11 @@ OPTIONS
     Use relative paths instead of absolute paths in the database.
     Useful for portable compilation databases.
 
+--shared-objects / --no-shared-objects
+    Enable file locking for concurrent compilation database writes.
+    Useful in multi-user environments with shared build caches.
+    Default: disabled.
+
 EXAMPLES
 ========
 
@@ -106,16 +110,28 @@ Example ct-cake usage::
     ct-cake --no-compilation-database    # Disable generation
     ct-cake --compilation-database-output .compile_db.json
 
-CLANGD CONFIGURATION
-====================
-For best results with clangd, create a .clangd config file in your project root:
 
-.. code-block:: yaml
+VSCODE INTEGRATION
+==================
+To enable IntelliSense in VSCode using the generated compilation database,
+create or update ``.vscode/c_cpp_properties.json``:
 
-    CompileFlags:
-      CompilationDatabase: .
+.. code-block:: json
 
-This tells clangd to use the compile_commands.json in the project root.
+    {
+        "configurations": [
+            {
+                "name": "Linux",
+                "compileCommands": "${workspaceFolder}/compile_commands.json",
+                "compilerPath": "/path/to/bin/g++"
+            }
+        ],
+        "version": 4
+    }
+
+Replace ``Linux`` with your platform (``Mac`` for macOS, ``Win32`` for Windows)
+and ``/path/to/bin/g++`` with your actual compiler path (e.g.,
+``/usr/bin/g++`` or ``/usr/bin/clang++``).
 
 SEE ALSO
 ========

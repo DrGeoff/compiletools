@@ -9,7 +9,7 @@ Show the magic flags / magic comments that a file exports
 :Author: drgeoffathome@gmail.com
 :Date:   2018-02-23
 :Copyright: Copyright (C) 2011-2018 Zomojo Pty Ltd
-:Version: 6.1.5
+:Version: 7.0.2
 :Manual section: 1
 :Manual group: developers
 
@@ -17,7 +17,7 @@ SYNOPSIS
 ========
 ct-magicflags [-h] [-c CONFIG_FILE] [--headerdeps {direct,cpp}]
                    [--variant VARIANT] [-v] [-q] [--version] [-?]
-                   [--CTCACHE CTCACHE] [--ID ID] [--CPP CPP] [--CC CC]
+                   [--ID ID] [--CPP CPP] [--CC CC]
                    [--CXX CXX] [--CPPFLAGS CPPFLAGS] [--CXXFLAGS CXXFLAGS]
                    [--CFLAGS CFLAGS] [--git-root | --no-git-root]
                    [--include [INCLUDE [INCLUDE ...]]]
@@ -91,25 +91,60 @@ including common libraries like gtk+-3.0, libpng, libcurl, openssl, and many mor
 
 VALID MAGIC FLAGS
 =================
-A magic flag follows the pattern ``//#key=value``. Whitespace around the 
+A magic flag follows the pattern ``//#key=value``. Whitespace around the
 equal sign is acceptable.
 
 The known magic flags are::
 
-    =========   ==============================================================
-    Key         Description
-    =========   ==============================================================
-    CPPFLAGS    C Pre Processor flags
-    CFLAGS      C compiler flags
-    CXXFLAGS    C++ flags (do not confuse these with the C PreProcessor flags)
-    INCLUDE     Specify include paths without "-I". 
-                Adds the path to CPPFLAGS, CFLAGS and CXXFLAGS.
-    LDFLAGS     Linker flags
-    LINKFLAGS   Linker flags (deprecated)
-    SOURCE      Inject an extra souce file into the list of files to be built. 
-                This is most commonly used in cross platform work.
-    PKG-CONFIG  Extract the cflags and libs using pkg-config
-    ==========  ==============================================================
+    ===========  ==============================================================
+    Key          Description
+    ===========  ==============================================================
+    CPPFLAGS     C Pre Processor flags
+    CFLAGS       C compiler flags
+    CXXFLAGS     C++ flags (do not confuse these with the C PreProcessor flags)
+    INCLUDE      Specify include paths without "-I".
+                 Adds the path to CPPFLAGS, CFLAGS and CXXFLAGS.
+    LDFLAGS      Linker flags
+    LINKFLAGS    Linker flags (deprecated, use LDFLAGS)
+    SOURCE       Inject an extra source file into the list of files to be built.
+                 This is most commonly used in cross platform work.
+    PKG-CONFIG   Extract the cflags and libs using pkg-config
+    READMACROS   Read macro definitions from specified file before evaluating
+                 conditional compilation. Useful for system headers.
+    ===========  ==============================================================
+
+**Note:** Magic flags with arbitrary keys (not listed above) are also accepted
+and will be passed through to the output. This will allow for project-specific 
+extensions in the future.
+
+IMPORTANT: Library Linking
+==========================
+compiletools does **not** automatically detect library requirements from includes.
+For example, ``#include <pthread.h>`` does NOT automatically add ``-lpthread``.
+All library linking must be explicitly specified using either:
+
+* ``//#LDFLAGS=-lpthread`` for direct library specification
+* ``//#PKG-CONFIG=libname`` for pkg-config managed libraries
+
+Using READMACROS
+================
+The READMACROS magic flag allows extracting macro definitions from a file
+before evaluating conditional compilation. This is useful when magic flags
+depend on macros defined in system headers that aren't in the include path.
+
+.. code-block:: cpp
+
+    #include <fake_system_include/system/version.h>
+    //#READMACROS=fake_system_include/system/version.h
+
+    #if SYSTEM_VERSION_MAJOR >= 2
+    //#CPPFLAGS=-DSYSTEM_ENABLE_V2
+    #else
+    //#CPPFLAGS=-DUSE_LEGACY_API
+    #endif
+
+The file path is resolved relative to the source file containing the READMACROS
+flag, or as an absolute path if specified.
 
 EXAMPLES
 ========

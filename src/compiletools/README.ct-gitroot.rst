@@ -3,13 +3,13 @@ ct-gitroot
 ================
 
 ------------------------------------------------------------
-What directory is the root of the git repository?
+Display the git repository root directory
 ------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
 :Date:   2017-09-28
 :Copyright: Copyright (C) 2011-2016 Zomojo Pty Ltd
-:Version: 6.1.5
+:Version: 7.0.2
 :Manual section: 1
 :Manual group: developers
 
@@ -34,7 +34,15 @@ using the ``--no-git-root`` option.
 EXAMPLES
 ========
 
-ct-gitroot
+Display the git root::
+
+    $ ct-gitroot
+    /home/user/myproject
+
+Use in scripts::
+
+    cd $(ct-gitroot)
+    ct-cake
 
 SEE ALSO
 ========

@@ -179,15 +179,16 @@ def default_config_directories(
 ):
     # Use configuration in the order (lowest to highest priority)
     # If repoonly is true, start the procedure at step 4
-    # 1) same path as exe,
-    # 2) system config (XDG compliant.  /etc/xdg/ct)
-    # 2b)   python virtual environment system configs (${python-site-packages}/etc/xdg/ct/ct.conf.d)
-    # 3) user config   (XDG compliant. ~/.config/ct)
-    # 4) repoconfig (usually <gitroot>/ct.conf.d TODO:make this configurable)
+    # 1) ct/ct.conf.d subdirectory alongside the ct-* executable
+    # 2) system config (XDG compliant: /etc/xdg/ct)
+    # 2b) python virtual environment configs (${python-site-packages}/ct/ct.conf.d)
+    # 2c) package bundled config (<installed-package>/ct.conf.d)
+    # 3) user config (XDG compliant: ~/.config/ct)
+    # 4) project config (<gitroot>/ct.conf.d)
     # 5) gitroot
     # 6) current working directory
     # 7) environment variables
-    # 8) given on the command line
+    # 8) command line arguments
 
     # These variables are settable to assist writing tests
     if user_config_dir is None:

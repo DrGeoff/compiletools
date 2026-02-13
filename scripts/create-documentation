@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_NAME=$(basename "$0")
+
+# Find README: check installed location first, then development location
+if [[ -f "/usr/share/doc/compiletools/README.${SCRIPT_NAME}.rst" ]]; then
+    README_PATH="/usr/share/doc/compiletools/README.${SCRIPT_NAME}.rst"
+else
+    README_PATH="$(dirname "$(readlink -f "$0")")/../src/compiletools/README.${SCRIPT_NAME}.rst"
+fi
+
+show_help() {
+    echo "Usage: ${SCRIPT_NAME} [OPTIONS]"
+    echo ""
+    if [[ -f "$README_PATH" ]]; then
+        cat "$README_PATH"
+    else
+        echo "No documentation available for ${SCRIPT_NAME}"
+        echo "See: https://github.com/drgeoffathome/compiletools"
+    fi
+    exit 0
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        --help|-h) show_help ;;
+    esac
+done
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
+DOC_ROOT="${REPO_ROOT}/src/compiletools"
+MAN_DIR="${REPO_ROOT}/man1"
+
+mkdir -p "${MAN_DIR}"
+rm -f "${MAN_DIR}"/*.1
+
+for src in "${DOC_ROOT}"/README.*.rst; do
+    [[ -f "${src}" ]] || continue
+
+    # Extract base name: README.foo.rst -> foo
+    base=$(basename "${src}" .rst)
+    base=${base#README.}
+
+    # Special case: ct-doc -> compiletools
+    if [[ "${base}" == "ct-doc" ]]; then
+        man_file="compiletools.1"
+    else
+        man_file="${base}.1"
+    fi
+
+    dst="${MAN_DIR}/${man_file}"
+    echo "Generating ${dst} from $(basename "${src}")"
+    rst2man "${src}" "${dst}"
+done

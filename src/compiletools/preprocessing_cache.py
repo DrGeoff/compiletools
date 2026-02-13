@@ -15,9 +15,14 @@ The hash is deterministic across Python runs, enabling future disk caching suppo
 """
 
 from typing import List, Dict, Tuple, FrozenSet, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import sys
 import stringzilla as sz
+
+
+# Type aliases for macro dictionaries and cache keys
+MacroDict = Dict[sz.Str, sz.Str]
+MacroCacheKey = FrozenSet[Tuple[sz.Str, sz.Str]]
 
 
 @dataclass
@@ -30,17 +35,14 @@ class ProcessingResult:
         active_magic_flags: List of active magic flags with metadata
         active_defines: List of active #define directives with metadata
         updated_macros: Macro state after processing (input + defines - undefs)
+        file_defines: Macros defined BY this file only (for cache reconstruction)
     """
     active_lines: List[int]
     active_includes: List[dict]
     active_magic_flags: List[dict]
     active_defines: List[dict]
     updated_macros: 'MacroState'  # Forward reference
-
-
-# Type aliases for macro dictionaries and cache keys
-MacroDict = Dict[sz.Str, sz.Str]
-MacroCacheKey = FrozenSet[Tuple[sz.Str, sz.Str]]
+    file_defines: MacroDict = field(default_factory=dict)
 
 
 @dataclass
@@ -58,16 +60,12 @@ class MacroState:
               These never change during a build, so we exclude them from cache keys.
         variable: Dynamic macros accumulated from #define directives in files.
                   These grow as files are processed and determine cache behavior.
-        _version: Integer counter incremented on any mutation to variable macros.
-                  Used for fast convergence detection without expensive cache key comparisons.
-                  IMPORTANT: Any new mutation pathway must increment this counter.
     """
     core: MacroDict  # Static: compiler + cmdline macros
     variable: MacroDict  # Dynamic: file #defines
     _cache_key: Optional[MacroCacheKey]  # Cached frozenset for cache keys
     _hash: Optional[str]  # Cached hex digest for convergence detection (variable only)
     _hash_full: Optional[str]  # Cached hex digest including core + variable
-    _version: int  # Version counter incremented on any mutation for fast equality checks
 
     def __init__(self, core: MacroDict, variable: Optional[MacroDict] = None):
         """Initialize macro state.
@@ -81,7 +79,6 @@ class MacroState:
         self._cache_key = None  # Lazy-computed cache key
         self._hash = None  # Lazy-computed hash (variable only)
         self._hash_full = None  # Lazy-computed hash (core + variable)
-        self._version = 0  # Increments on mutations for fast convergence detection
 
     def all_macros(self) -> MacroDict:
         """Get merged view of all macros (core + variable).
@@ -100,11 +97,38 @@ class MacroState:
             new_macros: Macros to merge (typically from file #defines)
 
         Returns:
-            New MacroState with same core but updated variable macros
+            New MacroState with same core but updated variable macros.
+            Returns self if new_macros is empty or contains no effective changes.
         """
+        # Short-circuit: if no new macros, return self to preserve cached state
+        if not new_macros:
+            return self
+
+        # Filter out no-op updates to ensure immutability efficiency
+        # Only apply updates that actually change the value or add a new key
+        actual_updates = {
+            k: v for k, v in new_macros.items()
+            if k not in self.variable or self.variable[k] != v
+        }
+
+        if not actual_updates:
+            return self
+
         updated_variable = self.variable.copy()
-        updated_variable.update(new_macros)
-        return MacroState(self.core, updated_variable)
+        updated_variable.update(actual_updates)
+        new_state = MacroState(self.core, updated_variable)
+
+        # Optimization: incrementally compute cache key when possible
+        # Only for pure additions (no key overwrites) since frozenset union
+        # doesn't replace - it adds. Macro definitions are typically additive
+        # (include guards, feature flags), so pure additions are the common case.
+        if self._cache_key is not None:
+            overwrites = any(k in self.variable for k in actual_updates)
+            if not overwrites:
+                # Pure addition - O(k) frozenset union instead of O(n) rebuild
+                new_state._cache_key = self._cache_key | frozenset(actual_updates.items())
+
+        return new_state
 
     # Dict-like interface for easy drop-in replacement
     def __len__(self) -> int:
@@ -116,16 +140,6 @@ class MacroState:
         if key in self.variable:
             return self.variable[key]
         return self.core[key]
-
-    def __setitem__(self, key, value):
-        """Set macro value. Always sets in variable dict."""
-        # Only mutate and increment version if value actually changed
-        if key not in self.variable or self.variable[key] != value:
-            self.variable[key] = value
-            self._version += 1  # Increment version for convergence detection
-            self._cache_key = None  # Invalidate caches
-            self._hash = None
-            self._hash_full = None  # Invalidate full hash too
 
     def __contains__(self, key) -> bool:
         """Check if macro key exists in either core or variable."""
@@ -151,49 +165,9 @@ class MacroState:
         """Return all macro values (core + variable)."""
         return self.all_macros().values()
 
-    def update(self, other: 'MacroState'):
-        """Update variable macros from another MacroState.
-
-        Optimized to skip redundant updates using version comparison.
-        Only increments version when actual changes occur.
-        """
-        # Early exit if nothing to update
-        if not other.variable:
-            return
-
-        # Check if any actual changes would occur
-        has_changes = False
-        for key, value in other.variable.items():
-            if key not in self.variable or self.variable[key] != value:
-                has_changes = True
-                break
-
-        if not has_changes:
-            return  # No changes, skip update
-
-        # Perform update and increment version
-        self.variable.update(other.variable)
-        self._version += 1  # Increment version on mutation
-        self._cache_key = None
-        self._hash = None
-        self._hash_full = None  # Invalidate full hash too
-
     def copy(self) -> 'MacroState':
-        """Create shallow copy of this MacroState."""
-        result = MacroState(self.core, self.variable.copy())
-        result._version = self._version  # Preserve version in copy
-        return result
-
-    def get_version(self) -> int:
-        """Get version counter for fast convergence detection.
-
-        The version increments whenever variable macros are modified.
-        Used to detect convergence without expensive cache key comparisons.
-
-        Returns:
-            Integer version counter (starts at 0, increments on mutations)
-        """
-        return self._version
+        """Return self since MacroState is immutable."""
+        return self
 
     def get_cached_key_if_available(self) -> Optional[MacroCacheKey]:
         """Get cache key if already computed, None otherwise.
@@ -218,6 +192,30 @@ class MacroState:
             self._cache_key = frozenset(self.variable.items())
 
         return self._cache_key
+
+    def get_relevant_key(self, relevant_macros: FrozenSet[sz.Str]) -> MacroCacheKey:
+        """Get cache key filtered to only macros that affect the target file.
+
+        For variant caching, only macros referenced in conditionals (#ifdef, #if, etc.)
+        can affect preprocessing. Other macros in the state are irrelevant for this file
+        and should not create unique cache keys.
+
+        Args:
+            relevant_macros: Set of macro names from file_result.conditional_macros
+
+        Returns:
+            Frozenset of (name, value) pairs for only the relevant variable macros
+        """
+        if not relevant_macros:
+            return _EMPTY_FROZENSET
+
+        # Build filtered key - only include variable macros that matter
+        relevant_items = tuple(
+            (m, self.variable[m])
+            for m in relevant_macros
+            if m in self.variable
+        )
+        return frozenset(relevant_items) if relevant_items else _EMPTY_FROZENSET
 
     def get_hash(self, include_core=False) -> str:
         """Get or compute stable hash of this MacroState for convergence detection.
@@ -370,44 +368,48 @@ def get_or_compute_preprocessing(
         if content_hash in _invariant_cache:
             _cache_stats['hits'] += 1
             _cache_stats['invariant_hits'] += 1
-            cached_result = _invariant_cache[content_hash]
-
-            # IMPORTANT: Recompute updated_macros with current input_macros
-            # The cached result's updated_macros was computed with the input_macros
-            # from when it was first cached. If input_macros has evolved (e.g., during
-            # Pass 2 after macro convergence), we must merge the file's defines with
-            # the CURRENT input state, not the stale cached state.
-            if cached_result.active_defines:
-                # File defines macros - merge with current input state
-                defines_dict = {d['name']: d['value'] for d in cached_result.active_defines}
-                updated_macros = input_macros.with_updates(defines_dict)
+            cached = _invariant_cache[content_hash]
+            # Reconstruct updated_macros from caller's input + file's defines
+            # to prevent stale macro pollution from first caller's context
+            if cached.file_defines:
+                reconstructed_macros = input_macros.with_updates(cached.file_defines)
             else:
-                # File has no defines - input macros unchanged
-                updated_macros = input_macros
-
-            # Return result with recomputed updated_macros
+                reconstructed_macros = input_macros
             return ProcessingResult(
-                active_lines=cached_result.active_lines,
-                active_includes=cached_result.active_includes,
-                active_magic_flags=cached_result.active_magic_flags,
-                active_defines=cached_result.active_defines,
-                updated_macros=updated_macros
+                active_lines=cached.active_lines,
+                active_includes=cached.active_includes,
+                active_magic_flags=cached.active_magic_flags,
+                active_defines=cached.active_defines,
+                updated_macros=reconstructed_macros,
+                file_defines=cached.file_defines
             )
 
         _cache_stats['misses'] += 1
         _cache_stats['invariant_misses'] += 1
     else:
-        # Macro-variant: cache key is (content_hash, macro_cache_key)
-        # Try to use cached key if available to avoid recomputation
-        macro_key = input_macros.get_cached_key_if_available()
-        if macro_key is None:
-            macro_key = input_macros.get_cache_key()
+        # Macro-variant: cache key is (content_hash, file_specific_macro_key)
+        # Use file-specific key: only macros that affect this file's conditionals
+        macro_key = input_macros.get_relevant_key(file_result.conditional_macros)
         cache_key = (content_hash, macro_key)
 
         if cache_key in _variant_cache:
             _cache_stats['hits'] += 1
             _cache_stats['variant_hits'] += 1
-            return _variant_cache[cache_key]
+            cached = _variant_cache[cache_key]
+            # Apply same reconstruction pattern for consistency
+            # Fast path: if file defines nothing, no reconstruction needed
+            if cached.file_defines:
+                reconstructed_macros = input_macros.with_updates(cached.file_defines)
+            else:
+                reconstructed_macros = input_macros
+            return ProcessingResult(
+                active_lines=cached.active_lines,
+                active_includes=cached.active_includes,
+                active_magic_flags=cached.active_magic_flags,
+                active_defines=cached.active_defines,
+                updated_macros=reconstructed_macros,
+                file_defines=cached.file_defines
+            )
 
         _cache_stats['misses'] += 1
         _cache_stats['variant_misses'] += 1
@@ -444,6 +446,14 @@ def get_or_compute_preprocessing(
         if k not in input_macros.core:
             new_variable_macros[k] = v
 
+    # Store file-specific defines for cache reconstruction
+    # file_defines should ONLY contain macros defined BY this file (not inherited from input)
+    # Note: Include guards are already excluded by SimplePreprocessor._handle_define_structured()
+    file_defines: MacroDict = {}
+    for k, v in new_variable_macros.items():
+        if k not in input_macros.variable:
+            file_defines[k] = v
+
     # CRITICAL: Use with_updates to preserve existing variable macros during traversal
     # Creates MacroState with input_macros.variable + new_variable_macros
     # This ensures macros from previously processed files (e.g., base.hpp) are preserved
@@ -456,7 +466,8 @@ def get_or_compute_preprocessing(
         active_includes=active_includes,
         active_magic_flags=active_magic_flags,
         active_defines=active_defines,
-        updated_macros=updated_macro_state
+        updated_macros=updated_macro_state,
+        file_defines=file_defines
     )
 
     # Store in appropriate cache

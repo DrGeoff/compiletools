@@ -360,7 +360,12 @@ class CIFSLock:
 
 
 class FlockLock:
-    """POSIX flock locking for local filesystems (ext4/xfs/btrfs)."""
+    """POSIX flock locking for local filesystems (ext4/xfs/btrfs).
+
+    WARNING: flock() is node-local on GPFS/Lustre/NFS. Use LockdirLock
+    for network filesystems. This class should only be used when
+    filesystem detection confirms a local filesystem.
+    """
 
     def __init__(self, target_file, args):
         self.lockfile = target_file + ".lock"

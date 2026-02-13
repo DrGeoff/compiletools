@@ -158,45 +158,65 @@ class FindTargets(object):
             path = "."
         executabletargets = []
         testtargets = []
-        bindir = self.namer.topbindir()
-        for root, dirs, files in os.walk(path):
-            if bindir in root or self._args.objdir in root:
+
+        # Use the global hash registry instead of os.walk to avoid
+        # traversing large non-source files (e.g. core dumps).
+        # Fall back to os.walk for non-git directories.
+        from compiletools.global_hash_registry import get_tracked_files, get_file_hash
+        tracked = get_tracked_files()
+
+        prefix = os.path.realpath(path)
+        if not prefix.endswith(os.sep):
+            prefix += os.sep
+
+        if tracked:
+            source_files = (
+                (fp, h) for fp, h in tracked.items()
+                if fp.startswith(prefix) and compiletools.utils.is_source(fp)
+            )
+        else:
+            # Non-git directory: fall back to os.walk
+            bindir = self.namer.topbindir()
+            def _walk_source_files():
+                for root, _dirs, files in os.walk(path):
+                    if bindir in root or self._args.objdir in root:
+                        continue
+                    for fname in files:
+                        pathname = os.path.realpath(os.path.join(root, fname))
+                        if compiletools.utils.is_source(pathname):
+                            try:
+                                yield pathname, get_file_hash(pathname)
+                            except FileNotFoundError:
+                                continue
+            source_files = _walk_source_files()
+
+        for filepath, content_hash in source_files:
+            try:
+                result = compiletools.file_analyzer.analyze_file(content_hash)
+
+                filename = os.path.basename(filepath)
+
+                # Apply filename-based test detection first
+                # A file starting with "test" is a test even if it has exemarkers
+                if filename.startswith("test") and self._args.filenametestmatch:
+                    if result.marker_type in (MarkerType.EXE, MarkerType.TEST):
+                        testtargets.append(filepath)
+                        if self._args.verbose >= 3:
+                            print("Found a test: " + filepath)
+                        continue
+
+                # Check marker type from FileAnalyzer
+                if result.marker_type == MarkerType.EXE:
+                    executabletargets.append(filepath)
+                    if self._args.verbose >= 3:
+                        print("Found an executable source: " + filepath)
+                elif result.marker_type == MarkerType.TEST:
+                    testtargets.append(filepath)
+                    if self._args.verbose >= 3:
+                        print("Found a test: " + filepath)
+
+            except (OSError, IOError, FileNotFoundError):
                 continue
-            for filename in files:
-                pathname = os.path.join(root, filename)
-                if not compiletools.utils.is_source(pathname):
-                    continue
-
-                try:
-                    # Get content hash for content-based caching
-                    from compiletools.global_hash_registry import get_file_hash
-                    content_hash = get_file_hash(pathname)
-
-                    # Use FileAnalyzer instead of manual file reading
-                    result = compiletools.file_analyzer.analyze_file(content_hash)
-
-                    # Apply filename-based test detection first
-                    # A file starting with "test" is a test even if it has exemarkers
-                    if filename.startswith("test") and self._args.filenametestmatch:
-                        if result.marker_type in (MarkerType.EXE, MarkerType.TEST):
-                            testtargets.append(pathname)
-                            if self._args.verbose >= 3:
-                                print("Found a test: " + pathname)
-                            continue
-
-                    # Check marker type from FileAnalyzer
-                    if result.marker_type == MarkerType.EXE:
-                        executabletargets.append(pathname)
-                        if self._args.verbose >= 3:
-                            print("Found an executable source: " + pathname)
-                    elif result.marker_type == MarkerType.TEST:
-                        testtargets.append(pathname)
-                        if self._args.verbose >= 3:
-                            print("Found a test: " + pathname)
-
-                except (OSError, IOError, FileNotFoundError):
-                    # Skip files that can't be read
-                    continue
 
         if self._args.disable_tests:
             testtargets = []

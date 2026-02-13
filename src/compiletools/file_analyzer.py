@@ -253,6 +253,10 @@ def parse_directive_struct(dtype: str, pos: int, line_num: int,
             else:
                 directive.macro_value = None
 
+    elif dtype == 'pragma':
+        # Extract pragma name (e.g., "once" from "#pragma once")
+        directive.macro_name = strip_sz(content_slice)
+
     return directive
 
 
@@ -594,8 +598,13 @@ def analyze_file(content_hash: str) -> 'FileAnalysisResult':
                                     'value': value_trimmed
                                 })
 
+    # Sort directives by line number for correct guard detection
+    # The directives list is built by iterating directive_positions.items()
+    # which processes by directive TYPE, not line number order
+    directives_sorted = sorted(directives, key=lambda d: d.line_num)
+
     # Detect include guard first so we can exclude it from defines
-    include_guard = detect_include_guard(directives)
+    include_guard = detect_include_guard(directives_sorted)
 
     # Extract defines with full information (excluding include guard)
     defines = []
@@ -902,31 +911,58 @@ def detect_include_guard(directives: List[PreprocessorDirective]) -> Optional['s
 
     Supports both traditional include guards (#ifndef/#define) and #pragma once.
     Returns the guard macro name as StringZilla.Str or sz.Str("pragma_once") for #pragma once.
+
+    Include guard detection is STRICT to avoid false positives:
+    - #pragma once must be among the first 3 directives
+    - #ifndef/#define pattern must start at the FIRST directive
+    - The matching #endif must be the LAST (or near-last) directive
+    - This avoids misidentifying feature flag patterns like:
+        #ifndef ENABLE_FEATURE
+        #define ENABLE_FEATURE
+        #endif
+        // ... rest of file
     """
     import stringzilla as sz
 
     if not directives:
         return None
 
-    # Check for #pragma once first (simpler case)
-    for directive in directives:
-        if (directive.directive_type == 'pragma' and
-            directive.condition and
-            'once' in directive.condition):
-            return sz.Str("pragma_once")
+    # Check for #pragma once first (must be early in file)
+    # Note: pragma directives have macro_name set (e.g., "once")
+    for i, directive in enumerate(directives[:3]):  # Only first 3 directives
+        if directive.directive_type == 'pragma':
+            # Check macro_name for "once" (how parse_directive_struct stores it)
+            if directive.macro_name and str(directive.macro_name) == 'once':
+                return sz.Str("pragma_once")
+            # Also check condition in case it's stored there
+            if directive.condition and 'once' in str(directive.condition):
+                return sz.Str("pragma_once")
 
     # Check for traditional include guard pattern: #ifndef GUARD followed by #define GUARD
-    for i, directive in enumerate(directives):
-        if (directive.directive_type == 'ifndef' and
-            directive.macro_name):
+    # STRICT: Must start at the FIRST directive to be a true include guard
+    # AND the matching #endif must be the LAST directive (wraps entire file)
+    if len(directives) < 3:  # Need at least #ifndef, #define, #endif
+        return None
 
-            guard_candidate = directive.macro_name
+    first_directive = directives[0]
+    last_directive = directives[-1]
 
-            # Check if the next directive is #define with the same name
-            if (i + 1 < len(directives) and
-                directives[i + 1].directive_type == 'define' and
-                directives[i + 1].macro_name and
-                directives[i + 1].macro_name == guard_candidate):
+    # The last directive must be #endif for this to be an include guard
+    if last_directive.directive_type != 'endif':
+        return None
+
+    if (first_directive.directive_type == 'ifndef' and
+        first_directive.macro_name):
+
+        guard_candidate = first_directive.macro_name
+
+        # Look ahead up to 5 positions for the matching #define
+        # This handles cases where comments or other directives appear between
+        # the #ifndef and the matching #define
+        for j in range(1, min(6, len(directives))):
+            if (directives[j].directive_type == 'define' and
+                directives[j].macro_name and
+                directives[j].macro_name == guard_candidate):
 
                 # guard_candidate is already sz.Str from PreprocessorDirective.macro_name
                 return guard_candidate

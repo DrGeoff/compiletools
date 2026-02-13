@@ -9,7 +9,7 @@ Determine header and source dependencies of a C/C++ file by following headers an
 :Author: drgeoffathome@gmail.com
 :Date:   2017-07-06
 :Copyright: Copyright (C) 2011-2016 Zomojo Pty Ltd
-:Version: 6.1.5
+:Version: 7.0.2
 :Manual section: 1
 :Manual group: developers
 
@@ -45,37 +45,136 @@ output to build up a set of files to include in a tarball.
 OPTIONS
 =======
 
---extrafile [EXTRAFILE [EXTRAFILE ...]]
-                    Extra files to directly add to the filelist 
-                    [env var: EXTRAFILE] (default: None)
---extradir [EXTRADIR [EXTRADIR ...]]
-                    Extra directories to add all files from to the filelist 
-                    [env var: EXTRADIR] (default: None)
---extrafilelist [EXTRAFILELIST [EXTRAFILELIST ...]]
-                    Read the given files to find a list of extra files to add to the filelist 
-                    [env var: EXTRAFILELIST] (default: None)
---shorten []      
+**Output Control**
+
+--style {flat,indent}
+                    Output formatting style. ``flat`` outputs one file per line.
+                    ``indent`` shows the dependency tree with indentation.
+                    (default: flat)
+
+--filter {header,source,all}
+                    Filter output to show only headers, only source files,
+                    or all files. Useful for packaging when you need to
+                    separate headers from implementation files.
+                    (default: all)
+
+--shorten
                     Strip the git root from the filenames.
-                    Use "--no-shorten" to turn the feature off. 
-                    [env var: SHORTEN] (default: False)
---no-shorten []          
-                    [env var: NO_SHORTEN] (default: True)
---merge []
-                    Merge all outputs into a single list Use "--no-merge" to 
-                    turn the feature off. 
-                    [env var: MERGE] (default: True)
---no-merge []
-                    [env var: NO_MERGE] (default: False)
+                    Use ``--no-shorten`` to show full paths.
+                    (default: False)
+
+--merge
+                    Merge all outputs into a single list.
+                    Use ``--no-merge`` to keep separate lists per input file.
+                    (default: True)
+
+**Build Targets**
+
+--dynamic LIB.cpp
+                    Include files needed for building a dynamic/shared library.
+
+--static LIB.cpp
+                    Include files needed for building a static library.
+
+--tests TEST.cpp
+                    Include files needed for building test executables.
+
+**Extra Files**
+
+--extrafile FILE
+                    Extra files to directly add to the filelist.
+                    Can be specified multiple times.
+
+--extradir DIR
+                    Extra directories to add all files from to the filelist.
+                    Can be specified multiple times.
+
+--extrafilelist FILE
+                    Read the given file to find a list of extra files to add.
+                    Can be specified multiple times.
+
+**Dependency Detection**
+
+--headerdeps {direct,cpp}
+                    Method for finding header dependencies. ``direct`` parses
+                    include statements directly (faster). ``cpp`` uses the
+                    C preprocessor (more accurate with macros).
+                    (default: direct)
+
+**Common Options**
+
+--variant VARIANT
+                    Build variant to use for dependency resolution
+                    (debug, release, etc.). Determines which compiler
+                    configuration is active. (default: blank)
+
+-v, --verbose       Increase verbosity. Can be specified multiple times.
+
+-q, --quiet         Decrease verbosity.
+
+--version           Show the program version and exit.
+
+--man, --doc        Display the full manual/documentation.
+
+-h, -?              Show help message and exit.
+
+**Build System Options**
+
+The following options are (and many more) are inherited from the common build 
+system and control dependency resolution. See ``ct-config`` (1) 
+and ``ct-commandline`` (1) for the complete reference of compiler and build options.
+
+--git-root / --no-git-root
+                    Add git root to include paths for dependency detection.
+                    (default: True)
+
+--include PATH      Add additional include paths for header dependency
+                    resolution. Can be specified multiple times.
+
+--pkg-config LIBS   Use pkg-config to resolve library dependencies.
+                    Can be specified multiple times.
 
 
 EXAMPLES
 ========
 
-ct-filelist myfile.cpp
+Basic usage - list all dependencies:
 
-ct-filelist --extradir ../icons myfile.cpp
+.. code-block:: bash
+
+    ct-filelist myfile.cpp
+
+Show only header files (useful for packaging headers separately):
+
+.. code-block:: bash
+
+    ct-filelist --filter=header mylib.cpp
+
+Show only source files:
+
+.. code-block:: bash
+
+    ct-filelist --filter=source mylib.cpp
+
+Show dependency tree with indentation:
+
+.. code-block:: bash
+
+    ct-filelist --style=indent myfile.cpp
+
+Include extra files for packaging:
+
+.. code-block:: bash
+
+    ct-filelist --extradir ../icons --extrafile README.md myfile.cpp
+
+List files for a library build:
+
+.. code-block:: bash
+
+    ct-filelist --dynamic mylib.cpp
 
 
 SEE ALSO
 ========
-``compiletools`` (1), ``ct-commandline`` (1), ``ct-config`` (1)
+``ct-cake`` (1), ``ct-config`` (1), ``ct-commandline`` (1)

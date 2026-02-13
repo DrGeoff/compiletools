@@ -25,8 +25,8 @@ Conditionally includes `dependency.hpp` based on whether `USE_HASH` is defined.
 
 ### `libs/dependency.hpp`
 The header that gets missed by the bug when initial discovery uses empty macro state.
-- **Contains**: `//#PKG-CONFIG=testpkg` magic flag
-- **Purpose**: Declares `dependency_function()` and requires testpkg package
+- **Contains**: `//#PKG-CONFIG=conditional` magic flag
+- **Purpose**: Declares `dependency_function()` and requires conditional package
 - **Key characteristic**: This header is **only** discovered when `USE_HASH` is defined during header processing
 
 ### `libs/main.cpp`
@@ -34,10 +34,11 @@ Entry point for the test.
 - **Includes**: `conditional.hpp`
 - **Purpose**: Minimal main function to create a compilable source file
 
-### `pkgconfig/testpkg.pc`
-Fake pkg-config file for testing PKG-CONFIG magic flag extraction.
+### Shared `samples/pkgs/conditional.pc`
+Fake pkg-config file (shared across samples) for testing PKG-CONFIG magic flag extraction.
 - **Cflags**: `-I/usr/local/include/testpkg -DTEST_PKG_ENABLED`
 - **Purpose**: Tests that PKG-CONFIG directives from conditionally-included headers are extracted
+- **Note**: Uses shared pkgs directory via `pkgconfig_env` pytest fixture
 
 ## Dependency Graph
 
@@ -46,13 +47,13 @@ main.cpp
   └─> conditional.hpp
         ├─> base.hpp (defines USE_HASH)
         └─> dependency.hpp (conditional on USE_HASH)
-              └─> requires testpkg (PKG-CONFIG)
+              └─> requires conditional (PKG-CONFIG)
 ```
 
 **Critical path**:
 - If `USE_HASH` is not defined when processing `conditional.hpp`, then `dependency.hpp` is **not included**
-- This means `//#PKG-CONFIG=testpkg` is never discovered
-- Build will fail with missing `testpkg` flags
+- This means `//#PKG-CONFIG=conditional` is never discovered
+- Build will fail with missing `conditional` package flags
 
 ## Expected Behavior
 
@@ -63,8 +64,8 @@ main.cpp
 4. Initial headers list: `[conditional.hpp, base.hpp]` (missing `dependency.hpp`)
 5. Convergence only processes `[conditional.hpp, base.hpp]`
 6. `dependency.hpp` is **NEVER discovered**
-7. PKG-CONFIG=testpkg is **NEVER extracted**
-8. **Test fails**: `dependency.hpp` not found, `testpkg` flags missing
+7. PKG-CONFIG=conditional is **NEVER extracted**
+8. **Test fails**: `dependency.hpp` not found, `conditional` flags missing
 
 ### With Fix (After Two-Pass Discovery):
 1. **Pass 1**: Initial discovery with core macros (compiler built-ins)
@@ -73,7 +74,7 @@ main.cpp
 4. Processing `conditional.hpp` with `USE_HASH=1` defined
 5. `#ifdef USE_HASH` succeeds → `dependency.hpp` IS included
 6. Final headers list: `[conditional.hpp, base.hpp, dependency.hpp]`
-7. PKG-CONFIG=testpkg IS extracted
+7. PKG-CONFIG=conditional IS extracted
 8. **Test passes**: All headers found, all flags extracted
 
 ## Related Tests
@@ -83,17 +84,17 @@ main.cpp
   - **Validates**: Two-pass discovery finds conditionally-included headers with file-defined macros
   - **Assertions**:
     - `dependency.hpp` is found in header dependencies
-    - `PKG-CONFIG=testpkg` is extracted
-    - testpkg Cflags are present in CPPFLAGS
+    - `PKG-CONFIG=conditional` is extracted
+    - conditional package Cflags are present in CPPFLAGS
 
 ## Usage in Tests
 
-Tests copy this sample directory to a temporary location before running:
+Tests copy the libs directory to a temporary location and use the shared `pkgs/` directory via the `pkgconfig_env` pytest fixture:
 ```python
 from compiletools.testhelper import samplesdir
 sample_src = Path(samplesdir()) / "empty_macro_bug"
 shutil.copytree(sample_src / "libs", self.libs_dir)
-shutil.copytree(sample_src / "pkgconfig", self.pkgconfig_dir)
+# PKG_CONFIG_PATH is set by pkgconfig_env fixture to samples/pkgs/
 ```
 
 This maintains test isolation while using version-controlled sample code.
@@ -108,6 +109,4 @@ This maintains test isolation while using version-controlled sample code.
 
 ## Related Documentation
 
-- **Root Cause Analysis**: `ROOT_CAUSE_ANALYSIS_AND_FIX.md`
-- **Bug Fix Documentation**: `BUGFIX_EMPTY_MACRO_STATE.md`
 - **Fixed Code**: `src/compiletools/magicflags.py` (two-pass discovery implementation)

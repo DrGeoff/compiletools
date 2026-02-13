@@ -2,20 +2,8 @@ import os
 import io
 from contextlib import redirect_stdout
 
-from importlib import reload
-
 import compiletools.cppdeps
 import compiletools.testhelper as uth
-
-
-def _reload_ct_with_cache(cache_home):
-    """ Set the CTCACHE environment variable to cache_home
-        and reload the compiletools.* modules
-    """
-    with uth.EnvironmentContext({"CTCACHE": cache_home}):
-        reload(compiletools.headerdeps)
-        reload(compiletools.cppdeps)
-        return cache_home
 
 
 @uth.requires_functional_compiler

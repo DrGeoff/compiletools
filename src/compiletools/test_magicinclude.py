@@ -29,7 +29,6 @@ class TestMagicInclude(tb.BaseCompileToolsTestCase):
                 argv = [
                     "--exemarkers=main",
                     "--testmarkers=unittest.hpp",
-                    "--CTCACHE=None",
                     "--quiet",
                     "--include=subdir2",
                     "--prepend-INCLUDE=subdir3",
@@ -59,7 +58,6 @@ class TestMagicInclude(tb.BaseCompileToolsTestCase):
                 argv = [
                     "--exemarkers=main",
                     "--testmarkers=unittest.hpp",
-                    "--CTCACHE=None",
                     "--quiet",
                     "--append-INCLUDE=subdir2",
                     "--append-INCLUDE=subdir3",

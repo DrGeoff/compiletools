@@ -7,7 +7,12 @@ import compiletools.configutils
 
 
 def main(argv=None):
-    cap = compiletools.apptools.create_parser("Configuration examination tool", argv=argv, include_config=True)
+    cap = compiletools.apptools.create_parser(
+        "Configuration examination tool. Write the config to file with -w.",
+        argv=argv,
+        include_config=True,
+        include_write_config=True,
+    )
     compiletools.cake.Cake.add_arguments(cap)
     if argv is None:
         # Output of stdout is done via increasing the verbosity
