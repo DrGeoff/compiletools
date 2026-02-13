@@ -333,3 +333,63 @@ class TestConfig:
             # print(args)
             # Check that the append-CXXFLAGS argument made its way into the CXXFLAGS
             assert "-fdiagnostics-color=always" in args.CXXFLAGS
+
+
+class TestUnifyCppCxxFlags:
+    """Tests for CPPFLAGS/CXXFLAGS unification (default behavior)."""
+
+    def setup_method(self):
+        uth.reset()
+
+    def _parse(self, extra_argv=None):
+        """Parse args with a temp config and optional extra argv."""
+        with uth.TempDirContext():
+            uth.create_temp_ct_conf(os.getcwd())
+            cfgfile = "foo.dbg.conf"
+            uth.create_temp_config(os.getcwd(), cfgfile)
+            argv = ["--config=" + cfgfile, "-v"]
+            if extra_argv:
+                argv.extend(extra_argv)
+            cap = configargparse.getArgumentParser(
+                description="Test unify CPP/CXX flags",
+                formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+                auto_env_var_prefix="",
+                default_config_files=["ct.conf"],
+                args_for_setting_config_path=["-c", "--config"],
+                ignore_unknown_config_file_keys=True,
+            )
+            compiletools.apptools.add_common_arguments(cap)
+            compiletools.apptools.add_link_arguments(cap)
+            return compiletools.apptools.parseargs(cap, argv)
+
+    def test_unified_by_default(self):
+        """After parseargs, CPPFLAGS and CXXFLAGS are identical."""
+        args = self._parse()
+        assert args.CPPFLAGS == args.CXXFLAGS
+
+    def test_unified_with_both_specified(self):
+        """When both flags are given, both end up containing both values."""
+        args = self._parse(["--CPPFLAGS=-DFOO", "--CXXFLAGS=-DBAR"])
+        assert "-DFOO" in args.CPPFLAGS
+        assert "-DBAR" in args.CPPFLAGS
+        assert "-DFOO" in args.CXXFLAGS
+        assert "-DBAR" in args.CXXFLAGS
+        assert args.CPPFLAGS == args.CXXFLAGS
+
+    def test_separate_mode_allows_divergence(self):
+        """--separate-flags-CPP-CXX keeps them independent."""
+        args = self._parse([
+            "--CPPFLAGS=-DFOO",
+            "--CXXFLAGS=-DBAR",
+            "--separate-flags-CPP-CXX",
+        ])
+        assert "-DFOO" in args.CPPFLAGS
+        assert "-DBAR" not in args.CPPFLAGS
+        assert "-DBAR" in args.CXXFLAGS
+        assert "-DFOO" not in args.CXXFLAGS
+
+    def test_append_cppflags_appears_in_both(self):
+        """--append-cppflags value appears in both CPPFLAGS and CXXFLAGS."""
+        args = self._parse(["--append-CPPFLAGS=-DAPPENDED"])
+        assert "-DAPPENDED" in args.CPPFLAGS
+        assert "-DAPPENDED" in args.CXXFLAGS

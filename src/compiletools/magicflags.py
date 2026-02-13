@@ -343,6 +343,15 @@ class MagicFlagsBase:
             flagsforfilename[sz.Str("LDFLAGS")].extend(flagsforfilename[sz.Str("LINKFLAGS")])
             del flagsforfilename[sz.Str("LINKFLAGS")]
 
+        # Unify CPPFLAGS and CXXFLAGS in magic flags (unless opted out)
+        if not getattr(self._args, 'separate_flags_CPP_CXX', False):
+            cpp_key = sz.Str("CPPFLAGS")
+            cxx_key = sz.Str("CXXFLAGS")
+            if cpp_key in flagsforfilename or cxx_key in flagsforfilename:
+                combined = flagsforfilename[cpp_key] + flagsforfilename[cxx_key]
+                flagsforfilename[cpp_key] = list(combined)
+                flagsforfilename[cxx_key] = list(combined)
+
         # Deduplicate all flags while preserving order, with smart compiler flag handling
         for key in flagsforfilename:
             flagsforfilename[key] = compiletools.utils.deduplicate_compiler_flags(flagsforfilename[key])
