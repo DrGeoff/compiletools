@@ -43,6 +43,7 @@ class ProcessingResult:
     active_defines: List[dict]
     updated_macros: 'MacroState'  # Forward reference
     file_defines: MacroDict = field(default_factory=dict)
+    file_undefs: FrozenSet = field(default_factory=frozenset)
 
 
 @dataclass
@@ -129,6 +130,14 @@ class MacroState:
                 new_state._cache_key = self._cache_key | frozenset(actual_updates.items())
 
         return new_state
+
+    def without_keys(self, keys) -> 'MacroState':
+        """Create new MacroState with specified keys removed from variable."""
+        removed = {k for k in keys if k in self.variable}
+        if not removed:
+            return self
+        updated_variable = {k: v for k, v in self.variable.items() if k not in removed}
+        return MacroState(self.core, updated_variable)
 
     # Dict-like interface for easy drop-in replacement
     def __len__(self) -> int:
@@ -371,8 +380,10 @@ def get_or_compute_preprocessing(
             cached = _invariant_cache[content_hash]
             # Reconstruct updated_macros from caller's input + file's defines
             # to prevent stale macro pollution from first caller's context
-            if cached.file_defines:
+            if cached.file_defines or cached.file_undefs:
                 reconstructed_macros = input_macros.with_updates(cached.file_defines)
+                if cached.file_undefs:
+                    reconstructed_macros = reconstructed_macros.without_keys(cached.file_undefs)
             else:
                 reconstructed_macros = input_macros
             return ProcessingResult(
@@ -381,7 +392,8 @@ def get_or_compute_preprocessing(
                 active_magic_flags=cached.active_magic_flags,
                 active_defines=cached.active_defines,
                 updated_macros=reconstructed_macros,
-                file_defines=cached.file_defines
+                file_defines=cached.file_defines,
+                file_undefs=cached.file_undefs
             )
 
         _cache_stats['misses'] += 1
@@ -397,9 +409,10 @@ def get_or_compute_preprocessing(
             _cache_stats['variant_hits'] += 1
             cached = _variant_cache[cache_key]
             # Apply same reconstruction pattern for consistency
-            # Fast path: if file defines nothing, no reconstruction needed
-            if cached.file_defines:
+            if cached.file_defines or cached.file_undefs:
                 reconstructed_macros = input_macros.with_updates(cached.file_defines)
+                if cached.file_undefs:
+                    reconstructed_macros = reconstructed_macros.without_keys(cached.file_undefs)
             else:
                 reconstructed_macros = input_macros
             return ProcessingResult(
@@ -408,7 +421,8 @@ def get_or_compute_preprocessing(
                 active_magic_flags=cached.active_magic_flags,
                 active_defines=cached.active_defines,
                 updated_macros=reconstructed_macros,
-                file_defines=cached.file_defines
+                file_defines=cached.file_defines,
+                file_undefs=cached.file_undefs
             )
 
         _cache_stats['misses'] += 1
@@ -454,11 +468,17 @@ def get_or_compute_preprocessing(
         if k not in input_macros.variable:
             file_defines[k] = v
 
-    # CRITICAL: Use with_updates to preserve existing variable macros during traversal
-    # Creates MacroState with input_macros.variable + new_variable_macros
-    # This ensures macros from previously processed files (e.g., base.hpp) are preserved
-    # when processing subsequent files (e.g., conditional.hpp)
-    updated_macro_state = input_macros.with_updates(new_variable_macros)
+    # Active undef targets: macro names from #undef directives on active lines.
+    # Input-independent: safe to cache for both invariant and variant entries.
+    # without_keys() handles the intersection with the caller's variable macros.
+    file_undefs = frozenset(
+        d.macro_name for d in file_result.directives
+        if d.directive_type == 'undef' and d.macro_name and d.line_num in active_line_set
+    )
+
+    # Build updated state: new_variable_macros already reflects the correct
+    # post-preprocessing state (input macros + file defines - file undefs)
+    updated_macro_state = MacroState(input_macros.core, new_variable_macros)
 
     # Create result
     result = ProcessingResult(
@@ -467,7 +487,8 @@ def get_or_compute_preprocessing(
         active_magic_flags=active_magic_flags,
         active_defines=active_defines,
         updated_macros=updated_macro_state,
-        file_defines=file_defines
+        file_defines=file_defines,
+        file_undefs=file_undefs
     )
 
     # Store in appropriate cache

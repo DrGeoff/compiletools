@@ -19,7 +19,7 @@ from compiletools.testhelper import samplesdir
 class TestUndefBugSample(BaseCompileToolsTestCase):
     """Test the undef_bug sample to validate #undef handling."""
 
-    def test_undef_bug_sample_finds_all_headers(self):
+    def test_undef_bug_sample_finds_all_headers(self, pkgconfig_env):
         """Test that #undef in cleans_up.hpp allows should_not_see_macro.hpp to be included.
 
         Dependency chain:
