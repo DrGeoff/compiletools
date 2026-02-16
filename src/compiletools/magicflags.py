@@ -527,7 +527,7 @@ class DirectMagicFlags(MagicFlagsBase):
             macro_value = define_info['value'] if define_info['value'] is not None else sz.Str("1")
             extracted_variable_macros[macro_name] = macro_value
 
-        return (active_magic_flags, extracted_variable_macros, cppflags_macros, cxxflags_macros)
+        return (active_magic_flags, extracted_variable_macros, cppflags_macros, cxxflags_macros, result.file_undefs)
 
     def _process_file_for_macros(self, fname: str, macro_key=None) -> None:
         """Process a single file to extract macros and active magic flags (mutates state).
@@ -551,7 +551,7 @@ class DirectMagicFlags(MagicFlagsBase):
         if cached_result is None:
             return
 
-        active_magic_flags, extracted_variable_macros, cppflags_macros, cxxflags_macros = cached_result
+        active_magic_flags, extracted_variable_macros, cppflags_macros, cxxflags_macros, file_undefs = cached_result
 
         # Store active magic flags for this file to avoid redundant final pass
         self._stored_active_magic_flags[fname] = active_magic_flags
@@ -567,6 +567,8 @@ class DirectMagicFlags(MagicFlagsBase):
 
         # Update state immutably
         self.defined_macros = self.defined_macros.with_updates(updates)
+        if file_undefs:
+            self.defined_macros = self.defined_macros.without_keys(file_undefs)
 
     def _extract_macros_from_file(self, filename):
         """Extract #define macros from a file (unconditionally, no preprocessor evaluation)."""
@@ -778,15 +780,13 @@ class DirectMagicFlags(MagicFlagsBase):
                         print(f"DirectMagicFlags:   {k} = {v}")
 
             # Clear caches that depend on macro state for Pass 2
-            # NOTE: _invariant_cache is NOT cleared because invariant files
-            # (those without conditionals) produce the same result regardless of macro state
+            # Invariant caches are preserved - those files have no conditionals
             if self._args.verbose >= 7:
-                print(f"DirectMagicFlags: Clearing macro-dependent caches before Pass 2")
+                print(f"DirectMagicFlags: Clearing variant caches before Pass 2")
             import compiletools.headerdeps
             import compiletools.preprocessing_cache
-            compiletools.headerdeps._include_list_cache.clear()
-            compiletools.preprocessing_cache._variant_cache.clear()
-            # DON'T clear _invariant_cache - invariant files don't depend on macro state
+            compiletools.headerdeps.clear_include_list_cache()
+            compiletools.preprocessing_cache.clear_variant_cache()
 
             # Re-discover headers with converged macros (includes file-defined macros)
             headers = self._headerdeps.process(filename, pass1_macro_key)
