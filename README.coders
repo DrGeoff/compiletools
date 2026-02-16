@@ -77,6 +77,26 @@ pyproject.toml        - Modern Python packaging configuration
 uv pip install -e ".[dev]"
 
 #
+# Worktree-Based Development
+#
+The repository uses a worktree layout: the `master` directory is the main
+worktree under a parent directory (e.g., compiletools/master/).
+
+Feature branches should be checked out as sibling worktrees:
+
+# Create a worktree for a feature branch
+git worktree add ../feature-x feature-x
+
+# List worktrees
+git worktree list
+
+# Remove a worktree when done
+git worktree remove ../feature-x
+
+The profiling script `profile-ct-cake-worktree` creates temporary profiling
+worktrees as siblings (e.g., compiletools/profile_worktree_master/).
+
+#
 # Making a release
 #
 The ct-release script automates the release process.  Read that script if you want to do each step manually.

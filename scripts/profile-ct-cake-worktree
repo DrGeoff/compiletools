@@ -15,6 +15,21 @@ import sys
 import os
 import shutil
 
+def get_repo_parent_dir() -> Path:
+    """Get the parent directory of the git toplevel.
+
+    For a repo at /home/user/compiletools/master, returns /home/user/compiletools/.
+    Worktrees are created as siblings under this parent directory.
+    """
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError("Failed to determine git toplevel directory")
+    return Path(result.stdout.strip()).parent
+
+
 def profile_ct_cake_in_worktree(worktree_path: Path, sample_dir: str,
                                magic_mode: str = "direct", profile_file: Optional[str] = None) -> Tuple[Dict, bool]:
     """Profile ct-cake execution using subprocess for complete isolation."""
@@ -244,8 +259,8 @@ def cleanup_all_worktrees():
         for line in lines:
             if line.startswith('worktree '):
                 worktree_path = line[9:]  # Remove 'worktree ' prefix
-                # Check if this is a temporary worktree (contains 'worktree_' in path)
-                if 'worktree_' in worktree_path and '/tmp/' in worktree_path:
+                # Only clean up profiling worktrees, not development worktrees
+                if 'profile_worktree_' in worktree_path:
                     worktrees_to_remove.append(worktree_path)
         
         for wt_path in worktrees_to_remove:
@@ -255,7 +270,7 @@ def cleanup_all_worktrees():
 
 def setup_worktree(branch_name: str, base_path: Path) -> Path:
     """Create a git worktree for the specified branch."""
-    worktree_path = base_path / f"worktree_{branch_name}"
+    worktree_path = base_path / f"profile_worktree_{branch_name}"
     
     # Remove existing worktree if it exists locally
     if worktree_path.exists():
@@ -270,7 +285,7 @@ def setup_worktree(branch_name: str, base_path: Path) -> Path:
     if result.returncode == 0:
         lines = result.stdout.strip().split('\n')
         for i, line in enumerate(lines):
-            if line.startswith('worktree ') and f'worktree_{branch_name}' in line:
+            if line.startswith('worktree ') and f'profile_worktree_{branch_name}' in line:
                 wt_path = line[9:]  # Remove 'worktree ' prefix
                 print(f"  Removing existing worktree: {wt_path}")
                 subprocess.run(["git", "worktree", "remove", "--force", wt_path], 
@@ -372,8 +387,10 @@ def cleanup_worktrees(worktree_paths: List[Path]):
     for worktree_path in worktree_paths:
         if worktree_path.exists():
             print(f"Cleaning up worktree: {worktree_path}")
-            subprocess.run(["git", "worktree", "remove", str(worktree_path)], 
+            subprocess.run(["git", "worktree", "remove", str(worktree_path)],
                           capture_output=True)
+            if worktree_path.exists():
+                shutil.rmtree(worktree_path)
 
 def compare_profiles(baseline: Dict, current: Dict, baseline_name: str, current_name: str, verbose: bool = False) -> None:
     """Compare and display profiling results."""
@@ -677,104 +694,114 @@ def main():
         print("Error: Not in a git repository")
         return 1
     
-    # Create temporary directory for worktrees
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
-        worktree_paths = []
-        profile_dir = None
-        
+    base_path = get_repo_parent_dir()
+    worktree_paths = []
+    profile_dir = None
+
+    if args.save_profiles:
+        profile_dir = Path("profiles_worktree")
+        profile_dir.mkdir(exist_ok=True)
+
+    try:
+        print("CT-CAKE DETAILED PERFORMANCE PROFILING (using git worktrees)")
+        print(f"Baseline: {args.baseline_branch}")
+        print(f"Current: {args.current_branch}")
+        print(f"Worktree base: {base_path}")
         if args.save_profiles:
-            profile_dir = Path("profiles_worktree")
-            profile_dir.mkdir(exist_ok=True)
-        
-        try:
-            print("CT-CAKE DETAILED PERFORMANCE PROFILING (using git worktrees)")
-            print(f"Baseline: {args.baseline_branch}")
-            print(f"Current: {args.current_branch}")
-            print("This approach is completely safe - your working directory won't be affected")
-            if args.save_profiles:
-                print("Saving individual profile files for detailed analysis")
-            
-            # Get test samples
-            test_samples = get_test_samples()
-            print(f"Test samples: {', '.join(test_samples)}")
-            
-            # Generate test configurations
-            configurations = []
-            for magic_mode in args.magic_modes:
-                configurations.append({
-                    "magic_mode": magic_mode,
-                    "name": magic_mode
-                })
-            
-            print(f"Test configurations: {', '.join([c['name'] for c in configurations])}")
-            
-            # Clean up any leftover worktrees first
-            print("\nCleaning up any leftover worktrees...")
-            cleanup_all_worktrees()
-            
-            # Set up worktrees
-            print("Setting up git worktrees...")
-            baseline_worktree = setup_worktree(args.baseline_branch, temp_path)
-            current_worktree = setup_worktree(args.current_branch, temp_path)
-            worktree_paths = [baseline_worktree, current_worktree]
-            
-            # Install packages in worktrees
-            if not install_package_in_worktree(baseline_worktree):
-                print(f"Failed to set up {args.baseline_branch} worktree")
-                return 1
-                
-            if not install_package_in_worktree(current_worktree):
-                print(f"Failed to set up {args.current_branch} worktree")
-                return 1
-            
-            # Profile both branches
-            baseline_results = profile_branch_worktree(
-                args.baseline_branch, baseline_worktree, test_samples, 
-                configurations, args.save_profiles, profile_dir
-            )
-            
+            print("Saving individual profile files for detailed analysis")
+
+        # Get test samples
+        test_samples = get_test_samples()
+        print(f"Test samples: {', '.join(test_samples)}")
+
+        # Generate test configurations
+        configurations = []
+        for magic_mode in args.magic_modes:
+            configurations.append({
+                "magic_mode": magic_mode,
+                "name": magic_mode
+            })
+
+        print(f"Test configurations: {', '.join([c['name'] for c in configurations])}")
+
+        # Clean up any leftover profiling worktrees first
+        print("\nCleaning up any leftover profiling worktrees...")
+        cleanup_all_worktrees()
+
+        # Set up worktrees as siblings under the repo parent directory
+        same_branch = args.baseline_branch == args.current_branch
+        if same_branch:
+            print(f"Baseline and current are the same branch ({args.baseline_branch}), profiling once...")
+
+        print("Setting up git worktrees...")
+        baseline_worktree = setup_worktree(args.baseline_branch, base_path)
+        worktree_paths = [baseline_worktree]
+
+        if not same_branch:
+            current_worktree = setup_worktree(args.current_branch, base_path)
+            worktree_paths.append(current_worktree)
+        else:
+            current_worktree = baseline_worktree
+
+        # Install packages in worktrees
+        if not install_package_in_worktree(baseline_worktree):
+            print(f"Failed to set up {args.baseline_branch} worktree")
+            return 1
+
+        if not same_branch and not install_package_in_worktree(current_worktree):
+            print(f"Failed to set up {args.current_branch} worktree")
+            return 1
+
+        # Profile branches
+        baseline_results = profile_branch_worktree(
+            args.baseline_branch, baseline_worktree, test_samples,
+            configurations, args.save_profiles, profile_dir
+        )
+
+        if same_branch:
+            current_results = baseline_results
+        else:
             current_results = profile_branch_worktree(
                 args.current_branch, current_worktree, test_samples,
                 configurations, args.save_profiles, profile_dir
             )
-            
-            # Compare results
-            compare_profiles(baseline_results, current_results, args.baseline_branch, args.current_branch, args.verbose)
-            
-            # Save results if requested
-            if args.save_results:
-                results = {
-                    "baseline_branch": args.baseline_branch,
-                    "current_branch": args.current_branch,
-                    "baseline_results": baseline_results,
-                    "current_results": current_results,
-                    "test_config": {
-                        "magic_modes": args.magic_modes,
-                        "configurations": [c['name'] for c in configurations],
-                        "test_samples": test_samples,
-                        "save_profiles": args.save_profiles
-                    }
+
+        # Compare results
+        compare_profiles(baseline_results, current_results, args.baseline_branch, args.current_branch, args.verbose)
+
+        # Save results if requested
+        if args.save_results:
+            results = {
+                "baseline_branch": args.baseline_branch,
+                "current_branch": args.current_branch,
+                "baseline_results": baseline_results,
+                "current_results": current_results,
+                "test_config": {
+                    "magic_modes": args.magic_modes,
+                    "configurations": [c['name'] for c in configurations],
+                    "test_samples": test_samples,
+                    "save_profiles": args.save_profiles
                 }
-                
-                with open(args.save_results, 'w') as f:
-                    json.dump(results, f, indent=2, default=str)
-                print(f"\nDetailed results saved to: {args.save_results}")
-            
-            if args.save_profiles and profile_dir:
-                print(f"\nProfile files saved in: {profile_dir}/")
-                print("Analyze with: python -m pstats <profile_file>")
-        
-        finally:
-            # Clean up worktrees unless requested to keep them
-            if not args.keep_worktrees:
-                cleanup_worktrees(worktree_paths)
-            else:
-                print("\nWorktrees preserved:")
-                for wt in worktree_paths:
-                    if wt.exists():
-                        print(f"  {wt}")
-                print("Remember to clean them up later with: git worktree remove <path>")
+            }
+
+            with open(args.save_results, 'w') as f:
+                json.dump(results, f, indent=2, default=str)
+            print(f"\nDetailed results saved to: {args.save_results}")
+
+        if args.save_profiles and profile_dir:
+            print(f"\nProfile files saved in: {profile_dir}/")
+            print("Analyze with: python -m pstats <profile_file>")
+
+    finally:
+        # Clean up worktrees unless requested to keep them
+        if not args.keep_worktrees:
+            cleanup_worktrees(worktree_paths)
+        else:
+            print("\nWorktrees preserved:")
+            for wt in worktree_paths:
+                if wt.exists():
+                    print(f"  {wt}")
+            print("Remember to clean them up later with: git worktree remove <path>")
 
 if __name__ == "__main__":
     exit(main())
