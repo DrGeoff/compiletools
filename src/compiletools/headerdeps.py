@@ -366,10 +366,10 @@ class DirectHeaderDeps(HeaderDepsBase):
             # Invariant file - use content_hash only as cache key
             if content_hash in _invariant_include_cache:
                 cached_includes, cached_file_defines, cached_file_undefs = _invariant_include_cache[content_hash]
-                if cached_file_defines or cached_file_undefs:
+                if cached_file_defines:
                     self.defined_macros = self.defined_macros.with_updates(cached_file_defines)
-                    if cached_file_undefs:
-                        self.defined_macros = self.defined_macros.without_keys(cached_file_undefs)
+                if cached_file_undefs:
+                    self.defined_macros = self.defined_macros.without_keys(cached_file_undefs)
                 return cached_includes
 
             # Cache miss for invariant file - compute and store
@@ -392,10 +392,10 @@ class DirectHeaderDeps(HeaderDepsBase):
 
         if cache_key in _include_list_cache:
             cached_includes, cached_file_defines, cached_file_undefs = _include_list_cache[cache_key]
-            if cached_file_defines or cached_file_undefs:
+            if cached_file_defines:
                 self.defined_macros = self.defined_macros.with_updates(cached_file_defines)
-                if cached_file_undefs:
-                    self.defined_macros = self.defined_macros.without_keys(cached_file_undefs)
+            if cached_file_undefs:
+                self.defined_macros = self.defined_macros.without_keys(cached_file_undefs)
             return cached_includes
 
         # Cache miss for variant file - compute and store

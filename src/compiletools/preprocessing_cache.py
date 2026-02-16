@@ -380,12 +380,11 @@ def get_or_compute_preprocessing(
             cached = _invariant_cache[content_hash]
             # Reconstruct updated_macros from caller's input + file's defines
             # to prevent stale macro pollution from first caller's context
-            if cached.file_defines or cached.file_undefs:
-                reconstructed_macros = input_macros.with_updates(cached.file_defines)
-                if cached.file_undefs:
-                    reconstructed_macros = reconstructed_macros.without_keys(cached.file_undefs)
-            else:
-                reconstructed_macros = input_macros
+            reconstructed_macros = input_macros
+            if cached.file_defines:
+                reconstructed_macros = reconstructed_macros.with_updates(cached.file_defines)
+            if cached.file_undefs:
+                reconstructed_macros = reconstructed_macros.without_keys(cached.file_undefs)
             return ProcessingResult(
                 active_lines=cached.active_lines,
                 active_includes=cached.active_includes,
@@ -408,13 +407,11 @@ def get_or_compute_preprocessing(
             _cache_stats['hits'] += 1
             _cache_stats['variant_hits'] += 1
             cached = _variant_cache[cache_key]
-            # Apply same reconstruction pattern for consistency
-            if cached.file_defines or cached.file_undefs:
-                reconstructed_macros = input_macros.with_updates(cached.file_defines)
-                if cached.file_undefs:
-                    reconstructed_macros = reconstructed_macros.without_keys(cached.file_undefs)
-            else:
-                reconstructed_macros = input_macros
+            reconstructed_macros = input_macros
+            if cached.file_defines:
+                reconstructed_macros = reconstructed_macros.with_updates(cached.file_defines)
+            if cached.file_undefs:
+                reconstructed_macros = reconstructed_macros.without_keys(cached.file_undefs)
             return ProcessingResult(
                 active_lines=cached.active_lines,
                 active_includes=cached.active_includes,
