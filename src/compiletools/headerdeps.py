@@ -365,9 +365,11 @@ class DirectHeaderDeps(HeaderDepsBase):
         if is_permanently_invariant(analysis_result):
             # Invariant file - use content_hash only as cache key
             if content_hash in _invariant_include_cache:
-                cached_includes, cached_file_defines = _invariant_include_cache[content_hash]
-                if cached_file_defines:
+                cached_includes, cached_file_defines, cached_file_undefs = _invariant_include_cache[content_hash]
+                if cached_file_defines or cached_file_undefs:
                     self.defined_macros = self.defined_macros.with_updates(cached_file_defines)
+                    if cached_file_undefs:
+                        self.defined_macros = self.defined_macros.without_keys(cached_file_undefs)
                 return cached_includes
 
             # Cache miss for invariant file - compute and store
@@ -381,7 +383,7 @@ class DirectHeaderDeps(HeaderDepsBase):
             ]
 
             self.defined_macros = result.updated_macros
-            _invariant_include_cache[content_hash] = (include_list, result.file_defines)
+            _invariant_include_cache[content_hash] = (include_list, result.file_defines, result.file_undefs)
             return include_list
 
         # Variant file - use file-specific macro key (only macros that affect this file)
@@ -389,9 +391,11 @@ class DirectHeaderDeps(HeaderDepsBase):
         cache_key = (content_hash, macro_key)
 
         if cache_key in _include_list_cache:
-            cached_includes, cached_file_defines = _include_list_cache[cache_key]
-            if cached_file_defines:
+            cached_includes, cached_file_defines, cached_file_undefs = _include_list_cache[cache_key]
+            if cached_file_defines or cached_file_undefs:
                 self.defined_macros = self.defined_macros.with_updates(cached_file_defines)
+                if cached_file_undefs:
+                    self.defined_macros = self.defined_macros.without_keys(cached_file_undefs)
             return cached_includes
 
         # Cache miss for variant file - compute and store
@@ -408,7 +412,7 @@ class DirectHeaderDeps(HeaderDepsBase):
         ]
 
         self.defined_macros = result.updated_macros
-        _include_list_cache[cache_key] = (include_list, result.file_defines)
+        _include_list_cache[cache_key] = (include_list, result.file_defines, result.file_undefs)
 
         return include_list
 
@@ -453,9 +457,15 @@ class DirectHeaderDeps(HeaderDepsBase):
         self.ancestor_paths.pop()
         return node
 
-    def generatetree(self, filename):
+    def generatetree(self, filename, macro_cache_key=None):
         """Returns the tree of include files"""
         self.ancestor_paths = []
+        if macro_cache_key:
+            variable_macros = {
+                sz.Str(k): sz.Str(v)
+                for k, v in macro_cache_key
+            }
+            self._initialize_includes_and_macros(variable_macros)
         realpath = compiletools.wrappedos.realpath(filename)
         return self._generate_tree_impl(realpath)
 

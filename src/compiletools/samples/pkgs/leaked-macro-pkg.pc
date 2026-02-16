@@ -1,0 +1,5 @@
+Name: LeakedMacroPkg
+Description: A dummy package for testing undef_bug sample
+Version: 1.0.0
+Cflags: -I/usr/local/include/leaked-macro-pkg
+Libs: -L/usr/local/lib -lleakedmacro

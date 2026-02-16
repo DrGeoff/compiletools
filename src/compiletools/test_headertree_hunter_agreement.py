@@ -15,6 +15,7 @@ import compiletools.apptools
 import compiletools.headerdeps
 import compiletools.magicflags
 import compiletools.hunter
+import compiletools.wrappedos
 import compiletools.testhelper as uth
 from compiletools.tree import flatten
 from compiletools.test_base import BaseCompileToolsTestCase
@@ -43,15 +44,23 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
         if compiler_macros:
             argv.extend(compiler_macros)
 
-        # Create parser and args
+        # Create parser and args (register magicflags args for two-pass discovery)
         cap = compiletools.apptools.create_parser("test_headertree", argv=argv)
+        compiletools.magicflags.add_arguments(cap)
         compiletools.headerdeps.add_arguments(cap)
         cap.add('filename', nargs='+')
         args = compiletools.apptools.parseargs(cap, argv)
 
-        # Create DirectHeaderDeps and generate tree
+        # Create DirectHeaderDeps and magicflags parser for convergence
         ht = compiletools.headerdeps.DirectHeaderDeps(args)
-        tree = ht.generatetree(args.filename[0])
+        magicparser = compiletools.magicflags.create(args, ht)
+
+        # Run two-pass discovery to converge macro state
+        magicparser.parse(args.filename[0])
+        macro_state_key = magicparser.get_final_macro_state_key(
+            compiletools.wrappedos.realpath(args.filename[0])
+        )
+        tree = ht.generatetree(args.filename[0], macro_cache_key=macro_state_key)
 
         # Flatten the tree to get all headers (excluding the root file itself)
         all_files = flatten(tree)
@@ -147,7 +156,7 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
             f"     2. Extract file-defined macros from discovered headers\n" \
             f"     3. Re-discover with converged macro state"
 
-    def test_undef_bug_sample(self):
+    def test_undef_bug_sample(self, pkgconfig_env):
         """Test #undef handling agreement between headertree and hunter.
 
         The dependency chain:

@@ -6,6 +6,7 @@ from collections import Counter
 import math
 import compiletools.wrappedos
 import compiletools.headerdeps
+import compiletools.magicflags
 import compiletools.tree as tree
 import compiletools.configutils
 import compiletools.apptools
@@ -224,9 +225,11 @@ def main(argv=None):
     styles = [st[:-5].lower() for st in dict(globals()) if st.endswith("Style")]
     cap.add("--style", choices=styles, default="tree", help="Output formatting style")
 
+    compiletools.magicflags.add_arguments(cap)
     compiletools.headerdeps.add_arguments(cap)
     args = compiletools.apptools.parseargs(cap, argv)
     ht = compiletools.headerdeps.DirectHeaderDeps(args)
+    magicparser = compiletools.magicflags.create(args, ht)
 
     if not compiletools.wrappedos.isfile(args.filename[0]):
         sys.stderr.write(
@@ -236,8 +239,12 @@ def main(argv=None):
         )
         exit(1)
 
-    # Create the headertree then print it in the appropriate style
-    inctree = ht.generatetree(args.filename[0])
+    # Run magicflags two-pass discovery to converge macro state
+    magicparser.parse(args.filename[0])
+    macro_state_key = magicparser.get_final_macro_state_key(
+        compiletools.wrappedos.realpath(args.filename[0])
+    )
+    inctree = ht.generatetree(args.filename[0], macro_cache_key=macro_state_key)
     styleclass = globals()[args.style.title() + "Style"]
 
     # Construct an instance of the style class which will print the header

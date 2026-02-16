@@ -527,7 +527,7 @@ class DirectMagicFlags(MagicFlagsBase):
             macro_value = define_info['value'] if define_info['value'] is not None else sz.Str("1")
             extracted_variable_macros[macro_name] = macro_value
 
-        return (active_magic_flags, extracted_variable_macros, cppflags_macros, cxxflags_macros)
+        return (active_magic_flags, extracted_variable_macros, cppflags_macros, cxxflags_macros, result.file_undefs)
 
     def _process_file_for_macros(self, fname: str, macro_key=None) -> None:
         """Process a single file to extract macros and active magic flags (mutates state).
@@ -551,7 +551,7 @@ class DirectMagicFlags(MagicFlagsBase):
         if cached_result is None:
             return
 
-        active_magic_flags, extracted_variable_macros, cppflags_macros, cxxflags_macros = cached_result
+        active_magic_flags, extracted_variable_macros, cppflags_macros, cxxflags_macros, file_undefs = cached_result
 
         # Store active magic flags for this file to avoid redundant final pass
         self._stored_active_magic_flags[fname] = active_magic_flags
@@ -567,6 +567,8 @@ class DirectMagicFlags(MagicFlagsBase):
 
         # Update state immutably
         self.defined_macros = self.defined_macros.with_updates(updates)
+        if file_undefs:
+            self.defined_macros = self.defined_macros.without_keys(file_undefs)
 
     def _extract_macros_from_file(self, filename):
         """Extract #define macros from a file (unconditionally, no preprocessor evaluation)."""
