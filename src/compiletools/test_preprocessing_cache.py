@@ -357,6 +357,53 @@ class TestPreprocessingCache:
         hasattr(sys, 'pypy_version_info'),
         reason="sys.getsizeof not meaningful in PyPy"
     )
+    def test_invariant_cache_honors_undef(self):
+        """Ensure invariant cache does not resurrect macros removed via #undef."""
+
+        text = "#undef REMOVED_MACRO\n"
+
+        directive = PreprocessorDirective(
+            line_num=0,
+            byte_pos=0,
+            directive_type='undef',
+            continuation_lines=0,
+            condition=None,
+            macro_name=sz.Str("REMOVED_MACRO"),
+            macro_value=None
+        )
+
+        file_result = FileAnalysisResult(
+            line_count=1,
+            line_byte_offsets=[0],
+            include_positions=[],
+            magic_positions=[],
+            directive_positions={'undef': [0]},
+            directives=[directive],
+            directive_by_line={0: directive},
+            bytes_analyzed=len(text),
+            was_truncated=False,
+            includes=[],
+            defines=[],
+            magic_flags=[],
+            content_hash="hash_undef_001",
+            include_guard=None,
+            conditional_macros=frozenset()
+        )
+
+        initial_macros = MacroState({}, {sz.Str("REMOVED_MACRO"): sz.Str("1")})
+
+        # First call computes result and should drop REMOVED_MACRO from updated macros
+        result1 = get_or_compute_preprocessing(file_result, initial_macros, 0)
+        assert sz.Str("REMOVED_MACRO") not in result1.updated_macros, "#undef should remove macro on initial processing"
+
+        # Second call hits invariant cache but must preserve the removal semantics
+        result2 = get_or_compute_preprocessing(file_result, initial_macros, 0)
+        assert sz.Str("REMOVED_MACRO") not in result2.updated_macros, "Invariant cache should not reintroduce macros removed via #undef"
+
+    @pytest.mark.skipif(
+        hasattr(sys, 'pypy_version_info'),
+        reason="sys.getsizeof not meaningful in PyPy"
+    )
     def test_empty_macros(self):
         """Test cache behavior with empty macro state."""
         text = dedent('''

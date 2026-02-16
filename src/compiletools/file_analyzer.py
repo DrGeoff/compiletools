@@ -700,6 +700,12 @@ def analyze_file(content_hash: str) -> 'FileAnalysisResult':
     # Extract macros referenced in conditionals (for cache optimization)
     conditional_macros = _extract_conditional_macros(directives)
 
+    # Extract static undef targets (macro names from all #undef directives)
+    undef_targets = frozenset(
+        d.macro_name for d in directives
+        if d.directive_type == 'undef' and d.macro_name
+    )
+
     # Detect marker type - check for exe, test, or library markers
     marker_type = MarkerType.NONE
     if exe_markers:
@@ -738,6 +744,7 @@ def analyze_file(content_hash: str) -> 'FileAnalysisResult':
         content_hash=content_hash,
         include_guard=include_guard,
         conditional_macros=conditional_macros,
+        undef_targets=undef_targets,
         marker_type=marker_type
     )
 
@@ -1033,6 +1040,7 @@ class FileAnalysisResult:
     content_hash: str = ""                  # SHA1 of original content
     include_guard: Optional['stringzilla.Str'] = None  # Include guard macro name (traditional) or sz.Str("pragma_once") for #pragma once
     conditional_macros: FrozenSet['stringzilla.Str'] = field(default_factory=frozenset)  # Macros referenced in conditionals (for cache optimization)
+    undef_targets: FrozenSet['stringzilla.Str'] = field(default_factory=frozenset)  # Macro names from all #undef directives (static, input-independent)
     marker_type: MarkerType = MarkerType.NONE  # Type of marker found in file (exe, test, library, or none)
     
     # Helper method for SimplePreprocessor compatibility
