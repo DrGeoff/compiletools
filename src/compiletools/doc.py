@@ -1,5 +1,7 @@
 import sys
+
 import compiletools.apptools
+
 
 def main(argv=None):
     cap = compiletools.apptools.create_parser("Documentation tool", argv=argv, include_config=False)

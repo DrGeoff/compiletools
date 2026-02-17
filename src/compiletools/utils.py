@@ -1,31 +1,47 @@
 from __future__ import annotations
 
-import os
-import inspect
-import functools
-import shlex
 import argparse
-from pathlib import Path
-from typing import Any, Union
+import functools
+import inspect
+import os
+import shlex
 from collections.abc import Iterable
 from itertools import chain
+from pathlib import Path
+from typing import Any, Union
+
 import compiletools.wrappedos
 
 # Public API
 __all__ = [
-    'CPP_SOURCE_EXTS', 'C_SOURCE_EXTS', 'ALL_SOURCE_EXTS', 'HEADER_EXTS',
-    'is_non_string_iterable', 'split_command_cached',
-    'is_header', 'is_cpp_source', 'is_c_source', 'is_source', 'is_executable',
-    'implied_source', 'implied_header', 'clear_cache',
-    'extract_init_args', 'to_bool', 'add_boolean_argument', 'add_flag_argument',
-    'remove_mount', 'ordered_unique', 'ordered_union', 'ordered_difference',
-    'deduplicate_compiler_flags', 'combine_and_deduplicate_compiler_flags'
+    "ALL_SOURCE_EXTS",
+    "CPP_SOURCE_EXTS",
+    "C_SOURCE_EXTS",
+    "HEADER_EXTS",
+    "add_boolean_argument",
+    "add_flag_argument",
+    "clear_cache",
+    "combine_and_deduplicate_compiler_flags",
+    "deduplicate_compiler_flags",
+    "extract_init_args",
+    "implied_header",
+    "implied_source",
+    "is_c_source",
+    "is_cpp_source",
+    "is_executable",
+    "is_header",
+    "is_non_string_iterable",
+    "is_source",
+    "ordered_difference",
+    "ordered_union",
+    "ordered_unique",
+    "remove_mount",
+    "split_command_cached",
+    "to_bool",
 ]
 
 # Module-level constant for C++ source extensions (lowercase)
-CPP_SOURCE_EXTS = frozenset({
-    '.cpp', '.cxx', '.cc', '.c++', '.cp', '.mm', '.ixx'
-})
+CPP_SOURCE_EXTS = frozenset({".cpp", ".cxx", ".cc", ".c++", ".cp", ".mm", ".ixx"})
 
 C_SOURCE_EXTS = frozenset({".c"})
 
@@ -33,29 +49,41 @@ C_SOURCE_EXTS = frozenset({".c"})
 ALL_SOURCE_EXTS = CPP_SOURCE_EXTS | C_SOURCE_EXTS
 
 # Header file extensions (lowercase)
-HEADER_EXTS = frozenset({'.h', '.hpp', '.hxx', '.hh', '.inl'})
+HEADER_EXTS = frozenset({".h", ".hpp", ".hxx", ".hh", ".inl"})
 
 # Source extensions with case variations for implied_source function
-SOURCE_EXTS_WITH_CASE = frozenset({'.cpp', '.cxx', '.cc', '.c++', '.cp', '.mm', '.ixx', '.c', '.C', '.CC'})
+SOURCE_EXTS_WITH_CASE = frozenset({".cpp", ".cxx", ".cc", ".c++", ".cp", ".mm", ".ixx", ".c", ".C", ".CC"})
 
 # Header extensions with case variations for implied_header function
-HEADER_EXTS_WITH_CASE = frozenset({'.h', '.hpp', '.hxx', '.hh', '.inl', '.H', '.HH'})
+HEADER_EXTS_WITH_CASE = frozenset({".h", ".hpp", ".hxx", ".hh", ".inl", ".H", ".HH"})
 
 # Boolean conversion mapping for to_bool function
 BOOL_MAP = {
     # True values
-    "yes": True, "y": True, "true": True, "t": True, "1": True, "on": True,
+    "yes": True,
+    "y": True,
+    "true": True,
+    "t": True,
+    "1": True,
+    "on": True,
     # False values
-    "no": False, "n": False, "false": False, "f": False, "0": False, "off": False
+    "no": False,
+    "n": False,
+    "false": False,
+    "f": False,
+    "0": False,
+    "off": False,
 }
 
-@functools.lru_cache(maxsize=None)
+
+@functools.cache
 def _get_lower_ext(filename: str) -> str:
     """Fast extension extraction and lowercase conversion."""
-    idx = filename.rfind('.')
+    idx = filename.rfind(".")
     if idx == -1 or idx == len(filename) - 1:
         return ""
     return filename[idx:].lower()
+
 
 def is_non_string_iterable(obj: Any) -> bool:
     """Check if an object is an iterable but not a string.
@@ -68,26 +96,29 @@ def is_non_string_iterable(obj: Any) -> bool:
     """
     return isinstance(obj, Iterable) and not isinstance(obj, (str, bytes, bytearray))
 
-@functools.lru_cache(maxsize=None)
+
+@functools.cache
 def split_command_cached(command_line: str) -> list[str]:
     """Cache shlex parsing results"""
     return shlex.split(command_line)
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def split_command_cached_sz(command_line_sz) -> list:
     """StringZilla-aware version returning StringZilla.Str list"""
     import stringzilla as sz
-    str_results = shlex.split(command_line_sz.decode('utf-8'))
+
+    str_results = shlex.split(command_line_sz.decode("utf-8"))
     return [sz.Str(s) for s in str_results]
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def is_header(filename: str) -> bool:
     """Is filename a header file?"""
     return _get_lower_ext(filename) in HEADER_EXTS
 
-@functools.lru_cache(maxsize=None)
+
+@functools.cache
 def is_cpp_source(path: str) -> bool:
     """Lightweight C++ source detection by extension (case-insensitive)."""
     # Fast path: split once
@@ -97,18 +128,19 @@ def is_cpp_source(path: str) -> bool:
         return True
     return ext.lower() in CPP_SOURCE_EXTS
 
-@functools.lru_cache(maxsize=None)
+
+@functools.cache
 def is_c_source(path: str) -> bool:
     """Test if the given file has a .c extension (but not .C which is C++)."""
     _, ext = os.path.splitext(path)
     # .c (lowercase) is C, but .C (uppercase) is C++
     return ext == ".c"
 
-@functools.lru_cache(maxsize=None)
+
+@functools.cache
 def is_source(filename: str) -> bool:
     """Is the filename a source file?"""
     return _get_lower_ext(filename) in ALL_SOURCE_EXTS
-
 
 
 def is_executable(filename: str) -> bool:
@@ -136,7 +168,7 @@ def _find_file_with_extensions(filename: str, extensions: frozenset[str]) -> str
     return None
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def implied_source(filename: str) -> str | None:
     """Find the source file corresponding to a header file.
 
@@ -152,7 +184,7 @@ def implied_source(filename: str) -> str | None:
     return _find_file_with_extensions(filename, SOURCE_EXTS_WITH_CASE)
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def implied_header(filename: str) -> str | None:
     """Find the header file corresponding to a source file.
 
@@ -191,7 +223,8 @@ def extract_init_args(args: argparse.Namespace, classname: type) -> dict[str, An
     sig = inspect.signature(classname.__init__)
     # Filter out 'self' and get only the parameters we care about
     params = {
-        p.name for p in sig.parameters.values()
+        p.name
+        for p in sig.parameters.values()
         if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY) and p.name != "self"
     }
     return {key: value for key, value in vars(args).items() if key in params}
@@ -228,7 +261,7 @@ def add_boolean_argument(
     dest: str | None = None,
     default: bool = False,
     help: str | None = None,
-    allow_value_conversion: bool = True
+    allow_value_conversion: bool = True,
 ) -> None:
     """Add a boolean argument to an ArgumentParser instance.
 
@@ -258,19 +291,13 @@ def add_boolean_argument(
             help=bool_help,
         )
     else:
-        group.add_argument(
-            f"--{name}", dest=dest, default=default, action="store_true", help=bool_help
-        )
+        group.add_argument(f"--{name}", dest=dest, default=default, action="store_true", help=bool_help)
 
     group.add_argument(f"--no-{name}", dest=dest, action="store_false")
 
 
 def add_flag_argument(
-    parser: argparse.ArgumentParser,
-    name: str,
-    dest: str | None = None,
-    default: bool = False,
-    help: str | None = None
+    parser: argparse.ArgumentParser, name: str, dest: str | None = None, default: bool = False, help: str | None = None
 ) -> None:
     """Add a flag argument to an ArgumentParser instance.
 
@@ -336,7 +363,7 @@ def deduplicate_compiler_flags(flags: list[str]) -> list[str]:
 
     # Flags that take arguments (both separate and combined forms)
     # Ordered longest-first to ensure correct prefix matching (-framework before -F)
-    FLAG_WITH_ARGS = ('-framework', '-isystem', '-I', '-L', '-l', '-D', '-U', '-F')
+    FLAG_WITH_ARGS = ("-framework", "-isystem", "-I", "-L", "-l", "-D", "-U", "-F")
 
     deduplicated = []
     seen_flag_args = {}  # flag -> set of seen arguments
@@ -365,7 +392,7 @@ def deduplicate_compiler_flags(flags: list[str]) -> list[str]:
                 i += 2
             elif flag.startswith(matched_flag):
                 # Combined form: '-Ipath'
-                arg = flag[len(matched_flag):]
+                arg = flag[len(matched_flag) :]
                 if matched_flag not in seen_flag_args:
                     seen_flag_args[matched_flag] = set()
                 if arg not in seen_flag_args[matched_flag]:
@@ -397,7 +424,7 @@ def _process_flag_source(source: Union[str, list[str], tuple[str, ...]]) -> list
         for item in source:
             if isinstance(item, str):
                 # Check if item might be a multi-flag string
-                if ' ' in item and not item.startswith('/'):
+                if " " in item and not item.startswith("/"):
                     flags.extend(split_command_cached(item))
                 else:
                     flags.append(item)

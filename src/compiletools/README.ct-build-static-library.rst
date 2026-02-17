@@ -70,4 +70,3 @@ Place intermediate files under ``out/`` while appending custom flags::
 SEE ALSO
 ========
 ``ct-build-dynamic-library`` (1), ``ct-create-makefile`` (1), ``ct-filelist`` (1), ``ct-jobs`` (1)
-

@@ -6,7 +6,7 @@
 #endif
 
 #ifdef FROM_CFLAGS
-#include "cflags_feature.hpp" 
+#include "cflags_feature.hpp"
 #endif
 
 #ifdef FROM_CXXFLAGS

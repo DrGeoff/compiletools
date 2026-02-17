@@ -1,14 +1,14 @@
 import os
 import shutil
-import pytest
-import compiletools.testhelper as uth
+
 import compiletools.cake
-import compiletools.utils
 import compiletools.test_base
+import compiletools.testhelper as uth
+import compiletools.utils
+
 
 # Although this is virtually identical to the test_cake.py, we can't merge the tests due to memoized results.
 class TestMovingHeaders(compiletools.test_base.BaseCompileToolsTestCase):
-
     @uth.requires_functional_compiler
     def test_moving_headers(self):
         # The concept of this test is to check that ct-cake copes with header files being changed directory
@@ -19,9 +19,7 @@ class TestMovingHeaders(compiletools.test_base.BaseCompileToolsTestCase):
 
             # Copy the movingheaders test files to the temp directory and compile using cake
             relativepaths = ["movingheaders/main.cpp", "movingheaders/someheader.hpp"]
-            realpaths = [
-                self._get_sample_path(filename) for filename in relativepaths
-            ]
+            realpaths = [self._get_sample_path(filename) for filename in relativepaths]
             for ff in realpaths:
                 shutil.copy2(ff, tmpdir)
 
@@ -48,10 +46,10 @@ class TestMovingHeaders(compiletools.test_base.BaseCompileToolsTestCase):
 
             # Clear all module-level caches to simulate fresh ct-cake invocation
             # In real usage, each ct-cake run loads all caches fresh in a new process
-            from compiletools.global_hash_registry import clear_global_registry, get_file_hash
             from compiletools.file_analyzer import analyze_file
+            from compiletools.global_hash_registry import clear_global_registry, get_file_hash
             from compiletools.headerdeps import HeaderDepsBase
-            from compiletools.magicflags import MagicFlagsBase, DirectMagicFlags
+            from compiletools.magicflags import DirectMagicFlags, MagicFlagsBase
 
             clear_global_registry()
             get_file_hash.cache_clear()
@@ -64,5 +62,3 @@ class TestMovingHeaders(compiletools.test_base.BaseCompileToolsTestCase):
                 compiletools.cake.main(argv)
 
             self._verify_one_exe_per_main(relativepaths, search_dir=tmpdir)
-
-

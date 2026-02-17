@@ -82,4 +82,3 @@ Compile with automatic magic flag detection disabled and custom output dirs::
 SEE ALSO
 ========
 ``ct-findtargets`` (1), ``ct-create-makefile`` (1), ``ct-cake`` (1), ``ct-jobs`` (1)
-

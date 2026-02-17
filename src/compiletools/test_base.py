@@ -1,20 +1,22 @@
 import os
-import pytest
+
 import configargparse
-import compiletools.testhelper as uth
+import pytest
+
 import compiletools.apptools
+import compiletools.compiler_macros
+import compiletools.configutils
+import compiletools.git_utils
 import compiletools.headerdeps
 import compiletools.magicflags
+import compiletools.testhelper as uth
 import compiletools.utils
-import compiletools.configutils
 import compiletools.wrappedos
-import compiletools.git_utils
-import compiletools.compiler_macros
 
 
 class BaseCompileToolsTestCase:
     """Base test case with common setup/teardown for compiletools tests"""
-    
+
     def _clear_all_caches(self):
         """Clear all LRU and module caches to ensure test isolation"""
         compiletools.wrappedos.clear_cache()
@@ -27,28 +29,29 @@ class BaseCompileToolsTestCase:
         compiletools.magicflags.MagicFlagsBase.clear_cache()
         # Clear preprocessing cache
         from compiletools.preprocessing_cache import clear_cache
+
         clear_cache()
         # Note: namer and hunter caches are cleared per-instance, not globally
-    
+
     def setup_method(self):
         self._clear_all_caches()  # Clear before setup
         self._temp_context = uth.TempDirectoryContext(change_dir=True)
         self._tmpdir = self._temp_context.__enter__()
         uth.delete_existing_parsers()
         compiletools.apptools.resetcallbacks()
-        
+
     def teardown_method(self):
-        if hasattr(self, '_temp_context'):
+        if hasattr(self, "_temp_context"):
             self._temp_context.__exit__(None, None, None)
         uth.delete_existing_parsers()
         compiletools.apptools.resetcallbacks()
         self._clear_all_caches()  # Clear after teardown
-        
+
     def _verify_one_exe_per_main(self, relativepaths, search_dir=None):
         """Common executable verification logic"""
         search_directory = search_dir or self._tmpdir
         actual_exes = set()
-        for root, dirs, files in os.walk(search_directory):
+        for root, _dirs, files in os.walk(search_directory):
             for ff in files:
                 if compiletools.utils.is_executable(os.path.join(root, ff)):
                     actual_exes.add(ff)
@@ -72,9 +75,7 @@ def create_magic_parser(extraargs=None, tempdir=None):
     temp_config_name = uth.create_temp_config(tempdir)
     argv = ["--config=" + temp_config_name] + extraargs
 
-    config_files = compiletools.configutils.config_files_from_variant(
-        argv=argv, exedir=uth.cakedir()
-    )
+    config_files = compiletools.configutils.config_files_from_variant(argv=argv, exedir=uth.cakedir())
 
     # Check if parser already exists and use it, otherwise create new one
     try:
@@ -96,9 +97,9 @@ def create_magic_parser(extraargs=None, tempdir=None):
     headerdeps = compiletools.headerdeps.create(args)
     return compiletools.magicflags.create(args, headerdeps)
 
+
 @uth.requires_functional_compiler
-def compare_direct_cpp_magic(test_case, relativepath, tempdir=None, expected_values=None,
-                             parsers=None):
+def compare_direct_cpp_magic(test_case, relativepath, tempdir=None, expected_values=None, parsers=None):
     """Utility to test that DirectMagicFlags and CppMagicFlags produce identical results
 
     Args:
@@ -156,18 +157,21 @@ def compare_direct_cpp_magic(test_case, relativepath, tempdir=None, expected_val
                         raise
 
         # Results should be identical
-        assert result_direct == result_cpp, \
-                           f"DirectMagicFlags and CppMagicFlags gave different results for {relativepath}"
+        assert result_direct == result_cpp, (
+            f"DirectMagicFlags and CppMagicFlags gave different results for {relativepath}"
+        )
 
         # If expected values provided, verify correctness
         if expected_values:
             import stringzilla as sz
+
             for key, expected_list in expected_values.items():
                 sz_key = sz.Str(key)
                 assert sz_key in result_direct, f"Expected key '{key}' not found in result for {relativepath}"
                 actual_list = [str(x) for x in result_direct[sz_key]]
-                assert actual_list == expected_list, \
+                assert actual_list == expected_list, (
                     f"For {relativepath}, expected {key}={expected_list}, got {actual_list}"
+                )
 
 
 def compare_direct_cpp_headers(test_case, filename, extraargs=None):

@@ -7,9 +7,9 @@
 
 int main(int argc, char* argv[])
 {
-    unsigned char input[] = "Hello Hello Hello Hello Hello Hello!"; 
+    unsigned char input[] = "Hello Hello Hello Hello Hello Hello!";
     unsigned char compressed[50];
-    
+
     // zlib struct
     z_stream defstream;
     defstream.zalloc = Z_NULL;
@@ -20,10 +20,9 @@ int main(int argc, char* argv[])
     defstream.next_in = reinterpret_cast<Bytef *>(&input[0]); // input char array
     defstream.avail_out = static_cast<uInt>(sizeof(compressed)); // size of output
     defstream.next_out = static_cast<Bytef *>(&compressed[0]); // output char array
-    
+
     // the actual compression work.
     deflateInit(&defstream, Z_BEST_COMPRESSION);
     deflate(&defstream, Z_FINISH);
     deflateEnd(&defstream);
 }
-

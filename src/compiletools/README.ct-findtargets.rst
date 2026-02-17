@@ -30,14 +30,14 @@ ct-findtargets [-h] [-c CONFIG_FILE] [--variant VARIANT] [-v] [-q]
 
 DESCRIPTION
 ===========
-ct-findtargets uses the variables exemarkers and testmarkers (usually 
-defined in ct.conf) to find the source files that will 
+ct-findtargets uses the variables exemarkers and testmarkers (usually
+defined in ct.conf) to find the source files that will
 compile to either an executable or a unit test.  The default settings are
 
 * exemarkers = [main(,main (,wxIMPLEMENT_APP,g_main_loop_new]
 * testmarkers = unit_test.hpp
 
-A filename that starts with "test" and also satisfies the exemarkers will 
+A filename that starts with "test" and also satisfies the exemarkers will
 be reported as a test, unless --no-filenametestmatch is set.
 
 EXAMPLES

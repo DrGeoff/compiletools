@@ -1,24 +1,24 @@
-import signal
-import sys
-import subprocess
 import os
 import shutil
-import compiletools.utils
+import signal
+import subprocess
+import sys
+
 import compiletools.apptools
+import compiletools.compilation_database
 import compiletools.configutils
-import compiletools.headerdeps
-import compiletools.magicflags
-import compiletools.hunter
-import compiletools.makefile
 import compiletools.filelist
 import compiletools.findtargets
+import compiletools.headerdeps
+import compiletools.hunter
 import compiletools.jobs
+import compiletools.magicflags
+import compiletools.makefile
+import compiletools.utils
 import compiletools.wrappedos
-import compiletools.compilation_database
 
 
-
-class Cake(object):
+class Cake:
     def __init__(self, args):
         self.args = args
         self.namer = None
@@ -28,29 +28,25 @@ class Cake(object):
 
     @staticmethod
     def _hide_makefilename(args):
-        """ Change the args.makefilename to hide the Makefile in the executable_dir()
-            This is a callback function for the compiletools.apptools.substitutions.
+        """Change the args.makefilename to hide the Makefile in the executable_dir()
+        This is a callback function for the compiletools.apptools.substitutions.
         """
         namer = compiletools.namer.Namer(args)
         if namer.executable_dir() not in args.makefilename:
             movedmakefile = os.path.join(namer.executable_dir(), args.makefilename)
             if args.verbose > 4:
-                print(
-                    "Makefile location is being altered.  New location is {}".format(
-                        movedmakefile
-                    )
-                )
+                print(f"Makefile location is being altered.  New location is {movedmakefile}")
             args.makefilename = movedmakefile
 
     @staticmethod
     def registercallback():
-        """ Must be called before object creation so that the args parse
-            correctly
+        """Must be called before object creation so that the args parse
+        correctly
         """
         compiletools.apptools.registercallback(Cake._hide_makefilename)
 
     def _createctobjs(self):
-        """ Has to be separate because --auto fiddles with the args """
+        """Has to be separate because --auto fiddles with the args"""
         self.namer = compiletools.namer.Namer(self.args)
         self.headerdeps = compiletools.headerdeps.create(self.args)
         self.magicparser = compiletools.magicflags.create(self.args, self.headerdeps)
@@ -74,7 +70,8 @@ class Cake(object):
             "--begintests",
             dest="tests",
             nargs="*",
-            help="Starts a test block. The cpp files following this declaration will generate executables which are then run. Synonym for --tests",
+            help="Starts a test block. The cpp files following this declaration will generate "
+            "executables which are then run. Synonym for --tests",
         )
         cap.add(
             "--endtests",
@@ -91,19 +88,19 @@ class Cake(object):
             default=True,
             help="Generate compile_commands.json for clang tooling.",
         )
-        
+
         cap.add(
             "--compilation-database-output",
             dest="compilation_database_output",
             default=None,
-            help="Output filename for compilation database (default: <gitroot>/compile_commands.json)"
+            help="Output filename for compilation database (default: <gitroot>/compile_commands.json)",
         )
-        
+
         cap.add(
             "--compilation-database-relative-paths",
             dest="compilation_database_relative",
-            action="store_true", 
-            help="Use relative paths instead of absolute paths in compilation database"
+            action="store_true",
+            help="Use relative paths instead of absolute paths in compilation database",
         )
 
         compiletools.utils.add_boolean_argument(
@@ -134,18 +131,14 @@ class Cake(object):
 
     def _call_compilation_database(self):
         """Generate compilation database if requested"""
-        if not getattr(self.args, 'compilation_database', True):
+        if not getattr(self.args, "compilation_database", True):
             return
         if self.args.clean:
             return  # Don't generate compilation database during clean
-            
+
         # Reuse existing objects to avoid duplicating work
         creator = compiletools.compilation_database.CompilationDatabaseCreator(
-            self.args,
-            namer=self.namer,
-            headerdeps=self.headerdeps,
-            magicparser=self.magicparser,
-            hunter=self.hunter
+            self.args, namer=self.namer, headerdeps=self.headerdeps, magicparser=self.magicparser, hunter=self.hunter
         )
         creator.write_compilation_database()
 
@@ -164,9 +157,7 @@ class Cake(object):
             if self.args.static:
                 shutil.copy2(self.namer.staticlibrary_pathname(), self.args.output)
             if self.args.dynamic:
-                shutil.copy2(
-                    self.namer.dynamiclibrary_pathname(), self.args.output
-                )
+                shutil.copy2(self.namer.dynamiclibrary_pathname(), self.args.output)
         else:
             outputdir = self.namer.topbindir()
             filelist = self.namer.all_executable_pathnames()
@@ -199,10 +190,10 @@ class Cake(object):
     def _callmakefile(self):
         makefile_creator = compiletools.makefile.MakefileCreator(self.args, self.hunter)
         makefile_creator.create()
-        
+
         # Generate compilation database after makefile creation but before build
         self._call_compilation_database()
-        
+
         os.makedirs(self.namer.executable_dir(), exist_ok=True)
         cmd = ["make"]
         if self.args.verbose <= 1:
@@ -224,7 +215,7 @@ class Cake(object):
             cmd.append("build")
         if self.args.verbose >= 1:
             print(" ".join(cmd))
-            
+
         # Time the main build subprocess
         subprocess.check_call(cmd, universal_newlines=True)
 
@@ -236,7 +227,7 @@ class Cake(object):
             cmd.extend(["-f", self.args.makefilename, "runtests"])
             if self.args.verbose >= 2:
                 print(" ".join(cmd))
-                
+
             # Time the test execution subprocess
             subprocess.check_call(cmd, universal_newlines=True)
 
@@ -260,8 +251,8 @@ class Cake(object):
             self._copyexes()
 
     def process(self):
-        """ Transform the arguments into suitable versions for ct-* tools
-            and call the appropriate tool.
+        """Transform the arguments into suitable versions for ct-* tools
+        and call the appropriate tool.
         """
         # If the user specified only a single file to be turned into a library, guess that
         # they mean for ct-cake to chase down all the implied files.
@@ -271,15 +262,11 @@ class Cake(object):
         self._createctobjs()
         recreateobjs = False
         if self.args.static and len(self.args.static) == 1:
-            self.args.static.extend(
-                self.hunter.required_source_files(self.args.static[0])
-            )
+            self.args.static.extend(self.hunter.required_source_files(self.args.static[0]))
             recreateobjs = True
 
         if self.args.dynamic and len(self.args.dynamic) == 1:
-            self.args.dynamic.extend(
-                self.hunter.required_source_files(self.args.dynamic[0])
-            )
+            self.args.dynamic.extend(self.hunter.required_source_files(self.args.dynamic[0]))
             recreateobjs = True
 
         if self.args.auto and not any([self.args.filename, self.args.static, self.args.dynamic, self.args.tests]):
@@ -305,7 +292,7 @@ class Cake(object):
             self._callmakefile()
 
     def clear_cache(self):
-        """ Only useful in test scenarios where you need to reset to a pristine state """
+        """Only useful in test scenarios where you need to reset to a pristine state"""
         compiletools.wrappedos.clear_cache()
         compiletools.utils.clear_cache()
         compiletools.git_utils.clear_cache()
@@ -328,11 +315,8 @@ def main(argv=None):
 
     args = compiletools.apptools.parseargs(cap, argv)
 
-
     if not any([args.filename, args.static, args.dynamic, args.tests, args.auto]):
-        print(
-            "Nothing for cake to do.  Did you mean cake --auto? Use cake --help for help."
-        )
+        print("Nothing for cake to do.  Did you mean cake --auto? Use cake --help for help.")
         return 0
 
     signal.signal(signal.SIGINT, signal_handler)
@@ -343,7 +327,7 @@ def main(argv=None):
         cake.process()
         # For testing purposes, clear out the memcaches for the times when main is called more than once.
         cake.clear_cache()
-    except IOError as ioe:
+    except OSError as ioe:
         if args.verbose < 2:
             print(f"Error processing {ioe.filename}: {ioe.strerror}")
             return 1

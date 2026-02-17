@@ -1,26 +1,26 @@
 import os
 import textwrap
-import compiletools.testhelper as uth
+
 import compiletools.listvariants
+import compiletools.testhelper as uth
 
 
 def test_none_found():
     # This test doesn't need the config file from CompileToolsTestContext,
     # only temp directory and parser reset
-    with uth.TempDirContextWithChange() as tempdir:
-        with uth.ParserContext():
-            # Create temp config with variant aliases
-            compiletools.testhelper.create_temp_ct_conf(tempdir)
+    with uth.TempDirContextWithChange() as tempdir, uth.ParserContext():
+        # Create temp config with variant aliases
+        compiletools.testhelper.create_temp_ct_conf(tempdir)
 
-            # Resolve to real path to handle symlinks
-            tempdir_real = os.path.realpath(tempdir)
+        # Resolve to real path to handle symlinks
+        tempdir_real = os.path.realpath(tempdir)
 
-            # These values are deliberately chosen so that we can know that
-            # no config files will be found except those in the temp directory
-            ucd = "/home/dummy/.config/ct"
-            scd = "/usr/lib"
-            ecd = uth.cakedir()
-            expected_output = textwrap.dedent("""\
+        # These values are deliberately chosen so that we can know that
+        # no config files will be found except those in the temp directory
+        ucd = "/home/dummy/.config/ct"
+        scd = "/usr/lib"
+        ecd = uth.cakedir()
+        expected_output = textwrap.dedent("""\
                 Variant aliases are:
                 {{'dbg':'foo.debug', 'rls':'foo.release'}}
                 From highest to lowest priority configuration directories, the possible variants are:
@@ -33,12 +33,11 @@ def test_none_found():
                 {1}
                     None found
                 """).format(
-                tempdir_real,
-                os.path.join(ecd, "ct", "ct.conf.d"),
-            )
+            tempdir_real,
+            os.path.join(ecd, "ct", "ct.conf.d"),
+        )
 
-            output = compiletools.listvariants.find_possible_variants(
-                user_config_dir=ucd, system_config_dir=scd, exedir=ecd, verbose=9, gitroot=tempdir_real
-            )
-            assert expected_output == output
-
+        output = compiletools.listvariants.find_possible_variants(
+            user_config_dir=ucd, system_config_dir=scd, exedir=ecd, verbose=9, gitroot=tempdir_real
+        )
+        assert expected_output == output

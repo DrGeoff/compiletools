@@ -1,15 +1,16 @@
-import os
 import functools
+import os
+from typing import ClassVar
 
 import compiletools.apptools
-import compiletools.utils
-import compiletools.wrappedos
 import compiletools.headerdeps
 import compiletools.magicflags
+import compiletools.utils
+import compiletools.wrappedos
 
 
 def add_arguments(cap):
-    """ Add the command line arguments that the Hunter classes require """
+    """Add the command line arguments that the Hunter classes require"""
     compiletools.apptools.add_common_arguments(cap)
     compiletools.headerdeps.add_arguments(cap)
     compiletools.magicflags.add_arguments(cap)
@@ -19,18 +20,18 @@ def add_arguments(cap):
         name="allow-magic-source-in-header",
         dest="allow_magic_source_in_header",
         default=False,
-        help="Set this to true if you want to use the //#SOURCE=foo.cpp magic flag in your header files. Defaults to false because it is significantly slower.",
+        help="Set this to true if you want to use the //#SOURCE=foo.cpp magic flag in your "
+        "header files. Defaults to false because it is significantly slower.",
     )
 
 
-class Hunter(object):
-
-    """ Deeply inspect files to understand what are the header dependencies,
-        other required source files, other required compile/link flags.
+class Hunter:
+    """Deeply inspect files to understand what are the header dependencies,
+    other required source files, other required compile/link flags.
     """
-    
+
     # Class-level cache for magic parsing results
-    _magic_cache = {}
+    _magic_cache: ClassVar[dict] = {}
 
     def __init__(self, args, headerdeps, magicparser):
         self.args = args
@@ -43,18 +44,19 @@ class Hunter(object):
         Hunter._required_files_impl.cache_clear()
         Hunter._extractSOURCE.cache_clear()
 
-    @functools.lru_cache(maxsize=None)
+    @functools.cache
     def _extractSOURCE(self, realpath):
         import stringzilla as sz
+
         # Call get_structured_data directly to leverage its cache (90%+ hit rate)
         # without paying the cost of parse() transforming all flags
         structured_data = self.magicparser.get_structured_data(realpath)
 
         sources = []
         for file_data in structured_data:
-            for magic_flag in file_data['active_magic_flags']:
-                if magic_flag['key'] == sz.Str("SOURCE"):
-                    sources.append(magic_flag['value'])
+            for magic_flag in file_data["active_magic_flags"]:
+                if magic_flag["key"] == sz.Str("SOURCE"):
+                    sources.append(magic_flag["value"])
 
         cwd = compiletools.wrappedos.dirname(realpath)
         ess = frozenset(compiletools.wrappedos.realpath(os.path.join(cwd, str(es))) for es in sources)
@@ -62,7 +64,7 @@ class Hunter(object):
             print("Hunter::_extractSOURCE. realpath=", realpath, " SOURCE flag:", ess)
         return ess
 
-    @functools.lru_cache(maxsize=None)
+    @functools.cache
     def _get_immediate_deps(self, realpath, macro_state_key):
         """Get immediate dependencies for a single file (cached by realpath + macro_state_key).
 
@@ -100,7 +102,7 @@ class Hunter(object):
             if dep not in processed:
                 self._expand_deps_recursive(dep, macro_state_key, processed)
 
-    @functools.lru_cache(maxsize=None)
+    @functools.cache
     def _required_files_impl(self, realpath, macro_state_key):
         """Get all transitive dependencies for a file (cached by realpath + macro_state_key)."""
         if self.args.verbose >= 7:
@@ -115,26 +117,22 @@ class Hunter(object):
         return list(processed)
 
     def required_source_files(self, filename):
-        """ Create the list of source files that also need to be compiled
-            to complete the linkage of the given file. If filename is a source
-            file itself then the returned set will contain the given filename.
-            As a side effect, the magic //#... flags are cached.
+        """Create the list of source files that also need to be compiled
+        to complete the linkage of the given file. If filename is a source
+        file itself then the returned set will contain the given filename.
+        As a side effect, the magic //#... flags are cached.
         """
         if self.args.verbose >= 9:
             print("Hunter::required_source_files for " + filename)
         return compiletools.utils.ordered_unique(
-            [
-                filename
-                for filename in self.required_files(filename)
-                if compiletools.utils.is_source(filename)
-            ]
+            [filename for filename in self.required_files(filename) if compiletools.utils.is_source(filename)]
         )
 
     def required_files(self, filename):
-        """ Create the list of files (both header and source)
-            that are either directly or indirectly utilised by the given file.
-            The returned set will contain the original filename.
-            As a side effect, examine the files to determine the magic //#... flags
+        """Create the list of files (both header and source)
+        that are either directly or indirectly utilised by the given file.
+        The returned set will contain the original filename.
+        As a side effect, examine the files to determine the magic //#... flags
         """
         if self.args.verbose >= 9:
             print("Hunter::required_files for " + filename)
@@ -174,12 +172,12 @@ class Hunter(object):
         self._required_files_impl.cache_clear()
         self._extractSOURCE.cache_clear()
         # Clear project-level source discovery caches (these are set dynamically)
-        if hasattr(self, '_hunted_sources'):
+        if hasattr(self, "_hunted_sources"):
             del self._hunted_sources
-        if hasattr(self, '_test_sources'):
+        if hasattr(self, "_test_sources"):
             del self._test_sources
 
-    @functools.lru_cache(maxsize=None)
+    @functools.cache
     def _parse_magic(self, filename):
         """Cache the magic parse result to avoid duplicate processing."""
         return self.magicparser.parse(filename)
@@ -236,9 +234,9 @@ class Hunter(object):
         """
         # For simplicity and test reliability, always recompute
         # This prevents test isolation issues while maintaining functionality
-        if hasattr(self, '_hunted_sources'):
+        if hasattr(self, "_hunted_sources"):
             del self._hunted_sources
-        if hasattr(self, '_test_sources'):
+        if hasattr(self, "_test_sources"):
             del self._test_sources
 
         if self.args.verbose >= 5:
@@ -246,15 +244,14 @@ class Hunter(object):
 
         # Get initial sources from command line arguments
         initial_sources = []
-        if getattr(self.args, 'static', None):
+        if getattr(self.args, "static", None):
             initial_sources.extend(self.args.static)
-        if getattr(self.args, 'dynamic', None):
+        if getattr(self.args, "dynamic", None):
             initial_sources.extend(self.args.dynamic)
-        if getattr(self.args, 'filename', None):
+        if getattr(self.args, "filename", None):
             initial_sources.extend(self.args.filename)
-        if getattr(self.args, 'tests', None):
+        if getattr(self.args, "tests", None):
             initial_sources.extend(self.args.tests)
-
 
         if not initial_sources:
             self._hunted_sources = []
@@ -306,7 +303,7 @@ class Hunter(object):
         Returns:
             List of absolute paths to all source files
         """
-        if not hasattr(self, '_hunted_sources'):
+        if not hasattr(self, "_hunted_sources"):
             self.huntsource()
         return self._hunted_sources
 
@@ -319,10 +316,10 @@ class Hunter(object):
         Returns:
             List of absolute paths to test source files
         """
-        if not hasattr(self, '_test_sources'):
+        if not hasattr(self, "_test_sources"):
             # Expand only test sources
             test_sources = set()
-            if getattr(self.args, 'tests', None):
+            if getattr(self.args, "tests", None):
                 for source in self.args.tests:
                     try:
                         realpath_source = compiletools.wrappedos.realpath(source)

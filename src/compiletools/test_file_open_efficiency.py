@@ -6,21 +6,23 @@ reopening files multiple times.
 """
 
 import os
-import pytest
 import unittest.mock as mock
 from collections import Counter
 
+import pytest
+
 import compiletools.apptools
 import compiletools.cake
-import compiletools.testhelper as uth
-import compiletools.global_hash_registry
 import compiletools.file_analyzer
+import compiletools.global_hash_registry
+import compiletools.test_base
+import compiletools.testhelper as uth
 
 
 class FileOpenTracker:
     """Context manager that tracks file open calls."""
 
-    def __init__(self, track_extensions=('.cpp', '.c', '.h', '.hpp', '.cc', '.cxx')):
+    def __init__(self, track_extensions=(".cpp", ".c", ".h", ".hpp", ".cc", ".cxx")):
         self.track_extensions = track_extensions
         self.counter = Counter()
         self.original_open = open
@@ -35,8 +37,8 @@ class FileOpenTracker:
 
     def __enter__(self):
         self.counter.clear()
-        self.builtin_patch = mock.patch('builtins.open', side_effect=self.tracking_open)
-        self.io_patch = mock.patch('io.open', side_effect=self.tracking_open)
+        self.builtin_patch = mock.patch("builtins.open", side_effect=self.tracking_open)
+        self.io_patch = mock.patch("io.open", side_effect=self.tracking_open)
         self.builtin_patch.__enter__()
         self.io_patch.__enter__()
         return self
@@ -51,14 +53,15 @@ class FileOpenTracker:
         return {path: count for path, count in self.counter.items() if count > 1}
 
 
-from compiletools.test_base import BaseCompileToolsTestCase
-
-class TestFileOpenEfficiency(BaseCompileToolsTestCase):
-    @pytest.mark.parametrize("sample_dir", [
-        "simple",
-        "factory",
-        "magicinclude",
-    ])
+class TestFileOpenEfficiency(compiletools.test_base.BaseCompileToolsTestCase):
+    @pytest.mark.parametrize(
+        "sample_dir",
+        [
+            "simple",
+            "factory",
+            "magicinclude",
+        ],
+    )
     def test_cake_auto_opens_files_once(self, sample_dir):
         """Test that ct-cake --auto opens each source file at most once.
 
@@ -81,20 +84,19 @@ class TestFileOpenEfficiency(BaseCompileToolsTestCase):
             os.chdir(test_dir)
 
             # Track file opens during cake execution
-            with uth.ParserContext():
-                with FileOpenTracker() as tracker:
-                    # Create argument parser and run cake
-                    cap = compiletools.apptools.create_parser("Test ct-cake file efficiency")
-                    compiletools.cake.Cake.add_arguments(cap)
+            with uth.ParserContext(), FileOpenTracker() as tracker:
+                # Create argument parser and run cake
+                cap = compiletools.apptools.create_parser("Test ct-cake file efficiency")
+                compiletools.cake.Cake.add_arguments(cap)
 
-                    # Use --auto to trigger dependency analysis and --file-list to avoid compilation
-                    # This runs the full dependency analysis without invoking the compiler
-                    argv = ['--auto', '--file-list']
-                    args = compiletools.apptools.parseargs(cap, argv=argv)
+                # Use --auto to trigger dependency analysis and --file-list to avoid compilation
+                # This runs the full dependency analysis without invoking the compiler
+                argv = ["--auto", "--file-list"]
+                args = compiletools.apptools.parseargs(cap, argv=argv)
 
-                    # Run the dependency analysis
-                    cake = compiletools.cake.Cake(args)
-                    cake.process()
+                # Run the dependency analysis
+                cake = compiletools.cake.Cake(args)
+                cake.process()
 
             # Success: all files opened at most once
             multiple_opens = tracker.get_multiple_opens()

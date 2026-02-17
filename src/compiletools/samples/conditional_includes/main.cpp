@@ -1,6 +1,6 @@
 #ifdef __linux__
 #include "linux_header.h"
-#else  
+#else
 #include "windows_header.h"
 #endif
 

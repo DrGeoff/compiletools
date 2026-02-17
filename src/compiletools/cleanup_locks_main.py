@@ -17,6 +17,7 @@ The tool will:
 """
 
 import sys
+
 import compiletools.apptools
 import compiletools.cleanup_locks
 import compiletools.configutils
@@ -30,22 +31,22 @@ def add_arguments(cap):
         cap: ConfigArgParse parser
     """
     cap.add(
-        '--dry-run',
-        action='store_true',
+        "--dry-run",
+        action="store_true",
         default=False,
-        help='Show what would be removed without actually removing locks'
+        help="Show what would be removed without actually removing locks",
     )
     cap.add(
-        '--ssh-timeout',
+        "--ssh-timeout",
         type=int,
         default=5,
-        help='SSH connection timeout in seconds for remote process checks (default: 5)'
+        help="SSH connection timeout in seconds for remote process checks (default: 5)",
     )
     cap.add(
-        '--min-lock-age',
+        "--min-lock-age",
         type=int,
         default=None,
-        help='Only check locks older than this many seconds (default: lock-cross-host-timeout)'
+        help="Only check locks older than this many seconds (default: lock-cross-host-timeout)",
     )
 
 
@@ -68,10 +69,7 @@ def main(argv=None):
     """
     try:
         # Create parser with standard compiletools configuration
-        cap = compiletools.apptools.create_parser(
-            "Clean up stale locks in shared object caches",
-            argv=argv
-        )
+        cap = compiletools.apptools.create_parser("Clean up stale locks in shared object caches", argv=argv)
 
         # Add cleanup-specific arguments
         add_arguments(cap)
@@ -112,14 +110,14 @@ def main(argv=None):
         cleaner.print_summary(stats)
 
         # Return error if any locks failed to remove
-        if stats['stale_failed'] > 0:
+        if stats["stale_failed"] > 0:
             return 1
 
         return 0
 
-    except IOError as ioe:
+    except OSError as ioe:
         # Check if args was set (might fail before argument parsing)
-        verbose = getattr(args, 'verbose', 0) if 'args' in locals() else 0
+        verbose = getattr(args, "verbose", 0) if "args" in locals() else 0
         if verbose < 2:
             print(f"Error: {ioe.strerror}: {ioe.filename}", file=sys.stderr)
             return 1
@@ -127,7 +125,7 @@ def main(argv=None):
             raise
     except Exception as err:
         # Check if args was set (might fail during argument parsing)
-        verbose = getattr(args, 'verbose', 0) if 'args' in locals() else 0
+        verbose = getattr(args, "verbose", 0) if "args" in locals() else 0
         if verbose < 2:
             print(f"Error: {err}", file=sys.stderr)
             return 1
@@ -135,5 +133,5 @@ def main(argv=None):
             raise
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

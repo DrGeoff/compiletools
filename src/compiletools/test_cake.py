@@ -1,17 +1,16 @@
 import os
 import os.path
 import shutil
+
 import configargparse
 
-# import pdb
-
-import compiletools.testhelper as uth
-import compiletools.cake
 import compiletools.apptools
+import compiletools.cake
 import compiletools.namer
+
+# import pdb
+import compiletools.testhelper as uth
 from compiletools.test_base import BaseCompileToolsTestCase
-
-
 
 
 class TestCake(BaseCompileToolsTestCase):
@@ -28,10 +27,11 @@ class TestCake(BaseCompileToolsTestCase):
             "--config=" + self._config_name,
         ]
 
-    def _call_ct_cake(self, extraargv=[]):
+    def _call_ct_cake(self, extraargv=None):
+        if extraargv is None:
+            extraargv = []
         uth.reset()
         compiletools.cake.main(self._create_argv() + extraargv)
-
 
     @uth.requires_functional_compiler
     def test_no_git_root(self):
@@ -40,9 +40,7 @@ class TestCake(BaseCompileToolsTestCase):
 
             # Copy a known cpp file to a non-git directory and compile using cake
             relativepaths = ["simple/helloworld_cpp.cpp"]
-            realpaths = [
-                os.path.join(uth.samplesdir(), filename) for filename in relativepaths
-            ]
+            realpaths = [os.path.join(uth.samplesdir(), filename) for filename in relativepaths]
             for ff in realpaths:
                 shutil.copy2(ff, self._tmpdir)
 
@@ -55,27 +53,25 @@ class TestCake(BaseCompileToolsTestCase):
 
             # Check that an executable got built for each cpp
             actual_exes = set()
-            for root, dirs, files in os.walk(self._tmpdir):
+            for root, _dirs, files in os.walk(self._tmpdir):
                 for ff in files:
                     if compiletools.utils.is_executable(os.path.join(root, ff)):
                         actual_exes.add(ff)
 
-            expected_exes = {
-                os.path.splitext(os.path.split(filename)[1])[0]
-                for filename in relativepaths
-            }
+            expected_exes = {os.path.splitext(os.path.split(filename)[1])[0] for filename in relativepaths}
             assert expected_exes == actual_exes
-            
+
             # Check that compilation database was created
             assert os.path.exists("compile_commands.json"), "Compilation database should be created by default"
-            
+
             # Verify compilation database content
             import json
-            with open("compile_commands.json", 'r') as f:
+
+            with open("compile_commands.json") as f:
                 commands = json.load(f)
             assert isinstance(commands, list), "Compilation database should be a JSON array"
             assert len(commands) >= len(relativepaths), f"Expected at least {len(relativepaths)} compilation commands"
-            
+
             # Verify each command has required fields
             for cmd in commands:
                 assert "directory" in cmd, "Each command should have 'directory' field"
@@ -90,9 +86,7 @@ class TestCake(BaseCompileToolsTestCase):
 
             # Copy a known cpp file to a non-git directory and compile using cake
             relativepaths = ["simple/helloworld_cpp.cpp"]
-            realpaths = [
-                os.path.join(uth.samplesdir(), filename) for filename in relativepaths
-            ]
+            realpaths = [os.path.join(uth.samplesdir(), filename) for filename in relativepaths]
             for ff in realpaths:
                 shutil.copy2(ff, self._tmpdir)
 
@@ -106,19 +100,18 @@ class TestCake(BaseCompileToolsTestCase):
 
             # Check that an executable got built
             actual_exes = set()
-            for root, dirs, files in os.walk(self._tmpdir):
+            for root, _dirs, files in os.walk(self._tmpdir):
                 for ff in files:
                     if compiletools.utils.is_executable(os.path.join(root, ff)):
                         actual_exes.add(ff)
 
-            expected_exes = {
-                os.path.splitext(os.path.split(filename)[1])[0]
-                for filename in relativepaths
-            }
+            expected_exes = {os.path.splitext(os.path.split(filename)[1])[0] for filename in relativepaths}
             assert expected_exes == actual_exes
-            
+
             # Check that compilation database was NOT created
-            assert not os.path.exists("compile_commands.json"), "Compilation database should not be created with --no-compilation-database"
+            assert not os.path.exists("compile_commands.json"), (
+                "Compilation database should not be created with --no-compilation-database"
+            )
 
     @uth.requires_functional_compiler
     def test_custom_compilation_database_output(self):
@@ -128,9 +121,7 @@ class TestCake(BaseCompileToolsTestCase):
 
             # Copy a known cpp file to a non-git directory and compile using cake
             relativepaths = ["simple/helloworld_cpp.cpp"]
-            realpaths = [
-                os.path.join(uth.samplesdir(), filename) for filename in relativepaths
-            ]
+            realpaths = [os.path.join(uth.samplesdir(), filename) for filename in relativepaths]
             for ff in realpaths:
                 shutil.copy2(ff, self._tmpdir)
 
@@ -145,24 +136,24 @@ class TestCake(BaseCompileToolsTestCase):
 
             # Check that an executable got built
             actual_exes = set()
-            for root, dirs, files in os.walk(self._tmpdir):
+            for root, _dirs, files in os.walk(self._tmpdir):
                 for ff in files:
                     if compiletools.utils.is_executable(os.path.join(root, ff)):
                         actual_exes.add(ff)
 
-            expected_exes = {
-                os.path.splitext(os.path.split(filename)[1])[0]
-                for filename in relativepaths
-            }
+            expected_exes = {os.path.splitext(os.path.split(filename)[1])[0] for filename in relativepaths}
             assert expected_exes == actual_exes
-            
+
             # Check that compilation database was created with custom name
             assert os.path.exists(custom_output), f"Custom compilation database {custom_output} should be created"
-            assert not os.path.exists("compile_commands.json"), "Default compilation database should not be created when custom output is specified"
-            
+            assert not os.path.exists("compile_commands.json"), (
+                "Default compilation database should not be created when custom output is specified"
+            )
+
             # Verify custom compilation database content
             import json
-            with open(custom_output, 'r') as f:
+
+            with open(custom_output) as f:
                 commands = json.load(f)
             assert isinstance(commands, list), "Custom compilation database should be a JSON array"
             assert len(commands) >= len(relativepaths), f"Expected at least {len(relativepaths)} compilation commands"
@@ -194,33 +185,33 @@ class TestCake(BaseCompileToolsTestCase):
             """,
             "main.cpp": """
                 #include "extra.hpp"
-                
+
                 int main(int argc, char* argv[])
                 {
                     return extra_func(42);
                 }
-            """
+            """,
         }
 
     def _create_source_files(self, files=None):
         """Create source files, optionally selecting which ones
-        
+
         Args:
             files: List of filenames to create. If None, creates all available files.
-        
+
         Returns:
             Dictionary of {relative_path: Path} for created files
         """
         file_contents = self._get_file_contents()
-        
+
         if files is None:
             files = list(file_contents.keys())
-        
+
         # Validate that all requested files are available
         unavailable = set(files) - set(file_contents.keys())
         if unavailable:
             raise ValueError(f"Unavailable files requested: {unavailable}")
-        
+
         return uth.write_sources({f: file_contents[f] for f in files})
 
     # Convenience methods for individual file creation
@@ -238,27 +229,27 @@ class TestCake(BaseCompileToolsTestCase):
 
     def _inject_deeper_hpp_into_extra_hpp(self):
         data = []
-        with open("extra.hpp", "r") as infile:
+        with open("extra.hpp") as infile:
             data = ['#include "deeper.hpp"\n'] + infile.readlines()
 
         with open("extra.hpp", "w") as outfile:
             outfile.writelines(data)
 
     def _create_recompile_test_files(self, deeper_is_included=False):
-        """ Create a simple C++ program containing a main.cpp, extra.hpp, 
-            extra.cpp, and extra.hpp in turn includes deeper.hpp which has an 
-            associated deeper.cpp.
-            This will allow us to test that editing any of those files 
-            triggers a recompile.
+        """Create a simple C++ program containing a main.cpp, extra.hpp,
+        extra.cpp, and extra.hpp in turn includes deeper.hpp which has an
+        associated deeper.cpp.
+        This will allow us to test that editing any of those files
+        triggers a recompile.
         """
         return self._create_source_files()
 
     def _grab_timestamps(self, deeper_is_included=False):
-        """ There are 8 files we want timestamps for.  
-            main.cpp, extra.hpp, extra.cpp, deeper.hpp, deeper.cpp, deeper.o, main.o, extra.o 
-            and the executable called "main".
+        """There are 8 files we want timestamps for.
+        main.cpp, extra.hpp, extra.cpp, deeper.hpp, deeper.cpp, deeper.o, main.o, extra.o
+        and the executable called "main".
 
-            This must be called inside the directory where main.cpp lives.
+        This must be called inside the directory where main.cpp lives.
         """
 
         # Create a namer so that we get the names of the object files correct
@@ -280,6 +271,7 @@ class TestCake(BaseCompileToolsTestCase):
         # Add in the object filenames (only cpp have object files)
         # Object files now have content-addressable names with hashes, so we glob for them
         import glob
+
         objdir = nmr.object_dir(fnames[0])
         for fname in [name for name in fnames if "cpp" in name]:
             _, name = os.path.split(fname)
@@ -300,9 +292,9 @@ class TestCake(BaseCompileToolsTestCase):
         return timestamps
 
     def _verify_timestamps(self, expected_changes, prets, postts):
-        """ Pass in the list of files that are expected to have newer
-            timestamps, the pre compiling timestamps and the
-            post compiling timestamps
+        """Pass in the list of files that are expected to have newer
+        timestamps, the pre compiling timestamps and the
+        post compiling timestamps
         """
         import os
 
@@ -320,7 +312,7 @@ class TestCake(BaseCompileToolsTestCase):
             for ec in expected_changes:
                 # Handle both plain files and object files with hash-based names
                 # Object files now have format: basename_filehash_macrostatehash.o
-                if ec.endswith('.o'):
+                if ec.endswith(".o"):
                     # For object files, match basename prefix (e.g., "main.o" matches "main_*_*.o")
                     basename = ec[:-2]  # Remove ".o"
                     file_basename = os.path.basename(fname)
@@ -328,7 +320,7 @@ class TestCake(BaseCompileToolsTestCase):
                         expected_to_change = True
                         is_object_file = True
                         # Check if the corresponding source file also changed
-                        source_file_changed = basename + '.cpp' in expected_changes
+                        source_file_changed = basename + ".cpp" in expected_changes
                 elif fname.endswith(ec):
                     # For non-object files, use exact suffix match
                     expected_to_change = True
@@ -349,26 +341,28 @@ class TestCake(BaseCompileToolsTestCase):
             else:
                 # File not expected to change - verify timestamp is the same
                 print("verify " + fname)
-                assert round(abs(postts[fname]-prets[fname]), 7) == 0
+                assert round(abs(postts[fname] - prets[fname]), 7) == 0
 
         # For object files whose source file changed, verify a new one was created
         for ec in expected_changes:
-            if ec.endswith('.o'):
+            if ec.endswith(".o"):
                 basename = ec[:-2]
                 # Check for new object file if source OR object file changed
                 # (headers trigger new objects via dep_hash, sources via file_hash)
-                if basename + '.cpp' in expected_changes or ec in expected_changes:
+                if basename + ".cpp" in expected_changes or ec in expected_changes:
                     # Find new object files in postts that weren't in prets
-                    new_objs = [f for f in postts if f not in prets and
-                               os.path.basename(f).startswith(basename + "_") and
-                               os.path.basename(f).endswith(".o")]
+                    new_objs = [
+                        f
+                        for f in postts
+                        if f not in prets
+                        and os.path.basename(f).startswith(basename + "_")
+                        and os.path.basename(f).endswith(".o")
+                    ]
                     # At least one new object file should have been created for this source
                     assert len(new_objs) > 0, f"Expected new object file for {ec} but none found"
 
-    def _compile_edit_compile(
-        self, files_to_edit, expected_changes, deeper_is_included=False
-    ):
-        """ Test that the compile, edit, compile cycle works as you expect """
+    def _compile_edit_compile(self, files_to_edit, expected_changes, deeper_is_included=False):
+        """Test that the compile, edit, compile cycle works as you expect"""
         with uth.TempDirContext() as _:
             self._tmpdir = os.getcwd()
             self._create_recompile_test_files(deeper_is_included)
@@ -402,24 +396,22 @@ class TestCake(BaseCompileToolsTestCase):
 
     @uth.requires_functional_compiler
     def test_source_edit_recompiles(self):
-        """ Make sure that when the source file is altered that a rebuild occurs """
+        """Make sure that when the source file is altered that a rebuild occurs"""
         self._compile_edit_compile(["main.cpp"], ["main.cpp", "main.o", "main"])
 
     @uth.requires_functional_compiler
     def test_header_edit_recompiles(self):
-        """ Make sure that when a header file is altered that a rebuild occurs """
-        self._compile_edit_compile(
-            ["extra.hpp"], ["extra.hpp", "extra.o", "main.o", "main"]
-        )
+        """Make sure that when a header file is altered that a rebuild occurs"""
+        self._compile_edit_compile(["extra.hpp"], ["extra.hpp", "extra.o", "main.o", "main"])
 
     @uth.requires_functional_compiler
     def test_dependent_source_edit_recompiles(self):
-        """ Make sure that when an implied source file is altered that a rebuild occurs """
+        """Make sure that when an implied source file is altered that a rebuild occurs"""
         self._compile_edit_compile(["extra.cpp"], ["extra.cpp", "extra.o", "main"])
 
     @uth.requires_functional_compiler
     def test_deeper_include_edit_recompiles(self):
-        """ Make sure that when a deeper include file is put into extra.hpp that a rebuild occurs """
+        """Make sure that when a deeper include file is put into extra.hpp that a rebuild occurs"""
         self._compile_edit_compile(
             ["extra.hpp"],
             ["extra.hpp", "deeper.hpp", "deeper.o", "extra.o", "main.o", "main"],
@@ -428,5 +420,3 @@ class TestCake(BaseCompileToolsTestCase):
 
     def teardown_method(self):
         uth.reset()
-
-

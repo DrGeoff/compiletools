@@ -10,7 +10,7 @@
     #endif
     //#LDFLAGS=-loptimized_lib
 #else
-    #ifndef USE_SIMULATION_MODE  
+    #ifndef USE_SIMULATION_MODE
     //#LDFLAGS=-ldebug_lib
     #endif
     //#LDFLAGS=-lstandard_lib
@@ -21,4 +21,3 @@
 //#CPPFLAGS=-DCUSTOM_FEATURES=MyCustomFeature
 //#LDFLAGS=-lcustom_feature_lib
 #endif
-

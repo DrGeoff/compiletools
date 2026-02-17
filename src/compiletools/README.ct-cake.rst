@@ -37,31 +37,31 @@ determine what implementation (cpp) files are also required to be built and
 linked into the final executable/s. Use ``--no-auto`` to disable automatic
 target detection and specify files explicitly.
 
-ct-cake will make your life easy if you don't arbitrarily name things. 
+ct-cake will make your life easy if you don't arbitrarily name things.
 The main rules are:
 
-   * ct-cake only builds C and C++. Everything can be done just fine with 
-     other tools, so there's no point reinventing them. Anyway, it's easy to 
+   * ct-cake only builds C and C++. Everything can be done just fine with
+     other tools, so there's no point reinventing them. Anyway, it's easy to
      embed ct-cake into other toolchains, see the last section.
-   * All binaries end up in the bin directory, with the same base name as 
-     their source filename. You can override this at the command-line, but it's 
+   * All binaries end up in the bin directory, with the same base name as
+     their source filename. You can override this at the command-line, but it's
      against the spirit of the tool.
    * The implementation file for point.hpp should be called point.cpp. ct-cake
      supports common C/C++ extensions for headers (.h, .hpp, .hxx, .hh) and
      implementation files (.cpp, .cxx, .cc, .c). This naming convention allows
      ct-cake to compile files and recursively hunt down their dependencies.
-   * If a header or implementation file will not work without being linked 
+   * If a header or implementation file will not work without being linked
      with a certain flag, add a //#LDFLAGS=myflag directly to the source code.
    * Likewise, if a special compiler option is needed, use //#CXXFLAGS=myflag.
-   * Minimise the use of "-I" include flags. They make it hard not only for 
-     cake to generate dependencies, but also autocomplete tools like Eclipse  
-     and ctags. You can avoid -I flags by structuring your code in the same way 
-     you refer to paths in your source code. 
-   * Currently only varieties of Linux are actively supported because that's 
-     what the compiletools developers have easy access to. That said, it stands 
-     a good chance of working on \*BSD and macOS. We are interested in receiving 
+   * Minimise the use of "-I" include flags. They make it hard not only for
+     cake to generate dependencies, but also autocomplete tools like Eclipse
+     and ctags. You can avoid -I flags by structuring your code in the same way
+     you refer to paths in your source code.
+   * Currently only varieties of Linux are actively supported because that's
+     what the compiletools developers have easy access to. That said, it stands
+     a good chance of working on \*BSD and macOS. We are interested in receiving
      patches for other platforms including Windows.
-   
+
 ct-cake works off a "pull" philosophy of building, unlike the "push" model
 of most build processes. Often, there is the monolithic build script that
 rebuilds everything. Users iterate over changing a file, relinking everything
@@ -69,10 +69,10 @@ and then rerunning their binary. A hierarchy of libraries is built up and
 then linked in to the final executables. All of this takes a lot of time,
 particularly for C++.
 
-With ct-cake, you only pull in what is strictly necessary to what you need to 
+With ct-cake, you only pull in what is strictly necessary to what you need to
 run right now. Say, you are testing a particular tool in a large project, with
 a large base of 2000 library files for string handling, sockets, etc. There
-is simply no Makefile (This is actually a lie, there is a Makefile under the 
+is simply no Makefile (This is actually a lie, there is a Makefile under the
 hood). You might want to create a build.sh for regression
 testing, but it's not essential.
 
@@ -175,16 +175,16 @@ ct-cake --build-only-changed \"$changed_source\"``
 Configuration
 =============
 
-The compiletools programs require *almost* no configuration. However, it is 
+The compiletools programs require *almost* no configuration. However, it is
 still useful to have some shortcut build templates such as 'release',
 'profile' etc.
 
-Config files for the ct-* applications are programmatically located using 
+Config files for the ct-* applications are programmatically located using
 python-appdirs, which on linux is a wrapper around the XDG specification.  Thus
-default locations are /etc/xdg/ct/ and $HOME/.config/ct/.  Configuration parsing 
-is done using python-configargparse which automatically handles environment 
+default locations are /etc/xdg/ct/ and $HOME/.config/ct/.  Configuration parsing
+is done using python-configargparse which automatically handles environment
 variables, command line arguments, system configs
-and user configs.  
+and user configs.
 
 Specifically, the config files are searched for in the following locations (from
 lowest to highest priority):
@@ -200,9 +200,9 @@ lowest to highest priority):
     * environment variables
     * command line arguments
 
-The ct-* applications are aware of two levels of configs.  There is a base level 
-ct.conf that contains the basic variables that apply no  matter what variant 
-(i.e, debug/release/etc) is being built. 
+The ct-* applications are aware of two levels of configs.  There is a base level
+ct.conf that contains the basic variables that apply no  matter what variant
+(i.e, debug/release/etc) is being built.
 
 The second layer of config files are the variant configs that contain the
 details for the debug/release/etc.  The variant names are simply a config file
@@ -226,12 +226,12 @@ To use explicit compiler configs, either specify them directly
 If any config value is specified in more than one way then the following
 hierarchy is used
 
-* command line > environment variables > config file values > defaults 
+* command line > environment variables > config file values > defaults
 
-If you need to append values rather than replace values, this can be 
-done (currently only for environment variables) by specifying 
---variable-handling-method append 
-or equivalently add an environment variable 
+If you need to append values rather than replace values, this can be
+done (currently only for environment variables) by specifying
+--variable-handling-method append
+or equivalently add an environment variable
 VARIABLE_HANDLING_METHOD=append
 
 The example /etc/xdg/ct/gcc.release.conf file looks as follows:
@@ -247,23 +247,23 @@ The example /etc/xdg/ct/gcc.release.conf file looks as follows:
     LDFLAGS=-fPIC -Wall -Werror -Xlinker --build-id
     TESTPREFIX=timeout 300 valgrind --quiet --error-exitcode=1
 
-CXXFLAGS lists the flags appended to each compilation job. The value in 
+CXXFLAGS lists the flags appended to each compilation job. The value in
 /etc/xdg/ct/\*.conf
 is overridden by the environment variable, which is in return overridden by
-the command-line argument --CXXFLAGS=. Likewise, LDFLAGS sets the default 
+the command-line argument --CXXFLAGS=. Likewise, LDFLAGS sets the default
 options used for linking.
 
-TESTPREFIX specifies a command prefix to place in front of unit test runs. This 
-should ideally be a tool like valgrind, gdb or purify that can be configured 
+TESTPREFIX specifies a command prefix to place in front of unit test runs. This
+should ideally be a tool like valgrind, gdb or purify that can be configured
 to execute the app and return a non-zero exit code on any failure.
 
 
 Build variants
 ==============
-A variant is a configuration file that specifies various configurable settings 
-like the compiler and compiler flags. Common variants are "debug" and "release".  
-Build variants are used by specifying the variant name at the command-line as 
-follows: 
+A variant is a configuration file that specifies various configurable settings
+like the compiler and compiler flags. Common variants are "debug" and "release".
+Build variants are used by specifying the variant name at the command-line as
+follows:
 
     ``$ ct-cake --variant=release a.cpp``
 
@@ -278,14 +278,14 @@ then runs the unit tests. This automatic behavior happens when you run
 ``ct-cake`` without arguments (equivalent to ``ct-cake --auto``). To disable
 automatic test discovery and execution, use ``--no-auto``.
 
-If you would prefer to be explicity, ct-cake allows you to specify multiple 
+If you would prefer to be explicity, ct-cake allows you to specify multiple
 build targets on each line, so the following is valid and useful:
 
     ``$ ct-cake utilities/*.cpp  # builds specified apps into bin/``
 
 To explicitly specify build targets and unit tests to be generated and run
-use the following example.  Unit tests are built and when run must return 
-an exit code of 0 otherwise this will become a build failure. The flag used 
+use the following example.  Unit tests are built and when run must return
+an exit code of 0 otherwise this will become a build failure. The flag used
 to specify that executables are unit tests is --tests.
 
     ``$ ct-cake utilities/*.cpp --tests tests/*.cpp``
@@ -340,7 +340,7 @@ Putting it all together - a typical build setup
 ===============================================
 
 For most simple projects, a build.sh script that looks like the
-following is quite useful. You can simply add more cpp to the apps directory to 
+following is quite useful. You can simply add more cpp to the apps directory to
 generate more tools from the project,
 or add test scripts to the regression directory to improve
 test coverage.

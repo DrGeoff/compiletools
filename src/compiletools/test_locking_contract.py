@@ -7,11 +7,13 @@ to ensure that refactoring doesn't change observable behavior.
 These tests must pass both BEFORE and AFTER the refactor to lock_utils.py.
 """
 
-import pytest
-import tempfile
 import os
+import tempfile
 import time
 from unittest.mock import Mock
+
+import pytest
+
 import compiletools.locking
 
 
@@ -42,6 +44,7 @@ def temp_lockdir():
                 path = lockfile + ext
                 if os.path.isdir(path):
                     import shutil
+
                     shutil.rmtree(path)
                 elif os.path.exists(path):
                     os.unlink(path)
@@ -96,7 +99,7 @@ class TestLockdirLockContract:
 
         # Create lockdir with fake PID that doesn't exist
         os.makedirs(lock.lockdir)
-        with open(lock.pid_file, 'w') as f:
+        with open(lock.pid_file, "w") as f:
             f.write(f"{lock.hostname}:999999\n")
 
         is_stale = lock._is_lock_stale()
@@ -110,7 +113,7 @@ class TestLockdirLockContract:
 
         # Create lockdir with our own PID (guaranteed to exist)
         os.makedirs(lock.lockdir)
-        with open(lock.pid_file, 'w') as f:
+        with open(lock.pid_file, "w") as f:
             f.write(f"{lock.hostname}:{os.getpid()}\n")
 
         is_stale = lock._is_lock_stale()
@@ -124,7 +127,7 @@ class TestLockdirLockContract:
 
         # Create lockdir from different host
         os.makedirs(lock.lockdir)
-        with open(lock.pid_file, 'w') as f:
+        with open(lock.pid_file, "w") as f:
             f.write("remote-host:12345\n")
 
         is_stale = lock._is_lock_stale()
@@ -160,7 +163,7 @@ class TestLockdirLockContract:
 
         # Create fresh lockdir with malformed pid file
         os.makedirs(lock.lockdir)
-        with open(lock.pid_file, 'w') as f:
+        with open(lock.pid_file, "w") as f:
             f.write("invalid-no-colon\n")
 
         is_stale = lock._is_lock_stale()
@@ -183,7 +186,7 @@ class TestLockdirLockContract:
 
         # Create fresh lockdir with empty pid file
         os.makedirs(lock.lockdir)
-        with open(lock.pid_file, 'w') as f:
+        with open(lock.pid_file, "w") as f:
             f.write("")
 
         is_stale = lock._is_lock_stale()
@@ -217,12 +220,12 @@ class TestLockBehaviorContract:
         # Verify pid file exists and has correct format
         assert os.path.exists(lock.pid_file), "Expected pid file to exist"
 
-        with open(lock.pid_file, 'r') as f:
+        with open(lock.pid_file) as f:
             content = f.read().strip()
 
         # Contract: Format must be hostname:pid
-        assert ':' in content, f"Expected hostname:pid format, got: {content}"
-        hostname, pid = content.split(':', 1)
+        assert ":" in content, f"Expected hostname:pid format, got: {content}"
+        _hostname, pid = content.split(":", 1)
         assert int(pid) == os.getpid(), f"Expected our PID, got {pid}"
 
         lock.release()
@@ -245,7 +248,7 @@ class TestLockBehaviorContract:
 
         # Manually create stale lock
         os.makedirs(lock.lockdir)
-        with open(lock.pid_file, 'w') as f:
+        with open(lock.pid_file, "w") as f:
             f.write(f"{lock.hostname}:999999\n")  # Fake dead PID
 
         # Verify it's considered stale
@@ -255,9 +258,9 @@ class TestLockBehaviorContract:
         lock.acquire()
 
         # Verify new lock has our PID
-        with open(lock.pid_file, 'r') as f:
+        with open(lock.pid_file) as f:
             content = f.read().strip()
-        _, pid = content.split(':', 1)
+        _, pid = content.split(":", 1)
         assert int(pid) == os.getpid(), "Expected new lock with our PID"
 
         lock.release()

@@ -5,12 +5,11 @@ Performance comparison alternative to bash ct-lock-helper.
 Reuses tested locking.py implementation with identical algorithms.
 """
 
-import sys
-import os
 import argparse
-import subprocess
+import os
 import signal
-import tempfile
+import subprocess
+import sys
 from types import SimpleNamespace
 
 
@@ -44,12 +43,12 @@ def create_args_from_env():
     """Create args object from environment variables matching bash version."""
     return SimpleNamespace(
         shared_objects=True,
-        lock_warn_interval=int(os.getenv('CT_LOCK_WARN_INTERVAL', '30')),
-        lock_cross_host_timeout=int(os.getenv('CT_LOCK_TIMEOUT', '600')),
-        sleep_interval_lockdir=float(os.getenv('CT_LOCK_SLEEP_INTERVAL', '0.05')),
-        sleep_interval_cifs=float(os.getenv('CT_LOCK_SLEEP_INTERVAL_CIFS', '0.1')),
-        sleep_interval_flock_fallback=float(os.getenv('CT_LOCK_SLEEP_INTERVAL_FLOCK', '0.1')),
-        verbose=int(os.getenv('CT_LOCK_VERBOSE', '0'))
+        lock_warn_interval=int(os.getenv("CT_LOCK_WARN_INTERVAL", "30")),
+        lock_cross_host_timeout=int(os.getenv("CT_LOCK_TIMEOUT", "600")),
+        sleep_interval_lockdir=float(os.getenv("CT_LOCK_SLEEP_INTERVAL", "0.05")),
+        sleep_interval_cifs=float(os.getenv("CT_LOCK_SLEEP_INTERVAL_CIFS", "0.1")),
+        sleep_interval_flock_fallback=float(os.getenv("CT_LOCK_SLEEP_INTERVAL_FLOCK", "0.1")),
+        verbose=int(os.getenv("CT_LOCK_VERBOSE", "0")),
     )
 
 
@@ -65,13 +64,13 @@ def create_lock(strategy, target_file, args):
         Lock instance (LockdirLock, CIFSLock, or FlockLock)
     """
     # Import here to reduce startup overhead if --help is requested
-    from compiletools.locking import LockdirLock, CIFSLock, FlockLock
+    from compiletools.locking import CIFSLock, FlockLock, LockdirLock
 
-    if strategy == 'lockdir':
+    if strategy == "lockdir":
         return LockdirLock(target_file, args)
-    elif strategy == 'cifs':
+    elif strategy == "cifs":
         return CIFSLock(target_file, args)
-    elif strategy == 'flock':
+    elif strategy == "flock":
         return FlockLock(target_file, args)
     else:
         raise ValueError(f"Unknown strategy: {strategy}")
@@ -103,7 +102,7 @@ def execute_compile(lock, target, compile_cmd, exit_handler):
         exit_handler.acquired = True
 
         # Execute compilation to temp file
-        cmd = list(compile_cmd) + ['-o', tempfile_path]
+        cmd = list(compile_cmd) + ["-o", tempfile_path]
         subprocess.run(cmd, check=True)
 
         # Atomic move
@@ -159,33 +158,21 @@ def main(argv=None):
 
     # Parse arguments
     parser = argparse.ArgumentParser(
-        prog='ct-lock-helper-py',
-        description='File locking helper for concurrent builds (Python implementation)'
+        prog="ct-lock-helper-py", description="File locking helper for concurrent builds (Python implementation)"
     )
 
-    subparsers = parser.add_subparsers(dest='command', help='Command to execute')
+    subparsers = parser.add_subparsers(dest="command", help="Command to execute")
 
     # Compile subcommand
-    compile_parser = subparsers.add_parser(
-        'compile',
-        help='Compile with file locking'
-    )
+    compile_parser = subparsers.add_parser("compile", help="Compile with file locking")
+    compile_parser.add_argument("--target", required=True, help="Target output file (e.g., file.o)")
     compile_parser.add_argument(
-        '--target',
+        "--strategy",
         required=True,
-        help='Target output file (e.g., file.o)'
+        choices=["lockdir", "cifs", "flock"],
+        help="Lock strategy: lockdir (NFS/GPFS/Lustre), cifs (CIFS/SMB), flock (local)",
     )
-    compile_parser.add_argument(
-        '--strategy',
-        required=True,
-        choices=['lockdir', 'cifs', 'flock'],
-        help='Lock strategy: lockdir (NFS/GPFS/Lustre), cifs (CIFS/SMB), flock (local)'
-    )
-    compile_parser.add_argument(
-        'compile_cmd',
-        nargs='+',
-        help='Compile command and arguments'
-    )
+    compile_parser.add_argument("compile_cmd", nargs="+", help="Compile command and arguments")
 
     # Parse
     args = parser.parse_args(argv)
@@ -196,7 +183,7 @@ def main(argv=None):
 
     # Execute command
     try:
-        if args.command == 'compile':
+        if args.command == "compile":
             cmd_compile(args, exit_handler)
         return 0
     except subprocess.CalledProcessError as e:
@@ -207,5 +194,5 @@ def main(argv=None):
         return 125  # Helper internal error (matches bash)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

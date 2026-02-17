@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 import sys
-import compiletools.utils
-import compiletools.cake
+
 import compiletools.apptools
+import compiletools.cake
 import compiletools.configutils
+import compiletools.utils
 
 
 def main(argv=None):
@@ -31,6 +32,6 @@ if __name__ == "__main__":
         "Helper tool for examining how config files, command line "
         "arguments and environment variables are combined. "
         "Write the config to file with -w.",
-        include_write_config=True
+        include_write_config=True,
     )
     sys.exit(main())

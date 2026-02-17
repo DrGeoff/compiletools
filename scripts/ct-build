@@ -33,7 +33,4 @@ cmd="ct-create-makefile ${all} $@"
 echo $cmd
 eval $cmd
 
-make -j$(ct-jobs) 
-
-
-
+make -j$(ct-jobs)

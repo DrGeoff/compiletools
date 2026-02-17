@@ -2,7 +2,7 @@
 #include "module_b.h"
 #endif
 
-#ifdef FEATURE_C_ENABLED  
+#ifdef FEATURE_C_ENABLED
 #include "module_c.h"
 #endif
 

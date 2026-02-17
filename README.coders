@@ -1,29 +1,57 @@
-This file contains notes to coders who want to contribute to the project. 
-It is aspirational as the original author still breaks the guidelines.
+This file contains notes to coders who want to contribute to the project.
+
+#
+# Development Setup
+#
+# Install development dependencies
+uv pip install -e ".[dev]"
+
+# Install pre-commit hooks (required for all contributors)
+pre-commit install
 
 #
 # Code Style
 #
 The code must run under Python 3.9+
 
-Follow the PEP 8 style guide. Use modern Python tooling for formatting:
+Follow the PEP 8 style guide. Formatting and linting are enforced by ruff
+via pre-commit hooks. You can also run them manually:
 
 # Format code
-black src/compiletools/
-# or
 ruff format src/compiletools/
 
-# Lint code  
+# Lint code
 ruff check src/compiletools/
+
+# Auto-fix lint issues
+ruff check --fix src/compiletools/
+
+Ruff configuration is in pyproject.toml under [tool.ruff].
+
+#
+# Pre-commit Hooks
+#
+Pre-commit hooks run automatically on every commit. They enforce:
+
+- Code formatting (ruff format)
+- Linting (ruff check)
+- Trailing whitespace removal
+- YAML/TOML validation
+- Merge conflict detection
+- Secret detection (detect-secrets)
+
+To run all hooks against the entire codebase:
+
+pre-commit run --all-files
+
+To skip hooks for a specific commit (not recommended):
+
+git commit --no-verify
 
 #
 # Running tests
 #
-The project uses pytest as its testing framework. First install development dependencies:
-
-uv pip install -e ".[dev]"
-
-Then run tests:
+The project uses pytest as its testing framework:
 
 # Run all tests
 pytest src/compiletools
@@ -71,12 +99,6 @@ ct-*                  - Command-line entry points
 pyproject.toml        - Modern Python packaging configuration
 
 #
-# Development Setup
-#
-# Install development dependencies
-uv pip install -e ".[dev]"
-
-#
 # Worktree-Based Development
 #
 The repository uses a worktree layout: the `master` directory is the main
@@ -100,5 +122,3 @@ worktrees as siblings (e.g., compiletools/profile_worktree_master/).
 # Making a release
 #
 The ct-release script automates the release process.  Read that script if you want to do each step manually.
-
-

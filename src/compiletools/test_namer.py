@@ -1,15 +1,17 @@
 import os
 import tempfile
+
 import configargparse
-import compiletools.testhelper as uth
-import compiletools.namer
-import compiletools.configutils
+
 import compiletools.apptools
+import compiletools.configutils
+import compiletools.namer
+import compiletools.testhelper as uth
 
 
 def test_executable_pathname():
     uth.reset()
-    
+
     try:
         config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
         config_files = [os.path.join(config_dir, "gcc.debug.conf")]
@@ -43,20 +45,20 @@ def test_object_name_with_dependencies():
 
     try:
         # Create temp source file
-        src_fd, src_file = tempfile.mkstemp(suffix='.cpp')
+        src_fd, src_file = tempfile.mkstemp(suffix=".cpp")
         os.write(src_fd, b"int main() { return 0; }")
         os.close(src_fd)
 
         # Create temp header files
-        h1_fd, h1_file = tempfile.mkstemp(suffix='.h')
+        h1_fd, h1_file = tempfile.mkstemp(suffix=".h")
         os.write(h1_fd, b"#define FOO 1")
         os.close(h1_fd)
 
-        h2_fd, h2_file = tempfile.mkstemp(suffix='.h')
+        h2_fd, h2_file = tempfile.mkstemp(suffix=".h")
         os.write(h2_fd, b"#define BAR 2")
         os.close(h2_fd)
 
-        h3_fd, h3_file = tempfile.mkstemp(suffix='.h')
+        h3_fd, h3_file = tempfile.mkstemp(suffix=".h")
         os.write(h3_fd, b"#define BAZ 3")
         os.close(h3_fd)
 
@@ -92,7 +94,7 @@ def test_object_name_with_dependencies():
 
         # Verify format: basename_12chars_14chars_16chars.o
         # Note: basename might contain underscores, so we match from the end
-        assert obj2.endswith('.o'), f"Object should end with .o: {obj2}"
+        assert obj2.endswith(".o"), f"Object should end with .o: {obj2}"
         obj_without_ext = obj2[:-2]  # Remove .o
 
         # Split and find the hashes by their known lengths from the end
@@ -101,12 +103,12 @@ def test_object_name_with_dependencies():
         # Previous 14 chars is dep hash
         # Previous 12 chars is file hash
         # Everything before is basename (may contain underscores)
-        assert len(obj_without_ext) >= 1+12+1+14+1+16, f"Object name too short: {obj2}"
+        assert len(obj_without_ext) >= 1 + 12 + 1 + 14 + 1 + 16, f"Object name too short: {obj2}"
 
         # Extract from right to left
         macro_hash = obj_without_ext[-16:]
-        dep_hash_extracted = obj_without_ext[-17-14:-17]
-        file_hash_extracted = obj_without_ext[-18-14-12:-18-14]
+        dep_hash_extracted = obj_without_ext[-17 - 14 : -17]
+        file_hash_extracted = obj_without_ext[-18 - 14 - 12 : -18 - 14]
 
         assert len(file_hash_extracted) == 12, f"file hash should be 12 chars: {file_hash_extracted}"
         assert len(dep_hash_extracted) == 14, f"dep hash should be 14 chars (MIDDLE): {dep_hash_extracted}"
@@ -141,11 +143,11 @@ def test_dep_hash_xor_properties():
 
     try:
         # Create test files
-        h1_fd, h1_file = tempfile.mkstemp(suffix='.h')
+        h1_fd, h1_file = tempfile.mkstemp(suffix=".h")
         os.write(h1_fd, b"#define FOO 1")
         os.close(h1_fd)
 
-        h2_fd, h2_file = tempfile.mkstemp(suffix='.h')
+        h2_fd, h2_file = tempfile.mkstemp(suffix=".h")
         os.write(h2_fd, b"#define BAR 2")
         os.close(h2_fd)
 
@@ -176,12 +178,12 @@ def test_dep_hash_xor_properties():
         assert hash_single == hash_dup, "Duplicates should be removed before XOR"
 
         # Test 3: Non-zero for real files
-        assert hash_single != '00000000000000', "Hash of real file should not be zero"
-        assert hash_ab != '00000000000000', "Hash of multiple files should not be zero"
+        assert hash_single != "00000000000000", "Hash of real file should not be zero"
+        assert hash_ab != "00000000000000", "Hash of multiple files should not be zero"
 
         # Test 4: XOR identity with empty list
         hash_empty = namer.compute_dep_hash([])
-        assert hash_empty == '00000000000000', "Empty dependency list should give zero hash"
+        assert hash_empty == "00000000000000", "Empty dependency list should give zero hash"
 
         # Test 5: Hash is valid hex
         assert len(hash_ab) == 14, "Hash should be 14 characters"
@@ -207,7 +209,7 @@ def test_dep_hash_handles_missing_generated_headers():
 
     try:
         # Create real header
-        h1_fd, h1_file = tempfile.mkstemp(suffix='.h')
+        h1_fd, h1_file = tempfile.mkstemp(suffix=".h")
         os.write(h1_fd, b"#define REAL 1")
         os.close(h1_fd)
 
@@ -229,35 +231,36 @@ def test_dep_hash_handles_missing_generated_headers():
 
         # Create temp directory for "generated" file
         tmpdir = tempfile.mkdtemp()
-        missing_gen = os.path.join(tmpdir, 'generated.h')
+        missing_gen = os.path.join(tmpdir, "generated.h")
 
         # Test: Mix real and missing files - should not raise FileNotFoundError
         deps_with_missing = [h1_file, missing_gen]
         hash_before = namer.compute_dep_hash(deps_with_missing)
 
         assert len(hash_before) == 14, "Should return valid hash despite missing file"
-        assert hash_before != '00000000000000', "Hash should include real file"
+        assert hash_before != "00000000000000", "Hash should include real file"
 
         # When generated file appears, hash should change
-        with open(missing_gen, 'w') as f:
-            f.write('#define GENERATED 1')
+        with open(missing_gen, "w") as f:
+            f.write("#define GENERATED 1")
 
         hash_after = namer.compute_dep_hash([h1_file, missing_gen])
         assert hash_before != hash_after, "Hash must change when generated file appears"
 
         # Verify both hashes are valid
         assert len(hash_after) == 14, "Hash after generation should be valid"
-        assert hash_after != '00000000000000', "Hash should not be zero"
+        assert hash_after != "00000000000000", "Hash should not be zero"
 
         # Test with only missing files
-        missing_only = [missing_gen + '_nonexistent']
+        missing_only = [missing_gen + "_nonexistent"]
         hash_missing_only = namer.compute_dep_hash(missing_only)
-        assert hash_missing_only == '00000000000000', "Hash of only missing files should be zero"
+        assert hash_missing_only == "00000000000000", "Hash of only missing files should be zero"
 
     finally:
         if h1_file and os.path.exists(h1_file):
             os.unlink(h1_file)
         if tmpdir:
             import shutil
+
             shutil.rmtree(tmpdir, ignore_errors=True)
         uth.reset()

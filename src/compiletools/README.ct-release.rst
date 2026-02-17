@@ -75,4 +75,3 @@ Force a minor release using a non-standard repo location::
 SEE ALSO
 ========
 ``bump-my-version`` (1), ``uv`` (1), ``README.coders`` (development workflow guide)
-

@@ -2,9 +2,9 @@
 #include <exception>
 #include <iostream>
 // #include "red_herring_cpp_style.hpp" This is here to verify that header deps does NOT include commented out files
-/* #include "red_herring_c_style.hpp" 
+/* #include "red_herring_c_style.hpp"
 This is here to verify that header deps does NOT include commented out files
-#include "red_herring_c_style_2.hpp" 
+#include "red_herring_c_style_2.hpp"
  */
 
 int main(int argc, char* argv[])

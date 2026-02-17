@@ -28,7 +28,7 @@ ct-magicflags [-h] [-c CONFIG_FILE] [--headerdeps {direct,cpp}]
 DESCRIPTION
 ===========
 ct-magicflags extracts the magic flags/magic comments from a given file.
-It is mostly used for debugging purposes so that you can see what the 
+It is mostly used for debugging purposes so that you can see what the
 other compiletools will be using as the magic flags.  A magic flag /
 magic comment is simply a C++ style comment that provides information
 required to complete the build process.
@@ -44,7 +44,7 @@ applications add the following comment in the file that includes:
 
     //#LDFLAGS=-lzip
 
-For easy maintainence, it is convenient to put the magic flag directly after 
+For easy maintainence, it is convenient to put the magic flag directly after
 the include:
 
 .. code-block:: cpp
@@ -52,9 +52,9 @@ the include:
     #include <zip.h>
     //#LDFLAGS=-lzip
 
-Whenever "compress.hpp" is included (either directly or indirectly), the 
-"-lzip" will be automatically added to the link step. If you stop using the 
-header, for a particular executable, compiletools will figure that out and 
+Whenever "compress.hpp" is included (either directly or indirectly), the
+"-lzip" will be automatically added to the link step. If you stop using the
+header, for a particular executable, compiletools will figure that out and
 stop linking against libzip.
 
 If you want to compile a cpp file with a particular optimization enabled you
@@ -62,7 +62,7 @@ would add something like:
 
 .. code-block:: cpp
 
-    //#CXXFLAGS=-fstrict-aliasing 
+    //#CXXFLAGS=-fstrict-aliasing
 
 Because the code and build flags are defined so close to each other, it is
 much easier to tweak the compilation locally and allow for easier maintainence.
@@ -114,7 +114,7 @@ The known magic flags are::
     ===========  ==============================================================
 
 **Note:** Magic flags with arbitrary keys (not listed above) are also accepted
-and will be passed through to the output. This will allow for project-specific 
+and will be passed through to the output. This will allow for project-specific
 extensions in the future.
 
 IMPORTANT: Library Linking
@@ -149,8 +149,8 @@ flag, or as an absolute path if specified.
 EXAMPLES
 ========
 
-* ct-magicflags main.cpp 
-* ct-magicflags --variant=release main.cpp 
+* ct-magicflags main.cpp
+* ct-magicflags --variant=release main.cpp
 
 SEE ALSO
 ========

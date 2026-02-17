@@ -1,8 +1,9 @@
-import sys
-import os
 import ast
+import os
+import sys
+from functools import cache
+
 import appdirs
-from functools import lru_cache
 
 # Work around an incompatibility between configargparse 0.10 and 0.11
 try:
@@ -10,14 +11,14 @@ try:
 except ImportError:
     from configargparse import ConfigFileParser as CfgFileParser
 
-import compiletools.wrappedos
-import compiletools.utils
 import compiletools.git_utils
+import compiletools.utils
+import compiletools.wrappedos
 
 
 def extract_value_from_argv(key, argv=None, default=None, verbose=0):
-    """ Extract the value for the given key from the argv.
-        Return the given default if no key was identified
+    """Extract the value for the given key from the argv.
+    Return the given default if no key was identified
     """
     if argv is None:
         argv = sys.argv
@@ -57,8 +58,8 @@ def extract_item_from_ct_conf(
     verbose=0,
     gitroot=None,
 ):
-    """ Extract the value for the given key from the ct.conf files.
-        Return the given default if no key was identified
+    """Extract the value for the given key from the ct.conf files.
+    Return the given default if no key was identified
     """
     fileparser = CfgFileParser()
     for cfgpath in reversed(
@@ -100,7 +101,7 @@ def extractconfig(argv):
 
 
 def impliedvariant(argv):
-    """ If the user specified a config directly then we imply the variant name """
+    """If the user specified a config directly then we imply the variant name"""
     config = extractconfig(argv)
 
     if config:
@@ -109,16 +110,14 @@ def impliedvariant(argv):
         return None
 
 
-def extract_variant(
-    argv=None, user_config_dir=None, system_config_dir=None, exedir=None, verbose=0, gitroot=None
-):
-    """ The variant argument is parsed directly from the command line arguments
-        so that it can be used to specify the default config for configargparse.
-        The ct.conf files are also checked.
-        Remember that the hierarchy of values is
-        command line > environment variables > config file values > defaults
-        If the user specified a config directly (rather than a variant) then
-        return the implied variant.
+def extract_variant(argv=None, user_config_dir=None, system_config_dir=None, exedir=None, verbose=0, gitroot=None):
+    """The variant argument is parsed directly from the command line arguments
+    so that it can be used to specify the default config for configargparse.
+    The ct.conf files are also checked.
+    Remember that the hierarchy of values is
+    command line > environment variables > config file values > defaults
+    If the user specified a config directly (rather than a variant) then
+    return the implied variant.
     """
     if argv is None:
         argv = sys.argv
@@ -157,7 +156,7 @@ def extract_variant(
         gitroot=gitroot,
     )
     try:
-        variant = os.environ["variant"]
+        variant = os.environ["VARIANT"]
     except KeyError:
         pass
     variant = extract_value_from_argv(key="variant", argv=argv, default=variant)
@@ -173,7 +172,7 @@ def extract_variant(
     return result
 
 
-@lru_cache(maxsize=None)
+@cache
 def default_config_directories(
     user_config_dir=None, system_config_dir=None, exedir=None, repoonly=False, verbose=0, gitroot=None, current_dir=None
 ):
@@ -218,12 +217,12 @@ def default_config_directories(
     if gitroot is None:
         gitroot = compiletools.git_utils.find_git_root()
     results = [current_dir, gitroot]
-    
+
     # Add config directories that actually exist
     project_config_dir = os.path.join(gitroot, "ct.conf.d")
     if compiletools.wrappedos.isdir(project_config_dir):
         results.append(project_config_dir)
-    
+
     repo_config_dir = os.path.join(gitroot, "src", "compiletools", "ct.conf.d")
     if compiletools.wrappedos.isdir(repo_config_dir):
         results.append(repo_config_dir)
@@ -239,21 +238,18 @@ def default_config_directories(
 def get_existing_config_files(filename="ct.conf", **kwargs):
     """Get list of existing config files in standard directories"""
     # Always resolve current_dir explicitly for proper caching
-    if 'current_dir' not in kwargs or kwargs['current_dir'] is None:
-        kwargs['current_dir'] = os.getcwd()
+    if "current_dir" not in kwargs or kwargs["current_dir"] is None:
+        kwargs["current_dir"] = os.getcwd()
     directories = default_config_directories(**kwargs)
-    
-    configs = [
-        os.path.join(directory, filename) 
-        for directory in reversed(directories)
-    ]
-    
+
+    configs = [os.path.join(directory, filename) for directory in reversed(directories)]
+
     # Only return files that actually exist
     existing_configs = [cfg for cfg in configs if compiletools.wrappedos.isfile(cfg)]
-    
-    if kwargs.get('verbose', 0) >= 8:
+
+    if kwargs.get("verbose", 0) >= 8:
         print(" ".join(["Existing config files:"] + existing_configs))
-    
+
     return existing_configs
 
 
@@ -307,16 +303,14 @@ def config_files_from_variant(
                         exedir=exedir,
                         verbose=verbose,
                         gitroot=gitroot,
-                        current_dir=os.getcwd()
+                        current_dir=os.getcwd(),
                     )
                 )
             ]
 
     # Check that a config file exists for the specified variant
     if not any([compiletools.wrappedos.isfile(cfg) for cfg in variantconfigs]):
-        sys.stderr.write(
-            " ".join(["Could not find a config file for variant =", variant, "\n"])
-        )
+        sys.stderr.write(" ".join(["Could not find a config file for variant =", variant, "\n"]))
         sys.stderr.write("\n".join(["Checked for "] + variantconfigs))
         sys.exit(1)
 
@@ -327,9 +321,7 @@ def config_files_from_variant(
         print(configs)
 
     # Make sure that if the user specified a variant then that a config file for the variant exists
-    if variant is not None and not any(
-        cfg.endswith(variant + ".conf") for cfg in configs
-    ):
+    if variant is not None and not any(cfg.endswith(variant + ".conf") for cfg in configs):
         sys.stderr.write(
             " ".join(
                 [

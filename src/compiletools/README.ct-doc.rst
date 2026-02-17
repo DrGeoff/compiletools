@@ -152,7 +152,7 @@ For details on configuration hierarchy, file format, and variant system, see ct-
 ATTRIBUTION
 ===========
 This project is derived from the original compiletools developed at Zomojo Pty Ltd
-(between 2011-2019). Zomojo ceased operations in February 2020. This repository 
+(between 2011-2019). Zomojo ceased operations in February 2020. This repository
 continues the development and maintenance of the compiletools project.
 
 SEE ALSO

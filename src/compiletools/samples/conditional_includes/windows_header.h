@@ -1,2 +1,2 @@
-// Windows-specific header  
+// Windows-specific header
 void windows_function(void);

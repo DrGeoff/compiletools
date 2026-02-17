@@ -1,9 +1,10 @@
 import subprocess
 import sys
+
 import compiletools.utils
 
 
-class PreProcessor(object):
+class PreProcessor:
     """Make it easy to call the C Pre Processor"""
 
     def __init__(self, args):
@@ -34,15 +35,13 @@ class PreProcessor(object):
                 print(output)
         except OSError as err:
             print(
-                "Failed to preprocess {0}. Error={1}".format(realpath, err),
+                f"Failed to preprocess {realpath}. Error={err}",
                 file=sys.stderr,
             )
             raise err
         except subprocess.CalledProcessError as err:
             print(
-                "Preprocessing failed for {0}. Return code={1}, Output={2}".format(
-                    realpath, err.returncode, err.output
-                ),
+                f"Preprocessing failed for {realpath}. Return code={err.returncode}, Output={err.output}",
                 file=sys.stderr,
             )
             raise err

@@ -4,13 +4,14 @@ These tests verify that ct-lock-helper implements the same locking algorithms
 as locking.py, covering all three strategies (lockdir, cifs, flock).
 """
 
-import pytest
+import os
+import shutil
+import socket
 import subprocess
 import tempfile
 import time
-import os
-import socket
-import shutil
+
+import pytest
 
 
 @pytest.fixture
@@ -55,15 +56,18 @@ class TestLockHelperBasic:
             # Run ct-lock-helper
             result = subprocess.run(
                 [
-                    "ct-lock-helper", "compile",
+                    "ct-lock-helper",
+                    "compile",
                     f"--target={temp_target}",
                     f"--strategy={strategy}",
                     "--",
-                    "gcc", "-c", source
+                    "gcc",
+                    "-c",
+                    source,
                 ],
                 capture_output=True,
                 text=True,
-                timeout=5
+                timeout=5,
             )
 
             # Verify success
@@ -91,15 +95,18 @@ class TestLockHelperBasic:
         try:
             result = subprocess.run(
                 [
-                    "ct-lock-helper", "compile",
+                    "ct-lock-helper",
+                    "compile",
                     f"--target={temp_target}",
                     f"--strategy={strategy}",
                     "--",
-                    "gcc", "-c", source
+                    "gcc",
+                    "-c",
+                    source,
                 ],
                 capture_output=True,
                 text=True,
-                timeout=5
+                timeout=5,
             )
 
             # Verify failure
@@ -134,21 +141,15 @@ class TestLockdirStrategy:
         #  Create wrapper script that sleeps then compiles
         wrapper = temp_target.replace(".o", "_compile.sh")
         with open(wrapper, "w") as f:
-            f.write(f"#!/bin/bash\nsleep 0.5\nexec gcc -c {source} \"$@\"\n")
+            f.write(f'#!/bin/bash\nsleep 0.5\nexec gcc -c {source} "$@"\n')
         os.chmod(wrapper, 0o755)
 
         try:
             # Run in background so we can inspect lock state
             proc = subprocess.Popen(
-                [
-                    "ct-lock-helper", "compile",
-                    f"--target={temp_target}",
-                    "--strategy=lockdir",
-                    "--",
-                    wrapper
-                ],
+                ["ct-lock-helper", "compile", f"--target={temp_target}", "--strategy=lockdir", "--", wrapper],
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.PIPE,
             )
 
             # Wait for lock to be acquired (polling with timeout)
@@ -163,7 +164,7 @@ class TestLockdirStrategy:
             assert os.path.exists(pid_file), "PID file not created"
 
             # Verify pid file format: hostname:pid
-            with open(pid_file, "r") as f:
+            with open(pid_file) as f:
                 content = f.read().strip()
                 assert ":" in content, "PID file format incorrect"
                 hostname, pid = content.split(":", 1)
@@ -211,16 +212,19 @@ class TestLockdirStrategy:
 
             result = subprocess.run(
                 [
-                    "ct-lock-helper", "compile",
+                    "ct-lock-helper",
+                    "compile",
                     f"--target={temp_target}",
                     "--strategy=lockdir",
                     "--",
-                    "gcc", "-c", source
+                    "gcc",
+                    "-c",
+                    source,
                 ],
                 capture_output=True,
                 text=True,
                 timeout=5,
-                env=env
+                env=env,
             )
 
             assert result.returncode == 0, f"Should remove stale lock: {result.stderr}"
@@ -258,16 +262,19 @@ class TestLockdirStrategy:
 
             proc = subprocess.Popen(
                 [
-                    "ct-lock-helper", "compile",
+                    "ct-lock-helper",
+                    "compile",
                     f"--target={temp_target}",
                     "--strategy=lockdir",
                     "--",
-                    "gcc", "-c", source
+                    "gcc",
+                    "-c",
+                    source,
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                env=env
+                env=env,
             )
 
             # Wait a bit to see if it waits for lock
@@ -298,21 +305,15 @@ class TestLockdirStrategy:
         # Create wrapper script that accepts -o argument
         wrapper = temp_target.replace(".o", "_compile.sh")
         with open(wrapper, "w") as f:
-            f.write(f"#!/bin/bash\nsleep 0.5\nexec gcc -c {source} \"$@\"\n")
+            f.write(f'#!/bin/bash\nsleep 0.5\nexec gcc -c {source} "$@"\n')
         os.chmod(wrapper, 0o755)
 
         try:
             # Run in background
             proc = subprocess.Popen(
-                [
-                    "ct-lock-helper", "compile",
-                    f"--target={temp_target}",
-                    "--strategy=lockdir",
-                    "--",
-                    wrapper
-                ],
+                ["ct-lock-helper", "compile", f"--target={temp_target}", "--strategy=lockdir", "--", wrapper],
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.PIPE,
             )
 
             # Wait for lock
@@ -358,15 +359,18 @@ class TestEnvironmentVariables:
             # This will wait since lock is held by us (appears active)
             proc = subprocess.Popen(
                 [
-                    "ct-lock-helper", "compile",
+                    "ct-lock-helper",
+                    "compile",
                     f"--target={temp_target}",
                     "--strategy=lockdir",
                     "--",
-                    "gcc", "-c", source
+                    "gcc",
+                    "-c",
+                    source,
                 ],
                 env=env,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.PIPE,
             )
 
             # Short sleep - it should be waiting
@@ -396,8 +400,8 @@ class TestConcurrentAccess:
         try:
             # Run two compilations sequentially with locking
             # If locking works, the second should wait for the first
-            import threading
             import queue
+            import threading
 
             results_queue = queue.Queue()
             start_times = {}
@@ -406,7 +410,7 @@ class TestConcurrentAccess:
             # Create wrapper script with delay
             wrapper = temp_target.replace(".o", "_compile.sh")
             with open(wrapper, "w") as f:
-                f.write(f"#!/bin/bash\nsleep 0.3\nexec gcc -c {source} \"$@\"\n")
+                f.write(f'#!/bin/bash\nsleep 0.3\nexec gcc -c {source} "$@"\n')
             os.chmod(wrapper, 0o755)
 
             def run_compile(proc_id):
@@ -414,15 +418,9 @@ class TestConcurrentAccess:
                 start_times[proc_id] = start
 
                 result = subprocess.run(
-                    [
-                        "ct-lock-helper", "compile",
-                        f"--target={temp_target}",
-                        f"--strategy={strategy}",
-                        "--",
-                        wrapper
-                    ],
+                    ["ct-lock-helper", "compile", f"--target={temp_target}", f"--strategy={strategy}", "--", wrapper],
                     capture_output=True,
-                    timeout=10
+                    timeout=10,
                 )
 
                 end = time.time()
@@ -447,7 +445,7 @@ class TestConcurrentAccess:
 
             # Both should succeed
             assert len(results) == 2, "Should have 2 results"
-            for proc_id, returncode, duration in results:
+            for proc_id, returncode, _duration in results:
                 assert returncode == 0, f"Process {proc_id} should succeed"
 
             # Check for serial execution: second process should start after first ends
@@ -472,7 +470,7 @@ class TestErrorHandling:
         result = subprocess.run(
             ["ct-lock-helper", "compile", "--strategy=lockdir", "--", "gcc", "-c", "foo.c"],
             capture_output=True,
-            text=True
+            text=True,
         )
         assert result.returncode != 0
         assert "target is required" in result.stderr.lower()
@@ -480,9 +478,7 @@ class TestErrorHandling:
     def test_missing_strategy_argument(self):
         """Test that missing --strategy produces error."""
         result = subprocess.run(
-            ["ct-lock-helper", "compile", "--target=foo.o", "--", "gcc", "-c", "foo.c"],
-            capture_output=True,
-            text=True
+            ["ct-lock-helper", "compile", "--target=foo.o", "--", "gcc", "-c", "foo.c"], capture_output=True, text=True
         )
         assert result.returncode != 0
         assert "strategy is required" in result.stderr.lower()
@@ -492,7 +488,7 @@ class TestErrorHandling:
         result = subprocess.run(
             ["ct-lock-helper", "compile", "--target=foo.o", "--strategy=invalid", "--", "gcc"],
             capture_output=True,
-            text=True
+            text=True,
         )
         assert result.returncode != 0
         assert "invalid" in result.stderr.lower()
@@ -500,20 +496,14 @@ class TestErrorHandling:
     def test_missing_compile_command(self):
         """Test that missing command after -- produces error."""
         result = subprocess.run(
-            ["ct-lock-helper", "compile", "--target=foo.o", "--strategy=lockdir", "--"],
-            capture_output=True,
-            text=True
+            ["ct-lock-helper", "compile", "--target=foo.o", "--strategy=lockdir", "--"], capture_output=True, text=True
         )
         assert result.returncode != 0
         assert "required" in result.stderr.lower()
 
     def test_help_command(self):
         """Test that help command works."""
-        result = subprocess.run(
-            ["ct-lock-helper", "help"],
-            capture_output=True,
-            text=True
-        )
+        result = subprocess.run(["ct-lock-helper", "help"], capture_output=True, text=True)
         assert result.returncode == 0
         assert "Usage:" in result.stdout
         assert "lockdir" in result.stdout

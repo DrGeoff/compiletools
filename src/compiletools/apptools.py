@@ -1,21 +1,22 @@
-import sys
-import os
-import subprocess
 import argparse
-import shlex
-import tempfile
 import functools
+import os
+import shlex
+import subprocess
+import sys
+import tempfile
 import textwrap
 import warnings
 
 # Only used for the verbose print.
 import configargparse
 
-from compiletools.version import __version__
-import compiletools.git_utils
 import compiletools.configutils
+import compiletools.git_utils
 import compiletools.utils
 from compiletools.utils import split_command_cached
+from compiletools.version import __version__
+
 try:
     from rich_rst import RestructuredText
 
@@ -28,8 +29,9 @@ except ModuleNotFoundError:
     )
 
 if rich_rst_available and sys.version_info.major == 3 and sys.version_info.minor >= 9:
-    import rich
     import inspect
+
+    import rich
 
     class DocumentationAction(argparse.BooleanOptionalAction):
         def __init__(self, option_strings, dest):
@@ -46,7 +48,7 @@ if rich_rst_available and sys.version_info.major == 3 and sys.version_info.minor
                 this_dir = os.path.dirname(os.path.abspath(inspect.getsourcefile(lambda: 0)))
                 doc_filename = os.path.join(this_dir, f"README.{parser.prog}.rst")
                 try:
-                    with open(doc_filename, "r") as docfile:
+                    with open(doc_filename) as docfile:
                         text = docfile.read()
                         rich.print(RestructuredText(text))
                 except FileNotFoundError:
@@ -56,7 +58,10 @@ if rich_rst_available and sys.version_info.major == 3 and sys.version_info.minor
 
 
 def add_base_arguments(cap, argv=None, variant=None):
-    """All compiletools applications MUST call this function.  Note that it is usually called indirectly from add_common_arguments."""
+    """All compiletools applications MUST call this function.
+
+    Note that it is usually called indirectly from add_common_arguments.
+    """
     # Even though the variant is actually sucked out of the command line by
     # parsing the sys.argv directly, we put it into the configargparse to get
     # the help.
@@ -65,7 +70,7 @@ def add_base_arguments(cap, argv=None, variant=None):
 
     cap.add(
         "--variant",
-        help="Specifies which variant of the config should be used. " "Use the config name without the .conf",
+        help="Specifies which variant of the config should be used. Use the config name without the .conf",
         default=variant,
     )
     cap.add(
@@ -128,7 +133,8 @@ def add_common_arguments(cap, argv=None, variant=None):
     cap.add(
         "--variable-handling-method",
         dest="variable_handling_method",
-        help="Does specifying --<someflag> (say CXXFLAGS) mean override existing flags or append to the existing? Choices are override or append.",
+        help="Does specifying --<someflag> (say CXXFLAGS) mean override existing flags "
+        "or append to the existing? Choices are override or append.",
         default="override",
     )
     cap.add(
@@ -327,7 +333,6 @@ def _extend_includes_using_git_root(args):
     if args.git_root and (
         hasattr(args, "filename") or hasattr(args, "static") or hasattr(args, "dynamic") or hasattr(args, "tests")
     ):
-
         if args.verbose > 8:
             print("Extending the include paths to have the git root")
 
@@ -383,51 +388,51 @@ def _add_include_paths_to_flags(args):
 
 def extract_system_include_paths(args, flag_sources=None, verbose=0):
     """Extract -I and -isystem include paths from command-line flags.
-    
+
     Args:
         args: Parsed arguments object with flag attributes (CPPFLAGS, CFLAGS, CXXFLAGS)
         flag_sources: List of flag names to extract from (default: ['CPPFLAGS', 'CXXFLAGS'])
         verbose: Verbosity level for debugging
-        
+
     Returns:
         List of unique include paths in order
     """
     if flag_sources is None:
-        flag_sources = ['CPPFLAGS', 'CXXFLAGS']
-    
+        flag_sources = ["CPPFLAGS", "CXXFLAGS"]
+
     include_paths = []
-    
+
     for flag_name in flag_sources:
-        flag_value = getattr(args, flag_name, '')
+        flag_value = getattr(args, flag_name, "")
         if not flag_value:
             continue
-            
+
         # Use existing shlex functionality from split_command_cached
         try:
             tokens = split_command_cached(flag_value)
         except ValueError:
             # Fall back to simple split if shlex fails
             tokens = flag_value.split()
-        
+
         # Process tokens to find -I and -isystem flags
         i = 0
         while i < len(tokens):
             token = tokens[i]
-            
-            if token == '-I' or token == '-isystem':
+
+            if token == "-I" or token == "-isystem":
                 # Next token should be the path
                 if i + 1 < len(tokens):
                     include_paths.append(tokens[i + 1])
                     i += 2
                 else:
                     i += 1
-            elif token.startswith('-I'):
+            elif token.startswith("-I"):
                 # -Ipath format
                 path = token[2:]
                 if path:  # Make sure it's not just "-I"
                     include_paths.append(path)
                 i += 1
-            elif token.startswith('-isystem'):
+            elif token.startswith("-isystem"):
                 # -isystempath format (though this is unusual)
                 path = token[8:]
                 if path:  # Make sure it's not just "-isystem"
@@ -435,99 +440,100 @@ def extract_system_include_paths(args, flag_sources=None, verbose=0):
                 i += 1
             else:
                 i += 1
-    
+
     # Remove duplicates while preserving order using existing ordered_unique
     include_paths = compiletools.utils.ordered_unique(include_paths)
-    
+
     if verbose >= 9 and include_paths:
         print(f"Extracted system include paths: {include_paths}")
-        
+
     return include_paths
 
 
 def find_system_header(header_name, args, verbose=0):
     """Find a system header in the -I/-isystem include paths.
-    
+
     Args:
         header_name: Name of header to find (e.g., "stdio.h", "mylib/header.h")
         args: Parsed arguments object with flag attributes
         verbose: Verbosity level for debugging
-        
+
     Returns:
         Absolute path to header if found, None otherwise
     """
     include_paths = extract_system_include_paths(args, verbose=verbose)
-    
+
     for include_path in include_paths:
         candidate = os.path.join(include_path, header_name)
         if compiletools.wrappedos.isfile(candidate):
             return compiletools.wrappedos.realpath(candidate)
-    
+
     if verbose >= 9:
         print(f"System header '{header_name}' not found in include paths: {include_paths}")
-    
+
     return None
 
 
 def extract_command_line_macros(args, flag_sources=None, include_compiler_macros=True, verbose=0):
     """Extract -D macro definitions from command line flags.
-    
+
     Args:
         args: Parsed arguments object with flag attributes (CPPFLAGS, CFLAGS, CXXFLAGS)
-        flag_sources: List of flag names to extract from (default: ['CPPFLAGS', 'CFLAGS', 'CXXFLAGS']) 
+        flag_sources: List of flag names to extract from (default: ['CPPFLAGS', 'CFLAGS', 'CXXFLAGS'])
         include_compiler_macros: Whether to include compiler/platform macros
         verbose: Verbosity level (uses args.verbose if 0)
-        
+
     Returns:
         Dict[str, str]: macro_name -> macro_value mapping
     """
-    if verbose == 0 and hasattr(args, 'verbose'):
+    if verbose == 0 and hasattr(args, "verbose"):
         verbose = args.verbose
-    
+
     if flag_sources is None:
-        flag_sources = ['CPPFLAGS', 'CFLAGS', 'CXXFLAGS']
-    
+        flag_sources = ["CPPFLAGS", "CFLAGS", "CXXFLAGS"]
+
     macros = {}
-    
+
     # Extract -D macros from specified flag sources
     for flag_name in flag_sources:
         flag_value = getattr(args, flag_name, None)
         if not flag_value:
             continue
-            
+
         # Handle both string and list types for flag_value
         if isinstance(flag_value, list):
-            flag_string = ' '.join(flag_value)
+            flag_string = " ".join(flag_value)
         else:
             flag_string = flag_value
-            
+
         # Use shlex.split for robust parsing
         try:
             flags = split_command_cached(flag_string)
         except ValueError:
             # Fallback to simple split if shlex fails on malformed input
             flags = flag_string.split()
-            
+
         for flag in flags:
-            if flag.startswith('-D'):
+            if flag.startswith("-D"):
                 # Extract macro name and value (handle both -DMACRO and -DMACRO=value)
                 macro_def = flag[2:]  # Remove the -D
-                if '=' in macro_def:
-                    macro_name, macro_value = macro_def.split('=', 1)
+                if "=" in macro_def:
+                    macro_name, macro_value = macro_def.split("=", 1)
                 else:
                     macro_name = macro_def
                     macro_value = "1"  # Default value for macros without explicit values
-                
+
                 if macro_name:
                     macros[macro_name] = macro_value
                     if verbose >= 9:
                         print(f"extract_command_line_macros: added macro {macro_name} = {macro_value} from {flag_name}")
-    
+
     # Add compiler, platform, and architecture macros if requested
     if include_compiler_macros:
         import compiletools.compiler_macros
+
         # Use same pattern as parseargs() - check args.CXX first to avoid redundant detection
-        compiler = getattr(args, 'CXX', None)
+        compiler = getattr(args, "CXX", None)
         if compiler is None:
             functional_compiler = get_functional_cxx_compiler()
             if functional_compiler:
@@ -535,11 +541,11 @@ def extract_command_line_macros(args, flag_sources=None, include_compiler_macros
             else:
                 if verbose >= 1:
                     print("Warning: No functional C++ compiler detected. Skipping compiler macros.")
-        
+
         if compiler is not None:
             compiler_macros = compiletools.compiler_macros.get_compiler_macros(compiler, verbose)
             macros.update(compiler_macros)
-    
+
     return macros
 
 
@@ -564,14 +570,14 @@ def extract_command_line_macros_sz(args, flag_sources_sz, verbose=0):
             continue
 
         for flag_sz in flag_list:
-            if not flag_sz.startswith('-D'):
+            if not flag_sz.startswith("-D"):
                 continue
 
             macro_def = flag_sz[2:]
-            eq_pos = macro_def.find('=')
+            eq_pos = macro_def.find("=")
             if eq_pos >= 0:
                 macro_name = macro_def[:eq_pos]
-                macro_value = macro_def[eq_pos + 1:]
+                macro_value = macro_def[eq_pos + 1 :]
             else:
                 macro_name = macro_def
                 macro_value = sz.Str("1")
@@ -579,7 +585,9 @@ def extract_command_line_macros_sz(args, flag_sources_sz, verbose=0):
             if macro_name:
                 macros[macro_name] = macro_value
                 if verbose >= 9:
-                    print(f"extract_command_line_macros_sz: added macro {macro_name} = {macro_value} from {flag_name_sz}")
+                    print(
+                        f"extract_command_line_macros_sz: added macro {macro_name} = {macro_value} from {flag_name_sz}"
+                    )
 
     return macros
 
@@ -593,23 +601,23 @@ def clear_cache():
 @functools.lru_cache(maxsize=8)
 def _get_functional_cxx_compiler_cached(env_cxx=None, env_cc=None, env_path=None):
     """Internal cached implementation of functional C++ compiler detection.
-    
+
     This function tests compiler candidates to ensure they can:
     - Execute basic version checks
     - Compile C++20 code with -std=c++20
-    
+
     Args:
         These are only used for test cases.  For normal use, call get_functional_cxx_compiler()
         env_cxx: Value of CXX environment variable (or None)
-        env_cc: Value of CC environment variable (or None)  
+        env_cc: Value of CC environment variable (or None)
         env_path: Value of PATH environment variable (for cache invalidation)
-    
+
     Returns:
         str: Path to working C++ compiler executable, or None if none found
     """
     # Compiler candidates to test, in priority order
     candidates = []
-    
+
     # Check environment variables first (user preference)
     if env_cxx and env_cxx.strip():
         candidates.append(env_cxx.strip())
@@ -617,64 +625,64 @@ def _get_functional_cxx_compiler_cached(env_cxx=None, env_cc=None, env_path=None
         # Try adding ++ suffix for C compilers that might have C++ versions
         cc = env_cc.strip()
         candidates.append(cc)
-        if cc.endswith('gcc'):
-            candidates.append(cc.replace('gcc', 'g++'))
-        elif cc.endswith('clang'):
-            candidates.append(cc.replace('clang', 'clang++'))
-    
+        if cc.endswith("gcc"):
+            candidates.append(cc.replace("gcc", "g++"))
+        elif cc.endswith("clang"):
+            candidates.append(cc.replace("clang", "clang++"))
+
     # Common system compiler names
-    common_compilers = ['g++', 'clang++', 'gcc', 'clang']
+    common_compilers = ["g++", "clang++", "gcc", "clang"]
     for compiler in common_compilers:
         if compiler not in candidates:
             candidates.append(compiler)
-    
+
     # Test each candidate
     for compiler_name in candidates:
         if _test_compiler_functionality(compiler_name):
             return compiler_name
-    
+
     return None
 
 
 def derive_c_compiler_from_cxx(cxx_compiler):
     """Derive a C compiler from a C++ compiler name.
-    
+
     Args:
         cxx_compiler (str): C++ compiler name (e.g., 'g++', 'clang++')
-        
+
     Returns:
         str: Corresponding C compiler name (e.g., 'gcc', 'clang')
     """
     cxx_to_c_map = {
-        'g++': 'gcc',
-        'clang++': 'clang',
+        "g++": "gcc",
+        "clang++": "clang",
     }
-    
+
     return cxx_to_c_map.get(cxx_compiler, cxx_compiler)
 
 
 def get_functional_cxx_compiler():
     """Detect and return a fully functional C++ compiler that supports C++20.
-    
+
     IMPORTANT: This is a FALLBACK mechanism for when args.CXX is not set.
-    Production code should rely on args.CXX being properly configured by 
+    Production code should rely on args.CXX being properly configured by
     parseargs() rather than calling this function directly.
-    
+
     This function tests compiler candidates to ensure they can:
     - Execute basic version checks
     - Compile C++20 code with -std=c++20
-    
+
     The result is cached for performance since compiler detection is expensive.
     The cache key includes environment variables so changes are detected.
-    
+
     Returns:
         str: Path to working C++ compiler executable, or None if none found
-        
+
     Usage:
         # PREFERRED - rely on parseargs() setting args.CXX:
         args = parseargs(cap, argv)
         compiler = args.CXX  # Already validated and set
-        
+
         # FALLBACK - only when args.CXX is not available:
         if not hasattr(args, 'CXX') or args.CXX is None:
             compiler = get_functional_cxx_compiler()
@@ -688,10 +696,10 @@ get_functional_cxx_compiler.cache_clear = _get_functional_cxx_compiler_cached.ca
 
 def _test_compiler_functionality(compiler_name):
     """Test if a compiler supports the functionality needed by the test suite.
-    
+
     Args:
         compiler_name: Name or path of compiler to test
-        
+
     Returns:
         bool: True if compiler is fully functional, False otherwise
     """
@@ -699,18 +707,16 @@ def _test_compiler_functionality(compiler_name):
         # Test 1: Basic version check
         # Split compiler_name to handle multi-word commands like "ccache g++"
         result = subprocess.run(
-            split_command_cached(compiler_name) + ['--version'],
-            capture_output=True,
-            timeout=5,
-            text=True
+            split_command_cached(compiler_name) + ["--version"], capture_output=True, timeout=5, text=True
         )
         if result.returncode != 0:
             return False
-            
+
         # Test 2: C++20 compilation test
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.cpp', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".cpp", delete=False) as f:
             # Write a simple C++20 test program
-            f.write(textwrap.dedent('''
+            f.write(
+                textwrap.dedent("""
                 #include <iostream>
                 #include <string_view>
                 #include <optional>
@@ -722,21 +728,24 @@ def _test_compiler_functionality(compiler_name):
                     std::optional<int> opt = 42;
                     return 0;
                 }
-            ''').strip())
+            """).strip()
+            )
             test_cpp = f.name
-            
+
         try:
             # Try to compile with C++20
-            with tempfile.NamedTemporaryFile(suffix='.o', delete=False) as obj_file:
+            with tempfile.NamedTemporaryFile(suffix=".o", delete=False) as obj_file:
                 obj_path = obj_file.name
-                
+
             result = subprocess.run(
-                split_command_cached(compiler_name) + ['-std=c++20', '-c', test_cpp, '-o', obj_path],
-                capture_output=True, timeout=10, text=True
+                split_command_cached(compiler_name) + ["-std=c++20", "-c", test_cpp, "-o", obj_path],
+                capture_output=True,
+                timeout=10,
+                text=True,
             )
-            
+
             success = result.returncode == 0
-            
+
         finally:
             # Cleanup test files
             try:
@@ -744,37 +753,32 @@ def _test_compiler_functionality(compiler_name):
             except OSError:
                 pass
             try:
-                if 'obj_path' in locals():
+                if "obj_path" in locals():
                     os.unlink(obj_path)
             except OSError:
                 pass
-                
+
         return success
-        
-    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, 
-            FileNotFoundError, OSError):
+
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError, OSError):
         return False
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def cached_pkg_config(package, option):
     """Cache pkg-config results for package and option (--cflags or --libs)"""
     # First check if the package exists
-    exists_result = subprocess.run(
-        ["pkg-config", "--exists", package],
-        capture_output=True,
-        check=False
-    )
+    exists_result = subprocess.run(["pkg-config", "--exists", package], capture_output=True, check=False)
     if exists_result.returncode != 0:
         # Package doesn't exist, return empty string
         # TODO: Switch from warnings to logging for pkg-config messages
-        warnings.warn(f"pkg-config package '{package}' not found", UserWarning)
+        warnings.warn(f"pkg-config package '{package}' not found", UserWarning, stacklevel=2)
         return ""
-    
+
     result = subprocess.run(
         ["pkg-config", option, package],
         stdout=subprocess.PIPE,
-        universal_newlines=True,
+        text=True,
     )
     return result.stdout.rstrip()
 
@@ -790,10 +794,10 @@ def filter_pkg_config_cflags(cflags_str, verbose=0):
         return ""
 
     # Standard system include paths
-    system_include_paths = set(['/usr/include'])
-    prefix = os.environ.get('PREFIX')
+    system_include_paths = set(["/usr/include"])
+    prefix = os.environ.get("PREFIX")
     if prefix:
-        system_include_paths.add(os.path.normpath(os.path.join(prefix, 'include')))
+        system_include_paths.add(os.path.normpath(os.path.join(prefix, "include")))
 
     # Use shlex to correctly handle quoted paths in flags
     try:
@@ -856,7 +860,7 @@ def _add_flags_from_pkg_config(args):
 
         # Only query pkg-config for libs if LDFLAGS is defined in the args namespace.
         # Some tools (like ct-magicflags) don't call add_link_arguments() so LDFLAGS won't exist.
-        if hasattr(args, 'LDFLAGS'):
+        if hasattr(args, "LDFLAGS"):
             libs = cached_pkg_config(pkg, "--libs")
             if libs:
                 args.LDFLAGS += f" {libs}"
@@ -896,7 +900,8 @@ def _set_project_version(args):
         except AttributeError:
             if args.verbose >= 6:
                 print(
-                    "Could not use projectversioncmd to set projectversion. Will use either existing projectversion or the zero version."
+                    "Could not use projectversioncmd to set projectversion. "
+                    "Will use either existing projectversion or the zero version."
                 )
 
     try:
@@ -906,14 +911,14 @@ def _set_project_version(args):
                 print("Set projectversion to the zero version")
 
         # Escape for C string literal (backslashes and double quotes)
-        version_escaped = args.projectversion.replace('\\', '\\\\').replace('"', '\\"')
+        version_escaped = args.projectversion.replace("\\", "\\\\").replace('"', '\\"')
 
         if "-DCAKE_PROJECT_VERSION" not in args.CPPFLAGS:
-            args.CPPFLAGS += ' -DCAKE_PROJECT_VERSION=' + shlex.quote(f'"{version_escaped}"')
+            args.CPPFLAGS += " -DCAKE_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
         if "-DCAKE_PROJECT_VERSION" not in args.CFLAGS:
-            args.CFLAGS += ' -DCAKE_PROJECT_VERSION=' + shlex.quote(f'"{version_escaped}"')
+            args.CFLAGS += " -DCAKE_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
         if "-DCAKE_PROJECT_VERSION" not in args.CXXFLAGS:
-            args.CXXFLAGS += ' -DCAKE_PROJECT_VERSION=' + shlex.quote(f'"{version_escaped}"')
+            args.CXXFLAGS += " -DCAKE_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
 
         if args.verbose >= 6:
             print("*FLAG variables have been modified with the project version:")
@@ -956,13 +961,9 @@ def _unify_cpp_cxx_flags(args):
 
     Skipped when --separate-flags-CPP-CXX is set.
     """
-    if getattr(args, 'separate_flags_CPP_CXX', False):
+    if getattr(args, "separate_flags_CPP_CXX", False):
         return
-    unified = " ".join(
-        compiletools.utils.combine_and_deduplicate_compiler_flags(
-            args.CPPFLAGS, args.CXXFLAGS
-        )
-    )
+    unified = " ".join(compiletools.utils.combine_and_deduplicate_compiler_flags(args.CPPFLAGS, args.CXXFLAGS))
     args.CPPFLAGS = unified
     args.CXXFLAGS = unified
 
@@ -1003,7 +1004,7 @@ def _tier_one_modifications(args):
 
 def _strip_quotes(args):
     """Remove shell quotes from arguments while preserving content quotes.
-    
+
     Uses proper shell parsing to understand when quotes are shell quoting
     vs. part of the actual content. Also strips extraneous whitespace.
     """
@@ -1022,22 +1023,23 @@ def _strip_quotes(args):
                 except (AttributeError, ValueError, TypeError):
                     pass
 
+
 def _safely_unquote_string(value):
     """Safely remove shell quotes from a string using proper parsing.
-    
+
     Only removes quotes that are actual shell quotes, not content quotes.
     Falls back to compatibility behavior for edge cases.
     """
     if not isinstance(value, str):
         return value
-        
+
     # Strip whitespace first
     value = value.strip()
-    
+
     # If the string doesn't look like it has shell quotes, don't process it
     if not (value.startswith('"') or value.startswith("'")):
         return value
-    
+
     try:
         # Use shlex to parse the string as shell would
         # If it parses to exactly one token, it was properly quoted
@@ -1045,11 +1047,12 @@ def _safely_unquote_string(value):
         if len(tokens) == 1:
             # Single token means the quotes were shell quotes
             unquoted = tokens[0]
-            
+
             # For backwards compatibility, if the result still has quotes at both ends,
             # recursively strip them (mimics old behavior for nested quotes)
-            if ((unquoted.startswith('"') and unquoted.endswith('"')) or 
-                (unquoted.startswith("'") and unquoted.endswith("'"))):
+            if (unquoted.startswith('"') and unquoted.endswith('"')) or (
+                unquoted.startswith("'") and unquoted.endswith("'")
+            ):
                 return _safely_unquote_string(unquoted)
             else:
                 return unquoted
@@ -1059,8 +1062,7 @@ def _safely_unquote_string(value):
     except ValueError:
         # Malformed quoting - fall back to original naive approach for compatibility
         # but only strip matching quote pairs
-        if ((value.startswith('"') and value.endswith('"')) or 
-            (value.startswith("'") and value.endswith("'"))):
+        if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
             return value[1:-1].strip()
         return value.strip("\"'").strip()
 
@@ -1219,7 +1221,8 @@ def parseargs(cap, argv, verbose=None):
 
     if "verbose" not in vars(args):
         raise ValueError(
-            "verbose was not found in args.  Fix is to call apptools.add_common_arguments or apptools.add_base_arguments before calling parseargs"
+            "verbose was not found in args. Fix is to call apptools.add_common_arguments "
+            "or apptools.add_base_arguments before calling parseargs"
         )
 
     if verbose is None:
@@ -1237,7 +1240,7 @@ def parseargs(cap, argv, verbose=None):
         print(f"Parsing commandline arguments has occured. Before substitutions args={args}")
 
     # Set CXX default if not specified and a functional compiler is available
-    if hasattr(args, 'CXX') and args.CXX is None:
+    if hasattr(args, "CXX") and args.CXX is None:
         functional_compiler = get_functional_cxx_compiler()
         if functional_compiler:
             args.CXX = functional_compiler
@@ -1280,7 +1283,7 @@ def verbose_print_args(args):
     # Print the args in two columns Attr: Value
     print("\n\nFinal aggregated variables for build:")
     maxattrlen = 0
-    for attr in args.__dict__.keys():
+    for attr in args.__dict__:
         if len(attr) > maxattrlen:
             maxattrlen = len(attr)
     fmt = "".join(["{0:", str(maxattrlen + 1), "}: {1}"])

@@ -19,6 +19,8 @@ deps/
 \.*
 !.gitignore
 !.github
+!.pre-commit-config.yaml
+!.secrets.baseline
 
 # Ignore auto-generated files
 vgcore.*

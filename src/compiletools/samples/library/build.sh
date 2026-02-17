@@ -9,4 +9,3 @@ popd
 
 # Now build the main.cpp linking against the static library
 ct-cake --auto "$@"
-

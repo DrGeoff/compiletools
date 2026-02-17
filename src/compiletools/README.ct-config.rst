@@ -19,16 +19,16 @@ ct-config [compilation args] [--variant=<VARIANT>] [-w output.conf]
 
 DESCRIPTION
 ===========
-ct-config is a helper tool for examining how config files, command line 
-arguments and environment variables are combined to make the internal 
+ct-config is a helper tool for examining how config files, command line
+arguments and environment variables are combined to make the internal
 variables that the ct-* applications use to do their job.
 
-Config files for the ct-* applications are programmatically located using 
-python-appdirs, which on linux is a wrapper around the XDG specification. 
-Thus default locations are /etc/xdg/ct/ and $HOME/.config/ct/.  
-Configuration parsing is done using python-configargparse which automatically 
+Config files for the ct-* applications are programmatically located using
+python-appdirs, which on linux is a wrapper around the XDG specification.
+Thus default locations are /etc/xdg/ct/ and $HOME/.config/ct/.
+Configuration parsing is done using python-configargparse which automatically
 handles environment variables, command line arguments, system configs
-and user configs.  
+and user configs.
 
 Specifically, the config files are searched for in the following
 locations (from lowest to highest priority):
@@ -44,9 +44,9 @@ locations (from lowest to highest priority):
 9. Environment variables (override config files)
 10. Command line arguments (highest priority, override everything)
 
-The ct-* applications are aware of two levels of configs.  
-There is a base level ct.conf that contains the basic variables that apply no 
-matter what variant (i.e, debug/release/etc) is being built. The default 
+The ct-* applications are aware of two levels of configs.
+There is a base level ct.conf that contains the basic variables that apply no
+matter what variant (i.e, debug/release/etc) is being built. The default
 ct.conf defines the following variables:
 
 .. code-block:: ini
@@ -95,13 +95,13 @@ hierarchy is used to overwrite the final value
 
 * command line > environment variables > config file values > defaults
 
-If you need to append values rather than replace values, this can be 
-done (currently only for environment variables) by specifying 
---variable-handling-method append 
-or equivalently add an environment variable 
+If you need to append values rather than replace values, this can be
+done (currently only for environment variables) by specifying
+--variable-handling-method append
+or equivalently add an environment variable
 VARIABLE_HANDLING_METHOD=append
 
-ct-config can be used to create a new config and write the config to file 
+ct-config can be used to create a new config and write the config to file
 simply by using the ``-w`` flag.
 
 OPTIONS
@@ -202,7 +202,7 @@ Say that you are cross compiling to a beaglebone. First off you might discover t
 
 * ct-cake main.cpp --CXX=arm-linux-gnueabihf-g++ --CPP=arm-linux-gnueabihf-g++  --CC=arm-linux-gnueabihf-g++ --LD=arm-linux-gnueabihf-g++
 
-What you would really prefer to type is 
+What you would really prefer to type is
 
 * ct-cake main.cpp --variant=bb.debug
 * ct-cake main.cpp --variant=bb.release

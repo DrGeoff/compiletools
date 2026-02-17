@@ -1,18 +1,20 @@
-import subprocess
-import shlex
 import os
+import shlex
+import subprocess
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Optional
+
 from compiletools import wrappedos
 from compiletools.git_utils import find_git_root
 
-def run_git(cmd: str, input_data: str = None) -> str:
+
+def run_git(cmd: str, input_data: Optional[str] = None) -> str:
     """Run a git command from the repository root, optionally with stdin, and return stdout."""
     try:
         git_root = find_git_root()
     except Exception as e:
-        raise RuntimeError(f"Failed to find git repository root: {e}")
-    
+        raise RuntimeError(f"Failed to find git repository root: {e}") from e
+
     try:
         result = subprocess.run(
             shlex.split(cmd),
@@ -20,9 +22,9 @@ def run_git(cmd: str, input_data: str = None) -> str:
             capture_output=True,
             text=True,
             check=False,  # Handle errors manually for better messages
-            cwd=git_root
+            cwd=git_root,
         )
-        
+
         if result.returncode != 0:
             error_msg = f"Git command failed: {cmd}\n"
             error_msg += f"Working directory: {git_root}\n"
@@ -32,16 +34,17 @@ def run_git(cmd: str, input_data: str = None) -> str:
             if result.stderr:
                 error_msg += f"Error output: {result.stderr}"
             raise RuntimeError(error_msg)
-        
+
         return result.stdout.strip()
-    except FileNotFoundError:
-        raise RuntimeError("Git executable not found. Make sure git is installed and in PATH.")
+    except FileNotFoundError as e:
+        raise RuntimeError("Git executable not found. Make sure git is installed and in PATH.") from e
     except Exception as e:
         if isinstance(e, RuntimeError):
             raise
-        raise RuntimeError(f"Unexpected error running git command '{cmd}': {e}")
+        raise RuntimeError(f"Unexpected error running git command '{cmd}': {e}") from e
 
-def get_index_hashes() -> Dict[Path, str]:
+
+def get_index_hashes() -> dict[Path, str]:
     """
     Return blob hashes for all tracked files from git index:
     { path: blob_sha }
@@ -61,7 +64,7 @@ def get_index_hashes() -> Dict[Path, str]:
         if len(parts) != 4:
             continue
 
-        mode, blob_sha, stage, path_str = parts
+        _mode, blob_sha, _stage, path_str = parts
         # Since we run git commands from git root, paths are relative to git root
         abs_path_str = os.path.join(git_root, path_str)
 
@@ -73,10 +76,12 @@ def get_index_hashes() -> Dict[Path, str]:
 
     return hashes
 
-def get_file_stat(path: Path) -> Tuple[int, int]:
+
+def get_file_stat(path: Path) -> tuple[int, int]:
     """Return (size, mtime_seconds) for a file on disk."""
     st = path.stat()
     return st.st_size, st.st_mtime_ns // 1_000_000_000
+
 
 def get_untracked_files() -> list[Path]:
     """
@@ -91,7 +96,8 @@ def get_untracked_files() -> list[Path]:
     git_root = find_git_root()
     return [Path(wrappedos.realpath(os.path.join(git_root, line))) for line in output.splitlines()]
 
-def batch_hash_objects(paths) -> Dict[Path, str]:
+
+def batch_hash_objects(paths) -> dict[Path, str]:
     """
     Given a list of paths, return { path: blob_sha } using batched git calls.
     Converts absolute paths to relative paths (relative to git root) for git compatibility.
@@ -127,6 +133,7 @@ def batch_hash_objects(paths) -> Dict[Path, str]:
     # Dynamically determine batch size based on system fd limit
     # git hash-object opens all files simultaneously, so we need to stay under the limit
     import resource
+
     try:
         soft_limit, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
         # Use 95% of soft limit, leaving some headroom for Python, git, and other processes
@@ -138,8 +145,8 @@ def batch_hash_objects(paths) -> Dict[Path, str]:
     result = {}
 
     for i in range(0, len(relative_paths), batch_size):
-        batch_rel_paths = relative_paths[i:i+batch_size]
-        batch_path_mapping = path_mapping[i:i+batch_size]
+        batch_rel_paths = relative_paths[i : i + batch_size]
+        batch_path_mapping = path_mapping[i : i + batch_size]
 
         input_data = "\n".join(batch_rel_paths) + "\n"
         output = run_git("git hash-object --stdin-paths", input_data=input_data)
@@ -148,13 +155,15 @@ def batch_hash_objects(paths) -> Dict[Path, str]:
 
     return result
 
-def get_current_blob_hashes() -> Dict[Path, str]:
+
+def get_current_blob_hashes() -> dict[Path, str]:
     """
     Get the blob hash for every tracked file as it exists now.
     Simply uses index hashes directly - git status will detect real changes.
     This is much faster and avoids file descriptor exhaustion.
     """
     return get_index_hashes()
+
 
 def get_modified_but_unstaged_files() -> list[Path]:
     """
@@ -177,7 +186,8 @@ def get_modified_but_unstaged_files() -> list[Path]:
             result.append(Path(wrappedos.realpath(abs_path_str)))
     return result
 
-def get_complete_working_directory_hashes() -> Dict[Path, str]:
+
+def get_complete_working_directory_hashes() -> dict[Path, str]:
     """
     Get blob hashes for ALL files in the working directory:
     - Tracked files (from git index, with updates for modified-but-unstaged files)
@@ -200,11 +210,9 @@ def get_complete_working_directory_hashes() -> Dict[Path, str]:
     # Get untracked source/header files and hash them in batches.
     # Filter to relevant extensions to avoid reading large binary files
     # (e.g. core dumps) that would never be used by the build system.
-    from compiletools.utils import is_source, is_header
-    untracked_files = [
-        f for f in get_untracked_files()
-        if is_source(str(f)) or is_header(str(f))
-    ]
+    from compiletools.utils import is_header, is_source
+
+    untracked_files = [f for f in get_untracked_files() if is_source(str(f)) or is_header(str(f))]
     if untracked_files:
         untracked_hashes = batch_hash_objects(untracked_files)
     else:
@@ -218,19 +226,20 @@ def get_complete_working_directory_hashes() -> Dict[Path, str]:
     # Combine results: tracked (with modified updates) + untracked
     return {**tracked_hashes, **untracked_hashes}
 
+
 def main():
     """Main entry point for ct-git-sha-report command."""
     import sys
-    
+
     # Check for command line arguments
     include_untracked = "--all" in sys.argv or "--untracked" in sys.argv
-    
+
     if include_untracked:
         print("# Complete working directory fingerprint (tracked + untracked files)")
         blob_map = get_complete_working_directory_hashes()
     else:
         print("# Tracked files only (use --all or --untracked to include untracked files)")
         blob_map = get_current_blob_hashes()
-    
+
     for path, sha in sorted(blob_map.items()):
         print(f"{sha}  {path}")

@@ -1,13 +1,13 @@
-import sys
 import os
+import sys
 
-import compiletools.utils
-import compiletools.git_utils
-import compiletools.wrappedos
 import compiletools.apptools
-import compiletools.hunter
+import compiletools.git_utils
 import compiletools.headerdeps
+import compiletools.hunter
 import compiletools.magicflags
+import compiletools.utils
+import compiletools.wrappedos
 
 
 class FlatStyle(compiletools.git_utils.NameAdjuster):
@@ -22,17 +22,17 @@ class IndentStyle(compiletools.git_utils.NameAdjuster):
             print("\t", self.adjust(source))
 
 
-class HeaderPassFilter(object):
+class HeaderPassFilter:
     def __call__(self, files):
         return {fn for fn in files if compiletools.utils.is_header(fn)}
 
 
-class SourcePassFilter(object):
+class SourcePassFilter:
     def __call__(self, files):
         return {fn for fn in files if compiletools.utils.is_source(fn)}
 
 
-class AllPassFilter(object):
+class AllPassFilter:
     def __call__(self, files):
         return files
 
@@ -40,16 +40,16 @@ class AllPassFilter(object):
 def check_filename(filename):
     if not compiletools.wrappedos.isfile(filename):
         sys.stderr.write(
-            "The supplied filename ({0}) isn't a file. "
+            f"The supplied filename ({filename}) isn't a file. "
             "Did you spell it correctly?"
             "Another possible reason is that you didn't supply a filename"
             " and that configargparse has picked an unused positional argument"
-            " from the config file.\n".format(filename)
+            " from the config file.\n"
         )
         exit(1)
 
 
-class Filelist(object):
+class Filelist:
     def __init__(self, args, hunter, style=None):
         self.args = args
         self._hunter = hunter
@@ -62,9 +62,7 @@ class Filelist(object):
     @staticmethod
     def add_arguments(cap):
         compiletools.apptools.add_target_arguments(cap)
-        cap.add(
-            "--extrafile", help="Extra files to directly add to the filelist", nargs="*"
-        )
+        cap.add("--extrafile", help="Extra files to directly add to the filelist", nargs="*")
         cap.add(
             "--extradir",
             help="Extra directories to add all files from to the filelist",
@@ -79,13 +77,9 @@ class Filelist(object):
         # Figure out what output style classes are available and add them to the
         # command line options
         styles = [st[:-5].lower() for st in dict(globals()) if st.endswith("Style")]
-        cap.add(
-            "--style", choices=styles, default="flat", help="Output formatting style"
-        )
+        cap.add("--style", choices=styles, default="flat", help="Output formatting style")
 
-        passfilters = [
-            st[:-10].lower() for st in dict(globals()) if st.endswith("PassFilter")
-        ]
+        passfilters = [st[:-10].lower() for st in dict(globals()) if st.endswith("PassFilter")]
         cap.add(
             "--filter",
             choices=passfilters,
@@ -93,9 +87,7 @@ class Filelist(object):
             help="What type of files are allowed in the output",
         )
 
-        compiletools.utils.add_flag_argument(
-            cap, "merge", default=True, help="Merge all outputs into a single list"
-        )
+        compiletools.utils.add_flag_argument(cap, "merge", default=True, help="Merge all outputs into a single list")
         compiletools.hunter.add_arguments(cap)
 
     def process(self):
@@ -108,11 +100,13 @@ class Filelist(object):
             extras.update(self.args.extrafile)
         if self.args.extradir:
             for ed in self.args.extradir:
-                extras.update([
-                    os.path.join(ed, ff)
-                    for ff in os.listdir(ed)
-                    if compiletools.wrappedos.isfile(os.path.join(ed, ff))
-                ])
+                extras.update(
+                    [
+                        os.path.join(ed, ff)
+                        for ff in os.listdir(ed)
+                        if compiletools.wrappedos.isfile(os.path.join(ed, ff))
+                    ]
+                )
         if self.args.extrafilelist:
             for fname in self.args.extrafilelist:
                 with open(fname) as ff:
@@ -130,9 +124,7 @@ class Filelist(object):
 
         mergedfiles = []
         if self.args.merge:
-            filteredfiles = filterobject(
-                {compiletools.wrappedos.realpath(fname) for fname in extras}
-            )
+            filteredfiles = filterobject({compiletools.wrappedos.realpath(fname) for fname in extras})
             mergedfiles.extend(filteredfiles)
         else:
             for fname in extras:

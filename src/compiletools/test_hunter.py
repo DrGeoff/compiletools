@@ -1,12 +1,13 @@
 import os
-import configargparse
-import compiletools.testhelper
 
+import configargparse
+
+import compiletools.headerdeps
+import compiletools.hunter
+import compiletools.magicflags
+import compiletools.testhelper
 import compiletools.testhelper as uth
 import compiletools.wrappedos
-import compiletools.headerdeps
-import compiletools.magicflags
-import compiletools.hunter
 
 
 def callprocess(headerobj, filenames):
@@ -28,21 +29,20 @@ class TestHunterModule:
         )
 
     def test_hunter_follows_source_files_from_header(self):
-        with uth.TempDirContextNoChange() as tempdir:
-            with uth.TempConfigContext() as temp_config:
-                argv = ["-c", temp_config, "--include", uth.ctdir()]
-                cap = configargparse.getArgumentParser()
-                compiletools.hunter.add_arguments(cap)
-                args = compiletools.apptools.parseargs(cap, argv)
-                headerdeps = compiletools.headerdeps.create(args)
-                magicparser = compiletools.magicflags.create(args, headerdeps)
-                hntr = compiletools.hunter.Hunter(args, headerdeps, magicparser)
+        with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
+            argv = ["-c", temp_config, "--include", uth.ctdir()]
+            cap = configargparse.getArgumentParser()
+            compiletools.hunter.add_arguments(cap)
+            args = compiletools.apptools.parseargs(cap, argv)
+            headerdeps = compiletools.headerdeps.create(args)
+            magicparser = compiletools.magicflags.create(args, headerdeps)
+            hntr = compiletools.hunter.Hunter(args, headerdeps, magicparser)
 
-                relativepath = "factory/widget_factory.hpp"
-                realpath = os.path.join(uth.samplesdir(), relativepath)
-                filesfromheader = hntr.required_source_files(realpath)
-                filesfromsource = hntr.required_source_files(compiletools.utils.implied_source(realpath))
-                assert set(filesfromheader) == set(filesfromsource)
+            relativepath = "factory/widget_factory.hpp"
+            realpath = os.path.join(uth.samplesdir(), relativepath)
+            filesfromheader = hntr.required_source_files(realpath)
+            filesfromsource = hntr.required_source_files(compiletools.utils.implied_source(realpath))
+            assert set(filesfromheader) == set(filesfromsource)
 
     @staticmethod
     def _hunter_is_not_order_dependent(precall):
@@ -75,7 +75,7 @@ class TestHunterModule:
             return result
 
     def test_hunter_is_not_order_dependent(self):
-        with uth.TempDirContextNoChange() as tempdir:
+        with uth.TempDirContextNoChange():
             result2 = self._hunter_is_not_order_dependent(True)
             result1 = self._hunter_is_not_order_dependent(False)
             result3 = self._hunter_is_not_order_dependent(False)
@@ -87,5 +87,3 @@ class TestHunterModule:
 
     def teardown_method(self):
         uth.reset()
-
-

@@ -14,15 +14,15 @@ for O(n) performance without sorting. XOR combination ensures order independence
 The hash is deterministic across Python runs, enabling future disk caching support.
 """
 
-from typing import List, Dict, Tuple, FrozenSet, Optional
-from dataclasses import dataclass, field
 import sys
+from dataclasses import dataclass, field
+from typing import Optional
+
 import stringzilla as sz
 
-
 # Type aliases for macro dictionaries and cache keys
-MacroDict = Dict[sz.Str, sz.Str]
-MacroCacheKey = FrozenSet[Tuple[sz.Str, sz.Str]]
+MacroDict = dict[sz.Str, sz.Str]
+MacroCacheKey = frozenset[tuple[sz.Str, sz.Str]]
 
 
 @dataclass
@@ -37,13 +37,14 @@ class ProcessingResult:
         updated_macros: Macro state after processing (input + defines - undefs)
         file_defines: Macros defined BY this file only (for cache reconstruction)
     """
-    active_lines: List[int]
-    active_includes: List[dict]
-    active_magic_flags: List[dict]
-    active_defines: List[dict]
-    updated_macros: 'MacroState'  # Forward reference
+
+    active_lines: list[int]
+    active_includes: list[dict]
+    active_magic_flags: list[dict]
+    active_defines: list[dict]
+    updated_macros: "MacroState"  # Forward reference
     file_defines: MacroDict = field(default_factory=dict)
-    file_undefs: FrozenSet = field(default_factory=frozenset)
+    file_undefs: frozenset = field(default_factory=frozenset)
 
 
 @dataclass
@@ -62,6 +63,7 @@ class MacroState:
         variable: Dynamic macros accumulated from #define directives in files.
                   These grow as files are processed and determine cache behavior.
     """
+
     core: MacroDict  # Static: compiler + cmdline macros
     variable: MacroDict  # Dynamic: file #defines
     _cache_key: Optional[MacroCacheKey]  # Cached frozenset for cache keys
@@ -91,7 +93,7 @@ class MacroState:
         result.update(self.variable)
         return result
 
-    def with_updates(self, new_macros: MacroDict) -> 'MacroState':
+    def with_updates(self, new_macros: MacroDict) -> "MacroState":
         """Create new MacroState with additional macros merged into variable.
 
         Args:
@@ -107,10 +109,7 @@ class MacroState:
 
         # Filter out no-op updates to ensure immutability efficiency
         # Only apply updates that actually change the value or add a new key
-        actual_updates = {
-            k: v for k, v in new_macros.items()
-            if k not in self.variable or self.variable[k] != v
-        }
+        actual_updates = {k: v for k, v in new_macros.items() if k not in self.variable or self.variable[k] != v}
 
         if not actual_updates:
             return self
@@ -131,7 +130,7 @@ class MacroState:
 
         return new_state
 
-    def without_keys(self, keys) -> 'MacroState':
+    def without_keys(self, keys) -> "MacroState":
         """Create new MacroState with specified keys removed from variable."""
         removed = {k for k in keys if k in self.variable}
         if not removed:
@@ -174,7 +173,7 @@ class MacroState:
         """Return all macro values (core + variable)."""
         return self.all_macros().values()
 
-    def copy(self) -> 'MacroState':
+    def copy(self) -> "MacroState":
         """Return self since MacroState is immutable."""
         return self
 
@@ -202,7 +201,7 @@ class MacroState:
 
         return self._cache_key
 
-    def get_relevant_key(self, relevant_macros: FrozenSet[sz.Str]) -> MacroCacheKey:
+    def get_relevant_key(self, relevant_macros: frozenset[sz.Str]) -> MacroCacheKey:
         """Get cache key filtered to only macros that affect the target file.
 
         For variant caching, only macros referenced in conditionals (#ifdef, #if, etc.)
@@ -219,11 +218,7 @@ class MacroState:
             return _EMPTY_FROZENSET
 
         # Build filtered key - only include variable macros that matter
-        relevant_items = tuple(
-            (m, self.variable[m])
-            for m in relevant_macros
-            if m in self.variable
-        )
+        relevant_items = tuple((m, self.variable[m]) for m in relevant_macros if m in self.variable)
         return frozenset(relevant_items) if relevant_items else _EMPTY_FROZENSET
 
     def get_hash(self, include_core=False) -> str:
@@ -241,7 +236,7 @@ class MacroState:
         Performance: O(n) with no sorting - XOR is commutative so order doesn't matter
         """
         # Use separate cache attributes for variable-only vs full hash
-        cache_attr = '_hash_full' if include_core else '_hash'
+        cache_attr = "_hash_full" if include_core else "_hash"
 
         cached_value = getattr(self, cache_attr, None)
         if cached_value is not None:
@@ -265,7 +260,7 @@ class MacroState:
             combined ^= sz.hash(bytes(name))
             combined ^= sz.hash(bytes(value))
 
-        result = format(combined, '016x')
+        result = format(combined, "016x")
         setattr(self, cache_attr, result)
         return result
 
@@ -290,7 +285,7 @@ def is_permanently_invariant(file_result) -> bool:
     return not file_result.conditional_macros
 
 
-def is_macro_invariant(file_result, input_macros: 'MacroState') -> bool:
+def is_macro_invariant(file_result, input_macros: "MacroState") -> bool:
     """Determine if a file's active lines are independent of current macro state.
 
     A file is effectively invariant if none of its conditional macros are currently defined
@@ -326,26 +321,22 @@ def is_macro_invariant(file_result, input_macros: 'MacroState') -> bool:
 # 2. Cache key must be extracted from file_result and macros
 # 3. We need full objects to compute results, not just hashes
 # 4. Provides enhanced debugging (dump_cache_keys with file path resolution)
-_invariant_cache: Dict[str, ProcessingResult] = {}  # str = content_hash (SHA1)
-_variant_cache: Dict[Tuple[str, MacroCacheKey], ProcessingResult] = {}  # str = content_hash (SHA1)
+_invariant_cache: dict[str, ProcessingResult] = {}  # str = content_hash (SHA1)
+_variant_cache: dict[tuple[str, MacroCacheKey], ProcessingResult] = {}  # str = content_hash (SHA1)
 
 # Cache statistics
 _cache_stats = {
-    'hits': 0,
-    'misses': 0,
-    'total_calls': 0,
-    'invariant_hits': 0,
-    'variant_hits': 0,
-    'invariant_misses': 0,
-    'variant_misses': 0
+    "hits": 0,
+    "misses": 0,
+    "total_calls": 0,
+    "invariant_hits": 0,
+    "variant_hits": 0,
+    "invariant_misses": 0,
+    "variant_misses": 0,
 }
 
 
-def get_or_compute_preprocessing(
-    file_result,
-    input_macros: 'MacroState',
-    verbose: int = 0
-) -> ProcessingResult:
+def get_or_compute_preprocessing(file_result, input_macros: "MacroState", verbose: int = 0) -> ProcessingResult:
     """Get preprocessing result from cache or compute if not cached.
 
     Uses dual cache strategy:
@@ -366,7 +357,7 @@ def get_or_compute_preprocessing(
     """
     from compiletools.simple_preprocessor import SimplePreprocessor
 
-    _cache_stats['total_calls'] += 1
+    _cache_stats["total_calls"] += 1
 
     content_hash = file_result.content_hash
     invariant = is_macro_invariant(file_result, input_macros)
@@ -375,8 +366,8 @@ def get_or_compute_preprocessing(
     if invariant:
         # Macro-invariant: cache key is content_hash only
         if content_hash in _invariant_cache:
-            _cache_stats['hits'] += 1
-            _cache_stats['invariant_hits'] += 1
+            _cache_stats["hits"] += 1
+            _cache_stats["invariant_hits"] += 1
             cached = _invariant_cache[content_hash]
             # Reconstruct updated_macros from caller's input + file's defines
             # to prevent stale macro pollution from first caller's context
@@ -392,11 +383,11 @@ def get_or_compute_preprocessing(
                 active_defines=cached.active_defines,
                 updated_macros=reconstructed_macros,
                 file_defines=cached.file_defines,
-                file_undefs=cached.file_undefs
+                file_undefs=cached.file_undefs,
             )
 
-        _cache_stats['misses'] += 1
-        _cache_stats['invariant_misses'] += 1
+        _cache_stats["misses"] += 1
+        _cache_stats["invariant_misses"] += 1
     else:
         # Macro-variant: cache key is (content_hash, file_specific_macro_key)
         # Use file-specific key: only macros that affect this file's conditionals
@@ -404,8 +395,8 @@ def get_or_compute_preprocessing(
         cache_key = (content_hash, macro_key)
 
         if cache_key in _variant_cache:
-            _cache_stats['hits'] += 1
-            _cache_stats['variant_hits'] += 1
+            _cache_stats["hits"] += 1
+            _cache_stats["variant_hits"] += 1
             cached = _variant_cache[cache_key]
             reconstructed_macros = input_macros
             if cached.file_defines:
@@ -419,11 +410,11 @@ def get_or_compute_preprocessing(
                 active_defines=cached.active_defines,
                 updated_macros=reconstructed_macros,
                 file_defines=cached.file_defines,
-                file_undefs=cached.file_undefs
+                file_undefs=cached.file_undefs,
             )
 
-        _cache_stats['misses'] += 1
-        _cache_stats['variant_misses'] += 1
+        _cache_stats["misses"] += 1
+        _cache_stats["variant_misses"] += 1
 
     # Compute result - pass all macros to preprocessor
     all_macros = input_macros.all_macros()
@@ -434,19 +425,19 @@ def get_or_compute_preprocessing(
     # Extract active includes
     active_includes = []
     for inc in file_result.includes:
-        if inc['line_num'] in active_line_set:
+        if inc["line_num"] in active_line_set:
             active_includes.append(inc)
 
     # Extract active magic flags
     active_magic_flags = []
     for magic in file_result.magic_flags:
-        if magic['line_num'] in active_line_set:
+        if magic["line_num"] in active_line_set:
             active_magic_flags.append(magic)
 
     # Extract active defines
     active_defines = []
     for define in file_result.defines:
-        if define['line_num'] in active_line_set:
+        if define["line_num"] in active_line_set:
             active_defines.append(define)
 
     # Build updated MacroState from preprocessor results
@@ -469,8 +460,9 @@ def get_or_compute_preprocessing(
     # Input-independent: safe to cache for both invariant and variant entries.
     # without_keys() handles the intersection with the caller's variable macros.
     file_undefs = frozenset(
-        d.macro_name for d in file_result.directives
-        if d.directive_type == 'undef' and d.macro_name and d.line_num in active_line_set
+        d.macro_name
+        for d in file_result.directives
+        if d.directive_type == "undef" and d.macro_name and d.line_num in active_line_set
     )
 
     # Build updated state: new_variable_macros already reflects the correct
@@ -485,7 +477,7 @@ def get_or_compute_preprocessing(
         active_defines=active_defines,
         updated_macros=updated_macro_state,
         file_defines=file_defines,
-        file_undefs=file_undefs
+        file_undefs=file_undefs,
     )
 
     # Store in appropriate cache
@@ -532,23 +524,23 @@ def get_cache_stats() -> dict:
         total_size += sys.getsizeof(result.updated_macros)
 
     hit_rate = 0.0
-    if _cache_stats['total_calls'] > 0:
-        hit_rate = (_cache_stats['hits'] / _cache_stats['total_calls']) * 100
+    if _cache_stats["total_calls"] > 0:
+        hit_rate = (_cache_stats["hits"] / _cache_stats["total_calls"]) * 100
 
     return {
-        'entries': len(_invariant_cache) + len(_variant_cache),
-        'invariant_entries': len(_invariant_cache),
-        'variant_entries': len(_variant_cache),
-        'hits': _cache_stats['hits'],
-        'invariant_hits': _cache_stats['invariant_hits'],
-        'variant_hits': _cache_stats['variant_hits'],
-        'misses': _cache_stats['misses'],
-        'invariant_misses': _cache_stats['invariant_misses'],
-        'variant_misses': _cache_stats['variant_misses'],
-        'total_calls': _cache_stats['total_calls'],
-        'hit_rate': hit_rate,
-        'memory_bytes': total_size,
-        'memory_mb': total_size / (1024 * 1024)
+        "entries": len(_invariant_cache) + len(_variant_cache),
+        "invariant_entries": len(_invariant_cache),
+        "variant_entries": len(_variant_cache),
+        "hits": _cache_stats["hits"],
+        "invariant_hits": _cache_stats["invariant_hits"],
+        "variant_hits": _cache_stats["variant_hits"],
+        "misses": _cache_stats["misses"],
+        "invariant_misses": _cache_stats["invariant_misses"],
+        "variant_misses": _cache_stats["variant_misses"],
+        "total_calls": _cache_stats["total_calls"],
+        "hit_rate": hit_rate,
+        "memory_bytes": total_size,
+        "memory_mb": total_size / (1024 * 1024),
     }
 
 
@@ -580,20 +572,22 @@ def clear_cache():
     """
     _invariant_cache.clear()
     _variant_cache.clear()
-    _cache_stats['hits'] = 0
-    _cache_stats['misses'] = 0
-    _cache_stats['invariant_hits'] = 0
-    _cache_stats['variant_hits'] = 0
-    _cache_stats['invariant_misses'] = 0
-    _cache_stats['variant_misses'] = 0
-    _cache_stats['total_calls'] = 0
+    _cache_stats["hits"] = 0
+    _cache_stats["misses"] = 0
+    _cache_stats["invariant_hits"] = 0
+    _cache_stats["variant_hits"] = 0
+    _cache_stats["invariant_misses"] = 0
+    _cache_stats["variant_misses"] = 0
+    _cache_stats["total_calls"] = 0
 
     # Clear file analyzer cache since analysis results are used by preprocessing
     from compiletools.file_analyzer import analyze_file
+
     analyze_file.cache_clear()
 
     # Clear global hash registry to prevent stale hash lookups in tests
     from compiletools.global_hash_registry import clear_global_registry, get_file_hash
+
     clear_global_registry()
     get_file_hash.cache_clear()
 
@@ -620,4 +614,5 @@ def print_preprocessing_stats():
 
     # Print SimplePreprocessor call statistics
     from compiletools.simple_preprocessor import print_preprocessor_stats
+
     print_preprocessor_stats()

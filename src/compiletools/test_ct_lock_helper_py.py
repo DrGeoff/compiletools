@@ -4,11 +4,12 @@ Minimal test suite to verify Python version works correctly.
 Full testing reuses test_ct_lock_helper.py infrastructure.
 """
 
-import pytest
-import subprocess
-import tempfile
 import os
 import shutil
+import subprocess
+import tempfile
+
+import pytest
 
 
 @pytest.fixture
@@ -53,15 +54,18 @@ class TestPythonLockHelper:
             # Run ct-lock-helper-py
             result = subprocess.run(
                 [
-                    "ct-lock-helper-py", "compile",
+                    "ct-lock-helper-py",
+                    "compile",
                     f"--target={temp_target}",
                     f"--strategy={strategy}",
                     "--",
-                    "gcc", "-c", source
+                    "gcc",
+                    "-c",
+                    source,
                 ],
                 capture_output=True,
                 text=True,
-                timeout=5
+                timeout=5,
             )
 
             # Verify success
@@ -89,15 +93,18 @@ class TestPythonLockHelper:
         try:
             result = subprocess.run(
                 [
-                    "ct-lock-helper-py", "compile",
+                    "ct-lock-helper-py",
+                    "compile",
                     f"--target={temp_target}",
                     f"--strategy={strategy}",
                     "--",
-                    "gcc", "-c", source
+                    "gcc",
+                    "-c",
+                    source,
                 ],
                 capture_output=True,
                 text=True,
-                timeout=5
+                timeout=5,
             )
 
             # Verify failure
@@ -116,21 +123,13 @@ class TestPythonLockHelper:
     def test_help_command(self):
         """Test that help command works."""
         # Main help
-        result = subprocess.run(
-            ["ct-lock-helper-py", "--help"],
-            capture_output=True,
-            text=True
-        )
+        result = subprocess.run(["ct-lock-helper-py", "--help"], capture_output=True, text=True)
         assert result.returncode == 0
         assert "ct-lock-helper-py" in result.stdout
         assert "compile" in result.stdout
 
         # Compile subcommand help
-        result = subprocess.run(
-            ["ct-lock-helper-py", "compile", "--help"],
-            capture_output=True,
-            text=True
-        )
+        result = subprocess.run(["ct-lock-helper-py", "compile", "--help"], capture_output=True, text=True)
         assert result.returncode == 0
         assert "lockdir" in result.stdout
         assert "cifs" in result.stdout

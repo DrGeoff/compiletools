@@ -1,10 +1,11 @@
 import os
 import sys
-import configargparse
-import compiletools.test_base as tb
 
-import compiletools.headerdeps
+import configargparse
+
 import compiletools.apptools
+import compiletools.headerdeps
+import compiletools.test_base as tb
 import compiletools.testhelper as uth
 
 
@@ -88,7 +89,6 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         )
         compiletools.headerdeps.add_arguments(cap)
 
-
     @uth.requires_functional_compiler
     def test_direct_and_cpp_generate_same_results(self):
         filenames = [
@@ -101,9 +101,9 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
             tb.compare_direct_cpp_headers(self, self._get_sample_path(filename))
 
     def _direct_and_cpp_generate_same_results_ex(self, extraargs=None):
-        """ Test that HeaderTree and HeaderDependencies give the same results.
-            Rather than polluting the real ct cache, use temporary cache
-            directories.
+        """Test that HeaderTree and HeaderDependencies give the same results.
+        Rather than polluting the real ct cache, use temporary cache
+        directories.
         """
         if extraargs is None:
             extraargs = []
@@ -121,15 +121,12 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
             ]
             realpaths = [os.path.join(samplesdir, filename) for filename in relativepaths]
 
-            directcache, directresults = _generatecache(
-                tempdir, "direct", realpaths, extraargs
-            )
-            cppcache, cppresults = _generatecache(
-                tempdir, "cpp", realpaths, extraargs
-            )
+            _directcache, directresults = _generatecache(tempdir, "direct", realpaths, extraargs)
+            _cppcache, cppresults = _generatecache(tempdir, "cpp", realpaths, extraargs)
 
             # The key test: both HeaderDeps implementations should produce the same results
             assert set(directresults) == set(cppresults)
+
     @uth.requires_functional_compiler
     def test_direct_and_cpp_generate_same_results_ex(self):
         self._direct_and_cpp_generate_same_results_ex()
@@ -180,11 +177,9 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
     @uth.requires_functional_compiler
     def test_compiler_builtin_macro_recognition(self):
         filename = self._get_sample_path("cppflags_macros/compiler_builtin_test.cpp")
-        result_set = uth.headerdeps_result(
-            filename,
-            "direct"
-        )
+        result_set = uth.headerdeps_result(filename, "direct")
         import platform
+
         arch = platform.machine().lower()
         expected_headers = ["gcc_feature.hpp"]
         if sys.platform.startswith("linux"):
@@ -235,7 +230,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
             ("VERSION_1_defined", f"-I{uth.samplesdir()} -DVERSION_1"),
             ("VERSION_2_defined", f"-I{uth.samplesdir()} -DVERSION_2"),
             ("VERSION_3_defined", f"-I{uth.samplesdir()} -DVERSION_3"),
-            ("no_version_defined", f"-I{uth.samplesdir()}")
+            ("no_version_defined", f"-I{uth.samplesdir()}"),
         ]
         _run_scenario_test(filename, scenarios)
 
@@ -246,7 +241,13 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
             "direct",
             cppflags="-DFEATURE_A -DALT_FORM_TEST",
         )
-        expected_headers = ["version_ge_2_feature.hpp", "partial_features.hpp", "temp_defined.hpp", "alt_form_feature.hpp", "version_205_plus.hpp"]
+        expected_headers = [
+            "version_ge_2_feature.hpp",
+            "partial_features.hpp",
+            "temp_defined.hpp",
+            "alt_form_feature.hpp",
+            "version_205_plus.hpp",
+        ]
         forbidden_headers = ["temp_still_defined.hpp", "combined_features.hpp"]
         _assert_headers_present(result_set, expected_headers)
         _assert_headers_absent(result_set, forbidden_headers)
@@ -258,7 +259,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
             ("FEATURE_A_and_ALT_FORM_TEST", f"-I{uth.samplesdir()} -DFEATURE_A -DALT_FORM_TEST"),
             ("FEATURE_A_and_FEATURE_B", f"-I{uth.samplesdir()} -DFEATURE_A -DFEATURE_B"),
             ("FEATURE_C_only", f"-I{uth.samplesdir()} -DFEATURE_C"),
-            ("no_feature_macros", f"-I{uth.samplesdir()}")
+            ("no_feature_macros", f"-I{uth.samplesdir()}"),
         ]
         _run_scenario_test(filename, scenarios)
 
@@ -266,27 +267,39 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
     def test_multiply_nested_macros_with_complex_logic(self):
         filename = self._get_sample_path("cppflags_macros/nested_macros_test.cpp")
         scenarios = [
-            ("level2_linux_threading_numa", f"-I{uth.samplesdir()} -DBUILD_CONFIG=2 -D__linux__ -DUSE_EPOLL=1 -DENABLE_THREADING -DTHREAD_COUNT=4 -DNUMA_SUPPORT=1"),
-            ("level3_expert_mode_with_profiling", f"-I{uth.samplesdir()} -DBUILD_CONFIG=3 -DENABLE_EXPERT_MODE=1 -DCUSTOM_ALLOCATOR -DALLOCATOR_TYPE=2 -DMEMORY_TRACKING=1 -DLEAK_DETECTION=1 -DSTACK_TRACE=1 -DENABLE_PROFILING=1 -DPROFILING_LEVEL=3 -DMEMORY_PROFILING=1 -DCPU_PROFILING=1 -DCACHE_PROFILING=1"),
+            (
+                "level2_linux_threading_numa",
+                f"-I{uth.samplesdir()} -DBUILD_CONFIG=2 -D__linux__ -DUSE_EPOLL=1 -DENABLE_THREADING -DTHREAD_COUNT=4 -DNUMA_SUPPORT=1",
+            ),
+            (
+                "level3_expert_mode_with_profiling",
+                f"-I{uth.samplesdir()} -DBUILD_CONFIG=3 -DENABLE_EXPERT_MODE=1 -DCUSTOM_ALLOCATOR -DALLOCATOR_TYPE=2 -DMEMORY_TRACKING=1 -DLEAK_DETECTION=1 -DSTACK_TRACE=1 -DENABLE_PROFILING=1 -DPROFILING_LEVEL=3 -DMEMORY_PROFILING=1 -DCPU_PROFILING=1 -DCACHE_PROFILING=1",
+            ),
             ("level1_basic_only", f"-I{uth.samplesdir()} -DBUILD_CONFIG=1"),
         ]
-        
+
         # Expected headers for each scenario
         scenario_expectations = {
             "level2_linux_threading_numa": {
-                "expected": ["basic_feature.hpp", "advanced_feature.hpp", "linux_advanced.hpp", "linux_epoll_threading.hpp", "numa_threading.hpp"],
-                "forbidden": []
+                "expected": [
+                    "basic_feature.hpp",
+                    "advanced_feature.hpp",
+                    "linux_advanced.hpp",
+                    "linux_epoll_threading.hpp",
+                    "numa_threading.hpp",
+                ],
+                "forbidden": [],
             },
             "level3_expert_mode_with_profiling": {
-                "expected": ["basic_feature.hpp", "advanced_feature.hpp", "expert_feature.hpp"], 
-                "forbidden": []
+                "expected": ["basic_feature.hpp", "advanced_feature.hpp", "expert_feature.hpp"],
+                "forbidden": [],
             },
             "level1_basic_only": {
                 "expected": ["basic_feature.hpp"],
-                "forbidden": ["advanced_feature.hpp", "expert_feature.hpp"]
-            }
+                "forbidden": ["advanced_feature.hpp", "expert_feature.hpp"],
+            },
         }
-        
+
         for name, cppflags in scenarios:
             direct = uth.compare_headerdeps_kinds(filename, cppflags=cppflags, scenario_name=name)["direct"]
             expectations = scenario_expectations[name]
@@ -301,71 +314,72 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
             ("-I src", ["src"]),
             ("-Isrc", ["src"]),
         ]
-        
+
         for cppflags, expected_includes in test_cases:
             cap = configargparse.getArgumentParser()
             compiletools.headerdeps.add_arguments(cap)
             compiletools.apptools.add_common_arguments(cap)
-            
+
             argv = [f"--CPPFLAGS={cppflags}", "-q"]
             args = compiletools.apptools.parseargs(cap, argv)
-            
+
             deps = compiletools.headerdeps.DirectHeaderDeps(args)
-            assert deps.includes == expected_includes, f"CPPFLAGS: {cppflags}, Expected: {expected_includes}, Got: {deps.includes}"
+            assert deps.includes == expected_includes, (
+                f"CPPFLAGS: {cppflags}, Expected: {expected_includes}, Got: {deps.includes}"
+            )
 
     def test_quoted_include_paths_shell_parsing_bug(self):
         """Test that exposes the shell parsing bug in HeaderDeps with quoted include paths.
-        
+
         This test demonstrates that the current regex-based approach fails to handle
         quoted paths with spaces correctly, just like the MagicFlags bug that was fixed.
-        
+
         The regex pattern r"-(?:I)(?:\\s+|)([^\\s]+)" stops at the first whitespace,
         breaking quoted paths that should be treated as single arguments.
         """
-        
-        # This is the critical test case that exposes the bug  
+
+        # This is the critical test case that exposes the bug
         expected_includes = ["/path with spaces/include"]
-        
+
         cap = configargparse.getArgumentParser()
         compiletools.headerdeps.add_arguments(cap)
         compiletools.apptools.add_common_arguments(cap)
-        
+
         # Bypass command line parsing issues by setting CPPFLAGS directly
         argv = ["-q"]
         args = compiletools.apptools.parseargs(cap, argv)
-        
+
         # Set the CPPFLAGS with properly quoted string directly
         args.CPPFLAGS = '-I "/path with spaces/include"'
-        
+
         deps = compiletools.headerdeps.DirectHeaderDeps(args)
         actual_includes = deps.includes
-        
+
         # This assertion should now PASS after the shlex.split() fix
-        assert actual_includes == expected_includes, \
-            f"SHELL PARSING BUG STILL EXISTS in HeaderDeps!\n" \
-            f"CPPFLAGS: {args.CPPFLAGS}\n" \
-            f"Expected: {expected_includes} (quoted path treated as single argument)\n" \
-            f"Got:      {actual_includes} (shlex parsing should handle this correctly)\n" \
+        assert actual_includes == expected_includes, (
+            f"SHELL PARSING BUG STILL EXISTS in HeaderDeps!\n"
+            f"CPPFLAGS: {args.CPPFLAGS}\n"
+            f"Expected: {expected_includes} (quoted path treated as single argument)\n"
+            f"Got:      {actual_includes} (shlex parsing should handle this correctly)\n"
             f"The shlex.split() fix should handle quoted paths with spaces correctly!"
+        )
 
     def test_isystem_flag_parsing(self):
         """Test that -isystem flags are parsed correctly with and without spaces"""
         test_cases = [
             "-isystem /usr/include -isystem/opt/local/include",
-            "-isystemsrc -isystem build/include", 
+            "-isystemsrc -isystem build/include",
             "-isystem src",
             "-isystemsrc",
         ]
-        
+
         for cppflags in test_cases:
             cap = configargparse.getArgumentParser()
             compiletools.headerdeps.add_arguments(cap)
             compiletools.apptools.add_common_arguments(cap)
-            
+
             argv = [f"--CPPFLAGS={cppflags}", "-q"]
             args = compiletools.apptools.parseargs(cap, argv)
-            
+
             # This should not raise an exception - the isystem parsing should work
             compiletools.headerdeps.DirectHeaderDeps(args)
-
-
