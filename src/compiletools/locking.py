@@ -6,18 +6,20 @@ All policies (timeouts, sleep intervals) are configured via args object from app
 """
 
 import os
-import sys
-import time
-import socket
 import platform
 import shutil
+import socket
+import sys
+import time
+
 import compiletools.filesystem_utils
-import compiletools.wrappedos
 import compiletools.lock_utils
+import compiletools.wrappedos
 
 # fcntl only available on Unix (not Windows)
 try:
     import fcntl
+
     HAS_FCNTL = True
 except ImportError:
     HAS_FCNTL = False
@@ -37,7 +39,7 @@ class LockdirLock:
         self.pid = os.getpid()
         self.cross_host_timeout = args.lock_cross_host_timeout
         self.warn_interval = args.lock_warn_interval
-        self.creation_grace_period = getattr(args, 'lock_creation_grace_period', 2)
+        self.creation_grace_period = getattr(args, "lock_creation_grace_period", 2)
 
         # Auto-detect optimal sleep interval based on filesystem, allow user override
         if args.sleep_interval_lockdir is not None:
@@ -88,10 +90,7 @@ class LockdirLock:
         Returns:
             float: Age in seconds, or 0 if lock doesn't exist or has future mtime
         """
-        return compiletools.lock_utils.get_lock_age_seconds(
-            self.lockdir,
-            getattr(self.args, 'verbose', 0)
-        )
+        return compiletools.lock_utils.get_lock_age_seconds(self.lockdir, getattr(self.args, "verbose", 0))
 
     def _read_lock_info(self):
         """Read hostname:pid from lock file (uses shared lock_utils).
@@ -179,9 +178,7 @@ class LockdirLock:
                     f"ERROR: Stale lock from {lock_info} cannot be removed",
                     file=sys.stderr,
                 )
-                print(
-                    f"ERROR: Check permissions on: {self.lockdir}", file=sys.stderr
-                )
+                print(f"ERROR: Check permissions on: {self.lockdir}", file=sys.stderr)
                 print(
                     "ERROR: Parent directory should be SGID with group write permissions",
                     file=sys.stderr,
@@ -275,9 +272,7 @@ class LockdirLock:
                         pass  # Best effort, may already be gone
 
                     if attempt == 3:
-                        raise RuntimeError(
-                            f"Failed to acquire lock after 3 attempts: {self.lockdir}"
-                        ) from e
+                        raise RuntimeError(f"Failed to acquire lock after 3 attempts: {self.lockdir}") from e
 
                     if self.args.verbose >= 1:
                         print(
@@ -331,9 +326,7 @@ class CIFSLock:
         # Acquire exclusive lock using O_EXCL
         while True:
             try:
-                excl_fd = os.open(
-                    self.lockfile_excl, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666
-                )
+                excl_fd = os.open(self.lockfile_excl, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
                 # Write PID
                 os.write(excl_fd, f"{os.getpid()}\n".encode())
                 os.close(excl_fd)
@@ -354,9 +347,7 @@ class CIFSLock:
                 os.unlink(self.lockfile)
         except OSError as e:
             if self.args.verbose >= 2:
-                print(
-                    f"Warning: Failed to release CIFS lock: {e}", file=sys.stderr
-                )
+                print(f"Warning: Failed to release CIFS lock: {e}", file=sys.stderr)
 
 
 class FlockLock:
@@ -395,7 +386,7 @@ class FlockLock:
                 fcntl.flock(self.fd, fcntl.LOCK_EX)
                 self.use_flock = True
                 return
-            except (OSError, IOError):
+            except OSError:
                 # flock failed, fall through to polling fallback
                 pass
 
@@ -405,9 +396,7 @@ class FlockLock:
         # Fallback: polling with O_EXCL
         while True:
             try:
-                pid_fd = os.open(
-                    self.lockfile_pid, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666
-                )
+                pid_fd = os.open(self.lockfile_pid, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
                 os.write(pid_fd, f"{os.getpid()}\n".encode())
                 os.close(pid_fd)
                 return
@@ -466,8 +455,7 @@ class FileLock:
             # Filesystem detection failed - default to flock (safest/most portable)
             if getattr(args, "verbose", 0) >= 2:
                 print(
-                    f"Warning: Filesystem detection failed for {target_file}, "
-                    f"defaulting to flock: {e}",
+                    f"Warning: Filesystem detection failed for {target_file}, defaulting to flock: {e}",
                     file=sys.stderr,
                 )
             strategy = "flock"

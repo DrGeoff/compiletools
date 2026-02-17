@@ -1,5 +1,6 @@
-import sys
 import os
+import sys
+
 import pytest
 
 # Add the parent directory to sys.path so we can import ct modules
@@ -20,8 +21,9 @@ class TestGlobalHashRegistry:
 
     def test_file_analyzer_raises_on_missing(self):
         """Verify file_analyzer fails fast when file missing from registry."""
-        from compiletools.file_analyzer import analyze_file, set_analyzer_args
         import argparse
+
+        from compiletools.file_analyzer import analyze_file, set_analyzer_args
 
         args = argparse.Namespace(verbose=0)
         set_analyzer_args(args)
@@ -33,9 +35,8 @@ class TestGlobalHashRegistry:
 
     def test_simple_preprocessor_raises_on_missing(self):
         """Verify simple_preprocessor fails fast when file missing from registry."""
-        import stringzilla as sz
-        from compiletools.simple_preprocessor import SimplePreprocessor
         from compiletools.file_analyzer import FileAnalysisResult
+        from compiletools.simple_preprocessor import SimplePreprocessor
 
         # Create SimplePreprocessor instance with empty macro state
         preprocessor = SimplePreprocessor(defined_macros={})
@@ -55,7 +56,7 @@ class TestGlobalHashRegistry:
             bytes_analyzed=100,
             was_truncated=False,
             # Optional field with fake hash
-            content_hash=fake_hash
+            content_hash=fake_hash,
         )
 
         # Should raise FileNotFoundError when looking up filepath from fake hash

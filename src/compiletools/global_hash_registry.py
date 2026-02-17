@@ -28,34 +28,35 @@ add a unique comment to each file explaining its purpose. For example:
 This makes each file's purpose explicit and ensures each has a unique hash.
 """
 
-from typing import Dict, Optional, List
-import threading
-import os
 import hashlib
-from functools import lru_cache
+import os
+import threading
+from functools import cache
+from typing import Optional
+
 from compiletools import wrappedos
 
 # Module-level cache: None = not loaded, Dict = loaded hashes
-_HASHES: Optional[Dict[str, str]] = None
-_REVERSE_HASHES: Optional[Dict[str, List[str]]] = None  # hash -> list of filepaths cache
+_HASHES: Optional[dict[str, str]] = None
+_REVERSE_HASHES: Optional[dict[str, list[str]]] = None  # hash -> list of filepaths cache
 _lock = threading.Lock()
 
 # Hash operation counters
-_hash_ops = {'registry_hits': 0, 'computed_hashes': 0}
+_hash_ops = {"registry_hits": 0, "computed_hashes": 0}
 
 
 def _compute_external_file_hash(filepath: str) -> Optional[str]:
     """Compute git blob hash for a file using git's algorithm."""
     global _hash_ops
-    _hash_ops['computed_hashes'] += 1
+    _hash_ops["computed_hashes"] += 1
     try:
-        with open(filepath, 'rb') as f:
+        with open(filepath, "rb") as f:
             content = f.read()
 
         # Git blob hash: sha1("blob {size}\0{content}")
         blob_data = f"blob {len(content)}\0".encode() + content
         return hashlib.sha1(blob_data).hexdigest()
-    except (OSError, IOError):
+    except OSError:
         return None
 
 
@@ -66,6 +67,7 @@ def load_hashes(verbose: int = 0) -> None:
         verbose: Verbosity level (0 = silent, higher = more output)
     """
     import gc
+
     global _HASHES, _REVERSE_HASHES
 
     if _HASHES is not None:
@@ -108,7 +110,7 @@ def load_hashes(verbose: int = 0) -> None:
             _REVERSE_HASHES = {}
 
 
-@lru_cache(maxsize=None)
+@cache
 def get_file_hash(filepath: str) -> str:
     """Get hash for a file, loading hashes on first call.
 
@@ -135,12 +137,13 @@ def get_file_hash(filepath: str) -> str:
 
     if result is not None:
         global _hash_ops
-        _hash_ops['registry_hits'] += 1
+        _hash_ops["registry_hits"] += 1
 
     # If not found and path was relative, try relative to git root
     if result is None and not os.path.isabs(filepath):
         try:
             from compiletools.git_utils import find_git_root
+
             git_root = find_git_root()
             git_relative_path = os.path.join(git_root, filepath)
             abs_git_path = wrappedos.realpath(git_relative_path)
@@ -171,23 +174,22 @@ def get_file_hash(filepath: str) -> str:
 # Public API functions for compatibility
 
 
-
-def get_tracked_files() -> Dict[str, str]:
+def get_tracked_files() -> dict[str, str]:
     """Get all file paths and their hashes from the registry."""
     if _HASHES is None:
         load_hashes()
     return _HASHES
 
 
-def get_registry_stats() -> Dict[str, int]:
+def get_registry_stats() -> dict[str, int]:
     """Get global registry statistics."""
     if _HASHES is None:
-        return {'total_files': 0, 'is_loaded': False}
+        return {"total_files": 0, "is_loaded": False}
     return {
-        'total_files': len(_HASHES),
-        'is_loaded': True,
-        'registry_hits': _hash_ops['registry_hits'],
-        'computed_hashes': _hash_ops['computed_hashes']
+        "total_files": len(_HASHES),
+        "is_loaded": True,
+        "registry_hits": _hash_ops["registry_hits"],
+        "computed_hashes": _hash_ops["computed_hashes"],
     }
 
 

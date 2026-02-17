@@ -1,7 +1,7 @@
 import importlib
 import sys
 from pathlib import Path
-from typing import Any, List
+from typing import Any
 
 import compiletools
 from compiletools.testhelper import samplesdir
@@ -25,11 +25,10 @@ def test_filelist_lists_sample_files_and_imports_dependencies(capsys: Any) -> No
     assert exit_code == 0
 
     captured = capsys.readouterr()
-    output_lines: List[str] = [line for line in captured.out.splitlines() if line]
+    output_lines: list[str] = [line for line in captured.out.splitlines() if line]
 
     expected_files = sorted(
-        str((sample_dir / name).resolve())
-        for name in ("helloworld_c.c", "helloworld_cpp.cpp", "test_cflags.c")
+        str((sample_dir / name).resolve()) for name in ("helloworld_c.c", "helloworld_cpp.cpp", "test_cflags.c")
     )
 
     assert output_lines == expected_files

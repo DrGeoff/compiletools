@@ -6,6 +6,7 @@ applied to all tests in src/compiletools/ and subdirectories.
 
 import os
 import sys
+
 import pytest
 
 
@@ -35,11 +36,11 @@ def ensure_lock_helpers_in_path():
     conftest_dir = os.path.dirname(__file__)
     repo_root = os.path.dirname(os.path.dirname(conftest_dir))
 
-    helpers_to_check = ['ct-lock-helper', 'ct-lock-helper-py']
+    helpers_to_check = ["ct-lock-helper", "ct-lock-helper-py"]
     helpers_found = []
 
     # Check each helper and add scripts/ directory to PATH if any are found there
-    scripts_dir = os.path.join(repo_root, 'scripts')
+    scripts_dir = os.path.join(repo_root, "scripts")
     path_modified = False
     for helper in helpers_to_check:
         if not shutil.which(helper):
@@ -48,7 +49,7 @@ def ensure_lock_helpers_in_path():
                 helpers_found.append(helper)
                 if not path_modified:
                     # Only modify PATH once, even if multiple helpers found
-                    os.environ['PATH'] = scripts_dir + os.pathsep + os.environ.get('PATH', '')
+                    os.environ["PATH"] = scripts_dir + os.pathsep + os.environ.get("PATH", "")
                     path_modified = True
 
     if helpers_found:
@@ -78,20 +79,21 @@ def pkgconfig_env():
     - modified.pc: For testing cache invalidation and change detection
     """
     from pathlib import Path
+
     from compiletools.testhelper import samplesdir
 
     # Save original PKG_CONFIG_PATH
-    original_pkg_config_path = os.environ.get('PKG_CONFIG_PATH')
+    original_pkg_config_path = os.environ.get("PKG_CONFIG_PATH")
 
     # Set PKG_CONFIG_PATH to shared pkgs directory
     shared_pkgconfig = Path(samplesdir()) / "pkgs"
-    os.environ['PKG_CONFIG_PATH'] = str(shared_pkgconfig)
+    os.environ["PKG_CONFIG_PATH"] = str(shared_pkgconfig)
 
     # Yield to test
     yield str(shared_pkgconfig)
 
     # Restore original PKG_CONFIG_PATH
     if original_pkg_config_path is None:
-        os.environ.pop('PKG_CONFIG_PATH', None)
+        os.environ.pop("PKG_CONFIG_PATH", None)
     else:
-        os.environ['PKG_CONFIG_PATH'] = original_pkg_config_path
+        os.environ["PKG_CONFIG_PATH"] = original_pkg_config_path

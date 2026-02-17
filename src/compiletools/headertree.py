@@ -1,49 +1,43 @@
 #!/usr/bin/env python3
-import sys
-import codecs
-from collections import defaultdict
-from collections import Counter
 import math
-import compiletools.wrappedos
+import sys
+from collections import Counter, defaultdict
+
+import compiletools.apptools
+import compiletools.configutils
 import compiletools.headerdeps
 import compiletools.magicflags
 import compiletools.tree as tree
-import compiletools.configutils
-import compiletools.apptools
+import compiletools.wrappedos
 
 
 class FlatStyle(compiletools.git_utils.NameAdjuster):
-
-    """ Print a newline delimited list of header files """
+    """Print a newline delimited list of header files"""
 
     def __init__(self, tree_, args):
         compiletools.git_utils.NameAdjuster.__init__(self, args)
         tree.depth_first_traverse(node=tree_, pre_traverse_function=self.print_wrapper)
 
     def print_wrapper(self, key):
-        """ Wrap the builtin print so that it can be passed to the tree.depth_first_traverse """
+        """Wrap the builtin print so that it can be passed to the tree.depth_first_traverse"""
         print(self.adjust(key))
 
 
 class DepthStyle(compiletools.git_utils.NameAdjuster):
-
-    """ Print the include tree with some sort of indicator of depth """
+    """Print the include tree with some sort of indicator of depth"""
 
     def __init__(self, tree_, args, indicator="--"):
         compiletools.git_utils.NameAdjuster.__init__(self, args)
         self.indicator = indicator
-        tree.depth_first_traverse(
-            node=tree_, pre_traverse_function=self.depth_indicator_print
-        )
+        tree.depth_first_traverse(node=tree_, pre_traverse_function=self.depth_indicator_print)
 
     def depth_indicator_print(self, key, depth):
-        """ Print the filenames with a leading indicator to denote the depth of the file from the root """
+        """Print the filenames with a leading indicator to denote the depth of the file from the root"""
         print(self.indicator * depth + self.adjust(key))
 
 
 class DotStyle(compiletools.git_utils.NameAdjuster):
-
-    """ Print the include tree in graphviz dot format. """
+    """Print the include tree in graphviz dot format."""
 
     def __init__(self, tree_, args):
         compiletools.git_utils.NameAdjuster.__init__(self, args)
@@ -70,8 +64,7 @@ class DotStyle(compiletools.git_utils.NameAdjuster):
 
 
 class TreeStyle(compiletools.git_utils.NameAdjuster):
-
-    """ Show the cumulative cost and self cost of including the header files """
+    """Show the cumulative cost and self cost of including the header files"""
 
     # TODO: There are now four different statistics that TreeStyle calculates and
     #       we can easily imagine more.  And by embedding the statistics in here
@@ -143,26 +136,20 @@ class TreeStyle(compiletools.git_utils.NameAdjuster):
 
     def print(self):
         if self.verbose >= 1:
-            print(
-                "First column is the cumulative count of headers (recursively) included by the filename."
-            )
-            print(
-                "Second column is the self count.  That is, the headers directly included by the filename."
-            )
-            print(
-                "Third column is the number of times the file is duplicated in this tree."
-            )
+            print("First column is the cumulative count of headers (recursively) included by the filename.")
+            print("Second column is the self count.  That is, the headers directly included by the filename.")
+            print("Third column is the number of times the file is duplicated in this tree.")
             print("Fourth column is the number of unique parents the file has.")
 
         def _righttreechars(child_index):
-            return {1: u"\u2514\u2500"}.get(child_index, u"\u251c\u2500")
+            return {1: "\u2514\u2500"}.get(child_index, "\u251c\u2500")
 
         def _internaltreechars(child_index):
-            return {0: u"  "}.get(child_index, u"\u2502 ")
+            return {0: "  "}.get(child_index, "\u2502 ")
 
         def _digits_str(max_value):
-            """ How many digits are in the number when represented in base 10. Return as a string. """
-            return str(1 + int(math.floor(math.log10(max_value))))
+            """How many digits are in the number when represented in base 10. Return as a string."""
+            return str(1 + math.floor(math.log10(max_value)))
 
         cumulative_format_str = "{c:" + _digits_str(self.max_cumulative) + "d}"
         self_format_str = "{s:" + _digits_str(self.max_self) + "d}"
@@ -211,9 +198,6 @@ class TreeStyle(compiletools.git_utils.NameAdjuster):
 def main(argv=None):
     # Python 3 stdout accepts unicode by default
     # So we only need to force python 2 stdout to accept unicode
-    if sys.version_info[0] < 3:
-        UTF8Writer = codecs.getwriter("utf8")
-        sys.stdout = UTF8Writer(sys.stdout)
 
     cap = compiletools.apptools.create_parser(
         "Create a tree of header dependencies starting at a given C/C++ file", argv=argv
@@ -233,17 +217,15 @@ def main(argv=None):
 
     if not compiletools.wrappedos.isfile(args.filename[0]):
         sys.stderr.write(
-            "The supplied filename ({0}) isn't a file.  Did you spell it correctly?  Another possible reason is that you didn't supply a filename and that configargparse has picked an unused positional argument from the config file.\n".format(
-                args.filename[0]
-            )
+            f"The supplied filename ({args.filename[0]}) isn't a file. Did you spell it "
+            f"correctly? Another possible reason is that you didn't supply a filename and "
+            f"that configargparse has picked an unused positional argument from the config file.\n"
         )
         exit(1)
 
     # Run magicflags two-pass discovery to converge macro state
     magicparser.parse(args.filename[0])
-    macro_state_key = magicparser.get_final_macro_state_key(
-        compiletools.wrappedos.realpath(args.filename[0])
-    )
+    macro_state_key = magicparser.get_final_macro_state_key(compiletools.wrappedos.realpath(args.filename[0]))
     inctree = ht.generatetree(args.filename[0], macro_cache_key=macro_state_key)
     styleclass = globals()[args.style.title() + "Style"]
 
@@ -251,14 +233,12 @@ def main(argv=None):
     # tree as a side effect
     try:
         styleclass(inctree, args)
-    except IOError:
+    except OSError:
         pass
 
     return 0
 
 
 if __name__ == "__main__":
-    cap = compiletools.apptools.create_parser(
-        "Create a tree of header dependencies starting at a given C/C++ file."
-    )
+    cap = compiletools.apptools.create_parser("Create a tree of header dependencies starting at a given C/C++ file.")
     sys.exit(main())

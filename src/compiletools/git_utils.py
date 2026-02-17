@@ -1,13 +1,13 @@
+import functools
 import os
 import subprocess
 
-import functools
-import compiletools.utils
 import compiletools.apptools
+import compiletools.utils
 
 
 def find_git_root(filename=None):
-    """ Return the absolute path of .git for the given filename """
+    """Return the absolute path of .git for the given filename"""
     # Note: You can't functools.lru_cache(maxsize=None) this one since the None parameter will
     # return different results as the cwd changes
     if filename:
@@ -17,9 +17,9 @@ def find_git_root(filename=None):
     return _find_git_root(directory)
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _find_git_root(directory):
-    """ Internal function to find the git root but cache it against the given directory """
+    """Internal function to find the git root but cache it against the given directory"""
     # Define the git root of a project that isn't under version control to be the directory
     gitroot = directory
     try:
@@ -28,7 +28,7 @@ def _find_git_root(directory):
             ["git", "rev-parse", "--show-toplevel"],
             stderr=subprocess.STDOUT,
             universal_newlines=True,
-            cwd=directory  # Run git command from the specified directory
+            cwd=directory,  # Run git command from the specified directory
         ).strip("\n")
     except (subprocess.CalledProcessError, OSError):
         # A CalledProcessError exception means we aren't in a real git repository.
@@ -42,11 +42,11 @@ def _find_git_root(directory):
                 gitroot = trialgitroot
                 break
             trialgitroot = os.path.dirname(trialgitroot)
-    
+
     return gitroot
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def strip_git_root(filename):
     size = len(find_git_root(filename)) + 1
     return filename[size:]
@@ -57,21 +57,20 @@ def clear_cache():
     strip_git_root.cache_clear()
 
 
-class Project(object):
+class Project:
     def __init__(self, args):
         self._args = args
 
     def pathname(self, filename):
-        """ Return the project part of the given filename """
+        """Return the project part of the given filename"""
         if self._args.git_root:
             return strip_git_root(filename)
         else:
             return compiletools.utils.remove_mount(filename)
 
 
-class NameAdjuster(object):
-
-    """ Conditionally remove the git root from a given filename """
+class NameAdjuster:
+    """Conditionally remove the git root from a given filename"""
 
     def __init__(self, args):
         self._args = args
@@ -92,9 +91,9 @@ class NameAdjuster(object):
         else:
             return name
 
+
 def main(argv=None):
     cap = compiletools.apptools.create_parser("Find git repository root", argv=argv, include_config=False)
     cap.parse_args(args=argv)
     print(compiletools.git_utils.find_git_root())
     return 0
-

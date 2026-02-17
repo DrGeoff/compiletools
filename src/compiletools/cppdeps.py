@@ -1,15 +1,14 @@
 import sys
-import compiletools.wrappedos
-import compiletools.utils
-import compiletools.headerdeps
-import compiletools.configutils
+
 import compiletools.apptools
+import compiletools.configutils
+import compiletools.headerdeps
+import compiletools.utils
+import compiletools.wrappedos
 
 
 def main(argv=None):
-    cap = compiletools.apptools.create_parser(
-        "Show C/C++ header dependencies using cpp -MM", argv=argv
-    )
+    cap = compiletools.apptools.create_parser("Show C/C++ header dependencies using cpp -MM", argv=argv)
     cap.add("filename", help='File to use in "$CPP $CPPFLAGS -MM filename"', nargs="+")
 
     # This will add the common arguments as a side effect
@@ -19,11 +18,11 @@ def main(argv=None):
 
     if not compiletools.wrappedos.isfile(args.filename[0]):
         sys.stderr.write(
-            "The supplied filename ({0}) isn't a file. "
+            f"The supplied filename ({args.filename[0]}) isn't a file. "
             " Did you spell it correctly?  "
             "Another possible reason is that you didn't supply a filename and "
             "that configargparse has picked an unused positional argument from "
-            "the config file.\n".format(args.filename[0])
+            "the config file.\n"
         )
         return 1
 

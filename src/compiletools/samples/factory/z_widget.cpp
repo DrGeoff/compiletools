@@ -3,7 +3,7 @@
 
 static widget_factory_registration<z_widget> wfr("z");
 
-std::string z_widget::as_string() const 
+std::string z_widget::as_string() const
 {
     return "z";
 }

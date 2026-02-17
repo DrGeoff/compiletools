@@ -162,5 +162,3 @@ class TestOrderedUnique:
         result = utils.ordered_difference(source, subtract)
         expected = ["a", "c", "e"]
         assert result == expected
-
-

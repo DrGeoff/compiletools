@@ -5,11 +5,12 @@ Handles both local and remote lock verification via SSH.
 """
 
 import os
-import sys
 import socket
+import sys
+
+import compiletools.lock_utils
 import compiletools.locking
 import compiletools.wrappedos
-import compiletools.lock_utils
 
 
 class LockCleaner:
@@ -23,10 +24,10 @@ class LockCleaner:
         """
         self.args = args
         self.hostname = socket.gethostname()
-        self.dry_run = getattr(args, 'dry_run', False)
-        self.ssh_timeout = getattr(args, 'ssh_timeout', 5)
-        self.min_lock_age = getattr(args, 'min_lock_age', args.lock_cross_host_timeout)
-        self.verbose = getattr(args, 'verbose', 1)
+        self.dry_run = getattr(args, "dry_run", False)
+        self.ssh_timeout = getattr(args, "ssh_timeout", 5)
+        self.min_lock_age = getattr(args, "min_lock_age", args.lock_cross_host_timeout)
+        self.verbose = getattr(args, "verbose", 1)
 
     def _get_lock_age_seconds(self, lockdir):
         """Get lock age in seconds (uses shared lock_utils).
@@ -117,6 +118,7 @@ class LockCleaner:
         """
         try:
             import shutil
+
             shutil.rmtree(lockdir, ignore_errors=True)
 
             if os.path.exists(lockdir):
@@ -137,14 +139,7 @@ class LockCleaner:
         Returns:
             dict: Statistics about locks found/cleaned
         """
-        stats = {
-            'total': 0,
-            'active': 0,
-            'stale_removed': 0,
-            'stale_failed': 0,
-            'unknown': 0,
-            'skipped_young': 0
-        }
+        stats = {"total": 0, "active": 0, "stale_removed": 0, "stale_failed": 0, "unknown": 0, "skipped_young": 0}
 
         if not os.path.exists(objdir):
             print(f"ERROR: Object directory does not exist: {objdir}", file=sys.stderr)
@@ -156,13 +151,13 @@ class LockCleaner:
         print()
 
         # Find all .lockdir directories
-        for root, dirs, files in os.walk(objdir):
+        for root, dirs, _files in os.walk(objdir):
             for dirname in dirs:
-                if not dirname.endswith('.lockdir'):
+                if not dirname.endswith(".lockdir"):
                     continue
 
                 lockdir = os.path.join(root, dirname)
-                stats['total'] += 1
+                stats["total"] += 1
 
                 lock_host, lock_pid = self._read_lock_info(lockdir)
                 lock_age = self._get_lock_age_seconds(lockdir)
@@ -175,7 +170,7 @@ class LockCleaner:
                 # Skip young locks (respect timeout policy)
                 if lock_age < self.min_lock_age:
                     print(f"  Status: SKIPPED (younger than {self.min_lock_age}s threshold)")
-                    stats['skipped_young'] += 1
+                    stats["skipped_young"] += 1
                     print()
                     continue
 
@@ -186,18 +181,18 @@ class LockCleaner:
                 if is_stale:
                     if self.dry_run:
                         print("  Action: Would remove lockdir")
-                        stats['stale_removed'] += 1
+                        stats["stale_removed"] += 1
                     else:
                         if self._remove_lockdir(lockdir):
                             print("  Action: REMOVED lockdir")
-                            stats['stale_removed'] += 1
+                            stats["stale_removed"] += 1
                         else:
                             print("  Action: FAILED to remove lockdir")
-                            stats['stale_failed'] += 1
+                            stats["stale_failed"] += 1
                 elif "UNKNOWN" in status:
-                    stats['unknown'] += 1
+                    stats["unknown"] += 1
                 else:
-                    stats['active'] += 1
+                    stats["active"] += 1
 
                 print()
 
@@ -214,9 +209,9 @@ class LockCleaner:
         print(f"  Total locks found: {stats['total']}")
         print(f"  Active locks: {stats['active']}")
         print(f"  Stale locks removed: {stats['stale_removed']}")
-        if stats['stale_failed'] > 0:
+        if stats["stale_failed"] > 0:
             print(f"  Stale locks failed to remove: {stats['stale_failed']}")
-        if stats['unknown'] > 0:
+        if stats["unknown"] > 0:
             print(f"  Unknown status (SSH failed): {stats['unknown']}")
-        if stats['skipped_young'] > 0:
+        if stats["skipped_young"] > 0:
             print(f"  Young locks skipped: {stats['skipped_young']}")

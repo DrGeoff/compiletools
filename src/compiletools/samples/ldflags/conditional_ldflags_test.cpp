@@ -2,7 +2,7 @@
 
 #ifndef USE_PRODUCTION_LIBS
 //#LDFLAGS=-ldebug_library -ltest_framework
-#else  
+#else
 //#LDFLAGS=-lproduction_library -loptimized_framework
 #endif
 

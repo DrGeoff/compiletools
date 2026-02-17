@@ -1,19 +1,19 @@
 # vim: set filetype=python:
+import builtins
 import os
 import sys
-from io import open
 
 import stringzilla as sz
 
-import compiletools.utils
-import compiletools.wrappedos
 import compiletools.apptools
-import compiletools.headerdeps
-import compiletools.magicflags
-import compiletools.hunter
-import compiletools.namer
 import compiletools.configutils
 import compiletools.filesystem_utils
+import compiletools.headerdeps
+import compiletools.hunter
+import compiletools.magicflags
+import compiletools.namer
+import compiletools.utils
+import compiletools.wrappedos
 
 
 class Rule:
@@ -42,10 +42,10 @@ class Rule:
         self.phony = phony
 
     def __repr__(self):
-        return "%s(%r)" % (self.__class__, self.__dict__)
+        return f"{self.__class__}({self.__dict__!r})"
 
     def __str__(self):
-        return "%r" % self.__dict__
+        return f"{self.__dict__!r}"
 
     def __eq__(self, other):
         return self.target == other.target
@@ -70,7 +70,7 @@ class Rule:
         makefile.write("\n")
 
 
-class LinkRuleCreator(object):
+class LinkRuleCreator:
     """Base class to provide common infrastructure for the creation of
     specific link rules by the derived classes.
     """
@@ -100,14 +100,16 @@ class LinkRuleCreator(object):
 
         allprerequisites = " ".join(extraprereqs)
         # Get macro state hash and dep hash for each source file (required for new naming scheme)
-        object_names = compiletools.utils.ordered_unique([
-            self.namer.object_pathname(
-                source,
-                self.hunter.macro_state_hash(source),
-                self.namer.compute_dep_hash(self.hunter.header_dependencies(source))
-            )
-            for source in completesources
-        ])
+        object_names = compiletools.utils.ordered_unique(
+            [
+                self.namer.object_pathname(
+                    source,
+                    self.hunter.macro_state_hash(source),
+                    self.namer.compute_dep_hash(self.hunter.header_dependencies(source)),
+                )
+                for source in completesources
+            ]
+        )
         allprerequisites += " "
         allprerequisites += " ".join(object_names)
 
@@ -118,11 +120,13 @@ class LinkRuleCreator(object):
                 all_magic_ldflags.extend(magic_flags.get(sz.Str("LDFLAGS"), []))
                 # LINKFLAGS is now merged into LDFLAGS by magicflags.py
         recipe = ""
-        
+
         if self.args.verbose >= 1:
             recipe += " ".join(["+@echo ...", outputname, ";"])
-        
-        link_flags = [linker, "-o", outputname] + list(object_names) + [str(flag) for flag in all_magic_ldflags] + [linkerflags]
+
+        link_flags = (
+            [linker, "-o", outputname] + list(object_names) + [str(flag) for flag in all_magic_ldflags] + [linkerflags]
+        )
         link_cmd = " ".join(link_flags)
         recipe += link_cmd
         return Rule(target=outputname, prerequisites=allprerequisites, recipe=recipe)
@@ -161,11 +165,15 @@ class ExeLinkRuleCreator(LinkRuleCreator):
             linkerflags += " -L"
             linkerflags += self.namer.executable_dir()
         if self.args.static:
-            staticlibrarypathname = self.namer.staticlibrary_pathname(compiletools.wrappedos.realpath(self.args.static[0]))
+            staticlibrarypathname = self.namer.staticlibrary_pathname(
+                compiletools.wrappedos.realpath(self.args.static[0])
+            )
             libname = os.path.join(self.namer.executable_dir(), os.path.basename(staticlibrarypathname))
             extraprereqs.append(libname)
         if self.args.dynamic:
-            dynamiclibrarypathname = self.namer.dynamiclibrary_pathname(compiletools.wrappedos.realpath(self.args.dynamic[0]))
+            dynamiclibrarypathname = self.namer.dynamiclibrary_pathname(
+                compiletools.wrappedos.realpath(self.args.dynamic[0])
+            )
             libname = os.path.join(self.namer.executable_dir(), os.path.basename(dynamiclibrarypathname))
             extraprereqs.append(libname)
 
@@ -220,7 +228,8 @@ class MakefileCreator:
         # Check if ct-lock-helper is available when using shared_objects
         if args.shared_objects:
             import shutil
-            if not shutil.which('ct-lock-helper'):
+
+            if not shutil.which("ct-lock-helper"):
                 print("ERROR: ct-lock-helper not found in PATH", file=sys.stderr)
                 print("", file=sys.stderr)
                 print("The --shared-objects flag requires ct-lock-helper to be installed.", file=sys.stderr)
@@ -258,7 +267,8 @@ class MakefileCreator:
         )
         cap.add(
             "--build-only-changed",
-            help="Only build the binaries depending on the source or header absolute filenames in this space-delimited list.",
+            help="Only build the binaries depending on the source or header absolute "
+            "filenames in this space-delimited list.",
         )
         compiletools.utils.add_boolean_argument(
             parser=cap,
@@ -272,7 +282,8 @@ class MakefileCreator:
             name="serialise-tests",
             dest="serialisetests",
             default=False,
-            help="Force the unit tests to run serially rather than in parallel. Defaults to false because it is slower.",
+            help="Force the unit tests to run serially rather than in parallel. "
+            "Defaults to false because it is slower.",
         )
 
     def _detect_filesystem_type(self):
@@ -285,14 +296,15 @@ class MakefileCreator:
     def _detect_os_type(self):
         """Detect OS type once for platform-specific code generation"""
         import platform
+
         system = platform.system().lower()
-        if 'linux' in system:
-            return 'linux'
-        elif 'darwin' in system or 'bsd' in system:
-            return 'bsd'
+        if "linux" in system:
+            return "linux"
+        elif "darwin" in system or "bsd" in system:
+            return "bsd"
         else:
             # Default to linux for unknown platforms
-            return 'linux'
+            return "linux"
 
     def _validate_umask_for_shared_objects(self):
         """Log warning if umask may affect multi-user shared-objects mode"""
@@ -308,7 +320,7 @@ class MakefileCreator:
                 f"  Single-user mode: Works fine (you can always remove your own locks)\n"
                 f"  Multi-user mode: Requires umask 0002 or 0007 for cross-user lock cleanup\n"
                 f"  If using multi-user cache, set: umask 0002",
-                file=sys.stderr
+                file=sys.stderr,
             )
 
     def _uptodate(self):
@@ -325,21 +337,19 @@ class MakefileCreator:
             # If the Makefile doesn't exist then we aren't up to date
             if self.args.verbose > 7:
                 print("Regenerating Makefile.")
-                print(
-                    "Could not determine mtime for {}. Assuming that it doesn't exist.".format(self.args.makefilename)
-                )
+                print(f"Could not determine mtime for {self.args.makefilename}. Assuming that it doesn't exist.")
             return False
 
         # See how the Makefile was previously generated
         expected = "".join(["# Makefile generated by ", str(self.args)])
 
-        with open(self.args.makefilename, mode="r", encoding="utf-8") as mfile:
+        with builtins.open(self.args.makefilename, encoding="utf-8") as mfile:
             previous = mfile.readline().strip()
             if previous != expected:
                 if self.args.verbose > 7:
                     print("Regenerating Makefile.")
-                    print('Previous generation line was "{}".'.format(previous))
-                    print('Current  generation line  is "{}".'.format(expected))
+                    print(f'Previous generation line was "{previous}".')
+                    print(f'Current  generation line  is "{expected}".')
                 return False
             elif self.args.verbose > 9:
                 print("Makefile header line is identical.  Testing mod time of all the files now.")
@@ -352,14 +362,13 @@ class MakefileCreator:
                     if self.args.verbose > 7:
                         print("Regenerating Makefile.")
                         print(
-                            "mtime {} for {} is newer than mtime for the Makefile".format(compiletools.wrappedos.getmtime(ff), ff)
+                            f"mtime {compiletools.wrappedos.getmtime(ff)} for {ff} is newer than mtime for the Makefile"
                         )
                     return False
                 elif self.args.verbose > 9:
                     print(
-                        "mtime {} for {} is older than mtime for the Makefile. This wont trigger regeneration of the Makefile.".format(
-                            compiletools.wrappedos.getmtime(ff), ff
-                        )
+                        f"mtime {compiletools.wrappedos.getmtime(ff)} for {ff} is older than "
+                        f"mtime for the Makefile. This wont trigger regeneration of the Makefile."
                     )
 
         if self.args.verbose > 9:
@@ -375,7 +384,8 @@ class MakefileCreator:
             target: Target file (e.g., "$@")
 
         Returns:
-            Complete command with locking (e.g., "ct-lock-helper compile --target=$@ --strategy=lockdir -- gcc -c file.c")
+            Complete command with locking
+            (e.g., "ct-lock-helper compile --target=$@ --strategy=lockdir -- gcc -c file.c")
         """
         if not self.args.shared_objects:
             return compile_cmd + " -o " + target
@@ -385,20 +395,20 @@ class MakefileCreator:
         # Build environment variables for lock configuration
         env_vars = []
 
-        if strategy == 'lockdir':
+        if strategy == "lockdir":
             sleep_interval = self._get_lockdir_sleep_interval()
-            env_vars.append(f'CT_LOCK_SLEEP_INTERVAL={sleep_interval}')
-        elif strategy == 'cifs':
-            env_vars.append(f'CT_LOCK_SLEEP_INTERVAL_CIFS={self.args.sleep_interval_cifs}')
+            env_vars.append(f"CT_LOCK_SLEEP_INTERVAL={sleep_interval}")
+        elif strategy == "cifs":
+            env_vars.append(f"CT_LOCK_SLEEP_INTERVAL_CIFS={self.args.sleep_interval_cifs}")
         else:  # flock
-            env_vars.append(f'CT_LOCK_SLEEP_INTERVAL_FLOCK={self.args.sleep_interval_flock_fallback}')
+            env_vars.append(f"CT_LOCK_SLEEP_INTERVAL_FLOCK={self.args.sleep_interval_flock_fallback}")
 
-        env_vars.append(f'CT_LOCK_WARN_INTERVAL={self.args.lock_warn_interval}')
-        env_vars.append(f'CT_LOCK_TIMEOUT={self.args.lock_cross_host_timeout}')
+        env_vars.append(f"CT_LOCK_WARN_INTERVAL={self.args.lock_warn_interval}")
+        env_vars.append(f"CT_LOCK_TIMEOUT={self.args.lock_cross_host_timeout}")
 
         env_prefix = " ".join(env_vars) + " " if env_vars else ""
 
-        return f'{env_prefix}ct-lock-helper compile --target={target} --strategy={strategy} -- {compile_cmd}'
+        return f"{env_prefix}ct-lock-helper compile --target={target} --strategy={strategy} -- {compile_cmd}"
 
     def _get_locking_recipe_prefix(self):
         """Generate filesystem-specific locking code prefix (deprecated, use _wrap_compile_with_lock)"""
@@ -667,11 +677,7 @@ class MakefileCreator:
                     targets.add(rule.target)
                     done = False
                     if self.args.verbose >= 3:
-                        print(
-                            "Building {} because it depends on changed: {}".format(
-                                rule.target, list(relevant_changed_files)
-                            )
-                        )
+                        print(f"Building {rule.target} because it depends on changed: {list(relevant_changed_files)}")
             new_rules = {}
             for rule in self.rules.values():
                 if not rule.phony:
@@ -722,10 +728,18 @@ class MakefileCreator:
         magic_cpp_flags = magicflags.get(sz.Str("CPPFLAGS"), [])
         if compiletools.utils.is_c_source(filename):
             magic_c_flags = magicflags.get(sz.Str("CFLAGS"), [])
-            compile_flags = [self.args.CC, self.args.CFLAGS] + [str(flag) for flag in magic_cpp_flags] + [str(flag) for flag in magic_c_flags]
+            compile_flags = (
+                [self.args.CC, self.args.CFLAGS]
+                + [str(flag) for flag in magic_cpp_flags]
+                + [str(flag) for flag in magic_c_flags]
+            )
         else:
             magic_cxx_flags = magicflags.get(sz.Str("CXXFLAGS"), [])
-            compile_flags = [self.args.CXX, self.args.CXXFLAGS] + [str(flag) for flag in magic_cpp_flags] + [str(flag) for flag in magic_cxx_flags]
+            compile_flags = (
+                [self.args.CXX, self.args.CXXFLAGS]
+                + [str(flag) for flag in magic_cpp_flags]
+                + [str(flag) for flag in magic_cxx_flags]
+            )
 
         # Build compile command without -o flag (ct-lock-helper adds it)
         compile_cmd_base = " ".join(compile_flags + ["-c", filename])
@@ -745,7 +759,6 @@ class MakefileCreator:
             recipe=recipe,
         )
 
-
     def _create_link_rules_for_sources(self, sources, exe_static_dynamic, libraryname=None):
         """For all the given source files return the set of rules required
         for the Makefile that will _link_ the source files into executables.
@@ -758,7 +771,7 @@ class MakefileCreator:
         # Output all the link rules
         if self.args.verbose >= 3:
             print("Creating link rule for ", sources)
-        
+
         linkrulecreatorclass = globals()[exe_static_dynamic + "LinkRuleCreator"]
         linkrulecreatorobject = linkrulecreatorclass(args=self.args, namer=self.namer, hunter=self.hunter)
         link_rules = linkrulecreatorobject(libraryname=libraryname, sources=sources)
@@ -818,8 +831,7 @@ def main(argv=None):
     MakefileCreator.add_arguments(cap)
     compiletools.hunter.add_arguments(cap)
     args = compiletools.apptools.parseargs(cap, argv)
-    
-    
+
     # Create HeaderDeps and other components
     headerdeps = compiletools.headerdeps.create(args)
     magicparser = compiletools.magicflags.create(args, headerdeps)

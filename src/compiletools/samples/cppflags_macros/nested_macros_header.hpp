@@ -30,16 +30,16 @@
 #elif BUILD_CONFIG == 2
     #define ADVANCED_FEATURES
     #define BASIC_FEATURES
-    
+
     #ifdef BASIC_FEATURES
         #include "basic_feature.hpp"
-        // #include "red_herring_cpp_style.hpp"  
+        // #include "red_herring_cpp_style.hpp"
         /* #include "red_herring_c_style.hpp" */
     #endif
-    
+
     #ifdef ADVANCED_FEATURES
         #include "advanced_feature.hpp"
-        
+
         // Nested platform-specific logic
         #ifdef __linux__
             #define LINUX_ADVANCED
@@ -58,7 +58,7 @@
                     #endif
                 #endif
             #endif
-            
+
         #elif defined(_WIN32)
             #define WINDOWS_ADVANCED
             #ifdef WINDOWS_ADVANCED
@@ -75,7 +75,7 @@
                 #endif
             #endif
         #endif
-        
+
         // Complex feature interdependencies
         #ifdef ENABLE_NETWORKING
             #if ENABLE_NETWORKING == 1
@@ -101,25 +101,25 @@
 
 #elif BUILD_CONFIG == 3
     #define EXPERT_FEATURES
-    #define ADVANCED_FEATURES  
+    #define ADVANCED_FEATURES
     #define BASIC_FEATURES
-    
+
     #ifdef BASIC_FEATURES
         #include "basic_feature.hpp"
     #endif
-    
+
     #ifdef ADVANCED_FEATURES
         #include "advanced_feature.hpp"
     #endif
-    
+
     #ifdef EXPERT_FEATURES
         #include "expert_feature.hpp"
-        
+
         // Deeply nested expert configuration
         #ifdef ENABLE_EXPERT_MODE
             #if ENABLE_EXPERT_MODE == 1
                 #include "expert_mode_base.hpp"
-                
+
                 #ifdef CUSTOM_ALLOCATOR
                     #if defined(ALLOCATOR_TYPE) && ALLOCATOR_TYPE == 2
                         #include "custom_allocator.hpp"
@@ -140,7 +140,7 @@
                         #endif
                     #endif
                 #endif
-                
+
                 // Complex optimization flags
                 #ifdef OPTIMIZATION_LEVEL
                     #if OPTIMIZATION_LEVEL >= 3

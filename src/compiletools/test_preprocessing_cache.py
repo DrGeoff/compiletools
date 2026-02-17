@@ -1,21 +1,18 @@
 """Tests for unified preprocessing cache."""
 
-import sys
 import os
+import sys
 from textwrap import dedent
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import stringzilla as sz
-from compiletools.preprocessing_cache import (
-    get_or_compute_preprocessing,
-    get_cache_stats,
-    clear_cache,
-    MacroState
-)
+
 from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
+from compiletools.preprocessing_cache import MacroState, clear_cache, get_cache_stats, get_or_compute_preprocessing
 
 
 class TestPreprocessingCache:
@@ -26,9 +23,9 @@ class TestPreprocessingCache:
         clear_cache()
 
         # Mock get_filepath_by_hash since tests don't have real files in registry
-        self.patcher = patch('compiletools.global_hash_registry.get_filepath_by_hash')
+        self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
         self.mock_get_filepath = self.patcher.start()
-        self.mock_get_filepath.return_value = '<test-file>'
+        self.mock_get_filepath.return_value = "<test-file>"
 
     def teardown_method(self):
         """Clean up after each test method."""
@@ -36,13 +33,13 @@ class TestPreprocessingCache:
 
     def _create_simple_file_result(self, text: str, content_hash: str = "test_hash_001") -> FileAnalysisResult:
         """Helper to create FileAnalysisResult for testing."""
-        lines = text.split('\n')
+        lines = text.split("\n")
 
         line_byte_offsets = []
         offset = 0
         for line in lines:
             line_byte_offsets.append(offset)
-            offset += len(line.encode('utf-8')) + 1
+            offset += len(line.encode("utf-8")) + 1
 
         # Parse directives for conditional compilation
         directives = []
@@ -50,28 +47,28 @@ class TestPreprocessingCache:
 
         for line_num, line in enumerate(lines):
             stripped = line.strip()
-            if stripped.startswith('#ifdef'):
+            if stripped.startswith("#ifdef"):
                 macro_name = sz.Str(stripped.split()[1] if len(stripped.split()) > 1 else "")
                 directive = PreprocessorDirective(
                     line_num=line_num,
                     byte_pos=line_byte_offsets[line_num],
-                    directive_type='ifdef',
+                    directive_type="ifdef",
                     continuation_lines=0,
                     condition=None,
                     macro_name=macro_name,
-                    macro_value=None
+                    macro_value=None,
                 )
                 directives.append(directive)
                 directive_by_line[line_num] = directive
-            elif stripped.startswith('#endif'):
+            elif stripped.startswith("#endif"):
                 directive = PreprocessorDirective(
                     line_num=line_num,
                     byte_pos=line_byte_offsets[line_num],
-                    directive_type='endif',
+                    directive_type="endif",
                     continuation_lines=0,
                     condition=None,
                     macro_name=None,
-                    macro_value=None
+                    macro_value=None,
                 )
                 directives.append(directive)
                 directive_by_line[line_num] = directive
@@ -87,17 +84,19 @@ class TestPreprocessingCache:
         # Create includes list
         includes = []
         for line_num, line in enumerate(lines):
-            if '#include' in line:
-                includes.append({
-                    'line_num': line_num,
-                    'filename': sz.Str(line.split('"')[1] if '"' in line else "test.h"),
-                    'type': 'quoted'
-                })
+            if "#include" in line:
+                includes.append(
+                    {
+                        "line_num": line_num,
+                        "filename": sz.Str(line.split('"')[1] if '"' in line else "test.h"),
+                        "type": "quoted",
+                    }
+                )
 
         # Extract conditional_macros from directives (critical for cache logic)
         conditional_macros = set()
         for directive in directives:
-            if directive.directive_type in ('ifdef', 'ifndef') and directive.macro_name:
+            if directive.directive_type in ("ifdef", "ifndef") and directive.macro_name:
                 conditional_macros.add(directive.macro_name)
 
         return FileAnalysisResult(
@@ -108,27 +107,24 @@ class TestPreprocessingCache:
             directive_positions=directive_positions,
             directives=directives,
             directive_by_line=directive_by_line,
-            bytes_analyzed=len(text.encode('utf-8')),
+            bytes_analyzed=len(text.encode("utf-8")),
             was_truncated=False,
             includes=includes,
             defines=[],
             magic_flags=[],
             content_hash=content_hash,
             include_guard=None,
-            conditional_macros=frozenset(conditional_macros)
+            conditional_macros=frozenset(conditional_macros),
         )
 
-    @pytest.mark.skipif(
-        hasattr(sys, 'pypy_version_info'),
-        reason="sys.getsizeof not meaningful in PyPy"
-    )
+    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
     def test_cache_basic_hit(self):
         """Test basic cache hit scenario."""
-        text = dedent('''
+        text = dedent("""
             #ifdef TEST_MACRO
             #include "test.h"
             #endif
-        ''').strip()
+        """).strip()
 
         file_result = self._create_simple_file_result(text, "hash_001")
         macros = MacroState({}, {sz.Str("TEST_MACRO"): sz.Str("1")})
@@ -145,21 +141,18 @@ class TestPreprocessingCache:
 
         # Verify cache was used
         stats = get_cache_stats()
-        assert stats['hits'] == 1
-        assert stats['misses'] == 1
-        assert stats['total_calls'] == 2
+        assert stats["hits"] == 1
+        assert stats["misses"] == 1
+        assert stats["total_calls"] == 2
 
-    @pytest.mark.skipif(
-        hasattr(sys, 'pypy_version_info'),
-        reason="sys.getsizeof not meaningful in PyPy"
-    )
+    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
     def test_cache_macro_value_change(self):
         """Test that macro value changes produce different results."""
-        text = dedent('''
+        text = dedent("""
             #ifdef FOO
             #include "enabled.h"
             #endif
-        ''').strip()
+        """).strip()
 
         file_result = self._create_simple_file_result(text, "hash_002")
         macros1 = MacroState({}, {sz.Str("FOO"): sz.Str("1")})
@@ -175,19 +168,16 @@ class TestPreprocessingCache:
 
         # Different macro values = different cache keys
         stats = get_cache_stats()
-        assert stats['misses'] == 2  # Both are misses
+        assert stats["misses"] == 2  # Both are misses
 
-    @pytest.mark.skipif(
-        hasattr(sys, 'pypy_version_info'),
-        reason="sys.getsizeof not meaningful in PyPy"
-    )
+    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
     def test_cache_irrelevant_macro_addition(self):
         """Test that adding irrelevant macros results in cache HIT (optimization)."""
-        text = dedent('''
+        text = dedent("""
             #ifdef FOO
             #include "foo.h"
             #endif
-        ''').strip()
+        """).strip()
 
         file_result = self._create_simple_file_result(text, "hash_003")
         macros1 = MacroState({}, {sz.Str("FOO"): sz.Str("1")})
@@ -203,20 +193,17 @@ class TestPreprocessingCache:
         # BAR is not in conditional_macros, so it's ignored in cache key
         # Second call should be a cache HIT (optimization working)
         stats = get_cache_stats()
-        assert stats['misses'] == 1  # Only first call is a miss
-        assert stats['hits'] == 1    # Second call is a hit (same relevant macros)
+        assert stats["misses"] == 1  # Only first call is a miss
+        assert stats["hits"] == 1  # Second call is a hit (same relevant macros)
 
-    @pytest.mark.skipif(
-        hasattr(sys, 'pypy_version_info'),
-        reason="sys.getsizeof not meaningful in PyPy"
-    )
+    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
     def test_cache_irrelevant_macro_removal(self):
         """Test that removing irrelevant macros results in cache HIT (optimization)."""
-        text = dedent('''
+        text = dedent("""
             #ifdef FOO
             #include "foo.h"
             #endif
-        ''').strip()
+        """).strip()
 
         file_result = self._create_simple_file_result(text, "hash_004")
         macros1 = MacroState({}, {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("1")})
@@ -231,23 +218,20 @@ class TestPreprocessingCache:
         # BAR is not in conditional_macros, so it's ignored in cache key
         # Second call should be a cache HIT (optimization working)
         stats = get_cache_stats()
-        assert stats['misses'] == 1  # Only first call is a miss
-        assert stats['hits'] == 1    # Second call is a hit (same relevant macros)
+        assert stats["misses"] == 1  # Only first call is a miss
+        assert stats["hits"] == 1  # Second call is a hit (same relevant macros)
 
-    @pytest.mark.skipif(
-        hasattr(sys, 'pypy_version_info'),
-        reason="sys.getsizeof not meaningful in PyPy"
-    )
+    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
     def test_cache_relevant_macro_change(self):
         """Test that changing relevant macros creates different cache keys."""
-        text = dedent('''
+        text = dedent("""
             #ifdef FOO
             #include "foo.h"
             #endif
             #ifdef BAR
             #include "bar.h"
             #endif
-        ''').strip()
+        """).strip()
 
         file_result = self._create_simple_file_result(text, "hash_003b")
         # Both FOO and BAR are in conditional_macros for this file
@@ -265,25 +249,22 @@ class TestPreprocessingCache:
         # BAR IS in conditional_macros, so it creates a different cache key
         # Both calls should be misses
         stats = get_cache_stats()
-        assert stats['misses'] == 2
+        assert stats["misses"] == 2
 
-    @pytest.mark.skipif(
-        hasattr(sys, 'pypy_version_info'),
-        reason="sys.getsizeof not meaningful in PyPy"
-    )
+    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
     def test_cache_file_change(self):
         """Test that file content changes create different cache keys."""
-        text1 = dedent('''
+        text1 = dedent("""
             #ifdef FOO
             #include "test1.h"
             #endif
-        ''').strip()
+        """).strip()
 
-        text2 = dedent('''
+        text2 = dedent("""
             #ifdef FOO
             #include "test2.h"
             #endif
-        ''').strip()
+        """).strip()
 
         file_result1 = self._create_simple_file_result(text1, "hash_005a")
         file_result2 = self._create_simple_file_result(text2, "hash_005b")
@@ -299,31 +280,31 @@ class TestPreprocessingCache:
         # But different includes
         assert len(result1.active_includes) == 1
         assert len(result2.active_includes) == 1
-        assert str(result1.active_includes[0]['filename']) == "test1.h"
-        assert str(result2.active_includes[0]['filename']) == "test2.h"
+        assert str(result1.active_includes[0]["filename"]) == "test1.h"
+        assert str(result2.active_includes[0]["filename"]) == "test2.h"
 
         # Different content_hash = different cache keys
         stats = get_cache_stats()
-        assert stats['misses'] == 2
+        assert stats["misses"] == 2
 
     def test_macro_state_propagation(self):
         """Test that macro state is correctly returned in updated_macros."""
-        text = dedent('''
+        text = dedent("""
             #define NEW_MACRO 42
-        ''').strip()
+        """).strip()
 
         # Create file result with define
-        lines = text.split('\n')
+        lines = text.split("\n")
         line_byte_offsets = [0]
 
         directive = PreprocessorDirective(
             line_num=0,
             byte_pos=0,
-            directive_type='define',
+            directive_type="define",
             continuation_lines=0,
             condition=None,
             macro_name=sz.Str("NEW_MACRO"),
-            macro_value=sz.Str("42")
+            macro_value=sz.Str("42"),
         )
 
         file_result = FileAnalysisResult(
@@ -337,10 +318,10 @@ class TestPreprocessingCache:
             bytes_analyzed=len(text),
             was_truncated=False,
             includes=[],
-            defines=[{'line_num': 0, 'name': sz.Str("NEW_MACRO"), 'value': sz.Str("42"), 'is_function_like': False}],
+            defines=[{"line_num": 0, "name": sz.Str("NEW_MACRO"), "value": sz.Str("42"), "is_function_like": False}],
             magic_flags=[],
             content_hash="hash_006",
-            include_guard=None
+            include_guard=None,
         )
 
         initial_macros = MacroState({}, {})
@@ -353,10 +334,7 @@ class TestPreprocessingCache:
         # Verify initial_macros is unchanged (immutable input)
         assert sz.Str("NEW_MACRO") not in initial_macros
 
-    @pytest.mark.skipif(
-        hasattr(sys, 'pypy_version_info'),
-        reason="sys.getsizeof not meaningful in PyPy"
-    )
+    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
     def test_invariant_cache_honors_undef(self):
         """Ensure invariant cache does not resurrect macros removed via #undef."""
 
@@ -365,11 +343,11 @@ class TestPreprocessingCache:
         directive = PreprocessorDirective(
             line_num=0,
             byte_pos=0,
-            directive_type='undef',
+            directive_type="undef",
             continuation_lines=0,
             condition=None,
             macro_name=sz.Str("REMOVED_MACRO"),
-            macro_value=None
+            macro_value=None,
         )
 
         file_result = FileAnalysisResult(
@@ -377,7 +355,7 @@ class TestPreprocessingCache:
             line_byte_offsets=[0],
             include_positions=[],
             magic_positions=[],
-            directive_positions={'undef': [0]},
+            directive_positions={"undef": [0]},
             directives=[directive],
             directive_by_line={0: directive},
             bytes_analyzed=len(text),
@@ -387,7 +365,7 @@ class TestPreprocessingCache:
             magic_flags=[],
             content_hash="hash_undef_001",
             include_guard=None,
-            conditional_macros=frozenset()
+            conditional_macros=frozenset(),
         )
 
         initial_macros = MacroState({}, {sz.Str("REMOVED_MACRO"): sz.Str("1")})
@@ -398,17 +376,16 @@ class TestPreprocessingCache:
 
         # Second call hits invariant cache but must preserve the removal semantics
         result2 = get_or_compute_preprocessing(file_result, initial_macros, 0)
-        assert sz.Str("REMOVED_MACRO") not in result2.updated_macros, "Invariant cache should not reintroduce macros removed via #undef"
+        assert sz.Str("REMOVED_MACRO") not in result2.updated_macros, (
+            "Invariant cache should not reintroduce macros removed via #undef"
+        )
 
-    @pytest.mark.skipif(
-        hasattr(sys, 'pypy_version_info'),
-        reason="sys.getsizeof not meaningful in PyPy"
-    )
+    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
     def test_empty_macros(self):
         """Test cache behavior with empty macro state."""
-        text = dedent('''
+        text = dedent("""
             #include "test.h"
-        ''').strip()
+        """).strip()
 
         file_result = self._create_simple_file_result(text, "hash_007")
         empty_macros = MacroState({}, {})
@@ -420,17 +397,14 @@ class TestPreprocessingCache:
         assert result1.active_lines == result2.active_lines
 
         stats = get_cache_stats()
-        assert stats['hits'] == 1
+        assert stats["hits"] == 1
 
-    @pytest.mark.skipif(
-        hasattr(sys, 'pypy_version_info'),
-        reason="sys.getsizeof not meaningful in PyPy"
-    )
+    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
     def test_cache_stats_accuracy(self):
         """Test that cache statistics are accurate."""
-        text = dedent('''
+        text = dedent("""
             #include "test.h"
-        ''').strip()
+        """).strip()
 
         file_result = self._create_simple_file_result(text, "hash_008")
         macros = MacroState({}, {})
@@ -438,29 +412,29 @@ class TestPreprocessingCache:
         # Clear stats
         clear_cache()
         initial_stats = get_cache_stats()
-        assert initial_stats['entries'] == 0
-        assert initial_stats['hits'] == 0
-        assert initial_stats['misses'] == 0
+        assert initial_stats["entries"] == 0
+        assert initial_stats["hits"] == 0
+        assert initial_stats["misses"] == 0
 
         # First call - miss
         get_or_compute_preprocessing(file_result, macros, 0)
         stats1 = get_cache_stats()
-        assert stats1['entries'] == 1
-        assert stats1['misses'] == 1
-        assert stats1['hits'] == 0
+        assert stats1["entries"] == 1
+        assert stats1["misses"] == 1
+        assert stats1["hits"] == 0
 
         # Second call - hit
         get_or_compute_preprocessing(file_result, macros, 0)
         stats2 = get_cache_stats()
-        assert stats2['entries'] == 1
-        assert stats2['misses'] == 1
-        assert stats2['hits'] == 1
+        assert stats2["entries"] == 1
+        assert stats2["misses"] == 1
+        assert stats2["hits"] == 1
 
         # Third call - hit
         get_or_compute_preprocessing(file_result, macros, 0)
         stats3 = get_cache_stats()
-        assert stats3['hits'] == 2
-        assert stats3['hit_rate'] > 66.0  # 2/3 = 66.7%
+        assert stats3["hits"] == 2
+        assert stats3["hit_rate"] > 66.0  # 2/3 = 66.7%
 
 
 class TestCacheManagement:
@@ -471,21 +445,18 @@ class TestCacheManagement:
         clear_cache()
 
         # Mock get_filepath_by_hash since tests don't have real files in registry
-        self.patcher = patch('compiletools.global_hash_registry.get_filepath_by_hash')
+        self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
         self.mock_get_filepath = self.patcher.start()
-        self.mock_get_filepath.return_value = '<test-file>'
+        self.mock_get_filepath.return_value = "<test-file>"
 
     def teardown_method(self):
         """Clean up after each test method."""
         self.patcher.stop()
 
-    @pytest.mark.skipif(
-        hasattr(sys, 'pypy_version_info'),
-        reason="sys.getsizeof not meaningful in PyPy"
-    )
+    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
     def test_clear_cache(self):
         """Test cache clearing."""
-        text = "#include \"test.h\""
+        text = '#include "test.h"'
 
         file_result = FileAnalysisResult(
             line_count=1,
@@ -501,39 +472,33 @@ class TestCacheManagement:
             defines=[],
             magic_flags=[],
             content_hash="hash_clear",
-            include_guard=None
+            include_guard=None,
         )
 
         # Add entry to cache
         get_or_compute_preprocessing(file_result, MacroState({}, {}), 0)
         stats1 = get_cache_stats()
-        assert stats1['entries'] == 1
+        assert stats1["entries"] == 1
 
         # Clear cache
         clear_cache()
         stats2 = get_cache_stats()
-        assert stats2['entries'] == 0
-        assert stats2['hits'] == 0
-        assert stats2['misses'] == 0
+        assert stats2["entries"] == 0
+        assert stats2["hits"] == 0
+        assert stats2["misses"] == 0
 
-    @pytest.mark.skipif(
-        hasattr(sys, 'pypy_version_info'),
-        reason="sys.getsizeof not meaningful in PyPy"
-    )
+    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
     def test_get_cache_stats_memory(self):
         """Test that cache stats include memory information."""
         clear_cache()
         stats = get_cache_stats()
 
-        assert 'memory_bytes' in stats
-        assert 'memory_mb' in stats
-        assert stats['memory_bytes'] >= 0
-        assert stats['memory_mb'] >= 0.0
+        assert "memory_bytes" in stats
+        assert "memory_mb" in stats
+        assert stats["memory_bytes"] >= 0
+        assert stats["memory_mb"] >= 0.0
 
-    @pytest.mark.skipif(
-        hasattr(sys, 'pypy_version_info'),
-        reason="tracemalloc not available in PyPy"
-    )
+    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="tracemalloc not available in PyPy")
     def test_memory_usage_reasonable(self):
         """Test that cache memory usage stays reasonable."""
         import tracemalloc
@@ -543,7 +508,7 @@ class TestCacheManagement:
 
         # Create 100 cache entries
         for i in range(100):
-            text = f"#include \"test{i}.h\""
+            text = f'#include "test{i}.h"'
             file_result = FileAnalysisResult(
                 line_count=1,
                 line_byte_offsets=[0],
@@ -554,21 +519,21 @@ class TestCacheManagement:
                 directive_by_line={},
                 bytes_analyzed=len(text),
                 was_truncated=False,
-                includes=[{'line_num': 0, 'filename': sz.Str(f"test{i}.h"), 'type': 'quoted'}],
+                includes=[{"line_num": 0, "filename": sz.Str(f"test{i}.h"), "type": "quoted"}],
                 defines=[],
                 magic_flags=[],
                 content_hash=f"hash_{i:03d}",
-                include_guard=None
+                include_guard=None,
             )
             macros = MacroState({}, {sz.Str(f"MACRO_{i}"): sz.Str(str(i))})
             get_or_compute_preprocessing(file_result, macros, 0)
 
-        current, peak = tracemalloc.get_traced_memory()
+        _current, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
 
         # Verify cache has 100 entries
         stats = get_cache_stats()
-        assert stats['entries'] == 100
+        assert stats["entries"] == 100
 
         # Peak memory should be reasonable (< 20MB for 100 entries including baseline overhead)
         peak_mb = peak / (1024 * 1024)
@@ -583,19 +548,19 @@ class TestMacroStateImmutability:
     def test_with_updates_returns_new_instance_on_change(self):
         """with_updates should return a new instance when actual changes occur."""
         state = MacroState(core={}, variable={})
-        
+
         # Add new macro
-        new_state = state.with_updates({sz.Str('FOO'): sz.Str('1')})
+        new_state = state.with_updates({sz.Str("FOO"): sz.Str("1")})
         assert new_state is not state
-        assert sz.Str('FOO') in new_state.variable
-        assert sz.Str('FOO') not in state.variable  # Original unchanged
+        assert sz.Str("FOO") in new_state.variable
+        assert sz.Str("FOO") not in state.variable  # Original unchanged
 
     def test_with_updates_returns_self_on_no_change(self):
         """with_updates should return self when updates don't change state."""
-        state = MacroState(core={}, variable={sz.Str('FOO'): sz.Str('1')})
+        state = MacroState(core={}, variable={sz.Str("FOO"): sz.Str("1")})
 
         # Update with same value
-        new_state = state.with_updates({sz.Str('FOO'): sz.Str('1')})
+        new_state = state.with_updates({sz.Str("FOO"): sz.Str("1")})
         assert new_state is state  # Identity equality
 
         # Update with empty dict
@@ -604,31 +569,30 @@ class TestMacroStateImmutability:
 
     def test_with_updates_returns_new_instance_value_change(self):
         """with_updates should return new instance on value change."""
-        state = MacroState(core={}, variable={sz.Str('FOO'): sz.Str('1')})
+        state = MacroState(core={}, variable={sz.Str("FOO"): sz.Str("1")})
 
         # Update with different value
-        new_state = state.with_updates({sz.Str('FOO'): sz.Str('2')})
+        new_state = state.with_updates({sz.Str("FOO"): sz.Str("2")})
         assert new_state is not state
-        assert new_state.variable[sz.Str('FOO')] == sz.Str('2')
-        assert state.variable[sz.Str('FOO')] == sz.Str('1')
+        assert new_state.variable[sz.Str("FOO")] == sz.Str("2")
+        assert state.variable[sz.Str("FOO")] == sz.Str("1")
 
     def test_copy_returns_self(self):
         """copy() should return self for immutable object."""
-        state = MacroState(core={}, variable={sz.Str('FOO'): sz.Str('1')})
+        state = MacroState(core={}, variable={sz.Str("FOO"): sz.Str("1")})
         copied = state.copy()
         assert copied is state
 
     def test_immutability_enforced(self):
         """Verify that mutation methods are gone."""
         state = MacroState(core={}, variable={})
-        
+
         # Check that setters raise AttributeError (methods removed)
         try:
-            state[sz.Str('FOO')] = sz.Str('1')
+            state[sz.Str("FOO")] = sz.Str("1")
             assert False, "__setitem__ should not exist"
         except TypeError:
-            pass # 'MacroState' object does not support item assignment
-            
-        assert not hasattr(state, 'update'), "update method should not exist"
-        assert not hasattr(state, 'get_version'), "get_version method should not exist"
+            pass  # 'MacroState' object does not support item assignment
 
+        assert not hasattr(state, "update"), "update method should not exist"
+        assert not hasattr(state, "get_version"), "get_version method should not exist"

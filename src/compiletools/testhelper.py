@@ -1,19 +1,19 @@
-import configargparse
-import os
+import builtins
 import contextlib
+import functools
+import os
 import shutil
-from io import open
+import subprocess
 import tempfile
 import textwrap
 from pathlib import Path
-import compiletools.apptools
-import functools
+
+import configargparse
 import pytest
-import subprocess
+
+import compiletools.apptools
 
 # The abbreviation "uth" is often used for this "testhelper"
-
-
 
 
 def requires_functional_compiler(func):
@@ -28,11 +28,13 @@ def requires_functional_compiler(func):
             # Test code that requires a C++ compiler
             pass
     """
+
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         if compiletools.apptools.get_functional_cxx_compiler() is None:
             pytest.skip("No functional C++ compiler detected")
         return func(*args, **kwargs)
+
     return wrapper
 
 
@@ -48,15 +50,18 @@ def requires_lockdir_filesystem(func):
             # Test code that requires NFS/GPFS/Lustre filesystem
             pass
     """
+
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         import compiletools.filesystem_utils
+
         with tempfile.TemporaryDirectory() as tmpdir:
             fstype = compiletools.filesystem_utils.get_filesystem_type(tmpdir)
             strategy = compiletools.filesystem_utils.get_lock_strategy(fstype)
-            if strategy != 'lockdir':
+            if strategy != "lockdir":
                 pytest.skip(f"Filesystem {fstype} uses {strategy} (not lockdir) - test requires NFS/GPFS/Lustre")
         return func(*args, **kwargs)
+
     return wrapper
 
 
@@ -72,15 +77,20 @@ def requires_flock_filesystem(func):
             # Test code that requires ext4/xfs/btrfs local filesystem
             pass
     """
+
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         import compiletools.filesystem_utils
+
         with tempfile.TemporaryDirectory() as tmpdir:
             fstype = compiletools.filesystem_utils.get_filesystem_type(tmpdir)
             strategy = compiletools.filesystem_utils.get_lock_strategy(fstype)
-            if strategy != 'flock':
-                pytest.skip(f"Filesystem {fstype} uses {strategy} (not flock) - test requires local filesystem (ext4/xfs/btrfs)")
+            if strategy != "flock":
+                pytest.skip(
+                    f"Filesystem {fstype} uses {strategy} (not flock) - test requires local filesystem (ext4/xfs/btrfs)"
+                )
         return func(*args, **kwargs)
+
     return wrapper
 
 
@@ -101,6 +111,7 @@ def with_group_writable_umask(cls_or_func):
         class TestSharedObjects:
             pass
     """
+
     def with_umask(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
@@ -109,13 +120,14 @@ def with_group_writable_umask(cls_or_func):
                 return func(*args, **kwargs)
             finally:
                 os.umask(old_umask)
+
         return wrapper
 
     # If decorating a class
     if isinstance(cls_or_func, type):
         # Wrap all test methods
         for attr_name in dir(cls_or_func):
-            if attr_name.startswith('test_'):
+            if attr_name.startswith("test_"):
                 attr = getattr(cls_or_func, attr_name)
                 if callable(attr):
                     setattr(cls_or_func, attr_name, with_umask(attr))
@@ -127,49 +139,48 @@ def with_group_writable_umask(cls_or_func):
 
 def requires_pkg_config(*packages):
     """Decorator to skip tests that require specific pkg-config packages.
-    
+
     This decorator checks if the specified pkg-config packages are available
     and automatically skips the test with an appropriate message if any are missing.
-    
+
     Args:
         *packages: One or more package names to check with pkg-config --exists
-    
+
     Usage:
         @requires_pkg_config("zlib")
         def test_something_that_needs_zlib(self):
             # Test code that requires zlib
             pass
-            
+
         @requires_pkg_config("zlib", "libcrypt")
         def test_something_that_needs_multiple_packages(self):
             # Test code that requires both zlib and libcrypt
             pass
     """
+
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             missing_packages = []
             for package in packages:
                 try:
-                    result = subprocess.run(
-                        ["pkg-config", "--exists", package],
-                        capture_output=True,
-                        check=False
-                    )
+                    result = subprocess.run(["pkg-config", "--exists", package], capture_output=True, check=False)
                     if result.returncode != 0:
                         missing_packages.append(package)
                 except (subprocess.SubprocessError, FileNotFoundError):
                     # pkg-config not available or other error
                     missing_packages.append(package)
-            
+
             if missing_packages:
                 if len(missing_packages) == 1:
                     pytest.skip(f"pkg-config package '{missing_packages[0]}' not available")
                 else:
                     pytest.skip(f"pkg-config packages {missing_packages} not available")
-            
+
             return func(*args, **kwargs)
+
         return wrapper
+
     return decorator
 
 
@@ -178,22 +189,28 @@ def reset():
     compiletools.apptools.resetcallbacks()
     # Clear wrappedos caches to prevent test interactions
     import compiletools.wrappedos as wo
+
     wo.clear_cache()
     # Clear git utils caches
     import compiletools.git_utils as git_utils
+
     git_utils.clear_cache()
     # Clear global hash registry to prevent stale file hash lookups
     from compiletools.global_hash_registry import clear_global_registry, get_file_hash
+
     clear_global_registry()
     get_file_hash.cache_clear()
     # Clear file analyzer cache to prevent stale analysis results
     from compiletools.file_analyzer import analyze_file
+
     analyze_file.cache_clear()
     # Clear preprocessing cache to prevent stale preprocessing results
     from compiletools.preprocessing_cache import clear_cache as clear_preprocessing_cache
+
     clear_preprocessing_cache()
     # Clear headerdeps caches to prevent stale include list results
     import compiletools.headerdeps as headerdeps
+
     headerdeps.clear_caches()
 
 
@@ -222,28 +239,30 @@ def ctconfdir():
     return os.path.realpath(os.path.join(ctdir(), "ct.conf.d"))
 
 
-def create_temp_config(tempdir=None, filename=None, extralines=[]):
+def create_temp_config(tempdir=None, filename=None, extralines=None):
     """Create a temporary config file with detected functional compilers.
-    
+
     Uses get_functional_cxx_compiler() to detect working C++ compiler
-    
+
     Args:
         tempdir: Directory to create temp file in
         filename: Specific filename to use (auto-generated if None)
         extralines: Additional config lines to append
-        
+
     Returns:
         str: Path to created config file
-        
+
     Note: User is responsible for removing the config file when finished
     """
+    if extralines is None:
+        extralines = []
     CXX = compiletools.apptools.get_functional_cxx_compiler()
     CC = compiletools.apptools.derive_c_compiler_from_cxx(CXX)
-   
-    if not filename:
-        tf_handle, filename = tempfile.mkstemp(suffix=".conf", text=True, dir=tempdir)
 
-    with open(filename, "w") as ff:
+    if not filename:
+        _tf_handle, filename = tempfile.mkstemp(suffix=".conf", text=True, dir=tempdir)
+
+    with builtins.open(filename, "w") as ff:
         ff.write(f"CC={CC}\n")
         ff.write(f"CXX={CXX}\n")
         ff.write('CPPFLAGS="-std=c++20"\n')
@@ -253,11 +272,13 @@ def create_temp_config(tempdir=None, filename=None, extralines=[]):
     return filename
 
 
-def create_temp_ct_conf(tempdir, defaultvariant="dbg", extralines=[]):
+def create_temp_ct_conf(tempdir, defaultvariant="dbg", extralines=None):
     """User is responsible for removing the config file when
     they are finished
     """
-    with open(os.path.join(tempdir, "ct.conf"), "w") as ff:
+    if extralines is None:
+        extralines = []
+    with builtins.open(os.path.join(tempdir, "ct.conf"), "w") as ff:
         ff.write(f"variant = {defaultvariant}\n")
         ff.write("variantaliases = {'dbg':'foo.debug', 'rls':'foo.release'}\n")
         ff.write("exemarkers = [main]\n")
@@ -268,36 +289,36 @@ def create_temp_ct_conf(tempdir, defaultvariant="dbg", extralines=[]):
 
 class TempDirectoryContext:
     """Context manager for temporary directories with optional directory changing.
-    
+
     Unifies all temp directory patterns into a single, flexible context manager.
     """
-    
+
     def __init__(self, change_dir=True, prefix=None, suffix=None, dir=None):
         """
         Args:
             change_dir: If True, changes to the temp directory (default: True for backward compatibility)
             prefix: Prefix for temp directory name
-            suffix: Suffix for temp directory name  
+            suffix: Suffix for temp directory name
             dir: Parent directory for temp directory
         """
         self.change_dir = change_dir
         self.prefix = prefix
-        self.suffix = suffix 
+        self.suffix = suffix
         self.dir = dir
         self._tmpdir = None
         self._origdir = None
-        
+
     def __enter__(self):
         if self.change_dir:
             self._origdir = os.getcwd()
-        
+
         self._tmpdir = tempfile.mkdtemp(prefix=self.prefix, suffix=self.suffix, dir=self.dir)
-        
+
         if self.change_dir:
             os.chdir(self._tmpdir)
-        
+
         return self._tmpdir
-        
+
     def __exit__(self, exc_type, exc_value, traceback):
         if self.change_dir and self._origdir:
             os.chdir(self._origdir)
@@ -308,9 +329,10 @@ class TempDirectoryContext:
 # Backward compatibility aliases
 class TempDirContext(TempDirectoryContext):
     """Backward compatibility: temp directory with directory change."""
+
     def __init__(self):
         super().__init__(change_dir=True)
-    
+
     def __enter__(self):
         super().__enter__()
         return self  # Original returned self, not tmpdir
@@ -318,12 +340,14 @@ class TempDirContext(TempDirectoryContext):
 
 class TempDirContextNoChange(TempDirectoryContext):
     """Backward compatibility: temp directory without directory change."""
+
     def __init__(self, prefix=None, suffix=None, dir=None):
         super().__init__(change_dir=False, prefix=prefix, suffix=suffix, dir=dir)
 
 
 class TempDirContextWithChange(TempDirectoryContext):
     """Backward compatibility: temp directory with directory change."""
+
     def __init__(self, prefix=None, suffix=None, dir=None):
         super().__init__(change_dir=True, prefix=prefix, suffix=suffix, dir=dir)
 
@@ -339,21 +363,21 @@ def DirectoryContext(target_dir):
         os.chdir(origdir)
 
 
-@contextlib.contextmanager  
+@contextlib.contextmanager
 def EnvironmentContext(env_vars):
     """Context manager for temporarily setting environment variables.
-    
+
     Args:
         env_vars: Dictionary of environment variables to set
     """
     original_values = {}
-    
+
     # Save original values and set new ones
     for key, value in env_vars.items():
         if value:  # Only set non-empty values
             original_values[key] = os.getenv(key)
             os.environ[key] = value
-    
+
     try:
         yield
     finally:
@@ -383,17 +407,13 @@ def ParserContext():
 @contextlib.contextmanager
 def TempConfigContext(tempdir=None, filename=None, extralines=None):
     """Context manager for temporary config files with automatic cleanup.
-    
+
     Args:
         tempdir: Directory to create temp config in (default: system temp)
         filename: Specific filename to use (default: auto-generated)
         extralines: Additional config lines to add
     """
-    config_path = create_temp_config(
-        tempdir=tempdir,
-        filename=filename,
-        extralines=extralines or []
-    )
+    config_path = create_temp_config(tempdir=tempdir, filename=filename, extralines=extralines or [])
     try:
         yield config_path
     finally:
@@ -454,7 +474,8 @@ def run_headerdeps(kind, filename, cppflags=None, extra_args=None):
         argv = [
             "--config=" + temp_config_name,
             f"--headerdeps={kind}",
-            "--include", samplesdir(),
+            "--include",
+            samplesdir(),
         ]
 
         if cppflags:
@@ -484,8 +505,9 @@ def HeaderDepsTestContext(argv, config_extralines=None):
         headerdeps: Configured HeaderDeps object ready for testing
     """
     import configargparse
-    import compiletools.headerdeps
+
     import compiletools.apptools
+    import compiletools.headerdeps
 
     # Create and configure parser
     cap = configargparse.getArgumentParser()
@@ -513,7 +535,7 @@ def CPPDepsTestContext(variant_configs=None, reload_modules=None):
     """
     import importlib
 
-    variant_configs = variant_configs or ['blank.conf']
+    variant_configs = variant_configs or ["blank.conf"]
     reload_modules = reload_modules or []
 
     # Use our refactored context managers in a nested fashion
@@ -524,7 +546,7 @@ def CPPDepsTestContext(variant_configs=None, reload_modules=None):
 
         src_config_dir = ctconfdir()
         # Always copy ct.conf
-        config_files = ['ct.conf'] + variant_configs
+        config_files = ["ct.conf"] + variant_configs
         for config_file in config_files:
             src_path = os.path.join(src_config_dir, config_file)
             dst_path = os.path.join(ct_conf_dir, config_file)
@@ -568,6 +590,7 @@ def headerdeps_result(filename, kind="direct", cppflags=None, include=None, extr
     with TempConfigContext(extralines=config_extralines) as temp_config_name:
         # Clear all caches for test isolation
         import compiletools.preprocessing_cache
+
         compiletools.preprocessing_cache.clear_cache()
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
 
@@ -586,14 +609,18 @@ def headerdeps_result(filename, kind="direct", cppflags=None, include=None, extr
             return set(h.process(filename, frozenset()))
 
 
-def compare_headerdeps_kinds(filename, cppflags=None, kinds=("direct", "cpp"), include=None, extra_args=None, scenario_name=None):
+def compare_headerdeps_kinds(
+    filename, cppflags=None, kinds=("direct", "cpp"), include=None, extra_args=None, scenario_name=None
+):
     """Run multiple headerdeps kinds and assert their results match (if >1 kinds).
     Returns dict kind->set.
     scenario_name included in assertion message if provided.
     """
     results = {}
     for kind in kinds:
-        results[kind] = headerdeps_result(filename, kind=kind, cppflags=cppflags, include=include, extra_args=extra_args)
+        results[kind] = headerdeps_result(
+            filename, kind=kind, cppflags=cppflags, include=include, extra_args=extra_args
+        )
     if len(kinds) > 1:
         baseline = results[kinds[0]]
         for kind in kinds[1:]:
@@ -617,21 +644,25 @@ def touch(*paths):
         *paths: Variable number of file paths to touch
     """
     import time
+
     for path in paths:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         # Append a comment with timestamp to ensure content changes
-        with open(path, 'a') as f:
+        with builtins.open(path, "a") as f:
             f.write(f"\n// touched at {time.time()}\n")
 
     # Clear all relevant caches to ensure modified files are detected
     from compiletools.global_hash_registry import clear_global_registry, get_file_hash
+
     clear_global_registry()
     get_file_hash.cache_clear()
 
     from compiletools.file_analyzer import analyze_file
+
     analyze_file.cache_clear()
 
     import compiletools.wrappedos as wo
+
     wo.clear_cache()
 
     # Brief sleep to ensure timestamp differences are detectable
@@ -640,14 +671,14 @@ def touch(*paths):
 
 def write_sources(mapping, target_dir=None):
     """Central utility for temp source file creation.
-    
+
     Args:
         mapping: Dictionary of {relative_path: content} for files to create
         target_dir: Directory to create files in (defaults to current directory)
-        
+
     Returns:
         Dictionary of {relative_path: Path} for created files
-        
+
     Usage:
         files = uth.write_sources({
             "main.cpp": '''
@@ -660,7 +691,7 @@ def write_sources(mapping, target_dir=None):
             '''
         })
         # files["main.cpp"] is a Path object to the created file
-        
+
         # Or write to specific directory:
         files = uth.write_sources(mapping, target_dir="/tmp/test")
     """
@@ -668,7 +699,7 @@ def write_sources(mapping, target_dir=None):
         base_path = Path(os.getcwd())
     else:
         base_path = Path(target_dir)
-        
+
     paths = {}
     for rel, text in mapping.items():
         p = base_path / rel

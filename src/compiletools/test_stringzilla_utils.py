@@ -1,12 +1,13 @@
 """Tests for stringzilla_utils module."""
 
 import stringzilla
+
 from compiletools.stringzilla_utils import (
-    strip_sz,
     ends_with_backslash_sz,
     is_alpha_or_underscore_sz,
     join_lines_strip_backslash_sz,
-    join_sz
+    join_sz,
+    strip_sz,
 )
 
 

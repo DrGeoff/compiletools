@@ -11,7 +11,7 @@ The issue occurred because header dependency results were cached based only on f
 ## Test Files
 
 - `feature.h` - Conditionally includes `debug.h` or `release.h` based on `DEBUG` macro
-- `debug.h` - Header included when `DEBUG` is defined  
+- `debug.h` - Header included when `DEBUG` is defined
 - `release.h` - Header included when `DEBUG` is not defined
 - `sample.cpp` - Main file that includes `feature.h`
 - `test_macro_state_dependency.py` - Test script that verifies the fix
@@ -26,7 +26,7 @@ The issue occurred because header dependency results were cached based only on f
 Two caches were removed that depended on macro state:
 
 1. **`@diskcache` from `_process_impl`** - Primary cache causing the issue
-2. **`@functools.lru_cache` from `_create_include_list`** - Secondary cache 
+2. **`@functools.lru_cache` from `_create_include_list`** - Secondary cache
 
 Performance impact: Approximately 2.3x slower on complex projects with many repeated header analyses, but absolute difference is typically milliseconds for real-world use cases.
 

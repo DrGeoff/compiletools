@@ -2,7 +2,7 @@
 #include "database.h"
 #endif
 
-#ifdef ENABLE_GRAPHICS  
+#ifdef ENABLE_GRAPHICS
 #include "graphics.h"
 #endif
 

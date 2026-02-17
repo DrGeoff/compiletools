@@ -1,4 +1,4 @@
-A variety of installation methods are possible.  
+A variety of installation methods are possible.
 
 1) git clone from github and run from repository
 2) pip install (as either user, root or virtualenv)
@@ -66,7 +66,7 @@ dnf install ${rpmhome}/RPMS/noarch/python-compiletools-*.noarch.rpm
 
 5) Fedora (>=28) with pypy3 in a virtual env
 
-# Get a python3 version of pypy 
+# Get a python3 version of pypy
 sudo dnf install pypy3 pypy3-devel
 
 # Create the virtual env
@@ -80,5 +80,5 @@ sudo chmod a+rwx /etc/xdg/ct/
 
 # If you are going to work from the git repo then just install the dependencies
 # pip install configargparse appdirs psutil
-# otherwise you can 
+# otherwise you can
 pip install compiletools

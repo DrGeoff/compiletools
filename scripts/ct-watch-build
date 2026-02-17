@@ -33,6 +33,6 @@ for arg in "$@"; do
 done
 
 while true; do
-    inotifywait -e modify,close_write,move,delete $(ct-cake --file-list) 
+    inotifywait -e modify,close_write,move,delete $(ct-cake --file-list)
     ct-cake "$@"
 done

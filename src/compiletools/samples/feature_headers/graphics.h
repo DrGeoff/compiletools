@@ -1,4 +1,4 @@
-// Graphics functionality header  
+// Graphics functionality header
 #ifndef GRAPHICS_H
 #define GRAPHICS_H
 

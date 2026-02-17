@@ -11,7 +11,7 @@ authors = [
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
-    "Intended Audience :: Developers", 
+    "Intended Audience :: Developers",
     "Topic :: Software Development :: Build Tools",
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Programming Language :: Python :: 3",
@@ -36,8 +36,9 @@ dev = [
     "twine>=5.0.0",
     "pytest>=7.0.2",
     "pytest-xdist>=3.5",
-    "ruff>=0.12.9",
+    "ruff>=0.14.0",
     "pyright>=1.1",
+    "pre-commit>=4.0",
 ]
 
 [project.urls]
@@ -137,3 +138,37 @@ filename = "src/compiletools/README.ct-magicflags.rst"
 [[tool.bumpversion.files]]
 filename = "src/compiletools/README.ct-cleanup-locks.rst"
 
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade (modernize syntax for target Python version)
+    "B",    # flake8-bugbear (common bug patterns)
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific rules
+]
+ignore = [
+    "UP007",  # Union[X, Y] -> X | Y requires Python 3.10+ at runtime
+    "B019",   # cached-instance-method -- deliberate design choice in this codebase
+    "SIM102", # collapsible-if -- nested ifs are often clearer
+    "SIM103", # needless-bool -- explicit if/return can be clearer with comments
+    "SIM105", # contextlib.suppress -- often less readable than try/except/pass
+    "SIM108", # ternary operator -- can reduce readability for complex expressions
+    "SIM113", # enumerate-for-loop -- manual counter can be clearer in complex loops
+    "SIM117", # multiple-with-statements -- explicit nesting is clearer
+    "RUF005", # collection-literal-concatenation -- stylistic, existing code is clear
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/compiletools/test_*.py" = [
+    "E501",   # line too long (tests often have long descriptive names)
+    "B011",   # assert False -- used deliberately in tests
+    "F823",   # false positive: module-level `import compiletools.X` makes `compiletools` available
+    "SIM103", # returning condition directly can obscure test intent
+]

@@ -1,13 +1,15 @@
 """Unit tests for file locking mechanisms."""
 
-import pytest
-import tempfile
 import multiprocessing
-import time
 import os
+import tempfile
+import time
 from unittest.mock import Mock, patch
-import compiletools.locking
+
+import pytest
+
 import compiletools.apptools
+import compiletools.locking
 
 
 @pytest.fixture
@@ -37,6 +39,7 @@ def temp_lock_file():
             path = temp_path + ext
             if os.path.isdir(path):
                 import shutil
+
                 shutil.rmtree(path)
             elif os.path.exists(path):
                 os.unlink(path)
@@ -57,10 +60,10 @@ class TestLockdirLock:
         assert os.path.exists(lock.pid_file)
 
         # Verify pid file content
-        with open(lock.pid_file, "r") as f:
+        with open(lock.pid_file) as f:
             content = f.read().strip()
             assert ":" in content
-            hostname, pid = content.split(":", 1)
+            _hostname, pid = content.split(":", 1)
             assert int(pid) == os.getpid()
 
         # Release lock
@@ -103,7 +106,7 @@ class TestLockdirLock:
         assert os.path.exists(lock.lockdir)
 
         # Verify new PID is ours
-        with open(lock.pid_file, "r") as f:
+        with open(lock.pid_file) as f:
             content = f.read().strip()
             _, pid = content.split(":", 1)
             assert int(pid) == os.getpid()
@@ -203,8 +206,7 @@ class TestLockdirLock:
 
             # Verify lockdir group matches target file group
             target_stat = os.stat(lock_file)
-            assert lockdir_stat.st_gid == target_stat.st_gid, \
-                "Lockdir group should match target file group"
+            assert lockdir_stat.st_gid == target_stat.st_gid, "Lockdir group should match target file group"
 
             lock.release()
 
@@ -222,14 +224,14 @@ class TestLockdirLock:
         lock = compiletools.locking.LockdirLock(temp_lock_file, mock_args)
 
         # Track attempts
-        attempt_count = {'value': 0}
+        attempt_count = {"value": 0}
         original_atomic = compiletools.filesystem_utils.atomic_output_file
 
         def failing_atomic(target_path, *args, **kwargs):
             """Simulate lockdir removal on first attempt."""
-            attempt_count['value'] += 1
+            attempt_count["value"] += 1
 
-            if attempt_count['value'] == 1:
+            if attempt_count["value"] == 1:
                 # Simulate concurrent process removing lockdir during pid write
                 if os.path.exists(lock.lockdir):
                     shutil.rmtree(lock.lockdir)
@@ -240,7 +242,7 @@ class TestLockdirLock:
             return original_atomic(target_path, *args, **kwargs)
 
         # Patch atomic_output_file to simulate race condition
-        with patch('compiletools.filesystem_utils.atomic_output_file', side_effect=failing_atomic):
+        with patch("compiletools.filesystem_utils.atomic_output_file", side_effect=failing_atomic):
             # Should retry and succeed on second attempt
             lock.acquire()
 
@@ -249,13 +251,13 @@ class TestLockdirLock:
             assert os.path.exists(lock.pid_file), "PID file should exist after retry"
 
             # Verify we retried (2 attempts: 1 failed + 1 succeeded)
-            assert attempt_count['value'] == 2, f"Expected 2 attempts, got {attempt_count['value']}"
+            assert attempt_count["value"] == 2, f"Expected 2 attempts, got {attempt_count['value']}"
 
             # Verify pid file has correct content
-            with open(lock.pid_file, 'r') as f:
+            with open(lock.pid_file) as f:
                 content = f.read().strip()
-            assert ':' in content, "PID file should have hostname:pid format"
-            _, pid = content.split(':', 1)
+            assert ":" in content, "PID file should have hostname:pid format"
+            _, pid = content.split(":", 1)
             assert int(pid) == os.getpid(), "PID file should contain our PID"
 
             lock.release()
@@ -274,7 +276,7 @@ class TestLockdirLock:
                 shutil.rmtree(lock.lockdir)
             raise FileNotFoundError(f"No such file or directory: '{lock.lockdir}'")
 
-        with patch('compiletools.filesystem_utils.atomic_output_file', side_effect=always_failing_atomic):
+        with patch("compiletools.filesystem_utils.atomic_output_file", side_effect=always_failing_atomic):
             # Should fail after 3 attempts
             with pytest.raises(RuntimeError, match="Failed to acquire lock after 3 attempts"):
                 lock.acquire()
@@ -421,10 +423,7 @@ class TestFileLock:
 
     def test_filesystem_detection_failure_defaults_to_flock(self, temp_lock_file, mock_args):
         """Test that filesystem detection failure defaults to flock."""
-        with patch(
-            "compiletools.filesystem_utils.get_filesystem_type",
-            side_effect=Exception("Detection failed")
-        ):
+        with patch("compiletools.filesystem_utils.get_filesystem_type", side_effect=Exception("Detection failed")):
             lock_ctx = compiletools.locking.FileLock(temp_lock_file, mock_args)
             assert isinstance(lock_ctx.lock, compiletools.locking.FlockLock)
 
@@ -443,9 +442,8 @@ class TestFileLock:
     def test_exception_propagation(self, temp_lock_file, mock_args):
         """Test that exceptions inside context are propagated."""
         with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="lockdir"):
-            with pytest.raises(ValueError):
-                with compiletools.locking.FileLock(temp_lock_file, mock_args):
-                    raise ValueError("Test exception")
+            with pytest.raises(ValueError), compiletools.locking.FileLock(temp_lock_file, mock_args):
+                raise ValueError("Test exception")
 
             # Lock should be released even after exception
             lockdir = temp_lock_file + ".lockdir"
@@ -493,7 +491,7 @@ class TestConcurrentLocking:
     def test_concurrent_processes_serial_access(self, temp_lock_file, mock_args, strategy):
         """Test that concurrent processes acquire locks serially."""
         # Use spawn method to avoid fork() deprecation warnings
-        ctx = multiprocessing.get_context('spawn')
+        ctx = multiprocessing.get_context("spawn")
 
         # Convert args to dict for pickling
         args_dict = {

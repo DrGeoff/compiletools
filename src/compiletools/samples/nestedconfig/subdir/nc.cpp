@@ -13,4 +13,3 @@ int main(int argc, char* argv[])
     MyStruct<'c'> valchar;
     return 0;
 }
-

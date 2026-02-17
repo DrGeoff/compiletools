@@ -8,9 +8,9 @@ No circular dependencies: only imports external libraries (psutil, subprocess, o
 """
 
 import os
+import subprocess
 import sys
 import time
-import subprocess
 
 
 def get_lock_age_seconds(lockdir, verbose=0):
@@ -58,13 +58,13 @@ def read_lock_info(lockdir):
         if not os.path.exists(pid_file):
             return None, None
 
-        with open(pid_file, 'r') as f:
+        with open(pid_file) as f:
             lock_info = f.read().strip()
 
-        if ':' not in lock_info:
+        if ":" not in lock_info:
             return None, None
 
-        lock_host, lock_pid = lock_info.split(':', 1)
+        lock_host, lock_pid = lock_info.split(":", 1)
         return lock_host, int(lock_pid)
 
     except (OSError, ValueError):
@@ -81,6 +81,7 @@ def is_process_alive_local(pid):
         bool: True if process exists
     """
     import psutil
+
     return psutil.pid_exists(pid)
 
 
@@ -99,12 +100,18 @@ def is_process_alive_remote(hostname, pid, ssh_timeout=5):
     """
     try:
         result = subprocess.run(
-            ['ssh', '-o', f'ConnectTimeout={ssh_timeout}',
-             '-o', 'BatchMode=yes', hostname,
-             f'kill -0 {pid} 2>/dev/null'],
+            [
+                "ssh",
+                "-o",
+                f"ConnectTimeout={ssh_timeout}",
+                "-o",
+                "BatchMode=yes",
+                hostname,
+                f"kill -0 {pid} 2>/dev/null",
+            ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=ssh_timeout + 1
+            timeout=ssh_timeout + 1,
         )
 
         # Exit code 0 = process exists

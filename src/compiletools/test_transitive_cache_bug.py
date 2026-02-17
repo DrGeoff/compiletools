@@ -19,14 +19,16 @@ Real-world scenario (game engine themed, sanitized from production code):
 
 import os
 import shutil
-import pytest
+
 import configargparse
-import compiletools.test_base as tb
-import compiletools.headerdeps
-import compiletools.magicflags
-import compiletools.hunter
+import pytest
+
 import compiletools.apptools
 import compiletools.cake
+import compiletools.headerdeps
+import compiletools.hunter
+import compiletools.magicflags
+import compiletools.test_base as tb
 import compiletools.testhelper as uth
 
 
@@ -62,12 +64,7 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
 
         sample_dir = os.path.join(uth.samplesdir(), "transitive_cache_bug")
         engine_dir = os.path.join(sample_dir, "engine")
-        argv = [
-            "--headerdeps", "direct",
-            "--INCLUDE", sample_dir,
-            "--INCLUDE", engine_dir,
-            "-q"
-        ]
+        argv = ["--headerdeps", "direct", "--INCLUDE", sample_dir, "--INCLUDE", engine_dir, "-q"]
         args = compiletools.apptools.parseargs(cap, argv)
 
         # Clear module-level caches to start fresh
@@ -121,12 +118,7 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
 
         sample_dir = os.path.join(uth.samplesdir(), "transitive_cache_bug")
         engine_dir = os.path.join(sample_dir, "engine")
-        argv = [
-            "--headerdeps", "direct",
-            "--INCLUDE", sample_dir,
-            "--INCLUDE", engine_dir,
-            "-q"
-        ]
+        argv = ["--headerdeps", "direct", "--INCLUDE", sample_dir, "--INCLUDE", engine_dir, "-q"]
         args = compiletools.apptools.parseargs(cap, argv)
 
         # Clear module-level caches to start fresh
@@ -163,9 +155,7 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
 
         # Verify all other files also have memory_buffer.hpp
         for filename, file_deps in results.items():
-            assert memory_buffer in file_deps, (
-                f"{filename} missing memory_buffer.hpp dependency"
-            )
+            assert memory_buffer in file_deps, f"{filename} missing memory_buffer.hpp dependency"
 
     def test_hunter_multi_file_processing(self):
         """
@@ -183,13 +173,7 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
 
         sample_dir = os.path.join(uth.samplesdir(), "transitive_cache_bug")
         engine_dir = os.path.join(sample_dir, "engine")
-        argv = [
-            "--headerdeps", "direct",
-            "--magic", "direct",
-            "--INCLUDE", sample_dir,
-            "--INCLUDE", engine_dir,
-            "-q"
-        ]
+        argv = ["--headerdeps", "direct", "--magic", "direct", "--INCLUDE", sample_dir, "--INCLUDE", engine_dir, "-q"]
         args = compiletools.apptools.parseargs(cap, argv)
 
         # Clear all caches
@@ -239,12 +223,7 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
 
         sample_dir = os.path.join(uth.samplesdir(), "transitive_cache_bug")
         engine_dir = os.path.join(sample_dir, "engine")
-        argv = [
-            "--headerdeps", "direct",
-            "--INCLUDE", sample_dir,
-            "--INCLUDE", engine_dir,
-            "-q"
-        ]
+        argv = ["--headerdeps", "direct", "--INCLUDE", sample_dir, "--INCLUDE", engine_dir, "-q"]
         args = compiletools.apptools.parseargs(cap, argv)
 
         task_scheduler = self._get_engine_file("systems", "task_scheduler.cpp")
@@ -325,7 +304,8 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
                     # Run ct-cake with --auto to automatically discover and build executables
                     argv = [
                         "--config=" + temp_config_name,
-                        "--INCLUDE", temp_engine,
+                        "--INCLUDE",
+                        temp_engine,
                         "--auto",
                         "--exemarkers=main",  # Find executables by looking for main()
                     ]
@@ -337,9 +317,9 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
                     compiletools.cake.main(argv)
 
             # If we get here, build succeeded - verify executables were created
-            expected_exes = {'a-game', 'b-game'}
+            expected_exes = {"a-game", "b-game"}
             actual_exes = set()
-            for root, dirs, files in os.walk(temp_engine):
+            for root, _dirs, files in os.walk(temp_engine):
                 for ff in files:
                     full_path = os.path.join(root, ff)
                     if os.access(full_path, os.X_OK) and os.path.isfile(full_path):
@@ -355,4 +335,5 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
 
 if __name__ == "__main__":
     import pytest
+
     pytest.main([__file__, "-v"])

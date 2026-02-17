@@ -19,9 +19,9 @@ ct-filelist [OPTION] filename [filename ...]
 
 DESCRIPTION
 ===========
-ct-filelist uses the given variants/configs, command line arguments, 
-environment variables, and most importantly one or more filenames to determine 
-the list of files that are required to build the given filename(s). For example, 
+ct-filelist uses the given variants/configs, command line arguments,
+environment variables, and most importantly one or more filenames to determine
+the list of files that are required to build the given filename(s). For example,
 if myfile.cpp includes myfile.hpp and myfile.hpp in turn includes awesome.h
 
 .. code-block:: text
@@ -120,8 +120,8 @@ OPTIONS
 
 **Build System Options**
 
-The following options are (and many more) are inherited from the common build 
-system and control dependency resolution. See ``ct-config`` (1) 
+The following options are (and many more) are inherited from the common build
+system and control dependency resolution. See ``ct-config`` (1)
 and ``ct-commandline`` (1) for the complete reference of compiler and build options.
 
 --git-root / --no-git-root

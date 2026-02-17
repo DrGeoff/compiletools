@@ -30,7 +30,7 @@ struct widget_factory_registration
     {
         //std::cout << "Registering " << key << "\n";
         widget_factory* wf    = widget_factory::instance();
-        wf->creator_map_[key] = []()->std::unique_ptr<widget> 
+        wf->creator_map_[key] = []()->std::unique_ptr<widget>
                                   {
 								       return std::unique_ptr<DerivedType>(new DerivedType());
                                   };

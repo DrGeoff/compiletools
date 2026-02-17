@@ -1,33 +1,38 @@
 import json
 import os
-from typing import List, Dict, Any
+from typing import Any, Optional
 
 import stringzilla as sz
-import compiletools.utils
+
 import compiletools.apptools
-import compiletools.headerdeps
-import compiletools.magicflags
-import compiletools.hunter
-import compiletools.namer
 import compiletools.configutils
-import compiletools.wrappedos
 import compiletools.filesystem_utils
 import compiletools.findtargets
+import compiletools.headerdeps
+import compiletools.hunter
+import compiletools.magicflags
+import compiletools.namer
+import compiletools.utils
+import compiletools.wrappedos
 from compiletools.locking import FileLock
 
 
 class CompilationDatabaseCreator:
     """Creates compile_commands.json files for clang tooling integration"""
-    
+
     def __init__(self, args, namer=None, headerdeps=None, magicparser=None, hunter=None):
         self.args = args
 
         # Use provided objects or create new ones
         self.namer = namer if namer is not None else compiletools.namer.Namer(args)
         self.headerdeps = headerdeps if headerdeps is not None else compiletools.headerdeps.create(args)
-        self.magicparser = magicparser if magicparser is not None else compiletools.magicflags.create(args, self.headerdeps)
-        self.hunter = hunter if hunter is not None else compiletools.hunter.Hunter(args, self.headerdeps, self.magicparser)
-            
+        self.magicparser = (
+            magicparser if magicparser is not None else compiletools.magicflags.create(args, self.headerdeps)
+        )
+        self.hunter = (
+            hunter if hunter is not None else compiletools.hunter.Hunter(args, self.headerdeps, self.magicparser)
+        )
+
     @staticmethod
     def add_arguments(cap):
         """Add command-line arguments for standalone ct-compilation-database"""
@@ -38,14 +43,14 @@ class CompilationDatabaseCreator:
             "--compilation-database-output",
             dest="compilation_database_output",
             default=None,
-            help="Output filename for compilation database (default: <gitroot>/compile_commands.json)"
+            help="Output filename for compilation database (default: <gitroot>/compile_commands.json)",
         )
 
         cap.add(
             "--relative-paths",
             dest="compilation_database_relative",
             action="store_true",
-            help="Use relative paths instead of absolute paths"
+            help="Use relative paths instead of absolute paths",
         )
 
         compiletools.utils.add_boolean_argument(
@@ -56,7 +61,7 @@ class CompilationDatabaseCreator:
             help="Enable file locking for concurrent compilation database writes",
         )
 
-    def _get_compiler_command(self, source_file: str) -> List[str]:
+    def _get_compiler_command(self, source_file: str) -> list[str]:
         """Generate compiler command arguments for a source file with StringZilla optimization"""
 
         # Determine compiler based on file extension
@@ -74,7 +79,7 @@ class CompilationDatabaseCreator:
         else:
             # If no compiler is set, we can't generate a valid command
             return []
-        
+
         # Get magic flags for this specific file
         # Use Hunter's cached results (populated during huntsource)
         try:
@@ -89,34 +94,34 @@ class CompilationDatabaseCreator:
         if compiletools.utils.is_cpp_source(source_file):
             # C++ source: combine CPPFLAGS + CXXFLAGS from both args and magic flags
             combined_flags = compiletools.utils.combine_and_deduplicate_compiler_flags(
-                getattr(self.args, 'CPPFLAGS', None),
+                getattr(self.args, "CPPFLAGS", None),
                 magic_flags.get(sz.Str("CPPFLAGS"), []),
-                getattr(self.args, 'CXXFLAGS', None),
-                magic_flags.get(sz.Str("CXXFLAGS"), [])
+                getattr(self.args, "CXXFLAGS", None),
+                magic_flags.get(sz.Str("CXXFLAGS"), []),
             )
         else:
             # C source: combine CPPFLAGS + CFLAGS from both args and magic flags
             combined_flags = compiletools.utils.combine_and_deduplicate_compiler_flags(
-                getattr(self.args, 'CPPFLAGS', None),
+                getattr(self.args, "CPPFLAGS", None),
                 magic_flags.get(sz.Str("CPPFLAGS"), []),
-                getattr(self.args, 'CFLAGS', None),
-                magic_flags.get(sz.Str("CFLAGS"), [])
+                getattr(self.args, "CFLAGS", None),
+                magic_flags.get(sz.Str("CFLAGS"), []),
             )
 
         args.extend(combined_flags)
-        
+
         # Add compile-only flag
         args.extend(["-c"])
-        
+
         # Add the source file
         if self.args.compilation_database_relative:
             args.append(os.path.relpath(source_file, os.getcwd()))
         else:
             args.append(os.path.realpath(source_file))
-            
+
         return args
 
-    def _create_command_object(self, source_file: str) -> Dict[str, Any]:
+    def _create_command_object(self, source_file: str) -> dict[str, Any]:
         """Create a single command object for the compilation database"""
 
         # Directory is always absolute (working directory)
@@ -135,13 +140,9 @@ class CompilationDatabaseCreator:
         if not arguments:
             return None
 
-        return {
-            "directory": directory,
-            "file": file_path,
-            "arguments": arguments
-        }
+        return {"directory": directory, "file": file_path, "arguments": arguments}
 
-    def create_compilation_database(self) -> List[Dict[str, Any]]:
+    def create_compilation_database(self) -> list[dict[str, Any]]:
         """Create the compilation database as a list of command objects"""
 
         commands = []
@@ -173,7 +174,7 @@ class CompilationDatabaseCreator:
 
         return commands
 
-    def write_compilation_database(self, output_file: str = None):
+    def write_compilation_database(self, output_file: Optional[str] = None):
         """Write the compilation database to file with incremental update support"""
 
         if output_file is None:
@@ -189,7 +190,7 @@ class CompilationDatabaseCreator:
         with FileLock(output_file, self.args):
             self._write_database_impl(output_file, new_commands)
 
-    def _write_database_impl(self, output_file: str, new_commands: List[Dict[str, Any]]):
+    def _write_database_impl(self, output_file: str, new_commands: list[dict[str, Any]]):
         """Implementation of database write (extracted for locking)
 
         Args:
@@ -202,10 +203,7 @@ class CompilationDatabaseCreator:
             try:
                 # Use filesystem-safe reading (mmap on local, regular I/O on network filesystems)
                 # No need for respect_locks since we're already inside FileLock context
-                content_str = compiletools.filesystem_utils.safe_read_text_file(
-                    output_file,
-                    encoding='utf-8'
-                )
+                content_str = compiletools.filesystem_utils.safe_read_text_file(output_file, encoding="utf-8")
                 if len(content_str) > 0:
                     existing_commands = json.loads(str(content_str))
                     if self.args.verbose:
@@ -216,7 +214,6 @@ class CompilationDatabaseCreator:
                 if self.args.verbose:
                     print(f"Warning: Could not read existing compilation database: {e}")
                 existing_commands = []
-
 
         # Merge: Keep existing entries for files we're not updating using StringZilla operations
         merged_commands = []
@@ -272,9 +269,7 @@ class CompilationDatabaseCreator:
 def main(argv=None):
     """Main entry point for ct-compilation-database"""
 
-    cap = compiletools.apptools.create_parser(
-        "Generate compile_commands.json for clang tooling", argv=argv
-    )
+    cap = compiletools.apptools.create_parser("Generate compile_commands.json for clang tooling", argv=argv)
 
     # Add compilation database specific arguments
     CompilationDatabaseCreator.add_arguments(cap)
@@ -302,4 +297,3 @@ def main(argv=None):
     creator.write_compilation_database()
 
     return 0
-

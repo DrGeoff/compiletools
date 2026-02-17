@@ -9,6 +9,7 @@ headerdeps resets macros to core-only instead of using the macro_state_key.
 When analyzing headers as dependencies, file-level #define macros are lost,
 causing conditional includes to be incorrectly evaluated.
 """
+
 import os
 import sys
 from pathlib import Path
@@ -16,10 +17,11 @@ from pathlib import Path
 # Add compiletools to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import compiletools.hunter
-import compiletools.headerdeps
-import compiletools.magicflags
 from types import SimpleNamespace
+
+import compiletools.headerdeps
+import compiletools.hunter
+import compiletools.magicflags
 
 
 def test_hunter_propagates_macros_to_header_dependencies():
@@ -42,7 +44,7 @@ def test_hunter_propagates_macros_to_header_dependencies():
     macro_state_key, so both calls return the same (wrong) result.
     """
     # Setup directory - point to sample files
-    sample_dir = Path(__file__).parent / 'samples' / 'hunter_macro_propagation'
+    sample_dir = Path(__file__).parent / "samples" / "hunter_macro_propagation"
     original_cwd = os.getcwd()
     os.chdir(sample_dir)
 
@@ -50,54 +52,57 @@ def test_hunter_propagates_macros_to_header_dependencies():
         # Create args
         args = SimpleNamespace()
         args.verbose = 0
-        args.headerdeps = 'direct'
-        args.magic = 'direct'
+        args.headerdeps = "direct"
+        args.magic = "direct"
         args.max_file_read_size = 0
         args.allow_magic_source_in_header = False
-        args.CPPFLAGS = f'-I {sample_dir}'
-        args.CFLAGS = ''
-        args.CXXFLAGS = ''
-        args.CXX = 'g++'
+        args.CPPFLAGS = f"-I {sample_dir}"
+        args.CFLAGS = ""
+        args.CXXFLAGS = ""
+        args.CXX = "g++"
 
         # Create components
         headerdeps = compiletools.headerdeps.DirectHeaderDeps(args)
         magicparser = compiletools.magicflags.DirectMagicFlags(args, headerdeps)
         hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser)
 
-        config_h_path = str(sample_dir / 'config.h')
+        config_h_path = str(sample_dir / "config.h")
 
         # Test 1: Analyze config.h WITHOUT the macro
         import stringzilla as sz
+
         macro_key_without = frozenset()
         headers_without, _ = hunter._get_immediate_deps(config_h_path, macro_key_without)
-        has_renderer_without = any('renderer.h' in h for h in headers_without)
+        has_renderer_without = any("renderer.h" in h for h in headers_without)
 
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print("Test 1: config.h dependencies WITHOUT ENABLE_RENDERING")
-        print("="*70)
+        print("=" * 70)
         print(f"Headers: {headers_without}")
         print(f"Includes renderer.h? {has_renderer_without}")
 
         # Test 2: Analyze config.h WITH the macro
-        macro_key_with = frozenset({(sz.Str('ENABLE_RENDERING'), sz.Str('1'))})
+        macro_key_with = frozenset({(sz.Str("ENABLE_RENDERING"), sz.Str("1"))})
         headers_with, _ = hunter._get_immediate_deps(config_h_path, macro_key_with)
-        has_renderer_with = any('renderer.h' in h for h in headers_with)
+        has_renderer_with = any("renderer.h" in h for h in headers_with)
 
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print("Test 2: config.h dependencies WITH ENABLE_RENDERING")
-        print("="*70)
+        print("=" * 70)
         print(f"Headers: {headers_with}")
         print(f"Includes renderer.h? {has_renderer_with}")
-        print("="*70)
+        print("=" * 70)
 
         # Assertions
-        assert not has_renderer_without, \
+        assert not has_renderer_without, (
             "config.h should NOT include renderer.h when ENABLE_RENDERING is not in macro_state_key"
+        )
 
-        assert has_renderer_with, \
-            "config.h SHOULD include renderer.h when ENABLE_RENDERING is in macro_state_key. " \
-            "If this fails, it means Hunter._get_immediate_deps() calls headerdeps.process() " \
+        assert has_renderer_with, (
+            "config.h SHOULD include renderer.h when ENABLE_RENDERING is in macro_state_key. "
+            "If this fails, it means Hunter._get_immediate_deps() calls headerdeps.process() "
             "which resets macros to empty, ignoring the macro_state_key parameter."
+        )
 
         print("\n✅ PASS: Hunter correctly uses macro_state_key when analyzing headers")
 
@@ -105,7 +110,7 @@ def test_hunter_propagates_macros_to_header_dependencies():
         os.chdir(original_cwd)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     try:
         test_hunter_propagates_macros_to_header_dependencies()
         print("\n✅ Test passed - Hunter macro propagation works correctly!")

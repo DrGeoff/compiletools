@@ -1,16 +1,16 @@
-import os
 import functools
-import compiletools.wrappedos
-import compiletools.git_utils
-import compiletools.utils
+import os
+
 import compiletools.apptools
 import compiletools.configutils
+import compiletools.git_utils
+import compiletools.utils
+import compiletools.wrappedos
 
 
-class Namer(object):
-
-    """ From a source filename, calculate related names
-        like executable name, object name, etc.
+class Namer:
+    """From a source filename, calculate related names
+    like executable name, object name, etc.
     """
 
     def __init__(self, args, argv=None, variant=None, exedir=None):
@@ -28,11 +28,11 @@ class Namer(object):
     def topbindir(self):
         """
         Return the top-level directory for executable placement.
-        
+
         For relative paths containing subdirectories (variant-style builds),
         return the parent directory to place executables in the top-level.
         For absolute paths, return the full path as specified by the user.
-        
+
         Examples:
             bin/gcc.release → "bin/"
             bin.special/gcc.release → "bin.special/"
@@ -44,8 +44,8 @@ class Namer(object):
             return self.args.bindir
 
     def _outputdir(self, defaultdir, sourcefilename=None):
-        """ Used by object_dir and executable_dir.
-            defaultdir must be either self.args.objdir or self.args.bindir
+        """Used by object_dir and executable_dir.
+        defaultdir must be either self.args.objdir or self.args.bindir
         """
         if sourcefilename:
             project_pathname = self._project.pathname(sourcefilename)
@@ -54,12 +54,12 @@ class Namer(object):
             relative = defaultdir
         return compiletools.wrappedos.realpath(relative)
 
-    @functools.lru_cache(maxsize=None)
+    @functools.cache
     def object_dir(self, sourcefilename=None):
-        """ This function allows for alternative behaviour to be explore.
-            Previously we tried replicating the source directory structure
-            to keep object files separated.  The mkdir involved slowed 
-            down the build process by about 25%.
+        """This function allows for alternative behaviour to be explore.
+        Previously we tried replicating the source directory structure
+        to keep object files separated.  The mkdir involved slowed
+        down the build process by about 25%.
         """
         return self.args.objdir
 
@@ -86,7 +86,7 @@ class Namer(object):
         from compiletools.global_hash_registry import get_file_hash
 
         if not header_list:
-            return '0' * 14  # No dependencies
+            return "0" * 14  # No dependencies
 
         # Coerce to str (handles str, stringzilla.Str, Path objects)
         # Use str() not os.fspath() - stringzilla.Str is not os.PathLike
@@ -98,6 +98,7 @@ class Namer(object):
         if len(unique_paths) != len(header_paths) and self.args.verbose >= 5:
             # Log if duplicates detected (shouldn't happen with proper callers)
             import sys
+
             print("Warning: Duplicate headers in dep hash computation", file=sys.stderr)
 
         # XOR all header hashes (order-independent via sorting)
@@ -111,11 +112,12 @@ class Namer(object):
                 # Generated header doesn't exist yet - treat as zero hash (XOR with 0 is identity)
                 if self.args.verbose >= 5:
                     import sys
+
                     print(f"Warning: Header not found (generated?): {header_path}", file=sys.stderr)
 
-        return format(combined, '014x')
+        return format(combined, "014x")
 
-    @functools.lru_cache(maxsize=None)
+    @functools.cache
     def object_name(self, sourcefilename, macro_state_hash, dep_hash):
         """Return the name (not the path) of the object file for the given source.
 
@@ -156,7 +158,7 @@ class Namer(object):
         # Use full 16-char macro state hash
         return f"{basename}_{file_hash_short}_{dep_hash}_{macro_state_hash}.o"
 
-    @functools.lru_cache(maxsize=None)
+    @functools.cache
     def object_pathname(self, sourcefilename, macro_state_hash, dep_hash):
         """Return full path to object file.
 
@@ -173,19 +175,19 @@ class Namer(object):
             ]
         )
 
-    @functools.lru_cache(maxsize=None)
+    @functools.cache
     def executable_dir(self, sourcefilename=None):
-        """ Similar to object_dir, this allows for alternative 
-            behaviour experimentation.
+        """Similar to object_dir, this allows for alternative
+        behaviour experimentation.
         """
         return self.args.bindir
 
-    @functools.lru_cache(maxsize=None)
+    @functools.cache
     def executable_name(self, sourcefilename):
         name = os.path.split(sourcefilename)[1]
         return os.path.splitext(name)[0]
 
-    @functools.lru_cache(maxsize=None)
+    @functools.cache
     def executable_pathname(self, sourcefilename):
         return "".join(
             [
@@ -195,16 +197,16 @@ class Namer(object):
             ]
         )
 
-    @functools.lru_cache(maxsize=None)
+    @functools.cache
     def staticlibrary_name(self, sourcefilename=None):
         if sourcefilename is None and self.args.static:
             sourcefilename = self.args.static[0]
         name = os.path.split(sourcefilename)[1]
         return "lib" + os.path.splitext(name)[0] + ".a"
 
-    @functools.lru_cache(maxsize=None)
+    @functools.cache
     def staticlibrary_pathname(self, sourcefilename=None):
-        """ Put static libraries in the same directory as executables """
+        """Put static libraries in the same directory as executables"""
         if sourcefilename is None and self.args.static:
             sourcefilename = compiletools.wrappedos.realpath(self.args.static[0])
         return "".join(
@@ -215,16 +217,16 @@ class Namer(object):
             ]
         )
 
-    @functools.lru_cache(maxsize=None)
+    @functools.cache
     def dynamiclibrary_name(self, sourcefilename=None):
         if sourcefilename is None and self.args.dynamic:
             sourcefilename = self.args.dynamic[0]
         name = os.path.split(sourcefilename)[1]
         return "lib" + os.path.splitext(name)[0] + ".so"
 
-    @functools.lru_cache(maxsize=None)
+    @functools.cache
     def dynamiclibrary_pathname(self, sourcefilename=None):
-        """ Put dynamic libraries in the same directory as executables """
+        """Put dynamic libraries in the same directory as executables"""
         if sourcefilename is None and self.args.dynamic:
             sourcefilename = compiletools.wrappedos.realpath(self.args.dynamic[0])
         return "".join(
@@ -236,8 +238,8 @@ class Namer(object):
         )
 
     def compilation_database_pathname(self):
-        """ Return the path for the compilation database, defaulting to git root """
-        if hasattr(self.args, 'compilation_database_output') and self.args.compilation_database_output:
+        """Return the path for the compilation database, defaulting to git root"""
+        if hasattr(self.args, "compilation_database_output") and self.args.compilation_database_output:
             # If user provided a path, use it (could be relative or absolute)
             if os.path.isabs(self.args.compilation_database_output):
                 return self.args.compilation_database_output
@@ -250,25 +252,23 @@ class Namer(object):
             return os.path.join(gitroot, "compile_commands.json")
 
     def all_executable_pathnames(self):
-        """ Use the filenames from the command line to determine the 
-            executable names.
+        """Use the filenames from the command line to determine the
+        executable names.
         """
         if self.args.filename:
             allexes = {
-                self.executable_pathname(compiletools.wrappedos.realpath(source))
-                for source in self.args.filename
+                self.executable_pathname(compiletools.wrappedos.realpath(source)) for source in self.args.filename
             }
             return list(allexes)
         return []
 
     def all_test_pathnames(self):
-        """ Use the test files from the command line to determine the 
-            executable names.
+        """Use the test files from the command line to determine the
+        executable names.
         """
         if self.args.tests:
             alltestsexes = {
-                self.executable_pathname(compiletools.wrappedos.realpath(source))
-                for source in self.args.tests
+                self.executable_pathname(compiletools.wrappedos.realpath(source)) for source in self.args.tests
             }
             return list(alltestsexes)
         return []

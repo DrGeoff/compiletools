@@ -6,8 +6,8 @@ This module provides filesystem type detection and policy decisions for:
 3. Filesystem-specific performance tuning
 """
 
-from functools import lru_cache
 import os
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -25,13 +25,13 @@ def get_filesystem_type(path: str) -> str:
         path = os.path.realpath(path)
         mounts = []
 
-        with open('/proc/mounts') as f:
+        with open("/proc/mounts") as f:
             for line in f:
                 parts = line.split()
                 if len(parts) >= 3:
                     mountpoint, fstype = parts[1], parts[2]
                     # Unescape octal sequences in mount paths (spaces, etc)
-                    mountpoint = mountpoint.replace('\\040', ' ')
+                    mountpoint = mountpoint.replace("\\040", " ")
                     mounts.append((mountpoint, fstype))
 
         # Sort by length descending to find most specific mount
@@ -50,16 +50,14 @@ def get_filesystem_type(path: str) -> str:
     # Fallback: try stat command (for non-Linux Unix)
     try:
         import subprocess
-        result = subprocess.run(
-            ['stat', '-f', '-c', '%T', path],
-            capture_output=True, text=True, timeout=5
-        )
+
+        result = subprocess.run(["stat", "-f", "-c", "%T", path], capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
             return result.stdout.strip()
     except (subprocess.SubprocessError, OSError, FileNotFoundError):
         pass
 
-    return 'unknown'
+    return "unknown"
 
 
 def get_lock_strategy(fstype: str) -> str:
@@ -73,15 +71,15 @@ def get_lock_strategy(fstype: str) -> str:
     fstype_lower = fstype.lower()
 
     # Filesystems requiring lockdir approach
-    if any(fs in fstype_lower for fs in ['gpfs', 'lustre', 'nfs']):
-        return 'lockdir'
+    if any(fs in fstype_lower for fs in ["gpfs", "lustre", "nfs"]):
+        return "lockdir"
 
     # CIFS/SMB requires exclusive file creation
-    if any(fs in fstype_lower for fs in ['cifs', 'smb']):
-        return 'cifs'
+    if any(fs in fstype_lower for fs in ["cifs", "smb"]):
+        return "cifs"
 
     # Standard POSIX flock
-    return 'flock'
+    return "flock"
 
 
 def supports_mmap_safely(fstype: str) -> bool:
@@ -94,7 +92,7 @@ def supports_mmap_safely(fstype: str) -> bool:
     fstype_lower = fstype.lower()
 
     # Known problematic filesystems
-    unsafe_filesystems = ['gpfs', 'cifs', 'smb', 'smbfs', 'afs']
+    unsafe_filesystems = ["gpfs", "cifs", "smb", "smbfs", "afs"]
     if any(fs in fstype_lower for fs in unsafe_filesystems):
         return False
 
@@ -113,10 +111,10 @@ def get_lockdir_sleep_interval(fstype: str) -> float:
     """
     fstype_lower = fstype.lower()
 
-    if 'lustre' in fstype_lower:
+    if "lustre" in fstype_lower:
         return 0.01  # Lustre is fast parallel filesystem
-    elif 'nfs' in fstype_lower:
-        return 0.1   # NFS has network latency
+    elif "nfs" in fstype_lower:
+        return 0.1  # NFS has network latency
     else:  # GPFS and others
         return 0.05  # Default middle ground
 
@@ -143,7 +141,7 @@ def atomic_write(target_path, content, binary=False, preserve_permissions=True):
     """
     import tempfile
 
-    target_dir = os.path.dirname(target_path) or '.'
+    target_dir = os.path.dirname(target_path) or "."
     target_name = os.path.basename(target_path)
 
     # Ensure target directory exists
@@ -162,23 +160,19 @@ def atomic_write(target_path, content, binary=False, preserve_permissions=True):
             pass
 
     # Create temp file in same directory (ensures same filesystem)
-    fd, temp_path = tempfile.mkstemp(
-        dir=target_dir,
-        prefix=f'.tmp.{target_name}.',
-        suffix=f'.{os.getpid()}'
-    )
+    fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix=f".tmp.{target_name}.", suffix=f".{os.getpid()}")
 
     try:
         # Write content
         if binary:
             if isinstance(content, str):
-                content = content.encode('utf-8')
+                content = content.encode("utf-8")
             os.write(fd, content)
         else:
             if isinstance(content, bytes):
                 os.write(fd, content)
             else:
-                os.write(fd, content.encode('utf-8'))
+                os.write(fd, content.encode("utf-8"))
         os.close(fd)
         fd = None
 
@@ -209,7 +203,7 @@ def atomic_write(target_path, content, binary=False, preserve_permissions=True):
         raise
 
 
-def safe_read_text_file(filepath, encoding='utf-8', force_no_mmap=False, respect_locks=False, lock_args=None):
+def safe_read_text_file(filepath, encoding="utf-8", force_no_mmap=False, respect_locks=False, lock_args=None):
     """Read text file safely, closing file descriptors properly.
 
     Always uses regular file I/O and closes file descriptors immediately.
@@ -240,16 +234,17 @@ def safe_read_text_file(filepath, encoding='utf-8', force_no_mmap=False, respect
     # Optional lock barrier - wait for any active writers
     if respect_locks and lock_args:
         from compiletools.locking import FileLock
+
         with FileLock(filepath, lock_args):
             pass  # Lock released immediately, now safe to read
 
     # Regular file I/O - safe on all filesystems, closes fd via context manager
     # OS page cache handles performance optimization
-    with open(filepath, 'r', encoding=encoding, errors='replace') as f:
+    with open(filepath, encoding=encoding, errors="replace") as f:
         return Str(f.read())
 
 
-def atomic_output_file(target_path, mode='w', encoding='utf-8', preserve_permissions=True):
+def atomic_output_file(target_path, mode="w", encoding="utf-8", preserve_permissions=True):
     """Context manager for atomic file writes via temp file + os.replace().
 
     Returns a file object that writes to a temp file. On successful exit,
@@ -278,7 +273,7 @@ def atomic_output_file(target_path, mode='w', encoding='utf-8', preserve_permiss
 
     @contextmanager
     def _atomic_context():
-        target_dir = os.path.dirname(target_path) or '.'
+        target_dir = os.path.dirname(target_path) or "."
         target_name = os.path.basename(target_path)
 
         # Ensure target directory exists
@@ -297,16 +292,12 @@ def atomic_output_file(target_path, mode='w', encoding='utf-8', preserve_permiss
                 pass
 
         # Create temp file in same directory
-        fd, temp_path = tempfile.mkstemp(
-            dir=target_dir,
-            prefix=f'.tmp.{target_name}.',
-            suffix=f'.{os.getpid()}'
-        )
+        fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix=f".tmp.{target_name}.", suffix=f".{os.getpid()}")
 
         f = None
         try:
             # Convert fd to file object with requested mode
-            if 'b' in mode:
+            if "b" in mode:
                 f = os.fdopen(fd, mode)
             else:
                 f = os.fdopen(fd, mode, encoding=encoding)

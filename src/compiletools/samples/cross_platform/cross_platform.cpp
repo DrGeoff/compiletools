@@ -12,4 +12,3 @@ std::string Cross_Platform::hello_world() const
 {
     return "hello world";
 }
-

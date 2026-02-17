@@ -8,17 +8,17 @@ hunter.py: Uses magicflags two-pass discovery to handle file-defined macros
 
 This test exposes cases where they disagree.
 """
-import pytest
+
 from pathlib import Path
 
 import compiletools.apptools
 import compiletools.headerdeps
-import compiletools.magicflags
 import compiletools.hunter
-import compiletools.wrappedos
+import compiletools.magicflags
 import compiletools.testhelper as uth
-from compiletools.tree import flatten
+import compiletools.wrappedos
 from compiletools.test_base import BaseCompileToolsTestCase
+from compiletools.tree import flatten
 
 
 class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
@@ -40,7 +40,7 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
         """
         filename = str(filename)
         test_dir = str(Path(filename).parent)
-        argv = [f'--INCLUDE={test_dir}', filename]
+        argv = [f"--INCLUDE={test_dir}", filename]
         if compiler_macros:
             argv.extend(compiler_macros)
 
@@ -48,7 +48,7 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
         cap = compiletools.apptools.create_parser("test_headertree", argv=argv)
         compiletools.magicflags.add_arguments(cap)
         compiletools.headerdeps.add_arguments(cap)
-        cap.add('filename', nargs='+')
+        cap.add("filename", nargs="+")
         args = compiletools.apptools.parseargs(cap, argv)
 
         # Create DirectHeaderDeps and magicflags parser for convergence
@@ -57,9 +57,7 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
 
         # Run two-pass discovery to converge macro state
         magicparser.parse(args.filename[0])
-        macro_state_key = magicparser.get_final_macro_state_key(
-            compiletools.wrappedos.realpath(args.filename[0])
-        )
+        macro_state_key = magicparser.get_final_macro_state_key(compiletools.wrappedos.realpath(args.filename[0]))
         tree = ht.generatetree(args.filename[0], macro_cache_key=macro_state_key)
 
         # Flatten the tree to get all headers (excluding the root file itself)
@@ -80,7 +78,7 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
         """
         filename = str(filename)
         test_dir = str(Path(filename).parent)
-        argv = [f'--INCLUDE={test_dir}', filename]
+        argv = [f"--INCLUDE={test_dir}", filename]
         if compiler_macros:
             argv.extend(compiler_macros)
 
@@ -89,7 +87,7 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
         compiletools.headerdeps.add_arguments(cap)
         compiletools.magicflags.add_arguments(cap)
         compiletools.hunter.add_arguments(cap)
-        cap.add('filename', nargs='+')
+        cap.add("filename", nargs="+")
         args = compiletools.apptools.parseargs(cap, argv)
 
         # Create hunter components
@@ -139,22 +137,23 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
         if missing_in_hunter:
             print(f"\nWARNING: hunter missed: {missing_in_hunter}")
 
-        assert headertree_basenames == hunter_basenames, \
-            f"BUG EXPOSED: headertree and hunter disagree on included files!\n" \
-            f"\n" \
-            f"Root cause: headertree.py lacks two-pass macro discovery.\n" \
-            f"- base.hpp defines USE_HASH=1 (file-defined macro)\n" \
-            f"- conditional.hpp has #ifdef USE_HASH to include dependency.hpp\n" \
-            f"- headertree processes conditional.hpp without USE_HASH first\n" \
-            f"- The #ifdef fails, so dependency.hpp is NOT discovered\n" \
-            f"\n" \
-            f"headertree missed: {missing_in_headertree}\n" \
-            f"hunter missed: {missing_in_hunter}\n" \
-            f"\n" \
-            f"Fix: Implement two-pass discovery in headertree.py like hunter does:\n" \
-            f"     1. Initial discovery with core macros\n" \
-            f"     2. Extract file-defined macros from discovered headers\n" \
+        assert headertree_basenames == hunter_basenames, (
+            f"BUG EXPOSED: headertree and hunter disagree on included files!\n"
+            f"\n"
+            f"Root cause: headertree.py lacks two-pass macro discovery.\n"
+            f"- base.hpp defines USE_HASH=1 (file-defined macro)\n"
+            f"- conditional.hpp has #ifdef USE_HASH to include dependency.hpp\n"
+            f"- headertree processes conditional.hpp without USE_HASH first\n"
+            f"- The #ifdef fails, so dependency.hpp is NOT discovered\n"
+            f"\n"
+            f"headertree missed: {missing_in_headertree}\n"
+            f"hunter missed: {missing_in_hunter}\n"
+            f"\n"
+            f"Fix: Implement two-pass discovery in headertree.py like hunter does:\n"
+            f"     1. Initial discovery with core macros\n"
+            f"     2. Extract file-defined macros from discovered headers\n"
             f"     3. Re-discover with converged macro state"
+        )
 
     def test_undef_bug_sample(self, pkgconfig_env):
         """Test #undef handling agreement between headertree and hunter.
@@ -189,19 +188,20 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
         if missing_in_hunter:
             print(f"\nBUG: hunter missed: {missing_in_hunter}")
 
-        assert headertree_basenames == hunter_basenames, \
-            f"Disagreement on #undef handling!\n" \
-            f"\n" \
-            f"Both tools should handle #undef TEMP_BUFFER_SIZE correctly.\n" \
-            f"After cleans_up.hpp undefines the macro, uses_conditional.hpp\n" \
-            f"should include should_be_included.hpp via #ifndef TEMP_BUFFER_SIZE.\n" \
-            f"\n" \
-            f"headertree missed: {missing_in_headertree}\n" \
-            f"hunter missed: {missing_in_hunter}\n" \
-            f"\n" \
-            f"If hunter is missing files: hunter.header_dependencies() may only\n" \
-            f"return direct dependencies, not the full transitive closure.\n" \
+        assert headertree_basenames == hunter_basenames, (
+            f"Disagreement on #undef handling!\n"
+            f"\n"
+            f"Both tools should handle #undef TEMP_BUFFER_SIZE correctly.\n"
+            f"After cleans_up.hpp undefines the macro, uses_conditional.hpp\n"
+            f"should include should_be_included.hpp via #ifndef TEMP_BUFFER_SIZE.\n"
+            f"\n"
+            f"headertree missed: {missing_in_headertree}\n"
+            f"hunter missed: {missing_in_hunter}\n"
+            f"\n"
+            f"If hunter is missing files: hunter.header_dependencies() may only\n"
+            f"return direct dependencies, not the full transitive closure.\n"
             f"If headertree is missing files: #undef handling in preprocessing may be broken."
+        )
 
     def test_macro_state_dependency_sample(self):
         """Test agreement when both start with same initial macro state.
@@ -222,7 +222,7 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
         headertree_basenames = self._get_basenames(headertree_headers)
         hunter_basenames = self._get_basenames(hunter_headers)
 
-        print(f"\nWithout DEBUG macro:")
+        print("\nWithout DEBUG macro:")
         print(f"headertree found: {sorted(headertree_basenames)}")
         print(f"hunter found: {sorted(hunter_basenames)}")
 
@@ -234,14 +234,15 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
         if missing_in_hunter:
             print(f"\nBUG: hunter missed: {missing_in_hunter}")
 
-        assert headertree_basenames == hunter_basenames, \
-            f"Disagreement on basic macro-conditional includes!\n" \
-            f"\n" \
-            f"Both tools should agree when starting with the same core macros\n" \
-            f"and no file-defined macros affect the include paths.\n" \
-            f"\n" \
-            f"headertree missed: {missing_in_headertree}\n" \
-            f"hunter missed: {missing_in_hunter}\n" \
-            f"\n" \
-            f"This is a baseline test - if this fails, there's a fundamental\n" \
+        assert headertree_basenames == hunter_basenames, (
+            f"Disagreement on basic macro-conditional includes!\n"
+            f"\n"
+            f"Both tools should agree when starting with the same core macros\n"
+            f"and no file-defined macros affect the include paths.\n"
+            f"\n"
+            f"headertree missed: {missing_in_headertree}\n"
+            f"hunter missed: {missing_in_hunter}\n"
+            f"\n"
+            f"This is a baseline test - if this fails, there's a fundamental\n"
             f"disagreement in how the tools process conditional includes."
+        )

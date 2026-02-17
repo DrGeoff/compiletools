@@ -1,16 +1,15 @@
-
 import os
+
 import pytest
-from unittest.mock import MagicMock
 import stringzilla as sz
+
+import compiletools.apptools
+import compiletools.magicflags
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
-import compiletools.magicflags
-import compiletools.apptools
 
 
 class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
-
     def setup_method(self):
         """Setup method - initialize parser cache"""
         super().setup_method()
@@ -19,10 +18,12 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
     def _check_flags(self, result, flag_type, expected_flags, unexpected_flags):
         """Helper to verify flags of given type contain expected flags and not unexpected ones"""
         import stringzilla as sz
+
         flag_key = sz.Str(flag_type) if isinstance(flag_type, str) else flag_type
         flags_str = " ".join(str(flag) for flag in result[flag_key])
-        return (all(flag in flags_str for flag in expected_flags) and
-                not any(flag in flags_str for flag in unexpected_flags))
+        return all(flag in flags_str for flag in expected_flags) and not any(
+            flag in flags_str for flag in unexpected_flags
+        )
 
     def _parse_with_magic(self, magic_type, source_file, extra_args=None):
         """Helper to create or reuse parser and parse file with given magic type
@@ -47,6 +48,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
         # Also clear preprocessing cache when args change (for MacroState correctness)
         from compiletools.preprocessing_cache import clear_cache as clear_preprocessing_cache
+
         clear_preprocessing_cache()
 
         try:
@@ -69,6 +71,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
         # Check that basic magic flags are present
         import stringzilla as sz
+
         assert sz.Str("F1") in result and str(result[sz.Str("F1")]) == str([sz.Str("1")])
         assert sz.Str("F2") in result and str(result[sz.Str("F2")]) == str([sz.Str("2")])
         assert sz.Str("F3") in result and str(result[sz.Str("F3")]) == str([sz.Str("3")])
@@ -83,8 +86,8 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         # Check that fake pkg-config flags were added
         # nested.pc has: -L/usr/local/lib -ltestpkg1
         ldflags_str = " ".join(str(f) for f in ldflags)
-        assert "-ltestpkg1" in ldflags_str, f"Expected '-ltestpkg1' from nested.pc to be in LDFLAGS"
-            
+        assert "-ltestpkg1" in ldflags_str, "Expected '-ltestpkg1' from nested.pc to be in LDFLAGS"
+
         # Check that PKG-CONFIG processing adds empty entries for flag types
         assert sz.Str("CPPFLAGS") in result
         assert sz.Str("CFLAGS") in result
@@ -98,40 +101,38 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         # Format: (filename, expected_values_dict or None)
         test_files = [
             # Core functionality with specific expected values
-            ("cross_platform/cross_platform.cpp",
-             {"SOURCE": [self._get_sample_path("cross_platform/cross_platform_lin.cpp")]}),
-
-            ("magicsourceinheader/main.cpp",
-             {"LDFLAGS": ["-lm"],
-              "SOURCE": [self._get_sample_path("magicsourceinheader/include_dir/sub_dir/the_code_lin.cpp")]}),
-
+            (
+                "cross_platform/cross_platform.cpp",
+                {"SOURCE": [self._get_sample_path("cross_platform/cross_platform_lin.cpp")]},
+            ),
+            (
+                "magicsourceinheader/main.cpp",
+                {
+                    "LDFLAGS": ["-lm"],
+                    "SOURCE": [self._get_sample_path("magicsourceinheader/include_dir/sub_dir/the_code_lin.cpp")],
+                },
+            ),
             # Macro dependencies - verify correct feature selection
             ("macro_deps/main.cpp", None),
-
             # LDFLAGS conditional compilation
             ("ldflags/conditional_ldflags_test.cpp", None),
             ("ldflags/version_dependent_ldflags.cpp", None),
-
             # Platform-specific includes
             ("conditional_includes/main.cpp", None),
-
             # Feature-based compilation
             ("feature_headers/main.cpp", None),
-
             # Complex macro scenarios - each tests different preprocessor edge cases
             ("cppflags_macros/elif_test.cpp", None),
             ("cppflags_macros/multi_flag_test.cpp", None),
             ("cppflags_macros/nested_macros_test.cpp", None),
             ("cppflags_macros/compiler_builtin_test.cpp", None),
             ("cppflags_macros/advanced_preprocessor_test.cpp", None),
-
             # Version-dependent API - both old and new versions
             ("version_dependent_api/test_main.cpp", None),
             ("version_dependent_api/test_main_new.cpp", None),
-
             # Magic processing order bug tests
             ("magic_processing_order/test_macro_transform.cpp", None),
-            ("magic_processing_order/complex_test.cpp", None)
+            ("magic_processing_order/complex_test.cpp", None),
         ]
 
         # Create parsers once and reuse across all files
@@ -151,7 +152,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
                 try:
                     tb.compare_direct_cpp_magic(self, filename, self._tmpdir, expected_values, parsers)
                 except (AssertionError, Exception) as e:
-                    failures.append(f"{filename}: {str(e)}")
+                    failures.append(f"{filename}: {e!s}")
 
             if failures:
                 fail_msg = "\n\nDirectMagicFlags vs CppMagicFlags equivalence failures:\n" + "\n".join(failures)
@@ -160,18 +161,18 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
     def test_macro_deps_cross_file(self, pkgconfig_env):
         """Test that macros defined in source files affect header magic flags"""
         source_file = "macro_deps/main.cpp"
-        
+
         # First verify both parsers give same results
         tb.compare_direct_cpp_magic(self, source_file, self._tmpdir)
-        
+
         # Then test specific behavior with direct parser
         result_direct = self._parse_with_magic("direct", source_file)
-        
+
         # Should only contain feature X dependencies, not feature Y
         assert sz.Str("PKG-CONFIG") in result_direct
         assert "zlib" in [str(x) for x in result_direct[sz.Str("PKG-CONFIG")]]
         assert "nested" not in [str(x) for x in result_direct.get(sz.Str("PKG-CONFIG"), [])]
-        
+
         assert sz.Str("SOURCE") in result_direct
         feature_x_source = self._get_sample_path("macro_deps/feature_x_impl.cpp")
         feature_y_source = self._get_sample_path("macro_deps/feature_y_impl.cpp")
@@ -184,249 +185,276 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         source_file = "ldflags/conditional_ldflags_test.cpp"
         debug_flags = ["-ldebug_library", "-ltest_framework"]
         production_flags = ["-lproduction_library", "-loptimized_framework"]
-        
+
         # Without macro - should get debug LDFLAGS
         result_debug = self._parse_with_magic("direct", source_file)
         assert self._check_flags(result_debug, "LDFLAGS", debug_flags, production_flags)
-        
+
         # With macro using direct magic via CPPFLAGS
         result_direct = self._parse_with_magic("direct", source_file, ["--append-CPPFLAGS=-DUSE_PRODUCTION_LIBS"])
-        assert self._check_flags(result_direct, "LDFLAGS", production_flags, debug_flags), \
+        assert self._check_flags(result_direct, "LDFLAGS", production_flags, debug_flags), (
             "Direct magic should handle command-line macros correctly"
-        
+        )
+
         # With macro using cpp magic - should work correctly
         result_cpp = self._parse_with_magic("cpp", source_file, ["--append-CPPFLAGS=-DUSE_PRODUCTION_LIBS"])
-        assert self._check_flags(result_cpp, "LDFLAGS", production_flags, debug_flags), \
+        assert self._check_flags(result_cpp, "LDFLAGS", production_flags, debug_flags), (
             "CPP magic should handle command-line macros correctly"
-        
+        )
+
         # Test that direct magic also works with CXXFLAGS
         result_direct_cxx = self._parse_with_magic("direct", source_file, ["--append-CXXFLAGS=-DUSE_PRODUCTION_LIBS"])
-        assert self._check_flags(result_direct_cxx, "LDFLAGS", production_flags, debug_flags), \
+        assert self._check_flags(result_direct_cxx, "LDFLAGS", production_flags, debug_flags), (
             "Direct magic should handle macros from CXXFLAGS correctly"
+        )
 
     @uth.requires_functional_compiler
     def test_version_dependent_ldflags_requires_feature_parity(self):
         """Test that DirectMagicFlags must have feature parity with CppMagicFlags for complex #if expressions"""
-        
+
         source_file = "ldflags/version_dependent_ldflags.cpp"
         new_api_flags = ["-lnewapi", "-ladvanced_features"]
         old_api_flags = ["-loldapi", "-lbasic_features"]
-        
+
         # Both magic types should produce identical results for complex #if expressions
         result_cpp = self._parse_with_magic("cpp", source_file)
         result_direct = self._parse_with_magic("direct", source_file)
-        
+
         # Both should correctly evaluate the complex expression and choose new API
-        assert self._check_flags(result_cpp, "LDFLAGS", new_api_flags, old_api_flags), \
+        assert self._check_flags(result_cpp, "LDFLAGS", new_api_flags, old_api_flags), (
             "CPP magic should correctly evaluate complex #if expressions"
-        assert self._check_flags(result_direct, "LDFLAGS", new_api_flags, old_api_flags), \
+        )
+        assert self._check_flags(result_direct, "LDFLAGS", new_api_flags, old_api_flags), (
             "DirectMagicFlags must have feature parity with CppMagicFlags for complex #if expressions"
+        )
 
     @uth.requires_functional_compiler
     def test_myapp_version_dependent_api_regression(self):
         """Test that external header version macros work correctly for MYAPP API selection"""
-        
+
         # Test MYAPP 1.27.8 (< 1.27.13) - should get legacy API
         legacy_api_flags = ["USE_LEGACY_API", "DLEGACY_HANDLER=myapp::LegacyProcessor"]
-        modern_api_flags = ["MYAPP_ENABLE_V2_SYSTEM", "DV2_PROCESSOR_CLASS=myapp::ModernProcessor"] 
+        modern_api_flags = ["MYAPP_ENABLE_V2_SYSTEM", "DV2_PROCESSOR_CLASS=myapp::ModernProcessor"]
         common_flags = ["MYAPP_CORE_ENABLED", "DMYAPP_CONFIG_NAMESPACE=MYAPP_CORE"]
-        
+
         # Test old version (1.27.8) with both magic types
         result_cpp_old = self._parse_with_magic("cpp", "version_dependent_api/api_config.h")
         result_direct_old = self._parse_with_magic("direct", "version_dependent_api/api_config.h")
-        
+
         # Both should extract legacy API flags for version 1.27.8
-        assert self._check_flags(result_cpp_old, "CPPFLAGS", legacy_api_flags, modern_api_flags), \
+        assert self._check_flags(result_cpp_old, "CPPFLAGS", legacy_api_flags, modern_api_flags), (
             "CPP magic should extract legacy API for MYAPP 1.27.8"
-        assert self._check_flags(result_direct_old, "CPPFLAGS", legacy_api_flags, modern_api_flags), \
+        )
+        assert self._check_flags(result_direct_old, "CPPFLAGS", legacy_api_flags, modern_api_flags), (
             "Direct magic should extract legacy API for MYAPP 1.27.8"
-            
-        # Test new version (1.27.13) with both magic types  
+        )
+
+        # Test new version (1.27.13) with both magic types
         result_cpp_new = self._parse_with_magic("cpp", "version_dependent_api/api_config_new.h")
         result_direct_new = self._parse_with_magic("direct", "version_dependent_api/api_config_new.h")
-        
+
         # Both should extract modern API flags for version 1.27.13
-        assert self._check_flags(result_cpp_new, "CPPFLAGS", modern_api_flags, legacy_api_flags), \
+        assert self._check_flags(result_cpp_new, "CPPFLAGS", modern_api_flags, legacy_api_flags), (
             "CPP magic should extract modern API for MYAPP 1.27.13"
-        assert self._check_flags(result_direct_new, "CPPFLAGS", modern_api_flags, legacy_api_flags), \
+        )
+        assert self._check_flags(result_direct_new, "CPPFLAGS", modern_api_flags, legacy_api_flags), (
             "Direct magic should extract modern API for MYAPP 1.27.13"
-            
+        )
+
         # Both versions should have common flags
         for result in [result_cpp_old, result_direct_old, result_cpp_new, result_direct_new]:
-            assert self._check_flags(result, "CPPFLAGS", common_flags, []), \
+            assert self._check_flags(result, "CPPFLAGS", common_flags, []), (
                 "All versions should have common MYAPP flags"
+            )
 
     @uth.requires_functional_compiler
     def test_magic_processing_order_bug(self, pkgconfig_env):
         """Test that DirectMagicFlags and CppMagicFlags produce identical results - should expose the processing order bug"""
-        
+
         source_file = "magic_processing_order/complex_test.cpp"
-        
+
         # Test with the exact macro combination that reproduces the real bug
-        test_flags = ["--append-CPPFLAGS=-DNDEBUG", "--append-CPPFLAGS=-DUSE_SIMULATION_MODE", 
-                     "--append-CPPFLAGS=-DUSE_CUSTOM_FEATURES"]
-        
+        test_flags = [
+            "--append-CPPFLAGS=-DNDEBUG",
+            "--append-CPPFLAGS=-DUSE_SIMULATION_MODE",
+            "--append-CPPFLAGS=-DUSE_CUSTOM_FEATURES",
+        ]
+
         # Get results from both parsers
         result_direct = self._parse_with_magic("direct", source_file, test_flags)
         result_cpp = self._parse_with_magic("cpp", source_file, test_flags)
-        
+
         # Print results for debugging
         print(f"\nDirect result: {result_direct}")
         print(f"CPP result: {result_cpp}")
-        
+
         # The critical test: results should be identical between parsers
         # This should FAIL if there's a macro transformation bug
-        assert result_direct == result_cpp, \
-            f"BUG EXPOSED: DirectMagicFlags and CppMagicFlags produce different results!\n" \
-            f"DirectMagicFlags: {result_direct}\n" \
-            f"CppMagicFlags: {result_cpp}\n" \
+        assert result_direct == result_cpp, (
+            f"BUG EXPOSED: DirectMagicFlags and CppMagicFlags produce different results!\n"
+            f"DirectMagicFlags: {result_direct}\n"
+            f"CppMagicFlags: {result_cpp}\n"
             f"This indicates a magic processing order bug in DirectMagicFlags!"
+        )
 
     @uth.requires_functional_compiler
     def test_conditional_magic_comments_with_complex_headers(self, pkgconfig_env):
         """Test conditional magic comments work correctly with header dependencies"""
-        
+
         source_file = "magic_processing_order/complex_test.cpp"
-        
+
         # Test different macro combinations
         test_cases = [
             # NDEBUG + USE_SIMULATION_MODE should exclude production_util, include optimized_core
-            (["--append-CPPFLAGS=-DNDEBUG", "--append-CPPFLAGS=-DUSE_SIMULATION_MODE"], 
-             ["optimized_core"], ["production_util", "debug_util", "standard_core"]),
-            
+            (
+                ["--append-CPPFLAGS=-DNDEBUG", "--append-CPPFLAGS=-DUSE_SIMULATION_MODE"],
+                ["optimized_core"],
+                ["production_util", "debug_util", "standard_core"],
+            ),
             # No NDEBUG, no USE_SIMULATION_MODE should include debug_util and standard_core
             ([], ["debug_util", "standard_core"], ["production_util", "optimized_core"]),
-            
             # NDEBUG but no USE_SIMULATION_MODE should include production_util and optimized_core
-            (["--append-CPPFLAGS=-DNDEBUG"], 
-             ["production_util", "optimized_core"], ["debug_util", "standard_core"])
+            (["--append-CPPFLAGS=-DNDEBUG"], ["production_util", "optimized_core"], ["debug_util", "standard_core"]),
         ]
-        
+
         for test_flags, expected_libs, unexpected_libs in test_cases:
             result_direct = self._parse_with_magic("direct", source_file, test_flags)
             result_cpp = self._parse_with_magic("cpp", source_file, test_flags)
-            
+
             # Verify both parsers get same results
-            assert result_direct == result_cpp, \
+            assert result_direct == result_cpp, (
                 f"Parsers disagree for flags {test_flags}:\nDirect: {result_direct}\nCPP: {result_cpp}"
-            
+            )
+
             # Verify correct libraries are included/excluded
             ldflags_str = " ".join(str(x) for x in result_direct.get(sz.Str("LDFLAGS"), []))
-            
+
             for lib in expected_libs:
-                assert f"-l{lib}" in ldflags_str, f"Expected -l{lib} in LDFLAGS for flags {test_flags}, got: {ldflags_str}"
-            
+                assert f"-l{lib}" in ldflags_str, (
+                    f"Expected -l{lib} in LDFLAGS for flags {test_flags}, got: {ldflags_str}"
+                )
+
             for lib in unexpected_libs:
-                assert f"-l{lib}" not in ldflags_str, f"Unexpected -l{lib} in LDFLAGS for flags {test_flags}, got: {ldflags_str}"
+                assert f"-l{lib}" not in ldflags_str, (
+                    f"Unexpected -l{lib} in LDFLAGS for flags {test_flags}, got: {ldflags_str}"
+                )
 
     def test_system_header_macro_extraction_bug_fix_disabled(self):
         """This test is disabled because the iterative processing masks the bug.
         The bug exists but is corrected in later iterations, making it hard to test."""
         pass
-    
+
     @uth.requires_functional_compiler
     def test_system_header_macro_extraction_bug_fix(self):
         """Test that DirectMagicFlags has the system header macro extraction fix
-        
+
         The bug fix adds the _extract_macros_from_file method to DirectMagicFlags
         which extracts macros from system headers before processing conditional compilation.
         Without this fix, system header macros may not be available when needed.
-        
+
         Since the iterative processing eventually fixes the issue, we test for the
         presence of the fix method and validate correct behavior with system headers.
         """
-        import compiletools.magicflags
-        
+
         # Test 1: Check that the fix method exists (will fail on buggy version)
-        assert hasattr(compiletools.magicflags.DirectMagicFlags, '_extract_macros_from_file'), \
-            "BUG EXPOSED: DirectMagicFlags is missing the _extract_macros_from_file method! " \
+        assert hasattr(compiletools.magicflags.DirectMagicFlags, "_extract_macros_from_file"), (
+            "BUG EXPOSED: DirectMagicFlags is missing the _extract_macros_from_file method! "
             "This method is required to extract macros from system headers before conditional compilation."
-        
+        )
+
         # Test 2: Verify system header processing works correctly
         source_file = "isystem_include_bug/main.cpp"
         include_path = self._get_sample_path("isystem_include_bug/fake_system_include")
         extra_args = ["--append-INCLUDE", include_path]
-        
+
         # The isystem_include_bug sample tests system header macro extraction
         # SYSTEM_VERSION is 2.15, so should trigger modern API (>= 2.10), not legacy API (< 2.10)
         expected_modern_flags = ["SYSTEM_ENABLE_V2", "V2_PROCESSOR_CLASS=system::ModernProcessor"]
         unexpected_legacy_flags = ["USE_LEGACY_API", "LEGACY_HANDLER=system::LegacyProcessor"]
         common_flags = ["SYSTEM_CORE_ENABLED", "SYSTEM_CONFIG_NAMESPACE=SYSTEM_CORE"]
-        
+
         # Test both magic types produce identical results
         result_cpp = self._parse_with_magic("cpp", source_file, extra_args)
         result_direct = self._parse_with_magic("direct", source_file, extra_args)
-        
+
         # Both parsers must produce identical results
-        assert result_direct == result_cpp, \
-            f"DirectMagicFlags and CppMagicFlags must produce identical results for system header macro extraction:\n" \
-            f"DirectMagicFlags: {result_direct}\n" \
+        assert result_direct == result_cpp, (
+            f"DirectMagicFlags and CppMagicFlags must produce identical results for system header macro extraction:\n"
+            f"DirectMagicFlags: {result_direct}\n"
             f"CppMagicFlags: {result_cpp}"
-        
+        )
+
         # Verify correct API selection based on SYSTEM_VERSION (2.15 >= 2.10)
-        assert self._check_flags(result_direct, "CPPFLAGS", expected_modern_flags, unexpected_legacy_flags), \
+        assert self._check_flags(result_direct, "CPPFLAGS", expected_modern_flags, unexpected_legacy_flags), (
             f"Should select modern API for SYSTEM_VERSION=2.15, got CPPFLAGS: {result_direct.get('CPPFLAGS', [])}"
-        
-        assert self._check_flags(result_direct, "CXXFLAGS", expected_modern_flags, unexpected_legacy_flags), \
+        )
+
+        assert self._check_flags(result_direct, "CXXFLAGS", expected_modern_flags, unexpected_legacy_flags), (
             f"Should select modern API for SYSTEM_VERSION=2.15, got CXXFLAGS: {result_direct.get('CXXFLAGS', [])}"
-        
+        )
+
         # Verify common flags are present
-        assert self._check_flags(result_direct, "CPPFLAGS", common_flags, []), \
+        assert self._check_flags(result_direct, "CPPFLAGS", common_flags, []), (
             f"Should include common SYSTEM flags, got CPPFLAGS: {result_direct.get('CPPFLAGS', [])}"
+        )
 
     @uth.requires_functional_compiler
     def test_isystem_include_path_bug(self):
-        """Test that exposes the -isystem include path bug where DirectMagicFlags 
+        """Test that exposes the -isystem include path bug where DirectMagicFlags
         doesn't process system headers the same way CppMagicFlags does.
-        
-        DirectMagicFlags only processes local files and misses macros defined in 
+
+        DirectMagicFlags only processes local files and misses macros defined in
         system headers accessible via -isystem include paths.
         """
-        
+
         source_file = "isystem_include_bug/main.cpp"
-        
+
         # Path to fake system include directory
         fake_system_include = self._get_sample_path("isystem_include_bug/fake_system_include")
-        
+
         # Test with -isystem include path that contains version macros
         include_args = [f"--append-CPPFLAGS=-isystem {fake_system_include}"]
-        
-        # Get results from both parsers with identical arguments 
+
+        # Get results from both parsers with identical arguments
         result_direct = self._parse_with_magic("direct", source_file, include_args)
         result_cpp = self._parse_with_magic("cpp", source_file, include_args)
-        
+
         # Extract CPPFLAGS for comparison
         direct_cppflags = " ".join(str(x) for x in result_direct.get(sz.Str("CPPFLAGS"), []))
         cpp_cppflags = " ".join(str(x) for x in result_cpp.get(sz.Str("CPPFLAGS"), []))
-        
+
         print("\n-isystem include path test results:")
         print(f"DirectMagicFlags: {direct_cppflags}")
         print(f"CppMagicFlags: {cpp_cppflags}")
-        
+
         # Define the expected patterns based on version 2.15
         legacy_pattern = "USE_LEGACY_API"  # Should appear if macros undefined (DirectMagicFlags)
         modern_pattern = "SYSTEM_ENABLE_V2"  # Should appear if macros = 2,15 (CppMagicFlags)
         common_pattern = "SYSTEM_CORE_ENABLED"  # Should appear in both
-        
+
         # Verify both have common flags
         assert common_pattern in direct_cppflags, f"DirectMagicFlags missing common flags: {direct_cppflags}"
         assert common_pattern in cpp_cppflags, f"CppMagicFlags missing common flags: {cpp_cppflags}"
-        
+
         # This WILL FAIL and expose the -isystem include path bug
         if legacy_pattern in direct_cppflags and modern_pattern in cpp_cppflags:
-            assert False, f"-ISYSTEM INCLUDE PATH BUG EXPOSED: DirectMagicFlags doesn't process system headers!\n" \
-                         f"DirectMagicFlags: {direct_cppflags} (can't see system headers - treats macros as undefined)\n" \
-                         f"CppMagicFlags: {cpp_cppflags} (processes system headers correctly - sees real macro values)\n" \
-                         f"DirectMagicFlags never processes -I/-isystem include paths like the real preprocessor does!\n" \
-                         f"SYSTEM_VERSION_MAJOR=2, SYSTEM_VERSION_MINOR=15 should choose modern branch!"
-        
+            assert False, (
+                f"-ISYSTEM INCLUDE PATH BUG EXPOSED: DirectMagicFlags doesn't process system headers!\n"
+                f"DirectMagicFlags: {direct_cppflags} (can't see system headers - treats macros as undefined)\n"
+                f"CppMagicFlags: {cpp_cppflags} (processes system headers correctly - sees real macro values)\n"
+                f"DirectMagicFlags never processes -I/-isystem include paths like the real preprocessor does!\n"
+                f"SYSTEM_VERSION_MAJOR=2, SYSTEM_VERSION_MINOR=15 should choose modern branch!"
+            )
+
         # Any difference in results exposes the bug
         if result_direct != result_cpp:
-            assert False, f"-ISYSTEM INCLUDE PATH BUG: DirectMagicFlags and CppMagicFlags process include paths differently!\n" \
-                         f"DirectMagicFlags result: {result_direct}\n" \
-                         f"CppMagicFlags result: {result_cpp}\n" \
-                         f"DirectMagicFlags doesn't process -I/-isystem include paths like the real preprocessor!"
-        
+            assert False, (
+                f"-ISYSTEM INCLUDE PATH BUG: DirectMagicFlags and CppMagicFlags process include paths differently!\n"
+                f"DirectMagicFlags result: {result_direct}\n"
+                f"CppMagicFlags result: {result_cpp}\n"
+                f"DirectMagicFlags doesn't process -I/-isystem include paths like the real preprocessor!"
+            )
+
         # If we reach here, both parsers produce identical results (bug is fixed)
         print("✓ Both parsers process -isystem include paths identically - bug is fixed!")
 
@@ -458,7 +486,9 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
         # Verify deduplication worked - each flag should appear at most once
         assert include_test_count <= 1, f"Duplicate -I /usr/include/test found {include_test_count} times in {cppflags}"
-        assert duplicate_macro_count <= 1, f"Duplicate -D DUPLICATE_MACRO found {duplicate_macro_count} times in {cppflags}"
+        assert duplicate_macro_count <= 1, (
+            f"Duplicate -D DUPLICATE_MACRO found {duplicate_macro_count} times in {cppflags}"
+        )
 
         print("✓ Duplicate flag deduplication test passed!")
 
@@ -467,7 +497,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         import compiletools.utils
 
         # Test mixed -I forms
-        flags = ['-I/usr/include/test', '-I', '/usr/include/test', '-I/usr/include/other', '-I', '/usr/include/other']
+        flags = ["-I/usr/include/test", "-I", "/usr/include/test", "-I/usr/include/other", "-I", "/usr/include/other"]
         deduplicated = compiletools.utils.deduplicate_compiler_flags(flags)
 
         # Should have only 2 include paths, not 4
@@ -488,7 +518,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert len(unique_paths) == 2, f"Expected 2 unique paths, got {len(unique_paths)}: {unique_paths}"
 
         # Test mixed -isystem forms
-        flags2 = ['-isystem/usr/include/sys', '-isystem', '/usr/include/sys']
+        flags2 = ["-isystem/usr/include/sys", "-isystem", "/usr/include/sys"]
         deduplicated2 = compiletools.utils.deduplicate_compiler_flags(flags2)
 
         isystem_paths = []
@@ -562,18 +592,16 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
     def test_cache_invalidates_on_header_magic_change(self):
         """Verify cache invalidates when header magic flags change."""
         import stringzilla as sz
-        import compiletools.magicflags
-        from compiletools.global_hash_registry import clear_global_registry, get_file_hash
+
+        import compiletools.headerdeps
         from compiletools.file_analyzer import analyze_file
+        from compiletools.global_hash_registry import clear_global_registry, get_file_hash
 
         # Clear all caches for test isolation
         compiletools.magicflags.MagicFlagsBase.clear_cache()
 
         # Create source and header
-        files = uth.write_sources({
-            "test.cpp": '#include "test.h"\nint main() {}',
-            "test.h": "//#LDFLAGS=-lversion1\n"
-        })
+        files = uth.write_sources({"test.cpp": '#include "test.h"\nint main() {}', "test.h": "//#LDFLAGS=-lversion1\n"})
         source_file = str(files["test.cpp"])
 
         # Create properly initialized parser using test helper
@@ -581,7 +609,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
         # First pass
         result1 = mf.parse(source_file)
-        assert sz.Str('-lversion1') in result1.get(sz.Str("LDFLAGS"), [])
+        assert sz.Str("-lversion1") in result1.get(sz.Str("LDFLAGS"), [])
 
         # Modify header
         uth.write_sources({"test.h": "//#LDFLAGS=-lversion2\n"})
@@ -592,7 +620,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         get_file_hash.cache_clear()
         analyze_file.cache_clear()
         # Clear headerdeps caches
-        import compiletools.headerdeps
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
         # Clear DirectMagicFlags LRU cache
         compiletools.magicflags.DirectMagicFlags._compute_file_processing_result.cache_clear()
@@ -602,24 +629,24 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
         # Second pass - should see new flags (cache invalidated)
         result2 = mf.parse(source_file)
-        assert sz.Str('-lversion2') in result2.get(sz.Str("LDFLAGS"), [])
-        assert sz.Str('-lversion1') not in result2.get(sz.Str("LDFLAGS"), [])
+        assert sz.Str("-lversion2") in result2.get(sz.Str("LDFLAGS"), [])
+        assert sz.Str("-lversion1") not in result2.get(sz.Str("LDFLAGS"), [])
 
     def test_cache_invalidates_on_readmacros_change(self):
         """Verify cache invalidates when READMACROS file changes."""
         import stringzilla as sz
-        import compiletools.magicflags
-        from compiletools.global_hash_registry import clear_global_registry, get_file_hash
+
+        import compiletools.headerdeps
         from compiletools.file_analyzer import analyze_file
+        from compiletools.global_hash_registry import clear_global_registry, get_file_hash
 
         # Clear all caches for test isolation
         compiletools.magicflags.MagicFlagsBase.clear_cache()
 
         # Create source and READMACROS file
-        files = uth.write_sources({
-            "test.cpp": '//#READMACROS=macros.h\nint main() {}',
-            "macros.h": "#define FOO 1\n//#LDFLAGS=-lfoo1\n"
-        })
+        files = uth.write_sources(
+            {"test.cpp": "//#READMACROS=macros.h\nint main() {}", "macros.h": "#define FOO 1\n//#LDFLAGS=-lfoo1\n"}
+        )
         source_file = str(files["test.cpp"])
 
         # Create properly initialized parser
@@ -627,7 +654,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
         # First pass
         result1 = mf.parse(source_file)
-        assert sz.Str('-lfoo1') in result1.get(sz.Str("LDFLAGS"), [])
+        assert sz.Str("-lfoo1") in result1.get(sz.Str("LDFLAGS"), [])
 
         # Modify macros file
         uth.write_sources({"macros.h": "#define FOO 2\n//#LDFLAGS=-lfoo2\n"})
@@ -637,7 +664,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         get_file_hash.cache_clear()
         analyze_file.cache_clear()
         # Clear headerdeps caches
-        import compiletools.headerdeps
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
         # Clear DirectMagicFlags LRU cache
         compiletools.magicflags.DirectMagicFlags._compute_file_processing_result.cache_clear()
@@ -649,23 +675,24 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         result2 = mf.parse(source_file)
 
         # Results should show new LDFLAGS (cache miss occurred)
-        assert sz.Str('-lfoo2') in result2.get(sz.Str("LDFLAGS"), [])
-        assert sz.Str('-lfoo1') not in result2.get(sz.Str("LDFLAGS"), [])
+        assert sz.Str("-lfoo2") in result2.get(sz.Str("LDFLAGS"), [])
+        assert sz.Str("-lfoo1") not in result2.get(sz.Str("LDFLAGS"), [])
 
     def test_cache_hit_when_deps_unchanged(self):
         """Verify cache hits when source and dependencies unchanged."""
         import stringzilla as sz
-        import compiletools.magicflags
 
         # Clear all caches for test isolation
         compiletools.magicflags.MagicFlagsBase.clear_cache()
 
         # Create source with header and READMACROS dependencies
-        files = uth.write_sources({
-            "test.cpp": '#include "test.h"\n//#READMACROS=macros.h\nint main() {}',
-            "test.h": "//#LDFLAGS=-ltest\n",
-            "macros.h": "#define VERSION 1\n"
-        })
+        files = uth.write_sources(
+            {
+                "test.cpp": '#include "test.h"\n//#READMACROS=macros.h\nint main() {}',
+                "test.h": "//#LDFLAGS=-ltest\n",
+                "macros.h": "#define VERSION 1\n",
+            }
+        )
         source_file = str(files["test.cpp"])
 
         # Create properly initialized parser
@@ -673,14 +700,14 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
         # First parse - cache miss
         result1 = mf.parse(source_file)
-        assert sz.Str('-ltest') in result1.get(sz.Str("LDFLAGS"), [])
+        assert sz.Str("-ltest") in result1.get(sz.Str("LDFLAGS"), [])
 
         # Second parse - should be cache hit (nothing changed)
         result2 = mf.parse(source_file)
         assert result1 == result2
 
         # Verify results are identical
-        assert sz.Str('-ltest') in result2.get(sz.Str("LDFLAGS"), [])
+        assert sz.Str("-ltest") in result2.get(sz.Str("LDFLAGS"), [])
 
     def test_header_guard_bug_transitive_magic_flags(self):
         """Test for include guard detection with non-standard guard patterns.
@@ -714,37 +741,33 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         result = self._parse_with_magic("direct", source_file)
 
         # Verify magic flags from transitive header (header_b.hpp) are discovered
-        assert sz.Str("PKG-CONFIG") in result, \
-            "PKG-CONFIG not found - transitive header magic flags not discovered"
+        assert sz.Str("PKG-CONFIG") in result, "PKG-CONFIG not found - transitive header magic flags not discovered"
 
         pkg_config_values = [str(x) for x in result.get(sz.Str("PKG-CONFIG"), [])]
-        assert "zlib" in pkg_config_values, \
-            f"Expected zlib in PKG-CONFIG from header_b.hpp, got: {pkg_config_values}"
+        assert "zlib" in pkg_config_values, f"Expected zlib in PKG-CONFIG from header_b.hpp, got: {pkg_config_values}"
 
-        assert sz.Str("LDFLAGS") in result, \
-            "LDFLAGS not found - transitive header magic flags not discovered"
+        assert sz.Str("LDFLAGS") in result, "LDFLAGS not found - transitive header magic flags not discovered"
 
         ldflags_values = [str(x) for x in result.get(sz.Str("LDFLAGS"), [])]
-        assert "-lm" in ldflags_values, \
-            f"Expected -lm in LDFLAGS from header_b.hpp, got: {ldflags_values}"
+        assert "-lm" in ldflags_values, f"Expected -lm in LDFLAGS from header_b.hpp, got: {ldflags_values}"
 
     @uth.requires_functional_compiler
     def test_cpp_magic_initialization_regression(self, pkgconfig_env):
         """Regression test for CppMagicFlags initialization (AttributeError fix) using real processing."""
         # Use existing sample that caused issues (lotsofmagic/lotsofmagic.cpp)
         source_file = "lotsofmagic/lotsofmagic.cpp"
-        
+
         # 1. Parse with "cpp" magic. This exercises __init__ processing and populates state.
         # This implicitly calls parser.parse(abs_path)
         self._parse_with_magic("cpp", source_file)
-        
+
         # 2. Retrieve the parser instance from the cache
         parser = self._parser_cache[("cpp", ())]
-        
+
         # 3. Simulate Hunter's behavior: asking for the macro state key
         # This triggered the crash because _final_macro_states was missing
         abs_path = self._get_sample_path(source_file)
-        
+
         try:
             # This method accesses self._final_macro_states
             key = parser.get_final_macro_state_key(abs_path)
@@ -790,7 +813,9 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
             # This is OK - CppMagicFlags uses -dM which shows final state after #undef
             # DirectMagicFlags tracks all macros encountered during processing
             # For this test, we'll allow this difference
-            print(f"\nNote: DirectMagicFlags found {len(only_in_direct)} macros not in CppMagicFlags (likely #undef'd):")
+            print(
+                f"\nNote: DirectMagicFlags found {len(only_in_direct)} macros not in CppMagicFlags (likely #undef'd):"
+            )
             for name, value in sorted(only_in_direct):
                 print(f"  {name} = {value}")
 
@@ -805,15 +830,17 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
         if mismatches:
             pytest.fail(
-                f"Macro value mismatches between DirectMagicFlags and CppMagicFlags:\n"
+                "Macro value mismatches between DirectMagicFlags and CppMagicFlags:\n"
                 + "\n".join(f"  {name}: Direct={dv}, Cpp={cv}" for name, dv, cv in mismatches[:10])
             )
 
     def test_magic_cppflags_unified_with_cxxflags(self):
         """Magic CPPFLAGS appear in CXXFLAGS (and vice versa) when unified."""
-        files = uth.write_sources({
-            "test_unified.cpp": '//#CPPFLAGS=-DFROMCPP\nint main() { return 0; }\n',
-        })
+        files = uth.write_sources(
+            {
+                "test_unified.cpp": "//#CPPFLAGS=-DFROMCPP\nint main() { return 0; }\n",
+            }
+        )
         source_file = str(files["test_unified.cpp"])
 
         mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir)
@@ -826,9 +853,11 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
     def test_magic_cxxflags_unified_with_cppflags(self):
         """Magic CXXFLAGS appear in CPPFLAGS when unified."""
-        files = uth.write_sources({
-            "test_unified2.cpp": '//#CXXFLAGS=-DFROMCXX\nint main() { return 0; }\n',
-        })
+        files = uth.write_sources(
+            {
+                "test_unified2.cpp": "//#CXXFLAGS=-DFROMCXX\nint main() { return 0; }\n",
+            }
+        )
         source_file = str(files["test_unified2.cpp"])
 
         mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir)
@@ -841,9 +870,11 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
     def test_magic_flags_separate_mode(self):
         """Magic CPPFLAGS stay separate from CXXFLAGS with --separate-flags-CPP-CXX."""
-        files = uth.write_sources({
-            "test_separate.cpp": '//#CPPFLAGS=-DFROMCPP\n//#CXXFLAGS=-DFROMCXX\nint main() { return 0; }\n',
-        })
+        files = uth.write_sources(
+            {
+                "test_separate.cpp": "//#CPPFLAGS=-DFROMCPP\n//#CXXFLAGS=-DFROMCXX\nint main() { return 0; }\n",
+            }
+        )
         source_file = str(files["test_separate.cpp"])
 
         mf = tb.create_magic_parser(["--magic=direct", "--separate-flags-CPP-CXX"], tempdir=self._tmpdir)
@@ -855,4 +886,3 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert "-DFROMCXX" not in cpp_flags, f"CPPFLAGS should not contain -DFROMCXX in separate mode, got {cpp_flags}"
         assert "-DFROMCXX" in cxx_flags
         assert "-DFROMCPP" not in cxx_flags, f"CXXFLAGS should not contain -DFROMCPP in separate mode, got {cxx_flags}"
-

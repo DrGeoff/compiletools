@@ -1,6 +1,7 @@
-import compiletools.apptools
 import os
 import platform
+
+import compiletools.apptools
 
 
 def _determine_system():
@@ -30,7 +31,7 @@ def _cpus_termux():
     return subprocess.run(
         ["nproc"],
         stdout=subprocess.PIPE,
-        universal_newlines=True,
+        text=True,
     ).stdout.rstrip()
 
 
@@ -42,7 +43,7 @@ def _cpus_darwin():
     return subprocess.run(
         ["sysctl", "-n", "hw.ncpu"],
         stdout=subprocess.PIPE,
-        universal_newlines=True,
+        text=True,
     ).stdout.rstrip()
 
 
@@ -69,7 +70,9 @@ def add_arguments(cap):
 
 
 def main(argv=None):
-    cap = compiletools.apptools.create_parser("Determine optimal number of parallel jobs", argv=argv, include_config=False)
+    cap = compiletools.apptools.create_parser(
+        "Determine optimal number of parallel jobs", argv=argv, include_config=False
+    )
     add_arguments(cap)
     args = cap.parse_args(args=argv)
     if args.verbose >= 2:

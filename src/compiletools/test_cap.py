@@ -1,4 +1,3 @@
-
 import configargparse
 
 import compiletools.testhelper as uth
@@ -34,7 +33,7 @@ def add_to_parser_in_func(recursion_depth=0):
 
 def test_multiple_parse_known_args():
     uth.reset()
-    
+
     try:
         non_existent_config_files = ["/blah/foo.conf", "/usr/bin/ba.conf"]
         cap = configargparse.getArgumentParser(
@@ -65,5 +64,3 @@ def test_multiple_parse_known_args():
         cap.parse_known_args(args=["--variant", "release"])
     finally:
         uth.reset()
-
-

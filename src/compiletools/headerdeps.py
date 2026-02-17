@@ -1,23 +1,29 @@
-import os
 import functools
-import stringzilla as sz
+import os
 from pathlib import Path
-from typing import List
 
 # At deep verbose levels pprint is used
 from pprint import pprint
 
-import compiletools.wrappedos
+import stringzilla as sz
+
 import compiletools.apptools
-import compiletools.utils
-from compiletools.utils import split_command_cached
-import compiletools.tree as tree
-import compiletools.preprocessor
 import compiletools.compiler_macros
 import compiletools.file_analyzer
-from compiletools.preprocessing_cache import get_or_compute_preprocessing, MacroState, MacroDict, MacroCacheKey, is_permanently_invariant
+import compiletools.preprocessor
+import compiletools.tree as tree
+import compiletools.utils
+import compiletools.wrappedos
 from compiletools.file_analyzer import analyze_file, set_analyzer_args
 from compiletools.global_hash_registry import get_file_hash
+from compiletools.preprocessing_cache import (
+    MacroCacheKey,
+    MacroDict,
+    MacroState,
+    get_or_compute_preprocessing,
+    is_permanently_invariant,
+)
+from compiletools.utils import split_command_cached
 
 # Cache for filtered include lists
 # Variant cache: (content_hash, macro_cache_key) -> (includes, file_defines)
@@ -34,6 +40,7 @@ def clear_caches():
     global _include_list_cache, _invariant_include_cache
     _include_list_cache = {}
     _invariant_include_cache = {}
+
 
 def clear_include_list_cache():
     """Clear the include list cache.
@@ -74,7 +81,7 @@ def add_arguments(cap):
     compiletools.file_analyzer.FileAnalyzer.add_arguments(cap)
 
 
-class HeaderDepsBase(object):
+class HeaderDepsBase:
     """Implement the common functionality of the different header
     searching classes.  This really should be an abstract base class.
     """
@@ -84,11 +91,11 @@ class HeaderDepsBase(object):
         # Set global analyzer args for FileAnalyzer caching
         set_analyzer_args(args)
 
-    def _process_impl(self, realpath: str, macro_cache_key: MacroCacheKey) -> List[str]:
+    def _process_impl(self, realpath: str, macro_cache_key: MacroCacheKey) -> list[str]:
         """Derived classes implement this function"""
         raise NotImplementedError
 
-    def process(self, filename: str, macro_cache_key: MacroCacheKey) -> List[str]:
+    def process(self, filename: str, macro_cache_key: MacroCacheKey) -> list[str]:
         """Return an ordered list of header dependencies for the given file.
 
         Args:
@@ -106,7 +113,7 @@ class HeaderDepsBase(object):
         realpath = compiletools.wrappedos.realpath(filename)
         try:
             result = self._process_impl(realpath, macro_cache_key)
-        except IOError:
+        except OSError:
             # If there was any error the first time around, an error correcting removal would have occured
             # So strangely, the best thing to do is simply try again
             result = None
@@ -118,35 +125,35 @@ class HeaderDepsBase(object):
 
     def _extract_isystem_paths_from_flags(self, flag_value):
         """Extract -isystem paths from command-line flags using proper shell parsing.
-        
+
         This replaces the regex-based approach to properly handle quoted paths with spaces.
         Shared utility method for both DirectHeaderDeps and CppHeaderDeps.
         """
         if not flag_value:
             return []
-            
+
         isystem_paths = []
-        
+
         # Split the flag string into individual tokens using shell parsing
         try:
             tokens = split_command_cached(flag_value)
         except ValueError:
             # Fall back to simple split if shlex fails
             tokens = flag_value.split()
-        
+
         # Process tokens to find -isystem flags
         i = 0
         while i < len(tokens):
             token = tokens[i]
-            
-            if token == '-isystem':
+
+            if token == "-isystem":
                 # Next token should be the path
                 if i + 1 < len(tokens):
                     isystem_paths.append(tokens[i + 1])
                     i += 2
                 else:
                     i += 1
-            elif token.startswith('-isystem'):
+            elif token.startswith("-isystem"):
                 # -isystempath format (though this is unusual)
                 path = token[8:]
                 if path:  # Make sure it's not just "-isystem"
@@ -154,12 +161,12 @@ class HeaderDepsBase(object):
                 i += 1
             else:
                 i += 1
-                
+
         return isystem_paths
 
     def _extract_include_paths_from_flags(self, flag_value):
         """Extract -I include paths from command-line flags using proper shell parsing.
-        
+
         This replaces the regex-based approach to properly handle quoted paths with spaces.
         Shared utility method for both DirectHeaderDeps and CppHeaderDeps.
         """
@@ -171,7 +178,7 @@ class HeaderDepsBase(object):
         # Handle both string and list inputs from configargparse
         if isinstance(flag_value, list):
             # Join list elements into a single string
-            flag_string = ' '.join(flag_value)
+            flag_string = " ".join(flag_value)
         else:
             flag_string = flag_value
 
@@ -181,20 +188,20 @@ class HeaderDepsBase(object):
         except ValueError:
             # Fall back to simple split if shlex fails
             tokens = flag_string.split()
-        
+
         # Process tokens to find -I flags
         i = 0
         while i < len(tokens):
             token = tokens[i]
-            
-            if token == '-I':
+
+            if token == "-I":
                 # Next token should be the path
                 if i + 1 < len(tokens):
                     include_paths.append(tokens[i + 1])
                     i += 2
                 else:
                     i += 1
-            elif token.startswith('-I'):
+            elif token.startswith("-I"):
                 # -Ipath format
                 path = token[2:]
                 if path:  # Make sure it's not just "-I"
@@ -202,13 +209,14 @@ class HeaderDepsBase(object):
                 i += 1
             else:
                 i += 1
-                
+
         return include_paths
 
     @staticmethod
     def clear_cache():
         # print("HeaderDepsBase::clear_cache")
         import compiletools.apptools
+
         compiletools.apptools.clear_cache()
         clear_include_list_cache()
         DirectHeaderDeps.clear_cache()
@@ -255,11 +263,12 @@ class DirectHeaderDeps(HeaderDepsBase):
             # Extract macro definitions from command line flags and compiler
             # Both are static for the lifetime of this instance (core macros)
             import compiletools.apptools
+
             raw_macros = compiletools.apptools.extract_command_line_macros(
                 self.args,
-                flag_sources=['CPPFLAGS', 'CFLAGS', 'CXXFLAGS'],
+                flag_sources=["CPPFLAGS", "CFLAGS", "CXXFLAGS"],
                 include_compiler_macros=True,
-                verbose=self.args.verbose
+                verbose=self.args.verbose,
             )
             # Convert all keys and values to StringZilla.Str and place in core
             self._core_macros = {sz.Str(k): sz.Str(v) for k, v in raw_macros.items()}
@@ -268,7 +277,7 @@ class DirectHeaderDeps(HeaderDepsBase):
         self.includes = self._includes
         self.defined_macros = MacroState(self._core_macros, variable_macros)
 
-    @functools.lru_cache(maxsize=None)
+    @functools.cache
     def _search_project_includes(self, include: sz.Str):
         """Internal use.  Find the given include file in the project include paths"""
         for inc_dir in self.includes:
@@ -279,7 +288,7 @@ class DirectHeaderDeps(HeaderDepsBase):
         # TODO: Try system include paths if the user sets (the currently nonexistent) "use-system" flag
         return None
 
-    @functools.lru_cache(maxsize=None)
+    @functools.cache
     def _find_include(self, include: sz.Str, cwd: str):
         """Internal use.  Find the given include file.
         Start at the current working directory then try the project includes
@@ -292,7 +301,7 @@ class DirectHeaderDeps(HeaderDepsBase):
 
         return self._search_project_includes(include)
 
-    @functools.lru_cache(maxsize=None)
+    @functools.cache
     def _process_impl(self, realpath, initial_macro_key):
         """Process file with macro state in cache key.
 
@@ -312,7 +321,7 @@ class DirectHeaderDeps(HeaderDepsBase):
             results_order.remove(realpath)
         return results_order
 
-    def process(self, filename: str, macro_cache_key: MacroCacheKey) -> List[str]:
+    def process(self, filename: str, macro_cache_key: MacroCacheKey) -> list[str]:
         """Override to compute and pass initial macro cache key.
 
         Args:
@@ -324,10 +333,7 @@ class DirectHeaderDeps(HeaderDepsBase):
 
         # Convert cache key frozenset to MacroDict for MacroState initialization
         # Ensure all keys/values are sz.Str for consistency (MacroState uses stringzilla exclusively)
-        variable_macros: MacroDict = {
-            sz.Str(k): sz.Str(v)
-            for k, v in macro_cache_key
-        }
+        variable_macros: MacroDict = {sz.Str(k): sz.Str(v) for k, v in macro_cache_key}
 
         # Initialize with variable macros to ensure consistent initial_macro_key for LRU cache
         self._initialize_includes_and_macros(variable_macros)
@@ -335,7 +341,7 @@ class DirectHeaderDeps(HeaderDepsBase):
 
         try:
             result = self._process_impl(realpath, initial_macro_key)
-        except IOError:
+        except OSError:
             result = None
 
         if not result:
@@ -377,9 +383,9 @@ class DirectHeaderDeps(HeaderDepsBase):
             active_line_set = set(result.active_lines)
 
             include_list = [
-                sz.Str(inc['filename'])
+                sz.Str(inc["filename"])
                 for inc in analysis_result.includes
-                if inc['line_num'] in active_line_set and not inc['is_commented']
+                if inc["line_num"] in active_line_set and not inc["is_commented"]
             ]
 
             self.defined_macros = result.updated_macros
@@ -400,15 +406,18 @@ class DirectHeaderDeps(HeaderDepsBase):
 
         # Cache miss for variant file - compute and store
         if self.args.verbose >= 9 and analysis_result.include_positions:
-            print(f"DirectHeaderDeps::analyze - FileAnalyzer pre-found {len(analysis_result.include_positions)} includes in {realpath}")
+            print(
+                f"DirectHeaderDeps::analyze - FileAnalyzer pre-found "
+                f"{len(analysis_result.include_positions)} includes in {realpath}"
+            )
 
         result = get_or_compute_preprocessing(analysis_result, self.defined_macros, self.args.verbose)
         active_line_set = set(result.active_lines)
 
         include_list = [
-            sz.Str(inc['filename'])
+            sz.Str(inc["filename"])
             for inc in analysis_result.includes
-            if inc['line_num'] in active_line_set and not inc['is_commented']
+            if inc["line_num"] in active_line_set and not inc["is_commented"]
         ]
 
         self.defined_macros = result.updated_macros
@@ -461,10 +470,7 @@ class DirectHeaderDeps(HeaderDepsBase):
         """Returns the tree of include files"""
         self.ancestor_paths = []
         if macro_cache_key:
-            variable_macros = {
-                sz.Str(k): sz.Str(v)
-                for k, v in macro_cache_key
-            }
+            variable_macros = {sz.Str(k): sz.Str(v) for k, v in macro_cache_key}
             self._initialize_includes_and_macros(variable_macros)
         realpath = compiletools.wrappedos.realpath(filename)
         return self._generate_tree_impl(realpath)
@@ -494,7 +500,7 @@ class DirectHeaderDeps(HeaderDepsBase):
         self._process_impl.cache_clear()
         if self.args.verbose >= 5:
             print("DirectHeaderDeps::clear_instance_cache completed")
-    
+
     @staticmethod
     def clear_cache():
         # print("DirectHeaderDeps::clear_cache")
@@ -511,7 +517,7 @@ class CppHeaderDeps(HeaderDepsBase):
         HeaderDepsBase.__init__(self, args)
         self.preprocessor = compiletools.preprocessor.PreProcessor(args)
 
-    def process(self, filename: str, macro_cache_key: MacroCacheKey) -> List[str]:
+    def process(self, filename: str, macro_cache_key: MacroCacheKey) -> list[str]:
         """Process using cpp -MM (raises error if macro_cache_key non-empty).
 
         Args:
@@ -530,7 +536,7 @@ class CppHeaderDeps(HeaderDepsBase):
         realpath = compiletools.wrappedos.realpath(filename)
         return self._process_impl(realpath, macro_cache_key)
 
-    def _process_impl(self, realpath: str, macro_cache_key: MacroCacheKey) -> List[str]:
+    def _process_impl(self, realpath: str, macro_cache_key: MacroCacheKey) -> list[str]:
         """Use the -MM option to the compiler to generate the list of dependencies
         If you supply a header file rather than a source file then
         a dummy, blank, source file will be transparently provided
@@ -538,7 +544,7 @@ class CppHeaderDeps(HeaderDepsBase):
         """
         # By default, exclude system paths
         # TODO: include system paths if the user sets (the currently nonexistent) "use-system" flag
-        
+
         # Use proper shell parsing instead of regex to handle quoted paths with spaces
         isystem_paths = self._extract_isystem_paths_from_flags(self.args.CPPFLAGS)
         system_paths = tuple(item for pth in isystem_paths for item in (pth, compiletools.wrappedos.realpath(pth)))
@@ -564,7 +570,9 @@ class CppHeaderDeps(HeaderDepsBase):
             [
                 compiletools.wrappedos.realpath(x)
                 for x in deplist.split()
-                if x.strip("\\\t\n\r") and x not in [realpath, "/dev/null"] and not any(Path(x).is_relative_to(syspath) for syspath in system_paths)
+                if x.strip("\\\t\n\r")
+                and x not in [realpath, "/dev/null"]
+                and not any(Path(x).is_relative_to(syspath) for syspath in system_paths)
             ]
         )
 
