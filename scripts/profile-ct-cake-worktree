@@ -709,7 +709,7 @@ def main():
     profile_dir = None
 
     if args.save_profiles:
-        profile_dir = Path("profiles_worktree")
+        profile_dir = Path("profiles_worktree").resolve()
         profile_dir.mkdir(exist_ok=True)
 
     try:
