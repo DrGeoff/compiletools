@@ -1,5 +1,6 @@
 import argparse
 import functools
+import importlib.util
 import os
 import shlex
 import subprocess
@@ -17,21 +18,9 @@ import compiletools.utils
 from compiletools.utils import split_command_cached
 from compiletools.version import __version__
 
-try:
-    from rich_rst import RestructuredText
+_rich_rst_available = importlib.util.find_spec("rich_rst") is not None
 
-    rich_rst_available = True
-except ModuleNotFoundError:
-    rich_rst_available = False
-    print(
-        "rich_rst module not available.  Disabling DocumentationAction and '--man'",
-        file=sys.stderr,
-    )
-
-if rich_rst_available and sys.version_info.major == 3 and sys.version_info.minor >= 9:
-    import inspect
-
-    import rich
+if _rich_rst_available and sys.version_info >= (3, 9):
 
     class DocumentationAction(argparse.BooleanOptionalAction):
         def __init__(self, option_strings, dest):
@@ -45,6 +34,11 @@ if rich_rst_available and sys.version_info.major == 3 and sys.version_info.minor
 
         def __call__(self, parser, namespace, values, option_string=None):
             if option_string in self.option_strings and not option_string.startswith("--no-"):
+                import inspect
+
+                import rich
+                from rich_rst import RestructuredText
+
                 this_dir = os.path.dirname(os.path.abspath(inspect.getsourcefile(lambda: 0)))
                 doc_filename = os.path.join(this_dir, f"README.{parser.prog}.rst")
                 try:
@@ -52,7 +46,7 @@ if rich_rst_available and sys.version_info.major == 3 and sys.version_info.minor
                         text = docfile.read()
                         rich.print(RestructuredText(text))
                 except FileNotFoundError:
-                    rich.print("No man/doc available :cry:")
+                    rich.print("No man/doc available")
 
                 sys.exit(0)
 
@@ -90,7 +84,7 @@ def add_base_arguments(cap, argv=None, variant=None):
     cap.add("--version", action="version", version=__version__)
     cap.add("-?", action="help", help="Help")
 
-    if rich_rst_available and sys.version_info.major == 3 and sys.version_info.minor >= 9:
+    if _rich_rst_available and sys.version_info >= (3, 9):
         cap.add("--man", "--doc", action=DocumentationAction)
 
 
