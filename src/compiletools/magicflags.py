@@ -1000,57 +1000,80 @@ class CppMagicFlags(MagicFlagsBase):
         # Get preprocessed text (existing logic)
         preprocessed_text = self._readfile(filename)
 
-        # Use StringZilla for SIMD-optimized processing with source file context tracking
+        # Bulk-find scan: jump directly to linemarkers and magic flags via SIMD find
+        # instead of splitting into ~697K lines and checking each one.
         text = sz.Str(preprocessed_text)
+        text_len = len(text)
         magic_flags = []
-
-        line_num = 0
         current_source_file = None
 
-        # Split into lines using StringZilla (SIMD optimized)
-        for line_sz in text.split("\n"):
-            # Track current source file from preprocessor # directives using StringZilla
-            # Format: # <linenum> "<filepath>" <flags>
-            if line_sz.startswith("# "):
+        # Patterns to search for in the bulk text
+        linemarker_pat = sz.Str("\n# ")
+        magic_pat = sz.Str("//#")
+
+        # Handle edge case: text starts with a linemarker (no preceding newline)
+        scan_pos = 0
+        if text_len > 2 and text[0] == "#" and text[1] == " ":
+            line_end = text.find("\n", 0)
+            if line_end < 0:
+                line_end = text_len
+            line_sz = text[:line_end]
+            first_quote = line_sz.find('"')
+            if first_quote >= 0:
+                second_quote = line_sz.find('"', first_quote + 1)
+                if second_quote > first_quote:
+                    current_source_file = str(line_sz[first_quote + 1 : second_quote])
+
+        # Main interleaved scan
+        next_lm = text.find(linemarker_pat, scan_pos)
+        next_mg = text.find(magic_pat, scan_pos)
+
+        while next_lm >= 0 or next_mg >= 0:
+            # Determine which match comes first (-1 means no more matches)
+            if next_mg < 0 or (next_lm >= 0 and next_lm < next_mg):
+                # Process linemarker: extract filename from # N "file"
+                line_start = next_lm + 1  # skip the \n
+                line_end = text.find("\n", line_start)
+                if line_end < 0:
+                    line_end = text_len
+                line_sz = text[line_start:line_end]
                 first_quote = line_sz.find('"')
                 if first_quote >= 0:
                     second_quote = line_sz.find('"', first_quote + 1)
                     if second_quote > first_quote:
                         current_source_file = str(line_sz[first_quote + 1 : second_quote])
+                scan_pos = line_end
+                next_lm = text.find(linemarker_pat, scan_pos)
+            else:
+                # Process magic flag: extract full line, then key=value
+                line_start_pos = text.rfind("\n", 0, next_mg)
+                line_start = 0 if line_start_pos < 0 else line_start_pos + 1
+                line_end = text.find("\n", next_mg)
+                if line_end < 0:
+                    line_end = text_len
+                line_sz = text[line_start:line_end]
+                magic_offset = next_mg - line_start
 
-            # Use StringZilla to find "//#" pattern with SIMD search
-            magic_start = line_sz.find("//#")
-            if magic_start >= 0:
-                # Extract everything after "//#" using StringZilla slicing
-                after_marker = line_sz[magic_start + 3 :]  # Skip "//#"
-
-                # Find the "=" separator using StringZilla SIMD find
+                after_marker = line_sz[magic_offset + 3 :]
                 eq_pos = after_marker.find("=")
                 if eq_pos >= 0:
-                    # Extract key and value using StringZilla character set operations
-                    key_slice = after_marker[:eq_pos]
-                    value_slice = after_marker[eq_pos + 1 :]
+                    key_trimmed = strip_sz(after_marker[:eq_pos])
+                    value_trimmed = strip_sz(after_marker[eq_pos + 1 :])
 
-                    # Use StringZilla strip for better performance
-                    key_trimmed = strip_sz(key_slice)
-                    value_trimmed = strip_sz(value_slice)
-
-                    if key_trimmed:  # Only add if key is non-empty
+                    if key_trimmed:
                         magic_flag = {
-                            "line_num": line_num,
-                            "byte_pos": -1,  # Not used for CppMagicFlags
+                            "line_num": -1,
+                            "byte_pos": -1,
                             "full_line": line_sz,
                             "key": key_trimmed,
                             "value": value_trimmed,
                         }
-
-                        # Add source file context for SOURCE resolution
                         if current_source_file:
                             magic_flag["source_file_context"] = current_source_file
-
                         magic_flags.append(magic_flag)
 
-            line_num += 1
+                scan_pos = line_end
+                next_mg = text.find(magic_pat, scan_pos)
 
         if self._args.verbose >= 9:
             print(f"CppMagicFlags: Found {len(magic_flags)} magic flags in preprocessed output")
