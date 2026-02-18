@@ -380,12 +380,9 @@ class DirectHeaderDeps(HeaderDepsBase):
 
             # Cache miss for invariant file - compute and store
             result = get_or_compute_preprocessing(analysis_result, self.defined_macros, self.args.verbose)
-            active_line_set = set(result.active_lines)
 
             include_list = [
-                sz.Str(inc["filename"])
-                for inc in analysis_result.includes
-                if inc["line_num"] in active_line_set and not inc["is_commented"]
+                sz.Str(inc["filename"]) for inc in result.active_includes if not inc.get("is_commented", False)
             ]
 
             self.defined_macros = result.updated_macros
@@ -412,13 +409,8 @@ class DirectHeaderDeps(HeaderDepsBase):
             )
 
         result = get_or_compute_preprocessing(analysis_result, self.defined_macros, self.args.verbose)
-        active_line_set = set(result.active_lines)
 
-        include_list = [
-            sz.Str(inc["filename"])
-            for inc in analysis_result.includes
-            if inc["line_num"] in active_line_set and not inc["is_commented"]
-        ]
+        include_list = [sz.Str(inc["filename"]) for inc in result.active_includes if not inc.get("is_commented", False)]
 
         self.defined_macros = result.updated_macros
         _include_list_cache[cache_key] = (include_list, result.file_defines, result.file_undefs)
