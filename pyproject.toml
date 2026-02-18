@@ -138,6 +138,39 @@ filename = "src/compiletools/README.ct-magicflags.rst"
 [[tool.bumpversion.files]]
 filename = "src/compiletools/README.ct-cleanup-locks.rst"
 
+[[tool.bumpversion.files]]
+filename = "src/compiletools/README.cleanup-remote-locks.rst"
+
+[[tool.bumpversion.files]]
+filename = "src/compiletools/README.create-documentation.rst"
+
+[[tool.bumpversion.files]]
+filename = "src/compiletools/README.ct-build.rst"
+
+[[tool.bumpversion.files]]
+filename = "src/compiletools/README.ct-build-dynamic-library.rst"
+
+[[tool.bumpversion.files]]
+filename = "src/compiletools/README.ct-build-static-library.rst"
+
+[[tool.bumpversion.files]]
+filename = "src/compiletools/README.ct-create-makefile.rst"
+
+[[tool.bumpversion.files]]
+filename = "src/compiletools/README.ct-git-sha-report.rst"
+
+[[tool.bumpversion.files]]
+filename = "src/compiletools/README.ct-lock-helper.rst"
+
+[[tool.bumpversion.files]]
+filename = "src/compiletools/README.ct-release.rst"
+
+[[tool.bumpversion.files]]
+filename = "src/compiletools/README.ct-watch-build.rst"
+
+[[tool.bumpversion.files]]
+filename = "src/compiletools/README.profile-ct-cake-worktree.rst"
+
 [tool.ruff]
 target-version = "py39"
 line-length = 120
