@@ -287,6 +287,29 @@ class SimplePreprocessor:
 
         return expr_sz
 
+    def resolve_computed_include(self, include_arg: "sz.Str | str") -> str | None:
+        """Resolve a computed #include expression using current macro state.
+
+        For #include XSTR(COMPILETIME_INCLUDE_FILE) where
+        COMPILETIME_INCLUDE_FILE is defined as linux_extra.h,
+        strips function-like wrappers and expands macros to return "linux_extra.h".
+
+        Returns resolved filename string, or None if not a computed include
+        or if unresolvable.
+        """
+        arg = str(include_arg).strip()
+        if not arg or arg[0] in ('"', "<"):
+            return None
+
+        # Strip function-like macro wrappers: XSTR(FOO) -> FOO
+        inner = arg
+        while "(" in inner and inner.endswith(")"):
+            paren = inner.index("(")
+            inner = inner[paren + 1 : -1].strip()
+
+        expanded = str(self._recursive_expand_macros_sz(sz.Str(inner)))
+        return expanded if expanded != inner else None
+
     def process_structured(self, file_result: "FileAnalysisResult") -> list[int]:
         """Process FileAnalysisResult and return active line numbers using structured directive data.
 

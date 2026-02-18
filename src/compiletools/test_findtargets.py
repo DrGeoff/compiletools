@@ -52,6 +52,7 @@ class TestFindTargetsModule:
             "transitive_cache_bug/engine/b-game.cpp",
             "header_guard_bug/main.cpp",
             "undef_bug/main.cpp",
+            "computed_include/main.cpp",
         }
         relativeexpectedtests = {
             "cross_platform/test_source.cpp",
