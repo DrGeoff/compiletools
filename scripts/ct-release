@@ -78,10 +78,19 @@ fi
 #   ct-release major    # e.g. 1.2.3 -> 2.0.0
 #
 
-# If ctdevdir is not set in the environment then assume its in the home directory
-ctdd=${ctdevdir:=$HOME/compiletools}
+# Auto-detect the repo root from the script's own location.
+# scripts/ sits directly under the repo root, so step one level up.
+SCRIPT_DIR=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+DERIVED=$(cd "$SCRIPT_DIR/.." && pwd)
+if [[ -f "$DERIVED/pyproject.toml" ]]; then
+    ctdd="$DERIVED"
+else
+    ctdd=$(git rev-parse --show-toplevel 2>/dev/null) || {
+        echo "Error: cannot determine repo root; run from within the compiletools repo." >&2
+        exit 1
+    }
+fi
 
-# Verify repo directory exists
 if [[ ! -d "$ctdd" ]]; then
     echo "Error: repo directory not found: $ctdd" >&2
     exit 1
