@@ -269,6 +269,9 @@ def parse_directive_struct(
             else:
                 directive.macro_value = None
 
+    elif dtype == "include":
+        directive.condition = strip_sz(content_slice)
+
     elif dtype == "pragma":
         # Extract pragma name (e.g., "once" from "#pragma once")
         directive.macro_name = strip_sz(content_slice)
@@ -907,7 +910,7 @@ def _extract_conditional_macros(directives: list[PreprocessorDirective]) -> froz
         if directive.directive_type in ("ifdef", "ifndef"):
             if directive.macro_name:
                 macros.add(directive.macro_name)
-        elif directive.directive_type in ("if", "elif"):
+        elif directive.directive_type in ("if", "elif", "include"):
             if directive.condition:
                 # Extract identifiers from condition using stringzilla
                 cond = directive.condition
