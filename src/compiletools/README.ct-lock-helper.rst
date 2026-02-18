@@ -8,7 +8,7 @@ Helper script for file locking during concurrent compilation
 
 :Author: drgeoffathome@gmail.com
 :Date:   2024-01-01
-:Version: 7.0.2
+:Version: 7.1.0
 :Manual section: 1
 :Manual group: developers
 
