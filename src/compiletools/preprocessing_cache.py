@@ -428,6 +428,20 @@ def get_or_compute_preprocessing(file_result, input_macros: "MacroState", verbos
         if inc["line_num"] in active_line_set:
             active_includes.append(inc)
 
+    # Resolve computed includes from directives
+    for directive in file_result.directives:
+        if directive.directive_type == "include" and directive.line_num in active_line_set and directive.condition:
+            resolved = preprocessor.resolve_computed_include(directive.condition)
+            if resolved:
+                active_includes.append(
+                    {
+                        "line_num": directive.line_num,
+                        "filename": sz.Str(resolved),
+                        "is_system": False,
+                        "is_commented": False,
+                    }
+                )
+
     # Extract active magic flags
     active_magic_flags = []
     for magic in file_result.magic_flags:

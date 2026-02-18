@@ -383,3 +383,33 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
 
             # This should not raise an exception - the isystem parsing should work
             compiletools.headerdeps.DirectHeaderDeps(args)
+
+    def test_computed_include_no_macro(self):
+        """Without COMPILETIME_INCLUDE_FILE, the #else branch includes default_extra.h."""
+        filename = self._get_sample_path("computed_include/main.cpp")
+        result_set = uth.headerdeps_result(filename, "direct")
+        expected = self._get_sample_path("computed_include/default_extra.h")
+        assert expected in result_set, f"Expected {expected} in {result_set}"
+
+    def test_computed_include_with_commandline_macro(self):
+        """With -DCOMPILETME_INCLUDE_FILE=linux_extra.h, direct should find linux_extra.h."""
+        filename = self._get_sample_path("computed_include/main.cpp")
+        result_set = uth.headerdeps_result(
+            filename,
+            "direct",
+            cppflags="-DCOMPILETIME_INCLUDE_FILE=linux_extra.h",
+        )
+        expected = self._get_sample_path("computed_include/linux_extra.h")
+        assert expected in result_set, f"Expected {expected} in {result_set}"
+
+    @uth.requires_functional_compiler
+    def test_computed_include_with_commandline_macro_cpp(self):
+        """With -DCOMPILETME_INCLUDE_FILE=linux_extra.h, cpp preprocessor should resolve it."""
+        filename = self._get_sample_path("computed_include/main.cpp")
+        result_set = uth.headerdeps_result(
+            filename,
+            "cpp",
+            cppflags="-DCOMPILETIME_INCLUDE_FILE=linux_extra.h",
+        )
+        expected = self._get_sample_path("computed_include/linux_extra.h")
+        assert expected in result_set, f"Expected {expected} in {result_set}"
