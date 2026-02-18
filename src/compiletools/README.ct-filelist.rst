@@ -9,7 +9,7 @@ Determine header and source dependencies of a C/C++ file by following headers an
 :Author: drgeoffathome@gmail.com
 :Date:   2017-07-06
 :Copyright: Copyright (C) 2011-2016 Zomojo Pty Ltd
-:Version: 7.0.2
+:Version: 7.1.0
 :Manual section: 1
 :Manual group: developers
 

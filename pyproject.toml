@@ -1,6 +1,6 @@
 [project]
 name = "compiletools"
-version = "7.0.2"
+version = "7.1.0"
 description = "Tools to make compiling C/C++ projects easy"
 readme = "src/compiletools/README.ct-doc.rst"
 requires-python = ">=3.9"
@@ -34,7 +34,7 @@ dependencies = [
 dev = [
     "bump-my-version>=0.26.0",
     "twine>=5.0.0",
-    "pytest>=7.0.2",
+    "pytest>=7.1.0",
     "pytest-xdist>=3.5",
     "ruff>=0.14.0",
     "pyright>=1.1",
@@ -81,7 +81,7 @@ include = [
 ]
 
 [tool.bumpversion]
-current_version = "7.0.2"
+current_version = "7.1.0"
 parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
 serialize = ["{major}.{minor}.{patch}"]
 search = "{current_version}"
