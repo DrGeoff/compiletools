@@ -21,6 +21,11 @@ DESCRIPTION
 ===========
 Create a tree of header dependencies starting at a given C/C++ file.
 
+The default ``direct`` mode uses a built-in preprocessor that handles
+conditional compilation (``#if``, ``#ifdef``, ``#ifndef``, ``#undef``) and
+computed includes (``#include MACRO_NAME``). Use ``--headerdeps=cpp`` to
+delegate to the system compiler's preprocessor instead.
+
 OPTIONS
 =======
   --style {tree,depth,dot,flat}

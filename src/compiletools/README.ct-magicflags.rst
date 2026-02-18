@@ -89,6 +89,13 @@ preferred over manual ``LDFLAGS`` because:
 The PKG-CONFIG magic flag works with any library that provides a .pc file,
 including common libraries like gtk+-3.0, libpng, libcurl, openssl, and many more.
 
+CPPFLAGS and CXXFLAGS Unification
+==================================
+By default, ``CPPFLAGS`` and ``CXXFLAGS`` magic flags are merged into a single
+deduplicated set. A flag set via ``//#CPPFLAGS=`` is also applied as a CXXFLAGS
+and vice versa. Use ``--separate-flags-CPP-CXX`` on the command line to keep
+them separate.
+
 VALID MAGIC FLAGS
 =================
 A magic flag follows the pattern ``//#key=value``. Whitespace around the

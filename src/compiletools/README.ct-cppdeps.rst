@@ -30,16 +30,16 @@ filename [filename ...]
 DESCRIPTION
 ===========
 ct-cppdeps generates the header dependencies for the file you specify at the
-command line.  There are two possible methodologys:
+command line.  There are two possible methodologies:
 
-* "--headerdeps=direct" uses a regex to find the "#include" lines in the source
-  code. This methodology is fast and is supposed to generate the same results as
-  using the compiler to preprocess the file.  However, its own simple
-  preprocessor does not handle all the complexities of a real C/C++
-  preprocessor and so it is possible to generate incorrect results.
+* ``--headerdeps=direct`` (default) uses a built-in preprocessor to find
+  ``#include`` directives. It handles conditional compilation (``#if``,
+  ``#ifdef``, ``#ifndef``, ``#undef``) and computed includes where the path
+  is specified via a macro, e.g. ``#include PLATFORM_HEADER``. This is fast
+  and correct for the vast majority of real-world code.
 
-* "--headerdeps=cpp" executes "$CPP -MM -MF" which is slower but guarantees correctness.
-
+* ``--headerdeps=cpp`` executes ``$CPP -MM -MF``, which is slower but
+  delegates entirely to the system compiler's preprocessor.
 
 The tool recursively follows #include directives to discover all header files
 that the specified source file depends upon, either directly or transitively.
