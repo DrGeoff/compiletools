@@ -36,6 +36,39 @@ require_cmd git
 require_cmd bump-my-version
 require_cmd uv
 
+# Check for gh (optional but recommended)
+HAS_GH=false
+if command -v gh >/dev/null 2>&1; then
+    HAS_GH=true
+else
+    echo "Warning: 'gh' (GitHub CLI) not found. GitHub release notes will not be created." >&2
+    # Suggest install command based on OS
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        case "$ID" in
+            fedora|rhel|centos|rocky|alma)
+                install_cmd="sudo dnf install gh" ;;
+            debian|ubuntu|pop)
+                install_cmd="sudo apt install gh" ;;
+            arch|manjaro)
+                install_cmd="sudo pacman -S github-cli" ;;
+            opensuse*)
+                install_cmd="sudo zypper install gh" ;;
+            *)
+                install_cmd="See https://github.com/cli/cli/blob/trunk/docs/install_linux.md" ;;
+        esac
+    elif [[ "$(uname)" == "Darwin" ]]; then
+        install_cmd="brew install gh"
+    else
+        install_cmd="See https://github.com/cli/cli#installation"
+    fi
+    read -rp "Continue without GitHub release notes? [y/N] " answer
+    if [[ "${answer,,}" != "y" ]]; then
+        echo "Install gh with: $install_cmd" >&2
+        exit 1
+    fi
+fi
+
 #
 # Bump the version of the vanilla compiletools repo and git push the tags
 # Usage: ct-release {major|minor|patch}
@@ -104,6 +137,13 @@ fi
 # Use exact-match to ensure HEAD is tagged
 tag=$(git describe --tags --exact-match)
 popd >/dev/null
+
+# Create a GitHub release with auto-generated notes
+if [[ "$HAS_GH" == "true" ]]; then
+    gh release create "$tag" --title "$tag" --generate-notes
+else
+    echo "No GitHub release notes generated (gh not available)."
+fi
 
 #Strip the v off the tag to get the numeric version
 version=${tag#*v}
