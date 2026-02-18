@@ -129,6 +129,28 @@ add, say:
 Because the code and build flags are defined so close to each other, its
 much easier to tweak the compilation locally.
 
+CPPFLAGS and CXXFLAGS
+---------------------
+
+By default, CPPFLAGS and CXXFLAGS are unified into a single deduplicated set.
+This means flags specified via ``//#CPPFLAGS=`` or ``--CPPFLAGS`` are also
+applied as CXXFLAGS and vice versa. Use ``--separate-flags-CPP-CXX`` to keep
+them separate if your build requires different flags for preprocessing and
+compilation.
+
+Computed Includes
+-----------------
+
+ct-cake's ``direct`` dependency mode (the default) now resolves computed
+``#include`` directives where the path is specified via a macro, for example:
+
+.. code-block:: cpp
+
+    #define PLATFORM_HEADER "linux_extra.h"
+    #include PLATFORM_HEADER
+
+Previously this required ``--headerdeps=cpp`` to track correctly.
+
 Performance
 ===========
 

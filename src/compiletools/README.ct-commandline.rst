@@ -37,6 +37,20 @@ OPTIONS
     are merged with system and user configs according to precedence rules:
     command line > environment variables > config files > defaults.
 
+--include PATH [PATH ...]
+    Extra path(s) to add to the include search path. Accepts one or more
+    space-separated paths, e.g. ``--include path/to/headers another/path``.
+
+--CPPFLAGS FLAGS [FLAGS ...]
+    C preprocessor flags (override). By default unified with CXXFLAGS.
+
+--CXXFLAGS FLAGS [FLAGS ...]
+    C++ compiler flags (override). By default unified with CPPFLAGS.
+
+--separate-flags-CPP-CXX
+    Keep CPPFLAGS and CXXFLAGS as separate values instead of merging them.
+    By default they are unified into a single deduplicated set.
+
 -v, --verbose
     Increase output verbosity. Can be specified multiple times for more detail
     (e.g., ``-vv`` or ``-v -v``).
