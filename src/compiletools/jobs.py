@@ -51,7 +51,7 @@ def _cpu_count():
     try:
         cpu_func = globals()["_".join(["_cpus", _determine_system()])]
         return cpu_func()
-    except KeyError:
+    except Exception:
         # A safe-ish default even for phones
         return 4
 
