@@ -1241,7 +1241,7 @@ def parseargs(cap, argv, verbose=None):
             if verbose >= 6:
                 print(f"Set CXX to detected functional compiler: {functional_compiler}")
         else:
-            RuntimeError("No functional C++ compiler detected. Please set CXX explicitly.")
+            raise RuntimeError("No functional C++ compiler detected. Please set CXX explicitly.")
 
     if verbose > 8:
         print(f"Parsing functioanl compiler has been set. Before substitutions args={args}")

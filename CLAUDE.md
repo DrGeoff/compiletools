@@ -160,3 +160,13 @@ py-spy record -o profile.svg -- python ct-cake --auto
 - **appdirs** -- XDG-compliant directory locations
 - **psutil** -- process management for stale lock detection
 - **rich** -- terminal formatting
+
+### stringzilla 4.6.0 install workaround
+
+On RHEL 8 (and similar), `uv pip install stringzilla==4.6.0` fails to compile because the system GCC (e.g. GCC 10) is too old to handle the AVX-512 intrinsics. Point the build at a modern GCC (12+) before installing:
+
+```bash
+export CC=/path/to/modern/gcc   # GCC 12 or newer
+export CFLAGS="-mavx512f -mavx512bw -mavx512vl -mavx512vbmi"
+uv pip install stringzilla==4.6.0
+```

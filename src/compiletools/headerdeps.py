@@ -275,7 +275,9 @@ class DirectHeaderDeps(HeaderDepsBase):
 
         # Set includes and reset macro state (reuse cached core, use provided variable dict)
         self.includes = self._includes
-        self.defined_macros = MacroState(self._core_macros, variable_macros)
+        self.defined_macros = MacroState(self._core_macros, variable_macros,
+                                        compiler_path=getattr(self.args, "CXX", ""),
+                                        cppflags=getattr(self.args, "CPPFLAGS", ""))
 
     @functools.cache
     def _search_project_includes(self, include: sz.Str):
