@@ -418,5 +418,36 @@ class TestCake(BaseCompileToolsTestCase):
             deeper_is_included=True,
         )
 
+    @uth.requires_functional_compiler
+    def test_platform_has_include_builds(self):
+        """Test that __has_include platform selection compiles and links.
+
+        platform_main.cpp uses __has_include to pick between linux_func and
+        windows_func.  Both define the same symbol (platform_func), so if
+        both were compiled the linker would fail with a duplicate definition.
+        A successful build proves exactly one platform was selected.
+        """
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+
+            sample_dir = os.path.join(uth.samplesdir(), "platform_has_include")
+            for f in os.listdir(sample_dir):
+                shutil.copy2(os.path.join(sample_dir, f), self._tmpdir)
+
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            self._call_ct_cake()
+
+            actual_exes = set()
+            for root, _dirs, files in os.walk(self._tmpdir):
+                for ff in files:
+                    if compiletools.utils.is_executable(os.path.join(root, ff)):
+                        actual_exes.add(ff)
+
+            assert "platform_main" in actual_exes
+
     def teardown_method(self):
         uth.reset()
