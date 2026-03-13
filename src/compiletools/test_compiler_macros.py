@@ -159,3 +159,102 @@ class TestCompilerMacros:
             assert "__GNUC__" in macros
             # Should have many macros
             assert len(macros) > 50  # GCC typically defines 100+ macros
+
+
+class TestQueryHasFunction:
+    """Test the query_has_function() functionality."""
+
+    def setup_method(self):
+        cm.clear_cache()
+
+    def test_returns_1_when_compiler_says_true(self):
+        """Mock compiler preprocessor output containing '1'."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "# 1 \"<stdin>\"\n1\n"
+
+        with patch("subprocess.run", return_value=mock_result):
+            assert cm.query_has_function("gcc", "__has_include(<iostream>)") == 1
+
+    def test_returns_0_when_compiler_says_false(self):
+        """Mock compiler preprocessor output containing '0'."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "# 1 \"<stdin>\"\n0\n"
+
+        with patch("subprocess.run", return_value=mock_result):
+            assert cm.query_has_function("gcc", "__has_include(<nonexistent_header_xyz.h>)") == 0
+
+    def test_returns_0_for_empty_compiler(self):
+        """No compiler specified should return 0."""
+        assert cm.query_has_function("", "__has_include(<iostream>)") == 0
+
+    def test_returns_0_on_file_not_found(self):
+        """FileNotFoundError should return 0."""
+        with patch("subprocess.run", side_effect=FileNotFoundError("not found")):
+            assert cm.query_has_function("nonexistent-compiler", "__has_include(<iostream>)") == 0
+
+    def test_returns_0_on_timeout(self):
+        """TimeoutExpired should return 0."""
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 5)):
+            assert cm.query_has_function("slow-compiler", "__has_include(<iostream>)") == 0
+
+    def test_returns_0_on_nonzero_return_code(self):
+        """Non-zero return code should return 0."""
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+
+        with patch("subprocess.run", return_value=mock_result):
+            assert cm.query_has_function("gcc", "__has_include(<iostream>)") == 0
+
+    def test_lru_cache_avoids_repeated_calls(self):
+        """Same args should use cached result, not call subprocess again."""
+        call_count = 0
+
+        def mock_run(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = "# 1 \"<stdin>\"\n1\n"
+            return result
+
+        with patch("subprocess.run", side_effect=mock_run):
+            assert cm.query_has_function("gcc", "__has_include(<iostream>)") == 1
+            assert call_count == 1
+
+            # Second call with same args should use cache
+            assert cm.query_has_function("gcc", "__has_include(<iostream>)") == 1
+            assert call_count == 1
+
+    def test_clear_cache_forces_recomputation(self):
+        """clear_cache() should clear query_has_function cache."""
+        call_count = 0
+
+        def mock_run(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = "# 1 \"<stdin>\"\n1\n"
+            return result
+
+        with patch("subprocess.run", side_effect=mock_run):
+            cm.query_has_function("gcc", "__has_include(<iostream>)")
+            assert call_count == 1
+
+            cm.clear_cache()
+
+            cm.query_has_function("gcc", "__has_include(<iostream>)")
+            assert call_count == 2
+
+    def test_cppflags_passed_to_compiler(self):
+        """CPPFLAGS should be inserted into the compiler command."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "1\n"
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            cm.query_has_function("gcc", "__has_include(<foo.h>)", cppflags="-I/usr/local/include")
+            args_used = mock_run.call_args[0][0]
+            assert "-I/usr/local/include" in args_used

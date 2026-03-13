@@ -502,6 +502,291 @@ class TestSimplePreprocessor:
         assert 1 in active_lines
 
 
+class TestExpandHasFunctions:
+    """Tests for __has_* preprocessor function expansion (Cycles 4-5)."""
+
+    def setup_method(self):
+        import stringzilla as sz
+
+        from compiletools.preprocessing_cache import clear_cache
+
+        clear_cache()
+
+        self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
+        self.mock_get_filepath = self.patcher.start()
+        self.mock_get_filepath.return_value = "<test-file>"
+
+        self.macros = {sz.Str("TEST_MACRO"): sz.Str("1")}
+
+    def teardown_method(self):
+        self.patcher.stop()
+
+    def test_basic_has_include_expands_to_1(self):
+        """__has_include(<iostream>) should expand to '1' when compiler says true."""
+        import stringzilla as sz
+
+        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
+
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1):
+            result = processor._expand_has_functions_sz(sz.Str("__has_include(<iostream>)"))
+            assert str(result) == "1"
+
+    def test_basic_has_include_expands_to_0(self):
+        """__has_include(<nonexistent.h>) should expand to '0' when compiler says false."""
+        import stringzilla as sz
+
+        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
+
+        with patch("compiletools.compiler_macros.query_has_function", return_value=0):
+            result = processor._expand_has_functions_sz(sz.Str("__has_include(<nonexistent.h>)"))
+            assert str(result) == "0"
+
+    def test_mixed_multiple_has_include(self):
+        """Both __has_include calls should be expanded in a compound expression."""
+        import stringzilla as sz
+
+        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
+
+        def mock_query(compiler, call_str, cppflags="", verbose=0):
+            if "<a>" in call_str:
+                return 1
+            if "<b>" in call_str:
+                return 0
+            return 0
+
+        with patch("compiletools.compiler_macros.query_has_function", side_effect=mock_query):
+            result = processor._expand_has_functions_sz(sz.Str("__has_include(<a>) && __has_include(<b>)"))
+            assert str(result) == "1 && 0"
+
+    def test_quoted_header(self):
+        """__has_include("local.h") should preserve the quoted argument."""
+        import stringzilla as sz
+
+        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
+
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1) as mock_query:
+            result = processor._expand_has_functions_sz(sz.Str('__has_include("local.h")'))
+            assert str(result) == "1"
+            # Verify the full call was passed to the compiler
+            mock_query.assert_called_once_with("gcc", '__has_include("local.h")', "", 0)
+
+    def test_has_builtin(self):
+        """__has_builtin(__builtin_expect) should work for non-include __has_* functions."""
+        import stringzilla as sz
+
+        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
+
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1):
+            result = processor._expand_has_functions_sz(sz.Str("__has_builtin(__builtin_expect)"))
+            assert str(result) == "1"
+
+    def test_no_compiler_evaluates_to_0(self):
+        """With no compiler_path, __has_* calls should evaluate to 0 (backward compat)."""
+        import stringzilla as sz
+
+        processor = SimplePreprocessor(self.macros, compiler_path="")
+
+        result = processor._expand_has_functions_sz(sz.Str("__has_include(<iostream>)"))
+        assert str(result) == "0"
+
+    def test_not_a_function_call_left_unchanged(self):
+        """Identifiers starting with __has_ but without parens should be left unchanged."""
+        import stringzilla as sz
+
+        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
+
+        result = processor._expand_has_functions_sz(sz.Str("__has_value"))
+        assert str(result) == "__has_value"
+
+    def test_has_in_larger_identifier_left_unchanged(self):
+        """__has_ as part of a larger identifier (preceded by alpha/underscore) left unchanged."""
+        import stringzilla as sz
+
+        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
+
+        result = processor._expand_has_functions_sz(sz.Str("my__has_include(<x>)"))
+        # 'my' prefix means it's part of another identifier
+        assert "__has_include" in str(result)
+
+    # Cycle 6: Integration through _evaluate_expression_sz()
+
+    def test_evaluate_expression_with_has_include_and_defined(self):
+        """__has_include and defined() should both work in a single expression."""
+        import stringzilla as sz
+
+        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
+
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1):
+            result = processor._evaluate_expression_sz(
+                sz.Str("__has_include(<iostream>) && defined(TEST_MACRO)")
+            )
+            assert result == 1
+
+    def test_evaluate_expression_has_include_false(self):
+        """When __has_include is false, expression should evaluate to 0."""
+        import stringzilla as sz
+
+        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
+
+        with patch("compiletools.compiler_macros.query_has_function", return_value=0):
+            result = processor._evaluate_expression_sz(
+                sz.Str("__has_include(<nonexistent.h>)")
+            )
+            assert result == 0
+
+    # Cycle 7: End-to-end through process_structured()
+
+    def test_process_structured_has_include_true(self):
+        """#if __has_include(<iostream>) should include content when compiler says true."""
+        from textwrap import dedent
+
+        text = dedent("""\
+            #if __has_include(<iostream>)
+            #include <special.h>
+            #endif""")
+
+        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
+
+        file_result = self._create_file_analysis_result(text)
+
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1):
+            active_lines = processor.process_structured(file_result)
+            # Line 1 (0-based) is "#include <special.h>" — should be active
+            assert 1 in active_lines
+
+    def test_process_structured_has_include_false(self):
+        """#if __has_include(<nonexistent>) should exclude content when compiler says false."""
+        from textwrap import dedent
+
+        text = dedent("""\
+            #if __has_include(<nonexistent.h>)
+            #include <special.h>
+            #endif""")
+
+        processor = SimplePreprocessor(self.macros, compiler_path="gcc")
+
+        file_result = self._create_file_analysis_result(text)
+
+        with patch("compiletools.compiler_macros.query_has_function", return_value=0):
+            active_lines = processor.process_structured(file_result)
+            # Line 1 should NOT be active
+            assert 1 not in active_lines
+
+    # Cycle 8: Threading through get_or_compute_preprocessing()
+
+    def test_get_or_compute_preprocessing_with_compiler(self):
+        """get_or_compute_preprocessing should read compiler_path from MacroState."""
+        import stringzilla as sz
+
+        from compiletools.preprocessing_cache import MacroState, clear_cache, get_or_compute_preprocessing
+
+        clear_cache()
+
+        text = "#if __has_include(<iostream>)\n#include <special.h>\n#endif"
+        file_result = self._create_file_analysis_result(text)
+
+        core = {sz.Str("__GNUC__"): sz.Str("11")}
+        macros = MacroState(core, compiler_path="gcc", cppflags="-I/usr/include")
+
+        with patch("compiletools.compiler_macros.query_has_function", return_value=1):
+            result = get_or_compute_preprocessing(file_result, macros, verbose=0)
+            assert 1 in result.active_lines
+
+    def test_get_or_compute_preprocessing_without_compiler(self):
+        """Without compiler_path on MacroState, __has_include should evaluate to 0."""
+        import stringzilla as sz
+
+        from compiletools.preprocessing_cache import MacroState, clear_cache, get_or_compute_preprocessing
+
+        clear_cache()
+
+        text = "#if __has_include(<iostream>)\n#include <special.h>\n#endif"
+        file_result = self._create_file_analysis_result(text)
+
+        core = {sz.Str("__GNUC__"): sz.Str("11")}
+        macros = MacroState(core)
+
+        result = get_or_compute_preprocessing(file_result, macros, verbose=0)
+        assert 1 not in result.active_lines
+
+    def _create_file_analysis_result(self, text):
+        """Helper to create FileAnalysisResult for testing."""
+        import re
+
+        from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
+
+        lines = text.split("\n")
+
+        line_byte_offsets = []
+        offset = 0
+        for line in lines:
+            line_byte_offsets.append(offset)
+            offset += len(line.encode("utf-8")) + 1
+
+        directives = []
+        directive_by_line = {}
+        directive_positions = {}
+
+        for line_num, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                match = re.match(r"^\s*#\s*([a-zA-Z_]+)(?:\s+(.*))?", stripped)
+                if match:
+                    import stringzilla as sz
+
+                    directive_type = match.group(1)
+                    rest = match.group(2) or ""
+
+                    condition = None
+                    macro_name = None
+                    macro_value = None
+
+                    if directive_type in ["if", "elif"]:
+                        condition = sz.Str(rest.strip())
+                    elif directive_type in ["ifdef", "ifndef"]:
+                        macro_name = sz.Str(rest.strip())
+                    elif directive_type == "define":
+                        parts = rest.split(None, 1)
+                        macro_name = sz.Str(parts[0]) if parts else sz.Str("")
+                        macro_value = sz.Str(parts[1]) if len(parts) > 1 else sz.Str("1")
+                        if "(" in str(macro_name):
+                            macro_name = sz.Str(str(macro_name).split("(")[0])
+                    elif directive_type == "undef":
+                        macro_name = sz.Str(rest.strip())
+
+                    directive = PreprocessorDirective(
+                        line_num=line_num,
+                        byte_pos=line_byte_offsets[line_num],
+                        directive_type=directive_type,
+                        continuation_lines=0,
+                        condition=condition,
+                        macro_name=macro_name,
+                        macro_value=macro_value,
+                    )
+
+                    directives.append(directive)
+                    directive_by_line[line_num] = directive
+
+                    if directive_type not in directive_positions:
+                        directive_positions[directive_type] = []
+                    directive_positions[directive_type].append(line_byte_offsets[line_num])
+
+        return FileAnalysisResult(
+            line_count=len(lines),
+            line_byte_offsets=line_byte_offsets,
+            include_positions=[],
+            magic_positions=[],
+            directive_positions=directive_positions,
+            directives=directives,
+            directive_by_line=directive_by_line,
+            bytes_analyzed=len(text.encode("utf-8")),
+            was_truncated=False,
+            includes=[],
+            defines=[],
+            magic_flags=[],
+        )
+
+
 class TestMacroHashConsistency:
     """Unit tests for macro hash computation consistency (Phase 0)"""
 

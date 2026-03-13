@@ -59,10 +59,14 @@ class SimplePreprocessor:
     - Provides recursive macro expansion helper for advanced use
     """
 
-    def __init__(self, defined_macros: dict[sz.Str, sz.Str], verbose: int = 0) -> None:
+    def __init__(
+        self, defined_macros: dict[sz.Str, sz.Str], verbose: int = 0, compiler_path: str = "", cppflags: str = ""
+    ) -> None:
         # Caller must provide dict with sz.Str keys and values - no type conversion needed
         self.macros = defined_macros.copy()
         self.verbose = verbose
+        self.compiler_path = compiler_path
+        self.cppflags = cppflags
         # Include guard to skip when processing #define (set by process_structured)
         self._include_guard = None
 
@@ -232,10 +236,96 @@ class SimplePreprocessor:
 
         return concat_sz(*result_parts) if result_parts else sz.Str("")
 
+    def _expand_has_functions_sz(self, expr_sz: sz.Str) -> sz.Str:
+        """Expand __has_* function calls by querying the compiler.
+
+        Handles __has_include(<header>), __has_include("header"),
+        __has_builtin(__builtin_x), __has_feature(cxx_rvalue_references), etc.
+
+        If no compiler_path is set, all __has_* calls evaluate to 0.
+        """
+        from compiletools.compiler_macros import query_has_function
+        from compiletools.stringzilla_utils import concat_sz
+
+        result_parts = []
+        i = 0
+
+        while i < len(expr_sz):
+            # Look for '__has_'
+            has_pos = expr_sz.find("__has_", i)
+            if has_pos == -1:
+                result_parts.append(expr_sz[i:])
+                break
+
+            # Add text before '__has_'
+            if has_pos > i:
+                result_parts.append(expr_sz[i:has_pos])
+
+            # Check if this is actually a standalone identifier start (not part of a larger identifier)
+            if has_pos > 0 and is_alpha_or_underscore_sz(expr_sz, has_pos - 1):
+                # Part of another identifier
+                result_parts.append(expr_sz[has_pos : has_pos + 6])
+                i = has_pos + 6
+                continue
+
+            # Find end of the function name (alphanumeric + underscore)
+            name_end = expr_sz.find_first_not_of(
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_", has_pos
+            )
+            if name_end == -1:
+                name_end = len(expr_sz)
+
+            func_name = expr_sz[has_pos:name_end]
+
+            # Skip whitespace after function name
+            j = expr_sz.find_first_not_of(" \t", name_end)
+            if j == -1:
+                j = len(expr_sz)
+
+            # Must have opening paren to be a function call
+            if j >= len(expr_sz) or expr_sz[j] != "(":
+                # Not a function call - leave unchanged
+                result_parts.append(func_name)
+                i = name_end
+                continue
+
+            # Find matching closing paren, handling nested parens and angle brackets
+            paren_depth = 1
+            k = j + 1
+            while k < len(expr_sz) and paren_depth > 0:
+                ch = expr_sz[k]
+                if ch == "(":
+                    paren_depth += 1
+                elif ch == ")":
+                    paren_depth -= 1
+                k += 1
+
+            if paren_depth != 0:
+                # Unmatched parens - leave unchanged
+                result_parts.append(expr_sz[has_pos:k])
+                i = k
+                continue
+
+            # Extract the full function call: __has_include(<iostream>)
+            call_str = str(expr_sz[has_pos:k])
+
+            if not self.compiler_path:
+                # No compiler available - evaluate to 0
+                result_parts.append(sz.Str("0"))
+            else:
+                value = query_has_function(self.compiler_path, call_str, self.cppflags, self.verbose)
+                result_parts.append(sz.Str(str(value)))
+
+            i = k
+
+        return concat_sz(*result_parts) if result_parts else sz.Str("")
+
     def _expand_macros_sz(self, expr_sz: sz.Str) -> sz.Str:
         """Replace macro names with their values using StringZilla operations"""
         # First handle defined() expressions to avoid expanding macros inside them
         result = self._expand_defined_sz(expr_sz)
+        # Then expand __has_* function calls by querying the compiler
+        result = self._expand_has_functions_sz(result)
 
         # Start from the beginning and find identifier patterns
         i = 0

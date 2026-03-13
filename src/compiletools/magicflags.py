@@ -446,7 +446,8 @@ class DirectMagicFlags(MagicFlagsBase):
         core_macros.update({sz.Str(k): sz.Str(v) for k, v in cmd_macros.items()})
 
         # Create MacroState with core macros, empty variable macros
-        return MacroState(core_macros, {})
+        return MacroState(core_macros, {},
+                          compiler_path=self._args.CXX, cppflags=self._args.CPPFLAGS)
 
     def _extract_macros_from_magic_flags(self, magic_flags_result):
         """Extract -D macros from magic flag CPPFLAGS and CXXFLAGS."""
@@ -915,7 +916,8 @@ class CppMagicFlags(MagicFlagsBase):
         core_macros.update({sz.Str(k): sz.Str(v) for k, v in cmd_macros.items()})
 
         # Create MacroState with core macros, empty variable macros
-        return MacroState(core_macros, {})
+        return MacroState(core_macros, {},
+                          compiler_path=self._args.CXX, cppflags=self._args.CPPFLAGS)
 
     def _extract_macros_from_preprocessor(self, filename: str) -> MacroState:
         """Extract all macro definitions from preprocessor using -dM flag.
@@ -970,7 +972,9 @@ class CppMagicFlags(MagicFlagsBase):
                 variable_macros[macro_name] = macro_value
 
         # Return MacroState with variable macros (core already initialized)
-        return MacroState(core=self._initial_macro_state.core.copy(), variable=variable_macros)
+        return MacroState(core=self._initial_macro_state.core.copy(), variable=variable_macros,
+                          compiler_path=self._initial_macro_state.compiler_path,
+                          cppflags=self._initial_macro_state.cppflags)
 
     def _readfile(self, filename):
         """Preprocess the given filename but leave comments"""
