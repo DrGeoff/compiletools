@@ -72,6 +72,64 @@ def get_compiler_macros(compiler_path: str, verbose: int = 0) -> dict[str, str]:
         return {}
 
 
+@lru_cache(maxsize=256)
+def query_has_function(compiler_path: str, function_call: str, cppflags: str = "", verbose: int = 0) -> int:
+    """Query the compiler to evaluate a __has_* preprocessor function call.
+
+    Args:
+        compiler_path: Path to the compiler executable (e.g., 'gcc', 'clang')
+        function_call: The full function call expression (e.g., '__has_include(<iostream>)')
+        cppflags: Additional preprocessor flags (e.g., '-I/usr/include')
+        verbose: Verbosity level for debug output
+
+    Returns:
+        1 if the compiler evaluates the function call as true, 0 otherwise.
+    """
+    if not compiler_path:
+        return 0
+
+    # Build a snippet that the preprocessor can evaluate
+    snippet = f"#if {function_call}\n1\n#else\n0\n#endif\n"
+
+    try:
+        cmd = compiletools.utils.split_command_cached(compiler_path)
+        if cppflags:
+            cmd = cmd + compiletools.utils.split_command_cached(cppflags)
+        cmd = cmd + ["-E", "-x", "c++", "-"]
+
+        result = subprocess.run(
+            cmd,
+            input=snippet,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+        )
+
+        if result.returncode != 0:
+            if verbose >= 4:
+                print(f"query_has_function: compiler returned {result.returncode} for '{function_call}'")
+            return 0
+
+        # Parse output: look for standalone '1' or '0' line, skipping # lines
+        for line in result.stdout.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if stripped == "1":
+                return 1
+            if stripped == "0":
+                return 0
+
+        return 0
+
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        if verbose >= 3:
+            print(f"query_has_function: failed for '{function_call}': {e}")
+        return 0
+
+
 def clear_cache():
-    """Clear the LRU cache for get_compiler_macros."""
+    """Clear the LRU caches for compiler macro functions."""
     get_compiler_macros.cache_clear()
+    query_has_function.cache_clear()

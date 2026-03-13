@@ -7,6 +7,7 @@ import compiletools.apptools
 import compiletools.headerdeps
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
+import compiletools.utils
 
 
 def _make_cppflags_path(relative_path):
@@ -136,6 +137,59 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         """Test that DirectHeaderDeps correctly handles conditional includes"""
         filename = self._get_sample_path("conditional_includes/main.cpp")
         tb.compare_direct_cpp_headers(self, filename)
+
+    @uth.requires_functional_compiler
+    def test_has_include(self):
+        """Test that DirectHeaderDeps evaluates __has_include via the compiler.
+
+        The has_include sample uses __has_include to conditionally include:
+        - optional_feature.h (exists locally, should be found)
+        - nonexistent_feature.h (does not exist, should be skipped)
+        - stdheader_extras.h (guarded by __has_include(<cstddef>), should be found)
+        """
+        filename = self._get_sample_path("has_include/main.cpp")
+        result_set = uth.headerdeps_result(filename, "direct")
+        expected = {
+            self._get_sample_path("has_include/optional_feature.h"),
+            self._get_sample_path("has_include/stdheader_extras.h"),
+        }
+        unexpected = {
+            self._get_sample_path("has_include/nonexistent_feature.h"),
+        }
+        assert expected <= result_set, f"Missing expected headers: {expected - result_set}"
+        assert not (unexpected & result_set), f"Found unexpected headers: {unexpected & result_set}"
+
+    @uth.requires_functional_compiler
+    def test_platform_has_include_source_tree(self):
+        """Test that __has_include selects only one platform's headers and implied sources.
+
+        platform_main.cpp uses __has_include(<windows.h>) / __has_include(<unistd.h>)
+        to pick between windows_func.hpp and linux_func.hpp.  On Linux only the
+        linux files should appear; the windows files must be absent.  The implied
+        source (linux_func.cpp) should exist, confirming the compilation source tree
+        contains exactly one platform.
+        """
+        filename = self._get_sample_path("platform_has_include/platform_main.cpp")
+        result_set = uth.headerdeps_result(filename, "direct")
+
+        linux_hpp = self._get_sample_path("platform_has_include/linux_func.hpp")
+        windows_hpp = self._get_sample_path("platform_has_include/windows_func.hpp")
+
+        if sys.platform.startswith("linux"):
+            assert linux_hpp in result_set, f"Expected linux_func.hpp in deps: {result_set}"
+            assert windows_hpp not in result_set, f"windows_func.hpp should NOT be in deps: {result_set}"
+
+            # Verify the implied source exists (hunter would pick this up)
+            linux_cpp = self._get_sample_path("platform_has_include/linux_func.cpp")
+            implied = compiletools.utils.implied_source(linux_hpp)
+            assert implied == linux_cpp, f"Implied source should be linux_func.cpp, got {implied}"
+
+            # Verify no implied source would be found for the excluded platform
+            windows_cpp = self._get_sample_path("platform_has_include/windows_func.cpp")
+            assert windows_cpp not in result_set
+        else:
+            assert windows_hpp in result_set
+            assert linux_hpp not in result_set
 
     @uth.requires_functional_compiler
     def test_user_defined_feature_headers(self):
