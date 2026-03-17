@@ -88,6 +88,8 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                         self.magic = "direct"
                         self.headerdeps = "direct"
                         self.CPPFLAGS = ""
+                        self.CFLAGS = ""
+                        self.CXXFLAGS = ""
                         self.CXX = compiletools.apptools.get_functional_cxx_compiler() or "g++"
 
                 args = MockArgs()
@@ -152,6 +154,8 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                     self.magic = "direct"
                     self.headerdeps = "direct"
                     self.CPPFLAGS = ""
+                    self.CFLAGS = ""
+                    self.CXXFLAGS = ""
                     self.max_file_read_size = 0
                     self.CXX = compiletools.apptools.get_functional_cxx_compiler() or "g++"
 

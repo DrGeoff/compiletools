@@ -101,8 +101,9 @@ class MagicFlagsBase:
         # The magic pattern is //#key=value with whitespace ignored
         self.magicpattern = re.compile(r"^[\s]*//#([\S]*?)[\s]*=[\s]*(.*)", re.MULTILINE)
 
-        # Store final converged MacroState objects by filename
-        # This is used by Hunter for dependency graph caching
+        # Store final converged MacroState objects by filename.
+        # After _parse() runs, the MacroState carries effective compile flags
+        # (global + per-file magic) so get_hash(include_core=True) captures everything.
         self._final_macro_states = {}
 
     def get_final_macro_state_key(self, filename: str):
@@ -127,17 +128,19 @@ class MagicFlagsBase:
         return macro_state.get_cache_key()
 
     def get_final_macro_state_hash(self, filename: str) -> str:
-        """Get the full macro state hash (core + variable) for object file naming.
+        """Get the full macro state hash (core + variable + build context) for object file naming.
 
-        This includes BOTH core macros (compiler built-ins + cmdline flags) AND
-        variable macros (from file #defines). Different compilers or cmdline flags
-        will produce different hashes, ensuring proper object file separation.
+        The MacroState carries all compile-relevant state:
+        - Core macros (compiler built-ins + cmdline -D flags)
+        - Variable macros (from file #defines)
+        - Build context: compiler_path, cppflags, cflags, cxxflags
+          (includes both global flags and per-file magic flags after _parse())
 
         Args:
             filename: The file path to get the full macro state hash for
 
         Returns:
-            str: 16-character hex hash of full macro state (core + variable)
+            str: 16-character hex hash of full macro state
 
         Raises:
             KeyError: If file hasn't been processed yet
@@ -146,6 +149,7 @@ class MagicFlagsBase:
         macro_state = self._final_macro_states.get(abs_filename)
         if macro_state is None:
             raise KeyError(f"No macro state found for {filename} - file not processed")
+
         return macro_state.get_hash(include_core=True)
 
     def _get_file_analyzer_result(self, filename: str) -> FileAnalysisResult:
@@ -360,6 +364,34 @@ class MagicFlagsBase:
         for key in flagsforfilename:
             flagsforfilename[key] = compiletools.utils.deduplicate_compiler_flags(flagsforfilename[key])
 
+        # Update _final_macro_states to carry effective compile flags
+        # (global from self._args + per-file magic flags).  Always computed
+        # from self._args.* so this is idempotent if _parse() runs twice.
+        abs_filename = compiletools.wrappedos.realpath(filename)
+        old_ms = self._final_macro_states.get(abs_filename)
+        if old_ms is None:
+            raise RuntimeError(
+                f"_final_macro_states not populated for {filename} before _parse() update. "
+                f"get_structured_data() should have been called first."
+            )
+
+        magic_cppflags = " ".join(str(f) for f in flagsforfilename.get(sz.Str("CPPFLAGS"), []))
+        magic_cflags = " ".join(str(f) for f in flagsforfilename.get(sz.Str("CFLAGS"), []))
+        magic_cxxflags = " ".join(str(f) for f in flagsforfilename.get(sz.Str("CXXFLAGS"), []))
+
+        effective_cppflags = f"{self._args.CPPFLAGS} {magic_cppflags}".strip()
+        effective_cflags = f"{self._args.CFLAGS} {magic_cflags}".strip()
+        effective_cxxflags = f"{self._args.CXXFLAGS} {magic_cxxflags}".strip()
+
+        self._final_macro_states[abs_filename] = MacroState(
+            old_ms.core,
+            old_ms.variable,
+            compiler_path=old_ms.compiler_path,
+            cppflags=effective_cppflags,
+            cflags=effective_cflags,
+            cxxflags=effective_cxxflags,
+        )
+
         return flagsforfilename
 
     def _extend_flags_from_dict(self, flagsforfilename, extra_flags_dict):
@@ -446,8 +478,14 @@ class DirectMagicFlags(MagicFlagsBase):
         core_macros.update({sz.Str(k): sz.Str(v) for k, v in cmd_macros.items()})
 
         # Create MacroState with core macros, empty variable macros
-        return MacroState(core_macros, {},
-                          compiler_path=self._args.CXX, cppflags=self._args.CPPFLAGS)
+        return MacroState(
+            core_macros,
+            {},
+            compiler_path=self._args.CXX,
+            cppflags=self._args.CPPFLAGS,
+            cflags=self._args.CFLAGS,
+            cxxflags=self._args.CXXFLAGS,
+        )
 
     def _extract_macros_from_magic_flags(self, magic_flags_result):
         """Extract -D macros from magic flag CPPFLAGS and CXXFLAGS."""
@@ -916,8 +954,14 @@ class CppMagicFlags(MagicFlagsBase):
         core_macros.update({sz.Str(k): sz.Str(v) for k, v in cmd_macros.items()})
 
         # Create MacroState with core macros, empty variable macros
-        return MacroState(core_macros, {},
-                          compiler_path=self._args.CXX, cppflags=self._args.CPPFLAGS)
+        return MacroState(
+            core_macros,
+            {},
+            compiler_path=self._args.CXX,
+            cppflags=self._args.CPPFLAGS,
+            cflags=self._args.CFLAGS,
+            cxxflags=self._args.CXXFLAGS,
+        )
 
     def _extract_macros_from_preprocessor(self, filename: str) -> MacroState:
         """Extract all macro definitions from preprocessor using -dM flag.
@@ -972,9 +1016,14 @@ class CppMagicFlags(MagicFlagsBase):
                 variable_macros[macro_name] = macro_value
 
         # Return MacroState with variable macros (core already initialized)
-        return MacroState(core=self._initial_macro_state.core.copy(), variable=variable_macros,
-                          compiler_path=self._initial_macro_state.compiler_path,
-                          cppflags=self._initial_macro_state.cppflags)
+        return MacroState(
+            core=self._initial_macro_state.core.copy(),
+            variable=variable_macros,
+            compiler_path=self._initial_macro_state.compiler_path,
+            cppflags=self._initial_macro_state.cppflags,
+            cflags=self._initial_macro_state.cflags,
+            cxxflags=self._initial_macro_state.cxxflags,
+        )
 
     def _readfile(self, filename):
         """Preprocess the given filename but leave comments"""
