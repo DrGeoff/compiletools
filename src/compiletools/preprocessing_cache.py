@@ -54,13 +54,20 @@ class MacroState:
     Separates static (core) from dynamic (variable) macros, reducing cache key
     computation cost by ~80% by avoiding repeated hashing of unchanging macros.
 
-    Also carries compiler_path and cppflags — these are not macros, but they are
-    build-invariant context needed by the preprocessor to evaluate __has_*
-    functions (e.g., __has_include(<iostream>)).  They live here rather than being
-    threaded as separate parameters because MacroState already flows through the
-    entire preprocessing pipeline.  Like core macros, they are set once at
-    construction and propagated automatically by with_updates()/without_keys().
-    They are NOT included in cache keys (the compiler is constant per-process).
+    Also carries build context fields (compiler_path, cppflags, cflags, cxxflags)
+    — these are not macros, but they are build-invariant context.  compiler_path
+    and cppflags are needed by the preprocessor to evaluate __has_* functions
+    (e.g., __has_include(<iostream>)).  All four fields live here rather than
+    being threaded as separate parameters because MacroState already flows
+    through the entire preprocessing pipeline.  Like core macros, they are set
+    once at construction and propagated automatically by with_updates()/
+    without_keys().
+
+    Build context fields are included in the full hash (include_core=True) used
+    for object file naming, so that different compilers, include paths, or
+    optimization flags produce different object names.  They are NOT included in
+    preprocessing cache keys (include_core=False) because the compiler and flags
+    are constant per-process.
 
     Acts as a dict-like container that can be used as a drop-in replacement for
     plain macro dictionaries, but with optimized caching behavior.
@@ -75,19 +82,30 @@ class MacroState:
         cppflags: Raw preprocessor flags (e.g., '-I/usr/include').  The -I paths
                   are needed so __has_include can search the right directories.
                   Not macros — only the -D portions are extracted into core.
+        cflags: Raw C compiler flags (e.g., '-O2 -fPIC').  Hashed for object
+                naming so different optimization levels produce different objects.
+        cxxflags: Raw C++ compiler flags (e.g., '-std=c++17').  Hashed for object
+                  naming so different C++ standards produce different objects.
     """
 
     core: MacroDict  # Static: compiler + cmdline macros
     variable: MacroDict  # Dynamic: file #defines
     compiler_path: str  # Build context: compiler executable for __has_* queries
     cppflags: str  # Build context: raw flags (-I paths etc.) for __has_* queries
+    cflags: str  # Build context: C compiler flags for object naming
+    cxxflags: str  # Build context: C++ compiler flags for object naming
     _cache_key: Optional[MacroCacheKey]  # Cached frozenset for cache keys
     _hash: Optional[str]  # Cached hex digest for convergence detection (variable only)
-    _hash_full: Optional[str]  # Cached hex digest including core + variable
+    _hash_full: Optional[str]  # Cached hex digest including core + variable + build context
 
     def __init__(
-        self, core: MacroDict, variable: Optional[MacroDict] = None,
-        compiler_path: str = "", cppflags: str = "",
+        self,
+        core: MacroDict,
+        variable: Optional[MacroDict] = None,
+        compiler_path: str = "",
+        cppflags: str = "",
+        cflags: str = "",
+        cxxflags: str = "",
     ):
         """Initialize macro state.
 
@@ -96,14 +114,18 @@ class MacroState:
             variable: Dynamic macros (file defines). Defaults to empty dict.
             compiler_path: Compiler executable for evaluating __has_* functions
             cppflags: Additional preprocessor flags forwarded to __has_* queries
+            cflags: C compiler flags (e.g., '-O2') for object naming hash
+            cxxflags: C++ compiler flags (e.g., '-std=c++17') for object naming hash
         """
         self.core = core
         self.variable = variable if variable is not None else {}
         self.compiler_path = compiler_path
         self.cppflags = cppflags
+        self.cflags = cflags
+        self.cxxflags = cxxflags
         self._cache_key = None  # Lazy-computed cache key
         self._hash = None  # Lazy-computed hash (variable only)
-        self._hash_full = None  # Lazy-computed hash (core + variable)
+        self._hash_full = None  # Lazy-computed hash (core + variable + build context)
 
     def all_macros(self) -> MacroDict:
         """Get merged view of all macros (core + variable).
@@ -138,8 +160,14 @@ class MacroState:
 
         updated_variable = self.variable.copy()
         updated_variable.update(actual_updates)
-        new_state = MacroState(self.core, updated_variable,
-                               compiler_path=self.compiler_path, cppflags=self.cppflags)
+        new_state = MacroState(
+            self.core,
+            updated_variable,
+            compiler_path=self.compiler_path,
+            cppflags=self.cppflags,
+            cflags=self.cflags,
+            cxxflags=self.cxxflags,
+        )
 
         # Optimization: incrementally compute cache key when possible
         # Only for pure additions (no key overwrites) since frozenset union
@@ -159,8 +187,14 @@ class MacroState:
         if not removed:
             return self
         updated_variable = {k: v for k, v in self.variable.items() if k not in removed}
-        return MacroState(self.core, updated_variable,
-                          compiler_path=self.compiler_path, cppflags=self.cppflags)
+        return MacroState(
+            self.core,
+            updated_variable,
+            compiler_path=self.compiler_path,
+            cppflags=self.cppflags,
+            cflags=self.cflags,
+            cxxflags=self.cxxflags,
+        )
 
     # Dict-like interface for easy drop-in replacement
     def __len__(self) -> int:
@@ -284,6 +318,21 @@ class MacroState:
             combined ^= sz.hash(bytes(name))
             combined ^= sz.hash(bytes(value))
 
+        # When computing the full hash (for object naming), also include
+        # build context fields so that different compilers, include paths,
+        # or optimization flags produce different object file names.
+        # NOTE: We hash a labeled composite string rather than XOR-ing
+        # individual field hashes, because CPPFLAGS and CXXFLAGS may be
+        # identical (unified mode) and XOR of identical values cancels out.
+        if include_core:
+            build_context = (
+                f"CC={self.compiler_path}\x00"
+                f"CPPFLAGS={self.cppflags}\x00"
+                f"CFLAGS={self.cflags}\x00"
+                f"CXXFLAGS={self.cxxflags}"
+            )
+            combined ^= sz.hash(bytes(build_context, "utf-8"))
+
         result = format(combined, "016x")
         setattr(self, cache_attr, result)
         return result
@@ -361,7 +410,9 @@ _cache_stats = {
 
 
 def get_or_compute_preprocessing(
-    file_result, input_macros: "MacroState", verbose: int = 0,
+    file_result,
+    input_macros: "MacroState",
+    verbose: int = 0,
 ) -> ProcessingResult:
     """Get preprocessing result from cache or compute if not cached.
 
@@ -445,9 +496,9 @@ def get_or_compute_preprocessing(
 
     # Compute result - pass all macros to preprocessor
     all_macros = input_macros.all_macros()
-    preprocessor = SimplePreprocessor(all_macros, verbose=verbose,
-                                      compiler_path=input_macros.compiler_path,
-                                      cppflags=input_macros.cppflags)
+    preprocessor = SimplePreprocessor(
+        all_macros, verbose=verbose, compiler_path=input_macros.compiler_path, cppflags=input_macros.cppflags
+    )
     active_lines = preprocessor.process_structured(file_result)
     active_line_set = set(active_lines)
 
@@ -510,9 +561,14 @@ def get_or_compute_preprocessing(
 
     # Build updated state: new_variable_macros already reflects the correct
     # post-preprocessing state (input macros + file defines - file undefs)
-    updated_macro_state = MacroState(input_macros.core, new_variable_macros,
-                                     compiler_path=input_macros.compiler_path,
-                                     cppflags=input_macros.cppflags)
+    updated_macro_state = MacroState(
+        input_macros.core,
+        new_variable_macros,
+        compiler_path=input_macros.compiler_path,
+        cppflags=input_macros.cppflags,
+        cflags=input_macros.cflags,
+        cxxflags=input_macros.cxxflags,
+    )
 
     # Create result
     result = ProcessingResult(

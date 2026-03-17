@@ -617,9 +617,7 @@ class TestExpandHasFunctions:
         processor = SimplePreprocessor(self.macros, compiler_path="gcc")
 
         with patch("compiletools.compiler_macros.query_has_function", return_value=1):
-            result = processor._evaluate_expression_sz(
-                sz.Str("__has_include(<iostream>) && defined(TEST_MACRO)")
-            )
+            result = processor._evaluate_expression_sz(sz.Str("__has_include(<iostream>) && defined(TEST_MACRO)"))
             assert result == 1
 
     def test_evaluate_expression_has_include_false(self):
@@ -629,9 +627,7 @@ class TestExpandHasFunctions:
         processor = SimplePreprocessor(self.macros, compiler_path="gcc")
 
         with patch("compiletools.compiler_macros.query_has_function", return_value=0):
-            result = processor._evaluate_expression_sz(
-                sz.Str("__has_include(<nonexistent.h>)")
-            )
+            result = processor._evaluate_expression_sz(sz.Str("__has_include(<nonexistent.h>)"))
             assert result == 0
 
     # Cycle 7: End-to-end through process_structured()
@@ -900,3 +896,80 @@ class TestMacroHashConsistency:
         # Verify it's deterministic
         hash_again = macros.get_hash()
         assert hash_result == hash_again, "Hash should be deterministic"
+
+
+class TestMacroStateBuildContextHash:
+    """Tests for MacroState hashing of build context (cflags, cxxflags, cppflags, compiler_path).
+
+    These tests verify the fix for the shared-objects hash collision bug where
+    objects compiled with different flags (e.g. -O0 vs -O2, or different -I paths)
+    were incorrectly reused because the hash omitted non-macro compile flags.
+    """
+
+    def test_macro_state_hash_differs_with_different_cflags(self):
+        """Object hash must change when compile flags change (e.g., -O0 vs -O2)."""
+        import stringzilla as sz
+
+        core = {sz.Str("__GNUC__"): sz.Str("12")}
+        ms1 = MacroState(core, {}, compiler_path="g++", cppflags="", cflags="-O0", cxxflags="")
+        ms2 = MacroState(core, {}, compiler_path="g++", cppflags="", cflags="-O2", cxxflags="")
+        assert ms1.get_hash(include_core=True) != ms2.get_hash(include_core=True)
+
+    def test_macro_state_hash_differs_with_different_cxxflags(self):
+        """Object hash must change when C++ standard changes."""
+        import stringzilla as sz
+
+        core = {sz.Str("__GNUC__"): sz.Str("12")}
+        ms1 = MacroState(core, {}, compiler_path="g++", cppflags="", cflags="", cxxflags="-std=c++17")
+        ms2 = MacroState(core, {}, compiler_path="g++", cppflags="", cflags="", cxxflags="-std=c++20")
+        assert ms1.get_hash(include_core=True) != ms2.get_hash(include_core=True)
+
+    def test_macro_state_hash_differs_with_different_cppflags(self):
+        """Object hash must change when include paths change (e.g., different library version)."""
+        import stringzilla as sz
+
+        core = {sz.Str("__GNUC__"): sz.Str("12")}
+        ms1 = MacroState(core, {}, compiler_path="g++", cppflags="-I/opt/libfoo/v1/include")
+        ms2 = MacroState(core, {}, compiler_path="g++", cppflags="-I/opt/libfoo/v2/include")
+        assert ms1.get_hash(include_core=True) != ms2.get_hash(include_core=True)
+
+    def test_macro_state_hash_differs_with_different_compiler(self):
+        """Object hash must change when compiler changes."""
+        import stringzilla as sz
+
+        core = {sz.Str("__GNUC__"): sz.Str("12")}
+        ms1 = MacroState(core, {}, compiler_path="g++")
+        ms2 = MacroState(core, {}, compiler_path="clang++")
+        assert ms1.get_hash(include_core=True) != ms2.get_hash(include_core=True)
+
+    def test_macro_state_hash_without_core_ignores_build_context(self):
+        """Preprocessing cache key (include_core=False) must NOT be affected by build flags."""
+        import stringzilla as sz
+
+        core = {sz.Str("__GNUC__"): sz.Str("12")}
+        ms1 = MacroState(core, {}, compiler_path="g++", cppflags="-I/a", cflags="-O0", cxxflags="-std=c++17")
+        ms2 = MacroState(core, {}, compiler_path="clang++", cppflags="-I/b", cflags="-O2", cxxflags="-std=c++20")
+        assert ms1.get_hash(include_core=False) == ms2.get_hash(include_core=False)
+
+    def test_with_updates_propagates_build_context(self):
+        """with_updates must carry cflags/cxxflags to the new MacroState."""
+        import stringzilla as sz
+
+        core = {sz.Str("X"): sz.Str("1")}
+        ms = MacroState(core, {}, compiler_path="g++", cppflags="-I/foo", cflags="-O2", cxxflags="-std=c++17")
+        ms2 = ms.with_updates({sz.Str("Y"): sz.Str("2")})
+        assert ms2.cflags == "-O2"
+        assert ms2.cxxflags == "-std=c++17"
+        assert ms2.compiler_path == "g++"
+        assert ms2.cppflags == "-I/foo"
+
+    def test_without_keys_propagates_build_context(self):
+        """without_keys must carry cflags/cxxflags to the new MacroState."""
+        import stringzilla as sz
+
+        core = {sz.Str("X"): sz.Str("1")}
+        var = {sz.Str("Y"): sz.Str("2")}
+        ms = MacroState(core, var, compiler_path="g++", cppflags="-I/foo", cflags="-O2", cxxflags="-std=c++17")
+        ms2 = ms.without_keys([sz.Str("Y")])
+        assert ms2.cflags == "-O2"
+        assert ms2.cxxflags == "-std=c++17"

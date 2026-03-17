@@ -48,18 +48,15 @@ class Hunter:
     def _extractSOURCE(self, realpath):
         import stringzilla as sz
 
-        # Call get_structured_data directly to leverage its cache (90%+ hit rate)
-        # without paying the cost of parse() transforming all flags
-        structured_data = self.magicparser.get_structured_data(realpath)
+        # Use magicflags() (which goes through _parse_magic cache) so that
+        # _parse() runs for every file during dependency expansion.  This
+        # ensures _final_macro_states carries the effective compile flags
+        # (global + per-file magic) before macro_state_hash() is ever called.
+        flags = self.magicflags(realpath)
 
-        sources = []
-        for file_data in structured_data:
-            for magic_flag in file_data["active_magic_flags"]:
-                if magic_flag["key"] == sz.Str("SOURCE"):
-                    sources.append(magic_flag["value"])
-
+        source_flags = flags.get(sz.Str("SOURCE"), [])
         cwd = compiletools.wrappedos.dirname(realpath)
-        ess = frozenset(compiletools.wrappedos.realpath(os.path.join(cwd, str(es))) for es in sources)
+        ess = frozenset(compiletools.wrappedos.realpath(os.path.join(cwd, str(es))) for es in source_flags)
         if self.args.verbose >= 2 and ess:
             print("Hunter::_extractSOURCE. realpath=", realpath, " SOURCE flag:", ess)
         return ess

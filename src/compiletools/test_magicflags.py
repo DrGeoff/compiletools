@@ -886,3 +886,118 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert "-DFROMCXX" not in cpp_flags, f"CPPFLAGS should not contain -DFROMCXX in separate mode, got {cpp_flags}"
         assert "-DFROMCXX" in cxx_flags
         assert "-DFROMCPP" not in cxx_flags, f"CXXFLAGS should not contain -DFROMCPP in separate mode, got {cxx_flags}"
+
+    def test_macro_state_hash_captures_global_cxxflags(self):
+        """Different global CXXFLAGS must produce different macro_state_hash."""
+        files = uth.write_sources({"test_cxxflags.cpp": "int main() { return 0; }\n"})
+        source_file = str(files["test_cxxflags.cpp"])
+
+        self._parse_with_magic("direct", source_file, ["--append-CXXFLAGS=-O0"])
+        parser1 = self._parser_cache[("direct", ("--append-CXXFLAGS=-O0",))]
+        hash1 = parser1.get_final_macro_state_hash(source_file)
+
+        self._parse_with_magic("direct", source_file, ["--append-CXXFLAGS=-O2"])
+        parser2 = self._parser_cache[("direct", ("--append-CXXFLAGS=-O2",))]
+        hash2 = parser2.get_final_macro_state_hash(source_file)
+
+        assert hash1 != hash2, f"Different CXXFLAGS should produce different macro_state_hash: {hash1} vs {hash2}"
+
+    def test_macro_state_hash_captures_global_cppflags_paths(self):
+        """Different CPPFLAGS include paths must produce different macro_state_hash."""
+        files = uth.write_sources({"test_cppflags_path.cpp": "int main() { return 0; }\n"})
+        source_file = str(files["test_cppflags_path.cpp"])
+
+        self._parse_with_magic("direct", source_file, ["--append-CPPFLAGS=-I/opt/libfoo/v1/include"])
+        parser1 = self._parser_cache[("direct", ("--append-CPPFLAGS=-I/opt/libfoo/v1/include",))]
+        hash1 = parser1.get_final_macro_state_hash(source_file)
+
+        self._parse_with_magic("direct", source_file, ["--append-CPPFLAGS=-I/opt/libfoo/v2/include"])
+        parser2 = self._parser_cache[("direct", ("--append-CPPFLAGS=-I/opt/libfoo/v2/include",))]
+        hash2 = parser2.get_final_macro_state_hash(source_file)
+
+        assert hash1 != hash2, f"Different CPPFLAGS paths should produce different macro_state_hash: {hash1} vs {hash2}"
+
+    def test_macro_state_hash_captures_per_file_magic_cppflags(self):
+        """Different per-file magic CPPFLAGS must produce different macro_state_hash."""
+        # File1 has magic CPPFLAGS with -I/v1
+        files1 = uth.write_sources(
+            {"test_magic_v1.cpp": "//#CPPFLAGS=-I/opt/mylib/v1/include\nint main() { return 0; }\n"}
+        )
+        source1 = str(files1["test_magic_v1.cpp"])
+
+        self._parse_with_magic("direct", source1)
+        parser = self._parser_cache[("direct", ())]
+        hash1 = parser.get_final_macro_state_hash(source1)
+
+        # File2 has magic CPPFLAGS with -I/v2
+        files2 = uth.write_sources(
+            {"test_magic_v2.cpp": "//#CPPFLAGS=-I/opt/mylib/v2/include\nint main() { return 0; }\n"}
+        )
+        source2 = str(files2["test_magic_v2.cpp"])
+
+        self._parse_with_magic("direct", source2)
+        hash2 = parser.get_final_macro_state_hash(source2)
+
+        assert hash1 != hash2, (
+            f"Different per-file magic CPPFLAGS should produce different macro_state_hash: {hash1} vs {hash2}"
+        )
+
+    def test_macro_state_hash_captures_per_file_pkg_config(self, pkgconfig_env):
+        """Different pkg-config results must produce different macro_state_hash."""
+        # Use the existing nested.pc from samples
+        files = uth.write_sources({"test_pkg.cpp": "//#PKG-CONFIG=nested\nint main() { return 0; }\n"})
+        source_pkg = str(files["test_pkg.cpp"])
+
+        self._parse_with_magic("direct", source_pkg)
+        parser = self._parser_cache[("direct", ())]
+        hash_with_pkg = parser.get_final_macro_state_hash(source_pkg)
+
+        # File without PKG-CONFIG
+        files2 = uth.write_sources({"test_nopkg.cpp": "int main() { return 0; }\n"})
+        source_nopkg = str(files2["test_nopkg.cpp"])
+        self._parse_with_magic("direct", source_nopkg)
+        hash_without_pkg = parser.get_final_macro_state_hash(source_nopkg)
+
+        assert hash_with_pkg != hash_without_pkg, (
+            f"PKG-CONFIG flags should affect macro_state_hash: {hash_with_pkg} vs {hash_without_pkg}"
+        )
+
+    @uth.requires_functional_compiler
+    def test_cpp_mode_macro_state_hash_captures_global_cxxflags(self):
+        """CppMagicFlags: different global CXXFLAGS must produce different macro_state_hash."""
+        files = uth.write_sources({"test_cpp_cxxflags.cpp": "int main() { return 0; }\n"})
+        source_file = str(files["test_cpp_cxxflags.cpp"])
+
+        self._parse_with_magic("cpp", source_file, ["--append-CXXFLAGS=-O0"])
+        parser1 = self._parser_cache[("cpp", ("--append-CXXFLAGS=-O0",))]
+        hash1 = parser1.get_final_macro_state_hash(source_file)
+
+        self._parse_with_magic("cpp", source_file, ["--append-CXXFLAGS=-O2"])
+        parser2 = self._parser_cache[("cpp", ("--append-CXXFLAGS=-O2",))]
+        hash2 = parser2.get_final_macro_state_hash(source_file)
+
+        assert hash1 != hash2, f"CppMagicFlags: different CXXFLAGS should produce different hash: {hash1} vs {hash2}"
+
+    @uth.requires_functional_compiler
+    def test_cpp_mode_macro_state_hash_captures_per_file_magic(self):
+        """CppMagicFlags: per-file magic CPPFLAGS must affect macro_state_hash."""
+        files1 = uth.write_sources(
+            {"test_cpp_magic_v1.cpp": "//#CPPFLAGS=-I/opt/mylib/v1/include\nint main() { return 0; }\n"}
+        )
+        source1 = str(files1["test_cpp_magic_v1.cpp"])
+
+        self._parse_with_magic("cpp", source1)
+        parser = self._parser_cache[("cpp", ())]
+        hash1 = parser.get_final_macro_state_hash(source1)
+
+        files2 = uth.write_sources(
+            {"test_cpp_magic_v2.cpp": "//#CPPFLAGS=-I/opt/mylib/v2/include\nint main() { return 0; }\n"}
+        )
+        source2 = str(files2["test_cpp_magic_v2.cpp"])
+
+        self._parse_with_magic("cpp", source2)
+        hash2 = parser.get_final_macro_state_hash(source2)
+
+        assert hash1 != hash2, (
+            f"CppMagicFlags: different per-file CPPFLAGS should produce different hash: {hash1} vs {hash2}"
+        )

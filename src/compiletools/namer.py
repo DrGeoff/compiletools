@@ -125,7 +125,7 @@ class Namer:
         - basename: filename without path or extension
         - file_hash_12: 12-char hex from global hash registry (source file)
         - dep_hash_14: 14-char hex XOR of header dependencies (MIDDLE POSITION)
-        - macro_state_hash_16: 16-char hex of full macro state (core + variable)
+        - macro_state_hash_16: 16-char hex of full macro state (core + variable + build context)
 
         This naming scheme is content-addressable and safe for shared caching:
         - Different file content → different file_hash
