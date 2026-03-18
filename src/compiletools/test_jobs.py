@@ -35,9 +35,15 @@ def test_cpu_count_success():
     assert result > 0
 
 
-def test_main_prints_count(capsys):
+def test_main_prints_count():
     """main([]) prints the CPU count."""
-    rc = jobs.main([])
-    assert rc == 0
-    output = capsys.readouterr().out.strip()
-    assert int(output) > 0
+    import subprocess
+
+    result = subprocess.run(
+        ["python", "-c", "import compiletools.jobs; compiletools.jobs.main([])"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0
+    assert int(result.stdout.strip()) > 0
