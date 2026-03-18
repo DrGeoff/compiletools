@@ -1,5 +1,6 @@
 import os
 import sys
+from unittest.mock import patch
 
 import configargparse
 
@@ -8,6 +9,7 @@ import compiletools.headerdeps
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
 import compiletools.utils
+import compiletools.wrappedos
 
 
 def _make_cppflags_path(relative_path):
@@ -467,3 +469,159 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         )
         expected = self._get_sample_path("computed_include/linux_extra.h")
         assert expected in result_set, f"Expected {expected} in {result_set}"
+
+
+class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
+    """Unit tests for headerdeps module coverage of uncovered lines."""
+
+    def setup_method(self):
+        super().setup_method()
+
+    def _make_args(self, cppflags="", verbose=0):
+        """Helper to create args with a fresh parser."""
+        cap = configargparse.getArgumentParser(
+            description="unit test parser",
+            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=False,
+        )
+        compiletools.headerdeps.add_arguments(cap)
+        argv = ["-q"]
+        if cppflags:
+            argv.append(f"--CPPFLAGS={cppflags}")
+        args = compiletools.apptools.parseargs(cap, argv)
+        if verbose:
+            args.verbose = verbose
+        return args
+
+    def test_clear_caches(self):
+        """Test clear_caches resets both module-level caches."""
+        compiletools.headerdeps._include_list_cache["dummy"] = "value"
+        compiletools.headerdeps._invariant_include_cache["dummy"] = "value"
+        compiletools.headerdeps.clear_caches()
+        assert compiletools.headerdeps._include_list_cache == {}
+        assert compiletools.headerdeps._invariant_include_cache == {}
+
+    def test_create_verbose(self):
+        """Test create() with verbose >= 4 prints classname."""
+        args = self._make_args(verbose=4)
+        deps = compiletools.headerdeps.create(args)
+        assert isinstance(deps, compiletools.headerdeps.DirectHeaderDeps)
+
+    def test_base_process_impl_raises(self):
+        """Test HeaderDepsBase._process_impl raises NotImplementedError."""
+        args = self._make_args()
+        base = compiletools.headerdeps.HeaderDepsBase(args)
+        try:
+            base._process_impl("somepath", frozenset())
+            assert False, "Should have raised NotImplementedError"
+        except NotImplementedError:
+            pass
+
+    def test_base_process_oserror_retry(self):
+        """Test HeaderDepsBase.process retries on OSError."""
+        args = self._make_args()
+        base = compiletools.headerdeps.HeaderDepsBase(args)
+        call_count = [0]
+
+        def fake_process_impl(realpath, macro_cache_key):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise OSError("transient error")
+            return ["/some/header.h"]
+
+        base._process_impl = fake_process_impl
+        result = base.process("/tmp/test.cpp", frozenset())
+        assert result == ["/some/header.h"]
+        assert call_count[0] == 2
+
+    def test_extract_isystem_empty(self):
+        """Test _extract_isystem_paths_from_flags with empty input."""
+        args = self._make_args()
+        base = compiletools.headerdeps.HeaderDepsBase(args)
+        assert base._extract_isystem_paths_from_flags("") == []
+        assert base._extract_isystem_paths_from_flags(None) == []
+
+    def test_extract_isystem_shlex_fallback(self):
+        """Test _extract_isystem_paths_from_flags falls back on shlex ValueError."""
+        args = self._make_args()
+        base = compiletools.headerdeps.HeaderDepsBase(args)
+        # Unclosed quote causes shlex ValueError
+        result = base._extract_isystem_paths_from_flags("-isystem /usr/include 'unclosed")
+        assert "/usr/include" in result
+
+    def test_extract_isystem_dangling(self):
+        """Test -isystem at end of string with no following path."""
+        args = self._make_args()
+        base = compiletools.headerdeps.HeaderDepsBase(args)
+        result = base._extract_isystem_paths_from_flags("-isystem")
+        assert result == []
+
+    def test_extract_isystem_joined_format(self):
+        """Test -isystem/path format (joined without space)."""
+        args = self._make_args()
+        base = compiletools.headerdeps.HeaderDepsBase(args)
+        result = base._extract_isystem_paths_from_flags("-isystem/usr/local/include")
+        assert result == ["/usr/local/include"]
+
+    def test_extract_include_empty(self):
+        """Test _extract_include_paths_from_flags with empty input."""
+        args = self._make_args()
+        base = compiletools.headerdeps.HeaderDepsBase(args)
+        assert base._extract_include_paths_from_flags("") == []
+        assert base._extract_include_paths_from_flags(None) == []
+
+    def test_extract_include_list_input(self):
+        """Test _extract_include_paths_from_flags with list input."""
+        args = self._make_args()
+        base = compiletools.headerdeps.HeaderDepsBase(args)
+        result = base._extract_include_paths_from_flags(["-I", "/usr/include", "-Ilocal"])
+        assert "/usr/include" in result
+        assert "local" in result
+
+    def test_extract_include_shlex_fallback(self):
+        """Test _extract_include_paths_from_flags falls back on shlex ValueError."""
+        args = self._make_args()
+        base = compiletools.headerdeps.HeaderDepsBase(args)
+        result = base._extract_include_paths_from_flags("-I /usr/include 'unclosed")
+        assert "/usr/include" in result
+
+    def test_extract_include_dangling_I(self):
+        """Test -I at end of string with no following path."""
+        args = self._make_args()
+        base = compiletools.headerdeps.HeaderDepsBase(args)
+        result = base._extract_include_paths_from_flags("-I")
+        assert result == []
+
+    def test_cpp_header_deps_with_macro_cache_key_raises(self):
+        """Test CppHeaderDeps.process raises NotImplementedError with non-empty macro_cache_key."""
+        args = self._make_args()
+        cpp = compiletools.headerdeps.CppHeaderDeps(args)
+        try:
+            cpp.process("/tmp/test.cpp", frozenset({("FOO", "1")}))
+            assert False, "Should have raised NotImplementedError"
+        except NotImplementedError:
+            pass
+
+    def test_direct_clear_instance_cache(self):
+        """Test DirectHeaderDeps.clear_instance_cache."""
+        args = self._make_args()
+        deps = compiletools.headerdeps.DirectHeaderDeps(args)
+        # Just call it - should not raise
+        deps.clear_instance_cache()
+
+    def test_generatetree_with_macro_cache_key(self):
+        """Test generatetree with a macro_cache_key."""
+        filename = os.path.join(uth.samplesdir(), "simple/helloworld_cpp.cpp")
+        args = self._make_args()
+        deps = compiletools.headerdeps.DirectHeaderDeps(args)
+        result = deps.generatetree(filename, macro_cache_key=frozenset())
+        assert result is not None
+
+    def test_generatetree_with_nonempty_macro_key(self):
+        """Test generatetree with non-empty macro_cache_key initializes macros."""
+        filename = os.path.join(uth.samplesdir(), "simple/helloworld_cpp.cpp")
+        args = self._make_args()
+        deps = compiletools.headerdeps.DirectHeaderDeps(args)
+        result = deps.generatetree(filename, macro_cache_key=frozenset({("TEST_MACRO", "1")}))
+        assert result is not None

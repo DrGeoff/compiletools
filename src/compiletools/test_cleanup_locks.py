@@ -531,3 +531,92 @@ class TestCleanupLocksMain:
         )
 
         assert result.returncode == 0
+
+    def _run_main_with_mocks(self, *, verbose=0, stats=None, dry_run=False):
+        """Helper: run main() in-process with full mocking past arg parsing.
+
+        Returns (return_code, mock_cleaner, captured_stdout).
+        """
+        import io
+        from contextlib import redirect_stdout
+
+        if stats is None:
+            stats = {"stale_failed": 0, "stale_removed": 0, "active": 0, "total": 0}
+
+        mock_args = Mock()
+        mock_args.verbose = verbose
+        mock_args.quiet = 0
+        mock_args.min_lock_age = None
+        mock_args.lock_cross_host_timeout = 600
+        mock_args.ssh_timeout = 5
+        mock_args.dry_run = dry_run
+
+        mock_cleaner = Mock()
+        mock_cleaner.scan_and_cleanup.return_value = stats
+
+        mock_namer = Mock()
+        mock_namer.object_dir.return_value = "/tmp/fake_objdir"
+
+        with (
+            patch("compiletools.apptools.create_parser") as mock_parser,
+            patch("compiletools.configutils.extract_variant", return_value=""),
+            patch("compiletools.apptools.add_base_arguments"),
+            patch("compiletools.apptools.add_locking_arguments"),
+            patch("compiletools.apptools.add_output_directory_arguments"),
+            patch("compiletools.cleanup_locks.LockCleaner", return_value=mock_cleaner),
+            patch("compiletools.namer.Namer", return_value=mock_namer),
+        ):
+            mock_parser.return_value.parse_args.return_value = mock_args
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = compiletools.cleanup_locks_main.main(argv=[])
+            return rc, mock_cleaner, buf.getvalue()
+
+    def test_main_happy_path_no_stale(self):
+        """main() returns 0 when no stale locks fail to remove."""
+        rc, mock_cleaner, _ = self._run_main_with_mocks()
+        assert rc == 0
+        mock_cleaner.scan_and_cleanup.assert_called_once_with("/tmp/fake_objdir")
+        mock_cleaner.print_summary.assert_called_once()
+
+    def test_main_returns_1_on_stale_failed(self):
+        """main() returns 1 when stale locks fail to remove."""
+        rc, _, _ = self._run_main_with_mocks(
+            stats={"stale_failed": 2, "stale_removed": 1, "active": 0, "total": 3}
+        )
+        assert rc == 1
+
+    def test_main_verbose_prints_config(self):
+        """main() prints configuration when verbose >= 1."""
+        rc, _, output = self._run_main_with_mocks(verbose=1, dry_run=True)
+        assert rc == 0
+        assert "Object directory: /tmp/fake_objdir" in output
+        assert "Min lock age: 600s" in output
+        assert "SSH timeout: 5s" in output
+        assert "Dry run: True" in output
+
+    def test_main_quiet_no_config_output(self):
+        """main() does not print config when verbose < 1."""
+        rc, _, output = self._run_main_with_mocks(verbose=0)
+        assert rc == 0
+        assert "Configuration:" not in output
+
+    def test_main_oserror_verbose_reraises(self):
+        """main() re-raises OSError when verbose >= 2."""
+        mock_args = Mock()
+        mock_args.verbose = 2
+        mock_args.quiet = 0
+        mock_args.min_lock_age = None
+        mock_args.lock_cross_host_timeout = 600
+
+        with (
+            patch("compiletools.apptools.create_parser") as mock_parser,
+            patch("compiletools.configutils.extract_variant", return_value=""),
+            patch("compiletools.apptools.add_base_arguments"),
+            patch("compiletools.apptools.add_locking_arguments"),
+            patch("compiletools.apptools.add_output_directory_arguments"),
+            patch("compiletools.cleanup_locks.LockCleaner", side_effect=OSError(2, "No such file", "/bad")),
+        ):
+            mock_parser.return_value.parse_args.return_value = mock_args
+            with pytest.raises(OSError):
+                compiletools.cleanup_locks_main.main(argv=[])
