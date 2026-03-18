@@ -131,6 +131,48 @@ def create_objdir_worker(worker_id, objdir):
         return {"worker_id": worker_id, "success": False, "error": str(e)}
 
 
+def compile_worker_with_flags(worker_id, source_dir, config_name, extra_argv):
+    """Worker process that runs ct-cake with extra flags.
+
+    Args:
+        worker_id: Unique identifier for this worker
+        source_dir: Directory containing source files
+        config_name: Path to config file
+        extra_argv: Additional argv flags (e.g. ["--CXXFLAGS=-O2"])
+
+    Returns:
+        Dict with worker_id, returncode, obj_names, exception info
+    """
+    import time
+
+    time.sleep(0.01 * worker_id)
+
+    try:
+        os.chdir(source_dir)
+
+        argv = [
+            "--exemarkers=main",
+            "--testmarkers=unittest.hpp",
+            "--auto",
+            "--config=" + config_name,
+        ] + list(extra_argv)
+
+        uth.reset()
+        compiletools.cake.main(argv)
+
+        return {
+            "worker_id": worker_id,
+            "returncode": 0,
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "worker_id": worker_id,
+            "returncode": 1,
+            "error": str(e),
+        }
+
+
 def build_subproject_worker(worker_id, source_dir, config_name):
     """Build a subproject using ct-cake (module-level for multiprocessing)."""
     try:
@@ -905,6 +947,151 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             # Verify no lock directories remain (all cleaned up)
             lockdirs = list(objdir.glob("**/*.lockdir"))
             assert len(lockdirs) == 0, f"Found stale lock directories: {lockdirs}"
+
+
+    @uth.requires_functional_compiler
+    def test_concurrent_different_variants(self):
+        """
+        Two processes compile the same source file simultaneously with
+        different compiler flags (simulating v1=debug, v2=release).
+
+        Expected:
+        - Both processes succeed
+        - Each produces a distinct object file (different macro_state_hash)
+        - No collision or corruption in the shared objdir
+        - No stale lock directories remain
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            objdir = Path(tmpdir) / "shared_obj"
+            objdir.mkdir(mode=0o2775)
+
+            # Two build dirs with identical source but different flags
+            source_dir_v1, config_v1 = self._create_test_source_dir(
+                tmpdir, "build_v1", str(objdir)
+            )
+            source_dir_v2, config_v2 = self._create_test_source_dir(
+                tmpdir, "build_v2", str(objdir)
+            )
+
+            ctx = multiprocessing.get_context("spawn")
+            with ctx.Pool(2) as pool:
+                results = pool.starmap(
+                    compile_worker_with_flags,
+                    [
+                        (0, source_dir_v1, config_v1, []),
+                        (1, source_dir_v2, config_v2, ["--CXXFLAGS=-O2"]),
+                    ],
+                )
+
+            # Both must succeed
+            for r in results:
+                assert r["returncode"] == 0, (
+                    f"Worker {r['worker_id']} failed: {r['error']}"
+                )
+
+            # Should have 2 distinct object files (different macro_state_hash)
+            obj_files = list(objdir.glob("*.o"))
+            assert len(obj_files) == 2, (
+                f"Expected 2 object files (one per variant), found {len(obj_files)}: "
+                f"{[f.name for f in obj_files]}"
+            )
+
+            # Verify the two objects share basename and file_hash but differ
+            # in macro_state_hash (last component)
+            names = sorted(f.name for f in obj_files)
+            parts_a = names[0].replace(".o", "").split("_")
+            parts_b = names[1].replace(".o", "").split("_")
+
+            assert parts_a[0] == parts_b[0], "Basename should match (same source)"
+            assert parts_a[1] == parts_b[1], "File hash should match (same content)"
+            # macro_state_hash (last part) must differ
+            assert parts_a[-1] != parts_b[-1], (
+                f"macro_state_hash should differ for different flags: "
+                f"{parts_a[-1]} vs {parts_b[-1]}"
+            )
+
+            # No stale locks
+            lockdirs = list(objdir.glob("*.lockdir"))
+            assert len(lockdirs) == 0, f"Found stale lock directories: {lockdirs}"
+
+    @uth.requires_functional_compiler
+    def test_mixed_compiler_flags_reverse_order(self):
+        """
+        Sequential variant test with reversed build order: optimized first,
+        then default.  Ensures object naming is order-independent.
+
+        Expected:
+        - User B (optimized, -O2) builds first → creates object B
+        - User A (default) builds second → creates object A
+        - Two distinct objects in shared objdir (same as forward order)
+        - Neither build corrupts or overwrites the other
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            objdir = Path(tmpdir) / "shared_obj"
+            objdir.mkdir(mode=0o2775)
+
+            # Build 1: Optimized flags FIRST (reverse of test_mixed_compiler_flags)
+            source_dir_opt, config_opt = self._create_test_source_dir(
+                tmpdir, "build_optimized", str(objdir)
+            )
+
+            os.chdir(source_dir_opt)
+            argv_opt = [
+                "--exemarkers=main",
+                "--auto",
+                "--config=" + config_opt,
+                "--CXXFLAGS=-O2",
+            ]
+            uth.reset()
+            compiletools.cake.main(argv_opt)
+
+            opt_objs = set(objdir.glob("*.o"))
+            assert len(opt_objs) == 1, (
+                f"Expected 1 object after optimized build, found {len(opt_objs)}"
+            )
+            opt_obj_name = next(iter(opt_objs)).name
+
+            # Build 2: Default flags SECOND
+            source_dir_def, config_def = self._create_test_source_dir(
+                tmpdir, "build_default", str(objdir)
+            )
+
+            os.chdir(source_dir_def)
+            argv_def = [
+                "--exemarkers=main",
+                "--auto",
+                "--config=" + config_def,
+            ]
+            uth.reset()
+            compiletools.cake.main(argv_def)
+
+            all_objs = set(objdir.glob("*.o"))
+
+            # Should have 2 distinct objects
+            assert len(all_objs) == 2, (
+                f"Expected 2 objects (one per variant), found {len(all_objs)}: "
+                f"{[f.name for f in all_objs]}"
+            )
+
+            # The default build must NOT have reused the optimized object
+            new_objs = {f.name for f in all_objs} - {opt_obj_name}
+            assert len(new_objs) == 1, (
+                f"Default build should create a new object, not reuse {opt_obj_name}"
+            )
+
+            # Verify hash components
+            opt_parts = opt_obj_name.replace(".o", "").split("_")
+            def_parts = list(new_objs)[0].replace(".o", "").split("_")
+
+            assert opt_parts[0] == def_parts[0], "Basename should match"
+            assert opt_parts[1] == def_parts[1], "File hash should match (same source)"
+            assert opt_parts[-1] != def_parts[-1], (
+                f"macro_state_hash should differ: {opt_parts[-1]} vs {def_parts[-1]}"
+            )
+
+            # Verify both objects are valid (non-empty)
+            for obj_file in all_objs:
+                assert obj_file.stat().st_size > 0, f"{obj_file.name} is empty"
 
 
 if __name__ == "__main__":
