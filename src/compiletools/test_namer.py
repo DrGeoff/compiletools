@@ -239,6 +239,72 @@ def test_dep_hash_handles_missing_generated_headers():
 
 
 @uth.requires_functional_compiler
+def test_source_magic_produces_different_hash_with_different_flags():
+    """Regression: //#SOURCE= expanded files must get different macro_state_hash when flags differ.
+
+    This guards against a regression in hunter._extractSOURCE where calling
+    get_structured_data() instead of magicflags() would skip _parse() and leave
+    _final_macro_states unpopulated for SOURCE-expanded files.
+    """
+    uth.reset()
+
+    try:
+        import compiletools.headerdeps
+        import compiletools.hunter
+        import compiletools.magicflags
+        import compiletools.preprocessing_cache
+
+        src = uth.write_sources(
+            {
+                "main.cpp": "//#SOURCE=helper.cpp\nint main() { return 0; }\n",
+                "helper.cpp": "void helper() {}\n",
+            }
+        )
+        main_file = str(src["main.cpp"])
+        helper_file = str(src["helper.cpp"])
+
+        def create_hunter_with_cppflags(cppflags_value):
+            """Create a Hunter instance with specific CPPFLAGS."""
+            cap = configargparse.getArgumentParser()
+            compiletools.hunter.add_arguments(cap)
+            argv = [f"--append-CPPFLAGS={cppflags_value}", "-q"]
+            args = compiletools.apptools.parseargs(cap, argv)
+            hdeps = compiletools.headerdeps.create(args)
+            magic = compiletools.magicflags.create(args, hdeps)
+            return compiletools.hunter.Hunter(args, hdeps, magic), magic
+
+        # Config 1: trigger _extractSOURCE via required_source_files
+        hunter1, magic1 = create_hunter_with_cppflags("-I/opt/libfoo/v1/include")
+        sources1 = hunter1.required_source_files(main_file)
+        assert any(f.endswith("helper.cpp") for f in sources1), (
+            f"Hunter should expand //#SOURCE=helper.cpp, got: {sources1}"
+        )
+        hash1_main = magic1.get_final_macro_state_hash(main_file)
+        hash1_helper = magic1.get_final_macro_state_hash(helper_file)
+
+        # Clear caches between configurations
+        compiletools.hunter.Hunter.clear_cache()
+        compiletools.preprocessing_cache.clear_cache()
+
+        # Config 2: same files, different CPPFLAGS
+        hunter2, magic2 = create_hunter_with_cppflags("-I/opt/libfoo/v2/include")
+        hunter2.required_source_files(main_file)
+        hash2_main = magic2.get_final_macro_state_hash(main_file)
+        hash2_helper = magic2.get_final_macro_state_hash(helper_file)
+
+        assert hash1_main != hash2_main, (
+            f"Different CPPFLAGS must produce different hash for main: {hash1_main} vs {hash2_main}"
+        )
+        assert hash1_helper != hash2_helper, (
+            f"Different CPPFLAGS must produce different hash for SOURCE-expanded helper: "
+            f"{hash1_helper} vs {hash2_helper}"
+        )
+
+    finally:
+        uth.reset()
+
+
+@uth.requires_functional_compiler
 def test_different_cppflags_produce_different_object_names():
     """Full chain: different CPPFLAGS -> different macro_state_hash -> different object names."""
     uth.reset()
