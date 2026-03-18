@@ -108,3 +108,35 @@ class TestFindTargetsModule:
 
     def teardown_method(self):
         uth.reset()
+
+
+class TestFindTargetsStyles:
+    """Test output formatting styles."""
+
+    def test_flat_style(self, capsys):
+        style = compiletools.findtargets.FlatStyle()
+        style(["a.cpp", "b.cpp"], ["t.cpp"])
+        assert capsys.readouterr().out == "a.cpp b.cpp t.cpp\n"
+
+    def test_indent_style(self, capsys):
+        style = compiletools.findtargets.IndentStyle()
+        style(["main.cpp"], [])
+        out = capsys.readouterr().out
+        assert "Executable Targets:" in out
+        assert "\tmain.cpp" in out
+        assert "None found" in out  # no tests
+
+    def test_indent_style_no_exes(self, capsys):
+        style = compiletools.findtargets.IndentStyle()
+        style([], ["test.cpp"])
+        out = capsys.readouterr().out
+        assert "None found" in out  # no exes
+        assert "\ttest.cpp" in out
+
+    def test_args_style(self, capsys):
+        style = compiletools.findtargets.ArgsStyle()
+        style(["main.cpp"], ["test.cpp"])
+        out = capsys.readouterr().out
+        assert " main.cpp" in out
+        assert " --tests" in out
+        assert " test.cpp" in out

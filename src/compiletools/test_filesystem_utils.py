@@ -3,9 +3,12 @@
 import tempfile
 
 from compiletools.filesystem_utils import (
+    atomic_output_file,
+    atomic_write,
     get_filesystem_type,
     get_lock_strategy,
     get_lockdir_sleep_interval,
+    safe_read_text_file,
     supports_mmap_safely,
 )
 
@@ -135,6 +138,66 @@ def test_case_insensitivity():
     assert get_lock_strategy("Gpfs") == "lockdir"
     assert supports_mmap_safely("CIFS") is False
     assert supports_mmap_safely("Cifs") is False
+
+
+def test_atomic_write_basic(tmp_path):
+    """atomic_write writes string content to file."""
+    target = str(tmp_path / "out.txt")
+    atomic_write(target, "hello world")
+    assert open(target).read() == "hello world"
+
+
+def test_atomic_write_binary(tmp_path):
+    """atomic_write with binary=True writes bytes."""
+    target = str(tmp_path / "out.bin")
+    atomic_write(target, b"\x00\x01\x02", binary=True)
+    assert open(target, "rb").read() == b"\x00\x01\x02"
+
+
+def test_atomic_write_preserves_permissions(tmp_path):
+    """atomic_write preserves existing file permissions."""
+    import os
+    import stat
+
+    target = str(tmp_path / "out.txt")
+    with open(target, "w") as f:
+        f.write("old")
+    os.chmod(target, 0o644)
+    atomic_write(target, "new")
+    mode = stat.S_IMODE(os.stat(target).st_mode)
+    assert mode == 0o644
+    assert open(target).read() == "new"
+
+
+def test_safe_read_text_file(tmp_path):
+    """safe_read_text_file reads file content."""
+    target = str(tmp_path / "read.txt")
+    with open(target, "w") as f:
+        f.write("test content")
+    result = safe_read_text_file(target)
+    assert str(result) == "test content"
+
+
+def test_atomic_output_file_basic(tmp_path):
+    """atomic_output_file context manager writes atomically."""
+    target = str(tmp_path / "ctx.txt")
+    with atomic_output_file(target) as f:
+        f.write("context content")
+    assert open(target).read() == "context content"
+
+
+def test_atomic_output_file_exception_cleans_up(tmp_path):
+    """atomic_output_file cleans up temp file on exception."""
+    import os
+
+    target = str(tmp_path / "fail.txt")
+    try:
+        with atomic_output_file(target) as f:
+            f.write("partial")
+            raise ValueError("deliberate")
+    except ValueError:
+        pass
+    assert not os.path.exists(target)
 
 
 def test_real_filesystem_detection():

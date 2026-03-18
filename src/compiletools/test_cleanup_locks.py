@@ -484,6 +484,42 @@ class TestCleanupLocksMain:
         # Lock should still exist in dry-run
         assert os.path.exists(os.path.join(tmpdir_with_locks, "test1.lockdir"))
 
+    def test_main_oserror_returns_1(self):
+        """main() catches OSError and returns 1."""
+        with patch("compiletools.apptools.create_parser", side_effect=OSError(2, "No such file", "/bad")):
+            rc = compiletools.cleanup_locks_main.main(argv=["--objdir", "/nonexistent"])
+        assert rc == 1
+
+    def test_main_general_exception_returns_1(self):
+        """main() catches general exceptions and returns 1."""
+        with patch("compiletools.apptools.create_parser", side_effect=RuntimeError("boom")):
+            rc = compiletools.cleanup_locks_main.main(argv=["--objdir", "/nonexistent"])
+        assert rc == 1
+
+    def test_main_verbose_reraises(self):
+        """main() re-raises exceptions when verbose >= 2."""
+        # The OSError is raised before args is parsed, so verbose defaults to 0
+        # We need to raise after args parsing to test the verbose path
+        with patch(
+            "compiletools.cleanup_locks.LockCleaner", side_effect=RuntimeError("boom")
+        ), patch(
+            "compiletools.apptools.create_parser"
+        ) as mock_parser:
+            # Set up mock to return args with verbose=2
+            mock_cap = mock_parser.return_value
+            mock_args = Mock()
+            mock_args.verbose = 2
+            mock_args.quiet = 0
+            mock_args.min_lock_age = None
+            mock_args.lock_cross_host_timeout = 600
+            mock_cap.parse_args.return_value = mock_args
+            with patch("compiletools.configutils.extract_variant", return_value=""):
+                with patch("compiletools.apptools.add_base_arguments"):
+                    with patch("compiletools.apptools.add_locking_arguments"):
+                        with patch("compiletools.apptools.add_output_directory_arguments"):
+                            with pytest.raises(RuntimeError, match="boom"):
+                                compiletools.cleanup_locks_main.main(argv=[])
+
     def test_exit_code_on_empty_directory(self, tmpdir_with_locks):
         """Test exit code 0 when no locks found."""
         result = subprocess.run(
