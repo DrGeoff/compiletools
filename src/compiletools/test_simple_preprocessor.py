@@ -783,6 +783,332 @@ class TestExpandHasFunctions:
         )
 
 
+class TestSimplePreprocessorEdgeCases:
+    """Tests for uncovered edge cases in SimplePreprocessor."""
+
+    def setup_method(self):
+        import stringzilla as sz
+
+        from compiletools.preprocessing_cache import clear_cache
+
+        clear_cache()
+
+        self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
+        self.mock_get_filepath = self.patcher.start()
+        self.mock_get_filepath.return_value = "<test-file>"
+
+        self.macros = {
+            sz.Str("DEFINED_MACRO"): sz.Str("1"),
+            sz.Str("VERSION"): sz.Str("3"),
+        }
+        self.processor = SimplePreprocessor(self.macros, verbose=0)
+
+    def teardown_method(self):
+        self.patcher.stop()
+
+    def _create_file_analysis_result(self, text):
+        """Reuse helper from TestSimplePreprocessor."""
+        return TestSimplePreprocessor._create_file_analysis_result(None, text)
+
+    def test_unclosed_block_comment(self):
+        """Unclosed /* comment should skip the rest of the expression."""
+        import stringzilla as sz
+
+        result = self.processor._strip_comments_sz(sz.Str("1 + /* unclosed"))
+        assert "unclosed" not in str(result)
+        assert "1 +" in str(result)
+
+    def test_defined_space_form(self):
+        """'defined MACRO' (without parens) should work."""
+        import stringzilla as sz
+
+        result = self.processor._expand_defined_sz(sz.Str("defined DEFINED_MACRO"))
+        assert str(result) == "1"
+
+        result = self.processor._expand_defined_sz(sz.Str("defined NONEXISTENT"))
+        assert str(result) == "0"
+
+    def test_defined_space_form_in_expression(self):
+        """'defined MACRO' should evaluate correctly in full expression."""
+        import stringzilla as sz
+
+        result = self.processor._evaluate_expression_sz(sz.Str("defined DEFINED_MACRO && 1"))
+        assert result == 1
+
+    def test_defined_as_part_of_identifier_prefix(self):
+        """'defined' preceded by alpha should not be treated as keyword."""
+        import stringzilla as sz
+
+        # 'predefined' contains 'defined' but shouldn't be treated as keyword
+        result = self.processor._expand_defined_sz(sz.Str("predefined"))
+        assert str(result) == "predefined"
+
+    def test_defined_as_part_of_identifier_suffix(self):
+        """'defined' followed by alpha (no space/paren) should not be treated as keyword."""
+        import stringzilla as sz
+
+        result = self.processor._expand_defined_sz(sz.Str("definedX"))
+        assert "definedX" in str(result)
+
+    def test_defined_at_end_of_string(self):
+        """'defined' at end with no macro after it."""
+        import stringzilla as sz
+
+        result = self.processor._expand_defined_sz(sz.Str("defined"))
+        assert "defined" in str(result)
+
+    def test_defined_with_whitespace_only_after(self):
+        """'defined  ' with only whitespace after."""
+        import stringzilla as sz
+
+        result = self.processor._expand_defined_sz(sz.Str("defined   "))
+        # Should not crash, keeps original text
+        assert "defined" in str(result)
+
+    def test_safe_eval_unsafe_expression(self):
+        """_safe_eval should raise ValueError for unsafe expressions."""
+        import pytest
+
+        with pytest.raises(ValueError, match="Unsafe expression"):
+            self.processor._safe_eval("__import__('os')")
+
+    def test_safe_eval_failure_returns_0(self):
+        """_safe_eval should return 0 when eval fails on a safe-looking expression."""
+        # Expression that matches the regex but fails at eval time
+        result = self.processor._safe_eval("1 2")
+        assert result == 0
+
+    def test_verbose_debug_output(self, capsys):
+        """Verbose mode prints debug info for directive handling."""
+        import stringzilla as sz
+
+        verbose_proc = SimplePreprocessor(
+            {sz.Str("X"): sz.Str("1")}, verbose=9
+        )
+        text = dedent("""
+            #ifdef X
+            line
+            #endif
+        """).strip()
+        file_result = self._create_file_analysis_result(text)
+        verbose_proc.process_structured(file_result)
+        out = capsys.readouterr().out
+        assert "#ifdef" in out
+        assert "#endif" in out
+
+    def test_verbose_define_undef(self, capsys):
+        """Verbose mode prints debug for #define and #undef."""
+        import stringzilla as sz
+
+        verbose_proc = SimplePreprocessor({}, verbose=9)
+        text = dedent("""
+            #define FOO 42
+            #undef FOO
+        """).strip()
+        file_result = self._create_file_analysis_result(text)
+        verbose_proc.process_structured(file_result)
+        out = capsys.readouterr().out
+        assert "defined macro FOO" in out
+        assert "undefined macro FOO" in out
+
+    def test_verbose_ifndef(self, capsys):
+        """Verbose mode prints debug for #ifndef."""
+        import stringzilla as sz
+
+        verbose_proc = SimplePreprocessor({}, verbose=9)
+        text = dedent("""
+            #ifndef GUARD
+            line
+            #endif
+        """).strip()
+        file_result = self._create_file_analysis_result(text)
+        verbose_proc.process_structured(file_result)
+        out = capsys.readouterr().out
+        assert "#ifndef" in out
+
+    def test_verbose_if_elif_else(self, capsys):
+        """Verbose mode prints debug for #if, #elif, #else."""
+        import stringzilla as sz
+
+        verbose_proc = SimplePreprocessor(
+            {sz.Str("V"): sz.Str("2")}, verbose=9
+        )
+        text = dedent("""
+            #if V == 1
+            a
+            #elif V == 2
+            b
+            #else
+            c
+            #endif
+        """).strip()
+        file_result = self._create_file_analysis_result(text)
+        verbose_proc.process_structured(file_result)
+        out = capsys.readouterr().out
+        assert "#if" in out
+        assert "#elif" in out
+        assert "#else" in out
+
+    def test_if_evaluation_failure_assumes_false(self):
+        """#if with unparseable expression should assume false."""
+        import stringzilla as sz
+
+        processor = SimplePreprocessor({}, verbose=0)
+        text = dedent("""
+            #if __has_cpp_attribute(nodiscard)
+            included
+            #endif
+        """).strip()
+        # __has_cpp_attribute isn't a known function, will fail to eval
+        file_result = self._create_file_analysis_result(text)
+        active_lines = processor.process_structured(file_result)
+        assert 1 not in active_lines  # 'included' line should not be active
+
+    def test_elif_evaluation_failure_assumes_false(self):
+        """#elif with unparseable expression should assume false."""
+        import stringzilla as sz
+
+        processor = SimplePreprocessor({}, verbose=0)
+        text = dedent("""
+            #if 0
+            a
+            #elif some_invalid_expr()
+            b
+            #else
+            c
+            #endif
+        """).strip()
+        file_result = self._create_file_analysis_result(text)
+        active_lines = processor.process_structured(file_result)
+        assert 3 not in active_lines  # 'b' should not be active
+        assert 5 in active_lines  # 'c' should be active
+
+    def test_if_no_condition(self):
+        """#if with no condition should assume false."""
+        from compiletools.file_analyzer import PreprocessorDirective
+
+        directive = PreprocessorDirective(
+            line_num=0, byte_pos=0, directive_type="if",
+            continuation_lines=0, condition=None, macro_name=None, macro_value=None,
+        )
+        condition_stack = [(True, False, False)]
+        self.processor._handle_if_structured(directive, condition_stack)
+        assert condition_stack[-1][0] is False
+
+    def test_elif_no_condition(self):
+        """#elif with no condition should assume false."""
+        from compiletools.file_analyzer import PreprocessorDirective
+
+        directive = PreprocessorDirective(
+            line_num=0, byte_pos=0, directive_type="elif",
+            continuation_lines=0, condition=None, macro_name=None, macro_value=None,
+        )
+        condition_stack = [(True, False, False), (False, False, False)]
+        self.processor._handle_elif_structured(directive, condition_stack)
+        assert condition_stack[-1][0] is False
+
+    def test_continuation_lines(self):
+        """Directives with continuation_lines should include continuation in active_lines."""
+        import stringzilla as sz
+
+        from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
+
+        # Simulate a #define with a continuation line
+        directive = PreprocessorDirective(
+            line_num=0, byte_pos=0, directive_type="define",
+            continuation_lines=1,
+            macro_name=sz.Str("MULTI"), macro_value=sz.Str("line1 line2"),
+            condition=None,
+        )
+        file_result = FileAnalysisResult(
+            line_count=3,
+            line_byte_offsets=[0, 20, 40],
+            include_positions=[], magic_positions=[],
+            directive_positions={"define": [0]},
+            directives=[directive],
+            directive_by_line={0: directive},
+            bytes_analyzed=60, was_truncated=False,
+            includes=[], defines=[], magic_flags=[],
+        )
+        active_lines = self.processor.process_structured(file_result)
+        assert 0 in active_lines  # directive line
+        assert 1 in active_lines  # continuation line
+        assert 2 in active_lines  # regular line
+
+    def test_include_guard_skipped(self):
+        """Include guard macro should not be added to macro state."""
+        import stringzilla as sz
+
+        processor = SimplePreprocessor({}, verbose=9)
+        text = dedent("""
+            #ifndef MY_HEADER_H
+            #define MY_HEADER_H
+            content
+            #endif
+        """).strip()
+        file_result = self._create_file_analysis_result(text)
+        file_result.include_guard = sz.Str("MY_HEADER_H")
+        processor.process_structured(file_result)
+        assert sz.Str("MY_HEADER_H") not in processor.macros
+
+    def test_unknown_directive_verbose(self, capsys):
+        """Unknown directive with verbose >= 8 prints debug."""
+        import stringzilla as sz
+
+        from compiletools.file_analyzer import PreprocessorDirective
+
+        verbose_proc = SimplePreprocessor({}, verbose=8)
+        directive = PreprocessorDirective(
+            line_num=0, byte_pos=0, directive_type="pragma",
+            continuation_lines=0, condition=None, macro_name=None, macro_value=None,
+        )
+        condition_stack = [(True, False, False)]
+        result = verbose_proc._handle_directive_structured(directive, condition_stack, 1)
+        assert result is False
+        out = capsys.readouterr().out
+        assert "Ignoring unknown directive" in out
+
+    def test_block_comment_with_content_after(self):
+        """Block comment followed by expression should work."""
+        import stringzilla as sz
+
+        result = self.processor._strip_comments_sz(sz.Str("/* comment */ 42"))
+        assert "42" in str(result)
+        assert "comment" not in str(result)
+
+    def test_multiple_block_comments(self):
+        """Multiple block comments in one expression."""
+        import stringzilla as sz
+
+        result = self.processor._strip_comments_sz(sz.Str("1 /* a */ + /* b */ 2"))
+        assert str(result) == "1 + 2"
+
+    def test_empty_block_comment_result(self):
+        """Block comment that leaves nothing."""
+        import stringzilla as sz
+
+        result = self.processor._strip_comments_sz(sz.Str("/* everything is a comment */"))
+        assert str(result) == ""
+
+
+class TestPrintPreprocessorStats:
+    """Test the print_preprocessor_stats diagnostic function."""
+
+    def test_print_stats(self, capsys):
+        from compiletools.simple_preprocessor import _stats, print_preprocessor_stats
+
+        # Save and restore stats
+        old_count = _stats["call_count"]
+        _stats["call_count"] = 42
+        try:
+            print_preprocessor_stats()
+            out = capsys.readouterr().out
+            assert "42" in out
+            assert "SimplePreprocessor" in out
+        finally:
+            _stats["call_count"] = old_count
+
+
 class TestMacroHashConsistency:
     """Unit tests for macro hash computation consistency (Phase 0)"""
 

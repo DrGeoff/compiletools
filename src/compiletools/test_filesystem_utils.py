@@ -1,5 +1,6 @@
 """Tests for filesystem_utils module."""
 
+import os
 import tempfile
 
 from compiletools.filesystem_utils import (
@@ -198,6 +199,206 @@ def test_atomic_output_file_exception_cleans_up(tmp_path):
     except ValueError:
         pass
     assert not os.path.exists(target)
+
+
+def test_get_filesystem_type_proc_mounts_unavailable(monkeypatch):
+    """Falls back when /proc/mounts is not available."""
+    import builtins
+
+    real_open = builtins.open
+
+    def fake_open(path, *args, **kwargs):
+        if str(path) == "/proc/mounts":
+            raise FileNotFoundError("no /proc/mounts")
+        return real_open(path, *args, **kwargs)
+
+    # Clear cache so we get a fresh call
+    get_filesystem_type.cache_clear()
+    monkeypatch.setattr(builtins, "open", fake_open)
+
+    # Also mock subprocess to return something
+    import subprocess
+
+    orig_run = subprocess.run
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[0] == "stat":
+            class FakeResult:
+                returncode = 0
+                stdout = "ext4\n"
+            return FakeResult()
+        return orig_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    fstype = get_filesystem_type("/tmp/test_fallback_path")
+    assert fstype == "ext4"
+    get_filesystem_type.cache_clear()
+
+
+def test_get_filesystem_type_all_fallbacks_fail(monkeypatch):
+    """Returns 'unknown' when all detection methods fail."""
+    import builtins
+
+    real_open = builtins.open
+
+    def fake_open(path, *args, **kwargs):
+        if str(path) == "/proc/mounts":
+            raise FileNotFoundError("no /proc/mounts")
+        return real_open(path, *args, **kwargs)
+
+    get_filesystem_type.cache_clear()
+    monkeypatch.setattr(builtins, "open", fake_open)
+
+    import subprocess
+
+    def fake_run(cmd, *args, **kwargs):
+        raise OSError("no stat")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    fstype = get_filesystem_type("/tmp/test_unknown_path")
+    assert fstype == "unknown"
+    get_filesystem_type.cache_clear()
+
+
+def test_get_filesystem_type_stat_nonzero_returncode(monkeypatch):
+    """Returns 'unknown' when stat command fails with non-zero return code."""
+    import builtins
+
+    real_open = builtins.open
+
+    def fake_open(path, *args, **kwargs):
+        if str(path) == "/proc/mounts":
+            raise PermissionError("denied")
+        return real_open(path, *args, **kwargs)
+
+    get_filesystem_type.cache_clear()
+    monkeypatch.setattr(builtins, "open", fake_open)
+
+    import subprocess
+
+    orig_run = subprocess.run
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[0] == "stat":
+            class FakeResult:
+                returncode = 1
+                stdout = ""
+            return FakeResult()
+        return orig_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    fstype = get_filesystem_type("/tmp/test_stat_fail_path")
+    assert fstype == "unknown"
+    get_filesystem_type.cache_clear()
+
+
+def test_atomic_write_creates_directory(tmp_path):
+    """atomic_write creates parent directory if it doesn't exist."""
+    target = str(tmp_path / "subdir" / "deep" / "out.txt")
+    atomic_write(target, "hello")
+    assert open(target).read() == "hello"
+
+
+def test_atomic_write_binary_with_str_content(tmp_path):
+    """atomic_write binary=True with str content encodes to UTF-8."""
+    target = str(tmp_path / "out.bin")
+    atomic_write(target, "hello", binary=True)
+    assert open(target, "rb").read() == b"hello"
+
+
+def test_atomic_write_text_with_bytes_content(tmp_path):
+    """atomic_write binary=False with bytes content writes bytes directly."""
+    target = str(tmp_path / "out.txt")
+    atomic_write(target, b"raw bytes", binary=False)
+    assert open(target, "rb").read() == b"raw bytes"
+
+
+def test_atomic_write_no_preserve_permissions(tmp_path):
+    """atomic_write with preserve_permissions=False skips permission copy."""
+    import os
+
+    target = str(tmp_path / "out.txt")
+    with open(target, "w") as f:
+        f.write("old")
+    os.chmod(target, 0o755)
+    atomic_write(target, "new", preserve_permissions=False)
+    assert open(target).read() == "new"
+
+
+def test_atomic_write_error_cleanup(tmp_path, monkeypatch):
+    """atomic_write cleans up temp file on write error."""
+    import os
+
+    target = str(tmp_path / "fail.txt")
+
+    # Monkey-patch os.write to fail after fd is opened
+    orig_write = os.write
+
+    def bad_write(fd, data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "write", bad_write)
+
+    try:
+        atomic_write(target, "data")
+    except OSError:
+        pass
+
+    # Target should not exist, and no temp files should remain
+    assert not os.path.exists(target)
+    # Check no temp files left
+    import glob
+    temps = glob.glob(str(tmp_path / ".tmp.*"))
+    assert len(temps) == 0
+
+
+def test_atomic_output_file_binary_mode(tmp_path):
+    """atomic_output_file works in binary mode."""
+    target = str(tmp_path / "out.bin")
+    with atomic_output_file(target, mode="wb") as f:
+        f.write(b"\x00\x01\x02")
+    assert open(target, "rb").read() == b"\x00\x01\x02"
+
+
+def test_atomic_output_file_creates_directory(tmp_path):
+    """atomic_output_file creates parent directory if missing."""
+    target = str(tmp_path / "newdir" / "out.txt")
+    with atomic_output_file(target) as f:
+        f.write("content")
+    assert open(target).read() == "content"
+
+
+def test_atomic_output_file_preserves_permissions(tmp_path):
+    """atomic_output_file preserves existing file permissions."""
+    import os
+    import stat
+
+    target = str(tmp_path / "perm.txt")
+    with open(target, "w") as f:
+        f.write("old")
+    os.chmod(target, 0o600)
+
+    with atomic_output_file(target) as f:
+        f.write("new")
+
+    mode = stat.S_IMODE(os.stat(target).st_mode)
+    assert mode == 0o600
+    assert open(target).read() == "new"
+
+
+def test_atomic_output_file_exception_cleans_up_binary(tmp_path):
+    """atomic_output_file cleans up temp file on exception in binary mode."""
+    import os
+
+    target = str(tmp_path / "fail.bin")
+    try:
+        with atomic_output_file(target, mode="wb") as f:
+            f.write(b"partial")
+            raise RuntimeError("deliberate")
+    except RuntimeError:
+        pass
+    assert not os.path.exists(target)
+
 
 
 def test_real_filesystem_detection():

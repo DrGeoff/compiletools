@@ -449,5 +449,405 @@ class TestCake(BaseCompileToolsTestCase):
 
             assert "platform_main" in actual_exes
 
+    def test_main_nothing_to_do(self):
+        """Test that main() returns 0 when there's nothing to do."""
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            # Explicitly disable --auto and provide no filenames → "Nothing for cake to do"
+            result = compiletools.cake.main(["--config=" + self._config_name, "--no-auto"])
+            assert result == 0
+
+    def test_main_oserror(self):
+        """Test that main() handles OSError and returns 1."""
+        from unittest.mock import patch
+
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            with patch("compiletools.cake.Cake.process", side_effect=OSError(2, "No such file", "missing.cpp")):
+                result = compiletools.cake.main(self._create_argv())
+                assert result == 1
+
+    def test_main_generic_exception(self):
+        """Test that main() handles generic exceptions and returns 1."""
+        from unittest.mock import patch
+
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            with patch("compiletools.cake.Cake.process", side_effect=RuntimeError("something broke")):
+                result = compiletools.cake.main(self._create_argv())
+                assert result == 1
+
+    def test_main_oserror_verbose_reraises(self):
+        """Test that main() re-raises OSError when verbose >= 2."""
+        from unittest.mock import patch
+
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            import pytest
+
+            with pytest.raises(OSError):
+                with patch(
+                    "compiletools.cake.Cake.process",
+                    side_effect=OSError(2, "No such file", "missing.cpp"),
+                ):
+                    compiletools.cake.main(self._create_argv() + ["-vvv"])
+
+    def test_main_generic_exception_verbose_reraises(self):
+        """Test that main() re-raises generic exceptions when verbose >= 2."""
+        from unittest.mock import patch
+
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            import pytest
+
+            with pytest.raises(RuntimeError, match="something broke"):
+                with patch(
+                    "compiletools.cake.Cake.process",
+                    side_effect=RuntimeError("something broke"),
+                ):
+                    compiletools.cake.main(self._create_argv() + ["-vvv"])
+
+    def test_signal_handler_exits(self):
+        """Test that signal_handler calls sys.exit(0)."""
+        import pytest
+
+        with pytest.raises(SystemExit) as exc_info:
+            compiletools.cake.signal_handler(None, None)
+        assert exc_info.value.code == 0
+
+    def test_hide_makefilename_moves_makefile(self):
+        """Test that _hide_makefilename moves the makefile into executable_dir."""
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            args = self._make_cake_args()
+            # Set verbose > 4 to cover the print branch
+            args.verbose = 5
+            args.makefilename = "Makefile"
+            compiletools.cake.Cake._hide_makefilename(args)
+            # makefilename should now include the executable dir
+            namer = compiletools.namer.Namer(args)
+            assert namer.executable_dir() in args.makefilename
+
+    def _make_cake_args(self, extra=None):
+        """Helper to create parsed args using cake.main's parser approach.
+        Mirrors the setup in cake.main().
+        """
+        if extra is None:
+            extra = []
+        argv = self._create_argv() + extra
+        uth.reset()
+        cap = compiletools.apptools.create_parser("test cake", argv=argv)
+        compiletools.cake.Cake.add_arguments(cap)
+        compiletools.cake.Cake.registercallback()
+        return compiletools.apptools.parseargs(cap, argv)
+
+    def test_copyexes_with_output_filename(self):
+        """Test _copyexes when args.output is set with a filename target."""
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            args = self._make_cake_args()
+            args.output = os.path.join(self._tmpdir, "myexe")
+            args.filename = ["test.cpp"]
+            args.static = None
+            args.dynamic = None
+            args.verbose = 1
+
+            cake = compiletools.cake.Cake(args)
+            cake._createctobjs()
+
+            # Create a fake executable to copy
+            src_exe = cake.namer.executable_pathname("test.cpp")
+            os.makedirs(os.path.dirname(src_exe), exist_ok=True)
+            with open(src_exe, "w") as f:
+                f.write("fake")
+
+            cake._copyexes()
+            assert os.path.exists(args.output)
+
+    def test_copyexes_with_output_static(self):
+        """Test _copyexes when args.output is set with a static library."""
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            args = self._make_cake_args()
+            args.output = os.path.join(self._tmpdir, "mylib.a")
+            args.filename = None
+            args.static = ["test.cpp"]
+            args.dynamic = None
+            args.verbose = 1
+
+            cake = compiletools.cake.Cake(args)
+            cake._createctobjs()
+
+            src_lib = cake.namer.staticlibrary_pathname()
+            os.makedirs(os.path.dirname(src_lib), exist_ok=True)
+            with open(src_lib, "w") as f:
+                f.write("fake")
+
+            cake._copyexes()
+            assert os.path.exists(args.output)
+
+    def test_copyexes_with_output_dynamic(self):
+        """Test _copyexes when args.output is set with a dynamic library."""
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            args = self._make_cake_args()
+            args.output = os.path.join(self._tmpdir, "mylib.so")
+            args.filename = None
+            args.static = None
+            args.dynamic = ["test.cpp"]
+            args.verbose = 1
+
+            cake = compiletools.cake.Cake(args)
+            cake._createctobjs()
+
+            src_lib = cake.namer.dynamiclibrary_pathname()
+            os.makedirs(os.path.dirname(src_lib), exist_ok=True)
+            with open(src_lib, "w") as f:
+                f.write("fake")
+
+            cake._copyexes()
+            assert os.path.exists(args.output)
+
+    def test_copyexes_no_output_static(self):
+        """Test _copyexes without output but with static library."""
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            args = self._make_cake_args()
+            args.output = None
+            args.filename = None
+            args.static = ["test.cpp"]
+            args.dynamic = None
+            args.verbose = 1
+
+            cake = compiletools.cake.Cake(args)
+            cake._createctobjs()
+
+            src_lib = cake.namer.staticlibrary_pathname()
+            os.makedirs(os.path.dirname(src_lib), exist_ok=True)
+            with open(src_lib, "w") as f:
+                f.write("fake")
+            outputdir = cake.namer.topbindir()
+            os.makedirs(outputdir, exist_ok=True)
+
+            cake._copyexes()
+            expected = os.path.join(outputdir, cake.namer.staticlibrary_name())
+            assert os.path.exists(expected)
+
+    def test_copyexes_no_output_dynamic(self):
+        """Test _copyexes without output but with dynamic library."""
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            args = self._make_cake_args()
+            args.output = None
+            args.filename = None
+            args.static = None
+            args.dynamic = ["test.cpp"]
+            args.verbose = 1
+
+            cake = compiletools.cake.Cake(args)
+            cake._createctobjs()
+
+            src_lib = cake.namer.dynamiclibrary_pathname()
+            os.makedirs(os.path.dirname(src_lib), exist_ok=True)
+            with open(src_lib, "w") as f:
+                f.write("fake")
+            outputdir = cake.namer.topbindir()
+            os.makedirs(outputdir, exist_ok=True)
+
+            cake._copyexes()
+            expected = os.path.join(outputdir, cake.namer.dynamiclibrary_name())
+            assert os.path.exists(expected)
+
+    def test_callfilelist(self):
+        """Test that _callfilelist actually invokes the filelist processor."""
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._create_source_files(["main.cpp", "extra.cpp", "extra.hpp"])
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            args = self._make_cake_args(["--filelist"])
+
+            cake = compiletools.cake.Cake(args)
+            cake._createctobjs()
+            # Should run without error and produce output
+            cake._callfilelist()
+
+    def test_call_compilation_database_skipped_on_clean(self):
+        """Test that _call_compilation_database returns early when clean is True."""
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            args = self._make_cake_args()
+            args.clean = True
+
+            cake = compiletools.cake.Cake(args)
+            cake._createctobjs()
+            # Should return early without error
+            cake._call_compilation_database()
+
+    def test_process_filelist_branch(self):
+        """Test that process() calls _callfilelist when args.filelist is set."""
+        from unittest.mock import patch
+
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._create_source_files(["main.cpp", "extra.cpp", "extra.hpp"])
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            args = self._make_cake_args(["--filelist"])
+
+            cake = compiletools.cake.Cake(args)
+            with patch.object(cake, "_callfilelist") as mock_filelist:
+                with patch.object(cake, "_callmakefile") as mock_makefile:
+                    cake.process()
+                    mock_filelist.assert_called_once()
+                    mock_makefile.assert_not_called()
+
+    def test_process_verbose_high(self):
+        """Test that process() prints debug messages when verbose > 4."""
+        from unittest.mock import patch
+
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._create_source_files(["main.cpp", "extra.cpp", "extra.hpp"])
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            args = self._make_cake_args(["-vvvvv"])
+
+            cake = compiletools.cake.Cake(args)
+            with patch.object(cake, "_callmakefile"):
+                with patch("builtins.print") as mock_print:
+                    cake.process()
+                    calls = [str(c) for c in mock_print.call_args_list]
+                    assert any("Early scanning" in c for c in calls)
+
+    def test_process_single_static_expands(self):
+        """Test that process() expands a single static library file."""
+        from unittest.mock import patch
+
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._create_source_files(["main.cpp", "extra.cpp", "extra.hpp"])
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            uth.reset()
+            argv = [
+                "--exemarkers=main",
+                "--testmarkers=unittest.hpp",
+                "--static",
+                os.path.join(self._tmpdir, "main.cpp"),
+                "--config=" + self._config_name,
+            ]
+            cap = compiletools.apptools.create_parser("test", argv=argv)
+            compiletools.cake.Cake.add_arguments(cap)
+            compiletools.cake.Cake.registercallback()
+            args = compiletools.apptools.parseargs(cap, argv)
+
+            cake = compiletools.cake.Cake(args)
+            with patch.object(cake, "_callmakefile"):
+                cake.process()
+                assert len(args.static) >= 1
+
+    def test_process_single_dynamic_expands(self):
+        """Test that process() expands a single dynamic library file."""
+        from unittest.mock import patch
+
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._create_source_files(["main.cpp", "extra.cpp", "extra.hpp"])
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            uth.reset()
+            argv = [
+                "--exemarkers=main",
+                "--testmarkers=unittest.hpp",
+                "--dynamic",
+                os.path.join(self._tmpdir, "main.cpp"),
+                "--config=" + self._config_name,
+            ]
+            cap = compiletools.apptools.create_parser("test", argv=argv)
+            compiletools.cake.Cake.add_arguments(cap)
+            compiletools.cake.Cake.registercallback()
+            args = compiletools.apptools.parseargs(cap, argv)
+
+            cake = compiletools.cake.Cake(args)
+            with patch.object(cake, "_callmakefile"):
+                cake.process()
+                assert len(args.dynamic) >= 1
+
     def teardown_method(self):
         uth.reset()

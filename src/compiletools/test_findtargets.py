@@ -1,7 +1,13 @@
 import os
+import sys
+import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import configargparse
 
+import compiletools.apptools
+import compiletools.configutils
 import compiletools.findtargets
 import compiletools.testhelper as uth
 import compiletools.utils
@@ -140,3 +146,164 @@ class TestFindTargetsStyles:
         assert " main.cpp" in out
         assert " --tests" in out
         assert " test.cpp" in out
+
+    def test_args_style_no_tests(self, capsys):
+        """Test ArgsStyle with no test targets."""
+        style = compiletools.findtargets.ArgsStyle()
+        style(["main.cpp"], [])
+        out = capsys.readouterr().out
+        assert " main.cpp" in out
+        assert "--tests" not in out
+
+    def test_args_style_no_exes(self, capsys):
+        """Test ArgsStyle with no executable targets."""
+        style = compiletools.findtargets.ArgsStyle()
+        style([], ["test.cpp"])
+        out = capsys.readouterr().out
+        assert "--tests" in out
+        assert " test.cpp" in out
+
+    def test_null_style(self, capsys):
+        """Test NullStyle output."""
+        style = compiletools.findtargets.NullStyle()
+        style(["a.cpp"], ["b.cpp"])
+        out = capsys.readouterr().out
+        assert "a.cpp" in out
+        assert "b.cpp" in out
+
+
+class TestFindTargetsProcess:
+    """Test FindTargets.process method."""
+
+    def setup_method(self):
+        uth.reset()
+
+    def teardown_method(self):
+        uth.reset()
+
+    def test_process_populates_args(self):
+        """Test that process() adds targets to args.filename and args.tests."""
+        config_files = compiletools.configutils.config_files_from_variant(exedir=uth.cakedir(), argv=[])
+        cap = configargparse.getArgumentParser(
+            description="TestFindTargetsProcess",
+            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+            default_config_files=config_files,
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
+        compiletools.findtargets.add_arguments(cap)
+        argv = ["--shorten"]
+        args = compiletools.apptools.parseargs(cap, argv=argv)
+        findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir())
+
+        # Set up args for process()
+        args.filename = []
+        args.tests = None
+        findtargets.process(args, path=uth.cakedir())
+        # Should have found some executables and tests
+        assert len(args.filename) > 0
+        assert args.tests is not None
+        assert len(args.tests) > 0
+
+    def test_process_verbose(self):
+        """Test that process() with verbose >= 2 prints style output."""
+        config_files = compiletools.configutils.config_files_from_variant(exedir=uth.cakedir(), argv=[])
+        cap = configargparse.getArgumentParser(
+            description="TestFindTargetsProcessVerbose",
+            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+            default_config_files=config_files,
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
+        compiletools.findtargets.add_arguments(cap)
+        argv = ["--shorten"]
+        args = compiletools.apptools.parseargs(cap, argv=argv)
+        args.verbose = 2
+        findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir())
+
+        args.filename = []
+        args.tests = None
+        # Should not raise
+        findtargets.process(args, path=uth.cakedir())
+
+
+class TestFindTargetsNoExemarkers:
+    """Test FindTargets behavior when exemarkers is None."""
+
+    def setup_method(self):
+        uth.reset()
+
+    def teardown_method(self):
+        uth.reset()
+
+    def test_no_exemarkers_exits(self):
+        """Test that None exemarkers causes sys.exit(1)."""
+        config_files = compiletools.configutils.config_files_from_variant(exedir=uth.cakedir(), argv=[])
+        cap = configargparse.getArgumentParser(
+            description="TestNoExemarkers",
+            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+            default_config_files=config_files,
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
+        compiletools.findtargets.add_arguments(cap)
+        argv = ["--shorten"]
+        args = compiletools.apptools.parseargs(cap, argv=argv)
+        args.exemarkers = None  # Force None
+        findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir())
+        try:
+            findtargets()
+            assert False, "Should have called sys.exit"
+        except SystemExit as e:
+            assert e.code == 1
+
+
+class TestFindTargetsOsWalkFallback:
+    """Test FindTargets os.walk fallback for non-git directories."""
+
+    def setup_method(self):
+        uth.reset()
+
+    def teardown_method(self):
+        uth.reset()
+
+    def test_walk_fallback(self):
+        """Test the os.walk fallback when get_tracked_files returns empty."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a source file with main(
+            src = os.path.join(tmpdir, "hello.cpp")
+            with open(src, "w") as f:
+                f.write('#include <iostream>\nint main() { return 0; }\n')
+
+            config_files = compiletools.configutils.config_files_from_variant(exedir=uth.cakedir(), argv=[])
+            cap = configargparse.getArgumentParser(
+                description="TestWalkFallback",
+                formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+                default_config_files=config_files,
+                args_for_setting_config_path=["-c", "--config"],
+                ignore_unknown_config_file_keys=True,
+            )
+            compiletools.findtargets.add_arguments(cap)
+            argv = ["--shorten"]
+            args = compiletools.apptools.parseargs(cap, argv=argv)
+            findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir())
+
+            # Mock get_tracked_files to return empty dict (non-git)
+            with patch("compiletools.global_hash_registry.get_tracked_files", return_value={}):
+                exes, tests = findtargets(path=tmpdir)
+                # Should find our file as an executable
+                assert any("hello.cpp" in e for e in exes)
+
+
+class TestFindTargetsMain:
+    """Test findtargets.main() entry point."""
+
+    def setup_method(self):
+        uth.reset()
+
+    def teardown_method(self):
+        uth.reset()
+
+    def test_main_runs(self):
+        """Test main() runs without error."""
+        result = compiletools.findtargets.main(argv=["--style=flat", "--shorten"])
