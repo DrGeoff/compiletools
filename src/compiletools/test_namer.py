@@ -254,51 +254,53 @@ def test_source_magic_produces_different_hash_with_different_flags():
         import compiletools.magicflags
         import compiletools.preprocessing_cache
 
-        src = uth.write_sources(
-            {
-                "main.cpp": "//#SOURCE=helper.cpp\nint main() { return 0; }\n",
-                "helper.cpp": "void helper() {}\n",
-            }
-        )
-        main_file = str(src["main.cpp"])
-        helper_file = str(src["helper.cpp"])
+        with tempfile.TemporaryDirectory() as srcdir:
+            src = uth.write_sources(
+                {
+                    "main.cpp": "//#SOURCE=helper.cpp\nint main() { return 0; }\n",
+                    "helper.cpp": "void helper() {}\n",
+                },
+                target_dir=srcdir,
+            )
+            main_file = str(src["main.cpp"])
+            helper_file = str(src["helper.cpp"])
 
-        def create_hunter_with_cppflags(cppflags_value):
-            """Create a Hunter instance with specific CPPFLAGS."""
-            cap = configargparse.getArgumentParser()
-            compiletools.hunter.add_arguments(cap)
-            argv = [f"--append-CPPFLAGS={cppflags_value}", "-q"]
-            args = compiletools.apptools.parseargs(cap, argv)
-            hdeps = compiletools.headerdeps.create(args)
-            magic = compiletools.magicflags.create(args, hdeps)
-            return compiletools.hunter.Hunter(args, hdeps, magic), magic
+            def create_hunter_with_cppflags(cppflags_value):
+                """Create a Hunter instance with specific CPPFLAGS."""
+                cap = configargparse.getArgumentParser()
+                compiletools.hunter.add_arguments(cap)
+                argv = [f"--append-CPPFLAGS={cppflags_value}", "-q"]
+                args = compiletools.apptools.parseargs(cap, argv)
+                hdeps = compiletools.headerdeps.create(args)
+                magic = compiletools.magicflags.create(args, hdeps)
+                return compiletools.hunter.Hunter(args, hdeps, magic), magic
 
-        # Config 1: trigger _extractSOURCE via required_source_files
-        hunter1, magic1 = create_hunter_with_cppflags("-I/opt/libfoo/v1/include")
-        sources1 = hunter1.required_source_files(main_file)
-        assert any(f.endswith("helper.cpp") for f in sources1), (
-            f"Hunter should expand //#SOURCE=helper.cpp, got: {sources1}"
-        )
-        hash1_main = magic1.get_final_macro_state_hash(main_file)
-        hash1_helper = magic1.get_final_macro_state_hash(helper_file)
+            # Config 1: trigger _extractSOURCE via required_source_files
+            hunter1, magic1 = create_hunter_with_cppflags("-I/opt/libfoo/v1/include")
+            sources1 = hunter1.required_source_files(main_file)
+            assert any(f.endswith("helper.cpp") for f in sources1), (
+                f"Hunter should expand //#SOURCE=helper.cpp, got: {sources1}"
+            )
+            hash1_main = magic1.get_final_macro_state_hash(main_file)
+            hash1_helper = magic1.get_final_macro_state_hash(helper_file)
 
-        # Clear caches between configurations
-        compiletools.hunter.Hunter.clear_cache()
-        compiletools.preprocessing_cache.clear_cache()
+            # Clear caches between configurations
+            compiletools.hunter.Hunter.clear_cache()
+            compiletools.preprocessing_cache.clear_cache()
 
-        # Config 2: same files, different CPPFLAGS
-        hunter2, magic2 = create_hunter_with_cppflags("-I/opt/libfoo/v2/include")
-        hunter2.required_source_files(main_file)
-        hash2_main = magic2.get_final_macro_state_hash(main_file)
-        hash2_helper = magic2.get_final_macro_state_hash(helper_file)
+            # Config 2: same files, different CPPFLAGS
+            hunter2, magic2 = create_hunter_with_cppflags("-I/opt/libfoo/v2/include")
+            hunter2.required_source_files(main_file)
+            hash2_main = magic2.get_final_macro_state_hash(main_file)
+            hash2_helper = magic2.get_final_macro_state_hash(helper_file)
 
-        assert hash1_main != hash2_main, (
-            f"Different CPPFLAGS must produce different hash for main: {hash1_main} vs {hash2_main}"
-        )
-        assert hash1_helper != hash2_helper, (
-            f"Different CPPFLAGS must produce different hash for SOURCE-expanded helper: "
-            f"{hash1_helper} vs {hash2_helper}"
-        )
+            assert hash1_main != hash2_main, (
+                f"Different CPPFLAGS must produce different hash for main: {hash1_main} vs {hash2_main}"
+            )
+            assert hash1_helper != hash2_helper, (
+                f"Different CPPFLAGS must produce different hash for SOURCE-expanded helper: "
+                f"{hash1_helper} vs {hash2_helper}"
+            )
 
     finally:
         uth.reset()
@@ -313,52 +315,56 @@ def test_different_cppflags_produce_different_object_names():
         import compiletools.preprocessing_cache
         import compiletools.test_base as tb
 
-        # Create a source file
-        src = uth.write_sources({"test_objname.cpp": "int main() { return 0; }\n"})
-        source_file = str(src["test_objname.cpp"])
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Build two magicflag parsers with different CPPFLAGS
-            parser1 = tb.create_magic_parser(
-                ["--magic=direct", "--append-CPPFLAGS=-I/opt/libfoo/v1/include"], tempdir=tmpdir
+        # Create a source file in a temp directory
+        with tempfile.TemporaryDirectory() as srcdir:
+            src = uth.write_sources(
+                {"test_objname.cpp": "int main() { return 0; }\n"},
+                target_dir=srcdir,
             )
-            parser1.parse(source_file)
-            hash1 = parser1.get_final_macro_state_hash(source_file)
+            source_file = str(src["test_objname.cpp"])
 
-            compiletools.preprocessing_cache.clear_cache()
-            parser2 = tb.create_magic_parser(
-                ["--magic=direct", "--append-CPPFLAGS=-I/opt/libfoo/v2/include"], tempdir=tmpdir
+            with tempfile.TemporaryDirectory() as tmpdir:
+                # Build two magicflag parsers with different CPPFLAGS
+                parser1 = tb.create_magic_parser(
+                    ["--magic=direct", "--append-CPPFLAGS=-I/opt/libfoo/v1/include"], tempdir=tmpdir
+                )
+                parser1.parse(source_file)
+                hash1 = parser1.get_final_macro_state_hash(source_file)
+
+                compiletools.preprocessing_cache.clear_cache()
+                parser2 = tb.create_magic_parser(
+                    ["--magic=direct", "--append-CPPFLAGS=-I/opt/libfoo/v2/include"], tempdir=tmpdir
+                )
+                parser2.parse(source_file)
+                hash2 = parser2.get_final_macro_state_hash(source_file)
+
+                assert hash1 != hash2, f"Different CPPFLAGS must produce different macro_state_hash: {hash1} vs {hash2}"
+
+            # Reset parser state before creating namer's parser
+            uth.reset()
+
+            # Setup namer
+            config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
+            config_files = [os.path.join(config_dir, "gcc.debug.conf")]
+            cap = configargparse.getArgumentParser(
+                description="TestNamerCPPFLAGS",
+                formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+                default_config_files=config_files,
+                args_for_setting_config_path=["-c", "--config"],
+                ignore_unknown_config_file_keys=True,
             )
-            parser2.parse(source_file)
-            hash2 = parser2.get_final_macro_state_hash(source_file)
+            argv = ["--no-git-root"]
+            compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
+            compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
+            args = compiletools.apptools.parseargs(cap, argv)
+            namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug")
 
-            assert hash1 != hash2, f"Different CPPFLAGS must produce different macro_state_hash: {hash1} vs {hash2}"
+            dep_hash = namer.compute_dep_hash([])
 
-        # Reset parser state before creating namer's parser
-        uth.reset()
+            obj1 = namer.object_pathname(source_file, hash1, dep_hash)
+            obj2 = namer.object_pathname(source_file, hash2, dep_hash)
 
-        # Setup namer
-        config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
-        config_files = [os.path.join(config_dir, "gcc.debug.conf")]
-        cap = configargparse.getArgumentParser(
-            description="TestNamerCPPFLAGS",
-            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-            default_config_files=config_files,
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-        argv = ["--no-git-root"]
-        compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
-        compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
-        args = compiletools.apptools.parseargs(cap, argv)
-        namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug")
-
-        dep_hash = namer.compute_dep_hash([])
-
-        obj1 = namer.object_pathname(source_file, hash1, dep_hash)
-        obj2 = namer.object_pathname(source_file, hash2, dep_hash)
-
-        assert obj1 != obj2, f"Different CPPFLAGS must produce different object paths: {obj1} vs {obj2}"
+            assert obj1 != obj2, f"Different CPPFLAGS must produce different object paths: {obj1} vs {obj2}"
 
     finally:
         uth.reset()
