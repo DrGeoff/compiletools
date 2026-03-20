@@ -18,6 +18,7 @@ import compiletools.magicflags
 import compiletools.makefile
 import compiletools.makefile_backend
 import compiletools.ninja_backend
+import compiletools.shake_backend  # noqa: F401 — ensure registered
 import compiletools.testhelper as uth
 import compiletools.utils
 from compiletools.build_backend import available_backends, get_backend_class
@@ -26,6 +27,8 @@ from compiletools.test_base import BaseCompileToolsTestCase
 
 def _backend_tool_available(backend_name):
     """Check if the build tool for a backend is on PATH."""
+    if backend_name == "shake":
+        return True  # Self-executing, no external tool needed
     tool = {"make": "make", "ninja": "ninja"}.get(backend_name)
     if tool is None:
         return False
@@ -93,30 +96,35 @@ class TestBackendBuildApplication(BaseCompileToolsTestCase):
             assert any(r.output == "build" for r in phony_rules), f"{backend_name}: expected 'build' phony"
             assert any(r.output == "all" for r in phony_rules), f"{backend_name}: expected 'all' phony"
 
-            # Generate the build file
+            # Generate and execute the build
             objdir = args.objdir
             bindir = args.bindir
             os.makedirs(objdir, exist_ok=True)
             os.makedirs(bindir, exist_ok=True)
-            build_file = os.path.join(str(tmp_path), type(backend).build_filename())
-            with open(build_file, "w") as f:
-                backend.generate(graph, output=f)
 
-            assert os.path.exists(build_file), f"{backend_name}: build file not created"
-
-            # Execute the build
-            if backend_name == "make":
-                cmd = ["make", "-s", "-j1", "-f", build_file, "build"]
-            elif backend_name == "ninja":
-                cmd = ["ninja", "-f", build_file, "build"]
+            if backend_name == "shake":
+                # Self-executing backend — no external build file needed
+                backend.generate(graph)
+                backend.execute("build")
             else:
-                pytest.skip(f"Don't know how to invoke {backend_name}")
+                build_file = os.path.join(str(tmp_path), type(backend).build_filename())
+                with open(build_file, "w") as f:
+                    backend.generate(graph, output=f)
 
-            result = subprocess.run(cmd, cwd=str(tmp_path), capture_output=True, text=True, timeout=30)
-            assert result.returncode == 0, (
-                f"{backend_name} build failed (rc={result.returncode}):\n"
-                f"stdout: {result.stdout}\nstderr: {result.stderr}"
-            )
+                assert os.path.exists(build_file), f"{backend_name}: build file not created"
+
+                if backend_name == "make":
+                    cmd = ["make", "-s", "-j1", "-f", build_file, "build"]
+                elif backend_name == "ninja":
+                    cmd = ["ninja", "-f", build_file, "build"]
+                else:
+                    pytest.skip(f"Don't know how to invoke {backend_name}")
+
+                result = subprocess.run(cmd, cwd=str(tmp_path), capture_output=True, text=True, timeout=30)
+                assert result.returncode == 0, (
+                    f"{backend_name} build failed (rc={result.returncode}):\n"
+                    f"stdout: {result.stdout}\nstderr: {result.stderr}"
+                )
 
             # Verify an executable was produced
             src_file = "helloworld_cpp.cpp"

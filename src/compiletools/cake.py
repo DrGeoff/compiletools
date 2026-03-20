@@ -14,8 +14,12 @@ import compiletools.hunter
 import compiletools.jobs
 import compiletools.magicflags
 import compiletools.makefile
+import compiletools.makefile_backend  # noqa: F401 — ensure registered
+import compiletools.ninja_backend  # noqa: F401 — ensure registered
+import compiletools.shake_backend  # noqa: F401 — ensure registered
 import compiletools.utils
 import compiletools.wrappedos
+from compiletools.build_backend import available_backends
 
 
 class Cake:
@@ -122,7 +126,7 @@ class Cake:
         cap.add(
             "--backend",
             default="make",
-            choices=["make"],
+            choices=available_backends(),
             help="Build system backend to use (default: make).",
         )
 
