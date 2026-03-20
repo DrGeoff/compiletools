@@ -1,6 +1,9 @@
 import compiletools.makefile_backend  # noqa: F401 — ensure registered
 import compiletools.ninja_backend  # noqa: F401 — ensure registered
 import compiletools.shake_backend  # noqa: F401 — ensure registered
+import compiletools.bazel_backend  # noqa: F401 — ensure registered
+import compiletools.cmake_backend  # noqa: F401 — ensure registered
+import compiletools.tup_backend  # noqa: F401 — ensure registered
 from compiletools.build_backend import available_backends, get_backend_class
 
 
@@ -14,3 +17,6 @@ class TestBackendCLIArg:
         assert "make" in backends
         assert "ninja" in backends
         assert "shake" in backends
+        assert "bazel" in backends
+        assert "cmake" in backends
+        assert "tup" in backends
