@@ -17,6 +17,9 @@ import compiletools.makefile
 import compiletools.makefile_backend  # noqa: F401 — ensure registered
 import compiletools.ninja_backend  # noqa: F401 — ensure registered
 import compiletools.shake_backend  # noqa: F401 — ensure registered
+import compiletools.bazel_backend  # noqa: F401 — ensure registered
+import compiletools.cmake_backend  # noqa: F401 — ensure registered
+import compiletools.tup_backend  # noqa: F401 — ensure registered
 import compiletools.utils
 import compiletools.wrappedos
 from compiletools.build_backend import available_backends
