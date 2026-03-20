@@ -1,0 +1,186 @@
+"""Abstract base class for build backends.
+
+A BuildBackend knows how to:
+1. Take a BuildGraph (backend-agnostic) and produce a native build file
+   (Makefile, build.ninja, CMakeLists.txt, etc.)
+2. Execute the build using the native tool (make, ninja, cmake --build, etc.)
+
+The base class provides `build_graph()` which populates a BuildGraph from the
+Hunter/Namer dependency data. This is the shared logic across all backends.
+"""
+
+from __future__ import annotations
+
+import abc
+
+import stringzilla as sz
+
+import compiletools.namer
+import compiletools.utils
+import compiletools.wrappedos
+from compiletools.build_graph import BuildGraph, BuildRule
+
+
+class BuildBackend(abc.ABC):
+    """Abstract base class for build system backends."""
+
+    def __init__(self, args, hunter):
+        self.args = args
+        self.hunter = hunter
+        self.namer = compiletools.namer.Namer(args)
+
+    @staticmethod
+    @abc.abstractmethod
+    def name() -> str:
+        """Short identifier for this backend (e.g., 'make', 'ninja')."""
+
+    @staticmethod
+    @abc.abstractmethod
+    def build_filename() -> str:
+        """Default output filename (e.g., 'Makefile', 'build.ninja')."""
+
+    @abc.abstractmethod
+    def generate(self, graph: BuildGraph) -> None:
+        """Write the native build file from the given BuildGraph."""
+
+    @abc.abstractmethod
+    def execute(self, target: str = "build") -> None:
+        """Invoke the native build tool to execute the build."""
+
+    def build_graph(self) -> BuildGraph:
+        """Populate a BuildGraph from hunter/namer data.
+
+        This is the backend-agnostic logic shared by all backends.
+        Subclasses call this, then pass the result to generate().
+        """
+        self.hunter.huntsource()
+        graph = BuildGraph()
+
+        # Gather all root sources
+        all_sources = []
+        if self.args.filename:
+            all_sources.extend(self.args.filename)
+        if self.args.tests:
+            all_sources.extend(self.args.tests)
+
+        if not all_sources and not self.args.static and not self.args.dynamic:
+            return graph
+
+        # Collect all source files that need compile rules
+        all_compile_sources = set()
+        for source in all_sources:
+            complete = self.hunter.required_source_files(source)
+            all_compile_sources.update(complete)
+
+        # Create compile rules
+        for filename in all_compile_sources:
+            rule = self._create_compile_rule(filename)
+            graph.add_rule(rule)
+
+        # Create link rules for executables
+        if self.args.filename:
+            for source in self.args.filename:
+                rule = self._create_link_rule(source)
+                graph.add_rule(rule)
+
+        # Create phony targets
+        build_deps = []
+        if self.args.filename:
+            build_deps.extend(
+                self.namer.executable_pathname(compiletools.wrappedos.realpath(s)) for s in self.args.filename
+            )
+        graph.add_rule(BuildRule(output="build", inputs=build_deps, command=None, rule_type="phony"))
+        all_deps = ["build"]
+        graph.add_rule(BuildRule(output="all", inputs=all_deps, command=None, rule_type="phony"))
+
+        return graph
+
+    def _create_compile_rule(self, filename: str) -> BuildRule:
+        """Create a compile BuildRule for a single source file."""
+        deplist = self.hunter.header_dependencies(filename)
+        prerequisites = [filename] + sorted([str(dep) for dep in deplist])
+
+        magicflags = self.hunter.magicflags(filename)
+        macro_state_hash = self.hunter.macro_state_hash(filename)
+        dep_hash = self.namer.compute_dep_hash(deplist)
+        obj_name = self.namer.object_pathname(filename, macro_state_hash, dep_hash)
+
+        magic_cpp_flags = magicflags.get(sz.Str("CPPFLAGS"), [])
+        if compiletools.utils.is_c_source(filename):
+            magic_c_flags = magicflags.get(sz.Str("CFLAGS"), [])
+            compile_cmd = (
+                [self.args.CC, self.args.CFLAGS]
+                + [str(flag) for flag in magic_cpp_flags]
+                + [str(flag) for flag in magic_c_flags]
+            )
+        else:
+            magic_cxx_flags = magicflags.get(sz.Str("CXXFLAGS"), [])
+            compile_cmd = (
+                [self.args.CXX, self.args.CXXFLAGS]
+                + [str(flag) for flag in magic_cpp_flags]
+                + [str(flag) for flag in magic_cxx_flags]
+            )
+
+        compile_cmd.extend(["-c", filename, "-o", obj_name])
+
+        return BuildRule(
+            output=obj_name,
+            inputs=prerequisites,
+            command=compile_cmd,
+            rule_type="compile",
+            order_only_deps=[self.args.objdir],
+        )
+
+    def _create_link_rule(self, source: str) -> BuildRule:
+        """Create a link BuildRule for a source file (executable target)."""
+        completesources = self.hunter.required_source_files(source)
+        exename = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
+
+        object_names = compiletools.utils.ordered_unique(
+            [
+                self.namer.object_pathname(
+                    s,
+                    self.hunter.macro_state_hash(s),
+                    self.namer.compute_dep_hash(self.hunter.header_dependencies(s)),
+                )
+                for s in completesources
+            ]
+        )
+
+        all_magic_ldflags = []
+        for s in completesources:
+            magic_flags = self.hunter.magicflags(s)
+            all_magic_ldflags.extend(magic_flags.get(sz.Str("LDFLAGS"), []))
+
+        link_cmd = [self.args.LD, "-o", exename] + list(object_names) + [str(f) for f in all_magic_ldflags]
+        if self.args.LDFLAGS:
+            link_cmd.append(self.args.LDFLAGS)
+
+        return BuildRule(
+            output=exename,
+            inputs=list(object_names),
+            command=link_cmd,
+            rule_type="link",
+        )
+
+
+_REGISTRY: dict[str, type[BuildBackend]] = {}
+
+
+def register_backend(cls: type[BuildBackend]) -> type[BuildBackend]:
+    """Register a backend class. Can be used as a decorator."""
+    _REGISTRY[cls.name()] = cls
+    return cls
+
+
+def get_backend_class(name: str) -> type[BuildBackend]:
+    """Look up a backend class by name. Raises ValueError if not found."""
+    if name not in _REGISTRY:
+        available = ", ".join(sorted(_REGISTRY.keys())) or "(none)"
+        raise ValueError(f"Unknown backend '{name}'. Available: {available}")
+    return _REGISTRY[name]
+
+
+def available_backends() -> list[str]:
+    """Return sorted list of registered backend names."""
+    return sorted(_REGISTRY.keys())

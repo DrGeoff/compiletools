@@ -120,6 +120,13 @@ class Cake:
         cap.add("--clean", action="store_true", help="Aggressively cleanup.")
 
         cap.add(
+            "--backend",
+            default="make",
+            choices=["make"],
+            help="Build system backend to use (default: make).",
+        )
+
+        cap.add(
             "-o",
             "--output",
             help="When there is only a single build product, rename it to this name.",
