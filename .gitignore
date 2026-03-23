@@ -4,6 +4,17 @@
 # Build files
 *.[oa]
 bin/
+compile_commands.json
+
+# Backend build artifacts
+build.ninja
+bazel-*/
+MODULE.bazel
+MODULE.bazel.lock
+WORKSPACE
+BUILD.bazel
+cmake-build/
+Tupfile
 
 # Text editor backups
 *~
