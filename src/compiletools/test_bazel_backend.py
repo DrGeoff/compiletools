@@ -185,8 +185,9 @@ class TestCoptsExtraction:
         assert _extract_copts([]) == []
 
     def test_complex_flags(self):
+        # -I flags are filtered out since Bazel manages includes itself
         cmd = ["g++", "-Wall", "-Wextra", "-I/usr/include", "-c", "x.cpp", "-o", "x.o"]
-        assert _extract_copts(cmd) == ["-Wall", "-Wextra", "-I/usr/include"]
+        assert _extract_copts(cmd) == ["-Wall", "-Wextra"]
 
 
 class TestLinkoptsExtraction:
