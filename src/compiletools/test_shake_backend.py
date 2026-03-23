@@ -19,6 +19,7 @@ from compiletools.shake_backend import (
     TraceEntry,
     TraceStore,
     _compute_file_hash,
+    _is_content_addressable,
 )
 
 # ---------------------------------------------------------------------------
@@ -133,7 +134,8 @@ class TestTraceVerification:
         return graph
 
     def test_verify_passes_when_hashes_match(self, tmp_path):
-        """If input hashes and command hash match the trace, skip rebuild."""
+        """Compile rule with existing output is skipped via content-addressable
+        short-circuit (os.path.exists), not trace verification."""
         os.chdir(tmp_path)
         # Create source and object files
         (tmp_path / "foo.cpp").write_text("int main() {}")
@@ -173,13 +175,24 @@ class TestTraceVerification:
             mock_sub.run.assert_not_called()
 
     def test_verify_fails_on_input_hash_change(self, tmp_path):
-        """If an input file changed, rebuild."""
+        """If an input file changed, rebuild (uses link rule to test trace verification,
+        since compile rules bypass traces via content-addressable short-circuit)."""
         os.chdir(tmp_path)
         (tmp_path / "foo.cpp").write_text("int main() { return 1; }")
         (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
         os.makedirs(tmp_path / "obj", exist_ok=True)
 
-        graph = self._make_graph_with_compile()
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="foo.o",
+                inputs=["foo.cpp"],
+                command=["g++", "-c", "foo.cpp", "-o", "foo.o"],
+                rule_type="link",
+                order_only_deps=["obj"],
+            )
+        )
+        graph.add_rule(BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony"))
         cmd = ["g++", "-c", "foo.cpp", "-o", "foo.o"]
 
         # Pre-populate trace with OLD source hash
@@ -215,13 +228,24 @@ class TestTraceVerification:
             mock_sub.run.assert_called_once()
 
     def test_verify_fails_on_command_hash_change(self, tmp_path):
-        """If the command changed, rebuild."""
+        """If the command changed, rebuild (uses link rule to test trace verification,
+        since compile rules bypass traces via content-addressable short-circuit)."""
         os.chdir(tmp_path)
         (tmp_path / "foo.cpp").write_text("int main() {}")
         (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
         os.makedirs(tmp_path / "obj", exist_ok=True)
 
-        graph = self._make_graph_with_compile()
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="foo.o",
+                inputs=["foo.cpp"],
+                command=["g++", "-c", "foo.cpp", "-o", "foo.o"],
+                rule_type="link",
+                order_only_deps=["obj"],
+            )
+        )
+        graph.add_rule(BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony"))
         source_hash = _compute_file_hash(str(tmp_path / "foo.cpp"))
         obj_hash = _compute_file_hash(str(tmp_path / "foo.o"))
 
@@ -258,7 +282,8 @@ class TestTraceVerification:
             mock_sub.run.assert_called_once()
 
     def test_verify_fails_on_added_input(self, tmp_path):
-        """If the input set changed (new input added), rebuild."""
+        """If the input set changed (new input added), rebuild (uses link rule to test
+        trace verification, since compile rules bypass traces via short-circuit)."""
         os.chdir(tmp_path)
         (tmp_path / "foo.cpp").write_text("int main() {}")
         (tmp_path / "foo.h").write_text("// header")
@@ -272,7 +297,7 @@ class TestTraceVerification:
                 output="foo.o",
                 inputs=["foo.cpp", "foo.h"],
                 command=["g++", "-c", "foo.cpp", "-o", "foo.o"],
-                rule_type="compile",
+                rule_type="link",
                 order_only_deps=["obj"],
             )
         )
@@ -321,7 +346,8 @@ class TestTraceVerification:
 
 class TestEarlyCutoff:
     def test_identical_output_skips_dependent(self, tmp_path):
-        """If a compile produces byte-identical output, the link step is skipped."""
+        """Content-addressable short-circuit: foo.o exists → compile skipped
+        (returns False). Link trace is valid → link also skipped. No subprocess calls."""
         os.chdir(tmp_path)
         (tmp_path / "foo.cpp").write_text("int main() { return 0; }")
         obj_content = b"\x7fELF fake object"
@@ -349,8 +375,7 @@ class TestEarlyCutoff:
         )
         graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
 
-        # Trace for foo.o with OLD source hash (triggers rebuild)
-        # Trace for foo with current obj hash
+        # Trace for foo with current obj and exe hashes
         trace_path = str(tmp_path / ".ct-traces.json")
         store = TraceStore(trace_path)
         obj_hash = _compute_file_hash(str(tmp_path / "foo.o"))
@@ -374,30 +399,18 @@ class TestEarlyCutoff:
         backend.args = args
         backend._graph = graph
 
-        # Compile subprocess writes same bytes (early cutoff)
-        def fake_run(cmd, **kwargs):
-            if "-c" in cmd:
-                (tmp_path / "foo.o").write_bytes(obj_content)  # identical
-            result = mock.MagicMock()
-            result.returncode = 0
-            result.stdout = ""
-            result.stderr = ""
-            return result
-
         with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
-            mock_sub.run.side_effect = fake_run
             mock_sub.CalledProcessError = subprocess.CalledProcessError
             backend.execute("build")
-            # Compile called, but link NOT called (early cutoff)
-            assert mock_sub.run.call_count == 1
-            called_cmd = mock_sub.run.call_args[0][0]
-            assert "-c" in called_cmd
+            # Compile skipped (content-addressable, foo.o exists),
+            # link skipped (trace valid, no input changed)
+            assert mock_sub.run.call_count == 0
 
     def test_different_output_rebuilds_dependent(self, tmp_path):
-        """If compile output changes, link step runs."""
+        """If compile executes (object didn't exist), link step runs too."""
         os.chdir(tmp_path)
         (tmp_path / "foo.cpp").write_text("int main() { return 1; }")
-        (tmp_path / "foo.o").write_bytes(b"\x7fELF old object")
+        # foo.o intentionally NOT created — forces compile to run
         (tmp_path / "foo").write_bytes(b"\x7fELF old executable")
         os.makedirs(tmp_path / "obj", exist_ok=True)
 
@@ -565,9 +578,7 @@ class TestParallelExecution:
                 order_only_deps=["obj"],
             )
         )
-        graph.add_rule(
-            BuildRule(output="build", inputs=["a.o", "b.o"], command=None, rule_type="phony")
-        )
+        graph.add_rule(BuildRule(output="build", inputs=["a.o", "b.o"], command=None, rule_type="phony"))
 
         args = mock.MagicMock()
         args.objdir = str(tmp_path)
@@ -631,9 +642,7 @@ class TestParallelExecution:
                 order_only_deps=["obj"],
             )
         )
-        graph.add_rule(
-            BuildRule(output="build", inputs=["a.o", "b.o"], command=None, rule_type="phony")
-        )
+        graph.add_rule(BuildRule(output="build", inputs=["a.o", "b.o"], command=None, rule_type="phony"))
 
         args = mock.MagicMock()
         args.objdir = str(tmp_path)
@@ -683,9 +692,7 @@ class TestOutputDeletion:
                 order_only_deps=["obj"],
             )
         )
-        graph.add_rule(
-            BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony")
-        )
+        graph.add_rule(BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony"))
 
         source_hash = _compute_file_hash(str(tmp_path / "foo.cpp"))
         cmd = ["g++", "-c", "foo.cpp", "-o", "foo.o"]
@@ -725,4 +732,183 @@ class TestOutputDeletion:
             mock_sub.CalledProcessError = subprocess.CalledProcessError
             backend.execute("build")
             # Must rebuild because output file was deleted
+            mock_sub.run.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Content-addressable short-circuit
+# ---------------------------------------------------------------------------
+
+
+class TestContentAddressableShortCircuit:
+    def test_is_content_addressable(self):
+        """Only compile rules are content-addressable."""
+        compile_rule = BuildRule(output="foo.o", inputs=["foo.cpp"], command=["g++"], rule_type="compile")
+        link_rule = BuildRule(output="foo", inputs=["foo.o"], command=["g++"], rule_type="link")
+        phony_rule = BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony")
+        assert _is_content_addressable(compile_rule) is True
+        assert _is_content_addressable(link_rule) is False
+        assert _is_content_addressable(phony_rule) is False
+
+    def test_compile_skipped_when_object_exists_no_traces(self, tmp_path):
+        """Object file exists, NO trace store populated. Compile is skipped
+        via content-addressable short-circuit independently of traces."""
+        os.chdir(tmp_path)
+        (tmp_path / "foo.cpp").write_text("int main() {}")
+        (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
+        os.makedirs(tmp_path / "obj", exist_ok=True)
+
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="foo.o",
+                inputs=["foo.cpp"],
+                command=["g++", "-c", "foo.cpp", "-o", "foo.o"],
+                rule_type="compile",
+                order_only_deps=["obj"],
+            )
+        )
+        graph.add_rule(BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony"))
+
+        # No traces at all — short-circuit should still work
+        args = mock.MagicMock()
+        args.objdir = str(tmp_path)
+        args.parallel = 1
+        args.verbose = 0
+
+        backend = ShakeBackend.__new__(ShakeBackend)
+        backend.args = args
+        backend._graph = graph
+
+        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
+            mock_sub.CalledProcessError = subprocess.CalledProcessError
+            backend.execute("build")
+            mock_sub.run.assert_not_called()
+
+    def test_compile_returns_true_when_object_new(self, tmp_path):
+        """Object file does NOT exist, compile executes. _build returns True
+        (signaling dependents should rebuild)."""
+        os.chdir(tmp_path)
+        (tmp_path / "foo.cpp").write_text("int main() {}")
+        # foo.o intentionally NOT created
+        os.makedirs(tmp_path / "obj", exist_ok=True)
+
+        graph = BuildGraph()
+        compile_rule = BuildRule(
+            output="foo.o",
+            inputs=["foo.cpp"],
+            command=["g++", "-c", "foo.cpp", "-o", "foo.o"],
+            rule_type="compile",
+            order_only_deps=["obj"],
+        )
+        graph.add_rule(compile_rule)
+        graph.add_rule(BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony"))
+
+        args = mock.MagicMock()
+        args.objdir = str(tmp_path)
+        args.parallel = 1
+        args.verbose = 0
+
+        backend = ShakeBackend.__new__(ShakeBackend)
+        backend.args = args
+        backend._graph = graph
+
+        traces = TraceStore(str(tmp_path / ".ct-traces.json"))
+        done: set[str] = set()
+        lock = threading.Lock()
+
+        def fake_run(cmd, **kwargs):
+            (tmp_path / "foo.o").write_bytes(b"\x7fELF new object")
+            result = mock.MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            result.stderr = ""
+            return result
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
+                mock_sub.run.side_effect = fake_run
+                mock_sub.CalledProcessError = subprocess.CalledProcessError
+                changed = backend._build("foo.o", graph, traces, done, lock, executor)
+                assert changed is True
+                mock_sub.run.assert_called_once()
+
+    def test_link_still_uses_traces(self, tmp_path):
+        """Link rules (rule_type='link') still go through full trace verification,
+        not the content-addressable short-circuit."""
+        os.chdir(tmp_path)
+        (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
+        (tmp_path / "foo").write_bytes(b"\x7fELF fake executable")
+
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="foo",
+                inputs=["foo.o"],
+                command=["g++", "-o", "foo", "foo.o"],
+                rule_type="link",
+            )
+        )
+        graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
+
+        obj_hash = _compute_file_hash(str(tmp_path / "foo.o"))
+        exe_hash = _compute_file_hash(str(tmp_path / "foo"))
+        cmd = ["g++", "-o", "foo", "foo.o"]
+
+        # Pre-populate trace with MATCHING hashes — trace verification should pass
+        trace_path = str(tmp_path / ".ct-traces.json")
+        store = TraceStore(trace_path)
+        store.put(
+            "foo",
+            TraceEntry(
+                output_hash=exe_hash,
+                input_hashes={"foo.o": obj_hash},
+                command_hash=TraceStore.hash_command(cmd),
+            ),
+        )
+        store.save()
+
+        args = mock.MagicMock()
+        args.objdir = str(tmp_path)
+        args.parallel = 1
+        args.verbose = 0
+
+        backend = ShakeBackend.__new__(ShakeBackend)
+        backend.args = args
+        backend._graph = graph
+
+        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
+            mock_sub.CalledProcessError = subprocess.CalledProcessError
+            backend.execute("build")
+            # Link skipped via trace verification (NOT short-circuit)
+            mock_sub.run.assert_not_called()
+
+        # Now invalidate the trace — link must rebuild
+        store2 = TraceStore(trace_path)
+        store2.put(
+            "foo",
+            TraceEntry(
+                output_hash=exe_hash,
+                input_hashes={"foo.o": "wrong_hash"},
+                command_hash=TraceStore.hash_command(cmd),
+            ),
+        )
+        store2.save()
+
+        backend2 = ShakeBackend.__new__(ShakeBackend)
+        backend2.args = args
+        backend2._graph = graph
+
+        mock_result = mock.MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = ""
+
+        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
+            mock_sub.run.return_value = mock_result
+            mock_sub.CalledProcessError = subprocess.CalledProcessError
+            backend2.execute("build")
+            # Link rebuilds because trace verification failed
             mock_sub.run.assert_called_once()
