@@ -59,9 +59,9 @@ The build process in `cake.py` follows this sequence:
    - `magicflags.py` extracts build flags from `//#` comment annotations (`CPPFLAGS=`, `PKG-CONFIG=`, `SOURCE=`, `LDFLAGS=`, etc.)
    - Implied sources are discovered (e.g., `foo.h` implies `foo.cpp`)
 
-4. **Build Generation** -- `makefile.py` generates a Makefile with compilation rules; `compilation_database.py` generates `compile_commands.json`.
+4. **Backend Dispatch** -- `cake.py:_call_backend()` uses the `--backend` flag (default: `make`) to select a build backend via the registry in `build_backend.py`. The backend calls `build_graph()` to populate a `BuildGraph` (backend-agnostic IR of `BuildRule` objects) from Hunter/Namer data, then `generate()` to write the native build file. Available backends: make (default), ninja, cmake, bazel, shake, tup. `compilation_database.py` generates `compile_commands.json` independently.
 
-5. **Build Execution** -- Runs make with parallel jobs, then runs tests if configured.
+5. **Build Execution** -- `backend.execute("build")` invokes the native build tool (make, ninja, cmake --build, etc.). If tests exist, `backend.execute("runtests")` runs them (most backends delegate to the shared `BuildBackend._run_tests()` which runs test executables directly). Finally `_copyexes()` copies executables to the output directory.
 
 ### Magic Detection Pipeline
 
@@ -108,7 +108,15 @@ PreprocessingCache                    # Two-tier caching
 | `hunter.py` | Recursive dependency graph walking |
 | `findtargets.py` | Executable/test target detection |
 | `namer.py` | File naming, object paths (includes macro state hash) |
-| `makefile.py` | Makefile generation |
+| `makefile.py` | Makefile generation (`MakefileCreator`) |
+| `build_graph.py` | Backend-agnostic IR (`BuildRule`, `BuildGraph`) |
+| `build_backend.py` | `BuildBackend` ABC, registry, `build_graph()`, `_run_tests()` |
+| `makefile_backend.py` | Make backend (wraps `MakefileCreator`) |
+| `ninja_backend.py` | Ninja backend |
+| `bazel_backend.py` | Bazel backend |
+| `cmake_backend.py` | CMake backend |
+| `shake_backend.py` | Shake backend (self-executing, verifying traces) |
+| `tup_backend.py` | Tup backend |
 | `compilation_database.py` | `compile_commands.json` generation |
 | `locking.py` | Cross-platform atomic file locking |
 | `stringzilla_utils.py` | SIMD text operation helpers |
@@ -124,7 +132,7 @@ PreprocessingCache                    # Two-tier caching
 
 Python entry points defined in `pyproject.toml [project.scripts]`. Shell wrappers in `scripts/` (ct-build, ct-release, ct-watch-build, ct-lock-helper, profile-ct).
 
-All tools support `--variant=<config>` for build configuration selection.
+All tools support `--variant=<config>` for build configuration selection and `--backend=<name>` for build system backend selection (make, ninja, cmake, bazel, shake, tup).
 
 ## Test Conventions
 
