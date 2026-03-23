@@ -6,6 +6,7 @@ import io
 import json
 import os
 import subprocess
+import threading
 from unittest import mock
 
 import pytest
@@ -530,3 +531,198 @@ class TestErrorHandling:
             mock_sub.CalledProcessError = subprocess.CalledProcessError
             with pytest.raises(subprocess.CalledProcessError):
                 backend.execute("build")
+
+
+# ---------------------------------------------------------------------------
+# Parallel execution
+# ---------------------------------------------------------------------------
+
+
+class TestParallelExecution:
+    def test_independent_targets_run_in_parallel(self, tmp_path):
+        """Phony target with independent inputs should dispatch them concurrently."""
+        os.chdir(tmp_path)
+        (tmp_path / "a.cpp").write_text("int a() {}")
+        (tmp_path / "b.cpp").write_text("int b() {}")
+        os.makedirs(tmp_path / "obj", exist_ok=True)
+
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="a.o",
+                inputs=["a.cpp"],
+                command=["g++", "-c", "a.cpp", "-o", "a.o"],
+                rule_type="compile",
+                order_only_deps=["obj"],
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="b.o",
+                inputs=["b.cpp"],
+                command=["g++", "-c", "b.cpp", "-o", "b.o"],
+                rule_type="compile",
+                order_only_deps=["obj"],
+            )
+        )
+        graph.add_rule(
+            BuildRule(output="build", inputs=["a.o", "b.o"], command=None, rule_type="phony")
+        )
+
+        args = mock.MagicMock()
+        args.objdir = str(tmp_path)
+        args.parallel = 4
+        args.verbose = 0
+
+        backend = ShakeBackend.__new__(ShakeBackend)
+        backend.args = args
+        backend._graph = graph
+
+        # Track which threads execute each compile
+        thread_ids = []
+        barrier = threading.Barrier(2, timeout=5)
+
+        def fake_run(cmd, **kwargs):
+            thread_ids.append(threading.current_thread().ident)
+            # Both compiles must reach the barrier before either proceeds,
+            # proving they run concurrently
+            barrier.wait()
+            target = cmd[cmd.index("-o") + 1]
+            (tmp_path / target).write_bytes(b"\x7fELF fake")
+            result = mock.MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            result.stderr = ""
+            return result
+
+        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
+            mock_sub.run.side_effect = fake_run
+            mock_sub.CalledProcessError = subprocess.CalledProcessError
+            backend.execute("build")
+            assert mock_sub.run.call_count == 2
+
+        # Verify they ran on different threads
+        assert len(thread_ids) == 2
+        assert thread_ids[0] != thread_ids[1]
+
+    def test_parallel_1_still_works(self, tmp_path):
+        """parallel=1 should work correctly (single-threaded)."""
+        os.chdir(tmp_path)
+        (tmp_path / "a.cpp").write_text("int a() {}")
+        (tmp_path / "b.cpp").write_text("int b() {}")
+        os.makedirs(tmp_path / "obj", exist_ok=True)
+
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="a.o",
+                inputs=["a.cpp"],
+                command=["g++", "-c", "a.cpp", "-o", "a.o"],
+                rule_type="compile",
+                order_only_deps=["obj"],
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="b.o",
+                inputs=["b.cpp"],
+                command=["g++", "-c", "b.cpp", "-o", "b.o"],
+                rule_type="compile",
+                order_only_deps=["obj"],
+            )
+        )
+        graph.add_rule(
+            BuildRule(output="build", inputs=["a.o", "b.o"], command=None, rule_type="phony")
+        )
+
+        args = mock.MagicMock()
+        args.objdir = str(tmp_path)
+        args.parallel = 1
+        args.verbose = 0
+
+        backend = ShakeBackend.__new__(ShakeBackend)
+        backend.args = args
+        backend._graph = graph
+
+        def fake_run(cmd, **kwargs):
+            target = cmd[cmd.index("-o") + 1]
+            (tmp_path / target).write_bytes(b"\x7fELF fake")
+            result = mock.MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            result.stderr = ""
+            return result
+
+        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
+            mock_sub.run.side_effect = fake_run
+            mock_sub.CalledProcessError = subprocess.CalledProcessError
+            backend.execute("build")
+            assert mock_sub.run.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Output file deletion detection
+# ---------------------------------------------------------------------------
+
+
+class TestOutputDeletion:
+    def test_rebuilds_when_output_deleted(self, tmp_path):
+        """If output file is deleted but trace exists, must rebuild."""
+        os.chdir(tmp_path)
+        (tmp_path / "foo.cpp").write_text("int main() {}")
+        os.makedirs(tmp_path / "obj", exist_ok=True)
+        # Note: foo.o does NOT exist (simulates deletion)
+
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="foo.o",
+                inputs=["foo.cpp"],
+                command=["g++", "-c", "foo.cpp", "-o", "foo.o"],
+                rule_type="compile",
+                order_only_deps=["obj"],
+            )
+        )
+        graph.add_rule(
+            BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony")
+        )
+
+        source_hash = _compute_file_hash(str(tmp_path / "foo.cpp"))
+        cmd = ["g++", "-c", "foo.cpp", "-o", "foo.o"]
+
+        # Pre-populate trace as if foo.o was previously built successfully
+        trace_path = str(tmp_path / ".ct-traces.json")
+        store = TraceStore(trace_path)
+        store.put(
+            "foo.o",
+            TraceEntry(
+                output_hash="hash_of_deleted_file",
+                input_hashes={"foo.cpp": source_hash},
+                command_hash=TraceStore.hash_command(cmd),
+            ),
+        )
+        store.save()
+
+        args = mock.MagicMock()
+        args.objdir = str(tmp_path)
+        args.parallel = 1
+        args.verbose = 0
+
+        backend = ShakeBackend.__new__(ShakeBackend)
+        backend.args = args
+        backend._graph = graph
+
+        def fake_run(cmd, **kwargs):
+            (tmp_path / "foo.o").write_bytes(b"\x7fELF rebuilt")
+            result = mock.MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            result.stderr = ""
+            return result
+
+        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
+            mock_sub.run.side_effect = fake_run
+            mock_sub.CalledProcessError = subprocess.CalledProcessError
+            backend.execute("build")
+            # Must rebuild because output file was deleted
+            mock_sub.run.assert_called_once()

@@ -1,9 +1,15 @@
 """Shake build backend — a self-executing backend using verifying traces.
 
-Implements the "Shake" build system from "Build Systems à la Carte":
+Implements the Shake rebuild strategy from "Build Systems à la Carte"
+(Mokhov, Mitchell, Jones 2018), specifically:
 - Suspending scheduler: build dependencies on-demand recursively
 - Verifying traces: content-hash-based change detection for minimal rebuilds
 - Early cutoff: if rebuilt output is byte-identical, skip rebuilding dependents
+
+The dependency graph is static (pre-computed by Hunter), not dynamic as in the
+original Shake (which uses monadic tasks for dynamic dependency discovery).
+This is sufficient because compiletools resolves all dependencies at a higher
+level before the backend executes.
 
 No external build tool required — drives compilation directly from Python.
 """
@@ -16,12 +22,14 @@ import os
 import shlex
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 
 import compiletools.filesystem_utils
 from compiletools.build_backend import BuildBackend, register_backend
 from compiletools.build_graph import BuildGraph
+from compiletools.locking import FileLock
 
 TRACE_VERSION = 1
 
@@ -140,12 +148,13 @@ class ShakeBackend(BuildBackend):
         trace_path = os.path.join(self.args.objdir, self.build_filename())
         traces = TraceStore(trace_path)
         done: set[str] = set()
+        lock = threading.Lock()
 
         parallel = getattr(self.args, "parallel", 1)
         max_workers = parallel if parallel and parallel > 0 else 1
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            self._build(target, self._graph, traces, done, executor)
+            self._build(target, self._graph, traces, done, lock, executor)
 
         traces.save()
 
@@ -155,44 +164,53 @@ class ShakeBackend(BuildBackend):
         graph: BuildGraph,
         traces: TraceStore,
         done: set[str],
+        lock: threading.Lock,
         executor: ThreadPoolExecutor,
     ) -> bool:
         """Suspending scheduler with verifying traces and early cutoff.
 
         Returns True if the target's output changed (dependents should rebuild).
         """
-        if target in done:
-            return False
+        with lock:
+            if target in done:
+                return False
 
         rule = graph.get_rule(target)
         if rule is None:
             # Leaf node (source/header file) — no rule to run
-            done.add(target)
+            with lock:
+                done.add(target)
             return False
 
         if rule.rule_type == "phony":
-            any_rebuilt = False
+            # Phony targets aggregate independent builds — parallelise them
+            futures: list[Future[bool]] = []
             for inp in rule.inputs:
-                if self._build(inp, graph, traces, done, executor):
-                    any_rebuilt = True
-            done.add(target)
+                futures.append(
+                    executor.submit(self._build, inp, graph, traces, done, lock, executor)
+                )
+            any_rebuilt = any(f.result() for f in futures)
+            with lock:
+                done.add(target)
             return any_rebuilt
 
         # Ensure order-only deps (directories) exist
         for dep in rule.order_only_deps:
             os.makedirs(dep, exist_ok=True)
 
-        # SUSPEND: recursively build all inputs
+        # SUSPEND: recursively build all inputs (sequential — they may share deps)
         any_input_rebuilt = False
         for inp in rule.inputs:
-            if self._build(inp, graph, traces, done, executor):
+            if self._build(inp, graph, traces, done, lock, executor):
                 any_input_rebuilt = True
 
         # VERIFY TRACE
         if not any_input_rebuilt:
-            trace = traces.get(target)
+            with lock:
+                trace = traces.get(target)
             if trace is not None and self._verify(rule, trace):
-                done.add(target)
+                with lock:
+                    done.add(target)
                 return False  # up to date
 
         # EXECUTE
@@ -208,30 +226,44 @@ class ShakeBackend(BuildBackend):
             parts = shlex.split(arg)
             flat_cmd.extend(parts)
 
-        result = subprocess.run(flat_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print(result.stdout, end="", file=sys.stdout)
-            print(result.stderr, end="", file=sys.stderr)
-            raise subprocess.CalledProcessError(result.returncode, rule.command, result.stdout, result.stderr)
+        # Use FileLock for cross-process safety on shared filesystems
+        # (NFS/GPFS/Lustre/CIFS). FileLock is a no-op when shared_objects
+        # is disabled; when enabled it selects the right locking strategy
+        # (lockdir/cifs/flock) based on filesystem type.
+        with FileLock(target, self.args):
+            result = subprocess.run(flat_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(result.stdout, end="", file=sys.stdout)
+                print(result.stderr, end="", file=sys.stderr)
+                raise subprocess.CalledProcessError(result.returncode, rule.command, result.stdout, result.stderr)
 
         new_hash = _compute_file_hash(target)
 
         # RECORD TRACE
-        traces.put(
-            target,
-            TraceEntry(
-                output_hash=new_hash,
-                input_hashes={inp: _hash_file(inp) for inp in rule.inputs},
-                command_hash=TraceStore.hash_command(rule.command),
-            ),
-        )
+        with lock:
+            traces.put(
+                target,
+                TraceEntry(
+                    output_hash=new_hash,
+                    input_hashes={inp: _hash_file(inp) for inp in rule.inputs},
+                    command_hash=TraceStore.hash_command(rule.command),
+                ),
+            )
 
         # EARLY CUTOFF
-        done.add(target)
+        with lock:
+            done.add(target)
         return old_hash != new_hash
 
     def _verify(self, rule, trace: TraceEntry) -> bool:
-        """Check if a trace is still valid (all inputs unchanged, same command)."""
+        """Check if a trace is still valid (output exists, inputs unchanged, same command)."""
+        # Verify output file still exists and matches the recorded hash
+        try:
+            if _compute_file_hash(rule.output) != trace.output_hash:
+                return False
+        except (FileNotFoundError, OSError):
+            return False
+
         if TraceStore.hash_command(rule.command) != trace.command_hash:
             return False
 
