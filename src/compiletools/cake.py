@@ -5,6 +5,8 @@ import subprocess
 import sys
 
 import compiletools.apptools
+import compiletools.bazel_backend
+import compiletools.cmake_backend
 import compiletools.compilation_database
 import compiletools.configutils
 import compiletools.filelist
@@ -14,15 +16,13 @@ import compiletools.hunter
 import compiletools.jobs
 import compiletools.magicflags
 import compiletools.makefile
-import compiletools.makefile_backend  # noqa: F401 — ensure registered
-import compiletools.ninja_backend  # noqa: F401 — ensure registered
-import compiletools.shake_backend  # noqa: F401 — ensure registered
-import compiletools.bazel_backend  # noqa: F401 — ensure registered
-import compiletools.cmake_backend  # noqa: F401 — ensure registered
-import compiletools.tup_backend  # noqa: F401 — ensure registered
+import compiletools.makefile_backend
+import compiletools.ninja_backend
+import compiletools.shake_backend
+import compiletools.tup_backend
 import compiletools.utils
 import compiletools.wrappedos
-from compiletools.build_backend import available_backends
+from compiletools.build_backend import available_backends, get_backend_class
 
 
 class Cake:
@@ -201,6 +201,45 @@ class Cake:
                         print(os.path.join(outputdir, filename))
                     shutil.copy2(src, outputdir)
 
+    def _call_backend(self):
+        """Dispatch to the selected build backend."""
+        backend_name = getattr(self.args, "backend", "make")
+        BackendClass = get_backend_class(backend_name)
+        backend = BackendClass(args=self.args, hunter=self.hunter)
+
+        graph = backend.build_graph()
+        backend.generate(graph)
+
+        self._call_compilation_database()
+
+        os.makedirs(self.namer.executable_dir(), exist_ok=True)
+
+        if self.args.clean:
+            if "realclean" in graph.outputs:
+                backend.execute("realclean")
+            # Remove the extra executables we copied
+            if self.args.output:
+                try:
+                    os.remove(self.args.output)
+                except OSError:
+                    pass
+            else:
+                outputdir = self.namer.topbindir()
+                filelist = os.listdir(outputdir)
+                for ff in filelist:
+                    filename = os.path.join(outputdir, ff)
+                    try:
+                        os.remove(filename)
+                    except OSError:
+                        pass
+        else:
+            backend.execute("build")
+
+            if self.args.tests and "runtests" in graph.outputs:
+                backend.execute("runtests")
+
+            self._copyexes()
+
     def _callmakefile(self):
         makefile_creator = compiletools.makefile.MakefileCreator(self.args, self.hunter)
         makefile_creator.create()
@@ -303,7 +342,7 @@ class Cake:
         if self.args.filelist:
             self._callfilelist()
         else:
-            self._callmakefile()
+            self._call_backend()
 
     def clear_cache(self):
         """Only useful in test scenarios where you need to reset to a pristine state"""
