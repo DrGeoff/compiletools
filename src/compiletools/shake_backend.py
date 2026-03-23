@@ -6,6 +6,12 @@ Implements the Shake rebuild strategy from "Build Systems à la Carte"
 - Verifying traces: content-hash-based change detection for minimal rebuilds
 - Early cutoff: if rebuilt output is byte-identical, skip rebuilding dependents
 
+Content-addressable short-circuit: compile rules produce output filenames that
+encode source hash, dependency hash, and macro state hash.  If such an output
+already exists on disk it is correct by construction, so verifying traces
+degenerates to a single os.path.exists() call — skipping all hashing, trace
+lookup, and input comparison for no-op rebuilds.
+
 The dependency graph is static (pre-computed by Hunter), not dynamic as in the
 original Shake (which uses monadic tasks for dynamic dependency discovery).
 This is sufficient because compiletools resolves all dependencies at a higher
@@ -105,6 +111,11 @@ def _hash_file(path: str) -> str:
         return _compute_file_hash(path)
 
 
+def _is_content_addressable(rule) -> bool:
+    """Compile rules have content-addressable output names encoding all inputs."""
+    return rule.rule_type == "compile"
+
+
 @register_backend
 class ShakeBackend(BuildBackend):
     """Self-executing backend using Shake-style verifying traces."""
@@ -186,9 +197,7 @@ class ShakeBackend(BuildBackend):
             # Phony targets aggregate independent builds — parallelise them
             futures: list[Future[bool]] = []
             for inp in rule.inputs:
-                futures.append(
-                    executor.submit(self._build, inp, graph, traces, done, lock, executor)
-                )
+                futures.append(executor.submit(self._build, inp, graph, traces, done, lock, executor))
             any_rebuilt = any(f.result() for f in futures)
             with lock:
                 done.add(target)
@@ -197,6 +206,14 @@ class ShakeBackend(BuildBackend):
         # Ensure order-only deps (directories) exist
         for dep in rule.order_only_deps:
             os.makedirs(dep, exist_ok=True)
+
+        # CONTENT-ADDRESSABLE SHORT-CIRCUIT
+        # Object filenames encode source hash, dep hash, and macro state hash.
+        # If the file exists, it is correct by construction — skip trace verification.
+        if _is_content_addressable(rule) and os.path.exists(target):
+            with lock:
+                done.add(target)
+            return False  # Already existed → no change for dependents
 
         # SUSPEND: recursively build all inputs (sequential — they may share deps)
         any_input_rebuilt = False
@@ -214,7 +231,9 @@ class ShakeBackend(BuildBackend):
                 return False  # up to date
 
         # EXECUTE
-        old_hash = _compute_file_hash(target) if os.path.exists(target) else None
+        old_hash = None
+        if not _is_content_addressable(rule):
+            old_hash = _compute_file_hash(target) if os.path.exists(target) else None
 
         verbose = getattr(self.args, "verbose", 0)
         if verbose >= 1:
@@ -237,9 +256,18 @@ class ShakeBackend(BuildBackend):
                 print(result.stderr, end="", file=sys.stderr)
                 raise subprocess.CalledProcessError(result.returncode, rule.command, result.stdout, result.stderr)
 
+        with lock:
+            done.add(target)
+
+        # Content-addressable compile outputs don't need trace recording or
+        # early cutoff — the output name encodes all inputs, so existence
+        # implies correctness.
+        if _is_content_addressable(rule):
+            return True  # New compile output → dependents must rebuild
+
         new_hash = _compute_file_hash(target)
 
-        # RECORD TRACE
+        # RECORD TRACE (only for non-content-addressable rules)
         with lock:
             traces.put(
                 target,
@@ -251,8 +279,6 @@ class ShakeBackend(BuildBackend):
             )
 
         # EARLY CUTOFF
-        with lock:
-            done.add(target)
         return old_hash != new_hash
 
     def _verify(self, rule, trace: TraceEntry) -> bool:
