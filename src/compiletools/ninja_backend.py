@@ -72,7 +72,11 @@ class NinjaBackend(BuildBackend):
         import subprocess
 
         filename = getattr(self.args, "ninja_filename", "build.ninja")
-        cmd = ["ninja", "-f", filename, target]
+        cmd = ["ninja", "-f", filename]
+        parallel = getattr(self.args, "parallel", None)
+        if parallel:
+            cmd.extend(["-j", str(parallel)])
         if self.args.verbose >= 1:
             cmd.append("-v")
+        cmd.append(target)
         subprocess.check_call(cmd, universal_newlines=True)

@@ -223,8 +223,11 @@ class BazelBackend(BuildBackend):
             "build",
             "--spawn_strategy=local",
             "--action_env=PATH",
-            bazel_target,
         ]
+        parallel = getattr(self.args, "parallel", None)
+        if parallel:
+            cmd.append(f"--jobs={parallel}")
+        cmd.append(bazel_target)
         subprocess.check_call(cmd, universal_newlines=True)
 
         # Bazel outputs executables to bazel-bin/.  Copy them to the

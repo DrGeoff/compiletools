@@ -61,4 +61,8 @@ class TupBackend(BuildBackend):
         if not os.path.isdir(".tup"):
             subprocess.check_call(["tup", "init"], universal_newlines=True)
 
-        subprocess.check_call(["tup"], universal_newlines=True)
+        cmd = ["tup"]
+        parallel = getattr(self.args, "parallel", None)
+        if parallel:
+            cmd.extend(["-j", str(parallel)])
+        subprocess.check_call(cmd, universal_newlines=True)
