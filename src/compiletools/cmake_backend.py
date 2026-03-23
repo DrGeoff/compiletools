@@ -187,10 +187,14 @@ class CMakeBackend(BuildBackend):
                 f.write(f"target_include_directories({target_name} PRIVATE {quoted})\n")
 
             if linkopts:
-                quoted = " ".join(f'"{l}"' for l in linkopts)
+                quoted = " ".join(f'"{opt}"' for opt in linkopts)
                 f.write(f"target_link_options({target_name} PRIVATE {quoted})\n")
 
     def execute(self, target: str = "build") -> None:
+        if target == "runtests":
+            self._run_tests()
+            return
+
         cmake = shutil.which("cmake")
         if cmake is None:
             raise RuntimeError("'cmake' not found on PATH")
@@ -212,12 +216,30 @@ class CMakeBackend(BuildBackend):
             build_cmd.extend(["--target", target])
         subprocess.check_call(build_cmd, universal_newlines=True)
 
-        # Copy built executables to bindir
-        if hasattr(self.args, "bindir") and self.args.bindir:
-            os.makedirs(self.args.bindir, exist_ok=True)
-            for dirpath, _dirs, files in os.walk(build_dir):
-                for fname in files:
-                    full = os.path.join(dirpath, fname)
-                    if os.access(full, os.X_OK) and not fname.endswith(".cmake"):
-                        dest = os.path.join(self.args.bindir, fname)
-                        shutil.copy2(full, dest)
+        # Copy built executables to namer.executable_pathname() locations
+        # so _copyexes() can find them.
+        self._copy_built_executables(build_dir)
+
+    def _copy_built_executables(self, build_dir: str) -> None:
+        """Copy built executables from cmake build dir to namer paths."""
+        import compiletools.wrappedos
+
+        all_sources = list(self.args.filename or []) + list(self.args.tests or [])
+        # Build a map of basename -> source for matching
+        source_by_basename: dict[str, str] = {}
+        for source in all_sources:
+            exe_basename = os.path.splitext(os.path.basename(source))[0]
+            # CMake mangles names same way: dots/hyphens become underscores
+            cmake_name = exe_basename.replace(".", "_").replace("-", "_")
+            source_by_basename[exe_basename] = source
+            source_by_basename[cmake_name] = source
+
+        for dirpath, _dirs, files in os.walk(build_dir):
+            for fname in files:
+                full = os.path.join(dirpath, fname)
+                if os.access(full, os.X_OK) and not fname.endswith(".cmake"):
+                    if fname in source_by_basename:
+                        source = source_by_basename[fname]
+                        dest_path = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
+                        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                        shutil.copy2(full, dest_path)

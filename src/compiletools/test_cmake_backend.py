@@ -5,14 +5,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from compiletools.build_backend import get_backend_class
+from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.cmake_backend import (
     CMakeBackend,
     _extract_copts,
     _extract_linkopts,
     _separate_include_dirs,
 )
-from compiletools.build_backend import get_backend_class
-from compiletools.build_graph import BuildGraph, BuildRule
 
 
 class TestCMakeBackendRegistered:
@@ -314,5 +314,5 @@ class TestCMakeExecute:
         backend = CMakeBackend(args=args, hunter=hunter)
 
         with patch("shutil.which", return_value=None):
-            with pytest.raises(RuntimeError, match="cmake.*not found"):
+            with pytest.raises(RuntimeError, match=r"cmake.*not found"):
                 backend.execute()

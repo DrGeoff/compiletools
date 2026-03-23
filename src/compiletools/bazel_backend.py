@@ -195,6 +195,10 @@ class BazelBackend(BuildBackend):
                 f.write('bazel_dep(name = "rules_cc", version = "0.1.1")\n')
 
     def execute(self, target: str = "build") -> None:
+        if target == "runtests":
+            self._run_tests()
+            return
+
         tool = shutil.which("bazelisk") or shutil.which("bazel")
         if tool is None:
             raise RuntimeError("Neither 'bazelisk' nor 'bazel' found on PATH. Try: module load bazelisk-latest")
@@ -204,5 +208,49 @@ class BazelBackend(BuildBackend):
         else:
             bazel_target = f"//:{target}"
 
-        cmd = [tool, "build", bazel_target]
+        # Startup options (before the "build" subcommand)
+        startup_args = [tool]
+        system_cacerts = "/etc/pki/ca-trust/extracted/java/cacerts"
+        if os.path.exists(system_cacerts):
+            startup_args.extend(
+                [
+                    f"--host_jvm_args=-Djavax.net.ssl.trustStore={system_cacerts}",
+                    "--host_jvm_args=-Djavax.net.ssl.trustStorePassword=changeit",
+                ]
+            )
+
+        cmd = startup_args + [
+            "build",
+            "--spawn_strategy=local",
+            "--action_env=PATH",
+            bazel_target,
+        ]
         subprocess.check_call(cmd, universal_newlines=True)
+
+        # Bazel outputs executables to bazel-bin/.  Copy them to the
+        # namer.executable_pathname() locations so _copyexes() can find them.
+        bazel_bin = os.path.join(os.getcwd(), "bazel-bin")
+        if os.path.isdir(bazel_bin):
+            self._copy_built_executables(bazel_bin)
+
+    def _copy_built_executables(self, build_output_dir: str) -> None:
+        """Copy built executables from a build output dir to namer paths.
+
+        Maps executables found in build_output_dir back to their
+        namer.executable_pathname() locations so _copyexes() can find them.
+        """
+        import compiletools.wrappedos
+
+        all_sources = list(self.args.filename or []) + list(self.args.tests or [])
+        for source in all_sources:
+            exe_basename = os.path.splitext(os.path.basename(source))[0]
+            # Bazel mangles names: dots/hyphens become underscores
+            bazel_name = exe_basename.replace(".", "_").replace("-", "_")
+
+            for candidate_name in (exe_basename, bazel_name):
+                src_path = os.path.join(build_output_dir, candidate_name)
+                if os.path.isfile(src_path) and os.access(src_path, os.X_OK):
+                    dest_path = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
+                    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                    shutil.copy2(src_path, dest_path)
+                    break

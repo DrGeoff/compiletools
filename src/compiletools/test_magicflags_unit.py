@@ -177,7 +177,7 @@ class TestHandleIncludeVerbose:
         with patch.object(MagicFlagsBase, "__init__", lambda self, *a, **kw: None):
             obj = MagicFlagsBase.__new__(MagicFlagsBase)
             obj._args = SimpleNamespace(verbose=9)
-            result = obj._handle_include(sz.Str("/some/path"))
+            obj._handle_include(sz.Str("/some/path"))
             captured = capsys.readouterr()
             assert "Added -I" in captured.out
 
@@ -432,7 +432,7 @@ class TestMainFunction:
             with (
                 patch("compiletools.apptools.create_parser") as mock_cp,
                 patch("compiletools.apptools.parseargs") as mock_pa,
-                patch("compiletools.headerdeps.create") as mock_hd,
+                patch("compiletools.headerdeps.create"),
                 patch("compiletools.magicflags.create") as mock_create,
             ):
                 mock_args = SimpleNamespace(

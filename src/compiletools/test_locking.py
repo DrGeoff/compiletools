@@ -3,9 +3,8 @@
 import os
 import shutil
 import tempfile
-import time
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -391,7 +390,7 @@ class TestFileLock:
 
     def test_context_manager_no_shared_objects(self):
         args = _make_lock_args(shared_objects=False)
-        with FileLock("/some/file.o", args) as fl:
+        with FileLock("/some/file.o", args):
             pass  # Should not crash
 
     def test_detection_error_defaults_to_flock(self):

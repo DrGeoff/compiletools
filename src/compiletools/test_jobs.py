@@ -1,6 +1,5 @@
 import os
 import platform
-from unittest.mock import patch
 
 import compiletools.jobs as jobs
 

@@ -10,19 +10,15 @@ from unittest import mock
 
 import pytest
 
+import compiletools.shake_backend  # noqa: F401 — ensure registered
+from compiletools.build_backend import available_backends, get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.shake_backend import (
-    TRACE_VERSION,
     ShakeBackend,
     TraceEntry,
     TraceStore,
     _compute_file_hash,
 )
-
-import compiletools.shake_backend  # noqa: F401 — ensure registered
-
-from compiletools.build_backend import available_backends, get_backend_class
-
 
 # ---------------------------------------------------------------------------
 # Registration
@@ -495,7 +491,7 @@ class TestErrorHandling:
         backend = ShakeBackend.__new__(ShakeBackend)
         backend._graph = None
         backend.args = mock.MagicMock()
-        with pytest.raises(RuntimeError, match="generate.*must be called"):
+        with pytest.raises(RuntimeError, match=r"generate.*must be called"):
             backend.execute("build")
 
     def test_build_fails_on_subprocess_error(self, tmp_path):

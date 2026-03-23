@@ -23,7 +23,6 @@ import compiletools.filesystem_utils
 from compiletools.build_backend import BuildBackend, register_backend
 from compiletools.build_graph import BuildGraph
 
-
 TRACE_VERSION = 1
 
 
@@ -131,6 +130,10 @@ class ShakeBackend(BuildBackend):
         f.write("\n")
 
     def execute(self, target: str = "build") -> None:
+        if target == "runtests":
+            self._run_tests()
+            return
+
         if self._graph is None:
             raise RuntimeError("generate() must be called before execute()")
 

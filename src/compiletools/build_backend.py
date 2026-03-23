@@ -12,6 +12,8 @@ Hunter/Namer dependency data. This is the shared logic across all backends.
 from __future__ import annotations
 
 import abc
+import subprocess
+import sys
 
 import stringzilla as sz
 
@@ -40,8 +42,14 @@ class BuildBackend(abc.ABC):
         """Default output filename (e.g., 'Makefile', 'build.ninja')."""
 
     @abc.abstractmethod
-    def generate(self, graph: BuildGraph) -> None:
-        """Write the native build file from the given BuildGraph."""
+    def generate(self, graph: BuildGraph, output=None) -> None:
+        """Write the native build file from the given BuildGraph.
+
+        Args:
+            graph: The build graph to render.
+            output: A file-like object to write to. If None, writes to the
+                backend's default file path.
+        """
 
     @abc.abstractmethod
     def execute(self, target: str = "build") -> None:
@@ -72,6 +80,16 @@ class BuildBackend(abc.ABC):
             complete = self.hunter.required_source_files(source)
             all_compile_sources.update(complete)
 
+        # Create objdir creation rule (needed by compile rules as order-only dep)
+        graph.add_rule(
+            BuildRule(
+                output=self.args.objdir,
+                inputs=[],
+                command=["mkdir", "-p", self.args.objdir],
+                rule_type="mkdir",
+            )
+        )
+
         # Create compile rules
         for filename in all_compile_sources:
             rule = self._create_compile_rule(filename)
@@ -83,17 +101,63 @@ class BuildBackend(abc.ABC):
                 rule = self._create_link_rule(source)
                 graph.add_rule(rule)
 
+        # Create link rules for test executables
+        if self.args.tests:
+            for source in self.args.tests:
+                rule = self._create_link_rule(source)
+                graph.add_rule(rule)
+
         # Create phony targets
         build_deps = []
         if self.args.filename:
             build_deps.extend(
                 self.namer.executable_pathname(compiletools.wrappedos.realpath(s)) for s in self.args.filename
             )
+        if self.args.tests:
+            build_deps.extend(
+                self.namer.executable_pathname(compiletools.wrappedos.realpath(s)) for s in self.args.tests
+            )
         graph.add_rule(BuildRule(output="build", inputs=build_deps, command=None, rule_type="phony"))
+
         all_deps = ["build"]
+
+        # Add runtests phony target when tests exist
+        if self.args.tests:
+            test_exe_paths = [
+                self.namer.executable_pathname(compiletools.wrappedos.realpath(s)) for s in self.args.tests
+            ]
+            graph.add_rule(BuildRule(output="runtests", inputs=test_exe_paths, command=None, rule_type="phony"))
+            all_deps.append("runtests")
+
         graph.add_rule(BuildRule(output="all", inputs=all_deps, command=None, rule_type="phony"))
 
         return graph
+
+    def _run_tests(self) -> None:
+        """Run test executables built from args.tests.
+
+        Provides a backend-agnostic way to run tests without encoding
+        test execution into build files. Each test executable is run
+        and its exit code is checked.
+        """
+        if not self.args.tests:
+            return
+
+        failures = []
+        for source in self.args.tests:
+            exe_path = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
+            if self.args.verbose >= 1:
+                print(f"Running test: {exe_path}", file=sys.stderr)
+            result = subprocess.run([exe_path], capture_output=True, text=True)
+            if result.stdout:
+                print(result.stdout, end="")
+            if result.stderr:
+                print(result.stderr, end="", file=sys.stderr)
+            if result.returncode != 0:
+                failures.append(exe_path)
+
+        if failures:
+            raise RuntimeError(f"Test failures: {', '.join(failures)}")
 
     def _create_compile_rule(self, filename: str) -> BuildRule:
         """Create a compile BuildRule for a single source file."""
