@@ -65,6 +65,10 @@ class NinjaBackend(BuildBackend):
             f.write("\n")
 
     def execute(self, target: str = "build") -> None:
+        if target == "runtests":
+            self._run_tests()
+            return
+
         import subprocess
 
         filename = getattr(self.args, "ninja_filename", "build.ninja")

@@ -46,6 +46,10 @@ class TupBackend(BuildBackend):
                 f.write(f": {inputs} |> {cmd} |> {rule.output}\n")
 
     def execute(self, target: str = "build") -> None:
+        if target == "runtests":
+            self._run_tests()
+            return
+
         import os
         import shutil
         import subprocess

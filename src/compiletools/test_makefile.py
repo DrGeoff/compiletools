@@ -276,8 +276,9 @@ class TestMakefileCreatorUnit:
 
     def test_create_cp_rule_same_dir(self):
         """Cover _create_cp_rule returning None (line 488)."""
-        from compiletools.makefile import MakefileCreator
         from unittest.mock import MagicMock
+
+        from compiletools.makefile import MakefileCreator
 
         args = _make_args()
         with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
@@ -291,8 +292,9 @@ class TestMakefileCreatorUnit:
 
     def test_create_cp_rule_different_dir(self):
         """Cover _create_cp_rule returning a Rule (line 490)."""
-        from compiletools.makefile import MakefileCreator
         from unittest.mock import MagicMock
+
+        from compiletools.makefile import MakefileCreator
 
         args = _make_args()
         with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
@@ -307,8 +309,9 @@ class TestMakefileCreatorUnit:
 
     def test_create_test_rules(self):
         """Cover _create_test_rules (lines 497-519)."""
-        from compiletools.makefile import MakefileCreator
         from unittest.mock import MagicMock
+
+        from compiletools.makefile import MakefileCreator
 
         args = _make_args(TESTPREFIX="valgrind", verbose=1)
         with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
@@ -322,7 +325,7 @@ class TestMakefileCreatorUnit:
             targets = [r.target for r in rules]
             assert "runtests" in targets
             # test rule should have valgrind and echo
-            test_rule = [r for r in rules if r.target != "runtests"][0]
+            test_rule = next(r for r in rules if r.target != "runtests")
             assert "valgrind" in test_rule.recipe
             assert "@echo" in test_rule.recipe
 
@@ -367,7 +370,6 @@ class TestMakefileCreatorUnit:
 
     def test_ct_lock_helper_missing_exits(self):
         """Cover ct-lock-helper not found error (lines 233-243)."""
-        import sys
 
         args = _make_args(shared_objects=True, verbose=0)
         with patch("shutil.which", return_value=None), \
@@ -380,8 +382,9 @@ class TestMakefileCreatorUnit:
 
     def test_link_rule_verbose(self):
         """Cover verbose recipe in _create_link_rule (line 125)."""
-        from compiletools.makefile import LinkRuleCreator
         from unittest.mock import MagicMock
+
+        from compiletools.makefile import LinkRuleCreator
 
         args = _make_args(verbose=1)
         namer = MagicMock()
@@ -447,8 +450,9 @@ class TestMakefileCreatorUnit:
     def test_uptodate_file_newer(self, tmp_path):
         """Cover _uptodate when a dependency is newer (lines 361-367)."""
         import time
-        from compiletools.makefile import MakefileCreator
         from unittest.mock import MagicMock
+
+        from compiletools.makefile import MakefileCreator
 
         args = _make_args(makefilename=str(tmp_path / "Makefile"), verbose=8)
         makefile_path = str(tmp_path / "Makefile")
@@ -477,8 +481,9 @@ class TestMakefileCreatorUnit:
 
     def test_uptodate_file_older(self, tmp_path):
         """Cover _uptodate when dependencies are older (lines 368-377)."""
-        from compiletools.makefile import MakefileCreator
         from unittest.mock import MagicMock
+
+        from compiletools.makefile import MakefileCreator
 
         args = _make_args(makefilename=str(tmp_path / "Makefile"), verbose=10)
         makefile_path = str(tmp_path / "Makefile")

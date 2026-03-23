@@ -1081,7 +1081,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
 
             # Verify hash components
             opt_parts = opt_obj_name.replace(".o", "").split("_")
-            def_parts = list(new_objs)[0].replace(".o", "").split("_")
+            def_parts = next(iter(new_objs)).replace(".o", "").split("_")
 
             assert opt_parts[0] == def_parts[0], "Basename should match"
             assert opt_parts[1] == def_parts[1], "File hash should match (same source)"

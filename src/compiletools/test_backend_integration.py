@@ -12,17 +12,17 @@ import subprocess
 import pytest
 
 import compiletools.apptools
+import compiletools.bazel_backend
+import compiletools.cmake_backend
 import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
 import compiletools.makefile
 import compiletools.makefile_backend
 import compiletools.ninja_backend
-import compiletools.bazel_backend  # noqa: F401 — ensure registered
-import compiletools.cmake_backend  # noqa: F401 — ensure registered
-import compiletools.shake_backend  # noqa: F401 — ensure registered
-import compiletools.tup_backend  # noqa: F401 — ensure registered
+import compiletools.shake_backend
 import compiletools.testhelper as uth
+import compiletools.tup_backend
 import compiletools.utils
 from compiletools.build_backend import available_backends, get_backend_class
 from compiletools.test_base import BaseCompileToolsTestCase
@@ -106,9 +106,10 @@ class TestBackendBuildApplication(BaseCompileToolsTestCase):
             assert any(r.output == "all" for r in phony_rules), f"{backend_name}: expected 'all' phony"
 
             # Generate and execute the build
+            # Note: do NOT pre-create objdir here — the build system must
+            # handle it via the mkdir rule in the BuildGraph.
             objdir = args.objdir
             bindir = args.bindir
-            os.makedirs(objdir, exist_ok=True)
             os.makedirs(bindir, exist_ok=True)
 
             if backend_name == "shake":
@@ -147,8 +148,7 @@ class TestBackendBuildApplication(BaseCompileToolsTestCase):
                     timeout=30,
                 )
                 assert result.returncode == 0, (
-                    f"cmake build failed (rc={result.returncode}):\n"
-                    f"stdout: {result.stdout}\nstderr: {result.stderr}"
+                    f"cmake build failed (rc={result.returncode}):\nstdout: {result.stdout}\nstderr: {result.stderr}"
                 )
 
                 # Copy executable to bindir for verification
@@ -166,12 +166,9 @@ class TestBackendBuildApplication(BaseCompileToolsTestCase):
                 assert os.path.exists(build_file), f"{backend_name}: Tupfile not created"
 
                 subprocess.check_call(["tup", "init"], cwd=str(tmp_path), timeout=10)
-                result = subprocess.run(
-                    ["tup"], cwd=str(tmp_path), capture_output=True, text=True, timeout=30
-                )
+                result = subprocess.run(["tup"], cwd=str(tmp_path), capture_output=True, text=True, timeout=30)
                 assert result.returncode == 0, (
-                    f"tup build failed (rc={result.returncode}):\n"
-                    f"stdout: {result.stdout}\nstderr: {result.stderr}"
+                    f"tup build failed (rc={result.returncode}):\nstdout: {result.stdout}\nstderr: {result.stderr}"
                 )
 
             elif backend_name == "bazel":
@@ -188,43 +185,18 @@ class TestBackendBuildApplication(BaseCompileToolsTestCase):
                     f.write('bazel_dep(name = "rules_cc", version = "0.1.1")\n')
                 assert os.path.exists(build_file), f"{backend_name}: BUILD.bazel not created"
 
-                tool = shutil.which("bazelisk") or shutil.which("bazel")
-                assert tool is not None  # already skipped if not available
-
-                # Build the bazel command with environment workarounds:
-                # --action_env=PATH: Bazel strips PATH by default, which can
-                #   prevent the linker from being found.
-                # --spawn_strategy=local: avoid sandbox issues in test envs.
-                # --host_jvm_args: fix TLS cert verification on RHEL/CentOS.
-                startup_args = [tool]
-                system_cacerts = "/etc/pki/ca-trust/extracted/java/cacerts"
-                if os.path.exists(system_cacerts):
-                    startup_args.extend([
-                        f"--host_jvm_args=-Djavax.net.ssl.trustStore={system_cacerts}",
-                        "--host_jvm_args=-Djavax.net.ssl.trustStorePassword=changeit",
-                    ])
-                cmd = startup_args + [
-                    "build",
-                    "--spawn_strategy=local",
-                    "--action_env=PATH",
-                    "//:all",
-                ]
-
-                result = subprocess.run(cmd, cwd=str(tmp_path), capture_output=True, text=True, timeout=120)
-                if result.returncode != 0 and "certificate" in result.stderr.lower():
-                    pytest.skip(f"bazel TLS error (environment issue): {result.stderr[:200]}")
-                assert result.returncode == 0, (
-                    f"{backend_name} build failed (rc={result.returncode}):\n"
-                    f"stdout: {result.stdout}\nstderr: {result.stderr}"
-                )
-
-                # Copy executable from bazel-bin to bindir for verification
-                bazel_bin = os.path.join(str(tmp_path), "bazel-bin")
-                if os.path.isdir(bazel_bin):
-                    for fname in os.listdir(bazel_bin):
-                        full = os.path.join(bazel_bin, fname)
-                        if os.path.isfile(full) and os.access(full, os.X_OK):
-                            shutil.copy2(full, os.path.join(bindir, fname))
+                orig_dir = os.getcwd()
+                try:
+                    os.chdir(str(tmp_path))
+                    backend.execute("build")
+                except subprocess.CalledProcessError as e:
+                    # Skip on TLS cert errors (environment issue, not a code bug)
+                    stderr = getattr(e, "stderr", "") or ""
+                    if "certificate" in stderr.lower():
+                        pytest.skip(f"bazel TLS error (environment issue): {stderr[:200]}")
+                    raise
+                finally:
+                    os.chdir(orig_dir)
             else:
                 build_file = os.path.join(str(tmp_path), type(backend).build_filename())
                 with open(build_file, "w") as f:
@@ -272,6 +244,64 @@ class TestBackendBuildApplication(BaseCompileToolsTestCase):
                 f"{backend_name}: executable failed (rc={run_result.returncode}):\n"
                 f"stdout: {run_result.stdout}\nstderr: {run_result.stderr}"
             )
+
+
+class TestBackendRunTestsDispatch:
+    """Verify each non-make backend dispatches execute('runtests') to _run_tests()."""
+
+    @pytest.mark.parametrize("backend_name", ["ninja", "bazel", "cmake", "shake", "tup"])
+    def test_execute_runtests_calls_run_tests(self, backend_name):
+        from unittest.mock import MagicMock, patch
+
+        BackendClass = get_backend_class(backend_name)
+        args = MagicMock()
+        args.tests = ["/src/test_foo.cpp"]
+        args.verbose = 0
+        hunter = MagicMock()
+        backend = BackendClass(args=args, hunter=hunter)
+
+        with patch.object(backend, "_run_tests") as mock_run_tests:
+            backend.execute("runtests")
+            mock_run_tests.assert_called_once()
+
+
+class TestBackendBuildGraphWithTests(BaseCompileToolsTestCase):
+    """Verify build_graph() includes test targets for all backends."""
+
+    @uth.requires_functional_compiler
+    def test_build_graph_includes_runtests(self, tmp_path):
+        """build_graph() with tests should include 'runtests' phony target."""
+        with uth.ParserContext():
+            # Use helloworld_cpp.cpp as both a regular and test target to verify graph structure
+            shutil.copy2(os.path.join(uth.samplesdir(), "simple", "helloworld_cpp.cpp"), tmp_path)
+            source_path = os.path.realpath(os.path.join(tmp_path, "helloworld_cpp.cpp"))
+
+            objdir = os.path.join(str(tmp_path), "obj")
+            bindir = os.path.join(str(tmp_path), "bin")
+            argv = [
+                "--include", str(tmp_path),
+                "--objdir", objdir,
+                "--bindir", bindir,
+                "--tests", source_path,
+            ]
+
+            cap = compiletools.apptools.create_parser("Backend integration test", argv=argv)
+            compiletools.makefile.MakefileCreator.add_arguments(cap)
+            args = compiletools.apptools.parseargs(cap, argv)
+
+            headerdeps = compiletools.headerdeps.create(args)
+            magicparser = compiletools.magicflags.create(args, headerdeps)
+            hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser)
+
+            BackendClass = get_backend_class("ninja")
+            backend = BackendClass(args=args, hunter=hunter)
+            graph = backend.build_graph()
+
+            assert "runtests" in graph.outputs
+            runtests_rule = graph.get_rule("runtests")
+            assert runtests_rule is not None
+            assert runtests_rule.rule_type == "phony"
+            assert len(runtests_rule.inputs) >= 1
 
 
 class TestBackendGenerateOutput(BaseCompileToolsTestCase):
@@ -349,3 +379,57 @@ class TestBackendGenerateOutput(BaseCompileToolsTestCase):
             assert "add_executable(" in content
             assert "CMakeLists.txt generated by compiletools" in content
             assert ".cpp" in content
+
+
+class TestBackendDefaultFileWrite(BaseCompileToolsTestCase):
+    """Verify each backend's generate(graph) with output=None writes the expected file."""
+
+    @pytest.mark.parametrize(
+        "backend_name,expected_file,expected_marker",
+        [
+            ("make", "Makefile", ".DELETE_ON_ERROR:"),
+            ("ninja", "build.ninja", "rule compile_cmd"),
+            ("bazel", "BUILD.bazel", "BUILD.bazel generated by compiletools"),
+            ("cmake", "CMakeLists.txt", "cmake_minimum_required"),
+            ("tup", "Tupfile", "Tupfile generated by compiletools"),
+        ],
+    )
+    def test_default_file_write(self, backend_name, expected_file, expected_marker, tmp_path):
+        """generate(graph) with output=None should write the expected file to disk."""
+        with uth.ParserContext():
+            backend, graph, args = _setup_backend_for_source(backend_name, tmp_path)
+
+            # For make backend, set makefilename to tmp_path so it writes there
+            if backend_name == "make":
+                args.makefilename = os.path.join(str(tmp_path), expected_file)
+
+            # chdir to tmp_path so default file writes land there
+            orig_dir = os.getcwd()
+            try:
+                os.chdir(str(tmp_path))
+                backend.generate(graph)
+            finally:
+                os.chdir(orig_dir)
+
+            output_path = os.path.join(str(tmp_path), expected_file)
+            assert os.path.exists(output_path), f"{backend_name}: expected {expected_file} at {output_path}"
+            with open(output_path) as fh:
+                content = fh.read()
+            assert expected_marker in content, (
+                f"{backend_name}: {expected_file} missing expected marker '{expected_marker}'"
+            )
+
+    def test_shake_stores_graph_internally(self, tmp_path):
+        """Shake backend stores graph internally; no file written on generate()."""
+        with uth.ParserContext():
+            backend, graph, _args = _setup_backend_for_source("shake", tmp_path)
+
+            orig_dir = os.getcwd()
+            try:
+                os.chdir(str(tmp_path))
+                backend.generate(graph)
+            finally:
+                os.chdir(orig_dir)
+
+            # Shake stores the graph internally, no file is written
+            assert backend._graph is graph

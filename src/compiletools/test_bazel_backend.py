@@ -1,7 +1,7 @@
 """Unit tests for the Bazel build backend (no compiler required)."""
 
 import io
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from compiletools.bazel_backend import BazelBackend, _extract_copts, _extract_linkopts
 from compiletools.build_backend import get_backend_class
@@ -208,3 +208,98 @@ class TestLinkoptsExtraction:
         cmd = ["g++", "-o", "bin/app", "obj/a.o", "obj/b.o", "-lz"]
         objs = {"obj/a.o", "obj/b.o"}
         assert _extract_linkopts(cmd, objs) == ["-lz"]
+
+
+class TestBazelExecuteRuntests:
+    def test_execute_runtests_calls_run_tests(self):
+        args = MagicMock()
+        args.tests = ["/src/test_foo.cpp"]
+        args.verbose = 0
+        hunter = MagicMock()
+        backend = BazelBackend(args=args, hunter=hunter)
+
+        with patch.object(backend, "_run_tests") as mock_run_tests:
+            backend.execute("runtests")
+            mock_run_tests.assert_called_once()
+
+    def test_execute_build_does_not_call_run_tests(self):
+        args = MagicMock()
+        hunter = MagicMock()
+        backend = BazelBackend(args=args, hunter=hunter)
+
+        with (
+            patch.object(backend, "_run_tests") as mock_run_tests,
+            patch("subprocess.check_call"),
+            patch("shutil.which", return_value="/usr/bin/bazel"),
+            patch("os.path.exists", return_value=False),
+            patch("os.path.isdir", return_value=False),
+        ):
+            backend.execute("build")
+            mock_run_tests.assert_not_called()
+
+
+class TestBazelCopyExecutables:
+    def test_copy_built_executables_to_namer_paths(self, tmp_path):
+        """After bazel build, executables should be copied to namer paths."""
+        # Set up a fake bazel-bin directory
+        bazel_bin = tmp_path / "bazel-bin"
+        bazel_bin.mkdir()
+        exe = bazel_bin / "helloworld_cpp"
+        exe.write_text("#!/bin/sh\necho hello")
+        exe.chmod(0o755)
+
+        args = MagicMock()
+        args.filename = ["/src/helloworld_cpp.cpp"]
+        args.tests = []
+        hunter = MagicMock()
+        backend = BazelBackend(args=args, hunter=hunter)
+
+        dest_path = str(tmp_path / "obj" / "helloworld_cpp")
+        backend.namer = MagicMock()
+        backend.namer.executable_pathname = MagicMock(return_value=dest_path)
+
+        with patch("compiletools.wrappedos.realpath", side_effect=lambda x: x):
+            backend._copy_built_executables(str(bazel_bin))
+
+        import os
+
+        assert os.path.exists(dest_path)
+
+
+class TestBazelExecute:
+    def _make_backend(self):
+        args = MagicMock()
+        hunter = MagicMock()
+        return BazelBackend(args=args, hunter=hunter)
+
+    @patch("subprocess.check_call")
+    @patch("shutil.which", side_effect=lambda name: "/usr/bin/bazel" if name == "bazel" else None)
+    @patch("os.path.exists", return_value=True)
+    def test_execute_includes_tls_workaround_when_cacerts_exist(self, mock_exists, mock_which, mock_check_call):
+        backend = self._make_backend()
+        backend.execute("build")
+
+        cmd = mock_check_call.call_args[0][0]
+        assert any("trustStore=" in arg for arg in cmd), f"Expected trustStore in {cmd}"
+        assert any("trustStorePassword=" in arg for arg in cmd), f"Expected trustStorePassword in {cmd}"
+
+    @patch("subprocess.check_call")
+    @patch("shutil.which", side_effect=lambda name: "/usr/bin/bazel" if name == "bazel" else None)
+    @patch("os.path.exists", return_value=False)
+    def test_execute_omits_tls_workaround_when_no_cacerts(self, mock_exists, mock_which, mock_check_call):
+        backend = self._make_backend()
+        backend.execute("build")
+
+        cmd = mock_check_call.call_args[0][0]
+        assert not any("trustStore" in arg for arg in cmd), f"Unexpected trustStore in {cmd}"
+
+    @patch("subprocess.check_call")
+    @patch("shutil.which", side_effect=lambda name: "/usr/bin/bazel" if name == "bazel" else None)
+    @patch("os.path.exists", return_value=False)
+    def test_execute_includes_spawn_strategy_and_action_env(self, mock_exists, mock_which, mock_check_call):
+        backend = self._make_backend()
+        backend.execute("build")
+
+        cmd = mock_check_call.call_args[0][0]
+        assert "--spawn_strategy=local" in cmd
+        assert "--action_env=PATH" in cmd
