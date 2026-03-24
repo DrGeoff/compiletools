@@ -117,12 +117,14 @@ General Options
 
 HOW IT WORKS
 ============
-1. Scans objdir for ``.lockdir`` directories and ``.lock`` files
-2. For lockdir locks: reads hostname:pid from pid file
-3. For fcntl lock files: probes with non-blocking ``fcntl.lockf()``
-4. For local locks: checks if process still exists
-5. For remote locks: SSHs to host and checks if process exists
-6. Removes locks where process is dead, unheld, or very old
+1. Scans objdir for ``.lockdir`` directories
+2. Reads hostname:pid from lockdir pid file
+3. For local locks: checks if process still exists
+4. For remote locks: SSHs to host and checks if process exists
+5. Removes locks where process is dead or very old
+
+Note: fcntl (GPFS) locks the target file directly with no sidecar files,
+so there is nothing for cleanup to scan.
 
 LOCK AGE POLICY
 ===============
@@ -185,10 +187,9 @@ For example::
 
 The tool uses this information to determine if the process is still running.
 
-**Fcntl lock files** (GPFS): Empty files named ``<filename>.lock``.
-These are probed with non-blocking ``fcntl.lockf()`` to determine if
-actively held. Unheld lock files are harmless artifacts that can be
-safely removed.
+**Fcntl locks** (GPFS): The fcntl strategy locks the target ``.o`` file
+directly — there are no sidecar ``.lock`` files to clean up. The kernel
+automatically releases locks when the process exits.
 
 SSH REQUIREMENTS
 ================

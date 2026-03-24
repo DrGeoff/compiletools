@@ -68,10 +68,9 @@ Example:
 
 The helper will:
   1. Acquire lock based on strategy
-  2. Create temp file (file.o.$$.$$RANDOM.tmp)
-  3. Execute: gcc -c file.c -o file.o.$$.$$RANDOM.tmp
-  4. Move temp to target: mv file.o.$$.$$RANDOM.tmp file.o
-  5. Release lock
+  2. For fcntl: compile directly to target (no temp file)
+     For others: compile to temp file, then rename to target
+  3. Release lock
 EOF
 }
 
@@ -361,35 +360,26 @@ release_lock_fcntl() {
 }
 
 compile_under_fcntl_lock() {
-    local lockfile="$1"
-    shift
     local target="$1"
-    shift
-    local tempfile="$1"
     shift
     # Remaining args are the compile command
 
     python3 -c "
 import fcntl, os, subprocess, sys
 
-lockfile, target, tempfile = sys.argv[1], sys.argv[2], sys.argv[3]
-cmd = sys.argv[4:]
+target = sys.argv[1]
+cmd = sys.argv[2:]
 
-fd = os.open(lockfile, os.O_CREAT | os.O_RDWR, 0o666)
+fd = os.open(target, os.O_CREAT | os.O_RDWR, 0o666)
 try:
     fcntl.lockf(fd, fcntl.LOCK_EX)
-    result = subprocess.run(cmd + ['-o', tempfile])
+    result = subprocess.run(cmd + ['-o', target])
     if result.returncode != 0:
-        try:
-            os.unlink(tempfile)
-        except OSError:
-            pass
         sys.exit(result.returncode)
-    os.rename(tempfile, target)
 finally:
     fcntl.lockf(fd, fcntl.LOCK_UN)
     os.close(fd)
-" "$lockfile" "$target" "$tempfile" "$@"
+" "$target" "$@"
 }
 
 # === Generic Lock Interface ===
@@ -486,8 +476,11 @@ cmd_compile() {
         lockdir)
             LOCKPATH="$TARGET.lockdir"
             ;;
-        cifs|flock|fcntl)
+        cifs|flock)
             LOCKPATH="$TARGET.lock"
+            ;;
+        fcntl)
+            LOCKPATH="$TARGET"
             ;;
         *)
             echo "ERROR: Invalid strategy: $STRATEGY (must be lockdir, cifs, flock, or fcntl)" >&2
@@ -507,8 +500,9 @@ cmd_compile() {
 
     # For fcntl strategy, delegate entire compile-under-lock to Python
     # (fcntl locks are per-process, shell can't hold lock and exec compiler)
+    # Compiles directly to target (no temp file, no rename)
     if [ "$STRATEGY" = "fcntl" ]; then
-        compile_under_fcntl_lock "$LOCKPATH" "$TARGET" "$TEMPFILE" "${compile_args[@]}"
+        compile_under_fcntl_lock "$TARGET" "${compile_args[@]}"
         return
     fi
 

@@ -197,6 +197,31 @@ class TestLockCleanerUnit:
         assert 99 <= age <= 101
 
 
+class TestFcntlCleanupRemoved:
+    """Verify fcntl-specific cleanup code has been removed."""
+
+    def test_no_fcntl_lock_held_method(self, mock_args):
+        """LockCleaner should not have _is_fcntl_lock_held (no sidecar files to clean)."""
+        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
+        assert not hasattr(cleaner, "_is_fcntl_lock_held")
+
+    def test_no_fcntl_lock_scan(self, tmpdir_with_locks, mock_args):
+        """Scanning a GPFS directory should NOT scan for .lock files."""
+        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
+
+        # Create a .lock file that would previously have been scanned
+        lockfile = os.path.join(tmpdir_with_locks, "test.o.lock")
+        with open(lockfile, "w") as f:
+            f.write("")
+
+        with patch("compiletools.filesystem_utils.get_filesystem_type", return_value="gpfs"), \
+             patch("compiletools.filesystem_utils.get_lock_strategy", return_value="fcntl"):
+            stats = cleaner.scan_and_cleanup(tmpdir_with_locks)
+
+        # .lock file should NOT be counted (no fcntl scan)
+        assert stats["total"] == 0
+
+
 class TestLockCleanerIntegration:
     """Integration tests with real lockdirs, mocked SSH."""
 

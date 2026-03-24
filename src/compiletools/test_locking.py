@@ -2,13 +2,14 @@
 
 import os
 import shutil
+import subprocess
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from compiletools.locking import CIFSLock, FcntlLock, FileLock, FlockLock, LockdirLock
+from compiletools.locking import CIFSLock, FcntlLock, FileLock, FlockLock, LockdirLock, atomic_compile
 
 
 def _make_lock_args(**overrides):
@@ -313,6 +314,35 @@ class TestFcntlLock:
             # Release without acquire — should not crash
             lock.release()
 
+    def test_locks_target_directly(self):
+        """FcntlLock.lockfile should be the target itself (no .lock suffix)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FcntlLock(target, args)
+            assert lock.lockfile == os.path.realpath(target)
+
+    def test_fcntl_direct_compile_true(self):
+        """FcntlLock should have direct_compile = True."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FcntlLock(target, args)
+            assert lock.direct_compile is True
+
+    def test_no_sidecar_file(self):
+        """Acquiring FcntlLock should NOT create a .lock sidecar file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FcntlLock(target, args)
+            lock.acquire()
+            try:
+                assert not os.path.exists(target + ".lock")
+            finally:
+                lock.release()
+
+
 class TestFlockLock:
     """Test FlockLock edge cases."""
 
@@ -412,6 +442,93 @@ class TestFlockLockRelease:
             lock = FlockLock(target, args)
             lock.acquire()
             lock.release()
+
+
+class TestDirectCompileProperty:
+    """Test that non-fcntl lock classes have direct_compile = False."""
+
+    def test_lockdir_direct_compile_false(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = LockdirLock(target, args)
+            assert lock.direct_compile is False
+
+    def test_flock_direct_compile_false(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+            assert lock.direct_compile is False
+
+    def test_cifs_direct_compile_false(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = CIFSLock(target, args)
+            assert lock.direct_compile is False
+
+
+class TestAtomicCompile:
+    """Test atomic_compile with direct_compile vs indirect locks."""
+
+    def test_atomic_compile_direct_no_temp(self):
+        """FcntlLock (direct_compile=True): compiler gets -o target, no rename."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FcntlLock(target, args)
+
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                )
+                atomic_compile(lock, target, ["gcc", "-c", "test.c"])
+
+                # Compiler should get -o target directly
+                call_args = mock_run.call_args[0][0]
+                assert call_args[-2:] == ["-o", target]
+
+            # No temp files should exist
+            for f in os.listdir(tmpdir):
+                assert ".tmp" not in f
+
+    def test_atomic_compile_direct_no_rename(self):
+        """FcntlLock (direct_compile=True): os.rename is NOT called."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FcntlLock(target, args)
+
+            with patch("subprocess.run") as mock_run, \
+                 patch("os.rename") as mock_rename:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                )
+                atomic_compile(lock, target, ["gcc", "-c", "test.c"])
+                mock_rename.assert_not_called()
+
+    def test_atomic_compile_indirect_uses_temp(self):
+        """FlockLock (direct_compile=False): compiler gets -o *.tmp, rename IS called."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+
+            with patch("subprocess.run") as mock_run, \
+                 patch("os.rename") as mock_rename:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                )
+                atomic_compile(lock, target, ["gcc", "-c", "test.c"])
+
+                # Compiler should get -o *.tmp
+                call_args = mock_run.call_args[0][0]
+                assert call_args[-2] == "-o"
+                assert call_args[-1].endswith(".tmp")
+
+                # os.rename should be called
+                mock_rename.assert_called_once()
 
 
 class TestFileLock:

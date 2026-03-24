@@ -50,10 +50,9 @@ Example::
 The helper will:
 
 1. Acquire lock based on strategy
-2. Create temporary file (``file.o.PID.RANDOM.tmp``)
-3. Execute: ``gcc -c file.c -o file.o.PID.RANDOM.tmp``
-4. Move temp to target: ``mv file.o.PID.RANDOM.tmp file.o``
-5. Release lock
+2. For fcntl: compile directly to target (no temp file)
+   For others: compile to temp file (``file.o.PID.RANDOM.tmp``), then rename to target
+3. Release lock
 
 Configuration
 -------------
@@ -139,15 +138,18 @@ need for polling and stale lock detection.
 - No polling: ``lockf(LOCK_EX)`` blocks in the kernel
 - No stale detection: kernel releases locks automatically on process death
 - No holder info: not needed since the kernel manages everything
+- Locks the target ``.o`` file directly — no sidecar ``.lock`` file
+- Compiles directly to target (no temp file, no rename)
 
 **Lock structure:**
 
 ::
 
-    target.o.lock        # Empty lockfile (reused across acquisitions)
+    target.o             # Locked directly via fcntl (no sidecar files)
 
-**Note:** Lock files are intentionally NOT removed on release to avoid creation
-races. They are harmless empty files that get reused.
+The fcntl advisory lock is placed on the target file itself. Since gcc opens
+the output with ``O_WRONLY|O_CREAT|O_TRUNC``, which preserves the inode, the
+lock held by the build process remains valid throughout compilation.
 
 **Shell implementation:** Since fcntl locks are per-process (not per-fd), the
 shell cannot hold an fcntl lock and then exec a compiler. The bash
@@ -349,13 +351,13 @@ The locking algorithm mirrors ``locking.py`` for consistency:
 
 2. **Execute:**
 
-   - Compile to temporary file
+   - For fcntl: compile directly to target (advisory lock protects target)
+   - For others: compile to temporary file, then rename to target (atomic)
    - Exit immediately on compile errors (``set -euo pipefail``)
 
 3. **Release:**
 
-   - Move temp to target (atomic)
-   - Remove lock files
+   - Remove lock files (except fcntl, which has no sidecar)
    - Cleanup via trap on EXIT/INT/TERM
 
 **Error handling:**

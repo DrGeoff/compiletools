@@ -34,12 +34,15 @@ class FcntlLock:
     and automatic release on process death — no polling, no stale detection,
     no holder info needed.
 
-    Lock files are NOT unlinked on release to avoid creation races; they are
-    harmless empty files that get reused.
+    Locks the target file directly (no sidecar .lock file). This works because
+    gcc opens the output with O_WRONLY|O_CREAT|O_TRUNC, which preserves the
+    inode — so the advisory fcntl lock stays valid.
     """
 
+    direct_compile = True
+
     def __init__(self, target_file, args):
-        self.lockfile = compiletools.wrappedos.realpath(target_file) + ".lock"
+        self.lockfile = compiletools.wrappedos.realpath(target_file)
         self.fd = None
         self.args = args
 
@@ -76,6 +79,8 @@ class FcntlLock:
 
 class LockdirLock:
     """Lockdir-based locking for NFS/Lustre (mkdir atomic operation)."""
+
+    direct_compile = False
 
     def __init__(self, target_file, args):
         # Use wrappedos for path computations (pure, cacheable)
@@ -352,6 +357,8 @@ class LockdirLock:
 class CIFSLock:
     """CIFS/SMB locking using exclusive file creation (O_CREAT|O_EXCL)."""
 
+    direct_compile = False
+
     def __init__(self, target_file, args):
         self.lockfile = target_file + ".lock"
         self.lockfile_excl = target_file + ".lock.excl"
@@ -406,6 +413,8 @@ class FlockLock:
     for GPFS or LockdirLock for NFS/Lustre. This class should only be
     used when filesystem detection confirms a local filesystem.
     """
+
+    direct_compile = False
 
     def __init__(self, target_file, args):
         self.lockfile = target_file + ".lock"
@@ -532,10 +541,15 @@ class FileLock:
 
 
 def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.CompletedProcess:
-    """Execute compilation atomically: compile to temp file, then rename.
+    """Execute compilation atomically under a lock.
 
-    Prevents TOCTOU races where another process sees a partially-written
-    output file. The target file never exists in a partial state.
+    For locks with direct_compile=True (FcntlLock): compiles directly to
+    the target file. The fcntl advisory lock protects the target while gcc
+    writes to it (O_WRONLY|O_CREAT|O_TRUNC preserves the inode).
+
+    For other locks: compiles to a temp file, then renames to target,
+    preventing TOCTOU races where another process sees a partially-written
+    output file.
 
     Args:
         lock: Lock object with acquire()/release() methods.
@@ -548,6 +562,19 @@ def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.Comp
     Raises:
         subprocess.CalledProcessError: If compilation fails.
     """
+    if getattr(lock, "direct_compile", False):
+        lock.acquire()
+        try:
+            cmd = list(compile_cmd) + ["-o", target]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise subprocess.CalledProcessError(
+                    result.returncode, cmd, result.stdout, result.stderr
+                )
+            return result
+        finally:
+            lock.release()
+
     pid = os.getpid()
     random_suffix = os.urandom(2).hex()
     tempfile_path = f"{target}.{pid}.{random_suffix}.tmp"
