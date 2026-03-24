@@ -34,7 +34,8 @@ the target filesystem type:
 Usage
 -----
 
-ct-lock-helper is invoked automatically by ``ct-cake`` when using ``--file-locking``.
+ct-lock-helper is invoked automatically by ``ct-cake`` when using ``--file-locking``
+with the Make or Ninja backends.
 You typically don't call it directly, but it's useful to understand for debugging.
 
 Basic command format::
@@ -206,7 +207,7 @@ Measured overhead (vs direct gcc, 100 iterations):
 
 **Filesystem detection:**
 
-Strategy is determined once in Python and baked into Makefile.
+Strategy is determined once in Python and baked into Makefile/build.ninja.
 No per-compilation filesystem detection overhead.
 
 **Benchmark:**

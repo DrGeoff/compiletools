@@ -276,6 +276,74 @@ class BuildBackend(abc.ABC):
         )
 
 
+def wrap_compile_with_lock(compile_cmd: str, target: str, args, filesystem_type: str) -> str:
+    """Wrap a compile command with ct-lock-helper for file locking.
+
+    Shared by Make and Ninja backends. When args.file_locking is False,
+    returns the command with ``-o target`` appended unchanged.
+
+    Args:
+        compile_cmd: Compile command without -o flag (e.g., "gcc -c file.c")
+        target: Target file (e.g., "$@" for Make, or an actual path for Ninja)
+        args: Namespace with file_locking, sleep_interval_lockdir,
+              sleep_interval_cifs, sleep_interval_flock_fallback,
+              lock_warn_interval, lock_cross_host_timeout
+        filesystem_type: Result of filesystem_utils.get_filesystem_type()
+
+    Returns:
+        Complete command string, lock-wrapped if file_locking is enabled.
+    """
+    if not args.file_locking:
+        return compile_cmd + " -o " + target
+
+    import compiletools.filesystem_utils
+
+    strategy = compiletools.filesystem_utils.get_lock_strategy(filesystem_type)
+
+    # Build environment variables for lock configuration
+    env_vars = []
+
+    if strategy == "lockdir":
+        if args.sleep_interval_lockdir is not None:
+            sleep_interval = args.sleep_interval_lockdir
+        else:
+            sleep_interval = compiletools.filesystem_utils.get_lockdir_sleep_interval(filesystem_type)
+        env_vars.append(f"CT_LOCK_SLEEP_INTERVAL={sleep_interval}")
+    elif strategy == "cifs":
+        env_vars.append(f"CT_LOCK_SLEEP_INTERVAL_CIFS={args.sleep_interval_cifs}")
+    else:  # flock
+        env_vars.append(f"CT_LOCK_SLEEP_INTERVAL_FLOCK={args.sleep_interval_flock_fallback}")
+
+    env_vars.append(f"CT_LOCK_WARN_INTERVAL={args.lock_warn_interval}")
+    env_vars.append(f"CT_LOCK_TIMEOUT={args.lock_cross_host_timeout}")
+
+    env_prefix = " ".join(env_vars) + " " if env_vars else ""
+
+    return f"{env_prefix}ct-lock-helper compile --target={target} --strategy={strategy} -- {compile_cmd}"
+
+
+def check_lock_helper_available() -> bool:
+    """Check if ct-lock-helper is on PATH. Returns True if found."""
+    import shutil
+
+    return shutil.which("ct-lock-helper") is not None
+
+
+def report_lock_helper_missing() -> None:
+    """Print error message about missing ct-lock-helper and exit."""
+    print("ERROR: ct-lock-helper not found in PATH", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("The --file-locking flag requires ct-lock-helper to be installed.", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("Solutions:", file=sys.stderr)
+    print("  1. Install compiletools: pip install compiletools", file=sys.stderr)
+    print("  2. Install from source: pip install -e .", file=sys.stderr)
+    print("  3. Add ct-lock-helper to your PATH", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("Or disable file locking with: --no-file-locking", file=sys.stderr)
+    sys.exit(1)
+
+
 _REGISTRY: dict[str, type[BuildBackend]] = {}
 
 
