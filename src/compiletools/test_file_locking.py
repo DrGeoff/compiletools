@@ -16,7 +16,7 @@ import compiletools.locking
 def mock_args():
     """Create mock args object with locking configuration."""
     args = Mock()
-    args.shared_objects = True
+    args.file_locking = True
     args.lock_cross_host_timeout = 600
     args.lock_warn_interval = 60
     args.lock_creation_grace_period = 2
@@ -410,9 +410,9 @@ class TestFileLock:
                 lock_ctx = compiletools.locking.FileLock(temp_lock_file, mock_args)
                 assert isinstance(lock_ctx.lock, compiletools.locking.FlockLock)
 
-    def test_noop_when_shared_objects_false(self, temp_lock_file, mock_args):
-        """Test that FileLock is no-op when shared_objects=False."""
-        mock_args.shared_objects = False
+    def test_noop_when_file_locking_false(self, temp_lock_file, mock_args):
+        """Test that FileLock is no-op when file_locking=False."""
+        mock_args.file_locking = False
 
         lock_ctx = compiletools.locking.FileLock(temp_lock_file, mock_args)
         assert lock_ctx.lock is None
@@ -495,7 +495,7 @@ class TestConcurrentLocking:
 
         # Convert args to dict for pickling
         args_dict = {
-            "shared_objects": True,
+            "file_locking": True,
             "lock_cross_host_timeout": 600,
             "lock_warn_interval": 60,
             "lock_creation_grace_period": 2,

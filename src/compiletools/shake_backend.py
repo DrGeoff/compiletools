@@ -260,7 +260,7 @@ class ShakeBackend(BuildBackend):
             flat_cmd.extend(parts)
 
         # Use FileLock for cross-process safety on shared filesystems
-        # (NFS/GPFS/Lustre/CIFS). FileLock is a no-op when shared_objects
+        # (NFS/GPFS/Lustre/CIFS). FileLock is a no-op when file_locking
         # is disabled; when enabled it selects the right locking strategy
         # (lockdir/cifs/flock) based on filesystem type.
         with FileLock(target, self.args):

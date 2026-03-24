@@ -60,12 +60,12 @@ OPTIONS
 --objdir DIR
     Output directory for object files. Default: bin/<variant>/obj
 
---shared-objects
-    Enable shared object cache for faster rebuilds across projects.
+--file-locking
+    Enable file locking for faster rebuilds across projects.
     Uses content-addressable storage with proper locking.
 
---no-shared-objects
-    Disable shared object cache. Default.
+--no-file-locking
+    Disable file locking. Default.
 
 --serialise-tests
     Run tests sequentially rather than in parallel.
@@ -112,11 +112,11 @@ Generate with a shared library:
     ct-create-makefile --dynamic mylib.cpp main.cpp
     make
 
-Generate for release variant with shared object cache:
+Generate for release variant with file locking:
 
 .. code-block:: bash
 
-    ct-create-makefile --variant=release --shared-objects main.cpp
+    ct-create-makefile --variant=release --file-locking main.cpp
     make
 
 COMPARISON WITH CT-CAKE

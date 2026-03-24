@@ -144,7 +144,7 @@ supports the following features:
     CC = gcc
 
     # Boolean
-    shared-objects = true
+    file-locking = true
 
     # Number
     max_file_read_size = 0
@@ -166,7 +166,7 @@ Command-line options automatically map to environment variables by:
 .. code-block:: bash
 
     --variant=release    -> VARIANT=release
-    --shared-objects     -> SHARED_OBJECTS=true
+    --file-locking       -> FILE_LOCKING=true
     --append-CXXFLAGS    -> APPEND_CXXFLAGS="-O2"
 
 **Common Configuration Options**
@@ -180,7 +180,7 @@ Base configuration (ct.conf):
     exemarkers = [main(,main (,wxIMPLEMENT_APP,g_main_loop_new]
     testmarkers = unit_test.hpp
     max_file_read_size = 0                            # 0 = read entire file
-    # shared-objects = true                           # Enable shared object cache
+    # file-locking = true                              # Enable file locking
     # objdir = /path/to/cache                         # Object file cache location
 
 Variant configuration (e.g., gcc.debug.conf):

@@ -205,7 +205,7 @@ class TestBuildGraphPopulation:
             CXXFLAGS="-O2 -std=c++17",
             LD="g++",
             LDFLAGS="",
-            shared_objects=False,
+            file_locking=False,
             serialisetests=False,
             build_only_changed=None,
         )
@@ -394,7 +394,7 @@ class TestRunTests:
             CXXFLAGS="-O2",
             LD="g++",
             LDFLAGS="",
-            shared_objects=False,
+            file_locking=False,
             serialisetests=False,
             build_only_changed=None,
         )

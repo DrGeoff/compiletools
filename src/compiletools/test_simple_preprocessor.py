@@ -1222,7 +1222,7 @@ class TestMacroHashConsistency:
 class TestMacroStateBuildContextHash:
     """Tests for MacroState hashing of build context (cflags, cxxflags, cppflags, compiler_path).
 
-    These tests verify the fix for the shared-objects hash collision bug where
+    These tests verify the fix for the content-addressable hash collision bug where
     objects compiled with different flags (e.g. -O0 vs -O2, or different -I paths)
     were incorrectly reused because the hash omitted non-macro compile flags.
     """

@@ -225,21 +225,21 @@ class MakefileCreator:
         self.namer = compiletools.namer.Namer(args)
         self.hunter = hunter
 
-        # Check if ct-lock-helper is available when using shared_objects
-        if args.shared_objects:
+        # Check if ct-lock-helper is available when using file_locking
+        if args.file_locking:
             import shutil
 
             if not shutil.which("ct-lock-helper"):
                 print("ERROR: ct-lock-helper not found in PATH", file=sys.stderr)
                 print("", file=sys.stderr)
-                print("The --shared-objects flag requires ct-lock-helper to be installed.", file=sys.stderr)
+                print("The --file-locking flag requires ct-lock-helper to be installed.", file=sys.stderr)
                 print("", file=sys.stderr)
                 print("Solutions:", file=sys.stderr)
                 print("  1. Install compiletools: pip install compiletools", file=sys.stderr)
                 print("  2. Install from source: pip install -e .", file=sys.stderr)
                 print("  3. Add ct-lock-helper to your PATH", file=sys.stderr)
                 print("", file=sys.stderr)
-                print("Or disable shared objects with: --no-shared-objects", file=sys.stderr)
+                print("Or disable file locking with: --no-file-locking", file=sys.stderr)
                 sys.exit(1)
 
         # Detect filesystem type once and cache it
@@ -248,9 +248,9 @@ class MakefileCreator:
         # Detect OS type once and cache it
         self._os_type = self._detect_os_type()
 
-        # Validate umask compatibility with shared-objects
-        if self.args.shared_objects:
-            self._validate_umask_for_shared_objects()
+        # Validate umask compatibility with file-locking
+        if self.args.file_locking:
+            self._validate_umask_for_file_locking()
 
     @staticmethod
     def add_arguments(cap):
@@ -272,10 +272,10 @@ class MakefileCreator:
         )
         compiletools.utils.add_boolean_argument(
             parser=cap,
-            name="shared-objects",
-            dest="shared_objects",
-            default=False,
-            help="Enable shared object cache for multi-user/multi-host builds",
+            name="file-locking",
+            dest="file_locking",
+            default=True,
+            help="Enable file locking for concurrent multi-user/multi-host builds",
         )
         compiletools.utils.add_flag_argument(
             parser=cap,
@@ -306,8 +306,8 @@ class MakefileCreator:
             # Default to linux for unknown platforms
             return "linux"
 
-    def _validate_umask_for_shared_objects(self):
-        """Log warning if umask may affect multi-user shared-objects mode"""
+    def _validate_umask_for_file_locking(self):
+        """Log warning if umask may affect multi-user file-locking mode"""
         current_umask = os.umask(0)
         os.umask(current_umask)  # Restore immediately
 
@@ -316,7 +316,7 @@ class MakefileCreator:
         # For multi-user scenarios, group permissions are needed for cross-user cleanup
         if (current_umask & 0o060) and self.args.verbose >= 1:
             print(
-                f"Warning: shared-objects enabled with restrictive umask {oct(current_umask)}\n"
+                f"Warning: file-locking enabled with restrictive umask {oct(current_umask)}\n"
                 f"  Single-user mode: Works fine (you can always remove your own locks)\n"
                 f"  Multi-user mode: Requires umask 0002 or 0007 for cross-user lock cleanup\n"
                 f"  If using multi-user cache, set: umask 0002",
@@ -387,7 +387,7 @@ class MakefileCreator:
             Complete command with locking
             (e.g., "ct-lock-helper compile --target=$@ --strategy=lockdir -- gcc -c file.c")
         """
-        if not self.args.shared_objects:
+        if not self.args.file_locking:
             return compile_cmd + " -o " + target
 
         strategy = compiletools.filesystem_utils.get_lock_strategy(self._filesystem_type)
@@ -744,7 +744,7 @@ class MakefileCreator:
         # Build compile command without -o flag (ct-lock-helper adds it)
         compile_cmd_base = " ".join(compile_flags + ["-c", filename])
 
-        # Wrap with locking if shared_objects enabled
+        # Wrap with locking if file_locking enabled
         compile_cmd = self._wrap_compile_with_lock(compile_cmd_base, obj_name)
         recipe += compile_cmd
 

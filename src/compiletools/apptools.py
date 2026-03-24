@@ -240,10 +240,15 @@ def add_output_directory_arguments(cap, variant):
         help="Output directory for executables",
         default="".join(["bin/", variant]),
     )
+    git_root = compiletools.git_utils.find_git_root()
+    if git_root:
+        default_objdir = os.path.join(git_root, "shared-objdir", variant)
+    else:
+        default_objdir = "".join(["bin/", variant, "/obj"])
     cap.add(
         "--objdir",
         help="Output directory for object files",
-        default="".join(["bin/", variant, "/obj"]),
+        default=default_objdir,
     )
 
 
@@ -1099,8 +1104,13 @@ def _commonsubstitutions(args):
         pass
 
     try:
-        # Same idea as the bindir modification
-        args.objdir = unsupplied_replacement(args.objdir, os.path.join(args.bindir, "obj"), args.verbose, "objdir")
+        # Same idea as the bindir modification -- use shared-objdir at git root if available
+        git_root = compiletools.git_utils.find_git_root()
+        if git_root:
+            default_objdir = os.path.join(git_root, "shared-objdir", args.variant)
+        else:
+            default_objdir = os.path.join(args.bindir, "obj")
+        args.objdir = unsupplied_replacement(args.objdir, default_objdir, args.verbose, "objdir")
     except AttributeError:
         pass
 

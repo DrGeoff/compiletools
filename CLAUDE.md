@@ -124,7 +124,7 @@ PreprocessingCache                    # Two-tier caching
 
 ### Configuration Files
 
-- `ct.conf.d/ct.conf` -- default variant, variant aliases, exe/test markers, shared-objects settings
+- `ct.conf.d/ct.conf` -- default variant, variant aliases, exe/test markers, file-locking settings
 - `ct.conf.d/{variant}.conf` -- compiler-specific flags (e.g., `gcc.debug.conf`, `clang.release.conf`)
 - Config priority: bundled < system (`/etc/xdg/ct`) < venv < user (`~/.config/ct`) < project (`{gitroot}/ct.conf.d/`) < cwd < env < CLI
 
@@ -146,7 +146,7 @@ All tools support `--variant=<config>` for build configuration selection and `--
 
 Two caches to be aware of when performance testing:
 1. **ccache** -- clear with `ccache -C`
-2. **cake object cache** -- clear with `rm -rf bin`; with `--shared-objects`, objdir may be a shared location
+2. **cake object cache** -- clear with `rm -rf bin`; with `--file-locking`, objdir may be a shared location
 
 ## Profiling
 
