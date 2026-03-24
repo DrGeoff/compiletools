@@ -76,52 +76,6 @@ def create_lock(strategy, target_file, args):
         raise ValueError(f"Unknown strategy: {strategy}")
 
 
-def execute_compile(lock, target, compile_cmd, exit_handler):
-    """Execute compilation with locking.
-
-    Args:
-        lock: Lock instance
-        target: Target output file
-        compile_cmd: List of compile command arguments
-        exit_handler: GracefulExit instance for cleanup
-
-    Raises:
-        subprocess.CalledProcessError: If compilation fails
-    """
-    # Generate temp file name (matches bash: target.PID.RANDOM.tmp)
-    pid = os.getpid()
-    random_suffix = os.urandom(2).hex()
-    tempfile_path = f"{target}.{pid}.{random_suffix}.tmp"
-
-    exit_handler.tempfile = tempfile_path
-    exit_handler.lock = lock
-
-    try:
-        # Acquire lock
-        lock.acquire()
-        exit_handler.acquired = True
-
-        # Execute compilation to temp file
-        cmd = list(compile_cmd) + ["-o", tempfile_path]
-        subprocess.run(cmd, check=True)
-
-        # Atomic move
-        os.rename(tempfile_path, target)
-
-    finally:
-        # Release lock
-        if exit_handler.acquired:
-            lock.release()
-            exit_handler.acquired = False
-
-        # Clean up temp file if it still exists
-        if os.path.exists(tempfile_path):
-            try:
-                os.unlink(tempfile_path)
-            except OSError:
-                pass
-
-
 def cmd_compile(args, exit_handler):
     """Handle 'compile' subcommand.
 
@@ -129,14 +83,19 @@ def cmd_compile(args, exit_handler):
         args: Parsed arguments
         exit_handler: GracefulExit instance
     """
+    from compiletools.locking import atomic_compile
+
     # Create args object from environment
     lock_args = create_args_from_env()
 
     # Create lock based on strategy
     lock = create_lock(args.strategy, args.target, lock_args)
 
-    # Execute compilation with locking
-    execute_compile(lock, args.target, args.compile_cmd, exit_handler)
+    # Register lock for signal-handler cleanup
+    exit_handler.lock = lock
+
+    # Delegate to shared atomic_compile (compile to temp, rename to target)
+    atomic_compile(lock, args.target, args.compile_cmd)
 
 
 def main(argv=None):

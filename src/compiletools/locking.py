@@ -9,6 +9,7 @@ import os
 import platform
 import shutil
 import socket
+import subprocess
 import sys
 import time
 
@@ -478,3 +479,47 @@ class FileLock:
         if self.lock:
             self.lock.release()
         return False  # Don't suppress exceptions
+
+
+def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.CompletedProcess:
+    """Execute compilation atomically: compile to temp file, then rename.
+
+    Prevents TOCTOU races where another process sees a partially-written
+    output file. The target file never exists in a partial state.
+
+    Args:
+        lock: Lock object with acquire()/release() methods.
+        target: Final output file path.
+        compile_cmd: Compile command WITHOUT -o flag.
+
+    Returns:
+        subprocess.CompletedProcess from the compiler invocation.
+
+    Raises:
+        subprocess.CalledProcessError: If compilation fails.
+    """
+    pid = os.getpid()
+    random_suffix = os.urandom(2).hex()
+    tempfile_path = f"{target}.{pid}.{random_suffix}.tmp"
+
+    try:
+        lock.acquire()
+
+        cmd = list(compile_cmd) + ["-o", tempfile_path]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode, cmd, result.stdout, result.stderr
+            )
+
+        os.rename(tempfile_path, target)
+        return result
+
+    finally:
+        lock.release()
+
+        if os.path.exists(tempfile_path):
+            try:
+                os.unlink(tempfile_path)
+            except OSError:
+                pass
