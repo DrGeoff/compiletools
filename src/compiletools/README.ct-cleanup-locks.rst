@@ -185,10 +185,10 @@ For example::
 
 The tool uses this information to determine if the process is still running.
 
-**Fcntl lock files** (GPFS): Files named ``<filename>.lock`` containing
-``hostname:pid`` for diagnostics. These are probed with non-blocking
-``fcntl.lockf()`` to determine if actively held. Unheld lock files are
-harmless artifacts that can be safely removed.
+**Fcntl lock files** (GPFS): Empty files named ``<filename>.lock``.
+These are probed with non-blocking ``fcntl.lockf()`` to determine if
+actively held. Unheld lock files are harmless artifacts that can be
+safely removed.
 
 SSH REQUIREMENTS
 ================

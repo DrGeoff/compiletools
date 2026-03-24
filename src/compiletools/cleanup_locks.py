@@ -256,12 +256,7 @@ class LockCleaner:
                 lockfile = os.path.join(root, filename)
                 stats["total"] += 1
 
-                lock_host, lock_pid = compiletools.lock_utils.read_lock_info_file(lockfile)
-
                 print(f"Lock: {lockfile}")
-                print("  Type: fcntl")
-                print(f"  Host: {lock_host}")
-                print(f"  PID: {lock_pid}")
 
                 if self._is_fcntl_lock_held(lockfile):
                     print("  Status: ACTIVE (fcntl lock held)")

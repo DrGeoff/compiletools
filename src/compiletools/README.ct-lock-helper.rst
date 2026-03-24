@@ -138,13 +138,13 @@ need for polling and stale lock detection.
 - Cross-node mutual exclusion via kernel-managed record locks
 - No polling: ``lockf(LOCK_EX)`` blocks in the kernel
 - No stale detection: kernel releases locks automatically on process death
-- Contention warning: prints holder info when lock is contended
+- No holder info: not needed since the kernel manages everything
 
 **Lock structure:**
 
 ::
 
-    target.o.lock        # Lockfile (contains "hostname:pid")
+    target.o.lock        # Empty lockfile (reused across acquisitions)
 
 **Note:** Lock files are intentionally NOT removed on release to avoid creation
 races. They are harmless empty files that get reused.

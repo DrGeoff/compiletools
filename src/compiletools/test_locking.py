@@ -293,21 +293,6 @@ class TestFcntlLock:
             # Lock file is intentionally NOT removed
             assert os.path.exists(lock.lockfile)
 
-    def test_holder_info_written(self):
-        """After acquire, lock file contains hostname:pid."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = FcntlLock(target, args)
-            lock.acquire()
-            with open(lock.lockfile) as f:
-                info = f.read().strip()
-            assert ":" in info
-            hostname, pid = info.split(":", 1)
-            assert hostname == lock.hostname
-            assert int(pid) == lock.pid
-            lock.release()
-
     def test_creates_parent_dir(self):
         """Acquire creates parent directory if missing."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -327,40 +312,6 @@ class TestFcntlLock:
             lock.fd = None
             # Release without acquire — should not crash
             lock.release()
-
-    def test_contention_warning(self, capsys):
-        """When lock is contended, prints waiting message."""
-        import fcntl as fcntl_mod
-
-        real_lockf = fcntl_mod.lockf
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-
-            # Pre-create lock file with holder info so the warning includes it
-            lockfile = target + ".lock"
-            with open(lockfile, "w") as f:
-                f.write("otherhost:12345\n")
-
-            lock = FcntlLock(target, args)
-
-            call_count = 0
-
-            def mock_lockf(fd, operation, *a, **kw):
-                nonlocal call_count
-                call_count += 1
-                if call_count == 1:
-                    # First call (non-blocking) — simulate contention
-                    raise OSError("would block")
-                # Second call (blocking) — succeed via saved real lockf
-                return real_lockf(fd, fcntl_mod.LOCK_EX, *a, **kw)
-
-            with patch("compiletools.locking.fcntl.lockf", side_effect=mock_lockf):
-                lock.acquire()
-            assert "Waiting for lock" in capsys.readouterr().err
-            lock.release()
-
 
 class TestFlockLock:
     """Test FlockLock edge cases."""
