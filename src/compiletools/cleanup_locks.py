@@ -183,6 +183,18 @@ class LockCleaner:
             print(f"ERROR: Object directory does not exist: {objdir}", file=sys.stderr)
             return stats
 
+        # Determine if objdir is on a GPFS filesystem (fcntl strategy)
+        # Only scan .lock files on GPFS; on other filesystems .lock files
+        # belong to flock/cifs strategies and use different lock semantics
+        import compiletools.filesystem_utils
+
+        try:
+            objdir_fstype = compiletools.filesystem_utils.get_filesystem_type(objdir)
+            objdir_strategy = compiletools.filesystem_utils.get_lock_strategy(objdir_fstype)
+        except Exception:
+            objdir_strategy = "unknown"
+        scan_fcntl_locks = objdir_strategy == "fcntl"
+
         print(f"Scanning for locks in: {objdir}")
         if self.dry_run:
             print("DRY RUN MODE: No locks will be removed")
@@ -234,7 +246,9 @@ class LockCleaner:
 
                 print()
 
-            # Find fcntl .lock files
+            # Find fcntl .lock files (only on GPFS filesystems)
+            if not scan_fcntl_locks:
+                continue
             for filename in files:
                 if not filename.endswith(".lock"):
                     continue
