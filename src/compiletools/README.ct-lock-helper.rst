@@ -30,7 +30,7 @@ the target filesystem type:
 - **lockdir**: For NFS, Lustre (mkdir-based, works across all filesystems)
 - **fcntl**: For GPFS (fcntl.lockf, cross-node, kernel-managed)
 - **cifs**: For CIFS/SMB (exclusive file creation)
-- **flock**: For local filesystems like ext4, xfs, btrfs (POSIX flock)
+- **flock**: For local filesystems like ext4, xfs, btrfs (POSIX flock, kernel-managed blocking)
 
 Usage
 -----
@@ -72,7 +72,7 @@ Environment variables control lock behavior:
     Seconds to sleep between lock acquisition attempts for CIFS strategy (default: 0.1)
 
 **CT_LOCK_SLEEP_INTERVAL_FLOCK**
-    Seconds to sleep between lock acquisition attempts for flock strategy (default: 0.1)
+    Unused since flock blocks in kernel (no polling). Kept for backwards compatibility.
 
 **CT_LOCK_WARN_INTERVAL**
     Seconds between lock wait warnings (default: 30)
@@ -171,14 +171,14 @@ Uses exclusive file creation (``O_CREAT|O_EXCL``) for CIFS compatibility.
 flock (Local filesystems)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Uses POSIX ``flock()`` when available, falls back to ``O_EXCL`` polling.
+Uses POSIX ``flock()`` for kernel-managed blocking. Only used on local
+filesystems (ext4/xfs/btrfs) where ``flock()`` is always available.
 
 **Lock structure:**
 
 ::
 
-    target.o.lock        # Lockfile (fd 9)
-    target.o.lock.pid    # PID marker (fallback only)
+    target.o.lock        # Lockfile (fd 9, flock advisory lock)
 
 Implementations
 ---------------
@@ -287,7 +287,6 @@ Solutions:
 
     export CT_LOCK_SLEEP_INTERVAL=0.01      # For lockdir on Lustre
     export CT_LOCK_SLEEP_INTERVAL_CIFS=0.05 # For CIFS strategy
-    export CT_LOCK_SLEEP_INTERVAL_FLOCK=0.05 # For flock strategy
 
 - For very fast local-only builds, consider ``--no-file-locking``
 

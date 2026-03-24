@@ -348,22 +348,15 @@ class TestFlockLock:
         lock.release()
         # Lockfile may still exist but should be unlocked
 
-    def test_windows_compatibility_fallback(self, temp_lock_file, mock_args):
-        """Test that FlockLock works without fcntl (Windows simulation)."""
-        # Simulate Windows by temporarily hiding fcntl
+    def test_no_fcntl_raises_runtime_error(self, temp_lock_file, mock_args):
+        """Test that FlockLock raises RuntimeError without fcntl (Windows)."""
         original_has_fcntl = compiletools.locking.HAS_FCNTL
         try:
             compiletools.locking.HAS_FCNTL = False
 
             lock = compiletools.locking.FlockLock(temp_lock_file, mock_args)
-            lock.acquire()
-
-            # Should use fallback mechanism (O_EXCL polling)
-            assert lock.use_flock is False
-            assert os.path.exists(lock.lockfile_pid)
-
-            lock.release()
-            assert not os.path.exists(lock.lockfile_pid)
+            with pytest.raises(RuntimeError, match="fcntl module not available"):
+                lock.acquire()
         finally:
             compiletools.locking.HAS_FCNTL = original_has_fcntl
 
