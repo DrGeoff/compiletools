@@ -41,7 +41,7 @@ from compiletools.build_backend import (
     register_backend,
 )
 from compiletools.build_graph import BuildGraph
-from compiletools.locking import FileLock
+from compiletools.locking import FileLock, atomic_compile
 
 TRACE_VERSION = 1
 
@@ -259,16 +259,34 @@ class ShakeBackend(BuildBackend):
             parts = shlex.split(arg)
             flat_cmd.extend(parts)
 
-        # Use FileLock for cross-process safety on shared filesystems
-        # (NFS/GPFS/Lustre/CIFS). FileLock is a no-op when file_locking
-        # is disabled; when enabled it selects the right locking strategy
-        # (lockdir/cifs/flock) based on filesystem type.
-        with FileLock(target, self.args):
-            result = subprocess.run(flat_cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                print(result.stdout, end="", file=sys.stdout)
-                print(result.stderr, end="", file=sys.stderr)
-                raise subprocess.CalledProcessError(result.returncode, rule.command, result.stdout, result.stderr)
+        if _is_content_addressable(rule):
+            # Compile rules: use atomic_compile to prevent TOCTOU races.
+            # The target file never exists in a partial state (compile to
+            # temp file, then atomic rename). Strip the trailing -o <target>
+            # from flat_cmd since atomic_compile appends -o <tempfile>.
+            cmd_without_output = flat_cmd[:-2]  # remove [-o, target]
+            file_lock = FileLock(target, self.args)
+            lock_impl = file_lock.lock  # underlying lock (or None if disabled)
+            if lock_impl is not None:
+                try:
+                    result = atomic_compile(lock_impl, target, cmd_without_output)
+                except subprocess.CalledProcessError as e:
+                    print(e.stdout or "", end="", file=sys.stdout)
+                    print(e.stderr or "", end="", file=sys.stderr)
+                    raise
+            else:
+                # File locking disabled — still use temp+rename for atomicity
+                # but without cross-process locking
+                result = self._atomic_compile_no_lock(target, cmd_without_output)
+        else:
+            # Link rules: execute directly with FileLock (no temp file needed,
+            # linker output is not content-addressable)
+            with FileLock(target, self.args):
+                result = subprocess.run(flat_cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(result.stdout, end="", file=sys.stdout)
+                    print(result.stderr, end="", file=sys.stderr)
+                    raise subprocess.CalledProcessError(result.returncode, rule.command, result.stdout, result.stderr)
 
         with lock:
             done.add(target)
@@ -298,6 +316,29 @@ class ShakeBackend(BuildBackend):
 
         # EARLY CUTOFF
         return old_hash != new_hash
+
+    @staticmethod
+    def _atomic_compile_no_lock(target: str, compile_cmd: list[str]) -> subprocess.CompletedProcess:
+        """Atomic compile without cross-process locking (temp file + rename only)."""
+        pid = os.getpid()
+        random_suffix = os.urandom(2).hex()
+        tempfile_path = f"{target}.{pid}.{random_suffix}.tmp"
+
+        try:
+            cmd = list(compile_cmd) + ["-o", tempfile_path]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise subprocess.CalledProcessError(
+                    result.returncode, cmd, result.stdout, result.stderr
+                )
+            os.rename(tempfile_path, target)
+            return result
+        finally:
+            if os.path.exists(tempfile_path):
+                try:
+                    os.unlink(tempfile_path)
+                except OSError:
+                    pass
 
     def _verify(self, rule, trace: TraceEntry) -> bool:
         """Check if a trace is still valid (output exists, inputs unchanged, same command)."""

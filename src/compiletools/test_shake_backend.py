@@ -439,27 +439,40 @@ class TestEarlyCutoff:
         args.objdir = str(tmp_path)
         args.parallel = 1
         args.verbose = 0
+        args.file_locking = False
 
         backend = ShakeBackend.__new__(ShakeBackend)
         backend.args = args
         backend._graph = graph
 
-        def fake_run(cmd, **kwargs):
-            if "-c" in cmd:
-                (tmp_path / "foo.o").write_bytes(b"\x7fELF NEW object")
-            elif "-o" in cmd and "foo.o" not in cmd:
-                (tmp_path / "foo").write_bytes(b"\x7fELF NEW executable")
+        compile_calls = []
+
+        def fake_atomic(target, cmd):
+            compile_calls.append(target)
+            (tmp_path / "foo.o").write_bytes(b"\x7fELF NEW object")
             result = mock.MagicMock()
             result.returncode = 0
             result.stdout = ""
             result.stderr = ""
             return result
 
-        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
+        def fake_run(cmd, **kwargs):
+            (tmp_path / "foo").write_bytes(b"\x7fELF NEW executable")
+            result = mock.MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            result.stderr = ""
+            return result
+
+        with (
+            mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic),
+            mock.patch("compiletools.shake_backend.subprocess") as mock_sub,
+        ):
             mock_sub.run.side_effect = fake_run
             mock_sub.CalledProcessError = subprocess.CalledProcessError
             backend.execute("build")
-            assert mock_sub.run.call_count == 2
+            assert len(compile_calls) == 1  # compile via atomic
+            assert mock_sub.run.call_count == 1  # link via subprocess
 
 
 # ---------------------------------------------------------------------------
@@ -530,19 +543,16 @@ class TestErrorHandling:
         args.objdir = str(tmp_path)
         args.parallel = 1
         args.verbose = 0
+        args.file_locking = False
 
         backend = ShakeBackend.__new__(ShakeBackend)
         backend.args = args
         backend._graph = graph
 
-        mock_result = mock.MagicMock()
-        mock_result.returncode = 1
-        mock_result.stdout = ""
-        mock_result.stderr = "error: bad code"
+        def fake_atomic_fail(target, cmd):
+            raise subprocess.CalledProcessError(1, cmd, "", "error: bad code")
 
-        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
-            mock_sub.run.return_value = mock_result
-            mock_sub.CalledProcessError = subprocess.CalledProcessError
+        with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic_fail):
             with pytest.raises(subprocess.CalledProcessError):
                 backend.execute("build")
 
@@ -585,6 +595,7 @@ class TestParallelExecution:
         args.objdir = str(tmp_path)
         args.parallel = 4
         args.verbose = 0
+        args.file_locking = False
 
         backend = ShakeBackend.__new__(ShakeBackend)
         backend.args = args
@@ -594,24 +605,20 @@ class TestParallelExecution:
         thread_ids = []
         barrier = threading.Barrier(2, timeout=5)
 
-        def fake_run(cmd, **kwargs):
+        def fake_atomic(target, cmd):
             thread_ids.append(threading.current_thread().ident)
             # Both compiles must reach the barrier before either proceeds,
             # proving they run concurrently
             barrier.wait()
-            target = cmd[cmd.index("-o") + 1]
-            (tmp_path / target).write_bytes(b"\x7fELF fake")
+            (tmp_path / os.path.basename(target)).write_bytes(b"\x7fELF fake")
             result = mock.MagicMock()
             result.returncode = 0
             result.stdout = ""
             result.stderr = ""
             return result
 
-        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
-            mock_sub.run.side_effect = fake_run
-            mock_sub.CalledProcessError = subprocess.CalledProcessError
+        with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic):
             backend.execute("build")
-            assert mock_sub.run.call_count == 2
 
         # Verify they ran on different threads
         assert len(thread_ids) == 2
@@ -649,25 +656,26 @@ class TestParallelExecution:
         args.objdir = str(tmp_path)
         args.parallel = 1
         args.verbose = 0
+        args.file_locking = False
 
         backend = ShakeBackend.__new__(ShakeBackend)
         backend.args = args
         backend._graph = graph
 
-        def fake_run(cmd, **kwargs):
-            target = cmd[cmd.index("-o") + 1]
-            (tmp_path / target).write_bytes(b"\x7fELF fake")
+        compile_calls = []
+
+        def fake_atomic(target, cmd):
+            compile_calls.append(target)
+            (tmp_path / os.path.basename(target)).write_bytes(b"\x7fELF fake")
             result = mock.MagicMock()
             result.returncode = 0
             result.stdout = ""
             result.stderr = ""
             return result
 
-        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
-            mock_sub.run.side_effect = fake_run
-            mock_sub.CalledProcessError = subprocess.CalledProcessError
+        with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic):
             backend.execute("build")
-            assert mock_sub.run.call_count == 2
+            assert len(compile_calls) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -715,12 +723,16 @@ class TestOutputDeletion:
         args.objdir = str(tmp_path)
         args.parallel = 1
         args.verbose = 0
+        args.file_locking = False
 
         backend = ShakeBackend.__new__(ShakeBackend)
         backend.args = args
         backend._graph = graph
 
-        def fake_run(cmd, **kwargs):
+        compile_calls = []
+
+        def fake_atomic(target, cmd):
+            compile_calls.append(target)
             (tmp_path / "foo.o").write_bytes(b"\x7fELF rebuilt")
             result = mock.MagicMock()
             result.returncode = 0
@@ -728,12 +740,10 @@ class TestOutputDeletion:
             result.stderr = ""
             return result
 
-        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
-            mock_sub.run.side_effect = fake_run
-            mock_sub.CalledProcessError = subprocess.CalledProcessError
+        with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic):
             backend.execute("build")
             # Must rebuild because output file was deleted
-            mock_sub.run.assert_called_once()
+            assert len(compile_calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -809,6 +819,7 @@ class TestContentAddressableShortCircuit:
         args.objdir = str(tmp_path)
         args.parallel = 1
         args.verbose = 0
+        args.file_locking = False
 
         backend = ShakeBackend.__new__(ShakeBackend)
         backend.args = args
@@ -818,7 +829,10 @@ class TestContentAddressableShortCircuit:
         done: set[str] = set()
         lock = threading.Lock()
 
-        def fake_run(cmd, **kwargs):
+        compile_calls = []
+
+        def fake_atomic(target, cmd):
+            compile_calls.append(target)
             (tmp_path / "foo.o").write_bytes(b"\x7fELF new object")
             result = mock.MagicMock()
             result.returncode = 0
@@ -829,12 +843,10 @@ class TestContentAddressableShortCircuit:
         from concurrent.futures import ThreadPoolExecutor
 
         with ThreadPoolExecutor(max_workers=1) as executor:
-            with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
-                mock_sub.run.side_effect = fake_run
-                mock_sub.CalledProcessError = subprocess.CalledProcessError
+            with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic):
                 changed = backend._build("foo.o", graph, traces, done, lock, executor)
                 assert changed is True
-                mock_sub.run.assert_called_once()
+                assert len(compile_calls) == 1
 
     def test_link_still_uses_traces(self, tmp_path):
         """Link rules (rule_type='link') still go through full trace verification,
@@ -1081,3 +1093,115 @@ class TestLinkSignatureShortCircuit:
         assert os.path.exists(sig_path)
         with open(sig_path) as f:
             assert f.read().strip() == compute_link_signature(link_rule)
+
+
+# ---------------------------------------------------------------------------
+# Atomic compile (TOCTOU prevention)
+# ---------------------------------------------------------------------------
+
+
+class TestAtomicCompile:
+    def test_compile_uses_temp_file_and_rename(self, tmp_path):
+        """Verify _atomic_compile_no_lock writes to a temp file then renames,
+        so the target file never exists in a partially-written state."""
+        os.chdir(tmp_path)
+        target = str(tmp_path / "foo.o")
+        observed_files = []
+
+        original_run = subprocess.run
+
+        def spy_run(cmd, **kwargs):
+            # During compilation, the -o flag should point to a .tmp file
+            if "-o" in cmd:
+                output_idx = cmd.index("-o") + 1
+                output_file = cmd[output_idx]
+                observed_files.append(output_file)
+                # Verify it's a temp file, not the final target
+                assert output_file.endswith(".tmp"), f"Expected temp file, got {output_file}"
+                assert output_file != target, "Should not compile directly to target"
+                # Create the temp file to simulate successful compilation
+                with open(output_file, "wb") as f:
+                    f.write(b"\x7fELF fake object")
+            result = mock.MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            result.stderr = ""
+            return result
+
+        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
+            mock_sub.run.side_effect = spy_run
+            mock_sub.CalledProcessError = subprocess.CalledProcessError
+            ShakeBackend._atomic_compile_no_lock(target, ["g++", "-c", "foo.cpp"])
+
+        # Verify temp file was used
+        assert len(observed_files) == 1
+        assert observed_files[0].startswith(target)
+        assert observed_files[0].endswith(".tmp")
+        # Verify final target exists (renamed from temp)
+        assert os.path.exists(target)
+        # Verify temp file was cleaned up
+        assert not os.path.exists(observed_files[0])
+
+    def test_compile_failure_cleans_up_temp_file(self, tmp_path):
+        """If compilation fails, temp file should be cleaned up and target not created."""
+        os.chdir(tmp_path)
+        target = str(tmp_path / "foo.o")
+        temp_files = []
+
+        def failing_run(cmd, **kwargs):
+            if "-o" in cmd:
+                output_idx = cmd.index("-o") + 1
+                temp_files.append(cmd[output_idx])
+                # Create temp file then fail
+                with open(cmd[output_idx], "wb") as f:
+                    f.write(b"partial")
+            result = mock.MagicMock()
+            result.returncode = 1
+            result.stdout = ""
+            result.stderr = "error: compilation failed"
+            return result
+
+        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
+            mock_sub.run.side_effect = failing_run
+            mock_sub.CalledProcessError = subprocess.CalledProcessError
+            with pytest.raises(subprocess.CalledProcessError):
+                ShakeBackend._atomic_compile_no_lock(target, ["g++", "-c", "foo.cpp"])
+
+        # Target should not exist
+        assert not os.path.exists(target)
+        # Temp file should be cleaned up
+        assert len(temp_files) == 1
+        assert not os.path.exists(temp_files[0])
+
+    def test_atomic_compile_in_locking_module(self, tmp_path):
+        """Verify the shared atomic_compile function in locking.py works correctly."""
+        from compiletools.locking import FlockLock, atomic_compile
+
+        target = str(tmp_path / "bar.o")
+        lock_args = mock.MagicMock()
+        lock_args.sleep_interval_flock_fallback = 0.01
+        lock_args.verbose = 0
+        lock = FlockLock(target, lock_args)
+
+        observed_outputs = []
+
+        def spy_run(cmd, **kwargs):
+            if "-o" in cmd:
+                output_idx = cmd.index("-o") + 1
+                observed_outputs.append(cmd[output_idx])
+                with open(cmd[output_idx], "wb") as f:
+                    f.write(b"\x7fELF object")
+            result = mock.MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            result.stderr = ""
+            return result
+
+        with mock.patch("compiletools.locking.subprocess") as mock_sub:
+            mock_sub.run.side_effect = spy_run
+            mock_sub.CalledProcessError = subprocess.CalledProcessError
+            atomic_compile(lock, target, ["g++", "-c", "bar.cpp"])
+
+        assert len(observed_outputs) == 1
+        assert observed_outputs[0].endswith(".tmp")
+        assert os.path.exists(target)
