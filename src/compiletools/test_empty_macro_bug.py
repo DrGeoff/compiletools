@@ -10,7 +10,7 @@ This calls headerdeps with EMPTY macro state, so:
 4. Convergence only processes files in all_files (built from initial headers)
 5. Missing headers are NEVER discovered, even after macros converge
 
-This test MUST FAIL to be valid.
+The bug has been fixed — this test now passes, verifying the fix works correctly.
 """
 
 import shutil

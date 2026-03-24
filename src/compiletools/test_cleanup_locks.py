@@ -359,7 +359,7 @@ class TestLockCleanerIntegration:
 
         # Should have tried to remove but failed
         assert stats["total"] == 1
-        assert stats["stale_failed"] >= 0  # May or may not fail depending on permissions
+        assert stats["stale_failed"] > 0, "Should fail to remove the permission-denied lockdir"
 
 
 class TestLockCleanupRaceConditions:
