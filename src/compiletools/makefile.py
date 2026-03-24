@@ -397,7 +397,7 @@ class MakefileCreator:
         user override via --sleep-interval-lockdir.
 
         Returns:
-            float: Sleep interval (only used by lockdir strategy for NFS/GPFS/Lustre)
+            float: Sleep interval (only used by lockdir strategy for NFS/Lustre)
         """
         # If user explicitly set the interval, use it
         if self.args.sleep_interval_lockdir is not None:

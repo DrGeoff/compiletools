@@ -48,7 +48,7 @@ Manages file locking during compilation for safe shared object caching.
 
 Arguments:
   --target=FILE        Target output file (e.g., file.o)
-  --strategy=STRATEGY  Lock strategy: lockdir, cifs, or flock
+  --strategy=STRATEGY  Lock strategy: lockdir, cifs, flock, or fcntl
   --                   Separator before compile command
 
 Options (via environment):
@@ -58,7 +58,8 @@ Options (via environment):
   CT_LOCK_VERBOSE              Verbosity level (default: 0)
 
 Lock Strategies:
-  lockdir  NFS, GPFS, Lustre (mkdir-based, stale detection)
+  lockdir  NFS, Lustre (mkdir-based, stale detection)
+  fcntl    GPFS (fcntl.lockf, cross-node, kernel-managed)
   cifs     CIFS/SMB (exclusive file creation)
   flock    Local filesystems (POSIX flock with fallback)
 
@@ -345,6 +346,50 @@ release_lock_flock() {
     rm -f "$lockfile" 2>/dev/null || true
 }
 
+# === Lock Strategy: fcntl ===
+# fcntl locks are per-process, so the shell cannot hold one and then exec.
+# We delegate the entire compile-under-lock to an inline Python script.
+
+acquire_lock_fcntl() {
+    # No-op: locking is handled inside compile_under_fcntl_lock
+    :
+}
+
+release_lock_fcntl() {
+    # No-op: locking is handled inside compile_under_fcntl_lock
+    :
+}
+
+compile_under_fcntl_lock() {
+    local lockfile="$1"
+    shift
+    local target="$1"
+    shift
+    local tempfile="$1"
+    shift
+    # Remaining args are the compile command
+
+    python3 -c "
+import fcntl, os, subprocess, sys
+
+lockfile = sys.argv[1]
+target = sys.argv[2]
+tempfile = sys.argv[3]
+cmd = sys.argv[4:]
+
+fd = os.open(lockfile, os.O_CREAT | os.O_RDWR, 0o666)
+try:
+    fcntl.lockf(fd, fcntl.LOCK_EX)
+    result = subprocess.run(cmd + ['-o', tempfile])
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+    os.rename(tempfile, target)
+finally:
+    fcntl.lockf(fd, fcntl.LOCK_UN)
+    os.close(fd)
+" "$lockfile" "$target" "$tempfile" "$@"
+}
+
 # === Generic Lock Interface ===
 
 acquire_lock() {
@@ -357,6 +402,9 @@ acquire_lock() {
             ;;
         flock)
             acquire_lock_flock "$LOCKPATH"
+            ;;
+        fcntl)
+            acquire_lock_fcntl "$LOCKPATH"
             ;;
         *)
             echo "ERROR: Unknown lock strategy: $STRATEGY" >&2
@@ -376,6 +424,9 @@ release_lock() {
             ;;
         flock)
             release_lock_flock "$LOCKPATH"
+            ;;
+        fcntl)
+            release_lock_fcntl "$LOCKPATH"
             ;;
     esac
     LOCK_ACQUIRED=false
@@ -433,11 +484,11 @@ cmd_compile() {
         lockdir)
             LOCKPATH="$TARGET.lockdir"
             ;;
-        cifs|flock)
+        cifs|flock|fcntl)
             LOCKPATH="$TARGET.lock"
             ;;
         *)
-            echo "ERROR: Invalid strategy: $STRATEGY (must be lockdir, cifs, or flock)" >&2
+            echo "ERROR: Invalid strategy: $STRATEGY (must be lockdir, cifs, flock, or fcntl)" >&2
             exit 1
             ;;
     esac
@@ -450,6 +501,13 @@ cmd_compile() {
     parent_dir=$(dirname "$TARGET")
     if [ ! -d "$parent_dir" ]; then
         mkdir -p "$parent_dir"
+    fi
+
+    # For fcntl strategy, delegate entire compile-under-lock to Python
+    # (fcntl locks are per-process, shell can't hold lock and exec compiler)
+    if [ "$STRATEGY" = "fcntl" ]; then
+        compile_under_fcntl_lock "$LOCKPATH" "$TARGET" "$TEMPFILE" "${compile_args[@]}"
+        return
     fi
 
     # Acquire lock

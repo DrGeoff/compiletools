@@ -8,6 +8,14 @@ import os
 import socket
 import sys
 
+# fcntl only available on Unix (not Windows)
+try:
+    import fcntl
+
+    HAS_FCNTL = True
+except ImportError:
+    HAS_FCNTL = False
+
 import compiletools.lock_utils
 import compiletools.locking
 import compiletools.wrappedos
@@ -130,11 +138,41 @@ class LockCleaner:
             print(f"  ERROR: Failed to remove lockdir: {e}", file=sys.stderr)
             return False
 
+    def _is_fcntl_lock_held(self, lockfile):
+        """Probe whether an fcntl lock file is actively held.
+
+        Uses non-blocking fcntl.lockf() to test. If we can acquire and
+        immediately release, the lock is NOT held.
+
+        Args:
+            lockfile: Path to .lock file
+
+        Returns:
+            bool: True if lock is actively held by another process
+        """
+        if not HAS_FCNTL:
+            return False  # Can't check without fcntl
+
+        try:
+            fd = os.open(lockfile, os.O_RDWR)
+            try:
+                fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                # Got it — not held. Release immediately.
+                fcntl.lockf(fd, fcntl.LOCK_UN)
+                return False
+            except OSError:
+                # Couldn't acquire — actively held
+                return True
+            finally:
+                os.close(fd)
+        except OSError:
+            return False  # Can't open file, treat as not held
+
     def scan_and_cleanup(self, objdir):
         """Scan objdir for stale locks and clean them up.
 
         Args:
-            objdir: Directory to scan for lockdirs
+            objdir: Directory to scan for lockdirs and lock files
 
         Returns:
             dict: Statistics about locks found/cleaned
@@ -145,13 +183,13 @@ class LockCleaner:
             print(f"ERROR: Object directory does not exist: {objdir}", file=sys.stderr)
             return stats
 
-        print(f"Scanning for lockdirs in: {objdir}")
+        print(f"Scanning for locks in: {objdir}")
         if self.dry_run:
             print("DRY RUN MODE: No locks will be removed")
         print()
 
-        # Find all .lockdir directories
-        for root, dirs, _files in os.walk(objdir):
+        for root, dirs, files in os.walk(objdir):
+            # Find all .lockdir directories
             for dirname in dirs:
                 if not dirname.endswith(".lockdir"):
                     continue
@@ -193,6 +231,40 @@ class LockCleaner:
                     stats["unknown"] += 1
                 else:
                     stats["active"] += 1
+
+                print()
+
+            # Find fcntl .lock files
+            for filename in files:
+                if not filename.endswith(".lock"):
+                    continue
+
+                lockfile = os.path.join(root, filename)
+                stats["total"] += 1
+
+                lock_host, lock_pid = compiletools.lock_utils.read_lock_info_file(lockfile)
+
+                print(f"Lock: {lockfile}")
+                print("  Type: fcntl")
+                print(f"  Host: {lock_host}")
+                print(f"  PID: {lock_pid}")
+
+                if self._is_fcntl_lock_held(lockfile):
+                    print("  Status: ACTIVE (fcntl lock held)")
+                    stats["active"] += 1
+                else:
+                    print("  Status: UNHELD (safe to remove)")
+                    if self.dry_run:
+                        print("  Action: Would remove lock file")
+                        stats["stale_removed"] += 1
+                    else:
+                        try:
+                            os.unlink(lockfile)
+                            print("  Action: REMOVED lock file")
+                            stats["stale_removed"] += 1
+                        except OSError as e:
+                            print(f"  Action: FAILED to remove lock file: {e}")
+                            stats["stale_failed"] += 1
 
                 print()
 

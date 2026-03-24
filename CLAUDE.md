@@ -92,7 +92,7 @@ PreprocessingCache                    # Two-tier caching
 
 ### Locking System
 
-`locking.py` uses atomic `mkdir` for cross-platform/cross-NFS locks. Lock info stored as `{hostname}:{pid}`. Auto-detects filesystem type to set polling intervals (Lustre: 0.01s, NFS: 0.1s, GPFS: 0.05s, local: blocking `flock`). `cleanup_locks.py` removes stale locks with process liveness checks (local via psutil, remote via SSH).
+`locking.py` provides four locking strategies auto-selected by filesystem type: `FcntlLock` (GPFS: `fcntl.lockf()`, cross-node, kernel-managed blocking), `LockdirLock` (NFS/Lustre: atomic `mkdir`, stale detection via `{hostname}:{pid}`), `CIFSLock` (CIFS/SMB: exclusive file creation), and `FlockLock` (local: POSIX `flock`). Polling intervals auto-detected (Lustre: 0.01s, NFS: 0.1s). `cleanup_locks.py` removes stale lockdirs (process liveness via psutil/SSH) and unheld fcntl lock files (non-blocking `lockf()` probe).
 
 ### Key Modules
 

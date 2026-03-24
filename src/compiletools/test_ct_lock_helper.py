@@ -127,7 +127,7 @@ class TestLockHelperBasic:
 
 
 class TestLockdirStrategy:
-    """Tests specific to lockdir strategy (NFS/GPFS/Lustre)."""
+    """Tests specific to lockdir strategy (NFS/Lustre)."""
 
     def test_creates_lockdir_with_pid_file(self, temp_target):
         """Test that lockdir and pid file are created during compilation."""

@@ -56,15 +56,15 @@ def create_lock(strategy, target_file, args):
     """Create appropriate lock instance based on strategy.
 
     Args:
-        strategy: One of 'lockdir', 'cifs', 'flock'
+        strategy: One of 'lockdir', 'cifs', 'flock', 'fcntl'
         target_file: Target output file path
         args: Args object with lock configuration
 
     Returns:
-        Lock instance (LockdirLock, CIFSLock, or FlockLock)
+        Lock instance (LockdirLock, CIFSLock, FlockLock, or FcntlLock)
     """
     # Import here to reduce startup overhead if --help is requested
-    from compiletools.locking import CIFSLock, FlockLock, LockdirLock
+    from compiletools.locking import CIFSLock, FcntlLock, FlockLock, LockdirLock
 
     if strategy == "lockdir":
         return LockdirLock(target_file, args)
@@ -72,6 +72,8 @@ def create_lock(strategy, target_file, args):
         return CIFSLock(target_file, args)
     elif strategy == "flock":
         return FlockLock(target_file, args)
+    elif strategy == "fcntl":
+        return FcntlLock(target_file, args)
     else:
         raise ValueError(f"Unknown strategy: {strategy}")
 
@@ -128,8 +130,8 @@ def main(argv=None):
     compile_parser.add_argument(
         "--strategy",
         required=True,
-        choices=["lockdir", "cifs", "flock"],
-        help="Lock strategy: lockdir (NFS/GPFS/Lustre), cifs (CIFS/SMB), flock (local)",
+        choices=["lockdir", "cifs", "flock", "fcntl"],
+        help="Lock strategy: lockdir (NFS/Lustre), fcntl (GPFS), cifs (CIFS/SMB), flock (local)",
     )
     compile_parser.add_argument("compile_cmd", nargs="+", help="Compile command and arguments")
 
