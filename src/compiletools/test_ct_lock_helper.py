@@ -44,7 +44,7 @@ def temp_target():
 class TestLockHelperBasic:
     """Basic functionality tests for all lock strategies."""
 
-    @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock"])
+    @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock", "fcntl"])
     def test_successful_compile(self, temp_target, strategy):
         """Test that ct-lock-helper successfully compiles a simple program."""
         # Create a simple C source file
@@ -74,17 +74,17 @@ class TestLockHelperBasic:
             assert result.returncode == 0, f"Compilation failed: {result.stderr}"
             assert os.path.exists(temp_target), "Target file not created"
 
-            # Verify lock was cleaned up
+            # Verify lock was cleaned up (fcntl locks the target directly, no sidecar)
             if strategy == "lockdir":
                 assert not os.path.exists(temp_target + ".lockdir"), "Lock not cleaned up"
-            else:
+            elif strategy != "fcntl":
                 assert not os.path.exists(temp_target + ".lock"), "Lock not cleaned up"
 
         finally:
             if os.path.exists(source):
                 os.unlink(source)
 
-    @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock"])
+    @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock", "fcntl"])
     def test_compile_error_propagates(self, temp_target, strategy):
         """Test that compiler errors cause non-zero exit."""
         # Create source with syntax error
@@ -115,10 +115,10 @@ class TestLockHelperBasic:
             # Note: temp file may exist if gcc creates it before failing
             # The important check is that final mv didn't happen (checked by returncode)
 
-            # Verify lock was cleaned up even on error
+            # Verify lock was cleaned up even on error (fcntl locks the target directly)
             if strategy == "lockdir":
                 assert not os.path.exists(temp_target + ".lockdir"), "Lock not cleaned up on error"
-            else:
+            elif strategy != "fcntl":
                 assert not os.path.exists(temp_target + ".lock"), "Lock not cleaned up on error"
 
         finally:
@@ -460,6 +460,76 @@ class TestConcurrentAccess:
                 os.unlink(source)
             if os.path.exists(wrapper):
                 os.unlink(wrapper)
+
+
+class TestFcntlStrategy:
+    """Tests specific to fcntl strategy (GPFS)."""
+
+    def test_fcntl_no_lock_file_created(self, temp_target):
+        """fcntl strategy should NOT create a .lock sidecar file."""
+        source = temp_target.replace(".o", ".c")
+        with open(source, "w") as f:
+            f.write("int main() { return 0; }\n")
+
+        try:
+            result = subprocess.run(
+                [
+                    "ct-lock-helper",
+                    "compile",
+                    f"--target={temp_target}",
+                    "--strategy=fcntl",
+                    "--",
+                    "gcc",
+                    "-c",
+                    source,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+            assert result.returncode == 0, f"Compilation failed: {result.stderr}"
+            assert os.path.exists(temp_target), "Target file not created"
+            assert not os.path.exists(temp_target + ".lock"), "No .lock sidecar should exist"
+        finally:
+            if os.path.exists(source):
+                os.unlink(source)
+
+    def test_fcntl_compiles_directly_to_target(self, temp_target):
+        """fcntl strategy should compile directly to target (no temp file)."""
+        source = temp_target.replace(".o", ".c")
+        with open(source, "w") as f:
+            f.write("int main() { return 0; }\n")
+
+        try:
+            result = subprocess.run(
+                [
+                    "ct-lock-helper",
+                    "compile",
+                    f"--target={temp_target}",
+                    "--strategy=fcntl",
+                    "--",
+                    "gcc",
+                    "-c",
+                    source,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+            assert result.returncode == 0, f"Compilation failed: {result.stderr}"
+            assert os.path.exists(temp_target), "Target file not created"
+
+            # Verify no temp files left behind
+            parent_dir = os.path.dirname(temp_target)
+            basename = os.path.basename(temp_target)
+            for f in os.listdir(parent_dir):
+                if f.startswith(basename) and ".tmp" in f:
+                    pytest.fail(f"Temp file should not exist: {f}")
+        finally:
+            if os.path.exists(source):
+                os.unlink(source)
 
 
 class TestErrorHandling:
