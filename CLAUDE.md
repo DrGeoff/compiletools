@@ -112,7 +112,7 @@ PreprocessingCache                    # Two-tier caching
 | `build_graph.py` | Backend-agnostic IR (`BuildRule`, `BuildGraph`) |
 | `build_backend.py` | `BuildBackend` ABC, registry, `build_graph()`, `_run_tests()` |
 | `makefile_backend.py` | Make backend (wraps `MakefileCreator`) |
-| `ninja_backend.py` | Ninja backend |
+| `ninja_backend.py` | Ninja backend (with file-locking support) |
 | `bazel_backend.py` | Bazel backend |
 | `cmake_backend.py` | CMake backend |
 | `shake_backend.py` | Shake backend (self-executing, verifying traces) |

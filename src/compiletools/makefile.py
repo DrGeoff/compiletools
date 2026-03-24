@@ -227,20 +227,10 @@ class MakefileCreator:
 
         # Check if ct-lock-helper is available when using file_locking
         if args.file_locking:
-            import shutil
+            from compiletools.build_backend import check_lock_helper_available, report_lock_helper_missing
 
-            if not shutil.which("ct-lock-helper"):
-                print("ERROR: ct-lock-helper not found in PATH", file=sys.stderr)
-                print("", file=sys.stderr)
-                print("The --file-locking flag requires ct-lock-helper to be installed.", file=sys.stderr)
-                print("", file=sys.stderr)
-                print("Solutions:", file=sys.stderr)
-                print("  1. Install compiletools: pip install compiletools", file=sys.stderr)
-                print("  2. Install from source: pip install -e .", file=sys.stderr)
-                print("  3. Add ct-lock-helper to your PATH", file=sys.stderr)
-                print("", file=sys.stderr)
-                print("Or disable file locking with: --no-file-locking", file=sys.stderr)
-                sys.exit(1)
+            if not check_lock_helper_available():
+                report_lock_helper_missing()
 
         # Detect filesystem type once and cache it
         self._filesystem_type = self._detect_filesystem_type()
@@ -390,25 +380,9 @@ class MakefileCreator:
         if not self.args.file_locking:
             return compile_cmd + " -o " + target
 
-        strategy = compiletools.filesystem_utils.get_lock_strategy(self._filesystem_type)
+        from compiletools.build_backend import wrap_compile_with_lock
 
-        # Build environment variables for lock configuration
-        env_vars = []
-
-        if strategy == "lockdir":
-            sleep_interval = self._get_lockdir_sleep_interval()
-            env_vars.append(f"CT_LOCK_SLEEP_INTERVAL={sleep_interval}")
-        elif strategy == "cifs":
-            env_vars.append(f"CT_LOCK_SLEEP_INTERVAL_CIFS={self.args.sleep_interval_cifs}")
-        else:  # flock
-            env_vars.append(f"CT_LOCK_SLEEP_INTERVAL_FLOCK={self.args.sleep_interval_flock_fallback}")
-
-        env_vars.append(f"CT_LOCK_WARN_INTERVAL={self.args.lock_warn_interval}")
-        env_vars.append(f"CT_LOCK_TIMEOUT={self.args.lock_cross_host_timeout}")
-
-        env_prefix = " ".join(env_vars) + " " if env_vars else ""
-
-        return f"{env_prefix}ct-lock-helper compile --target={target} --strategy={strategy} -- {compile_cmd}"
+        return wrap_compile_with_lock(compile_cmd, target, self.args, self._filesystem_type)
 
     def _get_locking_recipe_prefix(self):
         """Generate filesystem-specific locking code prefix (deprecated, use _wrap_compile_with_lock)"""
