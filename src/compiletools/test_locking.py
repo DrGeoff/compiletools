@@ -364,6 +364,17 @@ class TestFlockLock:
             assert not hasattr(lock, "lockfile_pid")
             assert not hasattr(lock, "sleep_interval")
 
+    def test_lockfile_persists_after_release(self):
+        """Lockfile must persist after release to prevent flock+unlink race."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+            lock.acquire()
+            assert os.path.exists(lock.lockfile)
+            lock.release()
+            assert os.path.exists(lock.lockfile)
+
 
 class TestCIFSLock:
     """Test CIFSLock."""
@@ -408,10 +419,8 @@ class TestFlockLockRelease:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args(verbose=2)
             lock = FlockLock(target, args)
-            lock.fd = None
-            with patch("os.path.exists", return_value=True), \
-                 patch("os.unlink", side_effect=OSError("fail")):
-                lock.release()
+            lock.fd = 999  # bogus fd to trigger OSError on flock/close
+            lock.release()
             assert "Failed to release flock" in capsys.readouterr().err
 
     def test_acquire_creates_parent_dir(self):

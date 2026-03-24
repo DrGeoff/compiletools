@@ -178,7 +178,11 @@ filesystems (ext4/xfs/btrfs) where ``flock()`` is always available.
 
 ::
 
-    target.o.lock        # Lockfile (fd 9, flock advisory lock)
+    target.o.lock        # Persistent lockfile (fd 9, flock advisory lock)
+
+The lockfile is intentionally kept on disk after release (same as ``flock(1)``
+pattern) to prevent the classic flock+unlink race where concurrent processes
+end up locking different inodes.
 
 Implementations
 ---------------
