@@ -434,7 +434,19 @@ class TestTerminalColumns:
 
 class TestClearCache:
     def test_clear_cache_runs(self):
-        clear_cache()  # Should not raise
+        # Populate the cache with a dummy call
+        import warnings
+
+        with patch("subprocess.run", return_value=MagicMock(returncode=1)):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                cached_pkg_config("nonexistent_test_pkg_clear_cache", "--cflags")
+
+        assert cached_pkg_config.cache_info().currsize > 0, "Cache should be populated"
+
+        clear_cache()
+
+        assert cached_pkg_config.cache_info().currsize == 0, "Cache should be cleared"
 
 
 class TestCallbackSystem:
@@ -588,9 +600,12 @@ class TestTestCompilerFunctionality:
 class TestVerbosePrintConfig:
     def test_verbose_level_2(self):
         args = SimpleNamespace(verbose=2, variant="gcc.debug")
-        with patch("compiletools.apptools.verbose_print_args"):
+        with patch("compiletools.apptools.verbose_print_args") as mock_vpa:
             verboseprintconfig(args)
+        mock_vpa.assert_called_once_with(args)
 
-    def test_verbose_level_0(self):
+    def test_verbose_level_0(self, capsys):
         args = SimpleNamespace(verbose=0, variant="gcc.debug")
-        verboseprintconfig(args)  # Should not print anything
+        verboseprintconfig(args)
+        captured = capsys.readouterr()
+        assert captured.out == "", "verbose=0 should produce no output"

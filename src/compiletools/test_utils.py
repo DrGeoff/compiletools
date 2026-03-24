@@ -1,5 +1,7 @@
 import os
 
+import pytest
+
 import compiletools.testhelper as uth
 import compiletools.utils as utils
 
@@ -106,11 +108,8 @@ class TestToBool:
         """Test that invalid values raise ValueError"""
         invalid_values = ["maybe", "invalid", "2", ""]
         for value in invalid_values:
-            try:
+            with pytest.raises(ValueError):
                 utils.to_bool(value)
-                assert False, f"Expected ValueError for {value}"
-            except ValueError:
-                pass  # Expected
 
 
 class TestRemoveMount:
@@ -122,11 +121,8 @@ class TestRemoveMount:
 
     def test_remove_mount_invalid_path(self):
         """Test remove_mount with non-absolute path raises error"""
-        try:
+        with pytest.raises(ValueError):
             utils.remove_mount("relative/path")
-            assert False, "Expected ValueError for relative path"
-        except ValueError:
-            pass  # Expected
 
 
 class TestOrderedUnique:

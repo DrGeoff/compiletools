@@ -10,6 +10,7 @@ import compiletools.utils
 
 
 class TestSerialiseTests:
+    @uth.requires_functional_compiler
     def test_serialisetests(self):
         # This test is to ensure that --serialise-tests actually does so
 
@@ -32,6 +33,17 @@ class TestSerialiseTests:
 
                 with uth.ParserContext():
                     compiletools.cake.main(argv)
+
+                # Verify test executables were built
+                built_exes = set()
+                for root, _dirs, files in os.walk(tmpserialisetests):
+                    for f in files:
+                        if compiletools.utils.is_executable(os.path.join(root, f)):
+                            built_exes.add(f)
+
+                assert len(built_exes) >= 2, (
+                    f"Expected at least 2 test executables, got {built_exes}"
+                )
 
     def teardown_method(self):
         uth.reset()
