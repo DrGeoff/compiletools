@@ -11,7 +11,7 @@ set -euo pipefail
 # === Configuration ===
 SLEEP_INTERVAL_LOCKDIR=${CT_LOCK_SLEEP_INTERVAL:-0.05}
 SLEEP_INTERVAL_CIFS=${CT_LOCK_SLEEP_INTERVAL_CIFS:-0.1}
-SLEEP_INTERVAL_FLOCK=${CT_LOCK_SLEEP_INTERVAL_FLOCK:-0.1}
+SLEEP_INTERVAL_FLOCK=${CT_LOCK_SLEEP_INTERVAL_FLOCK:-0.1}  # unused: flock blocks in kernel
 WARN_INTERVAL=${CT_LOCK_WARN_INTERVAL:-30}
 CROSS_HOST_TIMEOUT=${CT_LOCK_TIMEOUT:-600}
 VERBOSE=${CT_LOCK_VERBOSE:-0}
@@ -61,7 +61,7 @@ Lock Strategies:
   lockdir  NFS, Lustre (mkdir-based, stale detection)
   fcntl    GPFS (fcntl.lockf, cross-node, kernel-managed)
   cifs     CIFS/SMB (exclusive file creation)
-  flock    Local filesystems (POSIX flock with fallback)
+  flock    Local filesystems (POSIX flock, kernel-managed blocking)
 
 Example:
   ct-lock-helper compile --target=file.o --strategy=lockdir -- gcc -c file.c
@@ -316,32 +316,21 @@ release_lock_cifs() {
 
 acquire_lock_flock() {
     local lockfile="$1"
-    local lockfile_pid="$lockfile.pid"
 
     # Open lockfile on fd 9
     exec 9> "$lockfile"
 
-    # Try flock first
-    if command -v flock >/dev/null 2>&1; then
-        if flock 9 2>/dev/null; then
-            return 0
-        fi
-    fi
-
-    # Fallback: polling with O_EXCL
-    while ! (set -C; echo $$ > "$lockfile_pid") 2>/dev/null; do
-        sleep "$SLEEP_INTERVAL_FLOCK"
-    done
+    # flock(1) is part of util-linux, available on every Linux system.
+    # Blocks in kernel until lock is acquired.
+    flock 9
 }
 
 release_lock_flock() {
     local lockfile="$1"
-    local lockfile_pid="$lockfile.pid"
 
-    # Close fd 9 (releases flock if used)
+    # Close fd 9 (releases flock)
     exec 9>&- 2>/dev/null || true
 
-    rm -f "$lockfile_pid" 2>/dev/null || true
     rm -f "$lockfile" 2>/dev/null || true
 }
 

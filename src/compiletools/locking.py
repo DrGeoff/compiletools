@@ -418,64 +418,33 @@ class FlockLock:
 
     def __init__(self, target_file, args):
         self.lockfile = target_file + ".lock"
-        self.lockfile_pid = target_file + ".lock.pid"
         self.fd = None
-        self.use_flock = True
-        self.sleep_interval = args.sleep_interval_flock_fallback
         self.args = args
 
     def acquire(self):
-        """Acquire lock using POSIX flock with fallback.
+        """Acquire lock using POSIX flock(LOCK_EX).
 
-        Algorithm mirrors ct-lock-helper flock strategy.
-        Try fcntl.flock() first, fallback to O_EXCL polling.
+        Blocks in the kernel until the lock is acquired. Only used on local
+        filesystems where flock() is always available.
         """
+        if not HAS_FCNTL:
+            raise RuntimeError("fcntl module not available (Windows?); cannot use flock lock strategy")
+
         # Ensure parent directory exists
         parent_dir = os.path.dirname(self.lockfile)
         if parent_dir and not os.path.exists(parent_dir):
             os.makedirs(parent_dir, exist_ok=True)
 
-        # Open lockfile
         self.fd = os.open(self.lockfile, os.O_CREAT | os.O_WRONLY, 0o666)
-
-        # Try flock first (only on Unix)
-        if HAS_FCNTL:
-            try:
-                fcntl.flock(self.fd, fcntl.LOCK_EX)
-                self.use_flock = True
-                return
-            except OSError:
-                # flock failed, fall through to polling fallback
-                pass
-
-        # flock not available or failed, use fallback
-        self.use_flock = False
-
-        # Fallback: polling with O_EXCL
-        while True:
-            try:
-                pid_fd = os.open(self.lockfile_pid, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
-                os.write(pid_fd, f"{os.getpid()}\n".encode())
-                os.close(pid_fd)
-                return
-            except FileExistsError:
-                time.sleep(self.sleep_interval)
+        fcntl.flock(self.fd, fcntl.LOCK_EX)
 
     def release(self):
-        """Release flock."""
+        """Release flock and clean up lockfile."""
         try:
-            if self.use_flock and HAS_FCNTL:
-                if self.fd is not None:
-                    fcntl.flock(self.fd, fcntl.LOCK_UN)
-                    os.close(self.fd)
-                    self.fd = None
-            else:
-                if os.path.exists(self.lockfile_pid):
-                    os.unlink(self.lockfile_pid)
-                if self.fd is not None:
-                    os.close(self.fd)
-                    self.fd = None
-            # Clean up base lockfile to match Makefile suffix behavior
+            if self.fd is not None:
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
+                os.close(self.fd)
+                self.fd = None
             if os.path.exists(self.lockfile):
                 os.unlink(self.lockfile)
         except OSError as e:
@@ -490,7 +459,7 @@ class FileLock:
     - 'fcntl': GPFS (fcntl.lockf(), cross-node, kernel-managed)
     - 'lockdir': NFS, Lustre (mkdir-based locking)
     - 'cifs': CIFS/SMB (exclusive file creation)
-    - 'flock': All others, including unknown filesystems (POSIX flock with fallback)
+    - 'flock': All others, including unknown filesystems (POSIX flock, kernel-managed blocking)
 
     Note: Unknown/undetectable filesystems safely default to 'flock' strategy,
     which is the most portable (works on all POSIX systems).

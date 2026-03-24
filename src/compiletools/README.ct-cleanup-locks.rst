@@ -92,7 +92,7 @@ Lock Configuration
     Sleep interval for CIFS lock polling (default: 0.2)
 
 ``--sleep-interval-flock-fallback SECONDS``
-    Sleep interval for flock fallback polling (default: 0.1)
+    Unused since flock blocks in kernel (no polling). Kept for backwards compatibility.
 
 General Options
 ---------------

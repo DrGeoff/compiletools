@@ -354,20 +354,15 @@ class TestFlockLock:
             lock.acquire()
             lock.release()
 
-    def test_flock_oserror_falls_back_to_polling(self):
+    def test_flock_no_fallback_attributes(self):
+        """FlockLock should not have O_EXCL fallback attributes."""
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args()
             lock = FlockLock(target, args)
-
-            # Mock flock to raise OSError
-            with patch("compiletools.locking.fcntl") as mock_fcntl:
-                mock_fcntl.flock.side_effect = OSError("flock failed")
-                mock_fcntl.LOCK_EX = 2
-                mock_fcntl.LOCK_UN = 8
-                lock.acquire()
-                assert lock.use_flock is False
-            lock.release()
+            assert not hasattr(lock, "use_flock")
+            assert not hasattr(lock, "lockfile_pid")
+            assert not hasattr(lock, "sleep_interval")
 
 
 class TestCIFSLock:
@@ -408,27 +403,11 @@ class TestCIFSLock:
 class TestFlockLockRelease:
     """Additional FlockLock tests."""
 
-    def test_release_fallback_path(self):
-        """Release via fallback (non-flock) path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
-            # Simulate fallback mode
-            lock.use_flock = False
-            lock.fd = os.open(lock.lockfile, os.O_CREAT | os.O_WRONLY, 0o666)
-            # Create pid file
-            with open(lock.lockfile_pid, "w") as f:
-                f.write("123\n")
-            lock.release()
-            assert not os.path.exists(lock.lockfile_pid)
-
     def test_release_oserror_verbose(self, capsys):
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args(verbose=2)
             lock = FlockLock(target, args)
-            lock.use_flock = True
             lock.fd = None
             with patch("os.path.exists", return_value=True), \
                  patch("os.unlink", side_effect=OSError("fail")):
