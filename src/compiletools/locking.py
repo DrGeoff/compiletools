@@ -439,14 +439,17 @@ class FlockLock:
         fcntl.flock(self.fd, fcntl.LOCK_EX)
 
     def release(self):
-        """Release flock and clean up lockfile."""
+        """Release flock. Lockfile is intentionally kept on disk.
+
+        Not unlinking the lockfile prevents the classic flock+unlink race
+        where concurrent processes end up locking different inodes. This
+        matches the standard flock(1) pattern.
+        """
         try:
             if self.fd is not None:
                 fcntl.flock(self.fd, fcntl.LOCK_UN)
                 os.close(self.fd)
                 self.fd = None
-            if os.path.exists(self.lockfile):
-                os.unlink(self.lockfile)
         except OSError as e:
             if self.args.verbose >= 2:
                 print(f"Warning: Failed to release flock: {e}", file=sys.stderr)

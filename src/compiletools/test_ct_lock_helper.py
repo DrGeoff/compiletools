@@ -74,10 +74,10 @@ class TestLockHelperBasic:
             assert result.returncode == 0, f"Compilation failed: {result.stderr}"
             assert os.path.exists(temp_target), "Target file not created"
 
-            # Verify lock was cleaned up (fcntl locks the target directly, no sidecar)
+            # Verify lock was cleaned up (fcntl/flock keep their lockfiles on disk)
             if strategy == "lockdir":
                 assert not os.path.exists(temp_target + ".lockdir"), "Lock not cleaned up"
-            elif strategy != "fcntl":
+            elif strategy not in ("fcntl", "flock"):
                 assert not os.path.exists(temp_target + ".lock"), "Lock not cleaned up"
 
         finally:
@@ -115,10 +115,10 @@ class TestLockHelperBasic:
             # Note: temp file may exist if gcc creates it before failing
             # The important check is that final mv didn't happen (checked by returncode)
 
-            # Verify lock was cleaned up even on error (fcntl locks the target directly)
+            # Verify lock was cleaned up even on error (fcntl/flock keep lockfiles)
             if strategy == "lockdir":
                 assert not os.path.exists(temp_target + ".lockdir"), "Lock not cleaned up on error"
-            elif strategy != "fcntl":
+            elif strategy not in ("fcntl", "flock"):
                 assert not os.path.exists(temp_target + ".lock"), "Lock not cleaned up on error"
 
         finally:

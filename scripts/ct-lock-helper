@@ -326,12 +326,10 @@ acquire_lock_flock() {
 }
 
 release_lock_flock() {
-    local lockfile="$1"
-
-    # Close fd 9 (releases flock)
+    # Close fd 9 (releases flock). Lockfile intentionally kept on disk
+    # to prevent the flock+unlink race (concurrent processes locking
+    # different inodes). Matches the standard flock(1) pattern.
     exec 9>&- 2>/dev/null || true
-
-    rm -f "$lockfile" 2>/dev/null || true
 }
 
 # === Lock Strategy: fcntl ===
