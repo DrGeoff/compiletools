@@ -3,6 +3,7 @@
 
 # Build files
 *.[oa]
+*.ct-sig
 bin/
 compile_commands.json
 

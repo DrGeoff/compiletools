@@ -33,7 +33,13 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 
 import compiletools.filesystem_utils
-from compiletools.build_backend import BuildBackend, register_backend
+from compiletools.build_backend import (
+    BuildBackend,
+    _read_link_sig,
+    _write_link_sig,
+    compute_link_signature,
+    register_backend,
+)
 from compiletools.build_graph import BuildGraph
 from compiletools.locking import FileLock
 
@@ -215,6 +221,14 @@ class ShakeBackend(BuildBackend):
                 done.add(target)
             return False  # Already existed → no change for dependents
 
+        # LINK SIGNATURE SHORT-CIRCUIT
+        # Input names are content-addressed → signature encodes all inputs.
+        if rule.rule_type == "link" and os.path.exists(target):
+            if _read_link_sig(target) == compute_link_signature(rule):
+                with lock:
+                    done.add(target)
+                return False
+
         # SUSPEND: recursively build all inputs (sequential — they may share deps)
         any_input_rebuilt = False
         for inp in rule.inputs:
@@ -266,6 +280,10 @@ class ShakeBackend(BuildBackend):
             return True  # New compile output → dependents must rebuild
 
         new_hash = _compute_file_hash(target)
+
+        # RECORD LINK SIGNATURE
+        if rule.rule_type == "link":
+            _write_link_sig(target, compute_link_signature(rule))
 
         # RECORD TRACE (only for non-content-addressable rules)
         with lock:

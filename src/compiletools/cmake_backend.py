@@ -124,6 +124,7 @@ class CMakeBackend(BuildBackend):
         return "CMakeLists.txt"
 
     def generate(self, graph: BuildGraph, output=None) -> None:
+        self._graph = graph
         if output is not None:
             self._write_cmake(graph, output)
         else:
@@ -195,6 +196,9 @@ class CMakeBackend(BuildBackend):
             self._run_tests()
             return
 
+        if self._graph is not None and self._all_outputs_current(self._graph):
+            return
+
         cmake = shutil.which("cmake")
         if cmake is None:
             raise RuntimeError("'cmake' not found on PATH")
@@ -219,6 +223,8 @@ class CMakeBackend(BuildBackend):
         # Copy built executables to namer.executable_pathname() locations
         # so _copyexes() can find them.
         self._copy_built_executables(build_dir)
+        if self._graph is not None:
+            self._record_link_signatures(self._graph)
 
     def _copy_built_executables(self, build_dir: str) -> None:
         """Copy built executables from cmake build dir to namer paths."""

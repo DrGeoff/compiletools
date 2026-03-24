@@ -29,6 +29,7 @@ class MakefileBackend(BuildBackend):
             output: A file-like object to write to. If None, delegates to
                 MakefileCreator for full-featured Makefile generation.
         """
+        self._graph = graph
         if output is not None:
             self._write_makefile(graph, output)
         else:
@@ -51,6 +52,9 @@ class MakefileBackend(BuildBackend):
 
     def execute(self, target: str = "build") -> None:
         """Run GNU make."""
+        if self._graph is not None and self._all_outputs_current(self._graph):
+            return
+
         cmd = ["make"]
         if self.args.verbose <= 1:
             cmd.append("-s")
@@ -69,3 +73,5 @@ class MakefileBackend(BuildBackend):
         if self.args.verbose >= 1:
             print(" ".join(cmd))
         subprocess.check_call(cmd, universal_newlines=True)
+        if self._graph is not None:
+            self._record_link_signatures(self._graph)

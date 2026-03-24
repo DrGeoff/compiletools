@@ -104,6 +104,7 @@ class BazelBackend(BuildBackend):
         return "BUILD.bazel"
 
     def generate(self, graph: BuildGraph, output=None) -> None:
+        self._graph = graph
         if output is not None:
             # When writing to a file handle, try to determine the base directory
             # from the file's name attribute (set when opened with open()).
@@ -199,6 +200,9 @@ class BazelBackend(BuildBackend):
             self._run_tests()
             return
 
+        if self._graph is not None and self._all_outputs_current(self._graph):
+            return
+
         tool = shutil.which("bazelisk") or shutil.which("bazel")
         if tool is None:
             raise RuntimeError("Neither 'bazelisk' nor 'bazel' found on PATH. Try: module load bazelisk-latest")
@@ -235,6 +239,8 @@ class BazelBackend(BuildBackend):
         bazel_bin = os.path.join(os.getcwd(), "bazel-bin")
         if os.path.isdir(bazel_bin):
             self._copy_built_executables(bazel_bin)
+        if self._graph is not None:
+            self._record_link_signatures(self._graph)
 
     def _copy_built_executables(self, build_output_dir: str) -> None:
         """Copy built executables from a build output dir to namer paths.

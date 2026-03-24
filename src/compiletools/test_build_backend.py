@@ -1,10 +1,17 @@
+import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from compiletools.build_backend import BuildBackend, available_backends, get_backend_class, register_backend
-from compiletools.build_graph import BuildGraph
+from compiletools.build_backend import (
+    BuildBackend,
+    available_backends,
+    compute_link_signature,
+    get_backend_class,
+    register_backend,
+)
+from compiletools.build_graph import BuildGraph, BuildRule
 
 
 class TestBuildBackendContract:
@@ -434,3 +441,152 @@ class TestRunTests:
         backend._run_tests()
 
         mock_run.assert_not_called()
+
+
+class TestComputeLinkSignature:
+    """Test compute_link_signature determinism and sensitivity."""
+
+    def test_deterministic(self):
+        rule = BuildRule(
+            output="bin/main",
+            inputs=["obj/a.o", "obj/b.o"],
+            command=["g++", "-o", "bin/main", "obj/a.o", "obj/b.o"],
+            rule_type="link",
+        )
+        sig1 = compute_link_signature(rule)
+        sig2 = compute_link_signature(rule)
+        assert sig1 == sig2
+
+    def test_input_order_irrelevant(self):
+        rule1 = BuildRule(
+            output="bin/main",
+            inputs=["obj/b.o", "obj/a.o"],
+            command=["g++", "-o", "bin/main", "obj/a.o", "obj/b.o"],
+            rule_type="link",
+        )
+        rule2 = BuildRule(
+            output="bin/main",
+            inputs=["obj/a.o", "obj/b.o"],
+            command=["g++", "-o", "bin/main", "obj/a.o", "obj/b.o"],
+            rule_type="link",
+        )
+        assert compute_link_signature(rule1) == compute_link_signature(rule2)
+
+    def test_differs_for_different_inputs(self):
+        rule1 = BuildRule(
+            output="bin/main",
+            inputs=["obj/a.o"],
+            command=["g++", "-o", "bin/main", "obj/a.o"],
+            rule_type="link",
+        )
+        rule2 = BuildRule(
+            output="bin/main",
+            inputs=["obj/b.o"],
+            command=["g++", "-o", "bin/main", "obj/b.o"],
+            rule_type="link",
+        )
+        assert compute_link_signature(rule1) != compute_link_signature(rule2)
+
+    def test_differs_for_different_command(self):
+        rule1 = BuildRule(
+            output="bin/main",
+            inputs=["obj/a.o"],
+            command=["g++", "-o", "bin/main", "obj/a.o"],
+            rule_type="link",
+        )
+        rule2 = BuildRule(
+            output="bin/main",
+            inputs=["obj/a.o"],
+            command=["g++", "-O2", "-o", "bin/main", "obj/a.o"],
+            rule_type="link",
+        )
+        assert compute_link_signature(rule1) != compute_link_signature(rule2)
+
+
+class TestAllOutputsCurrent:
+    """Test _all_outputs_current pre-check logic."""
+
+    def _make_backend(self):
+        StubClass = _make_stub_backend_class()
+        args = MagicMock()
+        hunter = MagicMock()
+        return StubClass(args=args, hunter=hunter)
+
+    def test_returns_true_when_all_exist_and_sigs_match(self, tmp_path):
+        backend = self._make_backend()
+        obj_path = str(tmp_path / "foo.o")
+        exe_path = str(tmp_path / "main")
+
+        # Create files
+        with open(obj_path, "w") as f:
+            f.write("object")
+        with open(exe_path, "w") as f:
+            f.write("executable")
+
+        graph = BuildGraph()
+        graph.add_rule(BuildRule(output=obj_path, inputs=["foo.cpp"], command=["g++"], rule_type="compile"))
+        link_rule = BuildRule(
+            output=exe_path, inputs=[obj_path], command=["g++", "-o", exe_path, obj_path], rule_type="link"
+        )
+        graph.add_rule(link_rule)
+
+        # Write matching sig
+        sig = compute_link_signature(link_rule)
+        with open(exe_path + ".ct-sig", "w") as f:
+            f.write(sig)
+
+        assert backend._all_outputs_current(graph) is True
+
+    def test_returns_false_when_compile_output_missing(self, tmp_path):
+        backend = self._make_backend()
+        exe_path = str(tmp_path / "main")
+        with open(exe_path, "w") as f:
+            f.write("executable")
+
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(output=str(tmp_path / "foo.o"), inputs=["foo.cpp"], command=["g++"], rule_type="compile")
+        )
+
+        assert backend._all_outputs_current(graph) is False
+
+    def test_returns_false_when_link_sig_differs(self, tmp_path):
+        backend = self._make_backend()
+        obj_path = str(tmp_path / "foo.o")
+        exe_path = str(tmp_path / "main")
+
+        with open(obj_path, "w") as f:
+            f.write("object")
+        with open(exe_path, "w") as f:
+            f.write("executable")
+
+        graph = BuildGraph()
+        graph.add_rule(BuildRule(output=obj_path, inputs=["foo.cpp"], command=["g++"], rule_type="compile"))
+        graph.add_rule(
+            BuildRule(output=exe_path, inputs=[obj_path], command=["g++", "-o", exe_path, obj_path], rule_type="link")
+        )
+
+        # Write wrong sig
+        with open(exe_path + ".ct-sig", "w") as f:
+            f.write("wrong_signature")
+
+        assert backend._all_outputs_current(graph) is False
+
+    def test_returns_false_when_link_output_missing(self, tmp_path):
+        backend = self._make_backend()
+        obj_path = str(tmp_path / "foo.o")
+        with open(obj_path, "w") as f:
+            f.write("object")
+
+        graph = BuildGraph()
+        graph.add_rule(BuildRule(output=obj_path, inputs=["foo.cpp"], command=["g++"], rule_type="compile"))
+        graph.add_rule(BuildRule(output=str(tmp_path / "main"), inputs=[obj_path], command=["g++"], rule_type="link"))
+
+        assert backend._all_outputs_current(graph) is False
+
+    def test_returns_false_when_no_compile_or_link_rules(self):
+        """Empty graph (e.g. library builds) should not short-circuit."""
+        backend = self._make_backend()
+        graph = BuildGraph()
+        graph.add_rule(BuildRule(output="build", inputs=[], command=None, rule_type="phony"))
+        assert backend._all_outputs_current(graph) is False

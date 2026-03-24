@@ -12,6 +12,9 @@ Hunter/Namer dependency data. This is the shared logic across all backends.
 from __future__ import annotations
 
 import abc
+import hashlib
+import json
+import os
 import subprocess
 import sys
 
@@ -23,6 +26,25 @@ import compiletools.wrappedos
 from compiletools.build_graph import BuildGraph, BuildRule
 
 
+def compute_link_signature(rule: BuildRule) -> str:
+    """Hash sorted input names + command. Input names are content-addressed."""
+    key = json.dumps({"inputs": sorted(rule.inputs), "command": rule.command}, sort_keys=True)
+    return hashlib.sha1(key.encode()).hexdigest()
+
+
+def _read_link_sig(output: str) -> str | None:
+    try:
+        with open(output + ".ct-sig") as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def _write_link_sig(output: str, sig: str) -> None:
+    with open(output + ".ct-sig", "w") as f:
+        f.write(sig)
+
+
 class BuildBackend(abc.ABC):
     """Abstract base class for build system backends."""
 
@@ -30,6 +52,7 @@ class BuildBackend(abc.ABC):
         self.args = args
         self.hunter = hunter
         self.namer = compiletools.namer.Namer(args)
+        self._graph: BuildGraph | None = None
 
     @staticmethod
     @abc.abstractmethod
@@ -158,6 +181,31 @@ class BuildBackend(abc.ABC):
 
         if failures:
             raise RuntimeError(f"Test failures: {', '.join(failures)}")
+
+    def _all_outputs_current(self, graph: BuildGraph) -> bool:
+        """Pre-check: all compile outputs exist and all link sigs match?
+
+        Returns False when the graph has no compile/link rules, since the
+        graph may not capture all build steps (e.g. library builds).
+        """
+        has_build_rules = False
+        for rule in graph.rules:
+            if rule.rule_type == "compile":
+                has_build_rules = True
+                if not os.path.exists(rule.output):
+                    return False
+            elif rule.rule_type == "link":
+                has_build_rules = True
+                if not os.path.exists(rule.output):
+                    return False
+                if _read_link_sig(rule.output) != compute_link_signature(rule):
+                    return False
+        return has_build_rules
+
+    def _record_link_signatures(self, graph: BuildGraph) -> None:
+        for rule in graph.rules:
+            if rule.rule_type == "link":
+                _write_link_sig(rule.output, compute_link_signature(rule))
 
     def _create_compile_rule(self, filename: str) -> BuildRule:
         """Create a compile BuildRule for a single source file."""
