@@ -20,6 +20,7 @@ class NinjaBackend(BuildBackend):
         return "build.ninja"
 
     def generate(self, graph: BuildGraph, output=None) -> None:
+        self._graph = graph
         if output is not None:
             self._write_ninja(graph, output)
         else:
@@ -69,6 +70,9 @@ class NinjaBackend(BuildBackend):
             self._run_tests()
             return
 
+        if self._graph is not None and self._all_outputs_current(self._graph):
+            return
+
         import subprocess
 
         filename = getattr(self.args, "ninja_filename", "build.ninja")
@@ -80,3 +84,5 @@ class NinjaBackend(BuildBackend):
             cmd.append("-v")
         cmd.append(target)
         subprocess.check_call(cmd, universal_newlines=True)
+        if self._graph is not None:
+            self._record_link_signatures(self._graph)

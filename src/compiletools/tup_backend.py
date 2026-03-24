@@ -20,6 +20,7 @@ class TupBackend(BuildBackend):
         return "Tupfile"
 
     def generate(self, graph: BuildGraph, output=None) -> None:
+        self._graph = graph
         if output is not None:
             self._write_tupfile(graph, output)
         else:
@@ -50,6 +51,9 @@ class TupBackend(BuildBackend):
             self._run_tests()
             return
 
+        if self._graph is not None and self._all_outputs_current(self._graph):
+            return
+
         import os
         import shutil
         import subprocess
@@ -66,3 +70,5 @@ class TupBackend(BuildBackend):
         if parallel:
             cmd.extend(["-j", str(parallel)])
         subprocess.check_call(cmd, universal_newlines=True)
+        if self._graph is not None:
+            self._record_link_signatures(self._graph)

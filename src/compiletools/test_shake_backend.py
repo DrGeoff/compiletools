@@ -14,6 +14,7 @@ import pytest
 import compiletools.shake_backend  # noqa: F401 — ensure registered
 from compiletools.build_backend import available_backends, get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
+from compiletools.build_backend import _write_link_sig, compute_link_signature
 from compiletools.shake_backend import (
     ShakeBackend,
     TraceEntry,
@@ -912,3 +913,171 @@ class TestContentAddressableShortCircuit:
             backend2.execute("build")
             # Link rebuilds because trace verification failed
             mock_sub.run.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Link signature short-circuit
+# ---------------------------------------------------------------------------
+
+
+class TestLinkSignatureShortCircuit:
+    def test_link_skipped_when_signature_matches(self, tmp_path):
+        """Link output + matching sig file → skip (no subprocess call)."""
+        os.chdir(tmp_path)
+        (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
+        (tmp_path / "foo").write_bytes(b"\x7fELF fake executable")
+
+        graph = BuildGraph()
+        link_rule = BuildRule(
+            output="foo",
+            inputs=["foo.o"],
+            command=["g++", "-o", "foo", "foo.o"],
+            rule_type="link",
+        )
+        graph.add_rule(link_rule)
+        graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
+
+        # Write matching sig
+        _write_link_sig("foo", compute_link_signature(link_rule))
+
+        args = mock.MagicMock()
+        args.objdir = str(tmp_path)
+        args.parallel = 1
+        args.verbose = 0
+
+        backend = ShakeBackend.__new__(ShakeBackend)
+        backend.args = args
+        backend._graph = graph
+
+        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
+            mock_sub.CalledProcessError = subprocess.CalledProcessError
+            backend.execute("build")
+            mock_sub.run.assert_not_called()
+
+    def test_link_rebuilds_when_signature_differs(self, tmp_path):
+        """Wrong sig → rebuild (subprocess called)."""
+        os.chdir(tmp_path)
+        (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
+        (tmp_path / "foo").write_bytes(b"\x7fELF fake executable")
+
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="foo",
+                inputs=["foo.o"],
+                command=["g++", "-o", "foo", "foo.o"],
+                rule_type="link",
+            )
+        )
+        graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
+
+        # Write wrong sig
+        _write_link_sig("foo", "wrong_signature_hash")
+
+        args = mock.MagicMock()
+        args.objdir = str(tmp_path)
+        args.parallel = 1
+        args.verbose = 0
+
+        backend = ShakeBackend.__new__(ShakeBackend)
+        backend.args = args
+        backend._graph = graph
+
+        mock_result = mock.MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = ""
+
+        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
+            mock_sub.run.return_value = mock_result
+            mock_sub.CalledProcessError = subprocess.CalledProcessError
+            backend.execute("build")
+            mock_sub.run.assert_called_once()
+
+    def test_link_rebuilds_when_output_missing(self, tmp_path):
+        """No output file → rebuild regardless of sig."""
+        os.chdir(tmp_path)
+        (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
+        # foo intentionally NOT created
+
+        graph = BuildGraph()
+        link_rule = BuildRule(
+            output="foo",
+            inputs=["foo.o"],
+            command=["g++", "-o", "foo", "foo.o"],
+            rule_type="link",
+        )
+        graph.add_rule(link_rule)
+        graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
+
+        # Write a sig even though output doesn't exist
+        _write_link_sig("foo", compute_link_signature(link_rule))
+
+        args = mock.MagicMock()
+        args.objdir = str(tmp_path)
+        args.parallel = 1
+        args.verbose = 0
+
+        backend = ShakeBackend.__new__(ShakeBackend)
+        backend.args = args
+        backend._graph = graph
+
+        mock_result = mock.MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = ""
+
+        def fake_run(cmd, **kwargs):
+            (tmp_path / "foo").write_bytes(b"\x7fELF new exe")
+            return mock_result
+
+        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
+            mock_sub.run.side_effect = fake_run
+            mock_sub.CalledProcessError = subprocess.CalledProcessError
+            backend.execute("build")
+            mock_sub.run.assert_called_once()
+
+    def test_link_records_signature_after_build(self, tmp_path):
+        """After a successful link, the sig file should be written."""
+        os.chdir(tmp_path)
+        (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
+        # foo intentionally NOT created — forces link to run
+
+        graph = BuildGraph()
+        link_rule = BuildRule(
+            output="foo",
+            inputs=["foo.o"],
+            command=["g++", "-o", "foo", "foo.o"],
+            rule_type="link",
+        )
+        graph.add_rule(link_rule)
+        graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
+
+        args = mock.MagicMock()
+        args.objdir = str(tmp_path)
+        args.parallel = 1
+        args.verbose = 0
+
+        backend = ShakeBackend.__new__(ShakeBackend)
+        backend.args = args
+        backend._graph = graph
+
+        mock_result = mock.MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = ""
+
+        def fake_run(cmd, **kwargs):
+            (tmp_path / "foo").write_bytes(b"\x7fELF new exe")
+            return mock_result
+
+        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
+            mock_sub.run.side_effect = fake_run
+            mock_sub.CalledProcessError = subprocess.CalledProcessError
+            backend.execute("build")
+
+        # Verify sig file was written with correct signature
+        sig_path = str(tmp_path / "foo.ct-sig")
+        assert os.path.exists(sig_path)
+        with open(sig_path) as f:
+            assert f.read().strip() == compute_link_signature(link_rule)
