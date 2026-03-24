@@ -71,6 +71,35 @@ def read_lock_info(lockdir):
         return None, None
 
 
+def read_lock_info_file(lockfile):
+    """Read hostname:pid from a flat .lock file (fcntl strategy).
+
+    Unlike read_lock_info() which reads from lockdir/pid, this reads
+    directly from the lock file itself.
+
+    Args:
+        lockfile: Path to .lock file
+
+    Returns:
+        tuple: (hostname, pid) or (None, None) if unreadable
+    """
+    try:
+        if not os.path.exists(lockfile):
+            return None, None
+
+        with open(lockfile) as f:
+            lock_info = f.read().strip()
+
+        if not lock_info or ":" not in lock_info:
+            return None, None
+
+        lock_host, lock_pid = lock_info.split(":", 1)
+        return lock_host, int(lock_pid)
+
+    except (OSError, ValueError):
+        return None, None
+
+
 def is_process_alive_local(pid):
     """Check if process exists on local host.
 

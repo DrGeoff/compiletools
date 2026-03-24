@@ -200,7 +200,7 @@ def add_locking_arguments(cap):
         "--sleep-interval-lockdir",
         type=float,
         default=None,
-        help="Sleep interval for lockdir polling (NFS/GPFS/Lustre) (default: auto-detect based on filesystem)",
+        help="Sleep interval for lockdir polling (NFS/Lustre) (default: auto-detect based on filesystem)",
     )
     cap.add(
         "--sleep-interval-cifs",

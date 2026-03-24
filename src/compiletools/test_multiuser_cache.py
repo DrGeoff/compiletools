@@ -5,9 +5,9 @@ Tests concurrent compilation, locking mechanisms, and permission handling
 for shared object file caches across multiple users/processes.
 
 Filesystem Compatibility:
-- Most tests work with any locking strategy (flock, lockdir, cifs)
-- test_stale_lock_cleanup requires lockdir (NFS/GPFS/Lustre) and skips on flock filesystems
-- When run on GPFS/Lustre/NFS, all tests execute
+- Most tests work with any locking strategy (flock, fcntl, lockdir, cifs)
+- test_stale_lock_cleanup requires lockdir (NFS/Lustre) and skips on other strategies
+- When run on NFS/Lustre, all tests execute; GPFS uses fcntl (kernel-managed)
 - When run on local filesystems (ext4/xfs), stale lock test skips with informative message
 
 Umask Requirements:
@@ -819,8 +819,8 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         """
         Test stale lock detection and automatic cleanup.
 
-        Runs only on filesystems that use lockdir strategy (NFS, GPFS, Lustre).
-        Skipped on local filesystems (ext4, xfs, etc.) that use flock.
+        Runs only on filesystems that use lockdir strategy (NFS, Lustre).
+        Skipped on local filesystems (ext4, xfs, etc.) and GPFS (uses fcntl).
 
         Verifies that:
         1. Stale locks with hostname:PID format are detected

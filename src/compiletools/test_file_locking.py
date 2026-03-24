@@ -48,7 +48,7 @@ def temp_lock_file():
 
 
 class TestLockdirLock:
-    """Tests for lockdir-based locking (NFS/GPFS/Lustre)."""
+    """Tests for lockdir-based locking (NFS/Lustre)."""
 
     def test_acquire_release_basic(self, temp_lock_file, mock_args):
         """Test basic lock acquire and release."""
@@ -487,7 +487,7 @@ def _concurrent_lock_worker(queue, temp_file, args_dict, worker_id, strategy):
 class TestConcurrentLocking:
     """Tests for concurrent lock access."""
 
-    @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock"])
+    @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock", "fcntl"])
     def test_concurrent_processes_serial_access(self, temp_lock_file, mock_args, strategy):
         """Test that concurrent processes acquire locks serially."""
         # Use spawn method to avoid fork() deprecation warnings

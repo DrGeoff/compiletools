@@ -48,8 +48,8 @@ def test_get_filesystem_type_nonexistent_path():
 
 
 def test_get_lock_strategy_gpfs():
-    """GPFS should use lockdir strategy."""
-    assert get_lock_strategy("gpfs") == "lockdir"
+    """GPFS should use fcntl strategy."""
+    assert get_lock_strategy("gpfs") == "fcntl"
 
 
 def test_get_lock_strategy_lustre():
@@ -125,7 +125,7 @@ def test_get_lockdir_sleep_interval_nfs():
 
 
 def test_get_lockdir_sleep_interval_gpfs():
-    """GPFS should use default middle-ground interval."""
+    """GPFS falls through to default (not used in practice; GPFS uses fcntl)."""
     assert get_lockdir_sleep_interval("gpfs") == 0.05
 
 
@@ -136,8 +136,8 @@ def test_get_lockdir_sleep_interval_unknown():
 
 def test_case_insensitivity():
     """Filesystem type matching should be case-insensitive."""
-    assert get_lock_strategy("GPFS") == "lockdir"
-    assert get_lock_strategy("Gpfs") == "lockdir"
+    assert get_lock_strategy("GPFS") == "fcntl"
+    assert get_lock_strategy("Gpfs") == "fcntl"
     assert supports_mmap_safely("CIFS") is False
     assert supports_mmap_safely("Cifs") is False
 
@@ -404,7 +404,7 @@ def test_real_filesystem_detection():
 
         # Verify policy functions work with detected type
         strategy = get_lock_strategy(fstype)
-        assert strategy in ["lockdir", "cifs", "flock"]
+        assert strategy in ["fcntl", "lockdir", "cifs", "flock"]
 
         mmap_safe = supports_mmap_safely(fstype)
         assert isinstance(mmap_safe, bool)

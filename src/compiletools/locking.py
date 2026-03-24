@@ -26,8 +26,88 @@ except ImportError:
     HAS_FCNTL = False
 
 
+class FcntlLock:
+    """fcntl.lockf()-based locking for GPFS (cross-node, kernel-managed).
+
+    Uses POSIX fcntl record locks which work correctly across GPFS nodes
+    (unlike flock which is node-local on GPFS). The kernel handles blocking
+    and automatic release on process death, eliminating the need for polling
+    and stale lock detection.
+
+    Lock files are NOT unlinked on release to avoid creation races; they are
+    harmless empty files that get reused.
+    """
+
+    def __init__(self, target_file, args):
+        self.lockfile = compiletools.wrappedos.realpath(target_file) + ".lock"
+        self.fd = None
+        self.args = args
+        self.hostname = socket.gethostname()
+        self.pid = os.getpid()
+
+    def acquire(self):
+        """Acquire lock using fcntl.lockf().
+
+        Opens/creates .lock file, tries non-blocking first for diagnostics,
+        then blocks if contended. After acquiring, writes hostname:pid for
+        diagnostic purposes.
+        """
+        if not HAS_FCNTL:
+            raise RuntimeError("fcntl module not available (Windows?); cannot use fcntl lock strategy")
+
+        # Ensure parent directory exists
+        parent_dir = compiletools.wrappedos.dirname(self.lockfile)
+        if parent_dir and not os.path.exists(parent_dir):
+            os.makedirs(parent_dir, exist_ok=True)
+
+        self.fd = os.open(self.lockfile, os.O_CREAT | os.O_RDWR, 0o666)
+
+        try:
+            # Try non-blocking first to detect contention
+            fcntl.lockf(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            # Contended — read holder info and warn, then block
+            try:
+                holder_info = os.read(self.fd, 256).decode().strip()
+            except Exception:
+                holder_info = "unknown"
+            if holder_info:
+                print(
+                    f"Waiting for lock: {self.lockfile} (held by {holder_info})",
+                    file=sys.stderr,
+                )
+
+            # Blocking acquire — kernel handles the wait
+            fcntl.lockf(self.fd, fcntl.LOCK_EX)
+
+        # Write holder info for diagnostics (truncate first)
+        try:
+            os.ftruncate(self.fd, 0)
+            os.lseek(self.fd, 0, os.SEEK_SET)
+            os.write(self.fd, f"{self.hostname}:{self.pid}\n".encode())
+        except OSError:
+            pass  # Non-fatal: lock is held regardless
+
+    def release(self):
+        """Release fcntl lock and close fd. Does NOT unlink lock file."""
+        if self.fd is not None:
+            try:
+                fcntl.lockf(self.fd, fcntl.LOCK_UN)
+            except OSError as e:
+                if getattr(self.args, "verbose", 0) >= 2:
+                    print(
+                        f"Warning: Failed to unlock {self.lockfile}: {e}",
+                        file=sys.stderr,
+                    )
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self.fd = None
+
+
 class LockdirLock:
-    """Lockdir-based locking for NFS/GPFS/Lustre (mkdir atomic operation)."""
+    """Lockdir-based locking for NFS/Lustre (mkdir atomic operation)."""
 
     def __init__(self, target_file, args):
         # Use wrappedos for path computations (pure, cacheable)
@@ -354,9 +434,9 @@ class CIFSLock:
 class FlockLock:
     """POSIX flock locking for local filesystems (ext4/xfs/btrfs).
 
-    WARNING: flock() is node-local on GPFS/Lustre/NFS. Use LockdirLock
-    for network filesystems. This class should only be used when
-    filesystem detection confirms a local filesystem.
+    WARNING: flock() is node-local on GPFS/Lustre/NFS. Use FcntlLock
+    for GPFS or LockdirLock for NFS/Lustre. This class should only be
+    used when filesystem detection confirms a local filesystem.
     """
 
     def __init__(self, target_file, args):
@@ -430,7 +510,8 @@ class FileLock:
     """Context manager for file locking with automatic strategy selection.
 
     Strategy selection (via filesystem_utils.get_lock_strategy):
-    - 'lockdir': NFS, GPFS, Lustre (mkdir-based locking)
+    - 'fcntl': GPFS (fcntl.lockf(), cross-node, kernel-managed)
+    - 'lockdir': NFS, Lustre (mkdir-based locking)
     - 'cifs': CIFS/SMB (exclusive file creation)
     - 'flock': All others, including unknown filesystems (POSIX flock with fallback)
 
@@ -462,8 +543,9 @@ class FileLock:
             strategy = "flock"
 
         # Select lock implementation based on strategy
-        # get_lock_strategy() always returns 'lockdir', 'cifs', or 'flock'
-        if strategy == "lockdir":
+        if strategy == "fcntl":
+            self.lock = FcntlLock(target_file, args)
+        elif strategy == "lockdir":
             self.lock = LockdirLock(target_file, args)
         elif strategy == "cifs":
             self.lock = CIFSLock(target_file, args)

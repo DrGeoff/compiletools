@@ -39,15 +39,15 @@ def requires_functional_compiler(func):
 
 
 def requires_lockdir_filesystem(func):
-    """Decorator to skip tests that require lockdir-based locking (NFS/GPFS/Lustre).
+    """Decorator to skip tests that require lockdir-based locking (NFS/Lustre).
 
     This decorator checks if the test tmpdir filesystem uses lockdir strategy
-    and automatically skips the test if it uses flock or cifs instead.
+    and automatically skips the test if it uses flock, fcntl, or cifs instead.
 
     Usage:
         @requires_lockdir_filesystem
         def test_something_that_needs_lockdir(self):
-            # Test code that requires NFS/GPFS/Lustre filesystem
+            # Test code that requires NFS/Lustre filesystem
             pass
     """
 
@@ -59,7 +59,7 @@ def requires_lockdir_filesystem(func):
             fstype = compiletools.filesystem_utils.get_filesystem_type(tmpdir)
             strategy = compiletools.filesystem_utils.get_lock_strategy(fstype)
             if strategy != "lockdir":
-                pytest.skip(f"Filesystem {fstype} uses {strategy} (not lockdir) - test requires NFS/GPFS/Lustre")
+                pytest.skip(f"Filesystem {fstype} uses {strategy} (not lockdir) - test requires NFS/Lustre")
         return func(*args, **kwargs)
 
     return wrapper

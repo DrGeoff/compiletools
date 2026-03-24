@@ -24,10 +24,11 @@ DESCRIPTION
 file creation and prevent race conditions in multi-user or parallel build
 environments.
 
-The helper implements three locking strategies automatically selected based on
+The helper implements four locking strategies automatically selected based on
 the target filesystem type:
 
-- **lockdir**: For NFS, GPFS, Lustre (mkdir-based, works across all filesystems)
+- **lockdir**: For NFS, Lustre (mkdir-based, works across all filesystems)
+- **fcntl**: For GPFS (fcntl.lockf, cross-node, kernel-managed)
 - **cifs**: For CIFS/SMB (exclusive file creation)
 - **flock**: For local filesystems like ext4, xfs, btrfs (POSIX flock)
 
@@ -64,7 +65,9 @@ Environment variables control lock behavior:
 
     - Lustre filesystems: 0.01 (fast parallel filesystem)
     - NFS filesystems: 0.1 (network latency)
-    - GPFS and others: 0.05 (balanced)
+    - Others: 0.05 (balanced)
+
+    Note: GPFS uses the fcntl strategy (kernel-managed blocking), not lockdir polling.
 
 **CT_LOCK_SLEEP_INTERVAL_CIFS**
     Seconds to sleep between lock acquisition attempts for CIFS strategy (default: 0.1)
@@ -98,8 +101,8 @@ Example::
 Lock Strategies
 ---------------
 
-lockdir (NFS/GPFS/Lustre)
-^^^^^^^^^^^^^^^^^^^^^^^^^^
+lockdir (NFS/Lustre)
+^^^^^^^^^^^^^^^^^^^^
 
 Uses ``mkdir`` for atomic lock acquisition. Works on all POSIX filesystems.
 
@@ -121,6 +124,35 @@ Uses ``mkdir`` for atomic lock acquisition. Works on all POSIX filesystems.
 
 - Same-host: Checks if process alive (``kill -0`` + ``/proc`` check on Linux)
 - Cross-host: Cannot verify, relies on age-based timeout warnings
+
+fcntl (GPFS)
+^^^^^^^^^^^^
+
+Uses ``fcntl.lockf()`` for cross-node locking on GPFS. Unlike ``flock()``, which
+is node-local on GPFS, ``fcntl`` record locks work correctly across nodes. The
+kernel handles blocking and automatic release on process death, eliminating the
+need for polling and stale lock detection.
+
+**Features:**
+
+- Cross-node mutual exclusion via kernel-managed record locks
+- No polling: ``lockf(LOCK_EX)`` blocks in the kernel
+- No stale detection: kernel releases locks automatically on process death
+- Contention warning: prints holder info when lock is contended
+
+**Lock structure:**
+
+::
+
+    target.o.lock        # Lockfile (contains "hostname:pid")
+
+**Note:** Lock files are intentionally NOT removed on release to avoid creation
+races. They are harmless empty files that get reused.
+
+**Shell implementation:** Since fcntl locks are per-process (not per-fd), the
+shell cannot hold an fcntl lock and then exec a compiler. The bash
+``ct-lock-helper`` delegates the entire compile-under-lock to an inline Python
+script for the fcntl strategy.
 
 cifs (CIFS/SMB)
 ^^^^^^^^^^^^^^^
@@ -173,10 +205,14 @@ Measured overhead (vs direct gcc, 100 iterations):
 +===========+===============+================+===============+
 | flock     | 12.9ms        | 52.6ms         | **4.1x**      |
 +-----------+---------------+----------------+---------------+
+| fcntl     | ~50ms*        | 45.7ms         | **~1x**       |
++-----------+---------------+----------------+---------------+
 | lockdir   | 18.5ms        | 45.7ms         | **2.5x**      |
 +-----------+---------------+----------------+---------------+
 | cifs      | 11.9ms        | 47.5ms         | **4.0x**      |
 +-----------+---------------+----------------+---------------+
+
+\* Bash fcntl strategy delegates to inline Python (fcntl locks are per-process).
 
 **Verdict:** Bash is **2.5-4x faster** than Python.
 
@@ -196,7 +232,7 @@ Measured overhead (vs direct gcc, 100 iterations):
 **When file locking is beneficial:**
 
 - Multi-user team builds with shared cache
-- Parallel builds on NFS/GPFS/Lustre
+- Parallel builds on NFS/GPFS/Lustre (GPFS uses fcntl for best performance)
 - CI/CD with persistent object directories
 
 **When to skip:**
@@ -305,9 +341,9 @@ The locking algorithm mirrors ``locking.py`` for consistency:
 
 1. **Acquire:**
 
-   - Try ``mkdir`` (lockdir) or exclusive create (cifs/flock)
-   - If fails, check if lock is stale (same-host process check)
-   - If stale, remove and retry immediately
+   - Try ``mkdir`` (lockdir), ``fcntl.lockf`` (fcntl), or exclusive create (cifs/flock)
+   - For lockdir: if fails, check if stale (same-host process check), remove and retry
+   - For fcntl: kernel handles blocking and deadlock avoidance
    - If not stale, wait with periodic warnings
    - Write hostname:pid to lock
 

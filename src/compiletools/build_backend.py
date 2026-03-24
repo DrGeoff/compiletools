@@ -309,6 +309,8 @@ def wrap_compile_with_lock(compile_cmd: str, target: str, args, filesystem_type:
         else:
             sleep_interval = compiletools.filesystem_utils.get_lockdir_sleep_interval(filesystem_type)
         env_vars.append(f"CT_LOCK_SLEEP_INTERVAL={sleep_interval}")
+    elif strategy == "fcntl":
+        pass  # fcntl.lockf() blocks in kernel, no sleep interval needed
     elif strategy == "cifs":
         env_vars.append(f"CT_LOCK_SLEEP_INTERVAL_CIFS={args.sleep_interval_cifs}")
     else:  # flock
