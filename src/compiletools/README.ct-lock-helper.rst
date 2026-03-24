@@ -19,8 +19,8 @@ ct-lock-helper compile --target=OUTPUT --strategy=STRATEGY -- COMMAND
 DESCRIPTION
 ===========
 
-``ct-lock-helper`` manages file locks when building with shared object caching
-(``--shared-objects`` flag). It wraps compilation commands to ensure atomic
+``ct-lock-helper`` manages file locks when building with file locking
+(``--file-locking`` flag). It wraps compilation commands to ensure atomic
 file creation and prevent race conditions in multi-user or parallel build
 environments.
 
@@ -34,7 +34,7 @@ the target filesystem type:
 Usage
 -----
 
-ct-lock-helper is invoked automatically by ``ct-cake`` when using ``--shared-objects``.
+ct-lock-helper is invoked automatically by ``ct-cake`` when using ``--file-locking``.
 You typically don't call it directly, but it's useful to understand for debugging.
 
 Basic command format::
@@ -92,7 +92,7 @@ Example::
 
     export CT_LOCK_WARN_INTERVAL=10
     export CT_LOCK_TIMEOUT=300
-    ct-cake --shared-objects
+    ct-cake --file-locking
 
 Lock Strategies
 ---------------
@@ -192,7 +192,7 @@ Measured overhead (vs direct gcc, 100 iterations):
 - Cross-platform consistency required
 - Overhead is acceptable (< 50% of compile time)
 
-**When shared objects are beneficial:**
+**When file locking is beneficial:**
 
 - Multi-user team builds with shared cache
 - Parallel builds on NFS/GPFS/Lustre
@@ -202,7 +202,7 @@ Measured overhead (vs direct gcc, 100 iterations):
 
 - Fast local single-threaded builds
 - Many tiny files (<100ms compile time each)
-- Use ``--no-shared-objects`` to disable
+- Use ``--no-file-locking`` to disable
 
 **Filesystem detection:**
 
@@ -226,7 +226,7 @@ Solutions:
 1. Install compiletools: ``pip install compiletools``
 2. Install from source: ``pip install -e .``
 3. Add to PATH: ``export PATH=/path/to/compiletools:$PATH``
-4. Disable shared objects: use ``--no-shared-objects``
+4. Disable file locking: use ``--no-file-locking``
 
 **Locks not releasing**
 
@@ -250,7 +250,7 @@ Solutions:
     export CT_LOCK_SLEEP_INTERVAL_CIFS=0.05 # For CIFS strategy
     export CT_LOCK_SLEEP_INTERVAL_FLOCK=0.05 # For flock strategy
 
-- For very fast local-only builds, consider ``--no-shared-objects``
+- For very fast local-only builds, consider ``--no-file-locking``
 
 **Cross-host lock stuck**
 
@@ -263,7 +263,7 @@ Or use ``ct-cleanup-locks --dry-run`` to identify, then ``ct-cleanup-locks`` to 
 Multi-User Shared Caches
 -------------------------
 
-For team environments with shared object directories:
+For team environments with shared build directories:
 
 **Setup:**
 
@@ -275,7 +275,7 @@ For team environments with shared object directories:
 
 2. Configure compiletools::
 
-    ct-cake --shared-objects --objdir=/shared/build/cache
+    ct-cake --file-locking --objdir=/shared/build/cache
 
 **Lock permissions:**
 
@@ -345,7 +345,7 @@ Examples
 ::
 
     # Verbose output
-    CT_LOCK_VERBOSE=1 CT_LOCK_WARN_INTERVAL=5 ct-cake --shared-objects
+    CT_LOCK_VERBOSE=1 CT_LOCK_WARN_INTERVAL=5 ct-cake --file-locking
 
 **Testing lock strategies:**
 

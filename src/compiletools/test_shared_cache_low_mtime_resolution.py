@@ -86,7 +86,7 @@ class TestSharedCacheLowMtimeResolution(BaseCompileToolsTestCase):
         uth.create_temp_ct_conf(
             tempdir=str(main_repo),
             defaultvariant=os.path.basename(config_name)[:-5],
-            extralines=["shared-objects = true", f"objdir = {shared_objdir}"],
+            extralines=["file-locking = true", f"objdir = {shared_objdir}"],
         )
 
         # Copy config to worktree

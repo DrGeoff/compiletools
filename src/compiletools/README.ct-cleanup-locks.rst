@@ -3,7 +3,7 @@ ct-cleanup-locks
 ==================
 
 -------------------------------------------------------------------------
-Clean up stale lock directories in shared object caches
+Clean up stale lock directories from file locking
 -------------------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
@@ -18,11 +18,11 @@ ct-cleanup-locks [--dry-run] [--objdir PATH] [--min-lock-age SECONDS] [-v] [-vv]
 
 DESCRIPTION
 ===========
-Clean up stale lock directories in shared object caches from crashed builds,
+Clean up stale lock directories from file locking from crashed builds,
 network failures, or terminated processes.
 
 These locks are created by ``ct-lock-helper`` during compilation with
-``--shared-objects``. See ``README.ct-lock-helper.rst`` for lock details.
+``--file-locking``. See ``README.ct-lock-helper.rst`` for lock details.
 
 WHEN TO USE
 ===========

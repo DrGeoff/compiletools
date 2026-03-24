@@ -16,7 +16,7 @@ def ensure_lock_helpers_in_path():
 
     This fixture runs once per test session and is automatically applied to
     all tests (autouse=True). It's required for tests that use the
-    --shared-objects flag, which needs ct-lock-helper for file locking.
+    --file-locking flag, which needs ct-lock-helper for file locking.
 
     The fixture:
     1. Checks if ct-lock-helper and ct-lock-helper-py are in PATH
@@ -28,7 +28,7 @@ def ensure_lock_helpers_in_path():
     This centralized approach prevents:
     - Tests failing mysteriously based on developer environment
     - Duplicate fixture code in multiple test files
-    - Forgetting to add fixture when writing new tests with --shared-objects
+    - Forgetting to add fixture when writing new tests with --file-locking
     """
     import shutil
 

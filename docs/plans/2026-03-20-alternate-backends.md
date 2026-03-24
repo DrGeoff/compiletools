@@ -637,7 +637,7 @@ class TestBuildGraphPopulation:
             CXXFLAGS="-O2 -std=c++17",
             LD="g++",
             LDFLAGS="",
-            shared_objects=False,
+            file_locking=False,
             serialisetests=False,
             build_only_changed=None,
         )
@@ -805,7 +805,7 @@ class TestMakefileGenerate:
         defaults = dict(
             verbose=0,
             objdir="/tmp/obj",
-            shared_objects=False,
+            file_locking=False,
             makefilename="Makefile",
             filename=[],
             tests=[],
@@ -1006,7 +1006,7 @@ class TestNinjaGenerate:
         defaults = dict(
             verbose=0,
             objdir="/tmp/obj",
-            shared_objects=False,
+            file_locking=False,
             filename=[],
             tests=[],
             static=[],
@@ -1367,7 +1367,7 @@ class TestMakefileBackendIntegration(BaseCompileToolsTestCase):
         args.dynamic = []
         args.verbose = 0
         args.objdir = os.path.join(sample_dir, "obj")
-        args.shared_objects = False
+        args.file_locking = False
         args.serialisetests = False
         args.build_only_changed = None
         args.makefilename = os.path.join(sample_dir, "Makefile")
@@ -1496,7 +1496,7 @@ git commit -m "chore: fix lint and formatting for new backend modules"
 ## Future Work (Not In This Plan)
 
 1. ~~**Migrate cake.py** from `MakefileCreator` to `MakefileBackend`~~ — DONE: `cake.py:_call_backend()` dispatches to the selected backend.
-2. **Add shared-objects support** to `MakefileBackend.generate()` (lock wrapping).
+2. **Add file-locking support** to `MakefileBackend.generate()` (lock wrapping).
 3. ~~**Add CMakeBackend** for IDE integration~~ — DONE: `cmake_backend.py` implemented.
 4. **Add --build-only-changed** support in `BuildGraph.filter_changed()`.
 5. ~~**Add test/clean rule generation** to `build_graph()`~~ — DONE: test support added to all backends via `_run_tests()`.

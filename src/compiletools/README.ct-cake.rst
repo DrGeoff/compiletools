@@ -168,14 +168,14 @@ those strictly needed to build your particular binary, so you only pay for what
 you use. This difference alone should see a large improvement on most
 projects, especially for incremental rebuilds.
 
-Shared Object Cache
--------------------
+File Locking
+------------
 
-ct-cake supports a shared object file cache that enables multiple users and build
+ct-cake supports file locking that enables multiple users and build
 hosts to share compiled object files. This significantly speeds up builds in
 multi-developer and CI/CD environments by reusing object files across builds.
 
-Enable by setting ``shared-objects = true`` in your configuration file. This adds
+Enable by setting ``file-locking = true`` in your configuration file. This adds
 filesystem-aware locking to ensure safe concurrent access (flock on local filesystems,
 atomic mkdir on network filesystems). The cache uses content-addressable storage
 (files named by hash of source + compiler flags) and includes automatic stale lock

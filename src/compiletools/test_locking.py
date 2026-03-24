@@ -15,7 +15,7 @@ def _make_lock_args(**overrides):
     """Create a minimal args object for locking."""
     defaults = dict(
         verbose=0,
-        shared_objects=True,
+        file_locking=True,
         lock_cross_host_timeout=300,
         lock_warn_interval=30,
         lock_creation_grace_period=2,
@@ -383,13 +383,13 @@ class TestFlockLockRelease:
 class TestFileLock:
     """Test FileLock context manager."""
 
-    def test_no_lock_when_shared_objects_disabled(self):
-        args = _make_lock_args(shared_objects=False)
+    def test_no_lock_when_file_locking_disabled(self):
+        args = _make_lock_args(file_locking=False)
         lock = FileLock("/some/file.o", args)
         assert lock.lock is None
 
-    def test_context_manager_no_shared_objects(self):
-        args = _make_lock_args(shared_objects=False)
+    def test_context_manager_no_file_locking(self):
+        args = _make_lock_args(file_locking=False)
         with FileLock("/some/file.o", args):
             pass  # Should not crash
 

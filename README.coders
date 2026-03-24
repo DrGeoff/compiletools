@@ -74,7 +74,7 @@ When you are doing performance testing there are 2 caches you need to be aware o
 2) cake:    Object files go to objdir (default: bin/<variant>/obj/).
             Executables go to bindir (default: bin/<variant>/).
             To clear: rm -rf bin
-            With --shared-objects enabled, objdir may be a shared location
+            With --file-locking enabled, objdir may be a shared location
             (e.g., <gitroot>/obj or /some/path/to/obj).
 
 #

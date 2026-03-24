@@ -67,7 +67,7 @@ class TestRule:
 def _make_args(**overrides):
     """Create a minimal args namespace for MakefileCreator unit tests."""
     defaults = dict(
-        shared_objects=False,
+        file_locking=False,
         verbose=0,
         objdir="/tmp/test_obj",
         filename=[],
@@ -134,17 +134,17 @@ class TestMakefileCreatorUnit:
                 assert result == "linux"
 
     def test_validate_umask_warning(self, capsys):
-        """Cover _validate_umask_for_shared_objects warning (line 318)."""
+        """Cover _validate_umask_for_file_locking warning (line 318)."""
         from compiletools.makefile import MakefileCreator
 
-        args = _make_args(shared_objects=True, verbose=1)
+        args = _make_args(file_locking=True, verbose=1)
         with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
             mc = MakefileCreator.__new__(MakefileCreator)
             mc.args = args
             # Set restrictive umask to trigger warning
             old_umask = os.umask(0o077)
             try:
-                mc._validate_umask_for_shared_objects()
+                mc._validate_umask_for_file_locking()
             finally:
                 os.umask(old_umask)
             captured = capsys.readouterr()
@@ -154,23 +154,23 @@ class TestMakefileCreatorUnit:
         """No warning with permissive umask."""
         from compiletools.makefile import MakefileCreator
 
-        args = _make_args(shared_objects=True, verbose=1)
+        args = _make_args(file_locking=True, verbose=1)
         with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
             mc = MakefileCreator.__new__(MakefileCreator)
             mc.args = args
             old_umask = os.umask(0o002)
             try:
-                mc._validate_umask_for_shared_objects()
+                mc._validate_umask_for_file_locking()
             finally:
                 os.umask(old_umask)
             captured = capsys.readouterr()
             assert "restrictive umask" not in captured.err
 
-    def test_wrap_compile_without_shared_objects(self):
+    def test_wrap_compile_without_file_locking(self):
         """Cover _wrap_compile_with_lock non-shared path (line 391)."""
         from compiletools.makefile import MakefileCreator
 
-        args = _make_args(shared_objects=False)
+        args = _make_args(file_locking=False)
         with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
             mc = MakefileCreator.__new__(MakefileCreator)
             mc.args = args
@@ -181,7 +181,7 @@ class TestMakefileCreatorUnit:
         """Cover _wrap_compile_with_lock lockdir branch (lines 398-400)."""
         from compiletools.makefile import MakefileCreator
 
-        args = _make_args(shared_objects=True, sleep_interval_lockdir=0.05)
+        args = _make_args(file_locking=True, sleep_interval_lockdir=0.05)
         with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
             mc = MakefileCreator.__new__(MakefileCreator)
             mc.args = args
@@ -195,7 +195,7 @@ class TestMakefileCreatorUnit:
         """Cover _wrap_compile_with_lock cifs branch (lines 401-402)."""
         from compiletools.makefile import MakefileCreator
 
-        args = _make_args(shared_objects=True, sleep_interval_cifs=0.02)
+        args = _make_args(file_locking=True, sleep_interval_cifs=0.02)
         with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
             mc = MakefileCreator.__new__(MakefileCreator)
             mc.args = args
@@ -209,7 +209,7 @@ class TestMakefileCreatorUnit:
         """Cover _wrap_compile_with_lock flock branch (lines 403-404)."""
         from compiletools.makefile import MakefileCreator
 
-        args = _make_args(shared_objects=True, sleep_interval_flock_fallback=0.03)
+        args = _make_args(file_locking=True, sleep_interval_flock_fallback=0.03)
         with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
             mc = MakefileCreator.__new__(MakefileCreator)
             mc.args = args
@@ -371,7 +371,7 @@ class TestMakefileCreatorUnit:
     def test_ct_lock_helper_missing_exits(self):
         """Cover ct-lock-helper not found error (lines 233-243)."""
 
-        args = _make_args(shared_objects=True, verbose=0)
+        args = _make_args(file_locking=True, verbose=0)
         with patch("shutil.which", return_value=None), \
              patch("compiletools.filesystem_utils.get_filesystem_type", return_value="ext4"), \
              patch("compiletools.namer.Namer") as MockNamer:
@@ -555,8 +555,8 @@ class TestMakefile:
         _test_library("--dynamic")
 
     @uth.requires_functional_compiler
-    def test_shared_objects_propagates_compiler_errors(self):
-        """Test that compiler errors fail the build when using --shared-objects.
+    def test_file_locking_propagates_compiler_errors(self):
+        """Test that compiler errors fail the build when using --file-locking.
 
         Regression test for bug where set -e was missing from locking recipes,
         causing compiler failures to be silently ignored.
@@ -575,8 +575,8 @@ int main() {
 
             with uth.TempConfigContext(tempdir=tempdir) as temp_config_name:
                 with uth.ParserContext():
-                    # Generate Makefile with --shared-objects enabled
-                    compiletools.makefile.main(["--config=" + temp_config_name, bad_source, "--shared-objects"])
+                    # Generate Makefile with --file-locking enabled
+                    compiletools.makefile.main(["--config=" + temp_config_name, bad_source, "--file-locking"])
 
                 # Find generated Makefile
                 filelist = os.listdir(".")

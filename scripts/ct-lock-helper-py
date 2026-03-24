@@ -42,7 +42,7 @@ class GracefulExit:
 def create_args_from_env():
     """Create args object from environment variables matching bash version."""
     return SimpleNamespace(
-        shared_objects=True,
+        file_locking=True,
         lock_warn_interval=int(os.getenv("CT_LOCK_WARN_INTERVAL", "30")),
         lock_cross_host_timeout=int(os.getenv("CT_LOCK_TIMEOUT", "600")),
         sleep_interval_lockdir=float(os.getenv("CT_LOCK_SLEEP_INTERVAL", "0.05")),

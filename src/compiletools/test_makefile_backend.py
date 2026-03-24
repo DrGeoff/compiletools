@@ -26,7 +26,7 @@ class TestMakefileGenerate:
             objdir="/tmp/obj",
             bindir="/tmp/bin",
             git_root="",
-            shared_objects=False,
+            file_locking=False,
             makefilename="Makefile",
             filename=[],
             tests=[],

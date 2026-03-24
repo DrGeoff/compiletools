@@ -95,7 +95,7 @@ def requires_flock_filesystem(func):
 
 
 def with_group_writable_umask(cls_or_func):
-    """Decorator to temporarily set group-writable umask for shared-objects tests.
+    """Decorator to temporarily set group-writable umask for file-locking tests.
 
     This decorator temporarily sets umask to 0o002 (allow group read/write) for the
     duration of the test, then restores the original umask.
@@ -104,7 +104,7 @@ def with_group_writable_umask(cls_or_func):
 
     Usage:
         @with_group_writable_umask
-        def test_something_that_needs_shared_objects(self):
+        def test_something_that_needs_file_locking(self):
             pass
 
         @with_group_writable_umask

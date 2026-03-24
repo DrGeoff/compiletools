@@ -48,7 +48,7 @@ class TestCakeBackendDispatch:
             CXXFLAGS="-O2",
             LD="g++",
             LDFLAGS="",
-            shared_objects=False,
+            file_locking=False,
             serialisetests=False,
             build_only_changed=None,
             parallel=1,

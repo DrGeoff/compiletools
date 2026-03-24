@@ -57,7 +57,7 @@ class LockdirLock:
         self.platform = platform.system().lower()
 
     def _set_lockdir_permissions(self):
-        """Set lockdir permissions for multi-user shared-objects mode.
+        """Set lockdir permissions for multi-user file-locking mode.
 
         Mirrors shell behavior:
         - chmod 775 lockdir (group-writable)
@@ -438,7 +438,7 @@ class FileLock:
     """
 
     def __init__(self, target_file, args):
-        if not getattr(args, "shared_objects", False):
+        if not getattr(args, "file_locking", False):
             self.lock = None
             return
 

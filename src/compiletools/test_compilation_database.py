@@ -188,9 +188,9 @@ class TestCompilationDatabase:
                         ["--config=" + temp_config_name, "--compilation-database-output=" + comp_db_output] + realpaths
                     )
 
-                # Generate Makefile
+                # Generate Makefile (disable file-locking so commands are directly comparable)
                 with uth.ParserContext():
-                    compiletools.makefile.main(["--config=" + temp_config_name] + realpaths)
+                    compiletools.makefile.main(["--config=" + temp_config_name, "--no-file-locking"] + realpaths)
 
                 # Read compilation database
                 with open(comp_db_output) as f:
@@ -231,9 +231,9 @@ class TestCompilationDatabase:
                         ["--config=" + temp_config_name, "--compilation-database-output=" + comp_db_output] + realpaths
                     )
 
-                # Generate Makefile
+                # Generate Makefile (disable file-locking so commands are directly comparable)
                 with uth.ParserContext():
-                    compiletools.makefile.main(["--config=" + temp_config_name] + realpaths)
+                    compiletools.makefile.main(["--config=" + temp_config_name, "--no-file-locking"] + realpaths)
 
                 # Read compilation database
                 with open(comp_db_output) as f:
@@ -857,7 +857,7 @@ def _concurrent_write_worker(work_queue, result_queue, source_file, output_file)
             compiletools.compilation_database.CompilationDatabaseCreator.add_arguments(cap)
             compiletools.hunter.add_arguments(cap)
             args = compiletools.apptools.parseargs(
-                cap, ["--shared-objects", "--compilation-database-output=" + output_file, source_file]
+                cap, ["--file-locking", "--compilation-database-output=" + output_file, source_file]
             )
 
             # Write compilation database

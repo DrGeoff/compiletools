@@ -55,9 +55,9 @@ class CompilationDatabaseCreator:
 
         compiletools.utils.add_boolean_argument(
             parser=cap,
-            name="shared-objects",
-            dest="shared_objects",
-            default=False,
+            name="file-locking",
+            dest="file_locking",
+            default=True,
             help="Enable file locking for concurrent compilation database writes",
         )
 
@@ -184,8 +184,8 @@ class CompilationDatabaseCreator:
         # Only need lock for the actual read-merge-write operation
         new_commands = self.create_compilation_database()
 
-        # Use same --shared-objects flag as makefile.py
-        # FileLock is no-op if args.shared_objects is False
+        # Use same --file-locking flag as makefile.py
+        # FileLock is no-op if args.file_locking is False
         # Lock held only for quick read-merge-write to minimize blocking
         with FileLock(output_file, self.args):
             self._write_database_impl(output_file, new_commands)
