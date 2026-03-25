@@ -68,7 +68,7 @@ Example:
 
 The helper will:
   1. Acquire lock based on strategy
-  2. For fcntl: compile directly to target (no temp file)
+  2. For fcntl/flock: compile directly to target (no temp file)
      For others: compile to temp file, then rename to target
   3. Release lock
 EOF
@@ -317,8 +317,9 @@ release_lock_cifs() {
 acquire_lock_flock() {
     local lockfile="$1"
 
-    # Open lockfile on fd 9
-    exec 9> "$lockfile"
+    # Open target file on fd 9 (read-write to avoid O_TRUNC clobbering
+    # the target; matches Python's O_CREAT | O_RDWR).
+    exec 9<> "$lockfile"
 
     # flock(1) is part of util-linux, available on every Linux system.
     # Blocks in kernel until lock is acquired.
@@ -463,8 +464,11 @@ cmd_compile() {
         lockdir)
             LOCKPATH="$TARGET.lockdir"
             ;;
-        cifs|flock)
+        cifs)
             LOCKPATH="$TARGET.lock"
+            ;;
+        flock)
+            LOCKPATH="$TARGET"
             ;;
         fcntl)
             LOCKPATH="$TARGET"
@@ -493,7 +497,17 @@ cmd_compile() {
         return
     fi
 
-    # Acquire lock
+    # For flock strategy, compile directly to target (no temp file)
+    # flock can be held by the shell (unlike fcntl), so we acquire the
+    # lock on the target and compile directly to it.
+    if [ "$STRATEGY" = "flock" ]; then
+        acquire_lock
+        "${compile_args[@]}" -o "$TARGET"
+        release_lock
+        return
+    fi
+
+    # For other strategies (lockdir, cifs): compile to temp, then rename
     acquire_lock
 
     # Execute compile command with -o $TEMPFILE

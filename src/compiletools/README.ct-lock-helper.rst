@@ -174,15 +174,23 @@ flock (Local filesystems)
 Uses POSIX ``flock()`` for kernel-managed blocking. Only used on local
 filesystems (ext4/xfs/btrfs) where ``flock()`` is always available.
 
+**Features:**
+
+- Kernel-managed blocking: ``flock(LOCK_EX)`` blocks until acquired
+- Automatic release on process death
+- Locks the target ``.o`` file directly — no sidecar ``.lock`` file
+- Compiles directly to target (no temp file, no rename)
+
 **Lock structure:**
 
 ::
 
-    target.o.lock        # Persistent lockfile (fd 9, flock advisory lock)
+    target.o             # Locked directly via flock (no sidecar files)
 
-The lockfile is intentionally kept on disk after release (same as ``flock(1)``
-pattern) to prevent the classic flock+unlink race where concurrent processes
-end up locking different inodes.
+The flock advisory lock is placed on the target file itself. Since gcc opens
+the output with ``O_WRONLY|O_CREAT|O_TRUNC``, which preserves the inode, the
+lock held by the build process remains valid throughout compilation. Same
+reasoning as the fcntl strategy.
 
 Implementations
 ---------------
@@ -354,13 +362,13 @@ The locking algorithm mirrors ``locking.py`` for consistency:
 
 2. **Execute:**
 
-   - For fcntl: compile directly to target (advisory lock protects target)
+   - For fcntl/flock: compile directly to target (advisory lock protects target)
    - For others: compile to temporary file, then rename to target (atomic)
    - Exit immediately on compile errors (``set -euo pipefail``)
 
 3. **Release:**
 
-   - Remove lock files (except fcntl, which has no sidecar)
+   - Remove lock files (except fcntl/flock, which lock the target directly)
    - Cleanup via trap on EXIT/INT/TERM
 
 **Error handling:**

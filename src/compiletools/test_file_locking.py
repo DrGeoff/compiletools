@@ -364,8 +364,8 @@ class TestFlockLock:
         """Test FileLock context manager with flock strategy."""
         with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"):
             with compiletools.locking.FileLock(temp_lock_file, mock_args):
-                lockfile = temp_lock_file + ".lock"
-                assert os.path.exists(lockfile)
+                # FlockLock locks target directly (no .lock sidecar)
+                assert os.path.exists(temp_lock_file)
 
     def test_nonexistent_directory(self, mock_args):
         """Test that flock works when parent directory doesn't exist."""
