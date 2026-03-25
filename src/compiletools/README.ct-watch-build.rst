@@ -27,7 +27,7 @@ every save automatically triggers a rebuild. Each iteration:
 2. Executes ``ct-cake "$@"`` the moment ``inotifywait`` reports a change,
    relying on ct-cake's default automatic target detection.
 
-The tool never touches your Makefiles and stops only when you press Ctrl+C. All
+The tool never touches your generated build files and stops only when you press Ctrl+C. All
 arguments passed to ``ct-watch-build`` are forwarded to the ``ct-cake`` command
 so you can continue to specify variants, cache settings, output directories,
 magic modes, etc.

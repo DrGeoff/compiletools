@@ -2,9 +2,9 @@
 ct-build
 ============
 
------------------------------------------------------
-One-command wrapper around ct-findtargets + make -jN
------------------------------------------------------
+--------------------------------------------------------------
+One-command Make-specific wrapper around ct-findtargets + make
+--------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
 :Date:   2025-11-26
@@ -18,8 +18,8 @@ ct-build [CT-FINDTARGETS OPTIONS] [CT-CREATE-MAKEFILE OPTIONS]
 
 DESCRIPTION
 ===========
-``ct-build`` is a convenience front-end that chains the usual steps needed to
-compile a project with compiletools:
+``ct-build`` is a Make-specific convenience front-end that chains the usual
+steps needed to compile a project with compiletools:
 
 1. ``ct-findtargets --style=args`` is run with all user-supplied arguments to
    discover buildable executables and tests.
@@ -27,6 +27,9 @@ compile a project with compiletools:
    argument list to produce an up-to-date Makefile.
 3. ``make -j$(ct-jobs)`` executes the generated Makefile using the job count
    calculated by ``ct-jobs`` (which honors ``ct.conf`` and ``CT_JOBS``).
+
+For other build backends (Ninja, CMake, Bazel, Shake, Tup), use
+``ct-cake --backend=<name>`` instead.
 
 Because every flag is passed through untouched, you can use the exact same
 options you would normally hand to ``ct-findtargets`` or ``ct-create-makefile``

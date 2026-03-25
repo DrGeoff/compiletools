@@ -22,9 +22,11 @@ ct-create-makefile generates a Makefile from compiletools magic comments and
 automatic dependency detection. This is the underlying tool used by ct-cake
 and the ct-build shell scripts.
 
-Unlike ct-cake, which generates and immediately executes the Makefile,
+Unlike ct-cake, which generates and immediately executes the build,
 ct-create-makefile only generates the Makefile. This is useful when you need
-to customize the build process or integrate with other build systems.
+to customize the Makefile or inspect the generated rules. For other build
+system formats, use ``ct-cake --backend=<name>`` (choices: ninja, cmake,
+bazel, shake, tup).
 
 The tool analyzes source files for:
 
@@ -124,12 +126,13 @@ COMPARISON WITH CT-CAKE
 
 ct-cake and ct-create-makefile serve different purposes:
 
-* **ct-cake**: All-in-one tool that finds targets, generates Makefile, and
-  runs make. Use for quick builds during development.
+* **ct-cake**: All-in-one tool that finds targets, generates build files, and
+  runs the build. Supports multiple backends via ``--backend`` (make, ninja,
+  cmake, bazel, shake, tup). Use for quick builds during development.
 
-* **ct-create-makefile**: Only generates the Makefile. Use when you need
-  more control over the build process, want to customize the Makefile,
-  or integrate with other build systems.
+* **ct-create-makefile**: Only generates a Makefile. Use when you need
+  more control over the Make-based build process or want to inspect and
+  customize the generated Makefile.
 
 The ct-build shell scripts use ct-create-makefile internally:
 
