@@ -327,9 +327,8 @@ acquire_lock_flock() {
 }
 
 release_lock_flock() {
-    # Close fd 9 (releases flock). Lockfile intentionally kept on disk
-    # to prevent the flock+unlink race (concurrent processes locking
-    # different inodes). Matches the standard flock(1) pattern.
+    # Close fd 9 (releases flock). The target file remains on disk
+    # since it IS the compilation output — no sidecar to clean up.
     exec 9>&- 2>/dev/null || true
 }
 

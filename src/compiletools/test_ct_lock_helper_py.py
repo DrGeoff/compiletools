@@ -72,10 +72,10 @@ class TestPythonLockHelper:
             assert result.returncode == 0, f"Compilation failed: {result.stderr}"
             assert os.path.exists(temp_target), "Target file not created"
 
-            # Verify lock was cleaned up (flock keeps .lock on disk intentionally)
+            # Verify lock was cleaned up (flock/fcntl lock the target directly, no sidecar)
             if strategy == "lockdir":
                 assert not os.path.exists(temp_target + ".lockdir"), "Lock not cleaned up"
-            elif strategy != "flock":
+            elif strategy not in ("flock", "fcntl"):
                 assert not os.path.exists(temp_target + ".lock"), "Lock not cleaned up"
 
         finally:

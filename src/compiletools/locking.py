@@ -49,7 +49,7 @@ class FcntlLock:
     def acquire(self):
         """Acquire lock using fcntl.lockf(LOCK_EX).
 
-        Opens/creates .lock file, then blocks until the lock is acquired.
+        Opens/creates target file, then blocks until the lock is acquired.
         The kernel handles queuing and automatic release on process death.
         """
         if not HAS_FCNTL:
