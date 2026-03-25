@@ -566,10 +566,14 @@ def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.Comp
         return result
 
     finally:
-        lock.release()
-
-        if os.path.exists(tempfile_path):
-            try:
-                os.unlink(tempfile_path)
-            except OSError:
-                pass
+        # Clean up temp file before releasing lock, so other processes
+        # never see a stale temp file between lock release and cleanup.
+        # Nested finally guarantees lock.release() even if cleanup raises.
+        try:
+            if os.path.exists(tempfile_path):
+                try:
+                    os.unlink(tempfile_path)
+                except OSError:
+                    pass
+        finally:
+            lock.release()

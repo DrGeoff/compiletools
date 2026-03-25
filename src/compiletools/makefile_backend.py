@@ -60,14 +60,17 @@ class MakefileBackend(BuildBackend):
             cmd.append("-s")
         if self.args.verbose >= 4:
             # --trace first comes in GNU make 4.0
-            make_version = (
-                subprocess.check_output(["make", "--version"], universal_newlines=True)
-                .splitlines()[0]
-                .split(" ")[-1]
-                .split(".")[0]
-            )
-            if int(make_version) >= 4:
-                cmd.append("--trace")
+            try:
+                make_version = (
+                    subprocess.check_output(["make", "--version"], universal_newlines=True)
+                    .splitlines()[0]
+                    .split(" ")[-1]
+                    .split(".")[0]
+                )
+                if int(make_version) >= 4:
+                    cmd.append("--trace")
+            except (subprocess.CalledProcessError, ValueError, IndexError):
+                pass  # Skip --trace if version detection fails
         cmd.extend(["-j", str(getattr(self.args, "parallel", 1))])
         cmd.extend(["-f", self.args.makefilename, target])
         if self.args.verbose >= 1:

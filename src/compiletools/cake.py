@@ -1,7 +1,6 @@
 import os
 import shutil
 import signal
-import subprocess
 import sys
 
 import compiletools.apptools
@@ -238,69 +237,6 @@ class Cake:
             if self.args.tests and "runtests" in graph.outputs:
                 backend.execute("runtests")
 
-            self._copyexes()
-
-    def _callmakefile(self):
-        makefile_creator = compiletools.makefile.MakefileCreator(self.args, self.hunter)
-        makefile_creator.create()
-
-        # Generate compilation database after makefile creation but before build
-        self._call_compilation_database()
-
-        os.makedirs(self.namer.executable_dir(), exist_ok=True)
-        cmd = ["make"]
-        if self.args.verbose <= 1:
-            cmd.append("-s")
-        if self.args.verbose >= 4:
-            # --trace first comes in GNU make 4.0
-            make_version = (
-                subprocess.check_output(["make", "--version"], universal_newlines=True)
-                .splitlines()[0]
-                .split(" ")[-1]
-                .split(".")[0]
-            )
-            if int(make_version) >= 4:
-                cmd.append("--trace")
-        cmd.extend(["-j", str(self.args.parallel), "-f", self.args.makefilename])
-        if self.args.clean:
-            cmd.append("realclean")
-        else:
-            cmd.append("build")
-        if self.args.verbose >= 1:
-            print(" ".join(cmd))
-
-        # Time the main build subprocess
-        subprocess.check_call(cmd, universal_newlines=True)
-
-        if self.args.tests and not self.args.clean:
-            cmd = ["make"]
-            cmd.extend(["-j", str(self.args.parallel)])
-            if self.args.verbose < 2:
-                cmd.append("-s")
-            cmd.extend(["-f", self.args.makefilename, "runtests"])
-            if self.args.verbose >= 2:
-                print(" ".join(cmd))
-
-            # Time the test execution subprocess
-            subprocess.check_call(cmd, universal_newlines=True)
-
-        if self.args.clean:
-            # Remove the extra executables we copied
-            if self.args.output:
-                try:
-                    os.remove(self.args.output)
-                except OSError:
-                    pass
-            else:
-                outputdir = self.namer.topbindir()
-                filelist = os.listdir(outputdir)
-                for ff in filelist:
-                    filename = os.path.join(outputdir, ff)
-                    try:
-                        os.remove(filename)
-                    except OSError:
-                        pass
-        else:
             self._copyexes()
 
     def process(self):

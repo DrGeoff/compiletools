@@ -113,7 +113,7 @@ def _hash_file(path: str) -> str:
         from compiletools.global_hash_registry import get_file_hash
 
         return get_file_hash(path)
-    except (FileNotFoundError, Exception):
+    except (FileNotFoundError, KeyError, OSError):
         return _compute_file_hash(path)
 
 
@@ -200,7 +200,10 @@ class ShakeBackend(BuildBackend):
             return False
 
         if rule.rule_type == "phony":
-            # Phony targets aggregate independent builds — parallelise them
+            # Phony targets aggregate independent builds — parallelise them.
+            # NOTE: This assumes a flat graph (one phony -> compile/link rules).
+            # Nested phony targets could deadlock the ThreadPoolExecutor if all
+            # workers block on f.result() waiting for queued-but-unstarted tasks.
             futures: list[Future[bool]] = []
             for inp in rule.inputs:
                 futures.append(executor.submit(self._build, inp, graph, traces, done, lock, executor))
