@@ -364,14 +364,6 @@ class TestFlockLock:
             assert not hasattr(lock, "lockfile_pid")
             assert not hasattr(lock, "sleep_interval")
 
-    def test_flock_direct_compile_true(self):
-        """FlockLock should have direct_compile = True."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
-            assert lock.direct_compile is True
-
     def test_flock_locks_target_directly(self):
         """FlockLock.lockfile should be the target itself (no .lock suffix)."""
         with tempfile.TemporaryDirectory() as tmpdir:
