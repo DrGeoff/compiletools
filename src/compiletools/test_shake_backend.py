@@ -1203,5 +1203,5 @@ class TestAtomicCompile:
             atomic_compile(lock, target, ["g++", "-c", "bar.cpp"])
 
         assert len(observed_outputs) == 1
-        assert observed_outputs[0].endswith(".tmp")
-        assert os.path.exists(target)
+        # FlockLock has direct_compile=True, so compiler gets -o target directly
+        assert observed_outputs[0] == target

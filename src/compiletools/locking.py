@@ -412,47 +412,48 @@ class FlockLock:
     WARNING: flock() is node-local on GPFS/Lustre/NFS. Use FcntlLock
     for GPFS or LockdirLock for NFS/Lustre. This class should only be
     used when filesystem detection confirms a local filesystem.
+
+    Locks the target file directly (no sidecar .lock file). This works because
+    gcc opens the output with O_WRONLY|O_CREAT|O_TRUNC, which preserves the
+    inode — so the advisory flock stays valid. Same reasoning as FcntlLock.
     """
 
-    direct_compile = False
+    direct_compile = True
 
     def __init__(self, target_file, args):
-        self.lockfile = target_file + ".lock"
+        self.lockfile = compiletools.wrappedos.realpath(target_file)
         self.fd = None
         self.args = args
 
     def acquire(self):
         """Acquire lock using POSIX flock(LOCK_EX).
 
-        Blocks in the kernel until the lock is acquired. Only used on local
-        filesystems where flock() is always available.
+        Opens/creates target file, then blocks until the lock is acquired.
+        The kernel handles queuing and automatic release on process death.
         """
         if not HAS_FCNTL:
             raise RuntimeError("fcntl module not available (Windows?); cannot use flock lock strategy")
 
         # Ensure parent directory exists
-        parent_dir = os.path.dirname(self.lockfile)
+        parent_dir = compiletools.wrappedos.dirname(self.lockfile)
         if parent_dir and not os.path.exists(parent_dir):
             os.makedirs(parent_dir, exist_ok=True)
 
-        self.fd = os.open(self.lockfile, os.O_CREAT | os.O_WRONLY, 0o666)
+        self.fd = os.open(self.lockfile, os.O_CREAT | os.O_RDWR, 0o666)
         fcntl.flock(self.fd, fcntl.LOCK_EX)
 
     def release(self):
-        """Release flock. Lockfile is intentionally kept on disk.
-
-        Not unlinking the lockfile prevents the classic flock+unlink race
-        where concurrent processes end up locking different inodes. This
-        matches the standard flock(1) pattern.
-        """
-        try:
-            if self.fd is not None:
+        """Release flock and close fd. Does NOT unlink lock file."""
+        if self.fd is not None:
+            try:
                 fcntl.flock(self.fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
                 os.close(self.fd)
-                self.fd = None
-        except OSError as e:
-            if self.args.verbose >= 2:
-                print(f"Warning: Failed to release flock: {e}", file=sys.stderr)
+            except OSError:
+                pass
+            self.fd = None
 
 
 class FileLock:
@@ -515,9 +516,9 @@ class FileLock:
 def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.CompletedProcess:
     """Execute compilation atomically under a lock.
 
-    For locks with direct_compile=True (FcntlLock): compiles directly to
-    the target file. The fcntl advisory lock protects the target while gcc
-    writes to it (O_WRONLY|O_CREAT|O_TRUNC preserves the inode).
+    For locks with direct_compile=True (FcntlLock, FlockLock): compiles
+    directly to the target file. The advisory lock protects the target while
+    gcc writes to it (O_WRONLY|O_CREAT|O_TRUNC preserves the inode).
 
     For other locks: compiles to a temp file, then renames to target,
     preventing TOCTOU races where another process sees a partially-written

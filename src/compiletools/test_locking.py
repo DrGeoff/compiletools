@@ -364,16 +364,33 @@ class TestFlockLock:
             assert not hasattr(lock, "lockfile_pid")
             assert not hasattr(lock, "sleep_interval")
 
-    def test_lockfile_persists_after_release(self):
-        """Lockfile must persist after release to prevent flock+unlink race."""
+    def test_flock_direct_compile_true(self):
+        """FlockLock should have direct_compile = True."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+            assert lock.direct_compile is True
+
+    def test_flock_locks_target_directly(self):
+        """FlockLock.lockfile should be the target itself (no .lock suffix)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+            assert lock.lockfile == os.path.realpath(target)
+
+    def test_flock_no_sidecar_file(self):
+        """Acquiring FlockLock should NOT create a .lock sidecar file."""
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args()
             lock = FlockLock(target, args)
             lock.acquire()
-            assert os.path.exists(lock.lockfile)
-            lock.release()
-            assert os.path.exists(lock.lockfile)
+            try:
+                assert not os.path.exists(target + ".lock")
+            finally:
+                lock.release()
 
 
 class TestCIFSLock:
@@ -414,14 +431,15 @@ class TestCIFSLock:
 class TestFlockLockRelease:
     """Additional FlockLock tests."""
 
-    def test_release_oserror_verbose(self, capsys):
+    def test_release_without_acquire(self):
+        """Release without acquire should not crash."""
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args(verbose=2)
             lock = FlockLock(target, args)
-            lock.fd = 999  # bogus fd to trigger OSError on flock/close
+            lock.fd = None
+            # Release without acquire — should not crash
             lock.release()
-            assert "Failed to release flock" in capsys.readouterr().err
 
     def test_acquire_creates_parent_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -442,12 +460,12 @@ class TestDirectCompileProperty:
             lock = LockdirLock(target, args)
             assert lock.direct_compile is False
 
-    def test_flock_direct_compile_false(self):
+    def test_flock_direct_compile_true(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args()
             lock = FlockLock(target, args)
-            assert lock.direct_compile is False
+            assert lock.direct_compile is True
 
     def test_cifs_direct_compile_false(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -497,11 +515,11 @@ class TestAtomicCompile:
                 mock_rename.assert_not_called()
 
     def test_atomic_compile_indirect_uses_temp(self):
-        """FlockLock (direct_compile=False): compiler gets -o *.tmp, rename IS called."""
+        """CIFSLock (direct_compile=False): compiler gets -o *.tmp, rename IS called."""
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args()
-            lock = FlockLock(target, args)
+            lock = CIFSLock(target, args)
 
             with patch("subprocess.run") as mock_run, \
                  patch("os.rename") as mock_rename:
