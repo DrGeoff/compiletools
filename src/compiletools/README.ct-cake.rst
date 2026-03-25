@@ -388,6 +388,20 @@ or:
 
     ``$ ./build.sh --variant=release --append-CXXFLAGS=-DSPECIALMODE``
 
+References
+==========
+
+The content-addressable backend architecture was informed by:
+
+* Andrey Mokhov, Neil Mitchell, Simon Peyton Jones. *Build Systems à la Carte*.
+  Proc. ACM Program. Lang., Vol. 2, ICFP, Article 79, September 2018.
+  https://doi.org/10.1145/3236774
+
+The non-recursive Makefile generation was informed by:
+
+* Peter Miller. *Recursive Make Considered Harmful*. 2008.
+  https://api.semanticscholar.org/CorpusID:54117644
+
 SEE ALSO
 ========
 ``compiletools`` (1), ``ct-list-variants`` (1), ``ct-config`` (1)
