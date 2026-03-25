@@ -9,7 +9,9 @@ from unittest.mock import patch
 
 import pytest
 
+import compiletools.apptools
 from compiletools.locking import CIFSLock, FcntlLock, FileLock, FlockLock, LockdirLock, atomic_compile
+from compiletools.testhelper import requires_functional_compiler
 
 
 def _make_lock_args(**overrides):
@@ -470,6 +472,13 @@ class TestDirectCompileProperty:
 class TestAtomicCompile:
     """Test atomic_compile with direct_compile vs indirect locks."""
 
+    @staticmethod
+    def _compile_cmd(source="test.c"):
+        """Build a compile command using the detected functional compiler."""
+        cxx = compiletools.apptools.get_functional_cxx_compiler() or "c++"
+        return [cxx, "-c", source]
+
+    @requires_functional_compiler
     def test_atomic_compile_direct_no_temp(self):
         """FcntlLock (direct_compile=True): compiler gets -o target, no rename."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -481,7 +490,7 @@ class TestAtomicCompile:
                 mock_run.return_value = subprocess.CompletedProcess(
                     args=[], returncode=0, stdout="", stderr=""
                 )
-                atomic_compile(lock, target, ["gcc", "-c", "test.c"])
+                atomic_compile(lock, target, self._compile_cmd())
 
                 # Compiler should get -o target directly
                 call_args = mock_run.call_args[0][0]
@@ -491,6 +500,7 @@ class TestAtomicCompile:
             for f in os.listdir(tmpdir):
                 assert ".tmp" not in f
 
+    @requires_functional_compiler
     def test_atomic_compile_direct_no_rename(self):
         """FcntlLock (direct_compile=True): os.rename is NOT called."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -503,9 +513,10 @@ class TestAtomicCompile:
                 mock_run.return_value = subprocess.CompletedProcess(
                     args=[], returncode=0, stdout="", stderr=""
                 )
-                atomic_compile(lock, target, ["gcc", "-c", "test.c"])
+                atomic_compile(lock, target, self._compile_cmd())
                 mock_rename.assert_not_called()
 
+    @requires_functional_compiler
     def test_atomic_compile_indirect_uses_temp(self):
         """CIFSLock (direct_compile=False): compiler gets -o *.tmp, rename IS called."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -518,7 +529,7 @@ class TestAtomicCompile:
                 mock_run.return_value = subprocess.CompletedProcess(
                     args=[], returncode=0, stdout="", stderr=""
                 )
-                atomic_compile(lock, target, ["gcc", "-c", "test.c"])
+                atomic_compile(lock, target, self._compile_cmd())
 
                 # Compiler should get -o *.tmp
                 call_args = mock_run.call_args[0][0]
@@ -527,6 +538,74 @@ class TestAtomicCompile:
 
                 # os.rename should be called
                 mock_rename.assert_called_once()
+
+    @requires_functional_compiler
+    def test_atomic_compile_direct_failure_releases_lock(self):
+        """FcntlLock (direct_compile=True): lock is released on compiler failure."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FcntlLock(target, args)
+
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=1, stdout="", stderr="error"
+                )
+                with pytest.raises(subprocess.CalledProcessError):
+                    atomic_compile(lock, target, self._compile_cmd())
+
+            # Lock must be released — verify by acquiring it again
+            lock2 = FcntlLock(target, args)
+            lock2.acquire()
+            lock2.release()
+
+    @requires_functional_compiler
+    def test_atomic_compile_indirect_failure_releases_lock_and_cleans_temp(self):
+        """CIFSLock (direct_compile=False): lock released and temp cleaned on failure."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = CIFSLock(target, args)
+
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=1, stdout="", stderr="error"
+                )
+                with pytest.raises(subprocess.CalledProcessError):
+                    atomic_compile(lock, target, self._compile_cmd())
+
+            # No temp files should remain
+            for f in os.listdir(tmpdir):
+                assert ".tmp" not in f, f"Stale temp file found: {f}"
+
+    @requires_functional_compiler
+    def test_atomic_compile_indirect_rename_failure_cleans_temp(self):
+        """If os.rename fails, temp file is cleaned up and lock is released."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = CIFSLock(target, args)
+
+            with patch("subprocess.run") as mock_run, \
+                 patch("os.rename", side_effect=OSError("cross-device")):
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                )
+                # Create the temp file that subprocess.run would create
+                def create_temp(cmd, **kwargs):
+                    output_file = cmd[cmd.index("-o") + 1]
+                    with open(output_file, "w") as f:
+                        f.write("fake")
+                    return subprocess.CompletedProcess(args=cmd, returncode=0)
+
+                mock_run.side_effect = create_temp
+
+                with pytest.raises(OSError, match="cross-device"):
+                    atomic_compile(lock, target, self._compile_cmd())
+
+            # No temp files should remain
+            for f in os.listdir(tmpdir):
+                assert ".tmp" not in f, f"Stale temp file found: {f}"
 
 
 class TestFileLock:

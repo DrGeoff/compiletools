@@ -52,8 +52,10 @@ def _extract_copts(command: list[str]) -> list[str]:
         if arg in ("-I", "-isystem", "-iquote"):
             include_next = True
             continue
-        # Skip -I<path> combined forms — Bazel manages includes itself
-        if arg.startswith(("-I", "-isystem", "-iquote")):
+        # Skip -I<path>, -isystem<path>, -iquote<path> combined forms
+        if arg.startswith(("-isystem", "-iquote")):
+            continue
+        if arg.startswith("-I") and len(arg) > 2:
             continue
         # Skip source files (non-flag arguments that aren't preceded by -o)
         if not arg.startswith("-"):

@@ -12,9 +12,8 @@ from unittest import mock
 import pytest
 
 import compiletools.shake_backend  # noqa: F401 — ensure registered
-from compiletools.build_backend import available_backends, get_backend_class
+from compiletools.build_backend import _write_link_sig, available_backends, compute_link_signature, get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
-from compiletools.build_backend import _write_link_sig, compute_link_signature
 from compiletools.shake_backend import (
     ShakeBackend,
     TraceEntry,
@@ -134,10 +133,10 @@ class TestTraceVerification:
         graph.add_rule(BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony"))
         return graph
 
-    def test_verify_passes_when_hashes_match(self, tmp_path):
+    def test_verify_passes_when_hashes_match(self, tmp_path, monkeypatch):
         """Compile rule with existing output is skipped via content-addressable
         short-circuit (os.path.exists), not trace verification."""
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         # Create source and object files
         (tmp_path / "foo.cpp").write_text("int main() {}")
         (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
@@ -175,10 +174,10 @@ class TestTraceVerification:
             backend.execute("build")
             mock_sub.run.assert_not_called()
 
-    def test_verify_fails_on_input_hash_change(self, tmp_path):
+    def test_verify_fails_on_input_hash_change(self, tmp_path, monkeypatch):
         """If an input file changed, rebuild (uses link rule to test trace verification,
         since compile rules bypass traces via content-addressable short-circuit)."""
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.cpp").write_text("int main() { return 1; }")
         (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
         os.makedirs(tmp_path / "obj", exist_ok=True)
@@ -228,10 +227,10 @@ class TestTraceVerification:
             backend.execute("build")
             mock_sub.run.assert_called_once()
 
-    def test_verify_fails_on_command_hash_change(self, tmp_path):
+    def test_verify_fails_on_command_hash_change(self, tmp_path, monkeypatch):
         """If the command changed, rebuild (uses link rule to test trace verification,
         since compile rules bypass traces via content-addressable short-circuit)."""
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.cpp").write_text("int main() {}")
         (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
         os.makedirs(tmp_path / "obj", exist_ok=True)
@@ -282,10 +281,10 @@ class TestTraceVerification:
             backend.execute("build")
             mock_sub.run.assert_called_once()
 
-    def test_verify_fails_on_added_input(self, tmp_path):
+    def test_verify_fails_on_added_input(self, tmp_path, monkeypatch):
         """If the input set changed (new input added), rebuild (uses link rule to test
         trace verification, since compile rules bypass traces via short-circuit)."""
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.cpp").write_text("int main() {}")
         (tmp_path / "foo.h").write_text("// header")
         (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
@@ -346,10 +345,10 @@ class TestTraceVerification:
 
 
 class TestEarlyCutoff:
-    def test_identical_output_skips_dependent(self, tmp_path):
+    def test_identical_output_skips_dependent(self, tmp_path, monkeypatch):
         """Content-addressable short-circuit: foo.o exists → compile skipped
         (returns False). Link trace is valid → link also skipped. No subprocess calls."""
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.cpp").write_text("int main() { return 0; }")
         obj_content = b"\x7fELF fake object"
         (tmp_path / "foo.o").write_bytes(obj_content)
@@ -407,9 +406,9 @@ class TestEarlyCutoff:
             # link skipped (trace valid, no input changed)
             assert mock_sub.run.call_count == 0
 
-    def test_different_output_rebuilds_dependent(self, tmp_path):
+    def test_different_output_rebuilds_dependent(self, tmp_path, monkeypatch):
         """If compile executes (object didn't exist), link step runs too."""
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.cpp").write_text("int main() { return 1; }")
         # foo.o intentionally NOT created — forces compile to run
         (tmp_path / "foo").write_bytes(b"\x7fELF old executable")
@@ -522,8 +521,8 @@ class TestErrorHandling:
         with pytest.raises(RuntimeError, match=r"generate.*must be called"):
             backend.execute("build")
 
-    def test_build_fails_on_subprocess_error(self, tmp_path):
-        os.chdir(tmp_path)
+    def test_build_fails_on_subprocess_error(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.cpp").write_text("bad code")
         os.makedirs(tmp_path / "obj", exist_ok=True)
 
@@ -563,9 +562,9 @@ class TestErrorHandling:
 
 
 class TestParallelExecution:
-    def test_independent_targets_run_in_parallel(self, tmp_path):
+    def test_independent_targets_run_in_parallel(self, tmp_path, monkeypatch):
         """Phony target with independent inputs should dispatch them concurrently."""
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         (tmp_path / "a.cpp").write_text("int a() {}")
         (tmp_path / "b.cpp").write_text("int b() {}")
         os.makedirs(tmp_path / "obj", exist_ok=True)
@@ -624,9 +623,9 @@ class TestParallelExecution:
         assert len(thread_ids) == 2
         assert thread_ids[0] != thread_ids[1]
 
-    def test_parallel_1_still_works(self, tmp_path):
+    def test_parallel_1_still_works(self, tmp_path, monkeypatch):
         """parallel=1 should work correctly (single-threaded)."""
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         (tmp_path / "a.cpp").write_text("int a() {}")
         (tmp_path / "b.cpp").write_text("int b() {}")
         os.makedirs(tmp_path / "obj", exist_ok=True)
@@ -684,9 +683,9 @@ class TestParallelExecution:
 
 
 class TestOutputDeletion:
-    def test_rebuilds_when_output_deleted(self, tmp_path):
+    def test_rebuilds_when_output_deleted(self, tmp_path, monkeypatch):
         """If output file is deleted but trace exists, must rebuild."""
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.cpp").write_text("int main() {}")
         os.makedirs(tmp_path / "obj", exist_ok=True)
         # Note: foo.o does NOT exist (simulates deletion)
@@ -761,10 +760,10 @@ class TestContentAddressableShortCircuit:
         assert _is_content_addressable(link_rule) is False
         assert _is_content_addressable(phony_rule) is False
 
-    def test_compile_skipped_when_object_exists_no_traces(self, tmp_path):
+    def test_compile_skipped_when_object_exists_no_traces(self, tmp_path, monkeypatch):
         """Object file exists, NO trace store populated. Compile is skipped
         via content-addressable short-circuit independently of traces."""
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.cpp").write_text("int main() {}")
         (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
         os.makedirs(tmp_path / "obj", exist_ok=True)
@@ -796,10 +795,10 @@ class TestContentAddressableShortCircuit:
             backend.execute("build")
             mock_sub.run.assert_not_called()
 
-    def test_compile_returns_true_when_object_new(self, tmp_path):
+    def test_compile_returns_true_when_object_new(self, tmp_path, monkeypatch):
         """Object file does NOT exist, compile executes. _build returns True
         (signaling dependents should rebuild)."""
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.cpp").write_text("int main() {}")
         # foo.o intentionally NOT created
         os.makedirs(tmp_path / "obj", exist_ok=True)
@@ -848,10 +847,10 @@ class TestContentAddressableShortCircuit:
                 assert changed is True
                 assert len(compile_calls) == 1
 
-    def test_link_still_uses_traces(self, tmp_path):
+    def test_link_still_uses_traces(self, tmp_path, monkeypatch):
         """Link rules (rule_type='link') still go through full trace verification,
         not the content-addressable short-circuit."""
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
         (tmp_path / "foo").write_bytes(b"\x7fELF fake executable")
 
@@ -933,9 +932,9 @@ class TestContentAddressableShortCircuit:
 
 
 class TestLinkSignatureShortCircuit:
-    def test_link_skipped_when_signature_matches(self, tmp_path):
+    def test_link_skipped_when_signature_matches(self, tmp_path, monkeypatch):
         """Link output + matching sig file → skip (no subprocess call)."""
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
         (tmp_path / "foo").write_bytes(b"\x7fELF fake executable")
 
@@ -966,9 +965,9 @@ class TestLinkSignatureShortCircuit:
             backend.execute("build")
             mock_sub.run.assert_not_called()
 
-    def test_link_rebuilds_when_signature_differs(self, tmp_path):
+    def test_link_rebuilds_when_signature_differs(self, tmp_path, monkeypatch):
         """Wrong sig → rebuild (subprocess called)."""
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
         (tmp_path / "foo").write_bytes(b"\x7fELF fake executable")
 
@@ -1006,9 +1005,9 @@ class TestLinkSignatureShortCircuit:
             backend.execute("build")
             mock_sub.run.assert_called_once()
 
-    def test_link_rebuilds_when_output_missing(self, tmp_path):
+    def test_link_rebuilds_when_output_missing(self, tmp_path, monkeypatch):
         """No output file → rebuild regardless of sig."""
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
         # foo intentionally NOT created
 
@@ -1049,9 +1048,9 @@ class TestLinkSignatureShortCircuit:
             backend.execute("build")
             mock_sub.run.assert_called_once()
 
-    def test_link_records_signature_after_build(self, tmp_path):
+    def test_link_records_signature_after_build(self, tmp_path, monkeypatch):
         """After a successful link, the sig file should be written."""
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
         # foo intentionally NOT created — forces link to run
 
@@ -1101,14 +1100,12 @@ class TestLinkSignatureShortCircuit:
 
 
 class TestAtomicCompile:
-    def test_compile_uses_temp_file_and_rename(self, tmp_path):
+    def test_compile_uses_temp_file_and_rename(self, tmp_path, monkeypatch):
         """Verify _atomic_compile_no_lock writes to a temp file then renames,
         so the target file never exists in a partially-written state."""
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         target = str(tmp_path / "foo.o")
         observed_files = []
-
-        original_run = subprocess.run
 
         def spy_run(cmd, **kwargs):
             # During compilation, the -o flag should point to a .tmp file
@@ -1142,9 +1139,9 @@ class TestAtomicCompile:
         # Verify temp file was cleaned up
         assert not os.path.exists(observed_files[0])
 
-    def test_compile_failure_cleans_up_temp_file(self, tmp_path):
+    def test_compile_failure_cleans_up_temp_file(self, tmp_path, monkeypatch):
         """If compilation fails, temp file should be cleaned up and target not created."""
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         target = str(tmp_path / "foo.o")
         temp_files = []
 

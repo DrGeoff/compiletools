@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+VALID_RULE_TYPES = frozenset({"compile", "link", "test", "phony", "mkdir", "clean", "copy"})
+
 
 @dataclass
 class BuildRule:
@@ -28,6 +30,13 @@ class BuildRule:
     command: list[str] | None
     rule_type: str
     order_only_deps: list[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        if self.rule_type not in VALID_RULE_TYPES:
+            raise ValueError(
+                f"Invalid rule_type {self.rule_type!r}; "
+                f"must be one of {sorted(VALID_RULE_TYPES)}"
+            )
 
     def __eq__(self, other):
         if not isinstance(other, BuildRule):
