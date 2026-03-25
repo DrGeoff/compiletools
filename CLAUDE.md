@@ -141,6 +141,10 @@ All tools support `--variant=<config>` for build configuration selection and `--
 - `testhelper.py` provides `TempDirContext`, `create_temp_config()`, `samplesdir()`, `@requires_functional_compiler`
 - `conftest.py` has session-wide `ensure_lock_helpers_in_path` fixture and function-scoped `pkgconfig_env` fixture
 - Sample projects in `src/compiletools/samples/` cover specific test scenarios (conditional_includes, macro_deps, cross_platform, etc.)
+- Never hardcode compiler names (`gcc`, `g++`) in tests that invoke compilation — use `@requires_functional_compiler` decorator and `apptools.get_functional_cxx_compiler()` to detect the system compiler
+- Use `monkeypatch.chdir()` instead of `os.chdir()` with try/finally in tests — pytest auto-restores the working directory
+- When removing/renaming methods, search tests for `patch.object(...)` mocks referencing the old name
+- `BuildRule.rule_type` is validated against `VALID_RULE_TYPES` in `build_graph.py` — adding a new rule type requires updating the frozenset
 
 ## Caches and Performance Testing
 
