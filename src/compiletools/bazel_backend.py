@@ -207,7 +207,7 @@ class BazelBackend(BuildBackend):
 
         tool = shutil.which("bazelisk") or shutil.which("bazel")
         if tool is None:
-            raise RuntimeError("Neither 'bazelisk' nor 'bazel' found on PATH. Try: module load bazelisk-latest")
+            raise RuntimeError("Neither 'bazelisk' nor 'bazel' found on PATH")
 
         if target in ("build", "all"):
             bazel_target = "//:all"
