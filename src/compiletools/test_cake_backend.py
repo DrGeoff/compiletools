@@ -157,26 +157,6 @@ class TestCakeBackendDispatch:
             assert "build" in calls
             assert "runtests" in calls
 
-    @pytest.mark.parametrize("backend_name", ["ninja", "bazel", "cmake", "tup", "shake"])
-    def test_static_flag_raises_error_for_non_make_backends(self, backend_name):
-        """--static should be rejected for non-make backends."""
-        args = self._make_args(backend=backend_name)
-        args.static = ["lib.cpp"]
-        cake = Cake(args)
-
-        with pytest.raises(RuntimeError, match=r"--static.*not supported"):
-            cake.process()
-
-    @pytest.mark.parametrize("backend_name", ["ninja", "bazel", "cmake", "tup", "shake"])
-    def test_dynamic_flag_raises_error_for_non_make_backends(self, backend_name):
-        """--dynamic should be rejected for non-make backends."""
-        args = self._make_args(backend=backend_name)
-        args.dynamic = ["lib.cpp"]
-        cake = Cake(args)
-
-        with pytest.raises(RuntimeError, match=r"--dynamic.*not supported"):
-            cake.process()
-
     def test_static_flag_allowed_for_make_backend(self, tmp_path):
         """--static should not raise for --backend=make."""
         args = self._make_args(backend="make")

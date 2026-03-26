@@ -247,18 +247,6 @@ class Cake:
         if self.args.verbose > 4:
             print("Early scanning. Cake determining targets and implied files")
 
-        backend_name = getattr(self.args, "backend", "make")
-        if backend_name != "make" and (self.args.static or self.args.dynamic):
-            flags = []
-            if self.args.static:
-                flags.append("--static")
-            if self.args.dynamic:
-                flags.append("--dynamic")
-            raise RuntimeError(
-                f"{', '.join(flags)} not supported with --backend={backend_name}. "
-                f"Library targets are currently only supported with --backend=make."
-            )
-
         self._createctobjs()
         recreateobjs = False
         if self.args.static and len(self.args.static) == 1:

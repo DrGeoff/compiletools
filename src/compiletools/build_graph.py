@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-VALID_RULE_TYPES = frozenset({"compile", "link", "test", "phony", "mkdir", "clean", "copy"})
+VALID_RULE_TYPES = frozenset(
+    {"compile", "link", "test", "phony", "mkdir", "clean", "copy", "static_library", "shared_library"}
+)
 
 
 @dataclass

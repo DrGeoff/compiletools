@@ -113,6 +113,16 @@ class BuildBackend(abc.ABC):
             complete = self.hunter.required_source_files(source)
             all_compile_sources.update(complete)
 
+        # Also collect compile sources from library targets
+        library_compile_sources = set()
+        if self.args.static:
+            for source in self.args.static:
+                library_compile_sources.update(self.hunter.required_source_files(source))
+        if self.args.dynamic:
+            for source in self.args.dynamic:
+                library_compile_sources.update(self.hunter.required_source_files(source))
+        all_compile_sources.update(library_compile_sources)
+
         # Create objdir creation rule (needed by compile rules as order-only dep)
         graph.add_rule(
             BuildRule(
@@ -123,21 +133,35 @@ class BuildBackend(abc.ABC):
             )
         )
 
+        # Track which sources are used for dynamic libraries (need -fPIC)
+        self._dynamic_sources = library_compile_sources if self.args.dynamic else set()
+
         # Create compile rules
         for filename in all_compile_sources:
             rule = self._create_compile_rule(filename)
             graph.add_rule(rule)
 
+        # Create library rules
+        library_outputs = []
+        if self.args.static:
+            rule = self._create_static_library_rule()
+            graph.add_rule(rule)
+            library_outputs.append(rule.output)
+        if self.args.dynamic:
+            rule = self._create_shared_library_rule()
+            graph.add_rule(rule)
+            library_outputs.append(rule.output)
+
         # Create link rules for executables
         if self.args.filename:
             for source in self.args.filename:
-                rule = self._create_link_rule(source)
+                rule = self._create_link_rule(source, library_outputs=library_outputs)
                 graph.add_rule(rule)
 
         # Create link rules for test executables
         if self.args.tests:
             for source in self.args.tests:
-                rule = self._create_link_rule(source)
+                rule = self._create_link_rule(source, library_outputs=library_outputs)
                 graph.add_rule(rule)
 
         # Create phony targets
@@ -150,6 +174,7 @@ class BuildBackend(abc.ABC):
             build_deps.extend(
                 self.namer.executable_pathname(compiletools.wrappedos.realpath(s)) for s in self.args.tests
             )
+        build_deps.extend(library_outputs)
         graph.add_rule(BuildRule(output="build", inputs=build_deps, command=None, rule_type="phony"))
 
         all_deps = ["build"]
@@ -204,7 +229,7 @@ class BuildBackend(abc.ABC):
                 has_build_rules = True
                 if not os.path.exists(rule.output):
                     return False
-            elif rule.rule_type == "link":
+            elif rule.rule_type in ("link", "static_library", "shared_library"):
                 has_build_rules = True
                 if not os.path.exists(rule.output):
                     return False
@@ -214,7 +239,7 @@ class BuildBackend(abc.ABC):
 
     def _record_link_signatures(self, graph: BuildGraph) -> None:
         for rule in graph.rules:
-            if rule.rule_type == "link":
+            if rule.rule_type in ("link", "static_library", "shared_library"):
                 _write_link_sig(rule.output, compute_link_signature(rule))
 
     def _create_compile_rule(self, filename: str) -> BuildRule:
@@ -243,6 +268,10 @@ class BuildBackend(abc.ABC):
                 + [str(flag) for flag in magic_cxx_flags]
             )
 
+        # Add -fPIC for sources used in dynamic libraries
+        if self.args.dynamic and filename in getattr(self, "_dynamic_sources", set()):
+            compile_cmd.append("-fPIC")
+
         compile_cmd.extend(["-c", filename, "-o", obj_name])
 
         return BuildRule(
@@ -253,7 +282,7 @@ class BuildBackend(abc.ABC):
             order_only_deps=[self.args.objdir],
         )
 
-    def _create_link_rule(self, source: str) -> BuildRule:
+    def _create_link_rule(self, source: str, library_outputs: list[str] | None = None) -> BuildRule:
         """Create a link BuildRule for a source file (executable target)."""
         completesources = self.hunter.required_source_files(source)
         exename = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
@@ -275,14 +304,85 @@ class BuildBackend(abc.ABC):
             all_magic_ldflags.extend(magic_flags.get(sz.Str("LDFLAGS"), []))
 
         link_cmd = [self.args.LD, "-o", exename] + list(object_names) + [str(f) for f in all_magic_ldflags]
+
+        # Add library link flags when building alongside libraries
+        inputs = list(object_names)
+        if library_outputs:
+            exe_dir = self.namer.executable_dir()
+            link_cmd.append(f"-L{exe_dir}")
+            for lib_output in library_outputs:
+                # Extract library name: libfoo.a -> foo, libfoo.so -> foo
+                import os
+
+                lib_basename = os.path.basename(lib_output)
+                if lib_basename.startswith("lib"):
+                    lib_name = lib_basename[3:]  # strip "lib" prefix
+                    lib_name = os.path.splitext(lib_name)[0]  # strip extension
+                    link_cmd.append(f"-l{lib_name}")
+                inputs.append(lib_output)
+
         if self.args.LDFLAGS:
             link_cmd.append(self.args.LDFLAGS)
 
         return BuildRule(
             output=exename,
-            inputs=list(object_names),
+            inputs=inputs,
             command=link_cmd,
             rule_type="link",
+        )
+
+    def _get_library_object_names(self, sources: list[str]) -> list[str]:
+        """Get object file names for library source files."""
+        all_source_files = set()
+        for source in sources:
+            all_source_files.update(self.hunter.required_source_files(source))
+
+        return compiletools.utils.ordered_unique(
+            [
+                self.namer.object_pathname(
+                    s,
+                    self.hunter.macro_state_hash(s),
+                    self.namer.compute_dep_hash(self.hunter.header_dependencies(s)),
+                )
+                for s in all_source_files
+            ]
+        )
+
+    def _create_static_library_rule(self) -> BuildRule:
+        """Create a static library BuildRule from args.static sources."""
+        object_names = self._get_library_object_names(self.args.static)
+        lib_path = self.namer.staticlibrary_pathname()
+
+        lib_cmd = ["ar", "-src", lib_path] + list(object_names)
+
+        return BuildRule(
+            output=lib_path,
+            inputs=list(object_names),
+            command=lib_cmd,
+            rule_type="static_library",
+        )
+
+    def _create_shared_library_rule(self) -> BuildRule:
+        """Create a shared library BuildRule from args.dynamic sources."""
+        object_names = self._get_library_object_names(self.args.dynamic)
+        lib_path = self.namer.dynamiclibrary_pathname()
+
+        all_magic_ldflags = []
+        for source in self.args.dynamic:
+            for s in self.hunter.required_source_files(source):
+                magic_flags = self.hunter.magicflags(s)
+                all_magic_ldflags.extend(magic_flags.get(sz.Str("LDFLAGS"), []))
+
+        lib_cmd = [self.args.LD, "-shared", "-o", lib_path] + list(object_names)
+        lib_cmd.extend([str(f) for f in all_magic_ldflags])
+        if self.args.LDFLAGS:
+            lib_cmd.append(self.args.LDFLAGS)
+
+        return BuildRule(
+            output=lib_path,
+            inputs=list(object_names),
+            command=lib_cmd,
+            rule_type="shared_library",
         )
 
 

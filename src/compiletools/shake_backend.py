@@ -210,7 +210,7 @@ class ShakeBackend(BuildBackend):
 
         # LINK SIGNATURE SHORT-CIRCUIT
         # Input names are content-addressed → signature encodes all inputs.
-        if rule.rule_type == "link" and os.path.exists(target):
+        if rule.rule_type in ("link", "static_library", "shared_library") and os.path.exists(target):
             if _read_link_sig(target) == compute_link_signature(rule):
                 with lock:
                     done.add(target)
@@ -287,7 +287,7 @@ class ShakeBackend(BuildBackend):
         new_hash = get_file_hash(target)
 
         # RECORD LINK SIGNATURE
-        if rule.rule_type == "link":
+        if rule.rule_type in ("link", "static_library", "shared_library"):
             _write_link_sig(target, compute_link_signature(rule))
 
         # RECORD TRACE (only for non-content-addressable rules)
