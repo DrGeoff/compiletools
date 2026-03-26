@@ -12,7 +12,7 @@ from unittest import mock
 import pytest
 
 import compiletools.shake_backend  # noqa: F401 — ensure registered
-from compiletools.build_backend import _write_link_sig, available_backends, compute_link_signature, get_backend_class
+from compiletools.build_backend import available_backends, get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.global_hash_registry import get_file_hash
 from compiletools.shake_backend import (
@@ -20,6 +20,7 @@ from compiletools.shake_backend import (
     TraceEntry,
     TraceStore,
     _is_content_addressable,
+    hash_command,
 )
 
 # ---------------------------------------------------------------------------
@@ -101,13 +102,13 @@ class TestTraceStore:
 
     def test_hash_command_deterministic(self):
         cmd = ["g++", "-c", "foo.cpp", "-o", "foo.o"]
-        h1 = TraceStore.hash_command(cmd)
-        h2 = TraceStore.hash_command(cmd)
+        h1 = hash_command(cmd)
+        h2 = hash_command(cmd)
         assert h1 == h2
 
     def test_hash_command_differs_for_different_commands(self):
-        h1 = TraceStore.hash_command(["g++", "-O0", "foo.cpp"])
-        h2 = TraceStore.hash_command(["g++", "-O2", "foo.cpp"])
+        h1 = hash_command(["g++", "-O0", "foo.cpp"])
+        h2 = hash_command(["g++", "-O2", "foo.cpp"])
         assert h1 != h2
 
 
@@ -155,7 +156,7 @@ class TestTraceVerification:
             TraceEntry(
                 output_hash=obj_hash,
                 input_hashes={"foo.cpp": source_hash},
-                command_hash=TraceStore.hash_command(cmd),
+                command_hash=hash_command(cmd),
             ),
         )
         store.save()
@@ -203,7 +204,7 @@ class TestTraceVerification:
             TraceEntry(
                 output_hash="old_obj_hash",
                 input_hashes={"foo.cpp": "old_source_hash"},
-                command_hash=TraceStore.hash_command(cmd),
+                command_hash=hash_command(cmd),
             ),
         )
         store.save()
@@ -228,8 +229,8 @@ class TestTraceVerification:
             mock_sub.run.assert_called_once()
 
     def test_verify_fails_on_command_hash_change(self, tmp_path, monkeypatch):
-        """If the command changed, rebuild (uses link rule to test trace verification,
-        since compile rules bypass traces via content-addressable short-circuit)."""
+        """If the command changed, rebuild (uses copy rule to test trace verification,
+        since compile/link/library rules bypass traces via content-addressable short-circuit)."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.cpp").write_text("int main() {}")
         (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
@@ -240,8 +241,8 @@ class TestTraceVerification:
             BuildRule(
                 output="foo.o",
                 inputs=["foo.cpp"],
-                command=["g++", "-c", "foo.cpp", "-o", "foo.o"],
-                rule_type="link",
+                command=["cp", "foo.cpp", "foo.o"],
+                rule_type="copy",
                 order_only_deps=["obj"],
             )
         )
@@ -257,7 +258,7 @@ class TestTraceVerification:
             TraceEntry(
                 output_hash=obj_hash,
                 input_hashes={"foo.cpp": source_hash},
-                command_hash=TraceStore.hash_command(["g++", "-O2", "foo.cpp", "-o", "foo.o"]),
+                command_hash=hash_command(["cp", "-v", "foo.cpp", "foo.o"]),
             ),
         )
         store.save()
@@ -282,8 +283,8 @@ class TestTraceVerification:
             mock_sub.run.assert_called_once()
 
     def test_verify_fails_on_added_input(self, tmp_path, monkeypatch):
-        """If the input set changed (new input added), rebuild (uses link rule to test
-        trace verification, since compile rules bypass traces via short-circuit)."""
+        """If the input set changed (new input added), rebuild (uses copy rule to test
+        trace verification, since compile/link/library rules bypass traces via short-circuit)."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.cpp").write_text("int main() {}")
         (tmp_path / "foo.h").write_text("// header")
@@ -296,15 +297,15 @@ class TestTraceVerification:
             BuildRule(
                 output="foo.o",
                 inputs=["foo.cpp", "foo.h"],
-                command=["g++", "-c", "foo.cpp", "-o", "foo.o"],
-                rule_type="link",
+                command=["cp", "foo.cpp", "foo.o"],
+                rule_type="copy",
                 order_only_deps=["obj"],
             )
         )
         graph.add_rule(BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony"))
 
         source_hash = get_file_hash(str(tmp_path / "foo.cpp"))
-        cmd = ["g++", "-c", "foo.cpp", "-o", "foo.o"]
+        cmd = ["cp", "foo.cpp", "foo.o"]
 
         # Trace only knows about ONE input
         trace_path = str(tmp_path / ".ct-traces.json")
@@ -314,7 +315,7 @@ class TestTraceVerification:
             TraceEntry(
                 output_hash=get_file_hash(str(tmp_path / "foo.o")),
                 input_hashes={"foo.cpp": source_hash},
-                command_hash=TraceStore.hash_command(cmd),
+                command_hash=hash_command(cmd),
             ),
         )
         store.save()
@@ -346,15 +347,19 @@ class TestTraceVerification:
 
 class TestEarlyCutoff:
     def test_identical_output_skips_dependent(self, tmp_path, monkeypatch):
-        """Content-addressable short-circuit: foo.o exists → compile skipped
-        (returns False). Link trace is valid → link also skipped. No subprocess calls."""
+        """Content-addressable short-circuit: foo.o exists → compile skipped.
+        CA link target exists → link also skipped. No subprocess calls."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.cpp").write_text("int main() { return 0; }")
-        obj_content = b"\x7fELF fake object"
-        (tmp_path / "foo.o").write_bytes(obj_content)
-        (tmp_path / "foo").write_bytes(b"\x7fELF fake executable")
+        (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
         os.makedirs(tmp_path / "obj", exist_ok=True)
 
+        link_rule = BuildRule(
+            output="foo",
+            inputs=["foo.o"],
+            command=["g++", "-o", "foo", "foo.o"],
+            rule_type="link",
+        )
         graph = BuildGraph()
         graph.add_rule(
             BuildRule(
@@ -365,30 +370,8 @@ class TestEarlyCutoff:
                 order_only_deps=["obj"],
             )
         )
-        graph.add_rule(
-            BuildRule(
-                output="foo",
-                inputs=["foo.o"],
-                command=["g++", "-o", "foo", "foo.o"],
-                rule_type="link",
-            )
-        )
+        graph.add_rule(link_rule)
         graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
-
-        # Trace for foo with current obj and exe hashes
-        trace_path = str(tmp_path / ".ct-traces.json")
-        store = TraceStore(trace_path)
-        obj_hash = get_file_hash(str(tmp_path / "foo.o"))
-        exe_hash = get_file_hash(str(tmp_path / "foo"))
-        store.put(
-            "foo",
-            TraceEntry(
-                output_hash=exe_hash,
-                input_hashes={"foo.o": obj_hash},
-                command_hash=TraceStore.hash_command(["g++", "-o", "foo", "foo.o"]),
-            ),
-        )
-        store.save()
 
         args = mock.MagicMock()
         args.objdir = str(tmp_path)
@@ -399,11 +382,16 @@ class TestEarlyCutoff:
         backend.args = args
         backend._graph = graph
 
+        # Pre-create the CA link target so the short-circuit fires
+        ca = backend._ca_target(link_rule)
+        with open(ca, "wb") as f:
+            f.write(b"\x7fELF cached executable")
+
         with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
             mock_sub.CalledProcessError = subprocess.CalledProcessError
             backend.execute("build")
             # Compile skipped (content-addressable, foo.o exists),
-            # link skipped (trace valid, no input changed)
+            # link skipped (CA target exists, copied to human target)
             assert mock_sub.run.call_count == 0
 
     def test_different_output_rebuilds_dependent(self, tmp_path, monkeypatch):
@@ -411,9 +399,14 @@ class TestEarlyCutoff:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.cpp").write_text("int main() { return 1; }")
         # foo.o intentionally NOT created — forces compile to run
-        (tmp_path / "foo").write_bytes(b"\x7fELF old executable")
         os.makedirs(tmp_path / "obj", exist_ok=True)
 
+        link_rule = BuildRule(
+            output="foo",
+            inputs=["foo.o"],
+            command=["g++", "-o", "foo", "foo.o"],
+            rule_type="link",
+        )
         graph = BuildGraph()
         graph.add_rule(
             BuildRule(
@@ -424,14 +417,7 @@ class TestEarlyCutoff:
                 order_only_deps=["obj"],
             )
         )
-        graph.add_rule(
-            BuildRule(
-                output="foo",
-                inputs=["foo.o"],
-                command=["g++", "-o", "foo", "foo.o"],
-                rule_type="link",
-            )
-        )
+        graph.add_rule(link_rule)
         graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
 
         args = mock.MagicMock()
@@ -444,6 +430,7 @@ class TestEarlyCutoff:
         backend.args = args
         backend._graph = graph
 
+        ca = backend._ca_target(link_rule)
         compile_calls = []
 
         def fake_atomic(target, cmd):
@@ -456,7 +443,9 @@ class TestEarlyCutoff:
             return result
 
         def fake_run(cmd, **kwargs):
-            (tmp_path / "foo").write_bytes(b"\x7fELF NEW executable")
+            # Link builds to the CA target path
+            with open(ca, "wb") as f:
+                f.write(b"\x7fELF NEW executable")
             result = mock.MagicMock()
             result.returncode = 0
             result.stdout = ""
@@ -713,7 +702,7 @@ class TestOutputDeletion:
             TraceEntry(
                 output_hash="hash_of_deleted_file",
                 input_hashes={"foo.cpp": source_hash},
-                command_hash=TraceStore.hash_command(cmd),
+                command_hash=hash_command(cmd),
             ),
         )
         store.save()
@@ -752,12 +741,16 @@ class TestOutputDeletion:
 
 class TestContentAddressableShortCircuit:
     def test_is_content_addressable(self):
-        """Only compile rules are content-addressable."""
+        """Compile, link, and library rules are content-addressable."""
         compile_rule = BuildRule(output="foo.o", inputs=["foo.cpp"], command=["g++"], rule_type="compile")
         link_rule = BuildRule(output="foo", inputs=["foo.o"], command=["g++"], rule_type="link")
+        static_rule = BuildRule(output="libfoo.a", inputs=["foo.o"], command=["ar"], rule_type="static_library")
+        shared_rule = BuildRule(output="libfoo.so", inputs=["foo.o"], command=["g++"], rule_type="shared_library")
         phony_rule = BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony")
         assert _is_content_addressable(compile_rule) is True
-        assert _is_content_addressable(link_rule) is False
+        assert _is_content_addressable(link_rule) is True
+        assert _is_content_addressable(static_rule) is True
+        assert _is_content_addressable(shared_rule) is True
         assert _is_content_addressable(phony_rule) is False
 
     def test_compile_skipped_when_object_exists_no_traces(self, tmp_path, monkeypatch):
@@ -847,109 +840,21 @@ class TestContentAddressableShortCircuit:
                 assert changed is True
                 assert len(compile_calls) == 1
 
-    def test_link_still_uses_traces(self, tmp_path, monkeypatch):
-        """Link rules (rule_type='link') still go through full trace verification,
-        not the content-addressable short-circuit."""
+    def test_link_skipped_when_ca_target_exists(self, tmp_path, monkeypatch):
+        """Link uses CA short-circuit: if the CA-named file exists, the link
+        is skipped and the CA file is copied to the human-readable target."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
-        (tmp_path / "foo").write_bytes(b"\x7fELF fake executable")
 
-        graph = BuildGraph()
-        graph.add_rule(
-            BuildRule(
-                output="foo",
-                inputs=["foo.o"],
-                command=["g++", "-o", "foo", "foo.o"],
-                rule_type="link",
-            )
-        )
-        graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
-
-        obj_hash = get_file_hash(str(tmp_path / "foo.o"))
-        exe_hash = get_file_hash(str(tmp_path / "foo"))
-        cmd = ["g++", "-o", "foo", "foo.o"]
-
-        # Pre-populate trace with MATCHING hashes — trace verification should pass
-        trace_path = str(tmp_path / ".ct-traces.json")
-        store = TraceStore(trace_path)
-        store.put(
-            "foo",
-            TraceEntry(
-                output_hash=exe_hash,
-                input_hashes={"foo.o": obj_hash},
-                command_hash=TraceStore.hash_command(cmd),
-            ),
-        )
-        store.save()
-
-        args = mock.MagicMock()
-        args.objdir = str(tmp_path)
-        args.parallel = 1
-        args.verbose = 0
-
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
-        backend._graph = graph
-
-        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
-            mock_sub.CalledProcessError = subprocess.CalledProcessError
-            backend.execute("build")
-            # Link skipped via trace verification (NOT short-circuit)
-            mock_sub.run.assert_not_called()
-
-        # Now invalidate the trace — link must rebuild
-        store2 = TraceStore(trace_path)
-        store2.put(
-            "foo",
-            TraceEntry(
-                output_hash=exe_hash,
-                input_hashes={"foo.o": "wrong_hash"},
-                command_hash=TraceStore.hash_command(cmd),
-            ),
-        )
-        store2.save()
-
-        backend2 = ShakeBackend.__new__(ShakeBackend)
-        backend2.args = args
-        backend2._graph = graph
-
-        mock_result = mock.MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_result.stderr = ""
-
-        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
-            mock_sub.run.return_value = mock_result
-            mock_sub.CalledProcessError = subprocess.CalledProcessError
-            backend2.execute("build")
-            # Link rebuilds because trace verification failed
-            mock_sub.run.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# Link signature short-circuit
-# ---------------------------------------------------------------------------
-
-
-class TestLinkSignatureShortCircuit:
-    def test_link_skipped_when_signature_matches(self, tmp_path, monkeypatch):
-        """Link output + matching sig file → skip (no subprocess call)."""
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
-        (tmp_path / "foo").write_bytes(b"\x7fELF fake executable")
-
-        graph = BuildGraph()
         link_rule = BuildRule(
             output="foo",
             inputs=["foo.o"],
             command=["g++", "-o", "foo", "foo.o"],
             rule_type="link",
         )
+        graph = BuildGraph()
         graph.add_rule(link_rule)
         graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
-
-        # Write matching sig
-        _write_link_sig("foo", compute_link_signature(link_rule))
 
         args = mock.MagicMock()
         args.objdir = str(tmp_path)
@@ -959,70 +864,34 @@ class TestLinkSignatureShortCircuit:
         backend = ShakeBackend.__new__(ShakeBackend)
         backend.args = args
         backend._graph = graph
+
+        # Pre-create the CA target so the short-circuit fires
+        ca = backend._ca_target(link_rule)
+        with open(ca, "wb") as f:
+            f.write(b"\x7fELF cached executable")
 
         with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
             mock_sub.CalledProcessError = subprocess.CalledProcessError
             backend.execute("build")
             mock_sub.run.assert_not_called()
 
-    def test_link_rebuilds_when_signature_differs(self, tmp_path, monkeypatch):
-        """Wrong sig → rebuild (subprocess called)."""
+        # Human-readable target should be a copy of the CA file
+        assert (tmp_path / "foo").read_bytes() == b"\x7fELF cached executable"
+
+    def test_link_rebuilds_when_ca_target_missing(self, tmp_path, monkeypatch):
+        """No CA target → link executes, builds to CA target, copies to human target."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
-        (tmp_path / "foo").write_bytes(b"\x7fELF fake executable")
 
-        graph = BuildGraph()
-        graph.add_rule(
-            BuildRule(
-                output="foo",
-                inputs=["foo.o"],
-                command=["g++", "-o", "foo", "foo.o"],
-                rule_type="link",
-            )
-        )
-        graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
-
-        # Write wrong sig
-        _write_link_sig("foo", "wrong_signature_hash")
-
-        args = mock.MagicMock()
-        args.objdir = str(tmp_path)
-        args.parallel = 1
-        args.verbose = 0
-
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
-        backend._graph = graph
-
-        mock_result = mock.MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_result.stderr = ""
-
-        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
-            mock_sub.run.return_value = mock_result
-            mock_sub.CalledProcessError = subprocess.CalledProcessError
-            backend.execute("build")
-            mock_sub.run.assert_called_once()
-
-    def test_link_rebuilds_when_output_missing(self, tmp_path, monkeypatch):
-        """No output file → rebuild regardless of sig."""
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
-        # foo intentionally NOT created
-
-        graph = BuildGraph()
         link_rule = BuildRule(
             output="foo",
             inputs=["foo.o"],
             command=["g++", "-o", "foo", "foo.o"],
             rule_type="link",
         )
+        graph = BuildGraph()
         graph.add_rule(link_rule)
         graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
-
-        # Write a sig even though output doesn't exist
-        _write_link_sig("foo", compute_link_signature(link_rule))
 
         args = mock.MagicMock()
         args.objdir = str(tmp_path)
@@ -1032,6 +901,8 @@ class TestLinkSignatureShortCircuit:
         backend = ShakeBackend.__new__(ShakeBackend)
         backend.args = args
         backend._graph = graph
+
+        ca = backend._ca_target(link_rule)
 
         mock_result = mock.MagicMock()
         mock_result.returncode = 0
@@ -1039,7 +910,10 @@ class TestLinkSignatureShortCircuit:
         mock_result.stderr = ""
 
         def fake_run(cmd, **kwargs):
-            (tmp_path / "foo").write_bytes(b"\x7fELF new exe")
+            # The command should target the CA path, not the human-readable path
+            assert ca in cmd
+            with open(ca, "wb") as f:
+                f.write(b"\x7fELF new executable")
             return mock_result
 
         with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
@@ -1048,19 +922,72 @@ class TestLinkSignatureShortCircuit:
             backend.execute("build")
             mock_sub.run.assert_called_once()
 
-    def test_link_records_signature_after_build(self, tmp_path, monkeypatch):
-        """After a successful link, the sig file should be written."""
+        # Both CA and human-readable targets should exist
+        assert os.path.exists(ca)
+        assert (tmp_path / "foo").read_bytes() == b"\x7fELF new executable"
+
+
+# ---------------------------------------------------------------------------
+# Content-addressable link/library short-circuit
+# ---------------------------------------------------------------------------
+
+
+class TestCALinkShortCircuit:
+    def test_ca_target_deterministic(self, tmp_path):
+        """Same rule produces the same CA target path."""
+        rule = BuildRule(output="foo", inputs=["foo.o"], command=["g++", "-o", "foo", "foo.o"], rule_type="link")
+        args = mock.MagicMock()
+        args.objdir = str(tmp_path)
+        backend = ShakeBackend.__new__(ShakeBackend)
+        backend.args = args
+        assert backend._ca_target(rule) == backend._ca_target(rule)
+
+    def test_ca_target_differs_on_input_change(self, tmp_path):
+        """Different inputs produce different CA target paths."""
+        rule1 = BuildRule(output="foo", inputs=["foo.o"], command=["g++", "-o", "foo", "foo.o"], rule_type="link")
+        rule2 = BuildRule(
+            output="foo", inputs=["foo.o", "bar.o"], command=["g++", "-o", "foo", "foo.o", "bar.o"], rule_type="link"
+        )
+        args = mock.MagicMock()
+        args.objdir = str(tmp_path)
+        backend = ShakeBackend.__new__(ShakeBackend)
+        backend.args = args
+        assert backend._ca_target(rule1) != backend._ca_target(rule2)
+
+    def test_ca_target_differs_on_command_change(self, tmp_path):
+        """Different commands (same inputs) produce different CA target paths."""
+        rule1 = BuildRule(output="foo", inputs=["foo.o"], command=["g++", "-o", "foo", "foo.o"], rule_type="link")
+        rule2 = BuildRule(
+            output="foo", inputs=["foo.o"], command=["g++", "-O2", "-o", "foo", "foo.o"], rule_type="link"
+        )
+        args = mock.MagicMock()
+        args.objdir = str(tmp_path)
+        backend = ShakeBackend.__new__(ShakeBackend)
+        backend.args = args
+        assert backend._ca_target(rule1) != backend._ca_target(rule2)
+
+    def test_ca_target_preserves_extension(self, tmp_path):
+        """CA target preserves the file extension for libraries."""
+        rule = BuildRule(
+            output="libfoo.a", inputs=["foo.o"], command=["ar", "-src", "libfoo.a", "foo.o"], rule_type="static_library"
+        )
+        args = mock.MagicMock()
+        args.objdir = str(tmp_path)
+        backend = ShakeBackend.__new__(ShakeBackend)
+        backend.args = args
+        ca = backend._ca_target(rule)
+        assert ca.endswith(".a")
+        assert "libfoo_" in ca
+
+    def test_link_no_sig_files(self, tmp_path, monkeypatch):
+        """CA link/library rules do not produce .ct-sig sidecar files."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
-        # foo intentionally NOT created — forces link to run
 
-        graph = BuildGraph()
         link_rule = BuildRule(
-            output="foo",
-            inputs=["foo.o"],
-            command=["g++", "-o", "foo", "foo.o"],
-            rule_type="link",
+            output="foo", inputs=["foo.o"], command=["g++", "-o", "foo", "foo.o"], rule_type="link"
         )
+        graph = BuildGraph()
         graph.add_rule(link_rule)
         graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
 
@@ -1073,13 +1000,15 @@ class TestLinkSignatureShortCircuit:
         backend.args = args
         backend._graph = graph
 
+        ca = backend._ca_target(link_rule)
         mock_result = mock.MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = ""
         mock_result.stderr = ""
 
         def fake_run(cmd, **kwargs):
-            (tmp_path / "foo").write_bytes(b"\x7fELF new exe")
+            with open(ca, "wb") as f:
+                f.write(b"\x7fELF new exe")
             return mock_result
 
         with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
@@ -1087,11 +1016,7 @@ class TestLinkSignatureShortCircuit:
             mock_sub.CalledProcessError = subprocess.CalledProcessError
             backend.execute("build")
 
-        # Verify sig file was written with correct signature
-        sig_path = str(tmp_path / "foo.ct-sig")
-        assert os.path.exists(sig_path)
-        with open(sig_path) as f:
-            assert f.read().strip() == compute_link_signature(link_rule)
+        assert not os.path.exists("foo.ct-sig")
 
 
 # ---------------------------------------------------------------------------

@@ -22,12 +22,15 @@ No external build tool required — drives compilation directly from Python.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
@@ -35,12 +38,9 @@ from dataclasses import asdict, dataclass
 import compiletools.filesystem_utils
 from compiletools.build_backend import (
     BuildBackend,
-    _read_link_sig,
-    _write_link_sig,
-    compute_link_signature,
     register_backend,
 )
-from compiletools.build_graph import BuildGraph
+from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.global_hash_registry import get_file_hash
 from compiletools.locking import FileLock, atomic_compile
 
@@ -95,15 +95,29 @@ class TraceStore:
         with compiletools.filesystem_utils.atomic_output_file(self._path, mode="w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, sort_keys=True)
 
-    @staticmethod
-    def hash_command(cmd: list[str]) -> str:
-        return hashlib.sha1(json.dumps(cmd, sort_keys=False).encode()).hexdigest()
 
+def hash_command(cmd: list[str]) -> str:
+    """Compute a stable hash of a shell command list."""
+    return hashlib.sha1(json.dumps(cmd, sort_keys=False).encode()).hexdigest()
+
+
+def _atomic_copy(src: str, dst: str) -> None:
+    """Copy src to dst atomically via temp file + rename."""
+    dst_dir = os.path.dirname(dst) or "."
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=dst_dir)
+    try:
+        os.close(tmp_fd)
+        shutil.copy2(src, tmp_path)
+        os.replace(tmp_path, dst)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
 
 
 def _is_content_addressable(rule) -> bool:
-    """Compile rules have content-addressable output names encoding all inputs."""
-    return rule.rule_type == "compile"
+    """Rules whose output names encode all inputs — existence implies correctness."""
+    return rule.rule_type in ("compile", "link", "static_library", "shared_library")
 
 
 @register_backend
@@ -137,6 +151,20 @@ class ShakeBackend(BuildBackend):
                 f.write(f"  inputs: {' '.join(rule.inputs)}\n")
                 f.write(f"  command: {' '.join(rule.command)}\n")
         f.write("\n")
+
+    def _ca_target(self, rule: BuildRule) -> str:
+        """Content-addressable output path for a link/library rule.
+
+        Hashes sorted inputs + command (with output path stripped to avoid
+        circularity).  The CA filename lives alongside the human-readable
+        output so directory creation is already handled.
+        """
+        cmd_filtered = [a for a in rule.command if a != rule.output]
+        key = json.dumps({"inputs": sorted(rule.inputs), "cmd": cmd_filtered}, sort_keys=True)
+        h = hashlib.sha1(key.encode()).hexdigest()[:20]
+        base = os.path.basename(rule.output)
+        name, ext = os.path.splitext(base)
+        return os.path.join(os.path.dirname(rule.output), f"{name}_{h}{ext}")
 
     def execute(self, target: str = "build") -> None:
         if target == "runtests":
@@ -201,20 +229,25 @@ class ShakeBackend(BuildBackend):
             os.makedirs(dep, exist_ok=True)
 
         # CONTENT-ADDRESSABLE SHORT-CIRCUIT
-        # Object filenames encode source hash, dep hash, and macro state hash.
-        # If the file exists, it is correct by construction — skip trace verification.
-        if _is_content_addressable(rule) and os.path.exists(target):
-            with lock:
-                done.add(target)
-            return False  # Already existed → no change for dependents
-
-        # LINK SIGNATURE SHORT-CIRCUIT
-        # Input names are content-addressed → signature encodes all inputs.
-        if rule.rule_type in ("link", "static_library", "shared_library") and os.path.exists(target):
-            if _read_link_sig(target) == compute_link_signature(rule):
-                with lock:
-                    done.add(target)
-                return False
+        # For compile rules, the object filename encodes all inputs.
+        # For link/library rules, we compute a CA target from the rule's
+        # inputs + command; if that CA file exists, copy it to the
+        # human-readable target and skip.
+        if _is_content_addressable(rule):
+            if rule.rule_type == "compile":
+                # Compile: target IS the CA name
+                if os.path.exists(target):
+                    with lock:
+                        done.add(target)
+                    return False
+            else:
+                # Link/library: CA name differs from graph target
+                ca = self._ca_target(rule)
+                if os.path.exists(ca):
+                    _atomic_copy(ca, target)
+                    with lock:
+                        done.add(target)
+                    return False
 
         # SUSPEND: recursively build all inputs (sequential — they may share deps)
         any_input_rebuilt = False
@@ -222,8 +255,8 @@ class ShakeBackend(BuildBackend):
             if self._build(inp, graph, traces, done, lock, executor):
                 any_input_rebuilt = True
 
-        # VERIFY TRACE
-        if not any_input_rebuilt:
+        # VERIFY TRACE (non-CA rules only)
+        if not _is_content_addressable(rule) and not any_input_rebuilt:
             with lock:
                 trace = traces.get(target)
             if trace is not None and self._verify(rule, trace):
@@ -246,7 +279,7 @@ class ShakeBackend(BuildBackend):
             parts = shlex.split(arg)
             flat_cmd.extend(parts)
 
-        if _is_content_addressable(rule):
+        if rule.rule_type == "compile":
             # Compile rules: use atomic_compile to prevent TOCTOU races.
             # The target file never exists in a partial state (compile to
             # temp file, then atomic rename). Strip the trailing -o <target>
@@ -265,9 +298,19 @@ class ShakeBackend(BuildBackend):
                 # File locking disabled — still use temp+rename for atomicity
                 # but without cross-process locking
                 result = self._atomic_compile_no_lock(target, cmd_without_output)
+        elif _is_content_addressable(rule):
+            # Link/library rules: build to CA target, then copy to human target.
+            ca = self._ca_target(rule)
+            ca_cmd = [ca if a == target else a for a in flat_cmd]
+            with FileLock(ca, self.args):
+                result = subprocess.run(ca_cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(result.stdout, end="", file=sys.stdout)
+                    print(result.stderr, end="", file=sys.stderr)
+                    raise subprocess.CalledProcessError(result.returncode, rule.command, result.stdout, result.stderr)
+            _atomic_copy(ca, target)
         else:
-            # Link rules: execute directly with FileLock (no temp file needed,
-            # linker output is not content-addressable)
+            # Non-CA rules (shouldn't normally reach here)
             with FileLock(target, self.args):
                 result = subprocess.run(flat_cmd, capture_output=True, text=True)
                 if result.returncode != 0:
@@ -278,17 +321,12 @@ class ShakeBackend(BuildBackend):
         with lock:
             done.add(target)
 
-        # Content-addressable compile outputs don't need trace recording or
-        # early cutoff — the output name encodes all inputs, so existence
-        # implies correctness.
+        # CA outputs don't need trace recording or early cutoff —
+        # existence implies correctness.
         if _is_content_addressable(rule):
-            return True  # New compile output → dependents must rebuild
+            return True  # New output → dependents must rebuild
 
         new_hash = get_file_hash(target)
-
-        # RECORD LINK SIGNATURE
-        if rule.rule_type in ("link", "static_library", "shared_library"):
-            _write_link_sig(target, compute_link_signature(rule))
 
         # RECORD TRACE (only for non-content-addressable rules)
         with lock:
@@ -297,7 +335,7 @@ class ShakeBackend(BuildBackend):
                 TraceEntry(
                     output_hash=new_hash,
                     input_hashes={inp: get_file_hash(inp) for inp in rule.inputs},
-                    command_hash=TraceStore.hash_command(rule.command),
+                    command_hash=hash_command(rule.command),
                 ),
             )
 
@@ -336,7 +374,7 @@ class ShakeBackend(BuildBackend):
         except (FileNotFoundError, OSError):
             return False
 
-        if TraceStore.hash_command(rule.command) != trace.command_hash:
+        if hash_command(rule.command) != trace.command_hash:
             return False
 
         if set(rule.inputs) != set(trace.input_hashes.keys()):
