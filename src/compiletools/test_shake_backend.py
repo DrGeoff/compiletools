@@ -20,7 +20,7 @@ from compiletools.shake_backend import (
     ShakeBackend,
     TraceEntry,
     TraceStore,
-    _is_content_addressable,
+    _is_build_artifact,
     hash_command,
 )
 
@@ -647,18 +647,18 @@ class TestOutputDeletion:
 
 
 class TestContentAddressableShortCircuit:
-    def test_is_content_addressable(self):
+    def test_is_build_artifact(self):
         """Compile, link, and library rules are content-addressable."""
         compile_rule = BuildRule(output="foo.o", inputs=["foo.cpp"], command=["g++"], rule_type="compile")
         link_rule = BuildRule(output="foo", inputs=["foo.o"], command=["g++"], rule_type="link")
         static_rule = BuildRule(output="libfoo.a", inputs=["foo.o"], command=["ar"], rule_type="static_library")
         shared_rule = BuildRule(output="libfoo.so", inputs=["foo.o"], command=["g++"], rule_type="shared_library")
         phony_rule = BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony")
-        assert _is_content_addressable(compile_rule) is True
-        assert _is_content_addressable(link_rule) is True
-        assert _is_content_addressable(static_rule) is True
-        assert _is_content_addressable(shared_rule) is True
-        assert _is_content_addressable(phony_rule) is False
+        assert _is_build_artifact(compile_rule) is True
+        assert _is_build_artifact(link_rule) is True
+        assert _is_build_artifact(static_rule) is True
+        assert _is_build_artifact(shared_rule) is True
+        assert _is_build_artifact(phony_rule) is False
 
     def test_compile_skipped_when_object_exists_no_traces(self, monkeypatch):
         """Object file exists, NO trace store populated. Compile is skipped

@@ -74,7 +74,7 @@ class BazelBackend(BuildBackend):
         for rule in graph.rules_by_type("static_library"):
             srcs, all_copts = aggregate_rule_sources(rule, obj_info)
             target_name = mangle_target_name(os.path.basename(rule.output))
-            rel_srcs = sorted(set(os.path.relpath(s, base_dir) for s in srcs))
+            rel_srcs = sorted(set(self._bazel_src(s, base_dir) for s in srcs))
 
             f.write("\ncc_library(\n")
             f.write(f'    name = "{target_name}",\n')
@@ -93,9 +93,11 @@ class BazelBackend(BuildBackend):
         for rule in graph.rules_by_type("shared_library"):
             srcs, all_copts = aggregate_rule_sources(rule, obj_info)
             object_files = set(rule.inputs)
-            linkopts = extract_linkopts(rule.command, object_files) if rule.command else []
+            linkopts = self._resolve_linkopts(
+                extract_linkopts(rule.command, object_files) if rule.command else []
+            )
             target_name = mangle_target_name(os.path.basename(rule.output))
-            rel_srcs = sorted(set(os.path.relpath(s, base_dir) for s in srcs))
+            rel_srcs = sorted(set(self._bazel_src(s, base_dir) for s in srcs))
 
             f.write("\ncc_binary(\n")
             f.write(f'    name = "{target_name}",\n')
@@ -120,9 +122,11 @@ class BazelBackend(BuildBackend):
         for rule in graph.rules_by_type("link"):
             srcs, all_copts = aggregate_rule_sources(rule, obj_info)
             object_files = set(rule.inputs)
-            linkopts = extract_linkopts(rule.command, object_files) if rule.command else []
+            linkopts = self._resolve_linkopts(
+                extract_linkopts(rule.command, object_files) if rule.command else []
+            )
             target_name = mangle_target_name(os.path.basename(rule.output))
-            rel_srcs = sorted(set(os.path.relpath(s, base_dir) for s in srcs))
+            rel_srcs = sorted(set(self._bazel_src(s, base_dir) for s in srcs))
 
             f.write("\ncc_binary(\n")
             f.write(f'    name = "{target_name}",\n')
@@ -142,6 +146,46 @@ class BazelBackend(BuildBackend):
                     f.write(f'        "{opt}",\n')
                 f.write("    ],\n")
             f.write(")\n")
+
+    @staticmethod
+    def _resolve_linkopts(linkopts: list[str]) -> list[str]:
+        """Resolve relative -L paths to absolute.
+
+        Bazel executes the linker from a sandbox, so relative paths
+        would not resolve to the correct directory.
+        """
+        resolved = []
+        for opt in linkopts:
+            if opt.startswith("-L") and not os.path.isabs(opt[2:]):
+                resolved.append(f"-L{os.path.abspath(opt[2:])}")
+            else:
+                resolved.append(opt)
+        return resolved
+
+    @staticmethod
+    def _bazel_src(source: str, base_dir: str) -> str:
+        """Return a Bazel-safe relative source path.
+
+        Bazel rejects target paths containing '..'.  When a source file
+        lives outside the workspace, copy it into a local 'ext/' directory
+        and return the local relative path instead.
+        """
+        rel = os.path.relpath(source, base_dir)
+        if not rel.startswith(".."):
+            return rel
+
+        # Source is outside the workspace — copy it in.
+        if os.path.exists(source):
+            ext_dir = os.path.join(base_dir, "ext")
+            os.makedirs(ext_dir, exist_ok=True)
+            basename = os.path.basename(source)
+            dest = os.path.join(ext_dir, basename)
+            if not os.path.exists(dest):
+                shutil.copy2(source, dest)
+            return os.path.relpath(dest, base_dir)
+
+        # Source doesn't exist (e.g. mock/test paths) — use absolute path
+        return os.path.abspath(source)
 
     def _ensure_workspace(self, output_dir: str) -> None:
         """Create minimal WORKSPACE and MODULE.bazel files if none exist."""
@@ -199,8 +243,26 @@ class BazelBackend(BuildBackend):
         bazel_bin = os.path.join(os.getcwd(), "bazel-bin")
         if os.path.isdir(bazel_bin):
             self._copy_built_executables(bazel_bin)
+            self._copy_bazel_libraries(bazel_bin)
         if self._graph is not None:
             self._record_link_signatures(self._graph)
+
+    def _copy_bazel_libraries(self, bazel_bin: str) -> None:
+        """Copy Bazel-built libraries to namer paths.
+
+        Bazel names libraries lib<target>.a in bazel-bin/.  Walk the
+        graph to find expected library outputs and copy them.
+        """
+        if self._graph is None:
+            return
+        for lib_type in ("static_library", "shared_library"):
+            for rule in self._graph.rules_by_type(lib_type):
+                target_name = mangle_target_name(os.path.basename(rule.output))
+                # Bazel produces lib<target>.a for cc_library
+                bazel_lib = os.path.join(bazel_bin, f"lib{target_name}.a")
+                if os.path.exists(bazel_lib):
+                    os.makedirs(os.path.dirname(rule.output), exist_ok=True)
+                    shutil.copy2(bazel_lib, rule.output)
 
     def clean(self) -> None:
         """Run bazel clean, then remove build artifact directories."""

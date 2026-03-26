@@ -115,7 +115,7 @@ def _atomic_copy(src: str, dst: str) -> None:
         raise
 
 
-def _is_content_addressable(rule) -> bool:
+def _is_build_artifact(rule) -> bool:
     """Rules whose output names encode all inputs — existence implies correctness."""
     return rule.rule_type in ("compile", "link", "static_library", "shared_library")
 
@@ -233,7 +233,7 @@ class ShakeBackend(BuildBackend):
         # For link/library rules, we compute a CA target from the rule's
         # inputs + command; if that CA file exists, copy it to the
         # human-readable target and skip.
-        if _is_content_addressable(rule):
+        if _is_build_artifact(rule):
             if rule.rule_type == "compile":
                 # Compile: target IS the CA name
                 if os.path.exists(target):
@@ -256,7 +256,7 @@ class ShakeBackend(BuildBackend):
                 any_input_rebuilt = True
 
         # VERIFY TRACE (non-CA rules only)
-        if not _is_content_addressable(rule) and not any_input_rebuilt:
+        if not _is_build_artifact(rule) and not any_input_rebuilt:
             with lock:
                 trace = traces.get(target)
             if trace is not None and self._verify(rule, trace):
@@ -266,7 +266,7 @@ class ShakeBackend(BuildBackend):
 
         # EXECUTE
         old_hash = None
-        if not _is_content_addressable(rule):
+        if not _is_build_artifact(rule):
             old_hash = get_file_hash(target) if os.path.exists(target) else None
 
         verbose = getattr(self.args, "verbose", 0)
@@ -298,11 +298,18 @@ class ShakeBackend(BuildBackend):
                 # File locking disabled — still use temp+rename for atomicity
                 # but without cross-process locking
                 result = self._atomic_compile_no_lock(target, cmd_without_output)
-        elif _is_content_addressable(rule):
+        elif _is_build_artifact(rule):
             # Link/library rules: build to CA target, then copy to human target.
             ca = self._ca_target(rule)
             ca_cmd = [ca if a == target else a for a in flat_cmd]
             with FileLock(ca, self.args):
+                # FlockLock creates an empty file at the CA path via O_CREAT.
+                # ar -r treats an empty file as a corrupt archive and fails
+                # with "File format not recognized".  Remove the empty file
+                # so ar can create a fresh archive.  The flock fd stays valid
+                # after unlink on Unix, so the lock is still held.
+                if os.path.exists(ca) and os.path.getsize(ca) == 0:
+                    os.unlink(ca)
                 result = subprocess.run(ca_cmd, capture_output=True, text=True)
                 if result.returncode != 0:
                     print(result.stdout, end="", file=sys.stdout)
@@ -323,7 +330,7 @@ class ShakeBackend(BuildBackend):
 
         # CA outputs don't need trace recording or early cutoff —
         # existence implies correctness.
-        if _is_content_addressable(rule):
+        if _is_build_artifact(rule):
             return True  # New output → dependents must rebuild
 
         new_hash = get_file_hash(target)
