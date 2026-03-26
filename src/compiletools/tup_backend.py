@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
+
 import compiletools.filesystem_utils
 from compiletools.build_backend import BuildBackend, register_backend
 from compiletools.build_graph import BuildGraph
@@ -53,10 +57,6 @@ class TupBackend(BuildBackend):
 
         if self._graph is not None and self._all_outputs_current(self._graph):
             return
-
-        import os
-        import shutil
-        import subprocess
 
         if shutil.which("tup") is None:
             raise RuntimeError("tup not found on PATH")
