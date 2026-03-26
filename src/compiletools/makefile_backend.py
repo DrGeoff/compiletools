@@ -5,6 +5,7 @@ from __future__ import annotations
 import builtins
 import functools
 import os
+import re
 import subprocess
 import sys
 
@@ -25,12 +26,11 @@ from compiletools.build_graph import BuildGraph
 def _get_make_version() -> tuple[int, int]:
     """Detect GNU Make version. Returns (major, minor) or (0, 0) on failure."""
     try:
-        line = subprocess.check_output(["make", "--version"], universal_newlines=True).splitlines()[0]
-        version_str = line.split()[-1]
-        parts = version_str.split(".")
-        major = int(parts[0])
-        minor = int(parts[1]) if len(parts) > 1 else 0
-        return (major, minor)
+        line = subprocess.check_output(["make", "--version"], text=True).splitlines()[0]
+        m = re.search(r"(\d+)\.(\d+)", line)
+        if not m:
+            return (0, 0)
+        return (int(m.group(1)), int(m.group(2)))
     except (subprocess.CalledProcessError, ValueError, IndexError, FileNotFoundError):
         return (0, 0)
 
@@ -314,6 +314,6 @@ class MakefileBackend(BuildBackend):
         cmd.extend(["-f", self.args.makefilename, target])
         if self.args.verbose >= 1:
             print(" ".join(cmd))
-        subprocess.check_call(cmd, universal_newlines=True)
+        subprocess.check_call(cmd, text=True)
         if self._graph is not None:
             self._record_link_signatures(self._graph)

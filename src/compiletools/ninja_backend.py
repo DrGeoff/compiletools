@@ -32,6 +32,8 @@ class NinjaBackend(BuildBackend):
             if not check_lock_helper_available():
                 report_lock_helper_missing()
             self._filesystem_type = compiletools.filesystem_utils.get_filesystem_type(self.args.objdir)
+        else:
+            self._filesystem_type = None
 
         self._graph = graph
         if output is not None:
@@ -122,6 +124,6 @@ class NinjaBackend(BuildBackend):
         if self.args.verbose >= 1:
             cmd.append("-v")
         cmd.append(target)
-        subprocess.check_call(cmd, universal_newlines=True)
+        subprocess.check_call(cmd, text=True)
         if self._graph is not None:
             self._record_link_signatures(self._graph)

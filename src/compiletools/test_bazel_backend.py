@@ -331,7 +331,7 @@ class TestBazelClean:
             patch("shutil.which", side_effect=lambda name: "/usr/bin/bazel" if name == "bazel" else None),
         ):
             backend.clean()
-            mock_check_call.assert_called_once_with(["/usr/bin/bazel", "clean"], universal_newlines=True)
+            mock_check_call.assert_called_once_with(["/usr/bin/bazel", "clean"], text=True)
 
 
 class TestBazelExecute:

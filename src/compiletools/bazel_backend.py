@@ -93,9 +93,7 @@ class BazelBackend(BuildBackend):
         for rule in graph.rules_by_type("shared_library"):
             srcs, all_copts = aggregate_rule_sources(rule, obj_info)
             object_files = set(rule.inputs)
-            linkopts = self._resolve_linkopts(
-                extract_linkopts(rule.command, object_files) if rule.command else []
-            )
+            linkopts = self._resolve_linkopts(extract_linkopts(rule.command, object_files) if rule.command else [])
             target_name = mangle_target_name(os.path.basename(rule.output))
             rel_srcs = sorted(set(self._bazel_src(s, base_dir) for s in srcs))
 
@@ -122,9 +120,7 @@ class BazelBackend(BuildBackend):
         for rule in graph.rules_by_type("link"):
             srcs, all_copts = aggregate_rule_sources(rule, obj_info)
             object_files = set(rule.inputs)
-            linkopts = self._resolve_linkopts(
-                extract_linkopts(rule.command, object_files) if rule.command else []
-            )
+            linkopts = self._resolve_linkopts(extract_linkopts(rule.command, object_files) if rule.command else [])
             target_name = mangle_target_name(os.path.basename(rule.output))
             rel_srcs = sorted(set(self._bazel_src(s, base_dir) for s in srcs))
 
@@ -175,6 +171,8 @@ class BazelBackend(BuildBackend):
             return rel
 
         # Source is outside the workspace — copy it in.
+        # Note: these copies in ext/ may be orphaned if the build fails;
+        # clean() removes the entire output directory including ext/.
         if os.path.exists(source):
             ext_dir = os.path.join(base_dir, "ext")
             os.makedirs(ext_dir, exist_ok=True)
@@ -236,13 +234,15 @@ class BazelBackend(BuildBackend):
         if parallel:
             cmd.append(f"--jobs={parallel}")
         cmd.append(bazel_target)
-        subprocess.check_call(cmd, universal_newlines=True)
+        subprocess.check_call(cmd, text=True)
 
-        # Bazel outputs executables to bazel-bin/.  Copy them to the
-        # namer.executable_pathname() locations so _copyexes() can find them.
+        # Bazel outputs executables to bazel-bin/.  Copy directly to the
+        # final output directory (topbindir or --output) to avoid a
+        # redundant intermediate copy through objdir.
         bazel_bin = os.path.join(os.getcwd(), "bazel-bin")
         if os.path.isdir(bazel_bin):
-            self._copy_built_executables(bazel_bin)
+            dest = getattr(self.args, "output", None) or self.namer.topbindir()
+            self._copy_built_executables(bazel_bin, dest_dir=dest)
             self._copy_bazel_libraries(bazel_bin)
         if self._graph is not None:
             self._record_link_signatures(self._graph)
@@ -269,7 +269,7 @@ class BazelBackend(BuildBackend):
         tool = shutil.which("bazelisk") or shutil.which("bazel")
         if tool is not None:
             try:
-                subprocess.check_call([tool, "clean"], universal_newlines=True)
+                subprocess.check_call([tool, "clean"], text=True)
             except subprocess.CalledProcessError:
                 pass
         super().clean()
