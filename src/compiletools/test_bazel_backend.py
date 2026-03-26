@@ -3,8 +3,8 @@
 import io
 from unittest.mock import MagicMock, patch
 
-from compiletools.bazel_backend import BazelBackend, _extract_copts, _extract_linkopts
-from compiletools.build_backend import get_backend_class
+from compiletools.bazel_backend import BazelBackend
+from compiletools.build_backend import extract_copts, extract_linkopts, get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
 
 
@@ -175,39 +175,39 @@ class TestBazelGenerate:
 class TestCoptsExtraction:
     def test_basic_flags(self):
         cmd = ["g++", "-O2", "-std=c++17", "-c", "foo.cpp", "-o", "obj/foo.o"]
-        assert _extract_copts(cmd) == ["-O2", "-std=c++17"]
+        assert extract_copts(cmd, strip_includes=True) == ["-O2", "-std=c++17"]
 
     def test_define_flags(self):
         cmd = ["g++", "-DFOO=1", "-DBAR", "-c", "foo.cpp", "-o", "obj/foo.o"]
-        assert _extract_copts(cmd) == ["-DFOO=1", "-DBAR"]
+        assert extract_copts(cmd, strip_includes=True) == ["-DFOO=1", "-DBAR"]
 
     def test_empty_command(self):
-        assert _extract_copts([]) == []
+        assert extract_copts([]) == []
 
     def test_complex_flags(self):
         # -I flags are filtered out since Bazel manages includes itself
         cmd = ["g++", "-Wall", "-Wextra", "-I/usr/include", "-c", "x.cpp", "-o", "x.o"]
-        assert _extract_copts(cmd) == ["-Wall", "-Wextra"]
+        assert extract_copts(cmd, strip_includes=True) == ["-Wall", "-Wextra"]
 
 
 class TestLinkoptsExtraction:
     def test_library_flags(self):
         cmd = ["g++", "-o", "bin/foo", "obj/foo.o", "-lm", "-lpthread"]
         objs = {"obj/foo.o"}
-        assert _extract_linkopts(cmd, objs) == ["-lm", "-lpthread"]
+        assert extract_linkopts(cmd, objs) == ["-lm", "-lpthread"]
 
     def test_no_extra_flags(self):
         cmd = ["g++", "-o", "bin/foo", "obj/foo.o"]
         objs = {"obj/foo.o"}
-        assert _extract_linkopts(cmd, objs) == []
+        assert extract_linkopts(cmd, objs) == []
 
     def test_empty_command(self):
-        assert _extract_linkopts([], set()) == []
+        assert extract_linkopts([], set()) == []
 
     def test_multiple_objects_stripped(self):
         cmd = ["g++", "-o", "bin/app", "obj/a.o", "obj/b.o", "-lz"]
         objs = {"obj/a.o", "obj/b.o"}
-        assert _extract_linkopts(cmd, objs) == ["-lz"]
+        assert extract_linkopts(cmd, objs) == ["-lz"]
 
 
 class TestBazelExecuteRuntests:

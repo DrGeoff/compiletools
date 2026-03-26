@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import threading
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -22,6 +23,9 @@ from compiletools.shake_backend import (
     _is_content_addressable,
     hash_command,
 )
+
+from compiletools.testhelper import ShakeBackendTestContext, fake_subprocess_result
+
 
 # ---------------------------------------------------------------------------
 # Registration
@@ -134,55 +138,44 @@ class TestTraceVerification:
         graph.add_rule(BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony"))
         return graph
 
-    def test_verify_passes_when_hashes_match(self, tmp_path, monkeypatch):
+    def test_verify_passes_when_hashes_match(self, monkeypatch):
         """Compile rule with existing output is skipped via content-addressable
         short-circuit (os.path.exists), not trace verification."""
-        monkeypatch.chdir(tmp_path)
-        # Create source and object files
-        (tmp_path / "foo.cpp").write_text("int main() {}")
-        (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
-        os.makedirs(tmp_path / "obj", exist_ok=True)
-
         graph = self._make_graph_with_compile()
-        source_hash = get_file_hash(str(tmp_path / "foo.cpp"))
-        obj_hash = get_file_hash(str(tmp_path / "foo.o"))
-        cmd = ["g++", "-c", "foo.cpp", "-o", "foo.o"]
 
-        # Pre-populate trace store with matching hashes
-        trace_path = str(tmp_path / ".ct-traces.json")
-        store = TraceStore(trace_path)
-        store.put(
-            "foo.o",
-            TraceEntry(
-                output_hash=obj_hash,
-                input_hashes={"foo.cpp": source_hash},
-                command_hash=hash_command(cmd),
-            ),
-        )
-        store.save()
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            # Create source and object files
+            (td / "foo.cpp").write_text("int main() {}")
+            (td / "foo.o").write_bytes(b"\x7fELF fake object")
+            os.makedirs(td / "obj", exist_ok=True)
 
-        # Build — subprocess should NOT be called
-        args = mock.MagicMock()
-        args.objdir = str(tmp_path)
-        args.parallel = 1
-        args.verbose = 0
+            source_hash = get_file_hash(str(td / "foo.cpp"))
+            obj_hash = get_file_hash(str(td / "foo.o"))
+            cmd = ["g++", "-c", "foo.cpp", "-o", "foo.o"]
 
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
-        backend._graph = graph
+            # Pre-populate trace store with matching hashes
+            trace_path = str(td / ".ct-traces.json")
+            store = TraceStore(trace_path)
+            store.put(
+                "foo.o",
+                TraceEntry(
+                    output_hash=obj_hash,
+                    input_hashes={"foo.cpp": source_hash},
+                    command_hash=hash_command(cmd),
+                ),
+            )
+            store.save()
 
-        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
-            backend.execute("build")
-            mock_sub.run.assert_not_called()
+            # Build — subprocess should NOT be called
+            with mock.patch("compiletools.shake_backend.subprocess.run") as mock_run:
+                backend.execute("build")
+                mock_run.assert_not_called()
 
-    def test_verify_fails_on_input_hash_change(self, tmp_path, monkeypatch):
+    def test_verify_fails_on_input_hash_change(self, monkeypatch):
         """If an input file changed, rebuild (uses link rule to test trace verification,
         since compile rules bypass traces via content-addressable short-circuit)."""
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "foo.cpp").write_text("int main() { return 1; }")
-        (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
-        os.makedirs(tmp_path / "obj", exist_ok=True)
-
         graph = BuildGraph()
         graph.add_rule(
             BuildRule(
@@ -194,48 +187,44 @@ class TestTraceVerification:
             )
         )
         graph.add_rule(BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony"))
-        cmd = ["g++", "-c", "foo.cpp", "-o", "foo.o"]
 
-        # Pre-populate trace with OLD source hash
-        trace_path = str(tmp_path / ".ct-traces.json")
-        store = TraceStore(trace_path)
-        store.put(
-            "foo.o",
-            TraceEntry(
-                output_hash="old_obj_hash",
-                input_hashes={"foo.cpp": "old_source_hash"},
-                command_hash=hash_command(cmd),
-            ),
-        )
-        store.save()
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            (td / "foo.cpp").write_text("int main() { return 1; }")
+            (td / "foo.o").write_bytes(b"\x7fELF fake object")
+            os.makedirs(td / "obj", exist_ok=True)
 
-        args = mock.MagicMock()
-        args.objdir = str(tmp_path)
-        args.parallel = 1
-        args.verbose = 0
+            cmd = ["g++", "-c", "foo.cpp", "-o", "foo.o"]
 
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
-        backend._graph = graph
+            # Pre-populate trace with OLD source hash
+            trace_path = str(td / ".ct-traces.json")
+            store = TraceStore(trace_path)
+            store.put(
+                "foo.o",
+                TraceEntry(
+                    output_hash="old_obj_hash",
+                    input_hashes={"foo.cpp": "old_source_hash"},
+                    command_hash=hash_command(cmd),
+                ),
+            )
+            store.save()
 
-        mock_result = mock.MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_result.stderr = ""
+            rule = graph.rules[0]
+            ca = backend._ca_target(rule)
 
-        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
-            mock_sub.run.return_value = mock_result
-            backend.execute("build")
-            mock_sub.run.assert_called_once()
+            def fake_run(cmd, **kwargs):
+                with open(ca, "wb") as f:
+                    f.write(b"\x7fELF rebuilt")
+                return fake_subprocess_result()
 
-    def test_verify_fails_on_command_hash_change(self, tmp_path, monkeypatch):
+            with mock.patch("compiletools.shake_backend.subprocess.run", side_effect=fake_run) as mock_run:
+                backend.execute("build")
+                mock_run.assert_called_once()
+
+    def test_verify_fails_on_command_hash_change(self, monkeypatch):
         """If the command changed, rebuild (uses copy rule to test trace verification,
         since compile/link/library rules bypass traces via content-addressable short-circuit)."""
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "foo.cpp").write_text("int main() {}")
-        (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
-        os.makedirs(tmp_path / "obj", exist_ok=True)
-
         graph = BuildGraph()
         graph.add_rule(
             BuildRule(
@@ -247,50 +236,39 @@ class TestTraceVerification:
             )
         )
         graph.add_rule(BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony"))
-        source_hash = get_file_hash(str(tmp_path / "foo.cpp"))
-        obj_hash = get_file_hash(str(tmp_path / "foo.o"))
 
-        # Trace has a DIFFERENT command hash
-        trace_path = str(tmp_path / ".ct-traces.json")
-        store = TraceStore(trace_path)
-        store.put(
-            "foo.o",
-            TraceEntry(
-                output_hash=obj_hash,
-                input_hashes={"foo.cpp": source_hash},
-                command_hash=hash_command(["cp", "-v", "foo.cpp", "foo.o"]),
-            ),
-        )
-        store.save()
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            (td / "foo.cpp").write_text("int main() {}")
+            (td / "foo.o").write_bytes(b"\x7fELF fake object")
+            os.makedirs(td / "obj", exist_ok=True)
 
-        args = mock.MagicMock()
-        args.objdir = str(tmp_path)
-        args.parallel = 1
-        args.verbose = 0
+            source_hash = get_file_hash(str(td / "foo.cpp"))
+            obj_hash = get_file_hash(str(td / "foo.o"))
 
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
-        backend._graph = graph
+            # Trace has a DIFFERENT command hash
+            trace_path = str(td / ".ct-traces.json")
+            store = TraceStore(trace_path)
+            store.put(
+                "foo.o",
+                TraceEntry(
+                    output_hash=obj_hash,
+                    input_hashes={"foo.cpp": source_hash},
+                    command_hash=hash_command(["cp", "-v", "foo.cpp", "foo.o"]),
+                ),
+            )
+            store.save()
 
-        mock_result = mock.MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_result.stderr = ""
+            mock_result = fake_subprocess_result()
 
-        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
-            mock_sub.run.return_value = mock_result
-            backend.execute("build")
-            mock_sub.run.assert_called_once()
+            with mock.patch("compiletools.shake_backend.subprocess.run", return_value=mock_result) as mock_run:
+                backend.execute("build")
+                mock_run.assert_called_once()
 
-    def test_verify_fails_on_added_input(self, tmp_path, monkeypatch):
+    def test_verify_fails_on_added_input(self, monkeypatch):
         """If the input set changed (new input added), rebuild (uses copy rule to test
         trace verification, since compile/link/library rules bypass traces via short-circuit)."""
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "foo.cpp").write_text("int main() {}")
-        (tmp_path / "foo.h").write_text("// header")
-        (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
-        os.makedirs(tmp_path / "obj", exist_ok=True)
-
         # Graph now has TWO inputs
         graph = BuildGraph()
         graph.add_rule(
@@ -304,40 +282,39 @@ class TestTraceVerification:
         )
         graph.add_rule(BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony"))
 
-        source_hash = get_file_hash(str(tmp_path / "foo.cpp"))
-        cmd = ["cp", "foo.cpp", "foo.o"]
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            (td / "foo.cpp").write_text("int main() {}")
+            (td / "foo.h").write_text("// header")
+            (td / "foo.o").write_bytes(b"\x7fELF fake object")
+            os.makedirs(td / "obj", exist_ok=True)
 
-        # Trace only knows about ONE input
-        trace_path = str(tmp_path / ".ct-traces.json")
-        store = TraceStore(trace_path)
-        store.put(
-            "foo.o",
-            TraceEntry(
-                output_hash=get_file_hash(str(tmp_path / "foo.o")),
-                input_hashes={"foo.cpp": source_hash},
-                command_hash=hash_command(cmd),
-            ),
-        )
-        store.save()
+            source_hash = get_file_hash(str(td / "foo.cpp"))
+            cmd = ["cp", "foo.cpp", "foo.o"]
 
-        args = mock.MagicMock()
-        args.objdir = str(tmp_path)
-        args.parallel = 1
-        args.verbose = 0
+            # Trace only knows about ONE input
+            trace_path = str(td / ".ct-traces.json")
+            store = TraceStore(trace_path)
+            store.put(
+                "foo.o",
+                TraceEntry(
+                    output_hash=get_file_hash(str(td / "foo.o")),
+                    input_hashes={"foo.cpp": source_hash},
+                    command_hash=hash_command(cmd),
+                ),
+            )
+            store.save()
 
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
-        backend._graph = graph
+            mock_result = fake_subprocess_result()
 
-        mock_result = mock.MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_result.stderr = ""
-
-        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
-            mock_sub.run.return_value = mock_result
-            backend.execute("build")
-            mock_sub.run.assert_called_once()
+            with mock.patch("compiletools.shake_backend.subprocess.run", return_value=mock_result) as mock_run:
+                backend.execute("build")
+                # subprocess.run may also be called by git_utils (e.g. git rev-parse
+                # via check_output which delegates to run in Python 3.14+), so check
+                # for the specific build command rather than assert_called_once.
+                build_calls = [c for c in mock_run.call_args_list if c.args[0] == cmd]
+                assert len(build_calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -346,14 +323,9 @@ class TestTraceVerification:
 
 
 class TestEarlyCutoff:
-    def test_identical_output_skips_dependent(self, tmp_path, monkeypatch):
+    def test_identical_output_skips_dependent(self, monkeypatch):
         """Content-addressable short-circuit: foo.o exists → compile skipped.
         CA link target exists → link also skipped. No subprocess calls."""
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "foo.cpp").write_text("int main() { return 0; }")
-        (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
-        os.makedirs(tmp_path / "obj", exist_ok=True)
-
         link_rule = BuildRule(
             output="foo",
             inputs=["foo.o"],
@@ -373,94 +345,73 @@ class TestEarlyCutoff:
         graph.add_rule(link_rule)
         graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
 
-        args = mock.MagicMock()
-        args.objdir = str(tmp_path)
-        args.parallel = 1
-        args.verbose = 0
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            (td / "foo.cpp").write_text("int main() { return 0; }")
+            (td / "foo.o").write_bytes(b"\x7fELF fake object")
+            os.makedirs(td / "obj", exist_ok=True)
 
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
-        backend._graph = graph
-
-        # Pre-create the CA link target so the short-circuit fires
-        ca = backend._ca_target(link_rule)
-        with open(ca, "wb") as f:
-            f.write(b"\x7fELF cached executable")
-
-        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
-            mock_sub.CalledProcessError = subprocess.CalledProcessError
-            backend.execute("build")
-            # Compile skipped (content-addressable, foo.o exists),
-            # link skipped (CA target exists, copied to human target)
-            assert mock_sub.run.call_count == 0
-
-    def test_different_output_rebuilds_dependent(self, tmp_path, monkeypatch):
-        """If compile executes (object didn't exist), link step runs too."""
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "foo.cpp").write_text("int main() { return 1; }")
-        # foo.o intentionally NOT created — forces compile to run
-        os.makedirs(tmp_path / "obj", exist_ok=True)
-
-        link_rule = BuildRule(
-            output="foo",
-            inputs=["foo.o"],
-            command=["g++", "-o", "foo", "foo.o"],
-            rule_type="link",
-        )
-        graph = BuildGraph()
-        graph.add_rule(
-            BuildRule(
-                output="foo.o",
-                inputs=["foo.cpp"],
-                command=["g++", "-c", "foo.cpp", "-o", "foo.o"],
-                rule_type="compile",
-                order_only_deps=["obj"],
-            )
-        )
-        graph.add_rule(link_rule)
-        graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
-
-        args = mock.MagicMock()
-        args.objdir = str(tmp_path)
-        args.parallel = 1
-        args.verbose = 0
-        args.file_locking = False
-
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
-        backend._graph = graph
-
-        ca = backend._ca_target(link_rule)
-        compile_calls = []
-
-        def fake_atomic(target, cmd):
-            compile_calls.append(target)
-            (tmp_path / "foo.o").write_bytes(b"\x7fELF NEW object")
-            result = mock.MagicMock()
-            result.returncode = 0
-            result.stdout = ""
-            result.stderr = ""
-            return result
-
-        def fake_run(cmd, **kwargs):
-            # Link builds to the CA target path
+            # Pre-create the CA link target so the short-circuit fires
+            ca = backend._ca_target(link_rule)
             with open(ca, "wb") as f:
-                f.write(b"\x7fELF NEW executable")
-            result = mock.MagicMock()
-            result.returncode = 0
-            result.stdout = ""
-            result.stderr = ""
-            return result
+                f.write(b"\x7fELF cached executable")
 
-        with (
-            mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic),
-            mock.patch("compiletools.shake_backend.subprocess") as mock_sub,
-        ):
-            mock_sub.run.side_effect = fake_run
-            mock_sub.CalledProcessError = subprocess.CalledProcessError
-            backend.execute("build")
-            assert len(compile_calls) == 1  # compile via atomic
-            assert mock_sub.run.call_count == 1  # link via subprocess
+            with mock.patch("compiletools.shake_backend.subprocess.run") as mock_run:
+                backend.execute("build")
+                # Compile skipped (content-addressable, foo.o exists),
+                # link skipped (CA target exists, copied to human target)
+                assert mock_run.call_count == 0
+
+    def test_different_output_rebuilds_dependent(self, monkeypatch):
+        """If compile executes (object didn't exist), link step runs too."""
+        link_rule = BuildRule(
+            output="foo",
+            inputs=["foo.o"],
+            command=["g++", "-o", "foo", "foo.o"],
+            rule_type="link",
+        )
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="foo.o",
+                inputs=["foo.cpp"],
+                command=["g++", "-c", "foo.cpp", "-o", "foo.o"],
+                rule_type="compile",
+                order_only_deps=["obj"],
+            )
+        )
+        graph.add_rule(link_rule)
+        graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
+
+        with ShakeBackendTestContext(graph, file_locking=False) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            (td / "foo.cpp").write_text("int main() { return 1; }")
+            # foo.o intentionally NOT created — forces compile to run
+            os.makedirs(td / "obj", exist_ok=True)
+
+            ca = backend._ca_target(link_rule)
+            compile_calls = []
+
+            def fake_atomic(target, cmd):
+                compile_calls.append(target)
+                (td / "foo.o").write_bytes(b"\x7fELF NEW object")
+                return fake_subprocess_result()
+
+            def fake_run(cmd, **kwargs):
+                # Link builds to the CA target path
+                with open(ca, "wb") as f:
+                    f.write(b"\x7fELF NEW executable")
+                return fake_subprocess_result()
+
+            with (
+                mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic),
+                mock.patch("compiletools.shake_backend.subprocess.run", side_effect=fake_run) as mock_run,
+            ):
+                backend.execute("build")
+                assert len(compile_calls) == 1  # compile via atomic
+                assert mock_run.call_count == 1  # link via subprocess
 
 
 # ---------------------------------------------------------------------------
@@ -510,11 +461,7 @@ class TestErrorHandling:
         with pytest.raises(RuntimeError, match=r"generate.*must be called"):
             backend.execute("build")
 
-    def test_build_fails_on_subprocess_error(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "foo.cpp").write_text("bad code")
-        os.makedirs(tmp_path / "obj", exist_ok=True)
-
+    def test_build_fails_on_subprocess_error(self, monkeypatch):
         graph = BuildGraph()
         graph.add_rule(
             BuildRule(
@@ -527,22 +474,18 @@ class TestErrorHandling:
         )
         graph.add_rule(BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony"))
 
-        args = mock.MagicMock()
-        args.objdir = str(tmp_path)
-        args.parallel = 1
-        args.verbose = 0
-        args.file_locking = False
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            (td / "foo.cpp").write_text("bad code")
+            os.makedirs(td / "obj", exist_ok=True)
 
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
-        backend._graph = graph
+            def fake_atomic_fail(target, cmd):
+                raise subprocess.CalledProcessError(1, cmd, "", "error: bad code")
 
-        def fake_atomic_fail(target, cmd):
-            raise subprocess.CalledProcessError(1, cmd, "", "error: bad code")
-
-        with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic_fail):
-            with pytest.raises(subprocess.CalledProcessError):
-                backend.execute("build")
+            with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic_fail):
+                with pytest.raises(subprocess.CalledProcessError):
+                    backend.execute("build")
 
 
 # ---------------------------------------------------------------------------
@@ -551,13 +494,8 @@ class TestErrorHandling:
 
 
 class TestParallelExecution:
-    def test_independent_targets_run_in_parallel(self, tmp_path, monkeypatch):
+    def test_independent_targets_run_in_parallel(self, monkeypatch):
         """Phony target with independent inputs should dispatch them concurrently."""
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "a.cpp").write_text("int a() {}")
-        (tmp_path / "b.cpp").write_text("int b() {}")
-        os.makedirs(tmp_path / "obj", exist_ok=True)
-
         graph = BuildGraph()
         graph.add_rule(
             BuildRule(
@@ -579,46 +517,34 @@ class TestParallelExecution:
         )
         graph.add_rule(BuildRule(output="build", inputs=["a.o", "b.o"], command=None, rule_type="phony"))
 
-        args = mock.MagicMock()
-        args.objdir = str(tmp_path)
-        args.parallel = 4
-        args.verbose = 0
-        args.file_locking = False
+        with ShakeBackendTestContext(graph, parallel=4) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            (td / "a.cpp").write_text("int a() {}")
+            (td / "b.cpp").write_text("int b() {}")
+            os.makedirs(td / "obj", exist_ok=True)
 
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
-        backend._graph = graph
+            # Track which threads execute each compile
+            thread_ids = []
+            barrier = threading.Barrier(2, timeout=5)
 
-        # Track which threads execute each compile
-        thread_ids = []
-        barrier = threading.Barrier(2, timeout=5)
+            def fake_atomic(target, cmd):
+                thread_ids.append(threading.current_thread().ident)
+                # Both compiles must reach the barrier before either proceeds,
+                # proving they run concurrently
+                barrier.wait()
+                (td / os.path.basename(target)).write_bytes(b"\x7fELF fake")
+                return fake_subprocess_result()
 
-        def fake_atomic(target, cmd):
-            thread_ids.append(threading.current_thread().ident)
-            # Both compiles must reach the barrier before either proceeds,
-            # proving they run concurrently
-            barrier.wait()
-            (tmp_path / os.path.basename(target)).write_bytes(b"\x7fELF fake")
-            result = mock.MagicMock()
-            result.returncode = 0
-            result.stdout = ""
-            result.stderr = ""
-            return result
+            with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic):
+                backend.execute("build")
 
-        with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic):
-            backend.execute("build")
+            # Verify they ran on different threads
+            assert len(thread_ids) == 2
+            assert thread_ids[0] != thread_ids[1]
 
-        # Verify they ran on different threads
-        assert len(thread_ids) == 2
-        assert thread_ids[0] != thread_ids[1]
-
-    def test_parallel_1_still_works(self, tmp_path, monkeypatch):
+    def test_parallel_1_still_works(self, monkeypatch):
         """parallel=1 should work correctly (single-threaded)."""
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "a.cpp").write_text("int a() {}")
-        (tmp_path / "b.cpp").write_text("int b() {}")
-        os.makedirs(tmp_path / "obj", exist_ok=True)
-
         graph = BuildGraph()
         graph.add_rule(
             BuildRule(
@@ -640,30 +566,23 @@ class TestParallelExecution:
         )
         graph.add_rule(BuildRule(output="build", inputs=["a.o", "b.o"], command=None, rule_type="phony"))
 
-        args = mock.MagicMock()
-        args.objdir = str(tmp_path)
-        args.parallel = 1
-        args.verbose = 0
-        args.file_locking = False
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            (td / "a.cpp").write_text("int a() {}")
+            (td / "b.cpp").write_text("int b() {}")
+            os.makedirs(td / "obj", exist_ok=True)
 
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
-        backend._graph = graph
+            compile_calls = []
 
-        compile_calls = []
+            def fake_atomic(target, cmd):
+                compile_calls.append(target)
+                (td / os.path.basename(target)).write_bytes(b"\x7fELF fake")
+                return fake_subprocess_result()
 
-        def fake_atomic(target, cmd):
-            compile_calls.append(target)
-            (tmp_path / os.path.basename(target)).write_bytes(b"\x7fELF fake")
-            result = mock.MagicMock()
-            result.returncode = 0
-            result.stdout = ""
-            result.stderr = ""
-            return result
-
-        with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic):
-            backend.execute("build")
-            assert len(compile_calls) == 2
+            with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic):
+                backend.execute("build")
+                assert len(compile_calls) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -672,13 +591,8 @@ class TestParallelExecution:
 
 
 class TestOutputDeletion:
-    def test_rebuilds_when_output_deleted(self, tmp_path, monkeypatch):
+    def test_rebuilds_when_output_deleted(self, monkeypatch):
         """If output file is deleted but trace exists, must rebuild."""
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "foo.cpp").write_text("int main() {}")
-        os.makedirs(tmp_path / "obj", exist_ok=True)
-        # Note: foo.o does NOT exist (simulates deletion)
-
         graph = BuildGraph()
         graph.add_rule(
             BuildRule(
@@ -691,47 +605,40 @@ class TestOutputDeletion:
         )
         graph.add_rule(BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony"))
 
-        source_hash = get_file_hash(str(tmp_path / "foo.cpp"))
-        cmd = ["g++", "-c", "foo.cpp", "-o", "foo.o"]
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            (td / "foo.cpp").write_text("int main() {}")
+            os.makedirs(td / "obj", exist_ok=True)
+            # Note: foo.o does NOT exist (simulates deletion)
 
-        # Pre-populate trace as if foo.o was previously built successfully
-        trace_path = str(tmp_path / ".ct-traces.json")
-        store = TraceStore(trace_path)
-        store.put(
-            "foo.o",
-            TraceEntry(
-                output_hash="hash_of_deleted_file",
-                input_hashes={"foo.cpp": source_hash},
-                command_hash=hash_command(cmd),
-            ),
-        )
-        store.save()
+            source_hash = get_file_hash(str(td / "foo.cpp"))
+            cmd = ["g++", "-c", "foo.cpp", "-o", "foo.o"]
 
-        args = mock.MagicMock()
-        args.objdir = str(tmp_path)
-        args.parallel = 1
-        args.verbose = 0
-        args.file_locking = False
+            # Pre-populate trace as if foo.o was previously built successfully
+            trace_path = str(td / ".ct-traces.json")
+            store = TraceStore(trace_path)
+            store.put(
+                "foo.o",
+                TraceEntry(
+                    output_hash="hash_of_deleted_file",
+                    input_hashes={"foo.cpp": source_hash},
+                    command_hash=hash_command(cmd),
+                ),
+            )
+            store.save()
 
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
-        backend._graph = graph
+            compile_calls = []
 
-        compile_calls = []
+            def fake_atomic(target, cmd):
+                compile_calls.append(target)
+                (td / "foo.o").write_bytes(b"\x7fELF rebuilt")
+                return fake_subprocess_result()
 
-        def fake_atomic(target, cmd):
-            compile_calls.append(target)
-            (tmp_path / "foo.o").write_bytes(b"\x7fELF rebuilt")
-            result = mock.MagicMock()
-            result.returncode = 0
-            result.stdout = ""
-            result.stderr = ""
-            return result
-
-        with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic):
-            backend.execute("build")
-            # Must rebuild because output file was deleted
-            assert len(compile_calls) == 1
+            with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic):
+                backend.execute("build")
+                # Must rebuild because output file was deleted
+                assert len(compile_calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -753,14 +660,9 @@ class TestContentAddressableShortCircuit:
         assert _is_content_addressable(shared_rule) is True
         assert _is_content_addressable(phony_rule) is False
 
-    def test_compile_skipped_when_object_exists_no_traces(self, tmp_path, monkeypatch):
+    def test_compile_skipped_when_object_exists_no_traces(self, monkeypatch):
         """Object file exists, NO trace store populated. Compile is skipped
         via content-addressable short-circuit independently of traces."""
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "foo.cpp").write_text("int main() {}")
-        (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
-        os.makedirs(tmp_path / "obj", exist_ok=True)
-
         graph = BuildGraph()
         graph.add_rule(
             BuildRule(
@@ -774,28 +676,20 @@ class TestContentAddressableShortCircuit:
         graph.add_rule(BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony"))
 
         # No traces at all — short-circuit should still work
-        args = mock.MagicMock()
-        args.objdir = str(tmp_path)
-        args.parallel = 1
-        args.verbose = 0
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            (td / "foo.cpp").write_text("int main() {}")
+            (td / "foo.o").write_bytes(b"\x7fELF fake object")
+            os.makedirs(td / "obj", exist_ok=True)
 
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
-        backend._graph = graph
+            with mock.patch("compiletools.shake_backend.subprocess.run") as mock_run:
+                backend.execute("build")
+                mock_run.assert_not_called()
 
-        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
-            mock_sub.CalledProcessError = subprocess.CalledProcessError
-            backend.execute("build")
-            mock_sub.run.assert_not_called()
-
-    def test_compile_returns_true_when_object_new(self, tmp_path, monkeypatch):
+    def test_compile_returns_true_when_object_new(self, monkeypatch):
         """Object file does NOT exist, compile executes. _build returns True
         (signaling dependents should rebuild)."""
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "foo.cpp").write_text("int main() {}")
-        # foo.o intentionally NOT created
-        os.makedirs(tmp_path / "obj", exist_ok=True)
-
         graph = BuildGraph()
         compile_rule = BuildRule(
             output="foo.o",
@@ -807,45 +701,35 @@ class TestContentAddressableShortCircuit:
         graph.add_rule(compile_rule)
         graph.add_rule(BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony"))
 
-        args = mock.MagicMock()
-        args.objdir = str(tmp_path)
-        args.parallel = 1
-        args.verbose = 0
-        args.file_locking = False
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            (td / "foo.cpp").write_text("int main() {}")
+            # foo.o intentionally NOT created
+            os.makedirs(td / "obj", exist_ok=True)
 
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
-        backend._graph = graph
+            traces = TraceStore(str(td / ".ct-traces.json"))
+            done: set[str] = set()
+            lock = threading.Lock()
 
-        traces = TraceStore(str(tmp_path / ".ct-traces.json"))
-        done: set[str] = set()
-        lock = threading.Lock()
+            compile_calls = []
 
-        compile_calls = []
+            def fake_atomic(target, cmd):
+                compile_calls.append(target)
+                (td / "foo.o").write_bytes(b"\x7fELF new object")
+                return fake_subprocess_result()
 
-        def fake_atomic(target, cmd):
-            compile_calls.append(target)
-            (tmp_path / "foo.o").write_bytes(b"\x7fELF new object")
-            result = mock.MagicMock()
-            result.returncode = 0
-            result.stdout = ""
-            result.stderr = ""
-            return result
+            from concurrent.futures import ThreadPoolExecutor
 
-        from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic):
+                    changed = backend._build("foo.o", graph, traces, done, lock, executor)
+                    assert changed is True
+                    assert len(compile_calls) == 1
 
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic):
-                changed = backend._build("foo.o", graph, traces, done, lock, executor)
-                assert changed is True
-                assert len(compile_calls) == 1
-
-    def test_link_skipped_when_ca_target_exists(self, tmp_path, monkeypatch):
+    def test_link_skipped_when_ca_target_exists(self, monkeypatch):
         """Link uses CA short-circuit: if the CA-named file exists, the link
         is skipped and the CA file is copied to the human-readable target."""
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
-
         link_rule = BuildRule(
             output="foo",
             inputs=["foo.o"],
@@ -856,75 +740,58 @@ class TestContentAddressableShortCircuit:
         graph.add_rule(link_rule)
         graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
 
-        args = mock.MagicMock()
-        args.objdir = str(tmp_path)
-        args.parallel = 1
-        args.verbose = 0
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            (td / "foo.o").write_bytes(b"\x7fELF fake object")
 
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
-        backend._graph = graph
-
-        # Pre-create the CA target so the short-circuit fires
-        ca = backend._ca_target(link_rule)
-        with open(ca, "wb") as f:
-            f.write(b"\x7fELF cached executable")
-
-        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
-            mock_sub.CalledProcessError = subprocess.CalledProcessError
-            backend.execute("build")
-            mock_sub.run.assert_not_called()
-
-        # Human-readable target should be a copy of the CA file
-        assert (tmp_path / "foo").read_bytes() == b"\x7fELF cached executable"
-
-    def test_link_rebuilds_when_ca_target_missing(self, tmp_path, monkeypatch):
-        """No CA target → link executes, builds to CA target, copies to human target."""
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
-
-        link_rule = BuildRule(
-            output="foo",
-            inputs=["foo.o"],
-            command=["g++", "-o", "foo", "foo.o"],
-            rule_type="link",
-        )
-        graph = BuildGraph()
-        graph.add_rule(link_rule)
-        graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
-
-        args = mock.MagicMock()
-        args.objdir = str(tmp_path)
-        args.parallel = 1
-        args.verbose = 0
-
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
-        backend._graph = graph
-
-        ca = backend._ca_target(link_rule)
-
-        mock_result = mock.MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_result.stderr = ""
-
-        def fake_run(cmd, **kwargs):
-            # The command should target the CA path, not the human-readable path
-            assert ca in cmd
+            # Pre-create the CA target so the short-circuit fires
+            ca = backend._ca_target(link_rule)
             with open(ca, "wb") as f:
-                f.write(b"\x7fELF new executable")
-            return mock_result
+                f.write(b"\x7fELF cached executable")
 
-        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
-            mock_sub.run.side_effect = fake_run
-            mock_sub.CalledProcessError = subprocess.CalledProcessError
-            backend.execute("build")
-            mock_sub.run.assert_called_once()
+            with mock.patch("compiletools.shake_backend.subprocess.run") as mock_run:
+                backend.execute("build")
+                mock_run.assert_not_called()
 
-        # Both CA and human-readable targets should exist
-        assert os.path.exists(ca)
-        assert (tmp_path / "foo").read_bytes() == b"\x7fELF new executable"
+            # Human-readable target should be a copy of the CA file
+            assert (td / "foo").read_bytes() == b"\x7fELF cached executable"
+
+    def test_link_rebuilds_when_ca_target_missing(self, monkeypatch):
+        """No CA target → link executes, builds to CA target, copies to human target."""
+        link_rule = BuildRule(
+            output="foo",
+            inputs=["foo.o"],
+            command=["g++", "-o", "foo", "foo.o"],
+            rule_type="link",
+        )
+        graph = BuildGraph()
+        graph.add_rule(link_rule)
+        graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
+
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            (td / "foo.o").write_bytes(b"\x7fELF fake object")
+
+            ca = backend._ca_target(link_rule)
+
+            mock_result = fake_subprocess_result()
+
+            def fake_run(cmd, **kwargs):
+                # The command should target the CA path, not the human-readable path
+                assert ca in cmd
+                with open(ca, "wb") as f:
+                    f.write(b"\x7fELF new executable")
+                return mock_result
+
+            with mock.patch("compiletools.shake_backend.subprocess.run", side_effect=fake_run) as mock_run:
+                backend.execute("build")
+                mock_run.assert_called_once()
+
+            # Both CA and human-readable targets should exist
+            assert os.path.exists(ca)
+            assert (td / "foo").read_bytes() == b"\x7fELF new executable"
 
 
 # ---------------------------------------------------------------------------
@@ -979,44 +846,30 @@ class TestCALinkShortCircuit:
         assert ca.endswith(".a")
         assert "libfoo_" in ca
 
-    def test_link_no_sig_files(self, tmp_path, monkeypatch):
+    def test_link_no_sig_files(self, monkeypatch):
         """CA link/library rules do not produce .ct-sig sidecar files."""
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "foo.o").write_bytes(b"\x7fELF fake object")
-
-        link_rule = BuildRule(
-            output="foo", inputs=["foo.o"], command=["g++", "-o", "foo", "foo.o"], rule_type="link"
-        )
+        link_rule = BuildRule(output="foo", inputs=["foo.o"], command=["g++", "-o", "foo", "foo.o"], rule_type="link")
         graph = BuildGraph()
         graph.add_rule(link_rule)
         graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
 
-        args = mock.MagicMock()
-        args.objdir = str(tmp_path)
-        args.parallel = 1
-        args.verbose = 0
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            (td / "foo.o").write_bytes(b"\x7fELF fake object")
 
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
-        backend._graph = graph
+            ca = backend._ca_target(link_rule)
+            mock_result = fake_subprocess_result()
 
-        ca = backend._ca_target(link_rule)
-        mock_result = mock.MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_result.stderr = ""
+            def fake_run(cmd, **kwargs):
+                with open(ca, "wb") as f:
+                    f.write(b"\x7fELF new exe")
+                return mock_result
 
-        def fake_run(cmd, **kwargs):
-            with open(ca, "wb") as f:
-                f.write(b"\x7fELF new exe")
-            return mock_result
+            with mock.patch("compiletools.shake_backend.subprocess.run", side_effect=fake_run):
+                backend.execute("build")
 
-        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
-            mock_sub.run.side_effect = fake_run
-            mock_sub.CalledProcessError = subprocess.CalledProcessError
-            backend.execute("build")
-
-        assert not os.path.exists("foo.ct-sig")
+            assert not os.path.exists("foo.ct-sig")
 
 
 # ---------------------------------------------------------------------------
@@ -1044,15 +897,9 @@ class TestAtomicCompile:
                 # Create the temp file to simulate successful compilation
                 with open(output_file, "wb") as f:
                     f.write(b"\x7fELF fake object")
-            result = mock.MagicMock()
-            result.returncode = 0
-            result.stdout = ""
-            result.stderr = ""
-            return result
+            return fake_subprocess_result()
 
-        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
-            mock_sub.run.side_effect = spy_run
-            mock_sub.CalledProcessError = subprocess.CalledProcessError
+        with mock.patch("compiletools.shake_backend.subprocess.run", side_effect=spy_run):
             ShakeBackend._atomic_compile_no_lock(target, ["g++", "-c", "foo.cpp"])
 
         # Verify temp file was used
@@ -1077,15 +924,9 @@ class TestAtomicCompile:
                 # Create temp file then fail
                 with open(cmd[output_idx], "wb") as f:
                     f.write(b"partial")
-            result = mock.MagicMock()
-            result.returncode = 1
-            result.stdout = ""
-            result.stderr = "error: compilation failed"
-            return result
+            return fake_subprocess_result(returncode=1, stderr="error: compilation failed")
 
-        with mock.patch("compiletools.shake_backend.subprocess") as mock_sub:
-            mock_sub.run.side_effect = failing_run
-            mock_sub.CalledProcessError = subprocess.CalledProcessError
+        with mock.patch("compiletools.shake_backend.subprocess.run", side_effect=failing_run):
             with pytest.raises(subprocess.CalledProcessError):
                 ShakeBackend._atomic_compile_no_lock(target, ["g++", "-c", "foo.cpp"])
 
@@ -1113,15 +954,9 @@ class TestAtomicCompile:
                 observed_outputs.append(cmd[output_idx])
                 with open(cmd[output_idx], "wb") as f:
                     f.write(b"\x7fELF object")
-            result = mock.MagicMock()
-            result.returncode = 0
-            result.stdout = ""
-            result.stderr = ""
-            return result
+            return fake_subprocess_result()
 
-        with mock.patch("compiletools.locking.subprocess") as mock_sub:
-            mock_sub.run.side_effect = spy_run
-            mock_sub.CalledProcessError = subprocess.CalledProcessError
+        with mock.patch("compiletools.locking.subprocess.run", side_effect=spy_run):
             atomic_compile(lock, target, ["g++", "-c", "bar.cpp"])
 
         assert len(observed_outputs) == 1

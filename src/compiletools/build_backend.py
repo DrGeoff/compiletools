@@ -15,6 +15,7 @@ import abc
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -46,6 +47,119 @@ def _write_link_sig(output: str, sig: str) -> None:
         f.write(sig)
 
 
+def split_compound_args(args: list[str]) -> list[str]:
+    """Split compound space-separated arguments (e.g. CXXFLAGS as one string).
+
+    Uses shlex to correctly handle quoted values like -DFOO='bar baz'.
+    """
+    result = []
+    for arg in args:
+        if " " in arg:
+            try:
+                result.extend(shlex.split(arg))
+            except ValueError:
+                result.extend(arg.split())
+        else:
+            result.append(arg)
+    return result
+
+
+def extract_copts(command: list[str], *, strip_includes: bool = False) -> list[str]:
+    """Extract compiler flags from a compile command.
+
+    Strips the compiler binary, -c, source file, -o, and output file.
+    When strip_includes is True, drops all -I/-isystem/-iquote flags
+    (needed by Bazel which manages include paths itself).
+    When False, recombines space-separated ``-I <dir>`` into ``-I<dir>``.
+    """
+    if not command:
+        return []
+    args = split_compound_args(command[1:])
+    copts = []
+    skip_next = False
+    include_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if include_next:
+            if not strip_includes:
+                copts.append(f"-I{arg}")
+            include_next = False
+            continue
+        if arg == "-c":
+            continue
+        if arg == "-o":
+            skip_next = True
+            continue
+        if arg == "-I":
+            include_next = True
+            continue
+        if strip_includes:
+            if arg.startswith(("-isystem", "-iquote")):
+                if arg in ("-isystem", "-iquote"):
+                    skip_next = True
+                continue
+            if arg.startswith("-I") and len(arg) > 2:
+                continue
+        if not arg.startswith("-"):
+            continue
+        copts.append(arg)
+    return copts
+
+
+def extract_linkopts(command: list[str], object_files: set[str]) -> list[str]:
+    """Extract linker flags from a link command.
+
+    Strips the linker binary, -o, output executable, and object file paths.
+    """
+    if not command:
+        return []
+    args = split_compound_args(command[1:])
+    linkopts = []
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "-o":
+            skip_next = True
+            continue
+        if arg in object_files:
+            continue
+        linkopts.append(arg)
+    return linkopts
+
+
+def mangle_target_name(basename: str) -> str:
+    """Convert a filename to a valid build-system target name."""
+    return basename.replace(".", "_").replace("-", "_")
+
+
+def aggregate_rule_sources(
+    rule: BuildRule,
+    obj_info: dict[str, tuple[str, list[str], list[str]]],
+) -> tuple[list[str], list[str]]:
+    """Collect source files and deduplicated copts from a rule's object inputs.
+
+    Returns (source_and_header_files, deduplicated_copts).
+    """
+    srcs: list[str] = []
+    all_copts: list[str] = []
+    seen_copts: set[str] = set()
+    for obj in rule.inputs:
+        if obj in obj_info:
+            source, headers, copts = obj_info[obj]
+            if source:
+                srcs.append(source)
+            srcs.extend(headers)
+            for c in copts:
+                if c not in seen_copts:
+                    all_copts.append(c)
+                    seen_copts.add(c)
+    return srcs, all_copts
+
+
 class BuildBackend(abc.ABC):
     """Abstract base class for build system backends."""
 
@@ -54,6 +168,7 @@ class BuildBackend(abc.ABC):
         self.hunter = hunter
         self.namer = compiletools.namer.Namer(args)
         self._graph: BuildGraph | None = None
+        self._dynamic_sources: set[str] = set()
 
     @staticmethod
     @abc.abstractmethod
@@ -88,6 +203,41 @@ class BuildBackend(abc.ABC):
         if obj_dir != exe_dir and os.path.isdir(obj_dir):
             shutil.rmtree(obj_dir)
 
+    def _copy_built_executables(self, build_output_dir: str) -> None:
+        """Copy built executables from a build output dir to namer paths.
+
+        Walks build_output_dir recursively to find executables, matching
+        them by name (original or mangled) back to source files.
+        Backends that produce outputs in a non-standard location (e.g.
+        bazel-bin/, cmake-build/) call this after a successful build.
+        """
+        all_sources = list(self.args.filename or []) + list(self.args.tests or [])
+        source_by_basename: dict[str, str] = {}
+        for source in all_sources:
+            exe_basename = os.path.splitext(os.path.basename(source))[0]
+            mangled = mangle_target_name(exe_basename)
+            source_by_basename[exe_basename] = source
+            source_by_basename[mangled] = source
+
+        for dirpath, dirs, files in os.walk(build_output_dir, followlinks=False):
+            dirs[:] = [d for d in dirs if not d.endswith(".runfiles")]
+            for fname in files:
+                full = os.path.join(dirpath, fname)
+                if not (os.path.isfile(full) and os.access(full, os.X_OK)):
+                    continue
+                if fname.endswith(".cmake"):
+                    continue
+                if fname not in source_by_basename:
+                    continue
+                source = source_by_basename.pop(fname)
+                exe_basename = os.path.splitext(os.path.basename(source))[0]
+                mangled = mangle_target_name(exe_basename)
+                source_by_basename.pop(exe_basename, None)
+                source_by_basename.pop(mangled, None)
+                dest_path = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                shutil.copy2(full, dest_path)
+
     def build_graph(self) -> BuildGraph:
         """Populate a BuildGraph from hunter/namer data.
 
@@ -97,7 +247,6 @@ class BuildBackend(abc.ABC):
         self.hunter.huntsource()
         graph = BuildGraph()
 
-        # Gather all root sources
         all_sources = []
         if self.args.filename:
             all_sources.extend(self.args.filename)
@@ -107,13 +256,11 @@ class BuildBackend(abc.ABC):
         if not all_sources and not self.args.static and not self.args.dynamic:
             return graph
 
-        # Collect all source files that need compile rules
         all_compile_sources = set()
         for source in all_sources:
             complete = self.hunter.required_source_files(source)
             all_compile_sources.update(complete)
 
-        # Also collect compile sources from library targets
         library_compile_sources = set()
         if self.args.static:
             for source in self.args.static:
@@ -136,12 +283,10 @@ class BuildBackend(abc.ABC):
         # Track which sources are used for dynamic libraries (need -fPIC)
         self._dynamic_sources = library_compile_sources if self.args.dynamic else set()
 
-        # Create compile rules
         for filename in all_compile_sources:
             rule = self._create_compile_rule(filename)
             graph.add_rule(rule)
 
-        # Create library rules
         library_outputs = []
         if self.args.static:
             rule = self._create_static_library_rule()
@@ -152,38 +297,33 @@ class BuildBackend(abc.ABC):
             graph.add_rule(rule)
             library_outputs.append(rule.output)
 
-        # Create link rules for executables
         if self.args.filename:
             for source in self.args.filename:
                 rule = self._create_link_rule(source, library_outputs=library_outputs)
                 graph.add_rule(rule)
 
-        # Create link rules for test executables
         if self.args.tests:
             for source in self.args.tests:
                 rule = self._create_link_rule(source, library_outputs=library_outputs)
                 graph.add_rule(rule)
 
-        # Create phony targets
         build_deps = []
         if self.args.filename:
             build_deps.extend(
                 self.namer.executable_pathname(compiletools.wrappedos.realpath(s)) for s in self.args.filename
             )
+        test_exe_paths = []
         if self.args.tests:
-            build_deps.extend(
+            test_exe_paths = [
                 self.namer.executable_pathname(compiletools.wrappedos.realpath(s)) for s in self.args.tests
-            )
+            ]
+            build_deps.extend(test_exe_paths)
         build_deps.extend(library_outputs)
         graph.add_rule(BuildRule(output="build", inputs=build_deps, command=None, rule_type="phony"))
 
         all_deps = ["build"]
 
-        # Add runtests phony target when tests exist
-        if self.args.tests:
-            test_exe_paths = [
-                self.namer.executable_pathname(compiletools.wrappedos.realpath(s)) for s in self.args.tests
-            ]
+        if test_exe_paths:
             graph.add_rule(BuildRule(output="runtests", inputs=test_exe_paths, command=None, rule_type="phony"))
             all_deps.append("runtests")
 
@@ -268,8 +408,7 @@ class BuildBackend(abc.ABC):
                 + [str(flag) for flag in magic_cxx_flags]
             )
 
-        # Add -fPIC for sources used in dynamic libraries
-        if self.args.dynamic and filename in getattr(self, "_dynamic_sources", set()):
+        if self.args.dynamic and filename in self._dynamic_sources:
             compile_cmd.append("-fPIC")
 
         compile_cmd.extend(["-c", filename, "-o", obj_name])
@@ -305,15 +444,11 @@ class BuildBackend(abc.ABC):
 
         link_cmd = [self.args.LD, "-o", exename] + list(object_names) + [str(f) for f in all_magic_ldflags]
 
-        # Add library link flags when building alongside libraries
         inputs = list(object_names)
         if library_outputs:
             exe_dir = self.namer.executable_dir()
             link_cmd.append(f"-L{exe_dir}")
             for lib_output in library_outputs:
-                # Extract library name: libfoo.a -> foo, libfoo.so -> foo
-                import os
-
                 lib_basename = os.path.basename(lib_output)
                 if lib_basename.startswith("lib"):
                     lib_name = lib_basename[3:]  # strip "lib" prefix
@@ -331,13 +466,17 @@ class BuildBackend(abc.ABC):
             rule_type="link",
         )
 
-    def _get_library_object_names(self, sources: list[str]) -> list[str]:
-        """Get object file names for library source files."""
+    def _get_library_object_names(self, sources: list[str]) -> tuple[list[str], set[str]]:
+        """Get object file names and source files for library targets.
+
+        Returns:
+            (object_names, all_source_files) tuple.
+        """
         all_source_files = set()
         for source in sources:
             all_source_files.update(self.hunter.required_source_files(source))
 
-        return compiletools.utils.ordered_unique(
+        object_names = compiletools.utils.ordered_unique(
             [
                 self.namer.object_pathname(
                     s,
@@ -347,10 +486,11 @@ class BuildBackend(abc.ABC):
                 for s in all_source_files
             ]
         )
+        return object_names, all_source_files
 
     def _create_static_library_rule(self) -> BuildRule:
         """Create a static library BuildRule from args.static sources."""
-        object_names = self._get_library_object_names(self.args.static)
+        object_names, _ = self._get_library_object_names(self.args.static)
         lib_path = self.namer.staticlibrary_pathname()
 
         lib_cmd = ["ar", "-src", lib_path] + list(object_names)
@@ -364,14 +504,13 @@ class BuildBackend(abc.ABC):
 
     def _create_shared_library_rule(self) -> BuildRule:
         """Create a shared library BuildRule from args.dynamic sources."""
-        object_names = self._get_library_object_names(self.args.dynamic)
+        object_names, all_source_files = self._get_library_object_names(self.args.dynamic)
         lib_path = self.namer.dynamiclibrary_pathname()
 
         all_magic_ldflags = []
-        for source in self.args.dynamic:
-            for s in self.hunter.required_source_files(source):
-                magic_flags = self.hunter.magicflags(s)
-                all_magic_ldflags.extend(magic_flags.get(sz.Str("LDFLAGS"), []))
+        for s in all_source_files:
+            magic_flags = self.hunter.magicflags(s)
+            all_magic_ldflags.extend(magic_flags.get(sz.Str("LDFLAGS"), []))
 
         lib_cmd = [self.args.LD, "-shared", "-o", lib_path] + list(object_names)
         lib_cmd.extend([str(f) for f in all_magic_ldflags])
@@ -410,7 +549,6 @@ def wrap_compile_with_lock(compile_cmd: str, target: str, args, filesystem_type:
 
     strategy = compiletools.filesystem_utils.get_lock_strategy(filesystem_type)
 
-    # Build environment variables for lock configuration
     env_vars = []
 
     if strategy == "lockdir":
@@ -436,8 +574,6 @@ def wrap_compile_with_lock(compile_cmd: str, target: str, args, filesystem_type:
 
 def check_lock_helper_available() -> bool:
     """Check if ct-lock-helper is on PATH. Returns True if found."""
-    import shutil
-
     return shutil.which("ct-lock-helper") is not None
 
 

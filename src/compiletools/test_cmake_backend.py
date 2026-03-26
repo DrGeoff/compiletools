@@ -5,14 +5,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from compiletools.build_backend import get_backend_class
+from compiletools.build_backend import extract_copts, extract_linkopts, get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
-from compiletools.cmake_backend import (
-    CMakeBackend,
-    _extract_copts,
-    _extract_linkopts,
-    _separate_include_dirs,
-)
+from compiletools.cmake_backend import CMakeBackend, _separate_include_dirs
 
 
 class TestCMakeBackendRegistered:
@@ -291,20 +286,20 @@ class TestSeparateIncludeDirs:
 class TestCoptsExtraction:
     def test_basic_flags(self):
         cmd = ["g++", "-O2", "-std=c++17", "-c", "foo.cpp", "-o", "obj/foo.o"]
-        assert _extract_copts(cmd) == ["-O2", "-std=c++17"]
+        assert extract_copts(cmd) == ["-O2", "-std=c++17"]
 
     def test_empty_command(self):
-        assert _extract_copts([]) == []
+        assert extract_copts([]) == []
 
 
 class TestLinkoptsExtraction:
     def test_library_flags(self):
         cmd = ["g++", "-o", "bin/foo", "obj/foo.o", "-lm", "-lpthread"]
         objs = {"obj/foo.o"}
-        assert _extract_linkopts(cmd, objs) == ["-lm", "-lpthread"]
+        assert extract_linkopts(cmd, objs) == ["-lm", "-lpthread"]
 
     def test_empty_command(self):
-        assert _extract_linkopts([], set()) == []
+        assert extract_linkopts([], set()) == []
 
 
 class TestCMakeExecute:
