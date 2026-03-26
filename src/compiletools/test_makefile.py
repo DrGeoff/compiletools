@@ -377,7 +377,7 @@ class TestMakefileCreatorUnit:
              patch("compiletools.namer.Namer") as MockNamer:
             MockNamer.return_value = None
             import pytest
-            with pytest.raises(SystemExit):
+            with pytest.raises(RuntimeError):
                 compiletools.makefile.MakefileCreator(args, hunter=None)
 
     def test_link_rule_verbose(self):

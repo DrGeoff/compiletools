@@ -214,8 +214,7 @@ class Cake:
         os.makedirs(self.namer.executable_dir(), exist_ok=True)
 
         if self.args.clean:
-            if "realclean" in graph.outputs:
-                backend.execute("realclean")
+            backend.clean()
             # Remove the extra executables we copied
             if self.args.output:
                 try:
@@ -247,6 +246,18 @@ class Cake:
         # they mean for ct-cake to chase down all the implied files.
         if self.args.verbose > 4:
             print("Early scanning. Cake determining targets and implied files")
+
+        backend_name = getattr(self.args, "backend", "make")
+        if backend_name != "make" and (self.args.static or self.args.dynamic):
+            flags = []
+            if self.args.static:
+                flags.append("--static")
+            if self.args.dynamic:
+                flags.append("--dynamic")
+            raise RuntimeError(
+                f"{', '.join(flags)} not supported with --backend={backend_name}. "
+                f"Library targets are currently only supported with --backend=make."
+            )
 
         self._createctobjs()
         recreateobjs = False
