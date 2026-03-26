@@ -266,5 +266,5 @@ class TestNinjaFileLocking:
         backend = NinjaBackend(args=args, hunter=hunter)
 
         with patch("compiletools.ninja_backend.check_lock_helper_available", return_value=False), \
-             pytest.raises(SystemExit):
+             pytest.raises(RuntimeError):
             backend.generate(_compile_graph())

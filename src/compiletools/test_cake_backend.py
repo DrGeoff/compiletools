@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import compiletools.apptools
 from compiletools.build_backend import available_backends, get_backend_class
 from compiletools.cake import Cake
 
@@ -104,8 +105,8 @@ class TestCakeBackendDispatch:
             cake.process()
             cake._call_compilation_database.assert_called_once()
 
-    def test_backend_dispatch_clean_passes_realclean(self, tmp_path):
-        """--clean should pass 'realclean' target to backend.execute()."""
+    def test_clean_calls_backend_clean_method(self, tmp_path):
+        """--clean should call backend.clean() instead of execute('realclean')."""
         args = self._make_args(backend="ninja")
         args.clean = True
         args.output = str(tmp_path / "out")  # Use --output to avoid os.listdir on mock
@@ -119,14 +120,14 @@ class TestCakeBackendDispatch:
         expected_class = get_backend_class("ninja")
 
         mock_graph = MagicMock()
-        mock_graph.outputs = {"realclean", "build", "all"}
+        mock_graph.outputs = {"build", "all"}
         with (
             patch.object(expected_class, "build_graph", return_value=mock_graph),
             patch.object(expected_class, "generate"),
-            patch.object(expected_class, "execute") as mock_execute,
+            patch.object(expected_class, "clean") as mock_clean,
         ):
             cake.process()
-            mock_execute.assert_called_once_with("realclean")
+            mock_clean.assert_called_once()
 
     def test_backend_dispatch_runs_tests_when_runtests_in_graph(self, tmp_path):
         """When args.tests is set and 'runtests' is in graph.outputs, execute('runtests') should be called."""
@@ -155,6 +156,53 @@ class TestCakeBackendDispatch:
             calls = [c[0][0] for c in mock_execute.call_args_list]
             assert "build" in calls
             assert "runtests" in calls
+
+    @pytest.mark.parametrize("backend_name", ["ninja", "bazel", "cmake", "tup", "shake"])
+    def test_static_flag_raises_error_for_non_make_backends(self, backend_name):
+        """--static should be rejected for non-make backends."""
+        args = self._make_args(backend=backend_name)
+        args.static = ["lib.cpp"]
+        cake = Cake(args)
+
+        with pytest.raises(RuntimeError, match=r"--static.*not supported"):
+            cake.process()
+
+    @pytest.mark.parametrize("backend_name", ["ninja", "bazel", "cmake", "tup", "shake"])
+    def test_dynamic_flag_raises_error_for_non_make_backends(self, backend_name):
+        """--dynamic should be rejected for non-make backends."""
+        args = self._make_args(backend=backend_name)
+        args.dynamic = ["lib.cpp"]
+        cake = Cake(args)
+
+        with pytest.raises(RuntimeError, match=r"--dynamic.*not supported"):
+            cake.process()
+
+    def test_static_flag_allowed_for_make_backend(self, tmp_path):
+        """--static should not raise for --backend=make."""
+        args = self._make_args(backend="make")
+        args.static = ["lib.cpp"]
+        cake = Cake(args)
+        cake._createctobjs = MagicMock()
+        cake._call_compilation_database = MagicMock()
+        cake._copyexes = MagicMock()
+        cake.hunter = MagicMock()
+        cake.hunter.required_source_files = MagicMock(return_value=[])
+        namer = MagicMock()
+        namer.executable_dir.return_value = str(tmp_path / "exe")
+        namer.topbindir.return_value = str(tmp_path / "bin")
+        cake.namer = namer
+
+        expected_class = get_backend_class("make")
+
+        with (
+            patch.object(compiletools.apptools, "substitutions"),
+            patch.object(compiletools.apptools, "verboseprintconfig"),
+            patch.object(expected_class, "build_graph", return_value=MagicMock()),
+            patch.object(expected_class, "generate"),
+            patch.object(expected_class, "execute"),
+        ):
+            # Should not raise
+            cake.process()
 
     def test_backend_dispatch_skips_runtests_when_no_tests(self, tmp_path):
         """When args.tests is empty, execute('runtests') should NOT be called."""

@@ -15,6 +15,7 @@ import abc
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -77,6 +78,15 @@ class BuildBackend(abc.ABC):
     @abc.abstractmethod
     def execute(self, target: str = "build") -> None:
         """Invoke the native build tool to execute the build."""
+
+    def clean(self) -> None:
+        """Remove build artifacts. Override for backend-specific cleanup."""
+        exe_dir = self.namer.executable_dir()
+        obj_dir = self.namer.object_dir()
+        if os.path.isdir(exe_dir):
+            shutil.rmtree(exe_dir)
+        if obj_dir != exe_dir and os.path.isdir(obj_dir):
+            shutil.rmtree(obj_dir)
 
     def build_graph(self) -> BuildGraph:
         """Populate a BuildGraph from hunter/namer data.
@@ -332,18 +342,19 @@ def check_lock_helper_available() -> bool:
 
 
 def report_lock_helper_missing() -> None:
-    """Print error message about missing ct-lock-helper and exit."""
-    print("ERROR: ct-lock-helper not found in PATH", file=sys.stderr)
-    print("", file=sys.stderr)
-    print("The --file-locking flag requires ct-lock-helper to be installed.", file=sys.stderr)
-    print("", file=sys.stderr)
-    print("Solutions:", file=sys.stderr)
-    print("  1. Install compiletools: pip install compiletools", file=sys.stderr)
-    print("  2. Install from source: pip install -e .", file=sys.stderr)
-    print("  3. Add ct-lock-helper to your PATH", file=sys.stderr)
-    print("", file=sys.stderr)
-    print("Or disable file locking with: --no-file-locking", file=sys.stderr)
-    sys.exit(1)
+    """Raise RuntimeError when ct-lock-helper is not found on PATH."""
+    raise RuntimeError(
+        "ct-lock-helper not found in PATH\n"
+        "\n"
+        "The --file-locking flag requires ct-lock-helper to be installed.\n"
+        "\n"
+        "Solutions:\n"
+        "  1. Install compiletools: pip install compiletools\n"
+        "  2. Install from source: pip install -e .\n"
+        "  3. Add ct-lock-helper to your PATH\n"
+        "\n"
+        "Or disable file locking with: --no-file-locking"
+    )
 
 
 _REGISTRY: dict[str, type[BuildBackend]] = {}

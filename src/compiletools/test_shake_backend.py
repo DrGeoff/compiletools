@@ -14,11 +14,11 @@ import pytest
 import compiletools.shake_backend  # noqa: F401 — ensure registered
 from compiletools.build_backend import _write_link_sig, available_backends, compute_link_signature, get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
+from compiletools.global_hash_registry import get_file_hash
 from compiletools.shake_backend import (
     ShakeBackend,
     TraceEntry,
     TraceStore,
-    _compute_file_hash,
     _is_content_addressable,
 )
 
@@ -143,8 +143,8 @@ class TestTraceVerification:
         os.makedirs(tmp_path / "obj", exist_ok=True)
 
         graph = self._make_graph_with_compile()
-        source_hash = _compute_file_hash(str(tmp_path / "foo.cpp"))
-        obj_hash = _compute_file_hash(str(tmp_path / "foo.o"))
+        source_hash = get_file_hash(str(tmp_path / "foo.cpp"))
+        obj_hash = get_file_hash(str(tmp_path / "foo.o"))
         cmd = ["g++", "-c", "foo.cpp", "-o", "foo.o"]
 
         # Pre-populate trace store with matching hashes
@@ -246,8 +246,8 @@ class TestTraceVerification:
             )
         )
         graph.add_rule(BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony"))
-        source_hash = _compute_file_hash(str(tmp_path / "foo.cpp"))
-        obj_hash = _compute_file_hash(str(tmp_path / "foo.o"))
+        source_hash = get_file_hash(str(tmp_path / "foo.cpp"))
+        obj_hash = get_file_hash(str(tmp_path / "foo.o"))
 
         # Trace has a DIFFERENT command hash
         trace_path = str(tmp_path / ".ct-traces.json")
@@ -303,7 +303,7 @@ class TestTraceVerification:
         )
         graph.add_rule(BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony"))
 
-        source_hash = _compute_file_hash(str(tmp_path / "foo.cpp"))
+        source_hash = get_file_hash(str(tmp_path / "foo.cpp"))
         cmd = ["g++", "-c", "foo.cpp", "-o", "foo.o"]
 
         # Trace only knows about ONE input
@@ -312,7 +312,7 @@ class TestTraceVerification:
         store.put(
             "foo.o",
             TraceEntry(
-                output_hash=_compute_file_hash(str(tmp_path / "foo.o")),
+                output_hash=get_file_hash(str(tmp_path / "foo.o")),
                 input_hashes={"foo.cpp": source_hash},
                 command_hash=TraceStore.hash_command(cmd),
             ),
@@ -378,8 +378,8 @@ class TestEarlyCutoff:
         # Trace for foo with current obj and exe hashes
         trace_path = str(tmp_path / ".ct-traces.json")
         store = TraceStore(trace_path)
-        obj_hash = _compute_file_hash(str(tmp_path / "foo.o"))
-        exe_hash = _compute_file_hash(str(tmp_path / "foo"))
+        obj_hash = get_file_hash(str(tmp_path / "foo.o"))
+        exe_hash = get_file_hash(str(tmp_path / "foo"))
         store.put(
             "foo",
             TraceEntry(
@@ -702,7 +702,7 @@ class TestOutputDeletion:
         )
         graph.add_rule(BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony"))
 
-        source_hash = _compute_file_hash(str(tmp_path / "foo.cpp"))
+        source_hash = get_file_hash(str(tmp_path / "foo.cpp"))
         cmd = ["g++", "-c", "foo.cpp", "-o", "foo.o"]
 
         # Pre-populate trace as if foo.o was previously built successfully
@@ -865,8 +865,8 @@ class TestContentAddressableShortCircuit:
         )
         graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
 
-        obj_hash = _compute_file_hash(str(tmp_path / "foo.o"))
-        exe_hash = _compute_file_hash(str(tmp_path / "foo"))
+        obj_hash = get_file_hash(str(tmp_path / "foo.o"))
+        exe_hash = get_file_hash(str(tmp_path / "foo"))
         cmd = ["g++", "-o", "foo", "foo.o"]
 
         # Pre-populate trace with MATCHING hashes — trace verification should pass

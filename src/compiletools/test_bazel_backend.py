@@ -265,6 +265,74 @@ class TestBazelCopyExecutables:
 
         assert os.path.exists(dest_path)
 
+    def test_copy_built_executables_from_subdirectory(self, tmp_path):
+        """Executables in subdirectories of bazel-bin should be found."""
+        bazel_bin = tmp_path / "bazel-bin"
+        (bazel_bin / "subdir" / "pkg").mkdir(parents=True)
+        exe = bazel_bin / "subdir" / "pkg" / "myapp"
+        exe.write_text("#!/bin/sh\necho hello")
+        exe.chmod(0o755)
+
+        args = MagicMock()
+        args.filename = ["/src/subdir/myapp.cpp"]
+        args.tests = []
+        hunter = MagicMock()
+        backend = BazelBackend(args=args, hunter=hunter)
+
+        dest_path = str(tmp_path / "obj" / "myapp")
+        backend.namer = MagicMock()
+        backend.namer.executable_pathname = MagicMock(return_value=dest_path)
+
+        with patch("compiletools.wrappedos.realpath", side_effect=lambda x: x):
+            backend._copy_built_executables(str(bazel_bin))
+
+        import os
+
+        assert os.path.exists(dest_path)
+
+    def test_copy_built_executables_mangled_name_in_subdirectory(self, tmp_path):
+        """Mangled names in subdirectories should be found and copied."""
+        bazel_bin = tmp_path / "bazel-bin"
+        (bazel_bin / "src" / "tests").mkdir(parents=True)
+        exe = bazel_bin / "src" / "tests" / "my_test_app"
+        exe.write_text("#!/bin/sh\necho test")
+        exe.chmod(0o755)
+
+        args = MagicMock()
+        args.filename = ["/src/my-test-app.cpp"]
+        args.tests = []
+        hunter = MagicMock()
+        backend = BazelBackend(args=args, hunter=hunter)
+
+        dest_path = str(tmp_path / "obj" / "my-test-app")
+        backend.namer = MagicMock()
+        backend.namer.executable_pathname = MagicMock(return_value=dest_path)
+
+        with patch("compiletools.wrappedos.realpath", side_effect=lambda x: x):
+            backend._copy_built_executables(str(bazel_bin))
+
+        import os
+
+        assert os.path.exists(dest_path)
+
+
+class TestBazelClean:
+    def test_clean_runs_bazel_clean_command(self, tmp_path):
+        """clean() should invoke 'bazel clean' then call super().clean()."""
+        args = MagicMock()
+        hunter = MagicMock()
+        backend = BazelBackend(args=args, hunter=hunter)
+        backend.namer = MagicMock()
+        backend.namer.executable_dir.return_value = str(tmp_path / "exe")
+        backend.namer.object_dir.return_value = str(tmp_path / "obj")
+
+        with (
+            patch("subprocess.check_call") as mock_check_call,
+            patch("shutil.which", side_effect=lambda name: "/usr/bin/bazel" if name == "bazel" else None),
+        ):
+            backend.clean()
+            mock_check_call.assert_called_once_with(["/usr/bin/bazel", "clean"], universal_newlines=True)
+
 
 class TestBazelExecute:
     def _make_backend(self):

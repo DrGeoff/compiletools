@@ -41,6 +41,7 @@ from compiletools.build_backend import (
     register_backend,
 )
 from compiletools.build_graph import BuildGraph
+from compiletools.global_hash_registry import get_file_hash
 from compiletools.locking import FileLock, atomic_compile
 
 TRACE_VERSION = 1
@@ -98,23 +99,6 @@ class TraceStore:
     def hash_command(cmd: list[str]) -> str:
         return hashlib.sha1(json.dumps(cmd, sort_keys=False).encode()).hexdigest()
 
-
-def _compute_file_hash(path: str) -> str:
-    """Compute git blob hash for a file (works for any file, generated or source)."""
-    with open(path, "rb") as f:
-        content = f.read()
-    blob_data = f"blob {len(content)}\0".encode() + content
-    return hashlib.sha1(blob_data).hexdigest()
-
-
-def _hash_file(path: str) -> str:
-    """Hash a file, using the global registry for tracked files, fallback for generated."""
-    try:
-        from compiletools.global_hash_registry import get_file_hash
-
-        return get_file_hash(path)
-    except (FileNotFoundError, KeyError, OSError):
-        return _compute_file_hash(path)
 
 
 def _is_content_addressable(rule) -> bool:
@@ -250,7 +234,7 @@ class ShakeBackend(BuildBackend):
         # EXECUTE
         old_hash = None
         if not _is_content_addressable(rule):
-            old_hash = _compute_file_hash(target) if os.path.exists(target) else None
+            old_hash = get_file_hash(target) if os.path.exists(target) else None
 
         verbose = getattr(self.args, "verbose", 0)
         if verbose >= 1:
@@ -300,7 +284,7 @@ class ShakeBackend(BuildBackend):
         if _is_content_addressable(rule):
             return True  # New compile output → dependents must rebuild
 
-        new_hash = _compute_file_hash(target)
+        new_hash = get_file_hash(target)
 
         # RECORD LINK SIGNATURE
         if rule.rule_type == "link":
@@ -312,7 +296,7 @@ class ShakeBackend(BuildBackend):
                 target,
                 TraceEntry(
                     output_hash=new_hash,
-                    input_hashes={inp: _hash_file(inp) for inp in rule.inputs},
+                    input_hashes={inp: get_file_hash(inp) for inp in rule.inputs},
                     command_hash=TraceStore.hash_command(rule.command),
                 ),
             )
@@ -347,7 +331,7 @@ class ShakeBackend(BuildBackend):
         """Check if a trace is still valid (output exists, inputs unchanged, same command)."""
         # Verify output file still exists and matches the recorded hash
         try:
-            if _compute_file_hash(rule.output) != trace.output_hash:
+            if get_file_hash(rule.output) != trace.output_hash:
                 return False
         except (FileNotFoundError, OSError):
             return False
@@ -360,7 +344,7 @@ class ShakeBackend(BuildBackend):
 
         for inp, stored_hash in trace.input_hashes.items():
             try:
-                current_hash = _hash_file(inp)
+                current_hash = get_file_hash(inp)
             except (FileNotFoundError, OSError):
                 return False
             if current_hash != stored_hash:

@@ -1,4 +1,3 @@
-import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -501,6 +500,44 @@ class TestComputeLinkSignature:
             rule_type="link",
         )
         assert compute_link_signature(rule1) != compute_link_signature(rule2)
+
+
+class TestDefaultClean:
+    """Test the default clean() method on BuildBackend."""
+
+    def _make_backend(self, exe_dir, obj_dir):
+        StubClass = _make_stub_backend_class()
+        args = MagicMock()
+        hunter = MagicMock()
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = MagicMock()
+        backend.namer.executable_dir.return_value = str(exe_dir)
+        backend.namer.object_dir.return_value = str(obj_dir)
+        return backend
+
+    def test_default_clean_removes_directories(self, tmp_path):
+        """clean() should remove both objdir and exedir."""
+        exe_dir = tmp_path / "exe"
+        obj_dir = tmp_path / "obj"
+        exe_dir.mkdir()
+        obj_dir.mkdir()
+        (exe_dir / "main").write_text("binary")
+        (obj_dir / "main.o").write_text("object")
+
+        backend = self._make_backend(exe_dir, obj_dir)
+        backend.clean()
+
+        assert not exe_dir.exists()
+        assert not obj_dir.exists()
+
+    def test_clean_skips_nonexistent_directories(self, tmp_path):
+        """clean() should not error when directories don't exist."""
+        exe_dir = tmp_path / "exe"
+        obj_dir = tmp_path / "obj"
+
+        backend = self._make_backend(exe_dir, obj_dir)
+        # Should not raise
+        backend.clean()
 
 
 class TestAllOutputsCurrent:
