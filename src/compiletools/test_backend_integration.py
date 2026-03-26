@@ -17,15 +17,25 @@ import compiletools.cmake_backend
 import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
-import compiletools.makefile
 import compiletools.makefile_backend
+import compiletools.namer
 import compiletools.ninja_backend
 import compiletools.shake_backend
 import compiletools.testhelper as uth
 import compiletools.tup_backend
 import compiletools.utils
 from compiletools.build_backend import available_backends, get_backend_class
+from compiletools.makefile_backend import MakefileBackend
 from compiletools.test_base import BaseCompileToolsTestCase
+
+
+def _add_backend_arguments(cap):
+    """Add all arguments needed by backends (general + make-specific)."""
+    compiletools.apptools.add_target_arguments_ex(cap)
+    compiletools.apptools.add_link_arguments(cap)
+    compiletools.namer.Namer.add_arguments(cap)
+    compiletools.hunter.add_arguments(cap)
+    MakefileBackend.add_arguments(cap)
 
 
 def _setup_backend_for_source(backend_name, tmp_path, src_file="helloworld_cpp.cpp"):
@@ -49,7 +59,7 @@ def _setup_backend_for_source(backend_name, tmp_path, src_file="helloworld_cpp.c
     ]
 
     cap = compiletools.apptools.create_parser("Backend integration test", argv=argv)
-    compiletools.makefile.MakefileCreator.add_arguments(cap)
+    _add_backend_arguments(cap)
     args = compiletools.apptools.parseargs(cap, argv)
 
     headerdeps = compiletools.headerdeps.create(args)
@@ -269,7 +279,7 @@ class TestBackendBuildGraphWithTests(BaseCompileToolsTestCase):
             ]
 
             cap = compiletools.apptools.create_parser("Backend integration test", argv=argv)
-            compiletools.makefile.MakefileCreator.add_arguments(cap)
+            _add_backend_arguments(cap)
             args = compiletools.apptools.parseargs(cap, argv)
 
             headerdeps = compiletools.headerdeps.create(args)

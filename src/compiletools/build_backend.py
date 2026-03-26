@@ -28,6 +28,13 @@ import compiletools.wrappedos
 from compiletools.build_graph import BuildGraph, BuildRule
 
 
+def _touch(path: str) -> None:
+    """Create or update the modification time of a file."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a"):
+        os.utime(path, None)
+
+
 def compute_link_signature(rule: BuildRule) -> str:
     """Hash sorted input names + command. Input names are content-addressed."""
     key = json.dumps({"inputs": sorted(rule.inputs), "command": rule.command}, sort_keys=True)
@@ -280,6 +287,18 @@ class BuildBackend(abc.ABC):
             )
         )
 
+        # Create executable dir creation rule (needed by link rules as order-only dep)
+        exe_dir = self.namer.executable_dir()
+        if exe_dir != self.args.objdir:
+            graph.add_rule(
+                BuildRule(
+                    output=exe_dir,
+                    inputs=[],
+                    command=["mkdir", "-p", exe_dir],
+                    rule_type="mkdir",
+                )
+            )
+
         # Track which sources are used for dynamic libraries (need -fPIC)
         self._dynamic_sources = library_compile_sources if self.args.dynamic else set()
 
@@ -334,28 +353,118 @@ class BuildBackend(abc.ABC):
     def _run_tests(self) -> None:
         """Run test executables built from args.tests.
 
-        Provides a backend-agnostic way to run tests without encoding
-        test execution into build files. Each test executable is run
-        and its exit code is checked.
+        Provides a backend-agnostic way to run tests with:
+        - Result-file markers: skips tests whose .result file is newer than
+          the executable (incremental test execution).
+        - Parallel execution: uses ThreadPoolExecutor with args.parallel workers.
+        - Serialisation: when args.serialisetests is set, forces sequential execution.
+        - TESTPREFIX: honours args.TESTPREFIX (e.g., valgrind) by prepending to
+          the test command.
         """
         if not self.args.tests:
             return
 
-        failures = []
-        for source in self.args.tests:
-            exe_path = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
+        exe_paths = [
+            self.namer.executable_pathname(compiletools.wrappedos.realpath(source)) for source in self.args.tests
+        ]
+
+        # Filter out tests whose .result marker is up-to-date
+        tests_to_run = []
+        for exe_path in exe_paths:
+            result_file = exe_path + ".result"
+            if os.path.exists(result_file) and os.path.exists(exe_path):
+                if os.path.getmtime(result_file) >= os.path.getmtime(exe_path):
+                    if self.args.verbose >= 2:
+                        print(f"Skipping up-to-date test: {exe_path}", file=sys.stderr)
+                    continue
+            tests_to_run.append(exe_path)
+
+        if not tests_to_run:
             if self.args.verbose >= 1:
-                print(f"Running test: {exe_path}", file=sys.stderr)
-            result = subprocess.run([exe_path], capture_output=True, text=True)
-            if result.stdout:
-                print(result.stdout, end="")
-            if result.stderr:
-                print(result.stderr, end="", file=sys.stderr)
-            if result.returncode != 0:
+                print("All tests up-to-date, nothing to run.", file=sys.stderr)
+            return
+
+        parallel = getattr(self.args, "parallel", 1)
+        if getattr(self.args, "serialisetests", False):
+            parallel = 1
+
+        testprefix = getattr(self.args, "TESTPREFIX", "")
+
+        if parallel > 1:
+            self._run_tests_parallel(tests_to_run, testprefix, parallel)
+        else:
+            self._run_tests_sequential(tests_to_run, testprefix)
+
+    def _run_single_test(self, exe_path: str, testprefix: str) -> tuple[str, int, str, str]:
+        """Run a single test executable. Returns (exe_path, returncode, stdout, stderr)."""
+        cmd = []
+        if testprefix:
+            cmd.extend(testprefix.split())
+        cmd.append(exe_path)
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        return exe_path, result.returncode, result.stdout, result.stderr
+
+    def _run_tests_sequential(self, tests_to_run: list[str], testprefix: str) -> None:
+        """Run tests one at a time, printing output immediately."""
+        failures = []
+        for exe_path in tests_to_run:
+            if self.args.verbose >= 1:
+                print(f"... {exe_path}")
+            exe_path, rc, stdout, stderr = self._run_single_test(exe_path, testprefix)
+            if stdout:
+                print(stdout, end="")
+            if stderr:
+                print(stderr, end="", file=sys.stderr)
+            if rc != 0:
                 failures.append(exe_path)
+            else:
+                # Touch the .result file to mark success
+                _touch(exe_path + ".result")
 
         if failures:
             raise RuntimeError(f"Test failures: {', '.join(failures)}")
+
+    def _run_tests_parallel(self, tests_to_run: list[str], testprefix: str, parallel: int) -> None:
+        """Run tests in parallel, buffering output and printing in order."""
+        import concurrent.futures
+
+        failures = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as executor:
+            futures = {
+                executor.submit(self._run_single_test, exe_path, testprefix): exe_path for exe_path in tests_to_run
+            }
+            # Collect results in submission order
+            results = []
+            for future in concurrent.futures.as_completed(futures):
+                results.append(future.result())
+
+        # Sort by original order and print
+        order = {path: i for i, path in enumerate(tests_to_run)}
+        results.sort(key=lambda r: order[r[0]])
+        for exe_path, rc, stdout, stderr in results:
+            if self.args.verbose >= 1:
+                print(f"... {exe_path}")
+            if stdout:
+                print(stdout, end="")
+            if stderr:
+                print(stderr, end="", file=sys.stderr)
+            if rc != 0:
+                failures.append(exe_path)
+            else:
+                _touch(exe_path + ".result")
+
+        if failures:
+            raise RuntimeError(f"Test failures: {', '.join(failures)}")
+
+    def _build_file_uptodate(self, graph: BuildGraph) -> bool:
+        """Check whether the generated build file is still current.
+
+        Default implementation always returns False (always regenerate).
+        Backends that write a build file can override this to skip
+        unnecessary regeneration by checking args signatures and mtimes.
+        """
+        return False
 
     def _all_outputs_current(self, graph: BuildGraph) -> bool:
         """Pre-check: all compile outputs exist and all link sigs match?
@@ -459,11 +568,14 @@ class BuildBackend(abc.ABC):
         if self.args.LDFLAGS:
             link_cmd.append(self.args.LDFLAGS)
 
+        exe_dir = self.namer.executable_dir()
+
         return BuildRule(
             output=exename,
             inputs=inputs,
             command=link_cmd,
             rule_type="link",
+            order_only_deps=[exe_dir],
         )
 
     def _get_library_object_names(self, sources: list[str]) -> tuple[list[str], set[str]]:
@@ -500,6 +612,7 @@ class BuildBackend(abc.ABC):
             inputs=list(object_names),
             command=lib_cmd,
             rule_type="static_library",
+            order_only_deps=[self.namer.executable_dir()],
         )
 
     def _create_shared_library_rule(self) -> BuildRule:
@@ -522,6 +635,7 @@ class BuildBackend(abc.ABC):
             inputs=list(object_names),
             command=lib_cmd,
             rule_type="shared_library",
+            order_only_deps=[self.namer.executable_dir()],
         )
 
 

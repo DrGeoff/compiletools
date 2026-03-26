@@ -35,10 +35,7 @@ class BuildRule:
 
     def __post_init__(self):
         if self.rule_type not in VALID_RULE_TYPES:
-            raise ValueError(
-                f"Invalid rule_type {self.rule_type!r}; "
-                f"must be one of {sorted(VALID_RULE_TYPES)}"
-            )
+            raise ValueError(f"Invalid rule_type {self.rule_type!r}; must be one of {sorted(VALID_RULE_TYPES)}")
 
     def __eq__(self, other):
         if not isinstance(other, BuildRule):
@@ -82,3 +79,49 @@ class BuildGraph:
     def outputs(self) -> set[str]:
         """Return the set of all output paths."""
         return set(self._rules.keys())
+
+    def filter_to_changed(self, changed_files: set[str], verbose: int = 0) -> BuildGraph:
+        """Return a new BuildGraph containing only rules affected by changed_files.
+
+        Uses transitive closure: if a rule's inputs intersect changed_files,
+        its output is added to changed_files and the walk repeats until a
+        fixed-point is reached. Phony rules have their inputs pruned to only
+        reference affected targets.
+        """
+        changed = set(changed_files)
+        targets: set[str] = set()
+
+        # Fixed-point iteration: discover all affected outputs
+        done = False
+        while not done:
+            done = True
+            for rule in self._rules.values():
+                if rule.output in targets:
+                    continue
+                affected_inputs = set(rule.inputs) & changed
+                if not affected_inputs:
+                    continue
+                changed.add(rule.output)
+                targets.add(rule.output)
+                done = False
+                if verbose >= 3:
+                    print(f"Building {rule.output} because it depends on changed: {sorted(affected_inputs)}")
+
+        # Build new graph with only affected rules
+        filtered = BuildGraph()
+        for rule in self._rules.values():
+            if rule.rule_type == "phony":
+                pruned_inputs = [i for i in rule.inputs if i in targets]
+                filtered.add_rule(
+                    BuildRule(
+                        output=rule.output,
+                        inputs=pruned_inputs,
+                        command=rule.command,
+                        rule_type=rule.rule_type,
+                        order_only_deps=rule.order_only_deps,
+                    )
+                )
+            elif rule.output in targets:
+                filtered.add_rule(rule)
+
+        return filtered
