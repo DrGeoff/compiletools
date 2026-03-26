@@ -131,8 +131,31 @@ class CMakeBackend(BuildBackend):
                 f.write(f"target_include_directories({target_name} PRIVATE {quoted})\n")
 
             if linkopts:
-                quoted = " ".join(f'"{opt}"' for opt in linkopts)
-                f.write(f"target_link_options({target_name} PRIVATE {quoted})\n")
+                # Split linkopts into CMake-native directives:
+                # -L paths → link_directories (resolved to absolute since
+                #   CMake runs the linker from cmake-build/, not CWD)
+                # -l libs  → target_link_libraries (ensures correct order)
+                # other    → target_link_options (raw flags)
+                lib_dirs = []
+                lib_names = []
+                other_opts = []
+                for opt in linkopts:
+                    if opt.startswith("-L"):
+                        path = opt[2:]
+                        lib_dirs.append(os.path.abspath(path) if not os.path.isabs(path) else path)
+                    elif opt.startswith("-l"):
+                        lib_names.append(opt[2:])
+                    else:
+                        other_opts.append(opt)
+                if lib_dirs:
+                    quoted = " ".join(f'"{d}"' for d in lib_dirs)
+                    f.write(f"target_link_directories({target_name} PRIVATE {quoted})\n")
+                if lib_names:
+                    quoted = " ".join(f'"{n}"' for n in lib_names)
+                    f.write(f"target_link_libraries({target_name} PRIVATE {quoted})\n")
+                if other_opts:
+                    quoted = " ".join(f'"{opt}"' for opt in other_opts)
+                    f.write(f"target_link_options({target_name} PRIVATE {quoted})\n")
 
     def execute(self, target: str = "build") -> None:
         if target == "runtests":
@@ -166,5 +189,45 @@ class CMakeBackend(BuildBackend):
         # Copy built executables to namer.executable_pathname() locations
         # so _copyexes() can find them.
         self._copy_built_executables(build_dir)
+        # Copy built libraries to namer library paths so the second
+        # cake.main() (linking the exe) can find them via -L/-l flags.
         if self._graph is not None:
+            self._copy_built_libraries(build_dir, self._graph)
             self._record_link_signatures(self._graph)
+
+    def _copy_built_libraries(self, build_dir: str, graph) -> None:
+        """Copy built libraries from cmake-build to namer library paths.
+
+        CMake builds to an out-of-source directory.  The namer expects
+        libraries at paths like bin/<variant>/libfoo.a, so we walk
+        cmake-build looking for .a/.so files and copy them to the
+        graph-declared output paths.
+        """
+        lib_rules = list(graph.rules_by_type("static_library")) + list(
+            graph.rules_by_type("shared_library")
+        )
+        if not lib_rules:
+            return
+
+        # Build a lookup from CMake-mangled library name to graph output path
+        mangled_to_dest: dict[str, str] = {}
+        for rule in lib_rules:
+            basename = os.path.basename(rule.output)
+            mangled = mangle_target_name(basename)
+            # CMake produces lib<target>.a for STATIC, lib<target>.so for SHARED
+            if basename.startswith("lib"):
+                cmake_name = f"lib{mangled}.a"
+                cmake_name_so = f"lib{mangled}.so"
+            else:
+                cmake_name = f"lib{mangled}.a"
+                cmake_name_so = f"lib{mangled}.so"
+            mangled_to_dest[cmake_name] = rule.output
+            mangled_to_dest[cmake_name_so] = rule.output
+
+        for dirpath, _dirs, files in os.walk(build_dir):
+            for fname in files:
+                if fname in mangled_to_dest:
+                    src = os.path.join(dirpath, fname)
+                    dest = mangled_to_dest[fname]
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    shutil.copy2(src, dest)

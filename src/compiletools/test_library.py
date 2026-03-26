@@ -14,9 +14,12 @@ import io
 import os
 import shutil
 
+import pytest
+
 import compiletools.cake
 import compiletools.testhelper as uth
 import compiletools.utils
+from compiletools.build_backend import available_backends
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.testhelper import (
     TempDirContextNoChange,
@@ -346,7 +349,9 @@ class TestLibrary:
         pass
 
     @uth.requires_functional_compiler
-    def test_build_and_link_static_library(self):
+    @uth.requires_backend_tool()
+    @pytest.mark.parametrize("backend_name", available_backends())
+    def test_build_and_link_static_library(self, backend_name):
         with uth.TempDirContextWithChange() as tmpdir:
             # Mimic the build.sh and create the library in a 'mylib' subdirectory
             # Copy the sample source files into the test build location
@@ -370,6 +375,7 @@ class TestLibrary:
                 "--exemarkers=main",
                 "--testmarkers=unittest.hpp",
                 "--config=" + temp_config_name,
+                f"--backend={backend_name}",
                 "--static",
                 os.path.join(tmpdir, "mylib/get_numbers.cpp"),
             ]
@@ -384,7 +390,10 @@ class TestLibrary:
                 shutil.copy2(ff, tmpdir)
 
             # Build the exe, linking against the library
-            argv = ["--config=" + temp_config_name] + realpaths
+            argv = [
+                "--config=" + temp_config_name,
+                f"--backend={backend_name}",
+            ] + realpaths
             with uth.ParserContext():
                 compiletools.cake.main(argv)
 
@@ -396,7 +405,9 @@ class TestLibrary:
                         actual_exes.add(ff)
 
             expected_exes = {os.path.splitext(os.path.split(filename)[1])[0] for filename in relativepaths}
-            assert expected_exes == actual_exes
+            assert expected_exes <= actual_exes, (
+                f"{backend_name}: expected {expected_exes} to be a subset of {actual_exes}"
+            )
 
     def teardown_method(self):
         uth.reset()

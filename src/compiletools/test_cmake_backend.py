@@ -172,9 +172,9 @@ class TestCMakeGenerate:
         backend.generate(graph, output=buf)
         content = buf.getvalue()
 
-        assert "target_link_options(foo PRIVATE" in content
-        assert '"-lm"' in content
-        assert '"-lpthread"' in content
+        assert "target_link_libraries(foo PRIVATE" in content
+        assert '"m"' in content
+        assert '"pthread"' in content
 
     def test_include_dirs_separated(self):
         graph = BuildGraph()
