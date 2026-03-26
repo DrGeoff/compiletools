@@ -16,6 +16,50 @@ import compiletools.apptools
 # The abbreviation "uth" is often used for this "testhelper"
 
 
+def _backend_tool_available(backend_name):
+    """Check if the build tool for a backend is on PATH."""
+    if backend_name == "shake":
+        return True  # Self-executing, no external tool needed
+    if backend_name == "bazel":
+        return shutil.which("bazelisk") is not None or shutil.which("bazel") is not None
+    if backend_name == "cmake":
+        return shutil.which("cmake") is not None
+    if backend_name == "tup":
+        return shutil.which("tup") is not None
+    tool = {"make": "make", "ninja": "ninja"}.get(backend_name)
+    if tool is None:
+        return False
+    return shutil.which(tool) is not None
+
+
+def requires_backend_tool(backend_name_or_param="backend_name"):
+    """Skip test when the build tool for a backend is not on PATH.
+
+    Usage with parametrize (reads 'backend_name' kwarg):
+        @requires_backend_tool()
+        @pytest.mark.parametrize("backend_name", available_backends())
+
+    Usage with fixed name:
+        @requires_backend_tool("ninja")
+    """
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            name = kwargs.get(backend_name_or_param, backend_name_or_param)
+            if not _backend_tool_available(name):
+                pytest.skip(f"{name} build tool not found on PATH")
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    if callable(backend_name_or_param):
+        func = backend_name_or_param
+        backend_name_or_param = "backend_name"
+        return decorator(func)
+    return decorator
+
+
 def requires_functional_compiler(func):
     """Decorator to skip tests that require a functional C++ compiler.
 

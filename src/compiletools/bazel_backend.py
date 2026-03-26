@@ -244,24 +244,46 @@ class BazelBackend(BuildBackend):
         if self._graph is not None:
             self._record_link_signatures(self._graph)
 
+    def clean(self) -> None:
+        """Run bazel clean, then remove build artifact directories."""
+        tool = shutil.which("bazelisk") or shutil.which("bazel")
+        if tool is not None:
+            try:
+                subprocess.check_call([tool, "clean"], universal_newlines=True)
+            except subprocess.CalledProcessError:
+                pass
+        super().clean()
+
     def _copy_built_executables(self, build_output_dir: str) -> None:
         """Copy built executables from a build output dir to namer paths.
 
-        Maps executables found in build_output_dir back to their
-        namer.executable_pathname() locations so _copyexes() can find them.
+        Walks build_output_dir recursively to find executables, matching
+        them by name (original or Bazel-mangled) back to source files.
         """
         import compiletools.wrappedos
 
         all_sources = list(self.args.filename or []) + list(self.args.tests or [])
+        # Build a map of basename -> source for matching
+        source_by_basename: dict[str, str] = {}
         for source in all_sources:
             exe_basename = os.path.splitext(os.path.basename(source))[0]
             # Bazel mangles names: dots/hyphens become underscores
             bazel_name = exe_basename.replace(".", "_").replace("-", "_")
+            source_by_basename[exe_basename] = source
+            source_by_basename[bazel_name] = source
 
-            for candidate_name in (exe_basename, bazel_name):
-                src_path = os.path.join(build_output_dir, candidate_name)
-                if os.path.isfile(src_path) and os.access(src_path, os.X_OK):
+        for dirpath, dirs, files in os.walk(build_output_dir, followlinks=False):
+            # Skip Bazel runfiles trees — they contain symlinks to the real executables
+            dirs[:] = [d for d in dirs if not d.endswith(".runfiles")]
+            for fname in files:
+                full = os.path.join(dirpath, fname)
+                if os.path.isfile(full) and os.access(full, os.X_OK) and fname in source_by_basename:
+                    source = source_by_basename.pop(fname)
+                    # Remove the other name variant (original or Bazel-mangled)
+                    exe_basename = os.path.splitext(os.path.basename(source))[0]
+                    bazel_name = exe_basename.replace(".", "_").replace("-", "_")
+                    source_by_basename.pop(exe_basename, None)
+                    source_by_basename.pop(bazel_name, None)
                     dest_path = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
                     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-                    shutil.copy2(src_path, dest_path)
-                    break
+                    shutil.copy2(full, dest_path)

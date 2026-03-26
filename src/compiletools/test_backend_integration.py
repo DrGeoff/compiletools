@@ -28,22 +28,6 @@ from compiletools.build_backend import available_backends, get_backend_class
 from compiletools.test_base import BaseCompileToolsTestCase
 
 
-def _backend_tool_available(backend_name):
-    """Check if the build tool for a backend is on PATH."""
-    if backend_name == "shake":
-        return True  # Self-executing, no external tool needed
-    if backend_name == "bazel":
-        return shutil.which("bazelisk") is not None or shutil.which("bazel") is not None
-    if backend_name == "cmake":
-        return shutil.which("cmake") is not None
-    if backend_name == "tup":
-        return shutil.which("tup") is not None
-    tool = {"make": "make", "ninja": "ninja"}.get(backend_name)
-    if tool is None:
-        return False
-    return shutil.which(tool) is not None
-
-
 def _setup_backend_for_source(backend_name, tmp_path, src_file="helloworld_cpp.cpp"):
     """Create a backend with real args and hunter for a simple source.
 
@@ -87,12 +71,10 @@ class TestBackendBuildApplication(BaseCompileToolsTestCase):
     """
 
     @uth.requires_functional_compiler
+    @uth.requires_backend_tool()
     @pytest.mark.parametrize("backend_name", available_backends())
     def test_build_helloworld(self, backend_name, tmp_path, monkeypatch):
         """Build helloworld_cpp.cpp with each registered backend."""
-        if not _backend_tool_available(backend_name):
-            pytest.skip(f"{backend_name} build tool not found on PATH")
-
         with uth.ParserContext():
             backend, graph, args = _setup_backend_for_source(backend_name, tmp_path)
 
@@ -276,10 +258,14 @@ class TestBackendBuildGraphWithTests(BaseCompileToolsTestCase):
             objdir = os.path.join(str(tmp_path), "obj")
             bindir = os.path.join(str(tmp_path), "bin")
             argv = [
-                "--include", str(tmp_path),
-                "--objdir", objdir,
-                "--bindir", bindir,
-                "--tests", source_path,
+                "--include",
+                str(tmp_path),
+                "--objdir",
+                objdir,
+                "--bindir",
+                bindir,
+                "--tests",
+                source_path,
             ]
 
             cap = compiletools.apptools.create_parser("Backend integration test", argv=argv)

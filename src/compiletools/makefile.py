@@ -806,13 +806,26 @@ def main(argv=None):
     compiletools.hunter.add_arguments(cap)
     args = compiletools.apptools.parseargs(cap, argv)
 
-    # Create HeaderDeps and other components
-    headerdeps = compiletools.headerdeps.create(args)
-    magicparser = compiletools.magicflags.create(args, headerdeps)
-    hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser)
-    makefile_creator = MakefileCreator(args, hunter)
-    makefile_creator.create()
+    try:
+        # Create HeaderDeps and other components
+        headerdeps = compiletools.headerdeps.create(args)
+        magicparser = compiletools.magicflags.create(args, headerdeps)
+        hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser)
+        makefile_creator = MakefileCreator(args, hunter)
+        makefile_creator.create()
 
-    # And clean up for the test cases where main is called more than once
-    makefile_creator.clear_cache()
+        # And clean up for the test cases where main is called more than once
+        makefile_creator.clear_cache()
+    except OSError as ioe:
+        if args.verbose < 2:
+            print(f"Error processing {ioe.filename}: {ioe.strerror}")
+            return 1
+        else:
+            raise
+    except Exception as err:
+        if args.verbose < 2:
+            print(err)
+            return 1
+        else:
+            raise
     return 0
