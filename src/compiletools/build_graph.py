@@ -22,7 +22,8 @@ class BuildRule:
         output: The file this rule produces (or a phony target name).
         inputs: Files this rule depends on (source files, headers, objects).
         command: Shell command list to execute, or None for phony rules.
-        rule_type: One of "compile", "link", "test", "phony", "mkdir", "clean", "copy".
+        rule_type: One of "compile", "link", "test", "phony", "mkdir", "clean",
+            "copy", "static_library", "shared_library".
         order_only_deps: Dependencies that must exist but whose timestamps are
             not checked (e.g., output directories).
     """

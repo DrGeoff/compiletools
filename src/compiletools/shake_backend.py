@@ -213,13 +213,18 @@ class ShakeBackend(BuildBackend):
 
         if rule.rule_type == "phony":
             # Phony targets aggregate independent builds — parallelise them.
-            # NOTE: This assumes a flat graph (one phony -> compile/link rules).
-            # Nested phony targets could deadlock the ThreadPoolExecutor if all
-            # workers block on f.result() waiting for queued-but-unstarted tasks.
+            # Guard against nested phony targets: if an input is itself phony,
+            # build it sequentially to avoid ThreadPoolExecutor deadlock (all
+            # workers blocking on f.result() for queued-but-unstarted tasks).
             futures: list[Future[bool]] = []
+            sequential_results: list[bool] = []
             for inp in rule.inputs:
-                futures.append(executor.submit(self._build, inp, graph, traces, done, lock, executor))
-            any_rebuilt = any(f.result() for f in futures)
+                inp_rule = graph.get_rule(inp)
+                if inp_rule is not None and inp_rule.rule_type == "phony":
+                    sequential_results.append(self._build(inp, graph, traces, done, lock, executor))
+                else:
+                    futures.append(executor.submit(self._build, inp, graph, traces, done, lock, executor))
+            any_rebuilt = any(f.result() for f in futures) or any(sequential_results)
             with lock:
                 done.add(target)
             return any_rebuilt
@@ -360,9 +365,7 @@ class ShakeBackend(BuildBackend):
             cmd = list(compile_cmd) + ["-o", tempfile_path]
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
-                raise subprocess.CalledProcessError(
-                    result.returncode, cmd, result.stdout, result.stderr
-                )
+                raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
             os.rename(tempfile_path, target)
             return result
         finally:

@@ -67,9 +67,8 @@ class CMakeBackend(BuildBackend):
         f.write("cmake_minimum_required(VERSION 3.15)\n")
         f.write("\n# Reject in-source builds\n")
         f.write('file(TO_CMAKE_PATH "${PROJECT_BINARY_DIR}/CMakeLists.txt" LOC_PATH)\n')
-        f.write("if(EXISTS \"${LOC_PATH}\")\n")
-        f.write('    message(FATAL_ERROR "In-source builds are not allowed. '
-                'Use an out-of-source build directory.")\n')
+        f.write('if(EXISTS "${LOC_PATH}")\n')
+        f.write('    message(FATAL_ERROR "In-source builds are not allowed. Use an out-of-source build directory.")\n')
         f.write("endif()\n")
 
         has_c = False
@@ -182,7 +181,7 @@ class CMakeBackend(BuildBackend):
 
         # Configure
         configure_cmd = [cmake, "-S", source_dir, "-B", build_dir]
-        subprocess.check_call(configure_cmd, universal_newlines=True)
+        subprocess.check_call(configure_cmd, text=True)
 
         # Build
         build_cmd = [cmake, "--build", build_dir]
@@ -190,11 +189,12 @@ class CMakeBackend(BuildBackend):
             build_cmd.extend(["--parallel", str(self.args.parallel)])
         if target not in ("build", "all"):
             build_cmd.extend(["--target", target])
-        subprocess.check_call(build_cmd, universal_newlines=True)
+        subprocess.check_call(build_cmd, text=True)
 
-        # Copy built executables to namer.executable_pathname() locations
-        # so _copyexes() can find them.
-        self._copy_built_executables(build_dir)
+        # Copy built executables directly to the final output directory
+        # (topbindir or --output) to avoid a redundant intermediate copy.
+        dest = getattr(self.args, "output", None) or self.namer.topbindir()
+        self._copy_built_executables(build_dir, dest_dir=dest)
         # Copy built libraries to namer library paths so the second
         # cake.main() (linking the exe) can find them via -L/-l flags.
         if self._graph is not None:
@@ -209,9 +209,7 @@ class CMakeBackend(BuildBackend):
         cmake-build looking for .a/.so files and copy them to the
         graph-declared output paths.
         """
-        lib_rules = list(graph.rules_by_type("static_library")) + list(
-            graph.rules_by_type("shared_library")
-        )
+        lib_rules = list(graph.rules_by_type("static_library")) + list(graph.rules_by_type("shared_library"))
         if not lib_rules:
             return
 
@@ -220,13 +218,9 @@ class CMakeBackend(BuildBackend):
         for rule in lib_rules:
             basename = os.path.basename(rule.output)
             mangled = mangle_target_name(basename)
-            # CMake produces lib<target>.a for STATIC, lib<target>.so for SHARED
-            if basename.startswith("lib"):
-                cmake_name = f"lib{mangled}.a"
-                cmake_name_so = f"lib{mangled}.so"
-            else:
-                cmake_name = f"lib{mangled}.a"
-                cmake_name_so = f"lib{mangled}.so"
+            # CMake always produces lib<target>.a for STATIC, lib<target>.so for SHARED
+            cmake_name = f"lib{mangled}.a"
+            cmake_name_so = f"lib{mangled}.so"
             mangled_to_dest[cmake_name] = rule.output
             mangled_to_dest[cmake_name_so] = rule.output
 

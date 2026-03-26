@@ -4,8 +4,6 @@ import signal
 import sys
 
 import compiletools.apptools
-import compiletools.bazel_backend
-import compiletools.cmake_backend
 import compiletools.compilation_database
 import compiletools.configutils
 import compiletools.filelist
@@ -14,14 +12,24 @@ import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.jobs
 import compiletools.magicflags
-import compiletools.makefile_backend
 import compiletools.namer
-import compiletools.ninja_backend
-import compiletools.shake_backend
-import compiletools.tup_backend
 import compiletools.utils
 import compiletools.wrappedos
 from compiletools.build_backend import available_backends, get_backend_class
+
+
+def _ensure_backends_registered():
+    """Import all backend modules to trigger @register_backend decoration.
+
+    Called lazily on first use (argument parsing or backend dispatch) rather
+    than at module import time, to reduce startup cost for non-build paths.
+    """
+    import compiletools.bazel_backend
+    import compiletools.cmake_backend
+    import compiletools.makefile_backend
+    import compiletools.ninja_backend
+    import compiletools.shake_backend
+    import compiletools.tup_backend  # noqa: F401
 
 
 class Cake:
@@ -63,6 +71,8 @@ class Cake:
 
     @staticmethod
     def add_arguments(cap):
+        _ensure_backends_registered()
+
         # General arguments needed by all backends
         compiletools.apptools.add_target_arguments_ex(cap)
         compiletools.apptools.add_link_arguments(cap)
@@ -70,7 +80,9 @@ class Cake:
         compiletools.hunter.add_arguments(cap)
 
         # Make backend-specific arguments
-        compiletools.makefile_backend.MakefileBackend.add_arguments(cap)
+        from compiletools.makefile_backend import MakefileBackend
+
+        MakefileBackend.add_arguments(cap)
 
         compiletools.jobs.add_arguments(cap)
 

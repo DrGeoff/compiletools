@@ -7,6 +7,9 @@ A BuildBackend knows how to:
 
 The base class provides `build_graph()` which populates a BuildGraph from the
 Hunter/Namer dependency data. This is the shared logic across all backends.
+
+Backends may implement a static ``add_arguments(cap)`` method to register
+backend-specific CLI arguments (see MakefileBackend for an example).
 """
 
 from __future__ import annotations
@@ -210,13 +213,16 @@ class BuildBackend(abc.ABC):
         if obj_dir != exe_dir and os.path.isdir(obj_dir):
             shutil.rmtree(obj_dir)
 
-    def _copy_built_executables(self, build_output_dir: str) -> None:
-        """Copy built executables from a build output dir to namer paths.
+    def _copy_built_executables(self, build_output_dir: str, dest_dir: str | None = None) -> None:
+        """Copy built executables from a build output dir to dest_dir.
 
         Walks build_output_dir recursively to find executables, matching
         them by name (original or mangled) back to source files.
         Backends that produce outputs in a non-standard location (e.g.
         bazel-bin/, cmake-build/) call this after a successful build.
+
+        If dest_dir is None, copies to namer.executable_pathname() locations.
+        Otherwise, copies directly to dest_dir (e.g. topbindir).
         """
         all_sources = list(self.args.filename or []) + list(self.args.tests or [])
         source_by_basename: dict[str, str] = {}
@@ -225,6 +231,9 @@ class BuildBackend(abc.ABC):
             mangled = mangle_target_name(exe_basename)
             source_by_basename[exe_basename] = source
             source_by_basename[mangled] = source
+
+        if dest_dir is not None:
+            os.makedirs(dest_dir, exist_ok=True)
 
         for dirpath, dirs, files in os.walk(build_output_dir, followlinks=False):
             dirs[:] = [d for d in dirs if not d.endswith(".runfiles")]
@@ -241,7 +250,10 @@ class BuildBackend(abc.ABC):
                 mangled = mangle_target_name(exe_basename)
                 source_by_basename.pop(exe_basename, None)
                 source_by_basename.pop(mangled, None)
-                dest_path = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
+                if dest_dir is not None:
+                    dest_path = os.path.join(dest_dir, exe_basename)
+                else:
+                    dest_path = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
                 os.makedirs(os.path.dirname(dest_path), exist_ok=True)
                 shutil.copy2(full, dest_path)
 

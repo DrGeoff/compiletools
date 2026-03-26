@@ -63,12 +63,12 @@ class TupBackend(BuildBackend):
 
         # Tup requires .tup/ directory to be initialized
         if not os.path.isdir(".tup"):
-            subprocess.check_call(["tup", "init"], universal_newlines=True)
+            subprocess.check_call(["tup", "init"], text=True)
 
         cmd = ["tup"]
         parallel = getattr(self.args, "parallel", None)
         if parallel:
             cmd.extend(["-j", str(parallel)])
-        subprocess.check_call(cmd, universal_newlines=True)
+        subprocess.check_call(cmd, text=True)
         if self._graph is not None:
             self._record_link_signatures(self._graph)
