@@ -74,6 +74,10 @@ class NinjaBackend(BuildBackend):
                     f.write("  description = Compiling $out\n")
                 elif rule.rule_type == "link":
                     f.write("  description = Linking $out\n")
+                elif rule.rule_type == "static_library":
+                    f.write("  description = Archiving $out\n")
+                elif rule.rule_type == "shared_library":
+                    f.write("  description = Linking shared library $out\n")
                 else:
                     f.write(f"  description = {rule.rule_type} $out\n")
                 f.write("\n")

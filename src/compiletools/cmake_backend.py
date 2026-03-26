@@ -162,6 +162,47 @@ class CMakeBackend(BuildBackend):
             copts = _extract_copts(rule.command) if rule.command else []
             obj_info[rule.output] = (source, headers, copts)
 
+        # For each library rule, aggregate into an add_library
+        for lib_type in ("static_library", "shared_library"):
+            for rule in graph.rules_by_type(lib_type):
+                object_files = set(rule.inputs)
+                srcs = []
+                all_copts = []
+                seen_copts: set[str] = set()
+
+                for obj in rule.inputs:
+                    if obj in obj_info:
+                        source, headers, copts = obj_info[obj]
+                        if source:
+                            srcs.append(source)
+                        srcs.extend(headers)
+                        for c in copts:
+                            if c not in seen_copts:
+                                all_copts.append(c)
+                                seen_copts.add(c)
+
+                # Derive target name from library path
+                lib_basename = os.path.basename(rule.output)
+                target_name = lib_basename.replace(".", "_").replace("-", "_")
+
+                include_dirs, remaining_copts = _separate_include_dirs(all_copts)
+
+                rel_srcs = sorted(set(srcs))
+                cmake_type = "STATIC" if lib_type == "static_library" else "SHARED"
+
+                f.write(f"\nadd_library({target_name} {cmake_type}\n")
+                for s in rel_srcs:
+                    f.write(f"    {s}\n")
+                f.write(")\n")
+
+                if remaining_copts:
+                    quoted = " ".join(f'"{c}"' for c in remaining_copts)
+                    f.write(f"target_compile_options({target_name} PRIVATE {quoted})\n")
+
+                if include_dirs:
+                    quoted = " ".join(f'"{d}"' for d in include_dirs)
+                    f.write(f"target_include_directories({target_name} PRIVATE {quoted})\n")
+
         # For each link rule, aggregate into an add_executable
         for rule in graph.rules_by_type("link"):
             object_files = set(rule.inputs)
