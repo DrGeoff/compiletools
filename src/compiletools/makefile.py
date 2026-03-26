@@ -275,6 +275,14 @@ class MakefileCreator:
             help="Force the unit tests to run serially rather than in parallel. "
             "Defaults to false because it is slower.",
         )
+        compiletools.utils.add_flag_argument(
+            parser=cap,
+            name="shuffle",
+            dest="shuffle",
+            default=False,
+            help="Pass --shuffle to GNU Make (>= 4.4) to randomize prerequisite ordering. "
+            "Useful for CI to detect missing dependencies.",
+        )
 
     def _detect_filesystem_type(self):
         """Detect filesystem type once for objdir"""
@@ -443,7 +451,7 @@ class MakefileCreator:
         if self.namer.executable_dir() != self.namer.object_dir():
             recipe += " ".join([";find", self.namer.executable_dir(), "-type d -empty -delete"])
 
-        rule_clean = Rule(target="clean", prerequisites="", recipe=recipe, phony=True)
+        rule_clean = Rule(target="clean", prerequisites="", recipe="-" + recipe, phony=True)
         rules[rule_clean.target] = rule_clean
 
         # Now for realclean.  Just take a heavy handed rm -rf approach.
@@ -451,7 +459,7 @@ class MakefileCreator:
         recipe = " ".join(["rm -rf", self.namer.executable_dir()])
         if self.namer.executable_dir() != self.namer.object_dir():
             recipe += "; rm -rf " + self.namer.object_dir()
-        rule_realclean = Rule(target="realclean", prerequisites="", recipe=recipe, phony=True)
+        rule_realclean = Rule(target="realclean", prerequisites="", recipe="-" + recipe, phony=True)
         rules[rule_realclean.target] = rule_realclean
 
         return list(rules.values())
@@ -464,10 +472,10 @@ class MakefileCreator:
         return Rule(
             target=os.path.join(self.namer.executable_dir(), os.path.basename(output)),
             prerequisites=output,
-            recipe=" ".join(["cp", output, self.namer.executable_dir(), "2>/dev/null ||true"]),
+            recipe=" ".join(["cp", "-f", output, self.namer.executable_dir()]),
         )
 
-    def _create_test_rules(self, alltestsources):
+    def _create_test_rules(self, alltestsources, serialize_fallback=False):
         testprefix = ""
         if self.args.TESTPREFIX:
             testprefix = self.args.TESTPREFIX
@@ -480,6 +488,7 @@ class MakefileCreator:
         rules[runtestsrule.target] = runtestsrule
 
         # Create a rule for each individual test
+        prev_result = None
         for tt in alltestsources:
             exename = self.namer.executable_pathname(tt)
             testresult = ".".join([exename, "result"])
@@ -488,8 +497,12 @@ class MakefileCreator:
             if self.args.verbose >= 1:
                 recipe += " ".join(["@echo ...", exename, ";"])
             recipe += " ".join(["rm -f", testresult, "&&", testprefix, exename, "&& touch", testresult])
-            rule = Rule(target=testresult, prerequisites=exename, recipe=recipe)
+            # On Make < 4.4, chain test results via order-only deps to serialize
+            order_only = prev_result if serialize_fallback else None
+            rule = Rule(target=testresult, prerequisites=exename, order_only_prerequisites=order_only, recipe=recipe)
             rules[rule.target] = rule
+            if serialize_fallback:
+                prev_result = testresult
         return list(rules.values())
 
     @staticmethod
@@ -583,10 +596,14 @@ class MakefileCreator:
                 self.rules[rule.target] = rule
 
         if self.args.tests:
-            test_rules = self._create_test_rules(realpath_tests)
+            from compiletools.makefile_backend import _get_make_version
+
+            make_version = _get_make_version()
+            use_chain = self.args.serialisetests and make_version < (4, 4)
+            test_rules = self._create_test_rules(realpath_tests, serialize_fallback=use_chain)
             for rule in test_rules:
                 self.rules[rule.target] = rule
-            if self.args.serialisetests:
+            if self.args.serialisetests and make_version >= (4, 4):
                 rule = self._create_tests_not_parallel_rule()
                 self.rules[rule.target] = rule
 
@@ -785,6 +802,9 @@ class MakefileCreator:
             mfile.write(str(self.args))
             mfile.write("\n\n")
             mfile.write(".DELETE_ON_ERROR:\n\n")
+            mfile.write("MAKEFLAGS += -rR\n\n")
+            if os.path.isfile("/bin/bash"):
+                mfile.write("SHELL := /bin/bash\n\n")
             for rule in self.rules.values():
                 rule.write(mfile)
 
