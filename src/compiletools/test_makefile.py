@@ -305,7 +305,9 @@ class TestMakefileCreatorUnit:
             result = mc._create_cp_rule("/obj/dir/myexe")
             assert result is not None
             assert result.target == "/exe/dir/myexe"
-            assert "cp" in result.recipe
+            assert "cp -f" in result.recipe
+            assert "2>/dev/null" not in result.recipe
+            assert "||true" not in result.recipe
 
     def test_create_test_rules(self):
         """Cover _create_test_rules (lines 497-519)."""
@@ -372,11 +374,14 @@ class TestMakefileCreatorUnit:
         """Cover ct-lock-helper not found error (lines 233-243)."""
 
         args = _make_args(file_locking=True, verbose=0)
-        with patch("shutil.which", return_value=None), \
-             patch("compiletools.filesystem_utils.get_filesystem_type", return_value="ext4"), \
-             patch("compiletools.namer.Namer") as MockNamer:
+        with (
+            patch("shutil.which", return_value=None),
+            patch("compiletools.filesystem_utils.get_filesystem_type", return_value="ext4"),
+            patch("compiletools.namer.Namer") as MockNamer,
+        ):
             MockNamer.return_value = None
             import pytest
+
             with pytest.raises(RuntimeError):
                 compiletools.makefile.MakefileCreator(args, hunter=None)
 
@@ -500,6 +505,103 @@ class TestMakefileCreatorUnit:
                 with patch("compiletools.wrappedos.getmtime") as mock_getmtime:
                     mock_getmtime.side_effect = lambda f: 200.0 if f == makefile_path else 100.0
                     assert mc._uptodate() is True
+
+    def test_clean_rules_have_error_ignore_prefix(self):
+        """Clean and realclean recipes should use - prefix to ignore errors."""
+        from unittest.mock import MagicMock
+
+        from compiletools.makefile import MakefileCreator
+
+        args = _make_args()
+        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
+            mc = MakefileCreator.__new__(MakefileCreator)
+            mc.args = args
+            mc.namer = MagicMock()
+            mc.namer.executable_dir.return_value = "/exe/dir"
+            mc.namer.object_dir.return_value = "/obj/dir"
+            mc.objects = {"obj1.o", "obj2.o"}
+            rules = mc._create_clean_rules(["target1", "target2"])
+            clean_rule = next(r for r in rules if r.target == "clean")
+            realclean_rule = next(r for r in rules if r.target == "realclean")
+            assert clean_rule.recipe.startswith("-")
+            assert realclean_rule.recipe.startswith("-")
+
+    def test_create_test_rules_serialize_fallback(self):
+        """When serialize_fallback=True, test rules should chain via order-only deps."""
+        from unittest.mock import MagicMock
+
+        from compiletools.makefile import MakefileCreator
+
+        args = _make_args(TESTPREFIX="", verbose=0)
+        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
+            mc = MakefileCreator.__new__(MakefileCreator)
+            mc.args = args
+            mc.namer = MagicMock()
+            mc.namer.executable_pathname.side_effect = lambda tt: f"/bin/{os.path.basename(tt)}"
+            rules = mc._create_test_rules(
+                ["/src/test_a.cpp", "/src/test_b.cpp", "/src/test_c.cpp"],
+                serialize_fallback=True,
+            )
+            # First test should have no order-only dep; subsequent should chain
+            test_rules = [r for r in rules if r.target != "runtests"]
+            assert test_rules[0].order_only_prerequisites is None
+            assert test_rules[1].order_only_prerequisites == test_rules[0].target
+            assert test_rules[2].order_only_prerequisites == test_rules[1].target
+
+    def test_create_test_rules_no_serialize(self):
+        """Without serialize_fallback, test rules should have no order-only deps."""
+        from unittest.mock import MagicMock
+
+        from compiletools.makefile import MakefileCreator
+
+        args = _make_args(TESTPREFIX="", verbose=0)
+        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
+            mc = MakefileCreator.__new__(MakefileCreator)
+            mc.args = args
+            mc.namer = MagicMock()
+            mc.namer.executable_pathname.side_effect = lambda tt: f"/bin/{os.path.basename(tt)}"
+            rules = mc._create_test_rules(
+                ["/src/test_a.cpp", "/src/test_b.cpp"],
+                serialize_fallback=False,
+            )
+            test_rules = [r for r in rules if r.target != "runtests"]
+            for rule in test_rules:
+                assert rule.order_only_prerequisites is None
+
+    def test_write_includes_makeflags_and_shell(self, tmp_path):
+        """MakefileCreator.write() should include MAKEFLAGS and SHELL directives."""
+        from compiletools.makefile import MakefileCreator
+
+        makefile_path = str(tmp_path / "Makefile")
+        args = _make_args(makefilename=makefile_path)
+        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
+            mc = MakefileCreator.__new__(MakefileCreator)
+            mc.args = args
+            mc.rules = {}
+            mc.write(makefile_path)
+
+        with open(makefile_path) as f:
+            content = f.read()
+        assert "MAKEFLAGS += -rR" in content
+        assert ".DELETE_ON_ERROR:" in content
+        # SHELL depends on /bin/bash existence, just check it doesn't crash
+
+    @patch("os.path.isfile", return_value=False)
+    def test_write_omits_shell_without_bash(self, _mock_isfile, tmp_path):
+        """MakefileCreator.write() should omit SHELL when /bin/bash doesn't exist."""
+        from compiletools.makefile import MakefileCreator
+
+        makefile_path = str(tmp_path / "Makefile")
+        args = _make_args(makefilename=makefile_path)
+        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
+            mc = MakefileCreator.__new__(MakefileCreator)
+            mc.args = args
+            mc.rules = {}
+            mc.write(makefile_path)
+
+        with open(makefile_path) as f:
+            content = f.read()
+        assert "SHELL" not in content
 
 
 class TestMakefile:
