@@ -14,8 +14,8 @@ import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.jobs
 import compiletools.magicflags
-import compiletools.makefile
 import compiletools.makefile_backend
+import compiletools.namer
 import compiletools.ninja_backend
 import compiletools.shake_backend
 import compiletools.tup_backend
@@ -36,7 +36,10 @@ class Cake:
     def _hide_makefilename(args):
         """Change the args.makefilename to hide the Makefile in the executable_dir()
         This is a callback function for the compiletools.apptools.substitutions.
+        Only applies when using the make backend.
         """
+        if getattr(args, "backend", "make") != "make":
+            return
         namer = compiletools.namer.Namer(args)
         if namer.executable_dir() not in args.makefilename:
             movedmakefile = os.path.join(namer.executable_dir(), args.makefilename)
@@ -60,7 +63,15 @@ class Cake:
 
     @staticmethod
     def add_arguments(cap):
-        compiletools.makefile.MakefileCreator.add_arguments(cap)
+        # General arguments needed by all backends
+        compiletools.apptools.add_target_arguments_ex(cap)
+        compiletools.apptools.add_link_arguments(cap)
+        compiletools.namer.Namer.add_arguments(cap)
+        compiletools.hunter.add_arguments(cap)
+
+        # Make backend-specific arguments
+        compiletools.makefile_backend.MakefileBackend.add_arguments(cap)
+
         compiletools.jobs.add_arguments(cap)
 
         cap.add(
