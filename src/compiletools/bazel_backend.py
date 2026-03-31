@@ -37,6 +37,14 @@ class BazelBackend(BuildBackend):
 
     def generate(self, graph: BuildGraph, output=None) -> None:
         self._graph = graph
+
+        # Apply build_only_changed filtering if requested
+        build_only_changed = getattr(self.args, "build_only_changed", None)
+        if isinstance(build_only_changed, str):
+            changed = set(build_only_changed.split())
+            graph = graph.filter_to_changed(changed, verbose=self.args.verbose)
+            self._graph = graph
+
         if output is not None:
             # When writing to a file handle, try to determine the base directory
             # from the file's name attribute (set when opened with open()).
