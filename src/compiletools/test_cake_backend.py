@@ -3,12 +3,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import compiletools.apptools
-import compiletools.bazel_backend  # noqa: F401
-import compiletools.cmake_backend  # noqa: F401
-import compiletools.makefile_backend  # noqa: F401
-import compiletools.ninja_backend  # noqa: F401
-import compiletools.shake_backend  # noqa: F401
-import compiletools.tup_backend  # noqa: F401
+import compiletools.bazel_backend
+import compiletools.cmake_backend
+import compiletools.makefile_backend
+import compiletools.ninja_backend
+import compiletools.shake_backend
+import compiletools.tup_backend
 from compiletools.build_backend import available_backends, get_backend_class
 from compiletools.testhelper import CakeTestContext
 
@@ -34,7 +34,7 @@ class TestCakeBackendDispatch:
     @pytest.mark.parametrize("backend_name", ["make", "ninja", "bazel", "cmake", "tup", "shake"])
     def test_backend_dispatch_instantiates_correct_backend(self, backend_name):
         """--backend=X should instantiate the correct backend class."""
-        with CakeTestContext(backend_name) as (cake, tmpdir):
+        with CakeTestContext(backend_name) as (cake, _tmpdir):
             expected_class = get_backend_class(backend_name)
 
             with (
@@ -51,7 +51,7 @@ class TestCakeBackendDispatch:
 
     def test_backend_dispatch_generates_compilation_database(self):
         """Backend dispatch should still generate compilation database."""
-        with CakeTestContext("ninja", compilation_database=True) as (cake, tmpdir):
+        with CakeTestContext("ninja", compilation_database=True) as (cake, _tmpdir):
             expected_class = get_backend_class("ninja")
 
             with (
@@ -80,7 +80,7 @@ class TestCakeBackendDispatch:
 
     def test_backend_dispatch_runs_tests_when_runtests_in_graph(self):
         """When args.tests is set and 'runtests' is in graph.outputs, execute('runtests') should be called."""
-        with CakeTestContext("ninja", tests=["test_main.cpp"]) as (cake, tmpdir):
+        with CakeTestContext("ninja", tests=["test_main.cpp"]) as (cake, _tmpdir):
             expected_class = get_backend_class("ninja")
 
             mock_graph = MagicMock()
@@ -97,7 +97,7 @@ class TestCakeBackendDispatch:
 
     def test_static_flag_allowed_for_make_backend(self):
         """--static should not raise for --backend=make."""
-        with CakeTestContext("make", static=["lib.cpp"]) as (cake, tmpdir):
+        with CakeTestContext("make", static=["lib.cpp"]) as (cake, _tmpdir):
             cake.hunter = MagicMock()
             cake.hunter.required_source_files = MagicMock(return_value=[])
             expected_class = get_backend_class("make")
@@ -113,7 +113,7 @@ class TestCakeBackendDispatch:
 
     def test_backend_dispatch_skips_runtests_when_no_tests(self):
         """When args.tests is empty, execute('runtests') should NOT be called."""
-        with CakeTestContext("ninja") as (cake, tmpdir):
+        with CakeTestContext("ninja") as (cake, _tmpdir):
             expected_class = get_backend_class("ninja")
 
             mock_graph = MagicMock()

@@ -108,7 +108,7 @@ class TestBuildBackendCommon:
     def test_build_graph_construction(self):
         """The base class should provide build_graph() that populates a BuildGraph
         from the hunter/namer data, reusable across all backends."""
-        with BackendTestContext() as (backend, args, tmpdir):
+        with BackendTestContext() as (backend, _args, _tmpdir):
             graph = backend.build_graph()
             assert isinstance(graph, BuildGraph)
 

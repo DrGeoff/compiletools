@@ -23,9 +23,7 @@ from compiletools.shake_backend import (
     _is_build_artifact,
     hash_command,
 )
-
 from compiletools.testhelper import ShakeBackendTestContext, fake_subprocess_result
-
 
 # ---------------------------------------------------------------------------
 # Registration
