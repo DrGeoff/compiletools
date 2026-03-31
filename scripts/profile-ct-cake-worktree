@@ -276,33 +276,11 @@ def get_test_configurations(
     return configurations
 
 
-# Backend tools required for execution.  Backends not listed here (e.g. shake,
-# which is self-executing) are assumed to need no external tool.
-_BACKEND_TOOLS: dict[str, str] = {
-    "make": "make",
-    "ninja": "ninja",
-    "cmake": "cmake",
-    "bazel": "bazel",
-    "tup": "tup",
-}
-
-
 def detect_available_backends(requested: list[str]) -> list[str]:
     """Filter requested backends to those whose build tool is installed."""
-    available = []
-    for backend in requested:
-        if backend not in _BACKEND_TOOLS:
-            # Self-executing backends (e.g. shake) need no external tool.
-            available.append(backend)
-            continue
-        tool = _BACKEND_TOOLS[backend]
-        if shutil.which(tool):
-            available.append(backend)
-        elif backend == "bazel" and shutil.which("bazelisk"):
-            available.append(backend)
-        else:
-            print(f"  Skipping backend '{backend}': '{tool}' not found on PATH")
-    return available
+    from compiletools.build_backend import detect_available_backends as _detect
+
+    return _detect(requested)
 
 
 def cleanup_all_worktrees():

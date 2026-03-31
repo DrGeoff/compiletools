@@ -59,6 +59,7 @@ ct-git-sha-report = "compiletools.git_sha_report:main"
 ct-gitroot = "compiletools.git_utils:main"
 ct-headertree = "compiletools.headertree:main"
 ct-jobs = "compiletools.jobs:main"
+ct-list-backends = "compiletools.listbackends:main"
 ct-list-variants = "compiletools.listvariants:main"
 ct-magicflags = "compiletools.magicflags:main"
 ct-compilation-database = "compiletools.compilation_database:main"
@@ -137,6 +138,9 @@ filename = "src/compiletools/README.ct-headertree.rst"
 
 [[tool.bumpversion.files]]
 filename = "src/compiletools/README.ct-jobs.rst"
+
+[[tool.bumpversion.files]]
+filename = "src/compiletools/README.ct-list-backends.rst"
 
 [[tool.bumpversion.files]]
 filename = "src/compiletools/README.ct-list-variants.rst"
