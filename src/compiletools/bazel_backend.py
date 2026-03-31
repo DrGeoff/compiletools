@@ -256,10 +256,10 @@ class BazelBackend(BuildBackend):
         if self._graph is None:
             return
         for lib_type in ("static_library", "shared_library"):
+            ext = ".a" if lib_type == "static_library" else ".so"
             for rule in self._graph.rules_by_type(lib_type):
                 target_name = mangle_target_name(os.path.basename(rule.output))
-                # Bazel produces lib<target>.a for cc_library
-                bazel_lib = os.path.join(bazel_bin, f"lib{target_name}.a")
+                bazel_lib = os.path.join(bazel_bin, f"lib{target_name}{ext}")
                 if os.path.exists(bazel_lib):
                     os.makedirs(os.path.dirname(rule.output), exist_ok=True)
                     shutil.copy2(bazel_lib, rule.output)
