@@ -64,14 +64,19 @@ def get_lock_strategy(fstype: str) -> str:
     """Determine file locking strategy for filesystem type (for makefile.py).
 
     Returns:
-        'lockdir' - Use mkdir-based locking (atomic on all filesystems)
+        'fcntl' - Use fcntl.lockf() (GPFS: cross-node, kernel-managed)
+        'lockdir' - Use mkdir-based locking (NFS/Lustre)
         'cifs' - Use exclusive file creation (CIFS/SMB specific)
         'flock' - Use POSIX flock (standard local filesystems)
     """
     fstype_lower = fstype.lower()
 
-    # Filesystems requiring lockdir approach
-    if any(fs in fstype_lower for fs in ["gpfs", "lustre", "nfs"]):
+    # GPFS: fcntl.lockf() works cross-node (unlike flock which is node-local)
+    if "gpfs" in fstype_lower:
+        return "fcntl"
+
+    # NFS/Lustre: mkdir-based locking
+    if any(fs in fstype_lower for fs in ["lustre", "nfs"]):
         return "lockdir"
 
     # CIFS/SMB requires exclusive file creation
@@ -115,7 +120,7 @@ def get_lockdir_sleep_interval(fstype: str) -> float:
         return 0.01  # Lustre is fast parallel filesystem
     elif "nfs" in fstype_lower:
         return 0.1  # NFS has network latency
-    else:  # GPFS and others
+    else:  # Other filesystems (GPFS uses fcntl, not lockdir polling)
         return 0.05  # Default middle ground
 
 

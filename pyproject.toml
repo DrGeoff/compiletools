@@ -63,6 +63,7 @@ ct-list-variants = "compiletools.listvariants:main"
 ct-magicflags = "compiletools.magicflags:main"
 ct-compilation-database = "compiletools.compilation_database:main"
 ct-cleanup-locks = "compiletools.cleanup_locks_main:main"
+ct-lock-helper = "compiletools.ct_lock_helper:main"
 
 [tool.pytest.ini_options]
 testpaths = ["src/compiletools"]

@@ -21,7 +21,7 @@ import compiletools.locking
 def mock_args():
     """Create mock args object with locking configuration."""
     args = Mock()
-    args.shared_objects = True
+    args.file_locking = True
     args.lock_cross_host_timeout = 600
     args.lock_warn_interval = 60
     args.lock_creation_grace_period = 2

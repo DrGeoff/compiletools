@@ -898,7 +898,6 @@ class TestSimplePreprocessorEdgeCases:
 
     def test_verbose_define_undef(self, capsys):
         """Verbose mode prints debug for #define and #undef."""
-        import stringzilla as sz
 
         verbose_proc = SimplePreprocessor({}, verbose=9)
         text = dedent("""
@@ -913,7 +912,6 @@ class TestSimplePreprocessorEdgeCases:
 
     def test_verbose_ifndef(self, capsys):
         """Verbose mode prints debug for #ifndef."""
-        import stringzilla as sz
 
         verbose_proc = SimplePreprocessor({}, verbose=9)
         text = dedent("""
@@ -951,7 +949,6 @@ class TestSimplePreprocessorEdgeCases:
 
     def test_if_evaluation_failure_assumes_false(self):
         """#if with unparseable expression should assume false."""
-        import stringzilla as sz
 
         processor = SimplePreprocessor({}, verbose=0)
         text = dedent("""
@@ -966,7 +963,6 @@ class TestSimplePreprocessorEdgeCases:
 
     def test_elif_evaluation_failure_assumes_false(self):
         """#elif with unparseable expression should assume false."""
-        import stringzilla as sz
 
         processor = SimplePreprocessor({}, verbose=0)
         text = dedent("""
@@ -1053,7 +1049,6 @@ class TestSimplePreprocessorEdgeCases:
 
     def test_unknown_directive_verbose(self, capsys):
         """Unknown directive with verbose >= 8 prints debug."""
-        import stringzilla as sz
 
         from compiletools.file_analyzer import PreprocessorDirective
 
@@ -1227,7 +1222,7 @@ class TestMacroHashConsistency:
 class TestMacroStateBuildContextHash:
     """Tests for MacroState hashing of build context (cflags, cxxflags, cppflags, compiler_path).
 
-    These tests verify the fix for the shared-objects hash collision bug where
+    These tests verify the fix for the content-addressable hash collision bug where
     objects compiled with different flags (e.g. -O0 vs -O2, or different -I paths)
     were incorrectly reused because the hash omitted non-macro compile flags.
     """

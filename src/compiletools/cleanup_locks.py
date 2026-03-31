@@ -9,8 +9,6 @@ import socket
 import sys
 
 import compiletools.lock_utils
-import compiletools.locking
-import compiletools.wrappedos
 
 
 class LockCleaner:
@@ -134,7 +132,7 @@ class LockCleaner:
         """Scan objdir for stale locks and clean them up.
 
         Args:
-            objdir: Directory to scan for lockdirs
+            objdir: Directory to scan for lockdirs and lock files
 
         Returns:
             dict: Statistics about locks found/cleaned
@@ -145,13 +143,13 @@ class LockCleaner:
             print(f"ERROR: Object directory does not exist: {objdir}", file=sys.stderr)
             return stats
 
-        print(f"Scanning for lockdirs in: {objdir}")
+        print(f"Scanning for locks in: {objdir}")
         if self.dry_run:
             print("DRY RUN MODE: No locks will be removed")
         print()
 
-        # Find all .lockdir directories
         for root, dirs, _files in os.walk(objdir):
+            # Find all .lockdir directories
             for dirname in dirs:
                 if not dirname.endswith(".lockdir"):
                     continue

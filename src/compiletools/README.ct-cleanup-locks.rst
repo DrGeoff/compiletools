@@ -3,7 +3,7 @@ ct-cleanup-locks
 ==================
 
 -------------------------------------------------------------------------
-Clean up stale lock directories in shared object caches
+Clean up stale lock directories from file locking
 -------------------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
@@ -18,11 +18,11 @@ ct-cleanup-locks [--dry-run] [--objdir PATH] [--min-lock-age SECONDS] [-v] [-vv]
 
 DESCRIPTION
 ===========
-Clean up stale lock directories in shared object caches from crashed builds,
-network failures, or terminated processes.
+Clean up stale lock directories and lock files from file locking from crashed
+builds, network failures, or terminated processes.
 
 These locks are created by ``ct-lock-helper`` during compilation with
-``--shared-objects``. See ``README.ct-lock-helper.rst`` for lock details.
+``--file-locking``. See ``README.ct-lock-helper.rst`` for lock details.
 
 WHEN TO USE
 ===========
@@ -86,13 +86,13 @@ Lock Configuration
     Interval between lock wait warnings (default: 60)
 
 ``--sleep-interval-lockdir SECONDS``
-    Sleep interval for lockdir polling on NFS/GPFS/Lustre (default: auto-detect)
+    Sleep interval for lockdir polling on NFS/Lustre (default: auto-detect)
 
 ``--sleep-interval-cifs SECONDS``
     Sleep interval for CIFS lock polling (default: 0.2)
 
 ``--sleep-interval-flock-fallback SECONDS``
-    Sleep interval for flock fallback polling (default: 0.1)
+    Unused since flock blocks in kernel (no polling). Kept for backwards compatibility.
 
 General Options
 ---------------
@@ -117,11 +117,14 @@ General Options
 
 HOW IT WORKS
 ============
-1. Scans objdir for .lockdir directories
-2. Reads hostname:pid from each lock
+1. Scans objdir for ``.lockdir`` directories
+2. Reads hostname:pid from lockdir pid file
 3. For local locks: checks if process still exists
 4. For remote locks: SSHs to host and checks if process exists
 5. Removes locks where process is dead or very old
+
+Note: fcntl (GPFS) locks the target file directly with no sidecar files,
+so there is nothing for cleanup to scan.
 
 LOCK AGE POLICY
 ===============
@@ -172,8 +175,9 @@ EXAMPLES
 
 LOCK FORMAT
 ===========
-Locks are directories named ``<filename>.lockdir`` containing a ``pid`` file
-with the format::
+
+**Lockdir locks** (NFS/Lustre): Directories named ``<filename>.lockdir``
+containing a ``pid`` file with the format::
 
     hostname:pid
 
@@ -182,6 +186,10 @@ For example::
     build01.example.com:12345
 
 The tool uses this information to determine if the process is still running.
+
+**Fcntl locks** (GPFS): The fcntl strategy locks the target ``.o`` file
+directly — there are no sidecar ``.lock`` files to clean up. The kernel
+automatically releases locks when the process exits.
 
 SSH REQUIREMENTS
 ================

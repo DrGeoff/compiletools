@@ -1,0 +1,319 @@
+"""Makefile backend — generates GNU Makefiles from a BuildGraph."""
+
+from __future__ import annotations
+
+import builtins
+import functools
+import os
+import re
+import subprocess
+import sys
+
+import compiletools.filesystem_utils
+import compiletools.utils
+import compiletools.wrappedos
+from compiletools.build_backend import (
+    BuildBackend,
+    check_lock_helper_available,
+    register_backend,
+    report_lock_helper_missing,
+    wrap_compile_with_lock,
+)
+from compiletools.build_graph import BuildGraph
+
+
+@functools.lru_cache(maxsize=1)
+def _get_make_version() -> tuple[int, int]:
+    """Detect GNU Make version. Returns (major, minor) or (0, 0) on failure."""
+    try:
+        line = subprocess.check_output(["make", "--version"], text=True).splitlines()[0]
+        m = re.search(r"(\d+)\.(\d+)", line)
+        if not m:
+            return (0, 0)
+        return (int(m.group(1)), int(m.group(2)))
+    except (subprocess.CalledProcessError, ValueError, IndexError, FileNotFoundError):
+        return (0, 0)
+
+
+@register_backend
+class MakefileBackend(BuildBackend):
+    """Generate and execute GNU Makefiles."""
+
+    @staticmethod
+    def name() -> str:
+        return "make"
+
+    @staticmethod
+    def build_filename() -> str:
+        return "Makefile"
+
+    @staticmethod
+    def add_arguments(cap) -> None:
+        """Register Make-specific CLI arguments."""
+        cap.add(
+            "--makefilename",
+            default="Makefile",
+            help="Output filename for the Makefile",
+        )
+        cap.add(
+            "--build-only-changed",
+            help="Only build the binaries depending on the source or header absolute "
+            "filenames in this space-delimited list.",
+        )
+        compiletools.utils.add_boolean_argument(
+            parser=cap,
+            name="file-locking",
+            dest="file_locking",
+            default=True,
+            help="Enable file locking for concurrent multi-user/multi-host builds",
+        )
+        compiletools.utils.add_flag_argument(
+            parser=cap,
+            name="serialise-tests",
+            dest="serialisetests",
+            default=False,
+            help="Force the unit tests to run serially rather than in parallel. "
+            "Defaults to false because it is slower.",
+        )
+        compiletools.utils.add_flag_argument(
+            parser=cap,
+            name="shuffle",
+            dest="shuffle",
+            default=False,
+            help="Pass --shuffle to GNU Make (>= 4.4) to randomize prerequisite ordering. "
+            "Useful for CI to detect missing dependencies.",
+        )
+
+    def generate(self, graph: BuildGraph, output=None) -> None:
+        """Write Makefile from BuildGraph.
+
+        Args:
+            graph: The build graph to render.
+            output: A file-like object to write to. If None, writes to
+                the file specified by args.makefilename.
+        """
+        self._graph = graph
+
+        # Setup file-locking infrastructure if needed
+        if getattr(self.args, "file_locking", False):
+            if not check_lock_helper_available():
+                report_lock_helper_missing()
+            self._filesystem_type = compiletools.filesystem_utils.get_filesystem_type(self.args.objdir)
+            if self.args.verbose >= 3:
+                print(f"Detected filesystem type: {self._filesystem_type}")
+            self._validate_umask_for_file_locking()
+        else:
+            self._filesystem_type = None
+
+        # Apply build_only_changed filtering if requested
+        if getattr(self.args, "build_only_changed", None):
+            changed = set(self.args.build_only_changed.split())
+            graph = graph.filter_to_changed(changed, verbose=self.args.verbose)
+            self._graph = graph
+
+        if output is not None:
+            self._write_makefile(graph, output)
+        else:
+            if self._build_file_uptodate(graph):
+                return
+            with compiletools.filesystem_utils.atomic_output_file(
+                self.args.makefilename, mode="w", encoding="utf-8"
+            ) as f:
+                self._write_makefile(graph, f)
+
+    def _validate_umask_for_file_locking(self) -> None:
+        """Log warning if umask may affect multi-user file-locking mode."""
+        current_umask = os.umask(0)
+        os.umask(current_umask)  # Restore immediately
+
+        if (current_umask & 0o060) and self.args.verbose >= 1:
+            print(
+                f"Warning: file-locking enabled with restrictive umask {oct(current_umask)}\n"
+                f"  Single-user mode: Works fine (you can always remove your own locks)\n"
+                f"  Multi-user mode: Requires umask 0002 or 0007 for cross-user lock cleanup\n"
+                f"  If using multi-user cache, set: umask 0002",
+                file=sys.stderr,
+            )
+
+    def _build_file_uptodate(self, graph: BuildGraph) -> bool:
+        """Check if the Makefile needs regeneration.
+
+        Compares the args signature in the Makefile header and checks mtimes
+        of all source/header files referenced in compile rules.
+        """
+        try:
+            makefilemtime = compiletools.wrappedos.getmtime(self.args.makefilename)
+        except OSError:
+            if self.args.verbose > 7:
+                print("Regenerating Makefile.")
+                print(f"Could not determine mtime for {self.args.makefilename}. Assuming that it doesn't exist.")
+            return False
+
+        expected = f"# Makefile generated by {self.args}"
+        with builtins.open(self.args.makefilename, encoding="utf-8") as mfile:
+            previous = mfile.readline().strip()
+            if previous != expected:
+                if self.args.verbose > 7:
+                    print("Regenerating Makefile.")
+                    print(f'Previous generation line was "{previous}".')
+                    print(f'Current  generation line  is "{expected}".')
+                return False
+            elif self.args.verbose > 9:
+                print("Makefile header line is identical.  Testing mod time of all the files now.")
+
+        # Check mtimes of all compile rule inputs against the Makefile's mtime
+        for rule in graph.rules:
+            if rule.rule_type == "compile":
+                for dep in rule.inputs:
+                    try:
+                        dep_mtime = compiletools.wrappedos.getmtime(dep)
+                    except OSError:
+                        continue
+                    if dep_mtime > makefilemtime:
+                        if self.args.verbose > 7:
+                            print("Regenerating Makefile.")
+                            print(f"mtime {dep_mtime} for {dep} is newer than mtime for the Makefile")
+                        return False
+                    elif self.args.verbose > 9:
+                        print(
+                            f"mtime {dep_mtime} for {dep} is older than "
+                            f"mtime for the Makefile. This wont trigger regeneration of the Makefile."
+                        )
+
+        if self.args.verbose > 9:
+            print("Makefile is up to date.  Not recreating.")
+        return True
+
+    def _wrap_compile_cmd(self, command: list[str]) -> str:
+        """Return the command string for a compile rule, lock-wrapped if needed.
+
+        The command list is expected to end with [..., "-o", target].
+        When file_locking is enabled, the -o and target are stripped and
+        ct-lock-helper wraps the remainder.
+        """
+        if not getattr(self.args, "file_locking", False) or self._filesystem_type is None:
+            return " ".join(command)
+
+        try:
+            o_idx = command.index("-o")
+        except ValueError:
+            return " ".join(command)
+
+        compile_part = command[:o_idx]
+        target = command[o_idx + 1]
+
+        return wrap_compile_with_lock(" ".join(compile_part), target, self.args, self._filesystem_type)
+
+    def _write_makefile(self, graph: BuildGraph, f) -> None:
+        """Write a complete Makefile from the BuildGraph."""
+        f.write(f"# Makefile generated by {self.args}\n\n")
+        f.write(".DELETE_ON_ERROR:\n\n")
+        f.write("MAKEFLAGS += -rR\n\n")
+        if os.path.isfile("/bin/bash"):
+            f.write("SHELL := /bin/bash\n\n")
+
+        # Write phony rules first so "all" is the default target
+        phony_rules = [r for r in graph.rules if r.rule_type == "phony"]
+        non_phony_rules = [r for r in graph.rules if r.rule_type != "phony"]
+
+        # Ensure "all" comes first among phony rules
+        phony_rules.sort(key=lambda r: (0 if r.output == "all" else 1, r.output))
+
+        for rule in phony_rules + non_phony_rules:
+            if rule.rule_type == "phony":
+                f.write(f".PHONY: {rule.output}\n")
+
+            line = f"{rule.output}: {' '.join(rule.inputs)}"
+            if rule.order_only_deps:
+                line += f" | {' '.join(rule.order_only_deps)}"
+            f.write(line + "\n")
+
+            if rule.command:
+                recipe = self._format_recipe(rule)
+                f.write("\t" + recipe + "\n")
+            f.write("\n")
+
+        # Write clean rules
+        self._write_clean_rules(graph, f)
+
+    def _format_recipe(self, rule) -> str:
+        """Format a BuildRule's command into a Makefile recipe string."""
+        if rule.rule_type == "compile":
+            cmd_str = self._wrap_compile_cmd(rule.command)
+            if self.args.verbose >= 1:
+                # Find the source file (first input)
+                source = rule.inputs[0] if rule.inputs else rule.output
+                return f"@echo ... {source} ; {cmd_str}"
+            return cmd_str
+        elif rule.rule_type in ("link", "shared_library", "static_library"):
+            cmd_str = " ".join(rule.command)
+            if self.args.verbose >= 1:
+                return f"+@echo ... {rule.output} ; {cmd_str}"
+            return cmd_str
+        else:
+            return " ".join(rule.command)
+
+    def _write_clean_rules(self, graph: BuildGraph, f) -> None:
+        """Write clean and realclean rules to the Makefile."""
+        exe_dir = self.namer.executable_dir()
+        obj_dir = self.namer.object_dir()
+
+        # Gather all outputs and object files from the graph
+        all_outputs = []
+        all_objects = []
+        for rule in graph.rules:
+            if rule.rule_type == "compile":
+                all_objects.append(rule.output)
+            elif rule.rule_type in ("link", "static_library", "shared_library"):
+                all_outputs.append(rule.output)
+
+        # clean rule: remove executables, objects, and empty dirs
+        rmcopiedexes = f"find {exe_dir} -type f -executable -delete 2>/dev/null"
+        parts = [rmcopiedexes]
+        if all_outputs or all_objects:
+            parts.append("rm -f " + " ".join(all_outputs + all_objects))
+        parts.append(f"find {obj_dir} -type d -empty -delete")
+        if exe_dir != obj_dir:
+            parts.append(f"find {exe_dir} -type d -empty -delete")
+        recipe = ";".join(parts)
+
+        f.write(".PHONY: clean\n")
+        f.write("clean:\n")
+        f.write(f"\t-{recipe}\n\n")
+
+        # realclean rule: heavy-handed rm -rf
+        realclean_recipe = f"rm -rf {exe_dir}"
+        if exe_dir != obj_dir:
+            realclean_recipe += f"; rm -rf {obj_dir}"
+
+        f.write(".PHONY: realclean\n")
+        f.write("realclean:\n")
+        f.write(f"\t-{realclean_recipe}\n\n")
+
+    def execute(self, target: str = "build") -> None:
+        """Run GNU make, or delegate test execution to _run_tests()."""
+        if target == "runtests":
+            self._run_tests()
+            return
+
+        if self._graph is not None and self._all_outputs_current(self._graph):
+            return
+
+        make_version = _get_make_version()
+        cmd = ["make"]
+        if self.args.verbose <= 1:
+            cmd.append("-s")
+        if self.args.verbose >= 4 and make_version >= (4, 0):
+            cmd.append("--trace")
+        parallel = getattr(self.args, "parallel", 1)
+        if parallel > 1 and make_version >= (4, 0):
+            cmd.append("--output-sync=target")
+        if getattr(self.args, "shuffle", False) and make_version >= (4, 4):
+            cmd.append("--shuffle")
+        cmd.extend(["-j", str(parallel)])
+        cmd.extend(["-f", self.args.makefilename, target])
+        if self.args.verbose >= 1:
+            print(" ".join(cmd))
+        subprocess.check_call(cmd, text=True)
+        if self._graph is not None:
+            self._record_link_signatures(self._graph)

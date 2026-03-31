@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+from pathlib import Path
 
 from compiletools.filesystem_utils import (
     atomic_output_file,
@@ -47,8 +48,8 @@ def test_get_filesystem_type_nonexistent_path():
 
 
 def test_get_lock_strategy_gpfs():
-    """GPFS should use lockdir strategy."""
-    assert get_lock_strategy("gpfs") == "lockdir"
+    """GPFS should use fcntl strategy."""
+    assert get_lock_strategy("gpfs") == "fcntl"
 
 
 def test_get_lock_strategy_lustre():
@@ -124,7 +125,7 @@ def test_get_lockdir_sleep_interval_nfs():
 
 
 def test_get_lockdir_sleep_interval_gpfs():
-    """GPFS should use default middle-ground interval."""
+    """GPFS falls through to default (not used in practice; GPFS uses fcntl)."""
     assert get_lockdir_sleep_interval("gpfs") == 0.05
 
 
@@ -135,8 +136,8 @@ def test_get_lockdir_sleep_interval_unknown():
 
 def test_case_insensitivity():
     """Filesystem type matching should be case-insensitive."""
-    assert get_lock_strategy("GPFS") == "lockdir"
-    assert get_lock_strategy("Gpfs") == "lockdir"
+    assert get_lock_strategy("GPFS") == "fcntl"
+    assert get_lock_strategy("Gpfs") == "fcntl"
     assert supports_mmap_safely("CIFS") is False
     assert supports_mmap_safely("Cifs") is False
 
@@ -145,19 +146,18 @@ def test_atomic_write_basic(tmp_path):
     """atomic_write writes string content to file."""
     target = str(tmp_path / "out.txt")
     atomic_write(target, "hello world")
-    assert open(target).read() == "hello world"
+    assert Path(target).read_text() == "hello world"
 
 
 def test_atomic_write_binary(tmp_path):
     """atomic_write with binary=True writes bytes."""
     target = str(tmp_path / "out.bin")
     atomic_write(target, b"\x00\x01\x02", binary=True)
-    assert open(target, "rb").read() == b"\x00\x01\x02"
+    assert Path(target).read_bytes() == b"\x00\x01\x02"
 
 
 def test_atomic_write_preserves_permissions(tmp_path):
     """atomic_write preserves existing file permissions."""
-    import os
     import stat
 
     target = str(tmp_path / "out.txt")
@@ -167,7 +167,7 @@ def test_atomic_write_preserves_permissions(tmp_path):
     atomic_write(target, "new")
     mode = stat.S_IMODE(os.stat(target).st_mode)
     assert mode == 0o644
-    assert open(target).read() == "new"
+    assert Path(target).read_text() == "new"
 
 
 def test_safe_read_text_file(tmp_path):
@@ -184,12 +184,11 @@ def test_atomic_output_file_basic(tmp_path):
     target = str(tmp_path / "ctx.txt")
     with atomic_output_file(target) as f:
         f.write("context content")
-    assert open(target).read() == "context content"
+    assert Path(target).read_text() == "context content"
 
 
 def test_atomic_output_file_exception_cleans_up(tmp_path):
     """atomic_output_file cleans up temp file on exception."""
-    import os
 
     target = str(tmp_path / "fail.txt")
     try:
@@ -296,43 +295,40 @@ def test_atomic_write_creates_directory(tmp_path):
     """atomic_write creates parent directory if it doesn't exist."""
     target = str(tmp_path / "subdir" / "deep" / "out.txt")
     atomic_write(target, "hello")
-    assert open(target).read() == "hello"
+    assert Path(target).read_text() == "hello"
 
 
 def test_atomic_write_binary_with_str_content(tmp_path):
     """atomic_write binary=True with str content encodes to UTF-8."""
     target = str(tmp_path / "out.bin")
     atomic_write(target, "hello", binary=True)
-    assert open(target, "rb").read() == b"hello"
+    assert Path(target).read_bytes() == b"hello"
 
 
 def test_atomic_write_text_with_bytes_content(tmp_path):
     """atomic_write binary=False with bytes content writes bytes directly."""
     target = str(tmp_path / "out.txt")
     atomic_write(target, b"raw bytes", binary=False)
-    assert open(target, "rb").read() == b"raw bytes"
+    assert Path(target).read_bytes() == b"raw bytes"
 
 
 def test_atomic_write_no_preserve_permissions(tmp_path):
     """atomic_write with preserve_permissions=False skips permission copy."""
-    import os
 
     target = str(tmp_path / "out.txt")
     with open(target, "w") as f:
         f.write("old")
     os.chmod(target, 0o755)
     atomic_write(target, "new", preserve_permissions=False)
-    assert open(target).read() == "new"
+    assert Path(target).read_text() == "new"
 
 
 def test_atomic_write_error_cleanup(tmp_path, monkeypatch):
     """atomic_write cleans up temp file on write error."""
-    import os
 
     target = str(tmp_path / "fail.txt")
 
     # Monkey-patch os.write to fail after fd is opened
-    orig_write = os.write
 
     def bad_write(fd, data):
         raise OSError("disk full")
@@ -357,7 +353,7 @@ def test_atomic_output_file_binary_mode(tmp_path):
     target = str(tmp_path / "out.bin")
     with atomic_output_file(target, mode="wb") as f:
         f.write(b"\x00\x01\x02")
-    assert open(target, "rb").read() == b"\x00\x01\x02"
+    assert Path(target).read_bytes() == b"\x00\x01\x02"
 
 
 def test_atomic_output_file_creates_directory(tmp_path):
@@ -365,12 +361,11 @@ def test_atomic_output_file_creates_directory(tmp_path):
     target = str(tmp_path / "newdir" / "out.txt")
     with atomic_output_file(target) as f:
         f.write("content")
-    assert open(target).read() == "content"
+    assert Path(target).read_text() == "content"
 
 
 def test_atomic_output_file_preserves_permissions(tmp_path):
     """atomic_output_file preserves existing file permissions."""
-    import os
     import stat
 
     target = str(tmp_path / "perm.txt")
@@ -383,12 +378,11 @@ def test_atomic_output_file_preserves_permissions(tmp_path):
 
     mode = stat.S_IMODE(os.stat(target).st_mode)
     assert mode == 0o600
-    assert open(target).read() == "new"
+    assert Path(target).read_text() == "new"
 
 
 def test_atomic_output_file_exception_cleans_up_binary(tmp_path):
     """atomic_output_file cleans up temp file on exception in binary mode."""
-    import os
 
     target = str(tmp_path / "fail.bin")
     try:
@@ -410,7 +404,7 @@ def test_real_filesystem_detection():
 
         # Verify policy functions work with detected type
         strategy = get_lock_strategy(fstype)
-        assert strategy in ["lockdir", "cifs", "flock"]
+        assert strategy in ["fcntl", "lockdir", "cifs", "flock"]
 
         mmap_safe = supports_mmap_safely(fstype)
         assert isinstance(mmap_safe, bool)

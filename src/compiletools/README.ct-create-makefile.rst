@@ -22,9 +22,11 @@ ct-create-makefile generates a Makefile from compiletools magic comments and
 automatic dependency detection. This is the underlying tool used by ct-cake
 and the ct-build shell scripts.
 
-Unlike ct-cake, which generates and immediately executes the Makefile,
+Unlike ct-cake, which generates and immediately executes the build,
 ct-create-makefile only generates the Makefile. This is useful when you need
-to customize the build process or integrate with other build systems.
+to customize the Makefile or inspect the generated rules. For other build
+system formats, use ``ct-cake --backend=<name>`` (choices: ninja, cmake,
+bazel, shake, tup).
 
 The tool analyzes source files for:
 
@@ -60,12 +62,12 @@ OPTIONS
 --objdir DIR
     Output directory for object files. Default: bin/<variant>/obj
 
---shared-objects
-    Enable shared object cache for faster rebuilds across projects.
+--file-locking
+    Enable file locking for faster rebuilds across projects.
     Uses content-addressable storage with proper locking.
 
---no-shared-objects
-    Disable shared object cache. Default.
+--no-file-locking
+    Disable file locking. Default.
 
 --serialise-tests
     Run tests sequentially rather than in parallel.
@@ -112,11 +114,11 @@ Generate with a shared library:
     ct-create-makefile --dynamic mylib.cpp main.cpp
     make
 
-Generate for release variant with shared object cache:
+Generate for release variant with file locking:
 
 .. code-block:: bash
 
-    ct-create-makefile --variant=release --shared-objects main.cpp
+    ct-create-makefile --variant=release --file-locking main.cpp
     make
 
 COMPARISON WITH CT-CAKE
@@ -124,12 +126,13 @@ COMPARISON WITH CT-CAKE
 
 ct-cake and ct-create-makefile serve different purposes:
 
-* **ct-cake**: All-in-one tool that finds targets, generates Makefile, and
-  runs make. Use for quick builds during development.
+* **ct-cake**: All-in-one tool that finds targets, generates build files, and
+  runs the build. Supports multiple backends via ``--backend`` (make, ninja,
+  cmake, bazel, shake, tup). Use for quick builds during development.
 
-* **ct-create-makefile**: Only generates the Makefile. Use when you need
-  more control over the build process, want to customize the Makefile,
-  or integrate with other build systems.
+* **ct-create-makefile**: Only generates a Makefile. Use when you need
+  more control over the Make-based build process or want to inspect and
+  customize the generated Makefile.
 
 The ct-build shell scripts use ct-create-makefile internally:
 

@@ -1,7 +1,5 @@
 import os
-import sys
 import tempfile
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import configargparse
@@ -290,7 +288,7 @@ class TestFindTargetsOsWalkFallback:
 
             # Mock get_tracked_files to return empty dict (non-git)
             with patch("compiletools.global_hash_registry.get_tracked_files", return_value={}):
-                exes, tests = findtargets(path=tmpdir)
+                exes, _tests = findtargets(path=tmpdir)
                 # Should find our file as an executable
                 assert any("hello.cpp" in e for e in exes)
 
@@ -306,4 +304,4 @@ class TestFindTargetsMain:
 
     def test_main_runs(self):
         """Test main() runs without error."""
-        result = compiletools.findtargets.main(argv=["--style=flat", "--shorten"])
+        compiletools.findtargets.main(argv=["--style=flat", "--shorten"])

@@ -16,7 +16,7 @@ SYNOPSIS
 ========
 ct-compilation-database [-h] [-c CONFIG_FILE] [--variant VARIANT] [-v] [-q]
                         [--version] [--compilation-database-output OUTPUT]
-                        [--relative-paths] [--shared-objects]
+                        [--relative-paths] [--file-locking]
                         [filename ...]
 
 DESCRIPTION
@@ -67,7 +67,7 @@ OPTIONS
     Use relative paths instead of absolute paths in the database.
     Useful for portable compilation databases.
 
---shared-objects / --no-shared-objects
+--file-locking / --no-file-locking
     Enable file locking for concurrent compilation database writes.
     Useful in multi-user environments with shared build caches.
     Default: disabled.

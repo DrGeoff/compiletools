@@ -763,10 +763,10 @@ class TestCake(BaseCompileToolsTestCase):
 
             cake = compiletools.cake.Cake(args)
             with patch.object(cake, "_callfilelist") as mock_filelist:
-                with patch.object(cake, "_callmakefile") as mock_makefile:
+                with patch.object(cake, "_call_backend") as mock_backend:
                     cake.process()
                     mock_filelist.assert_called_once()
-                    mock_makefile.assert_not_called()
+                    mock_backend.assert_not_called()
 
     def test_process_verbose_high(self):
         """Test that process() prints debug messages when verbose > 4."""
@@ -783,7 +783,7 @@ class TestCake(BaseCompileToolsTestCase):
             args = self._make_cake_args(["-vvvvv"])
 
             cake = compiletools.cake.Cake(args)
-            with patch.object(cake, "_callmakefile"):
+            with patch.object(cake, "_call_backend"):
                 with patch("builtins.print") as mock_print:
                     cake.process()
                     calls = [str(c) for c in mock_print.call_args_list]
@@ -815,7 +815,7 @@ class TestCake(BaseCompileToolsTestCase):
             args = compiletools.apptools.parseargs(cap, argv)
 
             cake = compiletools.cake.Cake(args)
-            with patch.object(cake, "_callmakefile"):
+            with patch.object(cake, "_call_backend"):
                 cake.process()
                 assert len(args.static) >= 1
 
@@ -845,7 +845,7 @@ class TestCake(BaseCompileToolsTestCase):
             args = compiletools.apptools.parseargs(cap, argv)
 
             cake = compiletools.cake.Cake(args)
-            with patch.object(cake, "_callmakefile"):
+            with patch.object(cake, "_call_backend"):
                 cake.process()
                 assert len(args.dynamic) >= 1
 
