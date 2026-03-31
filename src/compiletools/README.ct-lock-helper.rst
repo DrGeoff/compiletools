@@ -3,7 +3,7 @@ ct-lock-helper
 ==============
 
 ------------------------------------------------------------
-Helper script for file locking during concurrent compilation
+Helper for file locking during concurrent compilation
 ------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
@@ -23,6 +23,10 @@ DESCRIPTION
 (``--file-locking`` flag). It wraps compilation commands to ensure atomic
 file creation and prevent race conditions in multi-user or parallel build
 environments.
+
+The helper is a Python entry point that delegates to ``locking.py``'s
+``atomic_compile()`` function, reusing the same tested locking algorithms
+used by the Shake backend.
 
 The helper implements four locking strategies automatically selected based on
 the target filesystem type:
@@ -50,7 +54,7 @@ Example::
 The helper will:
 
 1. Acquire lock based on strategy
-2. For fcntl: compile directly to target (no temp file)
+2. For fcntl/flock: compile directly to target (no temp file)
    For others: compile to temp file (``file.o.PID.RANDOM.tmp``), then rename to target
 3. Release lock
 
@@ -121,7 +125,7 @@ Uses ``mkdir`` for atomic lock acquisition. Works on all POSIX filesystems.
 
 **Stale lock handling:**
 
-- Same-host: Checks if process alive (``kill -0`` + ``/proc`` check on Linux)
+- Same-host: Checks if process alive (psutil)
 - Cross-host: Cannot verify, relies on age-based timeout warnings
 
 fcntl (GPFS)
@@ -137,7 +141,6 @@ need for polling and stale lock detection.
 - Cross-node mutual exclusion via kernel-managed record locks
 - No polling: ``lockf(LOCK_EX)`` blocks in the kernel
 - No stale detection: kernel releases locks automatically on process death
-- No holder info: not needed since the kernel manages everything
 - Locks the target ``.o`` file directly — no sidecar ``.lock`` file
 - Compiles directly to target (no temp file, no rename)
 
@@ -151,11 +154,6 @@ The fcntl advisory lock is placed on the target file itself. Since gcc opens
 the output with ``O_WRONLY|O_CREAT|O_TRUNC``, which preserves the inode, the
 lock held by the build process remains valid throughout compilation.
 
-**Shell implementation:** Since fcntl locks are per-process (not per-fd), the
-shell cannot hold an fcntl lock and then exec a compiler. The bash
-``ct-lock-helper`` delegates the entire compile-under-lock to an inline Python
-script for the fcntl strategy.
-
 cifs (CIFS/SMB)
 ^^^^^^^^^^^^^^^
 
@@ -165,7 +163,7 @@ Uses exclusive file creation (``O_CREAT|O_EXCL``) for CIFS compatibility.
 
 ::
 
-    target.o.lock        # Base lockfile (fd 9)
+    target.o.lock        # Base lockfile
     target.o.lock.excl   # Exclusive marker
 
 flock (Local filesystems)
@@ -192,56 +190,12 @@ the output with ``O_WRONLY|O_CREAT|O_TRUNC``, which preserves the inode, the
 lock held by the build process remains valid throughout compilation. Same
 reasoning as the fcntl strategy.
 
-Implementations
----------------
+Performance
+-----------
 
-Two implementations are available:
-
-**ct-lock-helper** (bash - default):
-- Overhead: ~12-18ms per compilation
-- Requires bash
-- Faster for simple operations
-
-**ct-lock-helper-py** (Python - alternative):
-- Overhead: ~45-52ms per compilation
-- Python 3.9+ required
-- Better error handling
-- Cross-platform (Windows compatible)
-- Reuses tested locking.py code
-
-Performance Comparison
-^^^^^^^^^^^^^^^^^^^^^^
-
-Measured overhead (vs direct gcc, 100 iterations):
-
-+-----------+---------------+----------------+---------------+
-| Strategy  | Bash          | Python         | Difference    |
-+===========+===============+================+===============+
-| flock     | 12.9ms        | 52.6ms         | **4.1x**      |
-+-----------+---------------+----------------+---------------+
-| fcntl     | ~50ms*        | 45.7ms         | **~1x**       |
-+-----------+---------------+----------------+---------------+
-| lockdir   | 18.5ms        | 45.7ms         | **2.5x**      |
-+-----------+---------------+----------------+---------------+
-| cifs      | 11.9ms        | 47.5ms         | **4.0x**      |
-+-----------+---------------+----------------+---------------+
-
-\* Bash fcntl strategy delegates to inline Python (fcntl locks are per-process).
-
-**Verdict:** Bash is **2.5-4x faster** than Python.
-
-**When the overhead doesn't matter:**
-
-- Real C/C++ compilation (typically 100ms-10s per file)
-- Parallel builds (``make -j8`` amortizes overhead)
-- Network filesystems (NFS latency >> 50ms)
-
-**When to use Python version:**
-
-- Windows or non-bash environments
-- Better error messages/debugging needed
-- Cross-platform consistency required
-- Overhead is acceptable (< 50% of compile time)
+ct-lock-helper adds ~45-65ms overhead per compilation due to Python startup
+and import costs. This is negligible for real C/C++ files (100ms-10s compile
+time) and under lock contention (where lock wait time dominates).
 
 **When file locking is beneficial:**
 
@@ -259,13 +213,6 @@ Measured overhead (vs direct gcc, 100 iterations):
 
 Strategy is determined once in Python and baked into Makefile/build.ninja.
 No per-compilation filesystem detection overhead.
-
-**Benchmark:**
-
-Run your own performance comparison::
-
-    # Available after installation
-    benchmark_lock_implementations.sh
 
 Troubleshooting
 ---------------
@@ -289,7 +236,7 @@ Check for:
 
 **Slow builds with locking**
 
-ct-lock-helper adds ~13-17ms overhead per compilation due to process spawn.
+ct-lock-helper adds ~45-65ms overhead per compilation due to Python startup.
 This is negligible for real C/C++ files (100ms-10s compile time) but may be
 noticeable for many tiny files.
 
@@ -350,7 +297,8 @@ See Also
 Algorithm Details
 -----------------
 
-The locking algorithm mirrors ``locking.py`` for consistency:
+The locking algorithms are implemented in ``locking.py`` and shared between
+ct-lock-helper (Make/Ninja backends) and the Shake backend:
 
 1. **Acquire:**
 
@@ -364,18 +312,11 @@ The locking algorithm mirrors ``locking.py`` for consistency:
 
    - For fcntl/flock: compile directly to target (advisory lock protects target)
    - For others: compile to temporary file, then rename to target (atomic)
-   - Exit immediately on compile errors (``set -euo pipefail``)
 
 3. **Release:**
 
    - Remove lock files (except fcntl/flock, which lock the target directly)
-   - Cleanup via trap on EXIT/INT/TERM
-
-**Error handling:**
-
-- All errors propagate (``set -euo pipefail``)
-- Locks released even on signals (trap)
-- Temp files cleaned up on exit
+   - Cleanup via signal handlers on SIGINT/SIGTERM
 
 Examples
 --------
@@ -419,5 +360,3 @@ For development::
     pip install -e .
     # or
     pip install -e ".[dev]"
-
-The script is located at the repository root: ``compiletools/ct-lock-helper``

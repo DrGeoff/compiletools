@@ -119,7 +119,7 @@ def main(argv=None):
 
     # Parse arguments
     parser = argparse.ArgumentParser(
-        prog="ct-lock-helper-py", description="File locking helper for concurrent builds (Python implementation)"
+        prog="ct-lock-helper", description="File locking helper for concurrent builds (Python implementation)"
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")

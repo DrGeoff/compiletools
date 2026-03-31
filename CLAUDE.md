@@ -130,7 +130,7 @@ PreprocessingCache                    # Two-tier caching
 
 ### Command-Line Tools
 
-Python entry points defined in `pyproject.toml [project.scripts]`. Shell wrappers in `scripts/` (ct-build, ct-release, ct-watch-build, ct-lock-helper, profile-ct).
+Python entry points defined in `pyproject.toml [project.scripts]`. Shell wrappers in `scripts/` (ct-build, ct-release, ct-watch-build, profile-ct).
 
 All tools support `--variant=<config>` for build configuration selection and `--backend=<name>` for build system backend selection (make, ninja, cmake, bazel, shake, tup).
 
@@ -139,7 +139,7 @@ All tools support `--variant=<config>` for build configuration selection and `--
 - Prefer function-based tests (`def test_something():`) for simple cases
 - Use class-based tests with `BaseCompileToolsTestCase` from `test_base.py` for tests needing cache isolation (it clears all module-level caches in setup/teardown)
 - `testhelper.py` provides `TempDirContext`, `create_temp_config()`, `samplesdir()`, `@requires_functional_compiler`
-- `conftest.py` has session-wide `ensure_lock_helpers_in_path` fixture and function-scoped `pkgconfig_env` fixture
+- `conftest.py` has session-wide `ensure_lock_helper_in_path` fixture and function-scoped `pkgconfig_env` fixture
 - Sample projects in `src/compiletools/samples/` cover specific test scenarios (conditional_includes, macro_deps, cross_platform, etc.)
 - Never hardcode compiler names (`gcc`, `g++`) in tests that invoke compilation — use `@requires_functional_compiler` decorator and `apptools.get_functional_cxx_compiler()` to detect the system compiler
 - Use `monkeypatch.chdir()` instead of `os.chdir()` with try/finally in tests — pytest auto-restores the working directory
