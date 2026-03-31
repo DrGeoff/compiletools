@@ -30,7 +30,11 @@ def get_repo_parent_dir() -> Path:
 
 
 def profile_ct_cake_in_worktree(
-    worktree_path: Path, sample_dir: str, magic_mode: str = "direct", profile_file: Optional[str] = None
+    worktree_path: Path,
+    sample_dir: str,
+    magic_mode: str = "direct",
+    backend: str = "make",
+    profile_file: Optional[str] = None,
 ) -> tuple[dict, bool]:
     """Profile ct-cake execution using subprocess for complete isolation."""
 
@@ -101,8 +105,8 @@ def profile_ct_cake_in_worktree(
                 "--auto",
                 "--magic",
                 magic_mode,
-                "--makefilename",
-                str(tmppath / "Makefile"),
+                "--backend",
+                backend,
                 "--objdir",
                 str(tmppath / "obj"),
                 "--bindir",
@@ -249,16 +253,51 @@ def get_test_samples() -> list[str]:
     ]
 
 
-def get_test_configurations() -> list[dict[str, str]]:
-    """Get list of test configurations for magic modes."""
+def get_test_configurations(
+    magic_modes: list[str], backends: list[str]
+) -> list[dict[str, str]]:
+    """Get list of test configurations for magic mode x backend combinations."""
     configurations = []
 
-    magic_modes = ["direct", "cpp"]
-
     for magic_mode in magic_modes:
-        configurations.append({"magic_mode": magic_mode, "name": magic_mode})
+        for backend in backends:
+            if len(backends) == 1:
+                name = magic_mode
+            elif len(magic_modes) == 1:
+                name = backend
+            else:
+                name = f"{magic_mode}+{backend}"
+            configurations.append({
+                "magic_mode": magic_mode,
+                "backend": backend,
+                "name": name,
+            })
 
     return configurations
+
+
+# Backend tools required for execution (generation-only backends don't need them,
+# but ct-cake --auto runs both generate and execute).
+_BACKEND_TOOLS: dict[str, str] = {
+    "make": "make",
+    "ninja": "ninja",
+    "cmake": "cmake",
+    "bazel": "bazel",
+    "shake": "ghc",
+    "tup": "tup",
+}
+
+
+def detect_available_backends(requested: list[str]) -> list[str]:
+    """Filter requested backends to those whose build tool is installed."""
+    available = []
+    for backend in requested:
+        tool = _BACKEND_TOOLS.get(backend, backend)
+        if shutil.which(tool):
+            available.append(backend)
+        else:
+            print(f"  Skipping backend '{backend}': '{tool}' not found on PATH")
+    return available
 
 
 def cleanup_all_worktrees():
@@ -373,6 +412,7 @@ def profile_branch_worktree(
     for config in configurations:
         config_name = config["name"]
         magic_mode = config["magic_mode"]
+        backend = config.get("backend", "make")
 
         print(f"  Profiling configuration: {config_name}")
         config_results = {}
@@ -384,7 +424,9 @@ def profile_branch_worktree(
             if save_profiles and profile_dir:
                 profile_file = str(profile_dir / f"{branch_name}_{config_name}_{sample_dir}.prof")
 
-            stats_data, success = profile_ct_cake_in_worktree(worktree_path, sample_dir, magic_mode, profile_file)
+            stats_data, success = profile_ct_cake_in_worktree(
+                worktree_path, sample_dir, magic_mode, backend, profile_file
+            )
 
             if success:
                 config_results[sample_dir] = stats_data
@@ -690,6 +732,13 @@ def main():
         help="Magic processing modes to test",
     )
     parser.add_argument(
+        "--backends",
+        nargs="+",
+        default=["make"],
+        choices=["make", "ninja", "cmake", "bazel", "shake", "tup"],
+        help="Build backends to test",
+    )
+    parser.add_argument(
         "--save-profiles", action="store_true", help="Save individual .prof files for detailed analysis"
     )
     parser.add_argument("--save-results", help="Save detailed results to JSON file")
@@ -716,6 +765,8 @@ def main():
         print("CT-CAKE DETAILED PERFORMANCE PROFILING (using git worktrees)")
         print(f"Baseline: {args.baseline_branch}")
         print(f"Current: {args.current_branch}")
+        print(f"Magic modes: {', '.join(args.magic_modes)}")
+        print(f"Backends: {', '.join(args.backends)}")
         print(f"Worktree base: {base_path}")
         if args.save_profiles:
             print("Saving individual profile files for detailed analysis")
@@ -724,10 +775,14 @@ def main():
         test_samples = get_test_samples()
         print(f"Test samples: {', '.join(test_samples)}")
 
-        # Generate test configurations
-        configurations = []
-        for magic_mode in args.magic_modes:
-            configurations.append({"magic_mode": magic_mode, "name": magic_mode})
+        # Detect which requested backends are available
+        backends = detect_available_backends(args.backends)
+        if not backends:
+            print("Error: No requested backends are available on this system")
+            return 1
+
+        # Generate test configurations (magic_mode x backend)
+        configurations = get_test_configurations(args.magic_modes, backends)
 
         print(f"Test configurations: {', '.join([c['name'] for c in configurations])}")
 
@@ -783,6 +838,7 @@ def main():
                 "current_results": current_results,
                 "test_config": {
                     "magic_modes": args.magic_modes,
+                    "backends": backends,
                     "configurations": [c["name"] for c in configurations],
                     "test_samples": test_samples,
                     "save_profiles": args.save_profiles,
