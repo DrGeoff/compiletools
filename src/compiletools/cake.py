@@ -1,7 +1,6 @@
 import os
 import shutil
 import signal
-import subprocess
 import sys
 
 import compiletools.apptools
@@ -13,9 +12,24 @@ import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.jobs
 import compiletools.magicflags
-import compiletools.makefile
+import compiletools.namer
 import compiletools.utils
 import compiletools.wrappedos
+from compiletools.build_backend import available_backends, get_backend_class
+
+
+def _ensure_backends_registered():
+    """Import all backend modules to trigger @register_backend decoration.
+
+    Called lazily on first use (argument parsing or backend dispatch) rather
+    than at module import time, to reduce startup cost for non-build paths.
+    """
+    import compiletools.bazel_backend
+    import compiletools.cmake_backend
+    import compiletools.makefile_backend
+    import compiletools.ninja_backend
+    import compiletools.shake_backend
+    import compiletools.tup_backend  # noqa: F401
 
 
 class Cake:
@@ -30,7 +44,10 @@ class Cake:
     def _hide_makefilename(args):
         """Change the args.makefilename to hide the Makefile in the executable_dir()
         This is a callback function for the compiletools.apptools.substitutions.
+        Only applies when using the make backend.
         """
+        if getattr(args, "backend", "make") != "make":
+            return
         namer = compiletools.namer.Namer(args)
         if namer.executable_dir() not in args.makefilename:
             movedmakefile = os.path.join(namer.executable_dir(), args.makefilename)
@@ -54,7 +71,19 @@ class Cake:
 
     @staticmethod
     def add_arguments(cap):
-        compiletools.makefile.MakefileCreator.add_arguments(cap)
+        _ensure_backends_registered()
+
+        # General arguments needed by all backends
+        compiletools.apptools.add_target_arguments_ex(cap)
+        compiletools.apptools.add_link_arguments(cap)
+        compiletools.namer.Namer.add_arguments(cap)
+        compiletools.hunter.add_arguments(cap)
+
+        # Make backend-specific arguments
+        from compiletools.makefile_backend import MakefileBackend
+
+        MakefileBackend.add_arguments(cap)
+
         compiletools.jobs.add_arguments(cap)
 
         cap.add(
@@ -118,6 +147,13 @@ class Cake:
         )
 
         cap.add("--clean", action="store_true", help="Aggressively cleanup.")
+
+        cap.add(
+            "--backend",
+            default="make",
+            choices=available_backends(),
+            help="Build system backend to use (default: make).",
+        )
 
         cap.add(
             "-o",
@@ -187,51 +223,21 @@ class Cake:
                         print(os.path.join(outputdir, filename))
                     shutil.copy2(src, outputdir)
 
-    def _callmakefile(self):
-        makefile_creator = compiletools.makefile.MakefileCreator(self.args, self.hunter)
-        makefile_creator.create()
+    def _call_backend(self):
+        """Dispatch to the selected build backend."""
+        backend_name = getattr(self.args, "backend", "make")
+        BackendClass = get_backend_class(backend_name)
+        backend = BackendClass(args=self.args, hunter=self.hunter)
 
-        # Generate compilation database after makefile creation but before build
+        graph = backend.build_graph()
+        backend.generate(graph)
+
         self._call_compilation_database()
 
         os.makedirs(self.namer.executable_dir(), exist_ok=True)
-        cmd = ["make"]
-        if self.args.verbose <= 1:
-            cmd.append("-s")
-        if self.args.verbose >= 4:
-            # --trace first comes in GNU make 4.0
-            make_version = (
-                subprocess.check_output(["make", "--version"], universal_newlines=True)
-                .splitlines()[0]
-                .split(" ")[-1]
-                .split(".")[0]
-            )
-            if int(make_version) >= 4:
-                cmd.append("--trace")
-        cmd.extend(["-j", str(self.args.parallel), "-f", self.args.makefilename])
-        if self.args.clean:
-            cmd.append("realclean")
-        else:
-            cmd.append("build")
-        if self.args.verbose >= 1:
-            print(" ".join(cmd))
-
-        # Time the main build subprocess
-        subprocess.check_call(cmd, universal_newlines=True)
-
-        if self.args.tests and not self.args.clean:
-            cmd = ["make"]
-            cmd.extend(["-j", str(self.args.parallel)])
-            if self.args.verbose < 2:
-                cmd.append("-s")
-            cmd.extend(["-f", self.args.makefilename, "runtests"])
-            if self.args.verbose >= 2:
-                print(" ".join(cmd))
-
-            # Time the test execution subprocess
-            subprocess.check_call(cmd, universal_newlines=True)
 
         if self.args.clean:
+            backend.clean()
             # Remove the extra executables we copied
             if self.args.output:
                 try:
@@ -248,6 +254,11 @@ class Cake:
                     except OSError:
                         pass
         else:
+            backend.execute("build")
+
+            if self.args.tests and "runtests" in graph.outputs:
+                backend.execute("runtests")
+
             self._copyexes()
 
     def process(self):
@@ -289,7 +300,7 @@ class Cake:
         if self.args.filelist:
             self._callfilelist()
         else:
-            self._callmakefile()
+            self._call_backend()
 
     def clear_cache(self):
         """Only useful in test scenarios where you need to reset to a pristine state"""

@@ -74,7 +74,7 @@ When you are doing performance testing there are 2 caches you need to be aware o
 2) cake:    Object files go to objdir (default: bin/<variant>/obj/).
             Executables go to bindir (default: bin/<variant>/).
             To clear: rm -rf bin
-            With --shared-objects enabled, objdir may be a shared location
+            With --file-locking enabled, objdir may be a shared location
             (e.g., <gitroot>/obj or /some/path/to/obj).
 
 #
@@ -94,6 +94,9 @@ rm -rf bin
 # Package Structure
 #
 src/compiletools/     - Main package code
+  *_backend.py        - Pluggable build backends (make, ninja, cmake, bazel, shake, tup)
+  build_graph.py      - Backend-agnostic IR (BuildRule, BuildGraph)
+  build_backend.py    - BuildBackend ABC and backend registry
 scripts/              - Shell script wrappers (ct-build, ct-release, etc.)
 ct-*                  - Command-line entry points
 pyproject.toml        - Modern Python packaging configuration

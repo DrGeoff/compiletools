@@ -5,9 +5,9 @@ Tests concurrent compilation, locking mechanisms, and permission handling
 for shared object file caches across multiple users/processes.
 
 Filesystem Compatibility:
-- Most tests work with any locking strategy (flock, lockdir, cifs)
-- test_stale_lock_cleanup requires lockdir (NFS/GPFS/Lustre) and skips on flock filesystems
-- When run on GPFS/Lustre/NFS, all tests execute
+- Most tests work with any locking strategy (flock, fcntl, lockdir, cifs)
+- test_stale_lock_cleanup requires lockdir (NFS/Lustre) and skips on other strategies
+- When run on NFS/Lustre, all tests execute; GPFS uses fcntl (kernel-managed)
 - When run on local filesystems (ext4/xfs), stale lock test skips with informative message
 
 Umask Requirements:
@@ -231,12 +231,12 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         src_file = os.path.join(uth.samplesdir(), "simple/helloworld_cpp.cpp")
         shutil.copy2(src_file, str(source_dir / "main.cpp"))
 
-        # Create config with shared-objects enabled and custom objdir
+        # Create config with file-locking enabled and custom objdir
         config_name = uth.create_temp_config(str(source_dir))
         uth.create_temp_ct_conf(
             tempdir=str(source_dir),
             defaultvariant=os.path.basename(config_name)[:-5],
-            extralines=["shared-objects = true", f"objdir = {objdir}"],
+            extralines=["file-locking = true", f"objdir = {objdir}"],
         )
 
         return str(source_dir), config_name
@@ -319,7 +319,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 uth.create_temp_ct_conf(
                     tempdir=str(source_dir),
                     defaultvariant=os.path.basename(config_name)[:-5],
-                    extralines=["shared-objects = true", f"objdir = {objdir}"],
+                    extralines=["file-locking = true", f"objdir = {objdir}"],
                 )
                 dirs_and_configs.append((str(source_dir), config_name))
 
@@ -345,7 +345,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
     @uth.requires_functional_compiler
     def test_different_umask_compatibility(self):
         """
-        Test 2.1: Umask compatibility for shared-objects mode.
+        Test 2.1: Umask compatibility for file-locking mode.
 
         Expected:
         - User A with umask 0002 compiles successfully
@@ -761,16 +761,16 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Overhead should be < 50% for single-threaded case
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Build without shared-objects (no locking)
+            # Build without file-locking (no locking)
             objdir_no_lock = Path(tmpdir) / "obj_no_lock"
             objdir_no_lock.mkdir()
 
             source_dir_1, config_name_1 = self._create_test_source_dir(tmpdir, "build_no_lock", str(objdir_no_lock))
 
-            # Modify config to disable shared-objects
+            # Modify config to disable file-locking
             ct_conf = Path(source_dir_1) / "ct.conf"
             content = ct_conf.read_text()
-            content = content.replace("shared-objects = true", "shared-objects = false")
+            content = content.replace("file-locking = true", "file-locking = false")
             ct_conf.write_text(content)
 
             os.chdir(source_dir_1)
@@ -786,7 +786,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             compiletools.cake.main(argv)
             no_lock_time = time.time() - start
 
-            # Build with shared-objects (with locking)
+            # Build with file-locking (with locking)
             objdir_lock = Path(tmpdir) / "obj_lock"
             objdir_lock.mkdir()
 
@@ -819,8 +819,8 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         """
         Test stale lock detection and automatic cleanup.
 
-        Runs only on filesystems that use lockdir strategy (NFS, GPFS, Lustre).
-        Skipped on local filesystems (ext4, xfs, etc.) that use flock.
+        Runs only on filesystems that use lockdir strategy (NFS, Lustre).
+        Skipped on local filesystems (ext4, xfs, etc.) and GPFS (uses fcntl).
 
         Verifies that:
         1. Stale locks with hostname:PID format are detected
@@ -907,7 +907,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             uth.create_temp_ct_conf(
                 tempdir=str(subproject_a_dir),
                 defaultvariant=os.path.basename(config_a)[:-5],
-                extralines=["shared-objects = true", f"objdir = {objdir}"],
+                extralines=["file-locking = true", f"objdir = {objdir}"],
             )
 
             # Subproject B: factory sample
@@ -922,7 +922,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             uth.create_temp_ct_conf(
                 tempdir=str(subproject_b_dir),
                 defaultvariant=os.path.basename(config_b)[:-5],
-                extralines=["shared-objects = true", f"objdir = {objdir}"],
+                extralines=["file-locking = true", f"objdir = {objdir}"],
             )
 
             # Build both subprojects concurrently
@@ -1081,7 +1081,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
 
             # Verify hash components
             opt_parts = opt_obj_name.replace(".o", "").split("_")
-            def_parts = list(new_objs)[0].replace(".o", "").split("_")
+            def_parts = next(iter(new_objs)).replace(".o", "").split("_")
 
             assert opt_parts[0] == def_parts[0], "Basename should match"
             assert opt_parts[1] == def_parts[1], "File hash should match (same source)"

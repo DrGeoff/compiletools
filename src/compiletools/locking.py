@@ -9,6 +9,7 @@ import os
 import platform
 import shutil
 import socket
+import subprocess
 import sys
 import time
 
@@ -25,8 +26,66 @@ except ImportError:
     HAS_FCNTL = False
 
 
+class FcntlLock:
+    """fcntl.lockf()-based locking for GPFS (cross-node, kernel-managed).
+
+    Uses POSIX fcntl record locks which work correctly across GPFS nodes
+    (unlike flock which is node-local on GPFS). The kernel handles blocking
+    and automatic release on process death — no polling, no stale detection,
+    no holder info needed.
+
+    Locks the target file directly (no sidecar .lock file). This works because
+    gcc opens the output with O_WRONLY|O_CREAT|O_TRUNC, which preserves the
+    inode — so the advisory fcntl lock stays valid.
+    """
+
+    direct_compile = True
+
+    def __init__(self, target_file, args):
+        self.lockfile = compiletools.wrappedos.realpath(target_file)
+        self.fd = None
+        self.args = args
+
+    def acquire(self):
+        """Acquire lock using fcntl.lockf(LOCK_EX).
+
+        Opens/creates target file, then blocks until the lock is acquired.
+        The kernel handles queuing and automatic release on process death.
+        """
+        if not HAS_FCNTL:
+            raise RuntimeError("fcntl module not available (Windows?); cannot use fcntl lock strategy")
+
+        # Ensure parent directory exists
+        parent_dir = compiletools.wrappedos.dirname(self.lockfile)
+        if parent_dir and not os.path.exists(parent_dir):
+            os.makedirs(parent_dir, exist_ok=True)
+
+        self.fd = os.open(self.lockfile, os.O_CREAT | os.O_RDWR, 0o666)
+        try:
+            fcntl.lockf(self.fd, fcntl.LOCK_EX)
+        except BaseException:
+            os.close(self.fd)
+            self.fd = None
+            raise
+
+    def release(self):
+        """Release fcntl lock and close fd. Does NOT unlink lock file."""
+        if self.fd is not None:
+            try:
+                fcntl.lockf(self.fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self.fd = None
+
+
 class LockdirLock:
-    """Lockdir-based locking for NFS/GPFS/Lustre (mkdir atomic operation)."""
+    """Lockdir-based locking for NFS/Lustre (mkdir atomic operation)."""
+
+    direct_compile = False
 
     def __init__(self, target_file, args):
         # Use wrappedos for path computations (pure, cacheable)
@@ -57,7 +116,7 @@ class LockdirLock:
         self.platform = platform.system().lower()
 
     def _set_lockdir_permissions(self):
-        """Set lockdir permissions for multi-user shared-objects mode.
+        """Set lockdir permissions for multi-user file-locking mode.
 
         Mirrors shell behavior:
         - chmod 775 lockdir (group-writable)
@@ -303,6 +362,8 @@ class LockdirLock:
 class CIFSLock:
     """CIFS/SMB locking using exclusive file creation (O_CREAT|O_EXCL)."""
 
+    direct_compile = False
+
     def __init__(self, target_file, args):
         self.lockfile = target_file + ".lock"
         self.lockfile_excl = target_file + ".lock.excl"
@@ -353,92 +414,73 @@ class CIFSLock:
 class FlockLock:
     """POSIX flock locking for local filesystems (ext4/xfs/btrfs).
 
-    WARNING: flock() is node-local on GPFS/Lustre/NFS. Use LockdirLock
-    for network filesystems. This class should only be used when
-    filesystem detection confirms a local filesystem.
+    WARNING: flock() is node-local on GPFS/Lustre/NFS. Use FcntlLock
+    for GPFS or LockdirLock for NFS/Lustre. This class should only be
+    used when filesystem detection confirms a local filesystem.
+
+    Locks the target file directly (no sidecar .lock file). This works because
+    gcc opens the output with O_WRONLY|O_CREAT|O_TRUNC, which preserves the
+    inode — so the advisory flock stays valid. Same reasoning as FcntlLock.
     """
 
+    direct_compile = True
+
     def __init__(self, target_file, args):
-        self.lockfile = target_file + ".lock"
-        self.lockfile_pid = target_file + ".lock.pid"
+        self.lockfile = compiletools.wrappedos.realpath(target_file)
         self.fd = None
-        self.use_flock = True
-        self.sleep_interval = args.sleep_interval_flock_fallback
         self.args = args
 
     def acquire(self):
-        """Acquire lock using POSIX flock with fallback.
+        """Acquire lock using POSIX flock(LOCK_EX).
 
-        Algorithm mirrors ct-lock-helper flock strategy.
-        Try fcntl.flock() first, fallback to O_EXCL polling.
+        Opens/creates target file, then blocks until the lock is acquired.
+        The kernel handles queuing and automatic release on process death.
         """
+        if not HAS_FCNTL:
+            raise RuntimeError("fcntl module not available (Windows?); cannot use flock lock strategy")
+
         # Ensure parent directory exists
-        parent_dir = os.path.dirname(self.lockfile)
+        parent_dir = compiletools.wrappedos.dirname(self.lockfile)
         if parent_dir and not os.path.exists(parent_dir):
             os.makedirs(parent_dir, exist_ok=True)
 
-        # Open lockfile
-        self.fd = os.open(self.lockfile, os.O_CREAT | os.O_WRONLY, 0o666)
-
-        # Try flock first (only on Unix)
-        if HAS_FCNTL:
-            try:
-                fcntl.flock(self.fd, fcntl.LOCK_EX)
-                self.use_flock = True
-                return
-            except OSError:
-                # flock failed, fall through to polling fallback
-                pass
-
-        # flock not available or failed, use fallback
-        self.use_flock = False
-
-        # Fallback: polling with O_EXCL
-        while True:
-            try:
-                pid_fd = os.open(self.lockfile_pid, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
-                os.write(pid_fd, f"{os.getpid()}\n".encode())
-                os.close(pid_fd)
-                return
-            except FileExistsError:
-                time.sleep(self.sleep_interval)
+        self.fd = os.open(self.lockfile, os.O_CREAT | os.O_RDWR, 0o666)
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_EX)
+        except BaseException:
+            os.close(self.fd)
+            self.fd = None
+            raise
 
     def release(self):
-        """Release flock."""
-        try:
-            if self.use_flock and HAS_FCNTL:
-                if self.fd is not None:
-                    fcntl.flock(self.fd, fcntl.LOCK_UN)
-                    os.close(self.fd)
-                    self.fd = None
-            else:
-                if os.path.exists(self.lockfile_pid):
-                    os.unlink(self.lockfile_pid)
-                if self.fd is not None:
-                    os.close(self.fd)
-                    self.fd = None
-            # Clean up base lockfile to match Makefile suffix behavior
-            if os.path.exists(self.lockfile):
-                os.unlink(self.lockfile)
-        except OSError as e:
-            if self.args.verbose >= 2:
-                print(f"Warning: Failed to release flock: {e}", file=sys.stderr)
+        """Release flock and close fd. Does NOT unlink lock file."""
+        if self.fd is not None:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self.fd = None
 
 
 class FileLock:
     """Context manager for file locking with automatic strategy selection.
 
     Strategy selection (via filesystem_utils.get_lock_strategy):
-    - 'lockdir': NFS, GPFS, Lustre (mkdir-based locking)
+    - 'fcntl': GPFS (fcntl.lockf(), cross-node, kernel-managed)
+    - 'lockdir': NFS, Lustre (mkdir-based locking)
     - 'cifs': CIFS/SMB (exclusive file creation)
-    - 'flock': All others, including unknown filesystems (POSIX flock with fallback)
+    - 'flock': All others, including unknown filesystems (POSIX flock, kernel-managed blocking)
 
     Note: Unknown/undetectable filesystems safely default to 'flock' strategy,
     which is the most portable (works on all POSIX systems).
     """
 
     def __init__(self, target_file, args):
-        if not getattr(args, "shared_objects", False):
+        if not getattr(args, "file_locking", False):
             self.lock = None
             return
 
@@ -461,8 +503,9 @@ class FileLock:
             strategy = "flock"
 
         # Select lock implementation based on strategy
-        # get_lock_strategy() always returns 'lockdir', 'cifs', or 'flock'
-        if strategy == "lockdir":
+        if strategy == "fcntl":
+            self.lock = FcntlLock(target_file, args)
+        elif strategy == "lockdir":
             self.lock = LockdirLock(target_file, args)
         elif strategy == "cifs":
             self.lock = CIFSLock(target_file, args)
@@ -478,3 +521,69 @@ class FileLock:
         if self.lock:
             self.lock.release()
         return False  # Don't suppress exceptions
+
+
+def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.CompletedProcess:
+    """Execute compilation atomically under a lock.
+
+    For locks with direct_compile=True (FcntlLock, FlockLock): compiles
+    directly to the target file. The advisory lock protects the target while
+    gcc writes to it (O_WRONLY|O_CREAT|O_TRUNC preserves the inode).
+
+    For other locks: compiles to a temp file, then renames to target,
+    preventing TOCTOU races where another process sees a partially-written
+    output file.
+
+    Args:
+        lock: Lock object with acquire()/release() methods.
+        target: Final output file path.
+        compile_cmd: Compile command WITHOUT -o flag.
+
+    Returns:
+        subprocess.CompletedProcess from the compiler invocation.
+
+    Raises:
+        subprocess.CalledProcessError: If compilation fails.
+    """
+    if getattr(lock, "direct_compile", False):
+        lock.acquire()
+        try:
+            cmd = list(compile_cmd) + ["-o", target]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise subprocess.CalledProcessError(
+                    result.returncode, cmd, result.stdout, result.stderr
+                )
+            return result
+        finally:
+            lock.release()
+
+    pid = os.getpid()
+    random_suffix = os.urandom(2).hex()
+    tempfile_path = f"{target}.{pid}.{random_suffix}.tmp"
+
+    try:
+        lock.acquire()
+
+        cmd = list(compile_cmd) + ["-o", tempfile_path]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode, cmd, result.stdout, result.stderr
+            )
+
+        os.rename(tempfile_path, target)
+        return result
+
+    finally:
+        # Clean up temp file before releasing lock, so other processes
+        # never see a stale temp file between lock release and cleanup.
+        # Nested finally guarantees lock.release() even if cleanup raises.
+        try:
+            if os.path.exists(tempfile_path):
+                try:
+                    os.unlink(tempfile_path)
+                except OSError:
+                    pass
+        finally:
+            lock.release()

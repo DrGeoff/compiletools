@@ -1,6 +1,7 @@
 import argparse
 import functools
 import importlib.util
+import logging
 import os
 import shlex
 import subprocess
@@ -200,7 +201,7 @@ def add_locking_arguments(cap):
         "--sleep-interval-lockdir",
         type=float,
         default=None,
-        help="Sleep interval for lockdir polling (NFS/GPFS/Lustre) (default: auto-detect based on filesystem)",
+        help="Sleep interval for lockdir polling (NFS/Lustre) (default: auto-detect based on filesystem)",
     )
     cap.add(
         "--sleep-interval-cifs",
@@ -240,10 +241,15 @@ def add_output_directory_arguments(cap, variant):
         help="Output directory for executables",
         default="".join(["bin/", variant]),
     )
+    git_root = compiletools.git_utils.find_git_root()
+    if git_root:
+        default_objdir = os.path.join(git_root, "shared-objdir", variant)
+    else:
+        default_objdir = "".join(["bin/", variant, "/obj"])
     cap.add(
         "--objdir",
         help="Output directory for object files",
-        default="".join(["bin/", variant, "/obj"]),
+        default=default_objdir,
     )
 
 
@@ -1015,7 +1021,7 @@ def _strip_quotes(args):
                     # Otherwise assume its a string
                     setattr(args, name, _safely_unquote_string(value))
                 except (AttributeError, ValueError, TypeError):
-                    pass
+                    logging.debug("Could not unquote arg %s (type %s)", name, type(value).__name__)
 
 
 def _safely_unquote_string(value):
@@ -1099,8 +1105,13 @@ def _commonsubstitutions(args):
         pass
 
     try:
-        # Same idea as the bindir modification
-        args.objdir = unsupplied_replacement(args.objdir, os.path.join(args.bindir, "obj"), args.verbose, "objdir")
+        # Same idea as the bindir modification -- use shared-objdir at git root if available
+        git_root = compiletools.git_utils.find_git_root()
+        if git_root:
+            default_objdir = os.path.join(git_root, "shared-objdir", args.variant)
+        else:
+            default_objdir = os.path.join(args.bindir, "obj")
+        args.objdir = unsupplied_replacement(args.objdir, default_objdir, args.verbose, "objdir")
     except AttributeError:
         pass
 

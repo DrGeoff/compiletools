@@ -125,7 +125,7 @@ class TestHunterClearCache:
     def test_clear_instance_cache(self):
         """Test clear_instance_cache clears functools.cache and dynamic attrs (lines 167-175)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr, args = _make_hunter(temp_config=temp_config)
+            hntr, _args = _make_hunter(temp_config=temp_config)
 
             # Set dynamic attributes that clear_instance_cache should remove
             hntr._hunted_sources = ["fake.cpp"]
@@ -139,7 +139,7 @@ class TestHunterClearCache:
     def test_clear_instance_cache_without_dynamic_attrs(self):
         """Test clear_instance_cache when dynamic attrs don't exist (lines 172-174 else branches)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr, args = _make_hunter(temp_config=temp_config)
+            hntr, _args = _make_hunter(temp_config=temp_config)
             # Should not raise even without _hunted_sources/_test_sources
             hntr.clear_instance_cache()
 
@@ -162,7 +162,7 @@ class TestHunterRequiredFiles:
     def test_required_files_returns_all_deps(self):
         """Test required_files returns headers + sources (lines 135, 142, 150, 152)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr, args = _make_hunter(temp_config=temp_config)
+            hntr, _args = _make_hunter(temp_config=temp_config)
             realpath = os.path.join(uth.samplesdir(), "factory/test_factory.cpp")
             result = hntr.required_files(realpath)
             # Should contain the file itself plus dependencies
@@ -172,7 +172,7 @@ class TestHunterRequiredFiles:
     def test_required_source_files_filters_to_sources(self):
         """Test required_source_files only returns source files (lines 122-126)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr, args = _make_hunter(temp_config=temp_config)
+            hntr, _args = _make_hunter(temp_config=temp_config)
             realpath = os.path.join(uth.samplesdir(), "factory/test_factory.cpp")
             sources = hntr.required_source_files(realpath)
             for s in sources:
@@ -181,7 +181,7 @@ class TestHunterRequiredFiles:
     def test_header_dependencies(self):
         """Test header_dependencies public API (lines 214-223)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr, args = _make_hunter(temp_config=temp_config)
+            hntr, _args = _make_hunter(temp_config=temp_config)
             realpath = os.path.join(uth.samplesdir(), "factory/test_factory.cpp")
             headers = hntr.header_dependencies(realpath)
             # Should return a list of header file paths
@@ -193,7 +193,7 @@ class TestHunterRequiredFiles:
     def test_macro_state_hash(self):
         """Test macro_state_hash returns a hash string (line 206)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr, args = _make_hunter(temp_config=temp_config)
+            hntr, _args = _make_hunter(temp_config=temp_config)
             realpath = os.path.join(uth.samplesdir(), "factory/test_factory.cpp")
             # Must call magicflags first
             hntr.magicflags(realpath)
@@ -204,7 +204,7 @@ class TestHunterRequiredFiles:
     def test_extractSOURCE_finds_source_flags(self):
         """Test _extractSOURCE extracts SOURCE magic flags (lines 48-62)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr, args = _make_hunter(temp_config=temp_config)
+            hntr, _args = _make_hunter(temp_config=temp_config)
             # widget_factory.cpp has //#SOURCE=a_widget.cpp and //#SOURCE=z_widget.cpp
             realpath = os.path.join(uth.samplesdir(), "factory/widget_factory.cpp")
             sources = hntr._extractSOURCE(realpath)
@@ -215,10 +215,10 @@ class TestHunterRequiredFiles:
     def test_get_immediate_deps_with_implied_source(self):
         """Test _get_immediate_deps finds implied source for header (lines 82-87)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr, args = _make_hunter(temp_config=temp_config)
+            hntr, _args = _make_hunter(temp_config=temp_config)
             # widget_factory.hpp has implied source widget_factory.cpp
             realpath = os.path.join(uth.samplesdir(), "factory/widget_factory.hpp")
-            headers, sources = hntr._get_immediate_deps(realpath, frozenset())
+            headers, _sources = hntr._get_immediate_deps(realpath, frozenset())
             # implied source should be in headers tuple
             implied_basenames = [os.path.basename(h) for h in headers]
             assert "widget_factory.cpp" in implied_basenames
@@ -242,7 +242,7 @@ class TestHunterHuntSource:
     def test_huntsource_no_initial_sources(self):
         """Test huntsource with no initial sources (lines 253-257)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr, args = _make_hunter(temp_config=temp_config)
+            hntr, _args = _make_hunter(temp_config=temp_config)
             # args has no filename/static/dynamic/tests
             hntr.huntsource()
             assert hntr._hunted_sources == []
@@ -250,7 +250,7 @@ class TestHunterHuntSource:
     def test_getsources_calls_huntsource_if_needed(self):
         """Test getsources auto-calls huntsource (lines 303-305)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr, args = _make_hunter(temp_config=temp_config)
+            hntr, _args = _make_hunter(temp_config=temp_config)
             # getsources should work without prior huntsource call
             result = hntr.getsources()
             assert isinstance(result, list)
@@ -294,7 +294,7 @@ class TestHunterHuntSource:
     def test_huntsource_clears_previous_results(self):
         """Test huntsource clears cached results on re-call (lines 234-237)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr, args = _make_hunter(temp_config=temp_config)
+            hntr, _args = _make_hunter(temp_config=temp_config)
             hntr._hunted_sources = ["old.cpp"]
             hntr._test_sources = ["old_test.cpp"]
             hntr.huntsource()
@@ -303,7 +303,7 @@ class TestHunterHuntSource:
     def test_gettestsources_no_tests(self):
         """Test gettestsources with no test sources (lines 316-332)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr, args = _make_hunter(temp_config=temp_config)
+            hntr, _args = _make_hunter(temp_config=temp_config)
             result = hntr.gettestsources()
             assert result == []
 
@@ -319,7 +319,7 @@ class TestHunterHuntSource:
     def test_gettestsources_cached(self):
         """Test gettestsources uses cached result on second call (line 316)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr, args = _make_hunter(temp_config=temp_config)
+            hntr, _args = _make_hunter(temp_config=temp_config)
             result1 = hntr.gettestsources()
             result2 = hntr.gettestsources()
             assert result1 is result2
@@ -363,7 +363,7 @@ class TestHunterVerbose:
     def test_required_files_verbose(self, capsys):
         """Test verbose output in required_files and _required_files_impl (lines 106, 112, 123, 135, 150)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr, args = _make_hunter(argv_extra=["-v", "-v", "-v", "-v", "-v",
+            hntr, _args = _make_hunter(argv_extra=["-v", "-v", "-v", "-v", "-v",
                                                    "-v", "-v", "-v", "-v", "-v"],
                                        temp_config=temp_config)
             realpath = os.path.join(uth.samplesdir(), "simple/helloworld_cpp.cpp")
@@ -374,7 +374,7 @@ class TestHunterVerbose:
     def test_get_immediate_deps_verbose(self, capsys):
         """Test verbose output in _get_immediate_deps (line 72)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr, args = _make_hunter(argv_extra=["-v"] * 10, temp_config=temp_config)
+            hntr, _args = _make_hunter(argv_extra=["-v"] * 10, temp_config=temp_config)
             realpath = os.path.join(uth.samplesdir(), "simple/helloworld_cpp.cpp")
             hntr._get_immediate_deps(realpath, frozenset())
             captured = capsys.readouterr()
@@ -402,7 +402,7 @@ class TestHunterVerbose:
     def test_huntsource_verbose_no_sources(self, capsys):
         """Test verbose output when no initial sources (line 256)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr, args = _make_hunter(argv_extra=["-v"] * 10, temp_config=temp_config)
+            hntr, _args = _make_hunter(argv_extra=["-v"] * 10, temp_config=temp_config)
             hntr.huntsource()
             captured = capsys.readouterr()
             assert "No initial sources found" in captured.out
@@ -410,7 +410,7 @@ class TestHunterVerbose:
     def test_header_dependencies_verbose(self, capsys):
         """Test verbose output in header_dependencies (lines 215)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr, args = _make_hunter(argv_extra=["-v"] * 10, temp_config=temp_config)
+            hntr, _args = _make_hunter(argv_extra=["-v"] * 10, temp_config=temp_config)
             realpath = os.path.join(uth.samplesdir(), "factory/test_factory.cpp")
             hntr.header_dependencies(realpath)
             captured = capsys.readouterr()
@@ -419,7 +419,7 @@ class TestHunterVerbose:
     def test_extractSOURCE_verbose(self, capsys):
         """Test verbose output in _extractSOURCE (line 61)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr, args = _make_hunter(argv_extra=["-v"] * 10, temp_config=temp_config)
+            hntr, _args = _make_hunter(argv_extra=["-v"] * 10, temp_config=temp_config)
             realpath = os.path.join(uth.samplesdir(), "factory/widget_factory.cpp")
             hntr._extractSOURCE(realpath)
             captured = capsys.readouterr()

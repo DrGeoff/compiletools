@@ -3,7 +3,7 @@ ct-lock-helper
 ==============
 
 ------------------------------------------------------------
-Helper script for file locking during concurrent compilation
+Helper for file locking during concurrent compilation
 ------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
@@ -19,22 +19,28 @@ ct-lock-helper compile --target=OUTPUT --strategy=STRATEGY -- COMMAND
 DESCRIPTION
 ===========
 
-``ct-lock-helper`` manages file locks when building with shared object caching
-(``--shared-objects`` flag). It wraps compilation commands to ensure atomic
+``ct-lock-helper`` manages file locks when building with file locking
+(``--file-locking`` flag). It wraps compilation commands to ensure atomic
 file creation and prevent race conditions in multi-user or parallel build
 environments.
 
-The helper implements three locking strategies automatically selected based on
+The helper is a Python entry point that delegates to ``locking.py``'s
+``atomic_compile()`` function, reusing the same tested locking algorithms
+used by the Shake backend.
+
+The helper implements four locking strategies automatically selected based on
 the target filesystem type:
 
-- **lockdir**: For NFS, GPFS, Lustre (mkdir-based, works across all filesystems)
+- **lockdir**: For NFS, Lustre (mkdir-based, works across all filesystems)
+- **fcntl**: For GPFS (fcntl.lockf, cross-node, kernel-managed)
 - **cifs**: For CIFS/SMB (exclusive file creation)
-- **flock**: For local filesystems like ext4, xfs, btrfs (POSIX flock)
+- **flock**: For local filesystems like ext4, xfs, btrfs (POSIX flock, kernel-managed blocking)
 
 Usage
 -----
 
-ct-lock-helper is invoked automatically by ``ct-cake`` when using ``--shared-objects``.
+ct-lock-helper is invoked automatically by ``ct-cake`` when using ``--file-locking``
+with the Make or Ninja backends.
 You typically don't call it directly, but it's useful to understand for debugging.
 
 Basic command format::
@@ -48,10 +54,9 @@ Example::
 The helper will:
 
 1. Acquire lock based on strategy
-2. Create temporary file (``file.o.PID.RANDOM.tmp``)
-3. Execute: ``gcc -c file.c -o file.o.PID.RANDOM.tmp``
-4. Move temp to target: ``mv file.o.PID.RANDOM.tmp file.o``
-5. Release lock
+2. For fcntl/flock: compile directly to target (no temp file)
+   For others: compile to temp file (``file.o.PID.RANDOM.tmp``), then rename to target
+3. Release lock
 
 Configuration
 -------------
@@ -63,13 +68,15 @@ Environment variables control lock behavior:
 
     - Lustre filesystems: 0.01 (fast parallel filesystem)
     - NFS filesystems: 0.1 (network latency)
-    - GPFS and others: 0.05 (balanced)
+    - Others: 0.05 (balanced)
+
+    Note: GPFS uses the fcntl strategy (kernel-managed blocking), not lockdir polling.
 
 **CT_LOCK_SLEEP_INTERVAL_CIFS**
     Seconds to sleep between lock acquisition attempts for CIFS strategy (default: 0.1)
 
 **CT_LOCK_SLEEP_INTERVAL_FLOCK**
-    Seconds to sleep between lock acquisition attempts for flock strategy (default: 0.1)
+    Unused since flock blocks in kernel (no polling). Kept for backwards compatibility.
 
 **CT_LOCK_WARN_INTERVAL**
     Seconds between lock wait warnings (default: 30)
@@ -92,13 +99,13 @@ Example::
 
     export CT_LOCK_WARN_INTERVAL=10
     export CT_LOCK_TIMEOUT=300
-    ct-cake --shared-objects
+    ct-cake --file-locking
 
 Lock Strategies
 ---------------
 
-lockdir (NFS/GPFS/Lustre)
-^^^^^^^^^^^^^^^^^^^^^^^^^^
+lockdir (NFS/Lustre)
+^^^^^^^^^^^^^^^^^^^^
 
 Uses ``mkdir`` for atomic lock acquisition. Works on all POSIX filesystems.
 
@@ -118,8 +125,34 @@ Uses ``mkdir`` for atomic lock acquisition. Works on all POSIX filesystems.
 
 **Stale lock handling:**
 
-- Same-host: Checks if process alive (``kill -0`` + ``/proc`` check on Linux)
+- Same-host: Checks if process alive (psutil)
 - Cross-host: Cannot verify, relies on age-based timeout warnings
+
+fcntl (GPFS)
+^^^^^^^^^^^^
+
+Uses ``fcntl.lockf()`` for cross-node locking on GPFS. Unlike ``flock()``, which
+is node-local on GPFS, ``fcntl`` record locks work correctly across nodes. The
+kernel handles blocking and automatic release on process death, eliminating the
+need for polling and stale lock detection.
+
+**Features:**
+
+- Cross-node mutual exclusion via kernel-managed record locks
+- No polling: ``lockf(LOCK_EX)`` blocks in the kernel
+- No stale detection: kernel releases locks automatically on process death
+- Locks the target ``.o`` file directly — no sidecar ``.lock`` file
+- Compiles directly to target (no temp file, no rename)
+
+**Lock structure:**
+
+::
+
+    target.o             # Locked directly via fcntl (no sidecar files)
+
+The fcntl advisory lock is placed on the target file itself. Since gcc opens
+the output with ``O_WRONLY|O_CREAT|O_TRUNC``, which preserves the inode, the
+lock held by the build process remains valid throughout compilation.
 
 cifs (CIFS/SMB)
 ^^^^^^^^^^^^^^^
@@ -130,91 +163,56 @@ Uses exclusive file creation (``O_CREAT|O_EXCL``) for CIFS compatibility.
 
 ::
 
-    target.o.lock        # Base lockfile (fd 9)
+    target.o.lock        # Base lockfile
     target.o.lock.excl   # Exclusive marker
 
 flock (Local filesystems)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Uses POSIX ``flock()`` when available, falls back to ``O_EXCL`` polling.
+Uses POSIX ``flock()`` for kernel-managed blocking. Only used on local
+filesystems (ext4/xfs/btrfs) where ``flock()`` is always available.
+
+**Features:**
+
+- Kernel-managed blocking: ``flock(LOCK_EX)`` blocks until acquired
+- Automatic release on process death
+- Locks the target ``.o`` file directly — no sidecar ``.lock`` file
+- Compiles directly to target (no temp file, no rename)
 
 **Lock structure:**
 
 ::
 
-    target.o.lock        # Lockfile (fd 9)
-    target.o.lock.pid    # PID marker (fallback only)
+    target.o             # Locked directly via flock (no sidecar files)
 
-Implementations
----------------
+The flock advisory lock is placed on the target file itself. Since gcc opens
+the output with ``O_WRONLY|O_CREAT|O_TRUNC``, which preserves the inode, the
+lock held by the build process remains valid throughout compilation. Same
+reasoning as the fcntl strategy.
 
-Two implementations are available:
+Performance
+-----------
 
-**ct-lock-helper** (bash - default):
-- Overhead: ~12-18ms per compilation
-- Requires bash
-- Faster for simple operations
+ct-lock-helper adds ~45-65ms overhead per compilation due to Python startup
+and import costs. This is negligible for real C/C++ files (100ms-10s compile
+time) and under lock contention (where lock wait time dominates).
 
-**ct-lock-helper-py** (Python - alternative):
-- Overhead: ~45-52ms per compilation
-- Python 3.9+ required
-- Better error handling
-- Cross-platform (Windows compatible)
-- Reuses tested locking.py code
-
-Performance Comparison
-^^^^^^^^^^^^^^^^^^^^^^
-
-Measured overhead (vs direct gcc, 100 iterations):
-
-+-----------+---------------+----------------+---------------+
-| Strategy  | Bash          | Python         | Difference    |
-+===========+===============+================+===============+
-| flock     | 12.9ms        | 52.6ms         | **4.1x**      |
-+-----------+---------------+----------------+---------------+
-| lockdir   | 18.5ms        | 45.7ms         | **2.5x**      |
-+-----------+---------------+----------------+---------------+
-| cifs      | 11.9ms        | 47.5ms         | **4.0x**      |
-+-----------+---------------+----------------+---------------+
-
-**Verdict:** Bash is **2.5-4x faster** than Python.
-
-**When the overhead doesn't matter:**
-
-- Real C/C++ compilation (typically 100ms-10s per file)
-- Parallel builds (``make -j8`` amortizes overhead)
-- Network filesystems (NFS latency >> 50ms)
-
-**When to use Python version:**
-
-- Windows or non-bash environments
-- Better error messages/debugging needed
-- Cross-platform consistency required
-- Overhead is acceptable (< 50% of compile time)
-
-**When shared objects are beneficial:**
+**When file locking is beneficial:**
 
 - Multi-user team builds with shared cache
-- Parallel builds on NFS/GPFS/Lustre
+- Parallel builds on NFS/GPFS/Lustre (GPFS uses fcntl for best performance)
 - CI/CD with persistent object directories
 
 **When to skip:**
 
 - Fast local single-threaded builds
 - Many tiny files (<100ms compile time each)
-- Use ``--no-shared-objects`` to disable
+- Use ``--no-file-locking`` to disable
 
 **Filesystem detection:**
 
-Strategy is determined once in Python and baked into Makefile.
+Strategy is determined once in Python and baked into Makefile/build.ninja.
 No per-compilation filesystem detection overhead.
-
-**Benchmark:**
-
-Run your own performance comparison::
-
-    # Available after installation
-    benchmark_lock_implementations.sh
 
 Troubleshooting
 ---------------
@@ -226,7 +224,7 @@ Solutions:
 1. Install compiletools: ``pip install compiletools``
 2. Install from source: ``pip install -e .``
 3. Add to PATH: ``export PATH=/path/to/compiletools:$PATH``
-4. Disable shared objects: use ``--no-shared-objects``
+4. Disable file locking: use ``--no-file-locking``
 
 **Locks not releasing**
 
@@ -238,7 +236,7 @@ Check for:
 
 **Slow builds with locking**
 
-ct-lock-helper adds ~13-17ms overhead per compilation due to process spawn.
+ct-lock-helper adds ~45-65ms overhead per compilation due to Python startup.
 This is negligible for real C/C++ files (100ms-10s compile time) but may be
 noticeable for many tiny files.
 
@@ -248,9 +246,8 @@ Solutions:
 
     export CT_LOCK_SLEEP_INTERVAL=0.01      # For lockdir on Lustre
     export CT_LOCK_SLEEP_INTERVAL_CIFS=0.05 # For CIFS strategy
-    export CT_LOCK_SLEEP_INTERVAL_FLOCK=0.05 # For flock strategy
 
-- For very fast local-only builds, consider ``--no-shared-objects``
+- For very fast local-only builds, consider ``--no-file-locking``
 
 **Cross-host lock stuck**
 
@@ -263,7 +260,7 @@ Or use ``ct-cleanup-locks --dry-run`` to identify, then ``ct-cleanup-locks`` to 
 Multi-User Shared Caches
 -------------------------
 
-For team environments with shared object directories:
+For team environments with shared build directories:
 
 **Setup:**
 
@@ -275,7 +272,7 @@ For team environments with shared object directories:
 
 2. Configure compiletools::
 
-    ct-cake --shared-objects --objdir=/shared/build/cache
+    ct-cake --file-locking --objdir=/shared/build/cache
 
 **Lock permissions:**
 
@@ -300,32 +297,26 @@ See Also
 Algorithm Details
 -----------------
 
-The locking algorithm mirrors ``locking.py`` for consistency:
+The locking algorithms are implemented in ``locking.py`` and shared between
+ct-lock-helper (Make/Ninja backends) and the Shake backend:
 
 1. **Acquire:**
 
-   - Try ``mkdir`` (lockdir) or exclusive create (cifs/flock)
-   - If fails, check if lock is stale (same-host process check)
-   - If stale, remove and retry immediately
+   - Try ``mkdir`` (lockdir), ``fcntl.lockf`` (fcntl), or exclusive create (cifs/flock)
+   - For lockdir: if fails, check if stale (same-host process check), remove and retry
+   - For fcntl: kernel handles blocking and deadlock avoidance
    - If not stale, wait with periodic warnings
    - Write hostname:pid to lock
 
 2. **Execute:**
 
-   - Compile to temporary file
-   - Exit immediately on compile errors (``set -euo pipefail``)
+   - For fcntl/flock: compile directly to target (advisory lock protects target)
+   - For others: compile to temporary file, then rename to target (atomic)
 
 3. **Release:**
 
-   - Move temp to target (atomic)
-   - Remove lock files
-   - Cleanup via trap on EXIT/INT/TERM
-
-**Error handling:**
-
-- All errors propagate (``set -euo pipefail``)
-- Locks released even on signals (trap)
-- Temp files cleaned up on exit
+   - Remove lock files (except fcntl/flock, which lock the target directly)
+   - Cleanup via signal handlers on SIGINT/SIGTERM
 
 Examples
 --------
@@ -345,7 +336,7 @@ Examples
 ::
 
     # Verbose output
-    CT_LOCK_VERBOSE=1 CT_LOCK_WARN_INTERVAL=5 ct-cake --shared-objects
+    CT_LOCK_VERBOSE=1 CT_LOCK_WARN_INTERVAL=5 ct-cake --file-locking
 
 **Testing lock strategies:**
 
@@ -369,5 +360,3 @@ For development::
     pip install -e .
     # or
     pip install -e ".[dev]"
-
-The script is located at the repository root: ``compiletools/ct-lock-helper``

@@ -42,7 +42,7 @@ class GracefulExit:
 def create_args_from_env():
     """Create args object from environment variables matching bash version."""
     return SimpleNamespace(
-        shared_objects=True,
+        file_locking=True,
         lock_warn_interval=int(os.getenv("CT_LOCK_WARN_INTERVAL", "30")),
         lock_cross_host_timeout=int(os.getenv("CT_LOCK_TIMEOUT", "600")),
         sleep_interval_lockdir=float(os.getenv("CT_LOCK_SLEEP_INTERVAL", "0.05")),
@@ -56,15 +56,15 @@ def create_lock(strategy, target_file, args):
     """Create appropriate lock instance based on strategy.
 
     Args:
-        strategy: One of 'lockdir', 'cifs', 'flock'
+        strategy: One of 'lockdir', 'cifs', 'flock', 'fcntl'
         target_file: Target output file path
         args: Args object with lock configuration
 
     Returns:
-        Lock instance (LockdirLock, CIFSLock, or FlockLock)
+        Lock instance (LockdirLock, CIFSLock, FlockLock, or FcntlLock)
     """
     # Import here to reduce startup overhead if --help is requested
-    from compiletools.locking import CIFSLock, FlockLock, LockdirLock
+    from compiletools.locking import CIFSLock, FcntlLock, FlockLock, LockdirLock
 
     if strategy == "lockdir":
         return LockdirLock(target_file, args)
@@ -72,54 +72,10 @@ def create_lock(strategy, target_file, args):
         return CIFSLock(target_file, args)
     elif strategy == "flock":
         return FlockLock(target_file, args)
+    elif strategy == "fcntl":
+        return FcntlLock(target_file, args)
     else:
         raise ValueError(f"Unknown strategy: {strategy}")
-
-
-def execute_compile(lock, target, compile_cmd, exit_handler):
-    """Execute compilation with locking.
-
-    Args:
-        lock: Lock instance
-        target: Target output file
-        compile_cmd: List of compile command arguments
-        exit_handler: GracefulExit instance for cleanup
-
-    Raises:
-        subprocess.CalledProcessError: If compilation fails
-    """
-    # Generate temp file name (matches bash: target.PID.RANDOM.tmp)
-    pid = os.getpid()
-    random_suffix = os.urandom(2).hex()
-    tempfile_path = f"{target}.{pid}.{random_suffix}.tmp"
-
-    exit_handler.tempfile = tempfile_path
-    exit_handler.lock = lock
-
-    try:
-        # Acquire lock
-        lock.acquire()
-        exit_handler.acquired = True
-
-        # Execute compilation to temp file
-        cmd = list(compile_cmd) + ["-o", tempfile_path]
-        subprocess.run(cmd, check=True)
-
-        # Atomic move
-        os.rename(tempfile_path, target)
-
-    finally:
-        # Release lock
-        if exit_handler.acquired:
-            lock.release()
-            exit_handler.acquired = False
-
-        # Clean up temp file if it still exists
-        if os.path.exists(tempfile_path):
-            try:
-                os.unlink(tempfile_path)
-            except OSError:
-                pass
 
 
 def cmd_compile(args, exit_handler):
@@ -129,14 +85,19 @@ def cmd_compile(args, exit_handler):
         args: Parsed arguments
         exit_handler: GracefulExit instance
     """
+    from compiletools.locking import atomic_compile
+
     # Create args object from environment
     lock_args = create_args_from_env()
 
     # Create lock based on strategy
     lock = create_lock(args.strategy, args.target, lock_args)
 
-    # Execute compilation with locking
-    execute_compile(lock, args.target, args.compile_cmd, exit_handler)
+    # Register lock for signal-handler cleanup
+    exit_handler.lock = lock
+
+    # Delegate to shared atomic_compile (compile to temp, rename to target)
+    atomic_compile(lock, args.target, args.compile_cmd)
 
 
 def main(argv=None):
@@ -158,7 +119,7 @@ def main(argv=None):
 
     # Parse arguments
     parser = argparse.ArgumentParser(
-        prog="ct-lock-helper-py", description="File locking helper for concurrent builds (Python implementation)"
+        prog="ct-lock-helper", description="File locking helper for concurrent builds (Python implementation)"
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")
@@ -169,8 +130,8 @@ def main(argv=None):
     compile_parser.add_argument(
         "--strategy",
         required=True,
-        choices=["lockdir", "cifs", "flock"],
-        help="Lock strategy: lockdir (NFS/GPFS/Lustre), cifs (CIFS/SMB), flock (local)",
+        choices=["lockdir", "cifs", "flock", "fcntl"],
+        help="Lock strategy: lockdir (NFS/Lustre), fcntl (GPFS), cifs (CIFS/SMB), flock (local)",
     )
     compile_parser.add_argument("compile_cmd", nargs="+", help="Compile command and arguments")
 

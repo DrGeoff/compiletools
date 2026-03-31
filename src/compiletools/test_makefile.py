@@ -1,75 +1,25 @@
+"""Tests for the Make backend (MakefileBackend) and makefile.py main()."""
+
 import io
 import os
 import subprocess
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import compiletools.makefile
 import compiletools.testhelper as uth
 import compiletools.utils
-from compiletools.makefile import Rule
-
-
-class TestRule:
-    """Test Rule class directly."""
-
-    def test_rule_write_basic(self):
-        rule = Rule(target="foo.o", prerequisites="foo.cpp foo.h", recipe="g++ -c foo.cpp -o foo.o")
-        buf = io.StringIO()
-        rule.write(buf)
-        output = buf.getvalue()
-        assert "foo.o: foo.cpp foo.h" in output
-        assert "g++ -c foo.cpp -o foo.o" in output
-
-    def test_rule_write_phony(self):
-        rule = Rule(target="clean", prerequisites="", recipe="rm -f *.o", phony=True)
-        buf = io.StringIO()
-        rule.write(buf)
-        output = buf.getvalue()
-        assert ".PHONY:" in output
-        assert "clean" in output
-
-    def test_rule_write_no_recipe(self):
-        rule = Rule(target="all", prerequisites="foo bar")
-        buf = io.StringIO()
-        rule.write(buf)
-        output = buf.getvalue()
-        assert "all: foo bar" in output
-
-    def test_rule_write_order_only_prereqs(self):
-        rule = Rule(target="foo.o", prerequisites="foo.cpp", order_only_prerequisites="bin/", recipe="g++ -c foo.cpp")
-        buf = io.StringIO()
-        rule.write(buf)
-        output = buf.getvalue()
-        assert "| bin/" in output
-
-    def test_rule_equality_and_hash(self):
-        r1 = Rule(target="foo.o", prerequisites="foo.cpp")
-        r2 = Rule(target="foo.o", prerequisites="bar.cpp")
-        assert r1 == r2
-        assert hash(r1) == hash(r2)
-
-    def test_rule_repr(self):
-        """Cover Rule.__repr__ (line 45)."""
-        r = Rule(target="t", prerequisites="p")
-        result = repr(r)
-        assert "Rule" in result
-        assert "'t'" in result
-
-    def test_rule_str(self):
-        """Cover Rule.__str__ (line 48)."""
-        r = Rule(target="t", prerequisites="p")
-        result = str(r)
-        assert "'t'" in result
-        assert "'p'" in result
+from compiletools.build_graph import BuildGraph, BuildRule
+from compiletools.makefile_backend import MakefileBackend
 
 
 def _make_args(**overrides):
-    """Create a minimal args namespace for MakefileCreator unit tests."""
+    """Create a minimal args namespace for MakefileBackend unit tests."""
     defaults = dict(
-        shared_objects=False,
+        file_locking=False,
         verbose=0,
         objdir="/tmp/test_obj",
+        bindir="/tmp/test_bin",
         filename=[],
         tests=[],
         static=[],
@@ -84,6 +34,9 @@ def _make_args(**overrides):
         CXXFLAGS="-O2",
         LD="g++",
         LDFLAGS="",
+        parallel=1,
+        shuffle=False,
+        backend="make",
         sleep_interval_lockdir=None,
         sleep_interval_cifs=0.01,
         sleep_interval_flock_fallback=0.01,
@@ -94,410 +47,382 @@ def _make_args(**overrides):
     return SimpleNamespace(**defaults)
 
 
-class TestMakefileCreatorUnit:
-    """Unit tests for MakefileCreator methods without needing a full build."""
-
-    def test_detect_os_type_linux(self):
-        """Cover _detect_os_type linux branch (line 302)."""
-        from compiletools.makefile import MakefileCreator
-
+def _make_simple_graph(args=None):
+    """Create a simple BuildGraph with compile + link + phony rules."""
+    if args is None:
         args = _make_args()
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            result = mc._detect_os_type()
-            # Running on linux, should return "linux"
-            assert result == "linux"
+    graph = BuildGraph()
+    graph.add_rule(
+        BuildRule(
+            output=args.objdir,
+            inputs=[],
+            command=["mkdir", "-p", args.objdir],
+            rule_type="mkdir",
+        )
+    )
+    graph.add_rule(
+        BuildRule(
+            output="/tmp/test_obj/foo.o",
+            inputs=["/src/foo.cpp", "/src/foo.h"],
+            command=["g++", "-O2", "-c", "/src/foo.cpp", "-o", "/tmp/test_obj/foo.o"],
+            rule_type="compile",
+            order_only_deps=[args.objdir],
+        )
+    )
+    graph.add_rule(
+        BuildRule(
+            output="/tmp/test_bin/foo",
+            inputs=["/tmp/test_obj/foo.o"],
+            command=["g++", "-o", "/tmp/test_bin/foo", "/tmp/test_obj/foo.o"],
+            rule_type="link",
+        )
+    )
+    graph.add_rule(
+        BuildRule(
+            output="build",
+            inputs=["/tmp/test_bin/foo"],
+            command=None,
+            rule_type="phony",
+        )
+    )
+    graph.add_rule(
+        BuildRule(
+            output="all",
+            inputs=["build"],
+            command=None,
+            rule_type="phony",
+        )
+    )
+    return graph
 
-    def test_detect_os_type_darwin(self):
-        """Cover _detect_os_type darwin/bsd branch (lines 303-304)."""
-        from compiletools.makefile import MakefileCreator
 
+class TestMakefileBackendWriteMakefile:
+    """Test _write_makefile() output."""
+
+    def test_basic_makefile_syntax(self):
         args = _make_args()
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            with patch("platform.system", return_value="Darwin"):
-                result = mc._detect_os_type()
-                assert result == "bsd"
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        graph = _make_simple_graph(args)
 
-    def test_detect_os_type_unknown(self):
-        """Cover _detect_os_type default branch (lines 305-307)."""
-        from compiletools.makefile import MakefileCreator
+        buf = io.StringIO()
+        backend._filesystem_type = None
+        backend._write_makefile(graph, buf)
+        content = buf.getvalue()
 
+        assert ".DELETE_ON_ERROR:" in content
+        assert "MAKEFLAGS += -rR" in content
+        assert ".PHONY: build" in content
+        assert ".PHONY: all" in content
+        assert "/tmp/test_obj/foo.o:" in content
+        assert "\t" in content  # Tab-indented recipes
+
+    def test_makefile_has_args_signature(self):
         args = _make_args()
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            with patch("platform.system", return_value="Windows"):
-                result = mc._detect_os_type()
-                assert result == "linux"
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        graph = _make_simple_graph(args)
+
+        buf = io.StringIO()
+        backend._filesystem_type = None
+        backend._write_makefile(graph, buf)
+        content = buf.getvalue()
+
+        assert content.startswith(f"# Makefile generated by {args}")
+
+    def test_verbose_echo_in_compile_rules(self):
+        args = _make_args(verbose=1)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        graph = _make_simple_graph(args)
+
+        buf = io.StringIO()
+        backend._filesystem_type = None
+        backend._write_makefile(graph, buf)
+        content = buf.getvalue()
+
+        assert "@echo ... /src/foo.cpp" in content
+
+    def test_verbose_echo_in_link_rules(self):
+        args = _make_args(verbose=1)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        graph = _make_simple_graph(args)
+
+        buf = io.StringIO()
+        backend._filesystem_type = None
+        backend._write_makefile(graph, buf)
+        content = buf.getvalue()
+
+        assert "+@echo ... /tmp/test_bin/foo" in content
+
+    def test_clean_rules_present(self):
+        args = _make_args()
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        graph = _make_simple_graph(args)
+
+        buf = io.StringIO()
+        backend._filesystem_type = None
+        backend._write_makefile(graph, buf)
+        content = buf.getvalue()
+
+        assert ".PHONY: clean" in content
+        assert ".PHONY: realclean" in content
+        assert "rm -rf" in content
+
+    def test_clean_rules_have_error_ignore_prefix(self):
+        args = _make_args()
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        graph = _make_simple_graph(args)
+
+        buf = io.StringIO()
+        backend._filesystem_type = None
+        backend._write_makefile(graph, buf)
+        content = buf.getvalue()
+
+        # Both clean and realclean should use - prefix
+        lines = content.split("\n")
+        clean_recipes = [line for line in lines if line.startswith("\t-")]
+        assert len(clean_recipes) >= 2
+
+    @patch("os.path.isfile", return_value=False)
+    def test_omits_shell_without_bash(self, _mock_isfile):
+        args = _make_args()
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        graph = _make_simple_graph(args)
+
+        buf = io.StringIO()
+        backend._filesystem_type = None
+        backend._write_makefile(graph, buf)
+        content = buf.getvalue()
+
+        assert "SHELL" not in content
+
+    def test_order_only_deps_rendered(self):
+        args = _make_args()
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        graph = _make_simple_graph(args)
+
+        buf = io.StringIO()
+        backend._filesystem_type = None
+        backend._write_makefile(graph, buf)
+        content = buf.getvalue()
+
+        assert f"| {args.objdir}" in content
+
+
+class TestMakefileBackendFileLocking:
+    """Test file-locking integration in _write_makefile()."""
+
+    def test_compile_without_file_locking(self):
+        args = _make_args(file_locking=False)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        backend._filesystem_type = None
+        graph = _make_simple_graph(args)
+
+        buf = io.StringIO()
+        backend._write_makefile(graph, buf)
+        content = buf.getvalue()
+
+        assert "ct-lock-helper" not in content
+
+    def test_compile_with_lockdir_strategy(self):
+        args = _make_args(file_locking=True, sleep_interval_lockdir=0.05)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        backend._filesystem_type = "nfs"
+        graph = _make_simple_graph(args)
+
+        buf = io.StringIO()
+        backend._write_makefile(graph, buf)
+        content = buf.getvalue()
+
+        assert "ct-lock-helper" in content
+        assert "--strategy=lockdir" in content
+        assert "CT_LOCK_SLEEP_INTERVAL=0.05" in content
+
+    def test_compile_with_cifs_strategy(self):
+        args = _make_args(file_locking=True, sleep_interval_cifs=0.02)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        backend._filesystem_type = "cifs"
+        graph = _make_simple_graph(args)
+
+        buf = io.StringIO()
+        with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="cifs"):
+            backend._write_makefile(graph, buf)
+        content = buf.getvalue()
+
+        assert "--strategy=cifs" in content
+        assert "CT_LOCK_SLEEP_INTERVAL_CIFS=0.02" in content
+
+    def test_compile_with_flock_strategy(self):
+        args = _make_args(file_locking=True, sleep_interval_flock_fallback=0.03)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        backend._filesystem_type = "ext4"
+        graph = _make_simple_graph(args)
+
+        buf = io.StringIO()
+        with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"):
+            backend._write_makefile(graph, buf)
+        content = buf.getvalue()
+
+        assert "--strategy=flock" in content
+        assert "CT_LOCK_SLEEP_INTERVAL_FLOCK=0.03" in content
 
     def test_validate_umask_warning(self, capsys):
-        """Cover _validate_umask_for_shared_objects warning (line 318)."""
-        from compiletools.makefile import MakefileCreator
-
-        args = _make_args(shared_objects=True, verbose=1)
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            # Set restrictive umask to trigger warning
-            old_umask = os.umask(0o077)
-            try:
-                mc._validate_umask_for_shared_objects()
-            finally:
-                os.umask(old_umask)
-            captured = capsys.readouterr()
-            assert "restrictive umask" in captured.err
+        args = _make_args(file_locking=True, verbose=1)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        old_umask = os.umask(0o077)
+        try:
+            backend._validate_umask_for_file_locking()
+        finally:
+            os.umask(old_umask)
+        captured = capsys.readouterr()
+        assert "restrictive umask" in captured.err
 
     def test_validate_umask_no_warning_permissive(self, capsys):
-        """No warning with permissive umask."""
-        from compiletools.makefile import MakefileCreator
+        args = _make_args(file_locking=True, verbose=1)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        old_umask = os.umask(0o002)
+        try:
+            backend._validate_umask_for_file_locking()
+        finally:
+            os.umask(old_umask)
+        captured = capsys.readouterr()
+        assert "restrictive umask" not in captured.err
 
-        args = _make_args(shared_objects=True, verbose=1)
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            old_umask = os.umask(0o002)
-            try:
-                mc._validate_umask_for_shared_objects()
-            finally:
-                os.umask(old_umask)
-            captured = capsys.readouterr()
-            assert "restrictive umask" not in captured.err
 
-    def test_wrap_compile_without_shared_objects(self):
-        """Cover _wrap_compile_with_lock non-shared path (line 391)."""
-        from compiletools.makefile import MakefileCreator
+class TestMakefileBackendUptodate:
+    """Test _build_file_uptodate()."""
 
-        args = _make_args(shared_objects=False)
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            result = mc._wrap_compile_with_lock("gcc -c foo.c", "$@")
-            assert result == "gcc -c foo.c -o $@"
-
-    def test_wrap_compile_with_lockdir_strategy(self):
-        """Cover _wrap_compile_with_lock lockdir branch (lines 398-400)."""
-        from compiletools.makefile import MakefileCreator
-
-        args = _make_args(shared_objects=True, sleep_interval_lockdir=0.05)
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            mc._filesystem_type = "nfs"
-            result = mc._wrap_compile_with_lock("gcc -c foo.c", "$@")
-            assert "ct-lock-helper" in result
-            assert "--strategy=lockdir" in result
-            assert "CT_LOCK_SLEEP_INTERVAL=0.05" in result
-
-    def test_wrap_compile_with_cifs_strategy(self):
-        """Cover _wrap_compile_with_lock cifs branch (lines 401-402)."""
-        from compiletools.makefile import MakefileCreator
-
-        args = _make_args(shared_objects=True, sleep_interval_cifs=0.02)
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            mc._filesystem_type = "cifs"
-            with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="cifs"):
-                result = mc._wrap_compile_with_lock("gcc -c foo.c", "$@")
-                assert "--strategy=cifs" in result
-                assert "CT_LOCK_SLEEP_INTERVAL_CIFS=0.02" in result
-
-    def test_wrap_compile_with_flock_strategy(self):
-        """Cover _wrap_compile_with_lock flock branch (lines 403-404)."""
-        from compiletools.makefile import MakefileCreator
-
-        args = _make_args(shared_objects=True, sleep_interval_flock_fallback=0.03)
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            mc._filesystem_type = "ext4"
-            with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"):
-                result = mc._wrap_compile_with_lock("gcc -c foo.c", "$@")
-                assert "--strategy=flock" in result
-                assert "CT_LOCK_SLEEP_INTERVAL_FLOCK=0.03" in result
-
-    def test_get_lockdir_sleep_interval_user_override(self):
-        """Cover _get_lockdir_sleep_interval user override (lines 429-430)."""
-        from compiletools.makefile import MakefileCreator
-
-        args = _make_args(sleep_interval_lockdir=0.99)
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            mc._filesystem_type = "nfs"
-            assert mc._get_lockdir_sleep_interval() == 0.99
-
-    def test_get_lockdir_sleep_interval_auto(self):
-        """Cover _get_lockdir_sleep_interval auto-detect (lines 432-433)."""
-        from compiletools.makefile import MakefileCreator
-
-        args = _make_args(sleep_interval_lockdir=None)
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            mc._filesystem_type = "nfs"
-            result = mc._get_lockdir_sleep_interval()
-            assert isinstance(result, float)
-
-    def test_get_locking_recipe_prefix_and_suffix(self):
-        """Cover deprecated _get_locking_recipe_prefix/suffix (lines 417, 438)."""
-        from compiletools.makefile import MakefileCreator
-
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            assert mc._get_locking_recipe_prefix() == ""
-            assert mc._get_locking_recipe_suffix() == ""
-
-    def test_create_all_rule_with_tests(self):
-        """Cover _create_all_rule with tests (line 444)."""
-        from compiletools.makefile import MakefileCreator
-
-        args = _make_args(tests=["test_foo.cpp"])
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            rule = mc._create_all_rule()
-            assert "runtests" in rule.prerequisites
-
-    def test_create_all_rule_without_tests(self):
-        """Cover _create_all_rule without tests."""
-        from compiletools.makefile import MakefileCreator
-
-        args = _make_args(tests=[])
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            rule = mc._create_all_rule()
-            assert "runtests" not in rule.prerequisites
-            assert "build" in rule.prerequisites
-
-    def test_create_cp_rule_same_dir(self):
-        """Cover _create_cp_rule returning None (line 488)."""
-        from compiletools.makefile import MakefileCreator
-        from unittest.mock import MagicMock
-
-        args = _make_args()
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            mc.namer = MagicMock()
-            mc.namer.executable_dir.return_value = "/some/dir"
-            # When output is in same dir, should return None
-            result = mc._create_cp_rule("/some/dir/myexe")
-            assert result is None
-
-    def test_create_cp_rule_different_dir(self):
-        """Cover _create_cp_rule returning a Rule (line 490)."""
-        from compiletools.makefile import MakefileCreator
-        from unittest.mock import MagicMock
-
-        args = _make_args()
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            mc.namer = MagicMock()
-            mc.namer.executable_dir.return_value = "/exe/dir"
-            result = mc._create_cp_rule("/obj/dir/myexe")
-            assert result is not None
-            assert result.target == "/exe/dir/myexe"
-            assert "cp" in result.recipe
-
-    def test_create_test_rules(self):
-        """Cover _create_test_rules (lines 497-519)."""
-        from compiletools.makefile import MakefileCreator
-        from unittest.mock import MagicMock
-
-        args = _make_args(TESTPREFIX="valgrind", verbose=1)
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            mc.namer = MagicMock()
-            mc.namer.executable_pathname.return_value = "/bin/test_foo"
-            rules = mc._create_test_rules(["/src/test_foo.cpp"])
-            # Should have runtests phony + one test rule
-            assert len(rules) == 2
-            targets = [r.target for r in rules]
-            assert "runtests" in targets
-            # test rule should have valgrind and echo
-            test_rule = [r for r in rules if r.target != "runtests"][0]
-            assert "valgrind" in test_rule.recipe
-            assert "@echo" in test_rule.recipe
-
-    def test_create_tests_not_parallel_rule(self):
-        """Cover _create_tests_not_parallel_rule (line 523)."""
-        rule = compiletools.makefile.MakefileCreator._create_tests_not_parallel_rule()
-        assert rule.target == ".NOTPARALLEL"
-        assert rule.prerequisites == "runtests"
-
-    def test_gather_root_sources(self):
-        """Cover _gather_root_sources (lines 529-540)."""
-        from compiletools.makefile import MakefileCreator
-
-        args = _make_args(
-            static=["a.cpp"],
-            dynamic=["b.cpp"],
-            filename=["c.cpp"],
-            tests=["d.cpp"],
-        )
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            sources = mc._gather_root_sources()
-            assert "a.cpp" in sources
-            assert "b.cpp" in sources
-            assert "c.cpp" in sources
-            assert "d.cpp" in sources
-
-    def test_detect_filesystem_type_verbose(self, capsys):
-        """Cover _detect_filesystem_type verbose print (line 293)."""
-        from compiletools.makefile import MakefileCreator
-
-        args = _make_args(verbose=3)
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            with patch("compiletools.filesystem_utils.get_filesystem_type", return_value="ext4"):
-                result = mc._detect_filesystem_type()
-            assert result == "ext4"
-            captured = capsys.readouterr()
-            assert "Detected filesystem type: ext4" in captured.out
-
-    def test_ct_lock_helper_missing_exits(self):
-        """Cover ct-lock-helper not found error (lines 233-243)."""
-        import sys
-
-        args = _make_args(shared_objects=True, verbose=0)
-        with patch("shutil.which", return_value=None), \
-             patch("compiletools.filesystem_utils.get_filesystem_type", return_value="ext4"), \
-             patch("compiletools.namer.Namer") as MockNamer:
-            MockNamer.return_value = None
-            import pytest
-            with pytest.raises(SystemExit):
-                compiletools.makefile.MakefileCreator(args, hunter=None)
-
-    def test_link_rule_verbose(self):
-        """Cover verbose recipe in _create_link_rule (line 125)."""
-        from compiletools.makefile import LinkRuleCreator
-        from unittest.mock import MagicMock
-
-        args = _make_args(verbose=1)
-        namer = MagicMock()
-        namer.object_pathname.return_value = "/obj/foo.o"
-        namer.compute_dep_hash.return_value = "abc123"
-        hunter = MagicMock()
-        hunter.macro_state_hash.return_value = "hash1"
-        hunter.header_dependencies.return_value = []
-        hunter.magicflags.return_value = {}
-
-        creator = LinkRuleCreator(args, namer, hunter)
-        rule = creator._create_link_rule(
-            outputname="myexe",
-            completesources=["foo.cpp"],
-            linker="g++",
-        )
-        assert "+@echo" in rule.recipe
-        assert "myexe" in rule.recipe
-
-    def test_uptodate_no_makefile(self):
-        """Cover _uptodate when Makefile doesn't exist (lines 339-340)."""
-        from compiletools.makefile import MakefileCreator
-
+    def test_no_makefile(self):
         args = _make_args(makefilename="/tmp/nonexistent_makefile_xyz", verbose=8)
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            assert mc._uptodate() is False
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        graph = _make_simple_graph(args)
+        assert backend._build_file_uptodate(graph) is False
 
-    def test_uptodate_changed_args(self, tmp_path):
-        """Cover _uptodate when args changed (lines 344-353)."""
-        from compiletools.makefile import MakefileCreator
-
+    def test_changed_args(self, tmp_path):
         makefile_path = str(tmp_path / "Makefile")
-        # Write a Makefile with different args
         with open(makefile_path, "w") as f:
             f.write("# Makefile generated by old_args\n")
 
         args = _make_args(makefilename=makefile_path, verbose=8)
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            assert mc._uptodate() is False
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        graph = _make_simple_graph(args)
+        assert backend._build_file_uptodate(graph) is False
 
-    def test_uptodate_matching_args_no_sources(self, tmp_path):
-        """Cover _uptodate when args match and no files changed (lines 354-377)."""
-        from compiletools.makefile import MakefileCreator
-
+    def test_matching_args_no_deps(self, tmp_path):
         args = _make_args(makefilename=str(tmp_path / "Makefile"), verbose=10)
         makefile_path = str(tmp_path / "Makefile")
-        expected_header = "# Makefile generated by " + str(args)
+        expected_header = f"# Makefile generated by {args}"
         with open(makefile_path, "w") as f:
             f.write(expected_header + "\n")
 
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            mc.hunter = None
-            # No sources to gather, so nothing to check
-            with patch.object(mc, "_gather_root_sources", return_value=[]):
-                assert mc._uptodate() is True
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        # Empty graph has no compile rules to check
+        graph = BuildGraph()
+        assert backend._build_file_uptodate(graph) is True
 
-    def test_uptodate_file_newer(self, tmp_path):
-        """Cover _uptodate when a dependency is newer (lines 361-367)."""
-        import time
-        from compiletools.makefile import MakefileCreator
-        from unittest.mock import MagicMock
-
+    def test_dep_newer_than_makefile(self, tmp_path):
         args = _make_args(makefilename=str(tmp_path / "Makefile"), verbose=8)
         makefile_path = str(tmp_path / "Makefile")
-        expected_header = "# Makefile generated by " + str(args)
+        expected_header = f"# Makefile generated by {args}"
         with open(makefile_path, "w") as f:
             f.write(expected_header + "\n")
 
-        # Create a source file that is "newer" than makefile
-        src_file = str(tmp_path / "foo.cpp")
-        with open(src_file, "w") as f:
-            f.write("int main() {}")
-        # Touch source to make it newer
-        time.sleep(0.01)
-        os.utime(src_file, None)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        graph = _make_simple_graph(args)
 
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            mc.hunter = MagicMock()
-            mc.hunter.required_files.return_value = [src_file]
-            with patch.object(mc, "_gather_root_sources", return_value=["foo.cpp"]):
-                # The source file should be newer
-                with patch("compiletools.wrappedos.getmtime") as mock_getmtime:
-                    mock_getmtime.side_effect = lambda f: 100.0 if f == makefile_path else 200.0
-                    assert mc._uptodate() is False
+        with patch("compiletools.wrappedos.getmtime") as mock_getmtime:
+            mock_getmtime.side_effect = lambda f: 100.0 if f == makefile_path else 200.0
+            assert backend._build_file_uptodate(graph) is False
 
-    def test_uptodate_file_older(self, tmp_path):
-        """Cover _uptodate when dependencies are older (lines 368-377)."""
-        from compiletools.makefile import MakefileCreator
-        from unittest.mock import MagicMock
-
+    def test_dep_older_than_makefile(self, tmp_path):
         args = _make_args(makefilename=str(tmp_path / "Makefile"), verbose=10)
         makefile_path = str(tmp_path / "Makefile")
-        expected_header = "# Makefile generated by " + str(args)
+        expected_header = f"# Makefile generated by {args}"
         with open(makefile_path, "w") as f:
             f.write(expected_header + "\n")
 
-        with patch.object(MakefileCreator, "__init__", lambda self, *a, **kw: None):
-            mc = MakefileCreator.__new__(MakefileCreator)
-            mc.args = args
-            mc.hunter = MagicMock()
-            mc.hunter.required_files.return_value = ["/some/file.cpp"]
-            with patch.object(mc, "_gather_root_sources", return_value=["main.cpp"]):
-                with patch("compiletools.wrappedos.getmtime") as mock_getmtime:
-                    mock_getmtime.side_effect = lambda f: 200.0 if f == makefile_path else 100.0
-                    assert mc._uptodate() is True
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        graph = _make_simple_graph(args)
+
+        with patch("compiletools.wrappedos.getmtime") as mock_getmtime:
+            mock_getmtime.side_effect = lambda f: 200.0 if f == makefile_path else 100.0
+            assert backend._build_file_uptodate(graph) is True
+
+
+class TestMakefileBackendGenerate:
+    """Test generate() with output=None writes to disk."""
+
+    def test_generate_writes_makefile(self, tmp_path):
+        makefile_path = str(tmp_path / "Makefile")
+        args = _make_args(makefilename=makefile_path)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        graph = _make_simple_graph(args)
+
+        backend.generate(graph)
+
+        assert os.path.exists(makefile_path)
+        with open(makefile_path) as f:
+            content = f.read()
+        assert ".DELETE_ON_ERROR:" in content
+
+    def test_generate_skips_when_uptodate(self, tmp_path):
+        makefile_path = str(tmp_path / "Makefile")
+        args = _make_args(makefilename=makefile_path, verbose=10)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+
+        # Write a Makefile with matching signature
+        graph = BuildGraph()  # No compile rules
+        expected_header = f"# Makefile generated by {args}"
+        with open(makefile_path, "w") as f:
+            f.write(expected_header + "\n")
+            f.write("existing content\n")
+
+        backend.generate(graph)
+
+        # Should not have been overwritten
+        with open(makefile_path) as f:
+            content = f.read()
+        assert "existing content" in content
+
+    def test_generate_applies_build_only_changed(self, tmp_path):
+        makefile_path = str(tmp_path / "Makefile")
+        args = _make_args(makefilename=makefile_path, build_only_changed="/src/foo.cpp")
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        graph = _make_simple_graph(args)
+
+        # Add another compile rule that should be filtered out
+        graph.add_rule(
+            BuildRule(
+                output="/tmp/test_obj/bar.o",
+                inputs=["/src/bar.cpp", "/src/bar.h"],
+                command=["g++", "-O2", "-c", "/src/bar.cpp", "-o", "/tmp/test_obj/bar.o"],
+                rule_type="compile",
+                order_only_deps=[args.objdir],
+            )
+        )
+
+        backend.generate(graph)
+
+        with open(makefile_path) as f:
+            content = f.read()
+        # foo.o should be present (depends on changed file)
+        assert "/tmp/test_obj/foo.o" in content
+        # bar.o should not be present (doesn't depend on changed file)
+        assert "/tmp/test_obj/bar.o" not in content
+
+
+class TestMakefileBackendExecute:
+    """Test execute() method."""
+
+    def test_execute_runtests_delegates_to_run_tests(self):
+        args = _make_args()
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        with patch.object(backend, "_run_tests") as mock_run_tests:
+            backend.execute("runtests")
+            mock_run_tests.assert_called_once()
 
 
 class TestMakefile:
+    """Integration tests using makefile.py main() (which now delegates to MakefileBackend)."""
+
     def setup_method(self):
         uth.reset()
 
@@ -517,8 +442,8 @@ class TestMakefile:
                 "dottypaths/dottypaths.cpp",
             ]
             realpaths = [os.path.join(samplesdir, filename) for filename in relativepaths]
-            with uth.ParserContext():  # Clear any existing parsers before calling main()
-                compiletools.makefile.main(["--config=" + temp_config_name] + realpaths)
+            with uth.ParserContext():
+                compiletools.makefile.main(["--config=" + temp_config_name, "--no-file-locking"] + realpaths)
 
             filelist = os.listdir(".")
             makefilename = [ff for ff in filelist if ff.startswith("Makefile")]
@@ -550,14 +475,13 @@ class TestMakefile:
         _test_library("--dynamic")
 
     @uth.requires_functional_compiler
-    def test_shared_objects_propagates_compiler_errors(self):
-        """Test that compiler errors fail the build when using --shared-objects.
+    def test_file_locking_propagates_compiler_errors(self):
+        """Test that compiler errors fail the build when using --file-locking.
 
         Regression test for bug where set -e was missing from locking recipes,
         causing compiler failures to be silently ignored.
         """
         with uth.TempDirContextWithChange() as tempdir:
-            # Create a source file with intentional syntax error
             bad_source = os.path.join(tempdir, "test_syntax_error.cpp")
             with open(bad_source, "w") as f:
                 f.write("""
@@ -570,29 +494,23 @@ int main() {
 
             with uth.TempConfigContext(tempdir=tempdir) as temp_config_name:
                 with uth.ParserContext():
-                    # Generate Makefile with --shared-objects enabled
-                    compiletools.makefile.main(["--config=" + temp_config_name, bad_source, "--shared-objects"])
+                    compiletools.makefile.main(["--config=" + temp_config_name, bad_source, "--file-locking"])
 
-                # Find generated Makefile
                 filelist = os.listdir(".")
                 makefilename = [ff for ff in filelist if ff.startswith("Makefile")]
                 assert makefilename, "Makefile should have been generated"
 
-                # Verify Makefile uses ct-lock-helper for error propagation
                 with open(makefilename[0]) as f:
                     makefile_content = f.read()
                     assert "ct-lock-helper" in makefile_content, (
                         "Makefile should use ct-lock-helper (which has set -euo pipefail)"
                     )
 
-                # Attempt to build - this MUST fail
                 cmd = ["make", "-f"] + makefilename
                 result = subprocess.run(cmd, capture_output=True, text=True)
 
-                # Verify build failed (non-zero exit code)
                 assert result.returncode != 0, "Build should fail with non-zero exit code when compiler errors occur"
 
-                # Verify error message is visible
                 combined_output = result.stdout + result.stderr
                 assert "error" in combined_output.lower(), "Compiler error message should be visible in output"
 
@@ -615,10 +533,9 @@ def _test_library(static_dynamic):
         ]
         exerealpath = os.path.join(samplesdir, exerelativepath)
         librealpaths = [os.path.join(samplesdir, filename) for filename in librelativepaths]
-        argv = ["--config=" + temp_config_name, exerealpath, static_dynamic] + librealpaths
+        argv = ["--config=" + temp_config_name, "--no-file-locking", exerealpath, static_dynamic] + librealpaths
         compiletools.makefile.main(argv)
 
-        # Figure out the name of the makefile and run make
         filelist = os.listdir(".")
         makefilename = [ff for ff in filelist if ff.startswith("Makefile")]
         cmd = ["make", "-f"] + makefilename

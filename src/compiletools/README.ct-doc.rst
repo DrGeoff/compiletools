@@ -82,9 +82,9 @@ KEY FEATURES
     Support for debug, release, and custom build configurations.
     Use ``--variant=release`` to select. See ct-config(1).
 
-**Shared Object Cache**
+**File Locking**
     Multi-user/multi-host object file caching with filesystem-aware locking
-    for faster builds in team environments. Enable with ``shared-objects = true``.
+    for faster builds in team environments. Enable with ``file-locking = true``.
 
 **Minimal Configuration**
     Works out-of-the-box with sensible defaults. Configuration only needed
@@ -112,7 +112,7 @@ CORE TOOLS
     Generate file lists for packaging and distribution.
 
 **ct-cleanup-locks**
-    Clean stale locks in shared object caches.
+    Clean stale locks from file locking.
 
 **Shell Wrappers**
     Convenience scripts in ``scripts/``: ct-build, ct-build-static-library,

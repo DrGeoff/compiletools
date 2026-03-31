@@ -15,7 +15,7 @@ Swiss army knife for building a C/C++ project
 
 SYNOPSIS
 ========
-ct-cake [compilation args] [--variant=<VARIANT>] filename.cpp
+ct-cake [compilation args] [--variant=<VARIANT>] [--backend=<BACKEND>] filename.cpp
 
 DESCRIPTION
 ===========
@@ -72,9 +72,10 @@ particularly for C++.
 With ct-cake, you only pull in what is strictly necessary to what you need to
 run right now. Say, you are testing a particular tool in a large project, with
 a large base of 2000 library files for string handling, sockets, etc. There
-is simply no Makefile (This is actually a lie, there is a Makefile under the
-hood). You might want to create a build.sh for regression
-testing, but it's not essential.
+is simply no Makefile (by default ct-cake generates one behind the scenes, but
+you can also use ``--backend`` to target Ninja, CMake, Bazel, Shake, or Tup).
+You might want to create a build.sh for regression testing, but it's not
+essential.
 
 The basic workflow is to simply type:
 
@@ -104,8 +105,9 @@ adds that implementation file to the build.  ct-cake also reads the entire file
 (configurable via --max-file-read-size) for "magic flags" (//#KEY=VALUE)
 that indicate needed link and compile flags.  Then it recurses through the
 dependencies of the cpp file, and uses this spidering to generate complete
-dependency information for the application. A Makefile is generated and finally
-it calls make.
+dependency information for the application. This information is collected into a
+backend-agnostic build graph, which is then handed to the selected backend
+(Make by default) to generate native build files and execute the build.
 
 Magic Comments / Magic Flags
 ============================
@@ -154,10 +156,11 @@ Previously this required ``--headerdeps=cpp`` to track correctly.
 Performance
 ===========
 
-Because ct-cake internally generates a Makefile to build the C++ file, ct-cake is
-about as fast as a handrolled Makefile that uses the same lazily generated
-dependencies. One particular (old) example project took 0.04 seconds to build if
-nothing is out of date, versus 2 seconds for, say, Boost.Build.
+ct-cake's dependency analysis is fast — one particular (old) example project took
+0.04 seconds to build if nothing is out of date, versus 2 seconds for, say,
+Boost.Build. The default Make backend is about as fast as a handrolled Makefile
+that uses the same lazily generated dependencies; alternative backends like Ninja
+can be even faster for large incremental rebuilds.
 
 ct-cake also eliminates the redundant generation of static archive files that
 a more hierarchical build process would generate as intermediaries, saving
@@ -168,14 +171,14 @@ those strictly needed to build your particular binary, so you only pay for what
 you use. This difference alone should see a large improvement on most
 projects, especially for incremental rebuilds.
 
-Shared Object Cache
--------------------
+File Locking
+------------
 
-ct-cake supports a shared object file cache that enables multiple users and build
+ct-cake supports file locking that enables multiple users and build
 hosts to share compiled object files. This significantly speeds up builds in
 multi-developer and CI/CD environments by reusing object files across builds.
 
-Enable by setting ``shared-objects = true`` in your configuration file. This adds
+Enable by setting ``file-locking = true`` in your configuration file. This adds
 filesystem-aware locking to ensure safe concurrent access (flock on local filesystems,
 atomic mkdir on network filesystems). The cache uses content-addressable storage
 (files named by hash of source + compiler flags) and includes automatic stale lock
@@ -340,12 +343,17 @@ Common Options
     When building a single target, rename the output to this name.
     Example: ``ct-cake main.cpp -o myapp``
 
+**--backend**
+    Build system backend to use. Choices: ``make`` (default), ``ninja``,
+    ``cmake``, ``bazel``, ``shake``, ``tup``.
+    Example: ``ct-cake --backend=ninja``
+
 **--clean**
-    Remove all build artifacts by running ``make realclean``.
+    Remove all build artifacts.
 
 **-j, --parallel**
-    Number of parallel jobs for make. Defaults to the output of ``ct-jobs``
-    (typically the number of CPU cores).
+    Number of parallel jobs. Defaults to the output of ``ct-jobs``
+    (typically the number of CPU cores). Passed to the selected backend.
 
 **--compilation-database / --no-compilation-database**
     Generate a ``compile_commands.json`` file for clang tooling. Enabled by
@@ -387,6 +395,20 @@ run the build script like this:
 or:
 
     ``$ ./build.sh --variant=release --append-CXXFLAGS=-DSPECIALMODE``
+
+References
+==========
+
+The content-addressable backend architecture was informed by:
+
+* Andrey Mokhov, Neil Mitchell, Simon Peyton Jones. *Build Systems à la Carte*.
+  Proc. ACM Program. Lang., Vol. 2, ICFP, Article 79, September 2018.
+  https://doi.org/10.1145/3236774
+
+The non-recursive Makefile generation was informed by:
+
+* Peter Miller. *Recursive Make Considered Harmful*. 2008.
+  https://api.semanticscholar.org/CorpusID:54117644
 
 SEE ALSO
 ========

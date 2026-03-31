@@ -16,7 +16,7 @@ import compiletools.locking
 def mock_args():
     """Create mock args object with locking configuration."""
     args = Mock()
-    args.shared_objects = True
+    args.file_locking = True
     args.lock_cross_host_timeout = 600
     args.lock_warn_interval = 60
     args.lock_creation_grace_period = 2
@@ -48,7 +48,7 @@ def temp_lock_file():
 
 
 class TestLockdirLock:
-    """Tests for lockdir-based locking (NFS/GPFS/Lustre)."""
+    """Tests for lockdir-based locking (NFS/Lustre)."""
 
     def test_acquire_release_basic(self, temp_lock_file, mock_args):
         """Test basic lock acquire and release."""
@@ -348,22 +348,15 @@ class TestFlockLock:
         lock.release()
         # Lockfile may still exist but should be unlocked
 
-    def test_windows_compatibility_fallback(self, temp_lock_file, mock_args):
-        """Test that FlockLock works without fcntl (Windows simulation)."""
-        # Simulate Windows by temporarily hiding fcntl
+    def test_no_fcntl_raises_runtime_error(self, temp_lock_file, mock_args):
+        """Test that FlockLock raises RuntimeError without fcntl (Windows)."""
         original_has_fcntl = compiletools.locking.HAS_FCNTL
         try:
             compiletools.locking.HAS_FCNTL = False
 
             lock = compiletools.locking.FlockLock(temp_lock_file, mock_args)
-            lock.acquire()
-
-            # Should use fallback mechanism (O_EXCL polling)
-            assert lock.use_flock is False
-            assert os.path.exists(lock.lockfile_pid)
-
-            lock.release()
-            assert not os.path.exists(lock.lockfile_pid)
+            with pytest.raises(RuntimeError, match="fcntl module not available"):
+                lock.acquire()
         finally:
             compiletools.locking.HAS_FCNTL = original_has_fcntl
 
@@ -371,8 +364,8 @@ class TestFlockLock:
         """Test FileLock context manager with flock strategy."""
         with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"):
             with compiletools.locking.FileLock(temp_lock_file, mock_args):
-                lockfile = temp_lock_file + ".lock"
-                assert os.path.exists(lockfile)
+                # FlockLock locks target directly (no .lock sidecar)
+                assert os.path.exists(temp_lock_file)
 
     def test_nonexistent_directory(self, mock_args):
         """Test that flock works when parent directory doesn't exist."""
@@ -410,9 +403,9 @@ class TestFileLock:
                 lock_ctx = compiletools.locking.FileLock(temp_lock_file, mock_args)
                 assert isinstance(lock_ctx.lock, compiletools.locking.FlockLock)
 
-    def test_noop_when_shared_objects_false(self, temp_lock_file, mock_args):
-        """Test that FileLock is no-op when shared_objects=False."""
-        mock_args.shared_objects = False
+    def test_noop_when_file_locking_false(self, temp_lock_file, mock_args):
+        """Test that FileLock is no-op when file_locking=False."""
+        mock_args.file_locking = False
 
         lock_ctx = compiletools.locking.FileLock(temp_lock_file, mock_args)
         assert lock_ctx.lock is None
@@ -487,7 +480,7 @@ def _concurrent_lock_worker(queue, temp_file, args_dict, worker_id, strategy):
 class TestConcurrentLocking:
     """Tests for concurrent lock access."""
 
-    @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock"])
+    @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock", "fcntl"])
     def test_concurrent_processes_serial_access(self, temp_lock_file, mock_args, strategy):
         """Test that concurrent processes acquire locks serially."""
         # Use spawn method to avoid fork() deprecation warnings
@@ -495,7 +488,7 @@ class TestConcurrentLocking:
 
         # Convert args to dict for pickling
         args_dict = {
-            "shared_objects": True,
+            "file_locking": True,
             "lock_cross_host_timeout": 600,
             "lock_warn_interval": 60,
             "lock_creation_grace_period": 2,

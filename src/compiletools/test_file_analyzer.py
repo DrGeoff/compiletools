@@ -197,9 +197,9 @@ class TestCommentDetection:
     """Test comment detection functions."""
 
     def test_is_position_commented_in_line_comment(self):
-        from compiletools.file_analyzer import is_position_commented_simd_optimized
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import is_position_commented_simd_optimized
 
         text = sz.Str("int x; // comment\nint y;")
         offsets = [0, 18]
@@ -207,43 +207,43 @@ class TestCommentDetection:
         assert is_position_commented_simd_optimized(text, 10, offsets) is True
 
     def test_is_position_commented_not_commented(self):
-        from compiletools.file_analyzer import is_position_commented_simd_optimized
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import is_position_commented_simd_optimized
 
         text = sz.Str("int x = 5;\nint y;")
         offsets = [0, 11]
         assert is_position_commented_simd_optimized(text, 4, offsets) is False
 
     def test_is_position_commented_empty_offsets(self):
-        from compiletools.file_analyzer import is_position_commented_simd_optimized
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import is_position_commented_simd_optimized
 
         text = sz.Str("// all comment")
         offsets = [0]
         assert is_position_commented_simd_optimized(text, 5, offsets) is True
 
     def test_is_inside_block_comment_no_comments(self):
-        from compiletools.file_analyzer import is_inside_block_comment_simd
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import is_inside_block_comment_simd
 
         text = sz.Str("int x = 5;")
         assert is_inside_block_comment_simd(text, 4) is False
 
     def test_is_inside_block_comment_inside(self):
-        from compiletools.file_analyzer import is_inside_block_comment_simd
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import is_inside_block_comment_simd
 
         text = sz.Str("/* comment */ int x;")
         assert is_inside_block_comment_simd(text, 5) is True
 
     def test_is_inside_block_comment_outside(self):
-        from compiletools.file_analyzer import is_inside_block_comment_simd
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import is_inside_block_comment_simd
 
         text = sz.Str("/* comment */ int x;")
         assert is_inside_block_comment_simd(text, 15) is False
@@ -253,9 +253,9 @@ class TestParseDirectiveStruct:
     """Test parse_directive_struct()."""
 
     def test_parse_define_no_value(self):
-        from compiletools.file_analyzer import parse_directive_struct
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import parse_directive_struct
 
         result = parse_directive_struct("define", 0, 0, [sz.Str("#define FOO")])
         assert result.directive_type == "define"
@@ -263,35 +263,35 @@ class TestParseDirectiveStruct:
         assert result.macro_value is None
 
     def test_parse_define_with_value(self):
-        from compiletools.file_analyzer import parse_directive_struct
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import parse_directive_struct
 
         result = parse_directive_struct("define", 0, 0, [sz.Str("#define FOO 42")])
         assert str(result.macro_name) == "FOO"
         assert str(result.macro_value) == "42"
 
     def test_parse_ifdef(self):
-        from compiletools.file_analyzer import parse_directive_struct
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import parse_directive_struct
 
         result = parse_directive_struct("ifdef", 0, 0, [sz.Str("#ifdef MY_MACRO")])
         assert result.directive_type == "ifdef"
         assert str(result.macro_name) == "MY_MACRO"
 
     def test_parse_directive_empty_content(self):
-        from compiletools.file_analyzer import parse_directive_struct
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import parse_directive_struct
 
         result = parse_directive_struct("endif", 0, 0, [sz.Str("#endif")])
         assert result.directive_type == "endif"
 
     def test_parse_include_directive(self):
-        from compiletools.file_analyzer import parse_directive_struct
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import parse_directive_struct
 
         result = parse_directive_struct("include", 0, 0, [sz.Str('#include "foo.h"')])
         assert result.directive_type == "include"
@@ -640,9 +640,9 @@ class TestDetectIncludeGuard:
         assert str(guard) == "pragma_once"
 
     def test_traditional_include_guard(self):
-        from compiletools.file_analyzer import PreprocessorDirective, detect_include_guard
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import PreprocessorDirective, detect_include_guard
 
         directives = [
             PreprocessorDirective(line_num=0, byte_pos=0, directive_type="ifndef",
@@ -662,9 +662,9 @@ class TestDetectIncludeGuard:
         assert detect_include_guard([]) is None
 
     def test_no_guard_too_few_directives(self):
-        from compiletools.file_analyzer import PreprocessorDirective, detect_include_guard
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import PreprocessorDirective, detect_include_guard
 
         directives = [
             PreprocessorDirective(line_num=0, byte_pos=0, directive_type="ifndef",
@@ -675,9 +675,9 @@ class TestDetectIncludeGuard:
         assert detect_include_guard(directives) is None
 
     def test_no_guard_last_not_endif(self):
-        from compiletools.file_analyzer import PreprocessorDirective, detect_include_guard
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import PreprocessorDirective, detect_include_guard
 
         directives = [
             PreprocessorDirective(line_num=0, byte_pos=0, directive_type="ifndef",
@@ -690,9 +690,9 @@ class TestDetectIncludeGuard:
         assert detect_include_guard(directives) is None
 
     def test_no_guard_mismatched_names(self):
-        from compiletools.file_analyzer import PreprocessorDirective, detect_include_guard
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import PreprocessorDirective, detect_include_guard
 
         directives = [
             PreprocessorDirective(line_num=0, byte_pos=0, directive_type="ifndef",
@@ -748,14 +748,14 @@ class TestAnalyzeFileFeatures:
         assert "BAR" in names
         assert "MAX" in names
         # Check FOO has value
-        foo = [d for d in result.defines if str(d["name"]) == "FOO"][0]
+        foo = next(d for d in result.defines if str(d["name"]) == "FOO")
         assert foo["value"] is not None
         assert "42" in str(foo["value"])
         # Check BAR has no value
-        bar = [d for d in result.defines if str(d["name"]) == "BAR"][0]
+        bar = next(d for d in result.defines if str(d["name"]) == "BAR")
         assert bar["value"] is None
         # Check MAX is function-like
-        maxd = [d for d in result.defines if str(d["name"]) == "MAX"][0]
+        maxd = next(d for d in result.defines if str(d["name"]) == "MAX")
         assert maxd["is_function_like"] is True
 
     def test_include_guard_excluded_from_defines(self):
@@ -913,8 +913,8 @@ class TestDetermineFileReadingStrategy:
     """Test _determine_file_reading_strategy."""
 
     def test_no_mmap_flag(self):
-        from compiletools.file_analyzer import _determine_file_reading_strategy, set_analyzer_args
         import compiletools.file_analyzer as fa
+        from compiletools.file_analyzer import set_analyzer_args
 
         old = fa._file_reading_strategy
         try:
@@ -925,8 +925,8 @@ class TestDetermineFileReadingStrategy:
             fa._file_reading_strategy = old
 
     def test_force_mmap_flag(self):
-        from compiletools.file_analyzer import set_analyzer_args
         import compiletools.file_analyzer as fa
+        from compiletools.file_analyzer import set_analyzer_args
 
         old = fa._file_reading_strategy
         try:
@@ -941,9 +941,9 @@ class TestExtractConditionalMacros:
     """Test _extract_conditional_macros function."""
 
     def test_ifdef_macros(self):
-        from compiletools.file_analyzer import PreprocessorDirective, _extract_conditional_macros
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import PreprocessorDirective, _extract_conditional_macros
 
         directives = [
             PreprocessorDirective(line_num=0, byte_pos=0, directive_type="ifdef",
@@ -957,9 +957,9 @@ class TestExtractConditionalMacros:
         assert "NDEBUG" in names
 
     def test_if_elif_conditions(self):
-        from compiletools.file_analyzer import PreprocessorDirective, _extract_conditional_macros
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import PreprocessorDirective, _extract_conditional_macros
 
         directives = [
             PreprocessorDirective(line_num=0, byte_pos=0, directive_type="if",
@@ -990,63 +990,63 @@ class TestParseDirectiveStructExtended:
     """Additional tests for parse_directive_struct edge cases."""
 
     def test_parse_ifndef(self):
-        from compiletools.file_analyzer import parse_directive_struct
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import parse_directive_struct
 
         result = parse_directive_struct("ifndef", 0, 0, [sz.Str("#ifndef GUARD_H")])
         assert result.directive_type == "ifndef"
         assert str(result.macro_name) == "GUARD_H"
 
     def test_parse_undef(self):
-        from compiletools.file_analyzer import parse_directive_struct
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import parse_directive_struct
 
         result = parse_directive_struct("undef", 0, 0, [sz.Str("#undef OLD_MACRO")])
         assert result.directive_type == "undef"
         assert str(result.macro_name) == "OLD_MACRO"
 
     def test_parse_if_condition(self):
-        from compiletools.file_analyzer import parse_directive_struct
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import parse_directive_struct
 
         result = parse_directive_struct("if", 0, 0, [sz.Str("#if defined(X) && Y > 1")])
         assert result.directive_type == "if"
         assert "defined(X)" in str(result.condition)
 
     def test_parse_elif_condition(self):
-        from compiletools.file_analyzer import parse_directive_struct
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import parse_directive_struct
 
         result = parse_directive_struct("elif", 0, 0, [sz.Str("#elif Z == 0")])
         assert result.directive_type == "elif"
         assert "Z == 0" in str(result.condition)
 
     def test_parse_pragma(self):
-        from compiletools.file_analyzer import parse_directive_struct
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import parse_directive_struct
 
         result = parse_directive_struct("pragma", 0, 0, [sz.Str("#pragma once")])
         assert result.directive_type == "pragma"
         assert str(result.macro_name) == "once"
 
     def test_parse_define_function_like(self):
-        from compiletools.file_analyzer import parse_directive_struct
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import parse_directive_struct
 
         result = parse_directive_struct("define", 0, 0, [sz.Str("#define MAX(a,b) ((a)>(b)?(a):(b))")])
         assert result.directive_type == "define"
         assert str(result.macro_name) == "MAX"
 
     def test_parse_multiline_directive(self):
-        from compiletools.file_analyzer import parse_directive_struct
-
         import stringzilla as sz
+
+        from compiletools.file_analyzer import parse_directive_struct
 
         result = parse_directive_struct("define", 0, 0, [sz.Str("#define LONG \\"), sz.Str("  value")])
         assert result.directive_type == "define"

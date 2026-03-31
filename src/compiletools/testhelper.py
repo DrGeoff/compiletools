@@ -7,6 +7,8 @@ import subprocess
 import tempfile
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import configargparse
 import pytest
@@ -14,6 +16,50 @@ import pytest
 import compiletools.apptools
 
 # The abbreviation "uth" is often used for this "testhelper"
+
+
+def _backend_tool_available(backend_name):
+    """Check if the build tool for a backend is on PATH."""
+    if backend_name == "shake":
+        return True  # Self-executing, no external tool needed
+    if backend_name == "bazel":
+        return shutil.which("bazelisk") is not None or shutil.which("bazel") is not None
+    if backend_name == "cmake":
+        return shutil.which("cmake") is not None
+    if backend_name == "tup":
+        return shutil.which("tup") is not None
+    tool = {"make": "make", "ninja": "ninja"}.get(backend_name)
+    if tool is None:
+        return False
+    return shutil.which(tool) is not None
+
+
+def requires_backend_tool(backend_name_or_param="backend_name"):
+    """Skip test when the build tool for a backend is not on PATH.
+
+    Usage with parametrize (reads 'backend_name' kwarg):
+        @requires_backend_tool()
+        @pytest.mark.parametrize("backend_name", available_backends())
+
+    Usage with fixed name:
+        @requires_backend_tool("ninja")
+    """
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            name = kwargs.get(backend_name_or_param, backend_name_or_param)
+            if not _backend_tool_available(name):
+                pytest.skip(f"{name} build tool not found on PATH")
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    if callable(backend_name_or_param):
+        func = backend_name_or_param
+        backend_name_or_param = "backend_name"
+        return decorator(func)
+    return decorator
 
 
 def requires_functional_compiler(func):
@@ -39,15 +85,15 @@ def requires_functional_compiler(func):
 
 
 def requires_lockdir_filesystem(func):
-    """Decorator to skip tests that require lockdir-based locking (NFS/GPFS/Lustre).
+    """Decorator to skip tests that require lockdir-based locking (NFS/Lustre).
 
     This decorator checks if the test tmpdir filesystem uses lockdir strategy
-    and automatically skips the test if it uses flock or cifs instead.
+    and automatically skips the test if it uses flock, fcntl, or cifs instead.
 
     Usage:
         @requires_lockdir_filesystem
         def test_something_that_needs_lockdir(self):
-            # Test code that requires NFS/GPFS/Lustre filesystem
+            # Test code that requires NFS/Lustre filesystem
             pass
     """
 
@@ -59,7 +105,7 @@ def requires_lockdir_filesystem(func):
             fstype = compiletools.filesystem_utils.get_filesystem_type(tmpdir)
             strategy = compiletools.filesystem_utils.get_lock_strategy(fstype)
             if strategy != "lockdir":
-                pytest.skip(f"Filesystem {fstype} uses {strategy} (not lockdir) - test requires NFS/GPFS/Lustre")
+                pytest.skip(f"Filesystem {fstype} uses {strategy} (not lockdir) - test requires NFS/Lustre")
         return func(*args, **kwargs)
 
     return wrapper
@@ -95,7 +141,7 @@ def requires_flock_filesystem(func):
 
 
 def with_group_writable_umask(cls_or_func):
-    """Decorator to temporarily set group-writable umask for shared-objects tests.
+    """Decorator to temporarily set group-writable umask for file-locking tests.
 
     This decorator temporarily sets umask to 0o002 (allow group read/write) for the
     duration of the test, then restores the original umask.
@@ -104,7 +150,7 @@ def with_group_writable_umask(cls_or_func):
 
     Usage:
         @with_group_writable_umask
-        def test_something_that_needs_shared_objects(self):
+        def test_something_that_needs_file_locking(self):
             pass
 
         @with_group_writable_umask
@@ -707,3 +753,178 @@ def write_sources(mapping, target_dir=None):
         p.write_text(textwrap.dedent(text).lstrip())
         paths[rel] = p
     return paths
+
+
+# ---------------------------------------------------------------------------
+# Backend test helpers
+# ---------------------------------------------------------------------------
+
+
+def make_stub_backend_class():
+    """Create a concrete BuildBackend subclass for unit testing."""
+    from compiletools.build_backend import BuildBackend
+
+    class StubBackend(BuildBackend):
+        def generate(self, graph, output=None):
+            self.last_graph = graph
+
+        def execute(self, target="build"):
+            pass
+
+        @staticmethod
+        def name():
+            return "stub_test"
+
+        @staticmethod
+        def build_filename():
+            return "Stubfile"
+
+    return StubBackend
+
+
+def make_backend_args(tmpdir, **overrides):
+    """Create a SimpleNamespace with standard backend args rooted in tmpdir."""
+    defaults = dict(
+        filename=[],
+        tests=[],
+        static=[],
+        dynamic=[],
+        verbose=0,
+        objdir=os.path.join(tmpdir, "obj"),
+        bindir=os.path.join(tmpdir, "bin"),
+        git_root="",
+        CC="gcc",
+        CXX="g++",
+        CFLAGS="-O2",
+        CXXFLAGS="-O2",
+        LD="g++",
+        LDFLAGS="",
+        file_locking=False,
+        serialisetests=False,
+        build_only_changed=None,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def make_mock_hunter(sources=None, headers=None, magicflags_map=None):
+    """Create a MagicMock hunter with standard behavior."""
+    hunter = MagicMock()
+    hunter.huntsource = MagicMock()
+    sources = sources or []
+    hunter.getsources = MagicMock(return_value=sources)
+    hunter.required_source_files = MagicMock(side_effect=lambda s: sources)
+    headers = headers or []
+    hunter.header_dependencies = MagicMock(return_value=headers)
+    hunter.magicflags = MagicMock(return_value=magicflags_map or {})
+    hunter.macro_state_hash = MagicMock(return_value="abcdef1234567890")
+    return hunter
+
+
+def make_mock_namer(args):
+    """Create a MagicMock namer deriving paths from args.objdir/bindir."""
+    objdir = args.objdir
+    bindir = args.bindir
+    namer = MagicMock()
+    namer.object_pathname = MagicMock(
+        side_effect=lambda f, mh, dh: f"{objdir}/{f.split('/')[-1].replace('.cpp', '.o')}"
+    )
+    namer.executable_pathname = MagicMock(
+        side_effect=lambda f: f"{bindir}/{f.split('/')[-1].replace('.cpp', '')}"
+    )
+    namer.staticlibrary_pathname = MagicMock(return_value=f"{bindir}/libmylib.a")
+    namer.dynamiclibrary_pathname = MagicMock(return_value=f"{bindir}/libmylib.so")
+    namer.compute_dep_hash = MagicMock(return_value="dep_hash_12345")
+    namer.executable_dir = MagicMock(return_value=bindir)
+    return namer
+
+
+def fake_subprocess_result(returncode=0, stdout="", stderr=""):
+    """Real CompletedProcess instead of MagicMock."""
+    return subprocess.CompletedProcess([], returncode, stdout, stderr)
+
+
+@contextlib.contextmanager
+def BackendTestContext(**arg_overrides):
+    """Context manager yielding (backend, args, tmpdir) with a stub backend.
+
+    Creates a temp directory, builds args and mock hunter/namer, and wires
+    up a stub BuildBackend ready for build_graph() calls.
+
+    Usage::
+
+        with BackendTestContext(filename=["/src/main.cpp"]) as (backend, args, tmpdir):
+            graph = backend.build_graph()
+            ...
+    """
+    with TempDirContextNoChange() as tmpdir:
+        args = make_backend_args(tmpdir, **arg_overrides)
+        hunter = make_mock_hunter(
+            sources=args.filename or [],
+            headers=[],
+        )
+        StubClass = make_stub_backend_class()
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        yield backend, args, tmpdir
+
+
+@contextlib.contextmanager
+def ShakeBackendTestContext(graph, **arg_overrides):
+    """Context manager yielding (backend, tmpdir) with a ShakeBackend wired to a graph.
+
+    Usage::
+
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            backend.execute("build")
+    """
+    from compiletools.shake_backend import ShakeBackend
+
+    with TempDirContextNoChange() as tmpdir:
+        args = make_backend_args(tmpdir, **arg_overrides)
+        backend = ShakeBackend.__new__(ShakeBackend)
+        backend.args = args
+        backend._graph = graph
+        yield backend, tmpdir
+
+
+@contextlib.contextmanager
+def CakeTestContext(backend_name="make", **arg_overrides):
+    """Context manager yielding (cake, tmpdir) with mocked internals.
+
+    Usage::
+
+        with CakeTestContext("ninja", tests=["test.cpp"]) as (cake, tmpdir):
+            cake.process()
+    """
+    # Ensure all backends are registered
+    import compiletools.bazel_backend
+    import compiletools.cmake_backend
+    import compiletools.makefile_backend
+    import compiletools.ninja_backend
+    import compiletools.shake_backend
+    import compiletools.tup_backend  # noqa: F401
+    from compiletools.cake import Cake
+
+    with TempDirContextNoChange() as tmpdir:
+        # Cake needs extra fields beyond the basic backend args
+        cake_defaults = dict(
+            backend=backend_name,
+            auto=False,
+            filelist=False,
+            clean=False,
+            output=None,
+            compilation_database=False,
+            makefilename="Makefile",
+        )
+        cake_defaults.update(arg_overrides)
+        args = make_backend_args(tmpdir, **cake_defaults)
+        cake = Cake(args)
+        cake._createctobjs = MagicMock()
+        cake._call_compilation_database = MagicMock()
+        cake._copyexes = MagicMock()
+        namer = MagicMock()
+        namer.executable_dir.return_value = os.path.join(tmpdir, "exe")
+        namer.topbindir.return_value = os.path.join(tmpdir, "topbin")
+        cake.namer = namer
+        yield cake, tmpdir

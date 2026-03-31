@@ -59,9 +59,9 @@ The build process in `cake.py` follows this sequence:
    - `magicflags.py` extracts build flags from `//#` comment annotations (`CPPFLAGS=`, `PKG-CONFIG=`, `SOURCE=`, `LDFLAGS=`, etc.)
    - Implied sources are discovered (e.g., `foo.h` implies `foo.cpp`)
 
-4. **Build Generation** -- `makefile.py` generates a Makefile with compilation rules; `compilation_database.py` generates `compile_commands.json`.
+4. **Backend Dispatch** -- `cake.py:_call_backend()` uses the `--backend` flag (default: `make`) to select a build backend via the registry in `build_backend.py`. The backend calls `build_graph()` to populate a `BuildGraph` (backend-agnostic IR of `BuildRule` objects) from Hunter/Namer data, then `generate()` to write the native build file. Available backends: make (default), ninja, cmake, bazel, shake, tup. `compilation_database.py` generates `compile_commands.json` independently.
 
-5. **Build Execution** -- Runs make with parallel jobs, then runs tests if configured.
+5. **Build Execution** -- `backend.execute("build")` invokes the native build tool (make, ninja, cmake --build, etc.). If tests exist, `backend.execute("runtests")` runs them (most backends delegate to the shared `BuildBackend._run_tests()` which runs test executables directly). Finally `_copyexes()` copies executables to the output directory.
 
 ### Magic Detection Pipeline
 
@@ -92,7 +92,7 @@ PreprocessingCache                    # Two-tier caching
 
 ### Locking System
 
-`locking.py` uses atomic `mkdir` for cross-platform/cross-NFS locks. Lock info stored as `{hostname}:{pid}`. Auto-detects filesystem type to set polling intervals (Lustre: 0.01s, NFS: 0.1s, GPFS: 0.05s, local: blocking `flock`). `cleanup_locks.py` removes stale locks with process liveness checks (local via psutil, remote via SSH).
+`locking.py` provides four locking strategies auto-selected by filesystem type: `FcntlLock` (GPFS: `fcntl.lockf()`, cross-node, kernel-managed blocking), `LockdirLock` (NFS/Lustre: atomic `mkdir`, stale detection via `{hostname}:{pid}`), `CIFSLock` (CIFS/SMB: exclusive file creation), and `FlockLock` (local: POSIX `flock`). Polling intervals auto-detected (Lustre: 0.01s, NFS: 0.1s). `cleanup_locks.py` removes stale lockdirs (process liveness via psutil/SSH) and unheld fcntl lock files (non-blocking `lockf()` probe).
 
 ### Key Modules
 
@@ -108,7 +108,15 @@ PreprocessingCache                    # Two-tier caching
 | `hunter.py` | Recursive dependency graph walking |
 | `findtargets.py` | Executable/test target detection |
 | `namer.py` | File naming, object paths (includes macro state hash) |
-| `makefile.py` | Makefile generation |
+| `makefile.py` | Makefile generation (`MakefileCreator`) |
+| `build_graph.py` | Backend-agnostic IR (`BuildRule`, `BuildGraph`) |
+| `build_backend.py` | `BuildBackend` ABC, registry, `build_graph()`, `_run_tests()` |
+| `makefile_backend.py` | Make backend (wraps `MakefileCreator`) |
+| `ninja_backend.py` | Ninja backend (with file-locking support) |
+| `bazel_backend.py` | Bazel backend |
+| `cmake_backend.py` | CMake backend |
+| `shake_backend.py` | Shake backend (self-executing, verifying traces) |
+| `tup_backend.py` | Tup backend |
 | `compilation_database.py` | `compile_commands.json` generation |
 | `locking.py` | Cross-platform atomic file locking |
 | `stringzilla_utils.py` | SIMD text operation helpers |
@@ -116,29 +124,33 @@ PreprocessingCache                    # Two-tier caching
 
 ### Configuration Files
 
-- `ct.conf.d/ct.conf` -- default variant, variant aliases, exe/test markers, shared-objects settings
+- `ct.conf.d/ct.conf` -- default variant, variant aliases, exe/test markers, file-locking settings
 - `ct.conf.d/{variant}.conf` -- compiler-specific flags (e.g., `gcc.debug.conf`, `clang.release.conf`)
 - Config priority: bundled < system (`/etc/xdg/ct`) < venv < user (`~/.config/ct`) < project (`{gitroot}/ct.conf.d/`) < cwd < env < CLI
 
 ### Command-Line Tools
 
-Python entry points defined in `pyproject.toml [project.scripts]`. Shell wrappers in `scripts/` (ct-build, ct-release, ct-watch-build, ct-lock-helper, profile-ct).
+Python entry points defined in `pyproject.toml [project.scripts]`. Shell wrappers in `scripts/` (ct-build, ct-release, ct-watch-build, profile-ct).
 
-All tools support `--variant=<config>` for build configuration selection.
+All tools support `--variant=<config>` for build configuration selection and `--backend=<name>` for build system backend selection (make, ninja, cmake, bazel, shake, tup).
 
 ## Test Conventions
 
 - Prefer function-based tests (`def test_something():`) for simple cases
 - Use class-based tests with `BaseCompileToolsTestCase` from `test_base.py` for tests needing cache isolation (it clears all module-level caches in setup/teardown)
 - `testhelper.py` provides `TempDirContext`, `create_temp_config()`, `samplesdir()`, `@requires_functional_compiler`
-- `conftest.py` has session-wide `ensure_lock_helpers_in_path` fixture and function-scoped `pkgconfig_env` fixture
+- `conftest.py` has session-wide `ensure_lock_helper_in_path` fixture and function-scoped `pkgconfig_env` fixture
 - Sample projects in `src/compiletools/samples/` cover specific test scenarios (conditional_includes, macro_deps, cross_platform, etc.)
+- Never hardcode compiler names (`gcc`, `g++`) in tests that invoke compilation — use `@requires_functional_compiler` decorator and `apptools.get_functional_cxx_compiler()` to detect the system compiler
+- Use `monkeypatch.chdir()` instead of `os.chdir()` with try/finally in tests — pytest auto-restores the working directory
+- When removing/renaming methods, search tests for `patch.object(...)` mocks referencing the old name
+- `BuildRule.rule_type` is validated against `VALID_RULE_TYPES` in `build_graph.py` — adding a new rule type requires updating the frozenset
 
 ## Caches and Performance Testing
 
 Two caches to be aware of when performance testing:
 1. **ccache** -- clear with `ccache -C`
-2. **cake object cache** -- clear with `rm -rf bin`; with `--shared-objects`, objdir may be a shared location
+2. **cake object cache** -- clear with `rm -rf bin`; with `--file-locking`, objdir may be a shared location
 
 ## Profiling
 

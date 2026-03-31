@@ -2,21 +2,23 @@
 
 import os
 import shutil
+import subprocess
 import tempfile
-import time
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from compiletools.locking import CIFSLock, FileLock, FlockLock, LockdirLock
+import compiletools.apptools
+from compiletools.locking import CIFSLock, FcntlLock, FileLock, FlockLock, LockdirLock, atomic_compile
+from compiletools.testhelper import requires_functional_compiler
 
 
 def _make_lock_args(**overrides):
     """Create a minimal args object for locking."""
     defaults = dict(
         verbose=0,
-        shared_objects=True,
+        file_locking=True,
         lock_cross_host_timeout=300,
         lock_warn_interval=30,
         lock_creation_grace_period=2,
@@ -280,6 +282,69 @@ class TestLockdirLock:
             os.rmdir(lock.lockdir)
 
 
+class TestFcntlLock:
+    """Test FcntlLock (fcntl.lockf-based locking for GPFS)."""
+
+    def test_acquire_and_release(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FcntlLock(target, args)
+            lock.acquire()
+            assert os.path.exists(lock.lockfile)
+            lock.release()
+            # Lock file is intentionally NOT removed
+            assert os.path.exists(lock.lockfile)
+
+    def test_creates_parent_dir(self):
+        """Acquire creates parent directory if missing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "subdir", "test.o")
+            args = _make_lock_args()
+            lock = FcntlLock(target, args)
+            lock.acquire()
+            assert os.path.exists(lock.lockfile)
+            lock.release()
+
+    def test_release_error_handled(self, capsys):
+        """Release handles errors gracefully."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args(verbose=2)
+            lock = FcntlLock(target, args)
+            lock.fd = None
+            # Release without acquire — should not crash
+            lock.release()
+
+    def test_locks_target_directly(self):
+        """FcntlLock.lockfile should be the target itself (no .lock suffix)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FcntlLock(target, args)
+            assert lock.lockfile == os.path.realpath(target)
+
+    def test_fcntl_direct_compile_true(self):
+        """FcntlLock should have direct_compile = True."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FcntlLock(target, args)
+            assert lock.direct_compile is True
+
+    def test_no_sidecar_file(self):
+        """Acquiring FcntlLock should NOT create a .lock sidecar file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FcntlLock(target, args)
+            lock.acquire()
+            try:
+                assert not os.path.exists(target + ".lock")
+            finally:
+                lock.release()
+
+
 class TestFlockLock:
     """Test FlockLock edge cases."""
 
@@ -291,20 +356,35 @@ class TestFlockLock:
             lock.acquire()
             lock.release()
 
-    def test_flock_oserror_falls_back_to_polling(self):
+    def test_flock_no_fallback_attributes(self):
+        """FlockLock should not have O_EXCL fallback attributes."""
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args()
             lock = FlockLock(target, args)
+            assert not hasattr(lock, "use_flock")
+            assert not hasattr(lock, "lockfile_pid")
+            assert not hasattr(lock, "sleep_interval")
 
-            # Mock flock to raise OSError
-            with patch("compiletools.locking.fcntl") as mock_fcntl:
-                mock_fcntl.flock.side_effect = OSError("flock failed")
-                mock_fcntl.LOCK_EX = 2
-                mock_fcntl.LOCK_UN = 8
-                lock.acquire()
-                assert lock.use_flock is False
-            lock.release()
+    def test_flock_locks_target_directly(self):
+        """FlockLock.lockfile should be the target itself (no .lock suffix)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+            assert lock.lockfile == os.path.realpath(target)
+
+    def test_flock_no_sidecar_file(self):
+        """Acquiring FlockLock should NOT create a .lock sidecar file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+            lock.acquire()
+            try:
+                assert not os.path.exists(target + ".lock")
+            finally:
+                lock.release()
 
 
 class TestCIFSLock:
@@ -345,32 +425,15 @@ class TestCIFSLock:
 class TestFlockLockRelease:
     """Additional FlockLock tests."""
 
-    def test_release_fallback_path(self):
-        """Release via fallback (non-flock) path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
-            # Simulate fallback mode
-            lock.use_flock = False
-            lock.fd = os.open(lock.lockfile, os.O_CREAT | os.O_WRONLY, 0o666)
-            # Create pid file
-            with open(lock.lockfile_pid, "w") as f:
-                f.write("123\n")
-            lock.release()
-            assert not os.path.exists(lock.lockfile_pid)
-
-    def test_release_oserror_verbose(self, capsys):
+    def test_release_without_acquire(self):
+        """Release without acquire should not crash."""
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args(verbose=2)
             lock = FlockLock(target, args)
-            lock.use_flock = True
             lock.fd = None
-            with patch("os.path.exists", return_value=True), \
-                 patch("os.unlink", side_effect=OSError("fail")):
-                lock.release()
-            assert "Failed to release flock" in capsys.readouterr().err
+            # Release without acquire — should not crash
+            lock.release()
 
     def test_acquire_creates_parent_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -381,17 +444,181 @@ class TestFlockLockRelease:
             lock.release()
 
 
+class TestDirectCompileProperty:
+    """Test that non-fcntl lock classes have direct_compile = False."""
+
+    def test_lockdir_direct_compile_false(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = LockdirLock(target, args)
+            assert lock.direct_compile is False
+
+    def test_flock_direct_compile_true(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+            assert lock.direct_compile is True
+
+    def test_cifs_direct_compile_false(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = CIFSLock(target, args)
+            assert lock.direct_compile is False
+
+
+class TestAtomicCompile:
+    """Test atomic_compile with direct_compile vs indirect locks."""
+
+    @staticmethod
+    def _compile_cmd(source="test.c"):
+        """Build a compile command using the detected functional compiler."""
+        cxx = compiletools.apptools.get_functional_cxx_compiler() or "c++"
+        return [cxx, "-c", source]
+
+    @requires_functional_compiler
+    def test_atomic_compile_direct_no_temp(self):
+        """FcntlLock (direct_compile=True): compiler gets -o target, no rename."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FcntlLock(target, args)
+
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                )
+                atomic_compile(lock, target, self._compile_cmd())
+
+                # Compiler should get -o target directly
+                call_args = mock_run.call_args[0][0]
+                assert call_args[-2:] == ["-o", target]
+
+            # No temp files should exist
+            for f in os.listdir(tmpdir):
+                assert ".tmp" not in f
+
+    @requires_functional_compiler
+    def test_atomic_compile_direct_no_rename(self):
+        """FcntlLock (direct_compile=True): os.rename is NOT called."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FcntlLock(target, args)
+
+            with patch("subprocess.run") as mock_run, \
+                 patch("os.rename") as mock_rename:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                )
+                atomic_compile(lock, target, self._compile_cmd())
+                mock_rename.assert_not_called()
+
+    @requires_functional_compiler
+    def test_atomic_compile_indirect_uses_temp(self):
+        """CIFSLock (direct_compile=False): compiler gets -o *.tmp, rename IS called."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = CIFSLock(target, args)
+
+            with patch("subprocess.run") as mock_run, \
+                 patch("os.rename") as mock_rename:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                )
+                atomic_compile(lock, target, self._compile_cmd())
+
+                # Compiler should get -o *.tmp
+                call_args = mock_run.call_args[0][0]
+                assert call_args[-2] == "-o"
+                assert call_args[-1].endswith(".tmp")
+
+                # os.rename should be called
+                mock_rename.assert_called_once()
+
+    @requires_functional_compiler
+    def test_atomic_compile_direct_failure_releases_lock(self):
+        """FcntlLock (direct_compile=True): lock is released on compiler failure."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FcntlLock(target, args)
+
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=1, stdout="", stderr="error"
+                )
+                with pytest.raises(subprocess.CalledProcessError):
+                    atomic_compile(lock, target, self._compile_cmd())
+
+            # Lock must be released — verify by acquiring it again
+            lock2 = FcntlLock(target, args)
+            lock2.acquire()
+            lock2.release()
+
+    @requires_functional_compiler
+    def test_atomic_compile_indirect_failure_releases_lock_and_cleans_temp(self):
+        """CIFSLock (direct_compile=False): lock released and temp cleaned on failure."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = CIFSLock(target, args)
+
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=1, stdout="", stderr="error"
+                )
+                with pytest.raises(subprocess.CalledProcessError):
+                    atomic_compile(lock, target, self._compile_cmd())
+
+            # No temp files should remain
+            for f in os.listdir(tmpdir):
+                assert ".tmp" not in f, f"Stale temp file found: {f}"
+
+    @requires_functional_compiler
+    def test_atomic_compile_indirect_rename_failure_cleans_temp(self):
+        """If os.rename fails, temp file is cleaned up and lock is released."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = CIFSLock(target, args)
+
+            with patch("subprocess.run") as mock_run, \
+                 patch("os.rename", side_effect=OSError("cross-device")):
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                )
+                # Create the temp file that subprocess.run would create
+                def create_temp(cmd, **kwargs):
+                    output_file = cmd[cmd.index("-o") + 1]
+                    with open(output_file, "w") as f:
+                        f.write("fake")
+                    return subprocess.CompletedProcess(args=cmd, returncode=0)
+
+                mock_run.side_effect = create_temp
+
+                with pytest.raises(OSError, match="cross-device"):
+                    atomic_compile(lock, target, self._compile_cmd())
+
+            # No temp files should remain
+            for f in os.listdir(tmpdir):
+                assert ".tmp" not in f, f"Stale temp file found: {f}"
+
+
 class TestFileLock:
     """Test FileLock context manager."""
 
-    def test_no_lock_when_shared_objects_disabled(self):
-        args = _make_lock_args(shared_objects=False)
+    def test_no_lock_when_file_locking_disabled(self):
+        args = _make_lock_args(file_locking=False)
         lock = FileLock("/some/file.o", args)
         assert lock.lock is None
 
-    def test_context_manager_no_shared_objects(self):
-        args = _make_lock_args(shared_objects=False)
-        with FileLock("/some/file.o", args) as fl:
+    def test_context_manager_no_file_locking(self):
+        args = _make_lock_args(file_locking=False)
+        with FileLock("/some/file.o", args):
             pass  # Should not crash
 
     def test_detection_error_defaults_to_flock(self):
@@ -419,6 +646,15 @@ class TestFileLock:
                  patch("compiletools.filesystem_utils.get_lock_strategy", return_value="lockdir"):
                 lock = FileLock(target, args)
                 assert isinstance(lock.lock, LockdirLock)
+
+    def test_fcntl_strategy_selected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            with patch("compiletools.filesystem_utils.get_filesystem_type", return_value="gpfs"), \
+                 patch("compiletools.filesystem_utils.get_lock_strategy", return_value="fcntl"):
+                lock = FileLock(target, args)
+                assert isinstance(lock.lock, FcntlLock)
 
     def test_cifs_strategy_selected(self):
         with tempfile.TemporaryDirectory() as tmpdir:

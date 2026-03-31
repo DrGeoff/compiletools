@@ -47,8 +47,8 @@ _hash_ops = {"registry_hits": 0, "computed_hashes": 0}
 
 def _compute_external_file_hash(filepath: str) -> Optional[str]:
     """Compute git blob hash for a file using git's algorithm."""
-    global _hash_ops
-    _hash_ops["computed_hashes"] += 1
+    with _lock:
+        _hash_ops["computed_hashes"] += 1
     try:
         with open(filepath, "rb") as f:
             content = f.read()
@@ -136,8 +136,8 @@ def get_file_hash(filepath: str) -> str:
     result = _HASHES.get(abs_path)
 
     if result is not None:
-        global _hash_ops
-        _hash_ops["registry_hits"] += 1
+        with _lock:
+            _hash_ops["registry_hits"] += 1
 
     # If not found and path was relative, try relative to git root
     if result is None and not os.path.isabs(filepath):
@@ -159,12 +159,13 @@ def get_file_hash(filepath: str) -> str:
         result = _compute_external_file_hash(abs_path)
         if result:
             # Cache the computed hash for future lookups (both forward and reverse)
-            _HASHES[abs_path] = result
-            # _REVERSE_HASHES is guaranteed to be initialized by load_hashes()
-            assert _REVERSE_HASHES is not None
-            if result not in _REVERSE_HASHES:
-                _REVERSE_HASHES[result] = []
-            _REVERSE_HASHES[result].append(abs_path)
+            with _lock:
+                _HASHES[abs_path] = result
+                # _REVERSE_HASHES is guaranteed to be initialized by load_hashes()
+                assert _REVERSE_HASHES is not None
+                if result not in _REVERSE_HASHES:
+                    _REVERSE_HASHES[result] = []
+                _REVERSE_HASHES[result].append(abs_path)
         else:
             raise FileNotFoundError(f"global_hash_registry encountered Failed to compute hash for file: {filepath}")
 
