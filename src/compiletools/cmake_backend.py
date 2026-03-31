@@ -179,8 +179,13 @@ class CMakeBackend(BuildBackend):
         build_dir = os.path.join(self.args.objdir, "cmake-build")
         os.makedirs(build_dir, exist_ok=True)
 
-        # Configure
+        # Configure — pass the user-configured compilers so CMake does not
+        # fall back to the system default (which may be too old).
         configure_cmd = [cmake, "-S", source_dir, "-B", build_dir]
+        if hasattr(self.args, "CXX") and self.args.CXX:
+            configure_cmd.append(f"-DCMAKE_CXX_COMPILER={self.args.CXX}")
+        if hasattr(self.args, "CC") and self.args.CC:
+            configure_cmd.append(f"-DCMAKE_C_COMPILER={self.args.CC}")
         subprocess.check_call(configure_cmd, text=True)
 
         # Build

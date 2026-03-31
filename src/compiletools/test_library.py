@@ -20,6 +20,9 @@ import compiletools.cake
 import compiletools.testhelper as uth
 import compiletools.utils
 from compiletools.build_backend import available_backends
+from compiletools.cake import _ensure_backends_registered
+
+_ensure_backends_registered()
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.testhelper import (
     TempDirContextNoChange,
