@@ -23,8 +23,6 @@ import shutil
 import subprocess
 import sys
 
-import stringzilla as sz
-
 import compiletools.namer
 import compiletools.utils
 import compiletools.wrappedos
@@ -312,7 +310,12 @@ class BuildBackend(abc.ABC):
             )
 
         # Track which sources are used for dynamic libraries (need -fPIC)
-        self._dynamic_sources = library_compile_sources if self.args.dynamic else set()
+        if self.args.dynamic:
+            self._dynamic_sources = set()
+            for source in self.args.dynamic:
+                self._dynamic_sources.update(self.hunter.required_source_files(source))
+        else:
+            self._dynamic_sources = set()
 
         for filename in all_compile_sources:
             rule = self._create_compile_rule(filename)
@@ -508,6 +511,8 @@ class BuildBackend(abc.ABC):
         deplist = self.hunter.header_dependencies(filename)
         prerequisites = [filename] + sorted([str(dep) for dep in deplist])
 
+        import stringzilla as sz
+
         magicflags = self.hunter.magicflags(filename)
         macro_state_hash = self.hunter.macro_state_hash(filename)
         dep_hash = self.namer.compute_dep_hash(deplist)
@@ -557,6 +562,8 @@ class BuildBackend(abc.ABC):
                 for s in completesources
             ]
         )
+
+        import stringzilla as sz
 
         all_magic_ldflags = []
         for s in completesources:
@@ -631,6 +638,8 @@ class BuildBackend(abc.ABC):
         """Create a shared library BuildRule from args.dynamic sources."""
         object_names, all_source_files = self._get_library_object_names(self.args.dynamic)
         lib_path = self.namer.dynamiclibrary_pathname()
+
+        import stringzilla as sz
 
         all_magic_ldflags = []
         for s in all_source_files:

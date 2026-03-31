@@ -159,12 +159,13 @@ def get_file_hash(filepath: str) -> str:
         result = _compute_external_file_hash(abs_path)
         if result:
             # Cache the computed hash for future lookups (both forward and reverse)
-            _HASHES[abs_path] = result
-            # _REVERSE_HASHES is guaranteed to be initialized by load_hashes()
-            assert _REVERSE_HASHES is not None
-            if result not in _REVERSE_HASHES:
-                _REVERSE_HASHES[result] = []
-            _REVERSE_HASHES[result].append(abs_path)
+            with _lock:
+                _HASHES[abs_path] = result
+                # _REVERSE_HASHES is guaranteed to be initialized by load_hashes()
+                assert _REVERSE_HASHES is not None
+                if result not in _REVERSE_HASHES:
+                    _REVERSE_HASHES[result] = []
+                _REVERSE_HASHES[result].append(abs_path)
         else:
             raise FileNotFoundError(f"global_hash_registry encountered Failed to compute hash for file: {filepath}")
 

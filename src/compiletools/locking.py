@@ -61,7 +61,12 @@ class FcntlLock:
             os.makedirs(parent_dir, exist_ok=True)
 
         self.fd = os.open(self.lockfile, os.O_CREAT | os.O_RDWR, 0o666)
-        fcntl.lockf(self.fd, fcntl.LOCK_EX)
+        try:
+            fcntl.lockf(self.fd, fcntl.LOCK_EX)
+        except BaseException:
+            os.close(self.fd)
+            self.fd = None
+            raise
 
     def release(self):
         """Release fcntl lock and close fd. Does NOT unlink lock file."""
@@ -440,7 +445,12 @@ class FlockLock:
             os.makedirs(parent_dir, exist_ok=True)
 
         self.fd = os.open(self.lockfile, os.O_CREAT | os.O_RDWR, 0o666)
-        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_EX)
+        except BaseException:
+            os.close(self.fd)
+            self.fd = None
+            raise
 
     def release(self):
         """Release flock and close fd. Does NOT unlink lock file."""
