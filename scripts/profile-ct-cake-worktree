@@ -291,8 +291,14 @@ def detect_available_backends(requested: list[str]) -> list[str]:
     """Filter requested backends to those whose build tool is installed."""
     available = []
     for backend in requested:
-        tool = _BACKEND_TOOLS.get(backend, backend)
+        if backend not in _BACKEND_TOOLS:
+            # Self-executing backends (e.g. shake) need no external tool.
+            available.append(backend)
+            continue
+        tool = _BACKEND_TOOLS[backend]
         if shutil.which(tool):
+            available.append(backend)
+        elif backend == "bazel" and shutil.which("bazelisk"):
             available.append(backend)
         else:
             print(f"  Skipping backend '{backend}': '{tool}' not found on PATH")
