@@ -20,10 +20,8 @@ import compiletools.cake
 import compiletools.testhelper as uth
 import compiletools.utils
 from compiletools.build_backend import available_backends
-from compiletools.cake import _ensure_backends_registered
-
-_ensure_backends_registered()
 from compiletools.build_graph import BuildGraph, BuildRule
+from compiletools.cake import _ensure_backends_registered
 from compiletools.testhelper import (
     TempDirContextNoChange,
     make_backend_args,
@@ -31,6 +29,8 @@ from compiletools.testhelper import (
     make_mock_namer,
     make_stub_backend_class,
 )
+
+_ensure_backends_registered()
 
 # ---------------------------------------------------------------------------
 # Layer 1: BuildGraph rule type tests

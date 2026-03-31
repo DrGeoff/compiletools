@@ -7,6 +7,8 @@ import subprocess
 import tempfile
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import configargparse
 import pytest
@@ -757,9 +759,6 @@ def write_sources(mapping, target_dir=None):
 # Backend test helpers
 # ---------------------------------------------------------------------------
 
-from types import SimpleNamespace
-from unittest.mock import MagicMock
-
 
 def make_stub_backend_class():
     """Create a concrete BuildBackend subclass for unit testing."""
@@ -898,15 +897,14 @@ def CakeTestContext(backend_name="make", **arg_overrides):
         with CakeTestContext("ninja", tests=["test.cpp"]) as (cake, tmpdir):
             cake.process()
     """
-    from compiletools.cake import Cake
-
     # Ensure all backends are registered
-    import compiletools.bazel_backend  # noqa: F401
-    import compiletools.cmake_backend  # noqa: F401
-    import compiletools.makefile_backend  # noqa: F401
-    import compiletools.ninja_backend  # noqa: F401
-    import compiletools.shake_backend  # noqa: F401
+    import compiletools.bazel_backend
+    import compiletools.cmake_backend
+    import compiletools.makefile_backend
+    import compiletools.ninja_backend
+    import compiletools.shake_backend
     import compiletools.tup_backend  # noqa: F401
+    from compiletools.cake import Cake
 
     with TempDirContextNoChange() as tmpdir:
         # Cake needs extra fields beyond the basic backend args
