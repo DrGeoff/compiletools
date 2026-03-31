@@ -730,6 +730,16 @@ def report_lock_helper_missing() -> None:
 
 _REGISTRY: dict[str, type[BuildBackend]] = {}
 
+# Backend tools required for execution.  Backends not listed here (e.g. shake,
+# which is self-executing) are assumed to need no external tool.
+_BACKEND_TOOLS: dict[str, str] = {
+    "make": "make",
+    "ninja": "ninja",
+    "cmake": "cmake",
+    "bazel": "bazel",
+    "tup": "tup",
+}
+
 
 def register_backend(cls: type[BuildBackend]) -> type[BuildBackend]:
     """Register a backend class. Can be used as a decorator."""
@@ -748,3 +758,34 @@ def get_backend_class(name: str) -> type[BuildBackend]:
 def available_backends() -> list[str]:
     """Return sorted list of registered backend names."""
     return sorted(_REGISTRY.keys())
+
+
+def backend_tool_command(name: str) -> str | None:
+    """Return the external tool command for a backend, or None if self-executing."""
+    return _BACKEND_TOOLS.get(name)
+
+
+def is_backend_available(name: str) -> bool:
+    """Check whether the external tool for a backend is installed."""
+    import shutil
+
+    tool = _BACKEND_TOOLS.get(name)
+    if tool is None:
+        return True  # Self-executing backends (e.g. shake) need no external tool.
+    if shutil.which(tool):
+        return True
+    if name == "bazel" and shutil.which("bazelisk"):
+        return True
+    return False
+
+
+def detect_available_backends(requested: list[str]) -> list[str]:
+    """Filter requested backends to those whose build tool is installed."""
+    available = []
+    for backend in requested:
+        if is_backend_available(backend):
+            available.append(backend)
+        else:
+            tool = _BACKEND_TOOLS.get(backend, backend)
+            print(f"  Skipping backend '{backend}': '{tool}' not found on PATH")
+    return available
