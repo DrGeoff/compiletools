@@ -183,7 +183,7 @@ class ShakeBackend(BuildBackend):
         max_workers = parallel if parallel and parallel > 0 else 1
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            self._build(target, self._graph, traces, done, lock, executor)
+            self._build(target, self._graph, traces, done, lock, executor, max_workers)
 
         traces.save()
 
@@ -195,6 +195,7 @@ class ShakeBackend(BuildBackend):
         done: set[str],
         lock: threading.Lock,
         executor: ThreadPoolExecutor,
+        max_workers: int = 1,
     ) -> bool:
         """Suspending scheduler with verifying traces and early cutoff.
 
@@ -221,9 +222,15 @@ class ShakeBackend(BuildBackend):
             for inp in rule.inputs:
                 inp_rule = graph.get_rule(inp)
                 if inp_rule is not None and inp_rule.rule_type == "phony":
-                    sequential_results.append(self._build(inp, graph, traces, done, lock, executor))
+                    sequential_results.append(
+                        self._build(inp, graph, traces, done, lock, executor, max_workers)
+                    )
                 else:
-                    futures.append(executor.submit(self._build, inp, graph, traces, done, lock, executor))
+                    futures.append(
+                        executor.submit(
+                            self._build, inp, graph, traces, done, lock, executor, max_workers
+                        )
+                    )
             any_rebuilt = any(f.result() for f in futures) or any(sequential_results)
             with lock:
                 done.add(target)
@@ -254,11 +261,30 @@ class ShakeBackend(BuildBackend):
                         done.add(target)
                     return False
 
-        # SUSPEND: recursively build all inputs (sequential — they may share deps)
-        any_input_rebuilt = False
-        for inp in rule.inputs:
-            if self._build(inp, graph, traces, done, lock, executor):
-                any_input_rebuilt = True
+        # SUSPEND: build all inputs.  The dependency graph is fully static
+        # (pre-computed by Hunter), so all inputs are known upfront and can
+        # be started concurrently when workers are available (§6.2 of Mokhov
+        # et al. 2018).  Shared deps are safe: the ``done`` set prevents
+        # duplicate work.  With max_workers == 1, submitting from inside a
+        # worker would deadlock (the worker blocks on f.result() while no
+        # other worker can pick up the submitted task), so we fall back to
+        # sequential execution.
+        if max_workers > 1 and len(rule.inputs) > 1:
+            futures = [
+                executor.submit(
+                    self._build, inp, graph, traces, done, lock, executor, max_workers
+                )
+                for inp in rule.inputs
+            ]
+            # Collect *all* results (no short-circuit) so that every input
+            # is built before we proceed to the EXECUTE step.
+            results = [f.result() for f in futures]
+            any_input_rebuilt = any(results)
+        else:
+            any_input_rebuilt = False
+            for inp in rule.inputs:
+                if self._build(inp, graph, traces, done, lock, executor, max_workers):
+                    any_input_rebuilt = True
 
         # VERIFY TRACE (non-CA rules only)
         if not _is_build_artifact(rule) and not any_input_rebuilt:
