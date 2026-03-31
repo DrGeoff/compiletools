@@ -1,6 +1,7 @@
 import argparse
 import functools
 import importlib.util
+import logging
 import os
 import shlex
 import subprocess
@@ -1020,7 +1021,7 @@ def _strip_quotes(args):
                     # Otherwise assume its a string
                     setattr(args, name, _safely_unquote_string(value))
                 except (AttributeError, ValueError, TypeError):
-                    pass
+                    logging.debug("Could not unquote arg %s (type %s)", name, type(value).__name__)
 
 
 def _safely_unquote_string(value):
