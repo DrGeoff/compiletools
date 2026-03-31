@@ -276,14 +276,13 @@ def get_test_configurations(
     return configurations
 
 
-# Backend tools required for execution (generation-only backends don't need them,
-# but ct-cake --auto runs both generate and execute).
+# Backend tools required for execution.  Backends not listed here (e.g. shake,
+# which is self-executing) are assumed to need no external tool.
 _BACKEND_TOOLS: dict[str, str] = {
     "make": "make",
     "ninja": "ninja",
     "cmake": "cmake",
     "bazel": "bazel",
-    "shake": "ghc",
     "tup": "tup",
 }
 
