@@ -106,8 +106,9 @@ class MakefileBackend(BuildBackend):
             self._filesystem_type = None
 
         # Apply build_only_changed filtering if requested
-        if getattr(self.args, "build_only_changed", None):
-            changed = set(self.args.build_only_changed.split())
+        build_only_changed = getattr(self.args, "build_only_changed", None)
+        if isinstance(build_only_changed, str):
+            changed = set(build_only_changed.split())
             graph = graph.filter_to_changed(changed, verbose=self.args.verbose)
             self._graph = graph
 

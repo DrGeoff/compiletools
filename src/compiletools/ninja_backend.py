@@ -36,6 +36,14 @@ class NinjaBackend(BuildBackend):
             self._filesystem_type = None
 
         self._graph = graph
+
+        # Apply build_only_changed filtering if requested
+        build_only_changed = getattr(self.args, "build_only_changed", None)
+        if isinstance(build_only_changed, str):
+            changed = set(build_only_changed.split())
+            graph = graph.filter_to_changed(changed, verbose=self.args.verbose)
+            self._graph = graph
+
         if output is not None:
             self._write_ninja(graph, output)
         else:
@@ -75,6 +83,8 @@ class NinjaBackend(BuildBackend):
                 f.write("  command = $cmd\n")
                 if rule.rule_type == "compile":
                     f.write("  description = Compiling $out\n")
+                    f.write("  depfile = $out.d\n")
+                    f.write("  deps = gcc\n")
                 elif rule.rule_type == "link":
                     f.write("  description = Linking $out\n")
                 elif rule.rule_type == "static_library":
@@ -83,6 +93,7 @@ class NinjaBackend(BuildBackend):
                     f.write("  description = Linking shared library $out\n")
                 else:
                     f.write(f"  description = {rule.rule_type} $out\n")
+                f.write("  restat = 1\n")
                 f.write("\n")
                 rule_types_seen.add(rule.rule_type)
 
@@ -102,7 +113,9 @@ class NinjaBackend(BuildBackend):
                 f.write(line + "\n")
 
                 if rule.rule_type == "compile":
-                    cmd_str = self._wrap_compile_cmd(rule.command)
+                    cmd_str = self._wrap_compile_cmd(
+                        rule.command + ["-MMD", "-MF", rule.output + ".d"]
+                    )
                 else:
                     cmd_str = " ".join(rule.command)
                 f.write(f"  cmd = {cmd_str}\n")
