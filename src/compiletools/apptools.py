@@ -185,6 +185,13 @@ def add_common_arguments(cap, argv=None, variant=None):
 
 def add_locking_arguments(cap):
     """Add file locking configuration arguments"""
+    compiletools.utils.add_boolean_argument(
+        parser=cap,
+        name="file-locking",
+        dest="file_locking",
+        default=True,
+        help="Enable file locking for concurrent multi-user/multi-host builds",
+    )
     cap.add(
         "--lock-cross-host-timeout",
         type=int,

@@ -540,3 +540,23 @@ def _test_library(static_dynamic):
         makefilename = [ff for ff in filelist if ff.startswith("Makefile")]
         cmd = ["make", "-f"] + makefilename
         subprocess.check_output(cmd, universal_newlines=True)
+
+
+def test_file_locking_registered_in_apptools():
+    """--file-locking is registered centrally in add_locking_arguments(), not per-backend."""
+    import configargparse
+    from compiletools.apptools import add_locking_arguments
+
+    cap = configargparse.ArgParser()
+    add_locking_arguments(cap)
+
+    # Should be able to parse --file-locking and --no-file-locking
+    args = cap.parse_args(["--file-locking"])
+    assert args.file_locking is True
+
+    args = cap.parse_args(["--no-file-locking"])
+    assert args.file_locking is False
+
+    # Default should be True
+    args = cap.parse_args([])
+    assert args.file_locking is True

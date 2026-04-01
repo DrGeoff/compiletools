@@ -56,13 +56,6 @@ class MakefileBackend(BuildBackend):
             help="Only build the binaries depending on the source or header absolute "
             "filenames in this space-delimited list.",
         )
-        compiletools.utils.add_boolean_argument(
-            parser=cap,
-            name="file-locking",
-            dest="file_locking",
-            default=True,
-            help="Enable file locking for concurrent multi-user/multi-host builds",
-        )
         compiletools.utils.add_flag_argument(
             parser=cap,
             name="serialise-tests",
