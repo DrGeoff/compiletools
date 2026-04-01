@@ -587,7 +587,9 @@ class BuildBackend(abc.ABC):
         if not getattr(self.args, "file_locking", False) or self._filesystem_type is None:
             return " ".join(command)
 
-        # Extract target from -o flag for locking
+        # Extract target from -o flag for locking.
+        # build_graph.py always emits -o in link/library commands; if absent,
+        # fall back to unwrapped to avoid silently mis-targeting the lock.
         try:
             o_idx = command.index("-o")
             target = command[o_idx + 1]

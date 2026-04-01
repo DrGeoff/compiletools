@@ -597,6 +597,11 @@ def atomic_link(lock, target: str, link_cmd: list[str]) -> int:
     lock.acquire()
     try:
         result = subprocess.run(link_cmd, capture_output=True, text=True)
+        # Surface linker/ar output (warnings, diagnostics) even on success
+        if result.stdout:
+            sys.stdout.write(result.stdout)
+        if result.stderr:
+            sys.stderr.write(result.stderr)
         if result.returncode != 0:
             raise subprocess.CalledProcessError(
                 result.returncode,
