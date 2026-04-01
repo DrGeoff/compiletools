@@ -610,6 +610,20 @@ class BuildBackend(abc.ABC):
         deplist = self.hunter.header_dependencies(filename)
         prerequisites = [filename] + sorted([str(dep) for dep in deplist])
 
+        # Compute include_weight for SLURM memory estimation.
+        # len(quoted_headers) from FileAnalyzer correlates with peak RSS (r=0.85)
+        # because each quoted include transitively pulls in framework templates.
+        # analyze_file is already cached from the header dep walk — zero cost.
+        from compiletools.file_analyzer import analyze_file
+        from compiletools.global_hash_registry import get_file_hash
+
+        try:
+            content_hash = get_file_hash(filename)
+            analysis = analyze_file(content_hash)
+            include_weight = len(analysis.quoted_headers)
+        except (FileNotFoundError, OSError, RuntimeError):
+            include_weight = 0
+
         import stringzilla as sz
 
         magicflags = self.hunter.magicflags(filename)
@@ -644,6 +658,7 @@ class BuildBackend(abc.ABC):
             command=compile_cmd,
             rule_type="compile",
             order_only_deps=[self.args.objdir],
+            include_weight=include_weight,
         )
 
     def _create_link_rule(self, source: str, library_outputs: list[str] | None = None) -> BuildRule:

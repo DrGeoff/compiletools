@@ -33,6 +33,7 @@ class BuildRule:
     command: list[str] | None
     rule_type: str
     order_only_deps: list[str] = field(default_factory=list)
+    include_weight: int = 0
 
     def __post_init__(self):
         if self.rule_type not in VALID_RULE_TYPES:

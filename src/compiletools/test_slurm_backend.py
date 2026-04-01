@@ -586,3 +586,134 @@ class TestLocalLink:
 
         with pytest.raises(RuntimeError, match="generate\\(\\) must be called"):
             backend.execute("build")
+
+
+# ---------------------------------------------------------------------------
+# Memory estimation and tiered submission
+# ---------------------------------------------------------------------------
+
+
+def _make_rule_with_weight(output, src, include_weight):
+    """Create a compile rule with a given include_weight."""
+    return BuildRule(
+        output=output,
+        inputs=[src],
+        command=["g++", "-c", src, "-o", output],
+        rule_type="compile",
+        include_weight=include_weight,
+    )
+
+
+class TestMemoryEstimation:
+    """Test _estimate_memory tier boundaries.
+
+    Tiers are based on include_weight (len(FileAnalyzer.quoted_headers)):
+      <= 1 -> 512M,  <= 2 -> 1G,  > 2 -> 4G
+    """
+
+    def test_zero_weight_gets_512M(self):
+        rule = make_compile_rule()  # include_weight=0
+        assert SlurmBackend._estimate_memory(rule) == "512M"
+
+    def test_weight_1_gets_512M(self):
+        rule = _make_rule_with_weight("a.o", "a.C", include_weight=1)
+        assert SlurmBackend._estimate_memory(rule) == "512M"
+
+    def test_weight_2_gets_1G(self):
+        rule = _make_rule_with_weight("a.o", "a.C", include_weight=2)
+        assert SlurmBackend._estimate_memory(rule) == "1G"
+
+    def test_weight_3_gets_4G(self):
+        rule = _make_rule_with_weight("a.o", "a.C", include_weight=3)
+        assert SlurmBackend._estimate_memory(rule) == "4G"
+
+    def test_weight_10_gets_4G(self):
+        rule = _make_rule_with_weight("a.o", "a.C", include_weight=10)
+        assert SlurmBackend._estimate_memory(rule) == "4G"
+
+
+class TestTieredSubmission:
+    """Test that rules with different include_weight produce separate sbatch calls."""
+
+    def test_mixed_tiers_produce_separate_sbatch_calls(self, tmp_path):
+        """Rules with different memory needs get separate sbatch calls."""
+        graph = BuildGraph()
+        # Small file: weight=0 -> 512M
+        r_small = _make_rule_with_weight(str(tmp_path / "small.o"), "small.C", include_weight=0)
+        # Large file: weight=5 -> 4G
+        r_large = _make_rule_with_weight(str(tmp_path / "large.o"), "large.C", include_weight=5)
+        graph.add_rule(r_small)
+        graph.add_rule(r_large)
+        graph.add_rule(make_phony_rule("build", [r_small.output, r_large.output]))
+
+        sbatch_ids = iter(["100\n", "200\n"])
+
+        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+            with (
+                patch("subprocess.check_output", side_effect=sbatch_ids) as mock_sbatch,
+                patch.object(backend, "_wait_for_arrays"),
+            ):
+                backend.execute("build")
+
+        # Two separate sbatch calls (one per tier)
+        assert mock_sbatch.call_count == 2
+        mems = []
+        for c in mock_sbatch.call_args_list:
+            cmd = c[0][0]
+            for arg in cmd:
+                if arg.startswith("--mem="):
+                    mems.append(arg)
+        assert "--mem=512M" in mems
+        assert "--mem=4G" in mems
+
+    def test_same_tier_uses_single_sbatch_call(self, tmp_path):
+        """Rules in the same memory tier are batched into one array."""
+        graph = BuildGraph()
+        # Both weight <= 1 -> same tier (512M)
+        r1 = _make_rule_with_weight(str(tmp_path / "a.o"), "a.C", include_weight=0)
+        r2 = _make_rule_with_weight(str(tmp_path / "b.o"), "b.C", include_weight=1)
+        graph.add_rule(r1)
+        graph.add_rule(r2)
+        graph.add_rule(make_phony_rule("build", [r1.output, r2.output]))
+
+        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+            with (
+                patch("subprocess.check_output", return_value="55\n") as mock_sbatch,
+                patch.object(backend, "_wait_for_arrays"),
+            ):
+                backend.execute("build")
+
+        # Both in same tier (512M) -> one sbatch call
+        mock_sbatch.assert_called_once()
+        cmd = mock_sbatch.call_args[0][0]
+        assert "--array=0-1" in cmd
+        assert "--mem=512M" in cmd
+
+    def test_sbatch_array_mem_parameter_overrides_default(self, tmp_path):
+        """The mem parameter to _sbatch_array overrides self.args.slurm_mem."""
+        graph = BuildGraph()
+        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [rule.output]))
+
+        with SlurmBackendTestContext(graph, slurm_mem="16G") as (backend, tmpdir):
+            with patch("subprocess.check_output", return_value="42\n") as mock_sbatch:
+                backend._sbatch_array([rule], chunk_id=0, mem="1G")
+
+        cmd = mock_sbatch.call_args[0][0]
+        assert "--mem=1G" in cmd
+        assert "--mem=16G" not in cmd
+
+    def test_sbatch_array_without_mem_uses_default(self, tmp_path):
+        """Without mem parameter, _sbatch_array uses self.args.slurm_mem."""
+        graph = BuildGraph()
+        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [rule.output]))
+
+        with SlurmBackendTestContext(graph, slurm_mem="16G") as (backend, tmpdir):
+            with patch("subprocess.check_output", return_value="42\n") as mock_sbatch:
+                backend._sbatch_array([rule], chunk_id=0)
+
+        cmd = mock_sbatch.call_args[0][0]
+        assert "--mem=16G" in cmd

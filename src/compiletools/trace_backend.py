@@ -35,6 +35,7 @@ directly from Python.
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import hashlib
 import json
@@ -539,18 +540,27 @@ class SlurmBackend(ShakeBackend):
             )
         ]
 
-        # Phase 2: submit compile rules as job arrays (one sbatch call per array chunk).
-        # Chunking is controlled by --slurm-max-array; each chunk becomes one job array
-        # so the scheduler sees all N tasks at once and backfills them efficiently.
-        # Each chunk gets a unique chunk_id so the command/output files don't collide
-        # when multiple chunks are submitted before the first chunk's tasks start reading.
+        # Phase 2: submit compile rules as job arrays grouped by memory tier.
+        # Rules are partitioned by estimated memory requirement so each Slurm
+        # job array requests only the memory its tasks actually need.  Within
+        # each tier, chunking by --slurm-max-array still applies.
         max_array = self.args.slurm_max_array
         # index_map[array_job_id] = list of rules corresponding to task indices 0, 1, …
         index_map: dict[str, list[BuildRule]] = {}
-        for chunk_start in range(0, len(to_submit), max_array):
-            chunk = to_submit[chunk_start : chunk_start + max_array]
-            array_job_id = self._sbatch_array(chunk, chunk_id=chunk_start)
-            index_map[array_job_id] = chunk
+
+        # Group rules by memory tier (preserving submission order within each tier).
+        tiers: dict[str, list[BuildRule]] = collections.defaultdict(list)
+        for rule in to_submit:
+            mem = self._estimate_memory(rule)
+            tiers[mem].append(rule)
+
+        chunk_id = 0
+        for mem, tier_rules in tiers.items():
+            for chunk_start in range(0, len(tier_rules), max_array):
+                chunk = tier_rules[chunk_start : chunk_start + max_array]
+                array_job_id = self._sbatch_array(chunk, chunk_id=chunk_id, mem=mem)
+                index_map[array_job_id] = chunk
+                chunk_id += len(chunk)
 
         # Phase 3: wait for all arrays to finish
         if index_map:
@@ -571,9 +581,39 @@ class SlurmBackend(ShakeBackend):
         self._record_link_signatures(graph)
 
     # ------------------------------------------------------------------
+    # Memory estimation
+
+    # Tier thresholds: (max_quoted_includes, slurm_mem_string)
+    #
+    # Derived from profiling C++20 builds on an HPC cluster (gcc-12, , -O3, with a large C++
+    # framework).  The number of quoted #include "..." directives in the
+    # source file (FileAnalyzer.quoted_headers) correlates strongly with
+    # peak RSS (r=0.85) because each quoted include transitively pulls in
+    # framework headers and triggers template instantiation.  Unity-build
+    # #include "*.C" patterns contribute naturally to this count.
+    _MEMORY_TIERS: list[tuple[int, str]] = [
+        (1, "512M"),
+        (2, "1G"),
+    ]
+    _MEMORY_TIER_MAX = "4G"
+
+    @classmethod
+    def _estimate_memory(cls, rule: BuildRule) -> str:
+        """Estimate Slurm memory from the source file's quoted-include count.
+
+        rule.include_weight is ``len(FileAnalyzer.quoted_headers)`` for the
+        source file, computed in BuildBackend._create_compile_rule() at zero
+        cost (analyze_file results are cached from the header dep walk).
+        """
+        for threshold, mem in cls._MEMORY_TIERS:
+            if rule.include_weight <= threshold:
+                return mem
+        return cls._MEMORY_TIER_MAX
+
+    # ------------------------------------------------------------------
     # Slurm helpers
 
-    def _sbatch_array(self, rules: list[BuildRule], chunk_id: int = 0) -> str:
+    def _sbatch_array(self, rules: list[BuildRule], chunk_id: int = 0, mem: str | None = None) -> str:
         """Submit *rules* as a single Slurm job array; return the array job ID.
 
         Each array task (index 0 … N-1) reads its compile command from a
@@ -582,6 +622,8 @@ class SlurmBackend(ShakeBackend):
         *chunk_id* is used to give each chunk a unique commands/outputs filename so
         multiple chunks submitted before the first chunk's tasks start reading do not
         overwrite each other's files.
+
+        *mem* overrides ``--slurm-mem`` for this array (used for per-tier sizing).
         """
         n = len(rules)
         # Write one shell-quoted compile command per line (1-based for sed).
@@ -603,6 +645,7 @@ class SlurmBackend(ShakeBackend):
             f'bash -c "$CMD" || {{ rm -f "$OUT"; exit 1; }}'
         )
 
+        effective_mem = mem if mem is not None else self.args.slurm_mem
         cmd = [
             "sbatch",
             "--parsable",
@@ -610,7 +653,7 @@ class SlurmBackend(ShakeBackend):
             f"--array=0-{n - 1}",
             "--job-name=ct-compile",
             f"--time={self.args.slurm_time}",
-            f"--mem={self.args.slurm_mem}",
+            f"--mem={effective_mem}",
             f"--cpus-per-task={self.args.slurm_cpus}",
         ]
         if self.args.slurm_partition:
