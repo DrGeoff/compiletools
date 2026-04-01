@@ -14,6 +14,7 @@ def _ensure_backends_registered():
     import compiletools.makefile_backend
     import compiletools.ninja_backend
     import compiletools.shake_backend
+    import compiletools.slurm_backend
     import compiletools.tup_backend  # noqa: F401 -- last import, triggers all registrations
 
 

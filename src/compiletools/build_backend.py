@@ -870,6 +870,8 @@ def is_backend_available(name: str) -> bool:
 
     tool = _BACKEND_TOOLS.get(name)
     if tool is None:
+        if name == "slurm":
+            return shutil.which("sbatch") is not None
         return True  # Self-executing backends (e.g. shake) need no external tool.
     if shutil.which(tool):
         return True

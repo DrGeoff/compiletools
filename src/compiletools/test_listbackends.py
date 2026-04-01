@@ -2,7 +2,7 @@ from unittest.mock import Mock, patch
 
 import compiletools.listbackends
 
-ALL_BACKENDS = {"bazel", "cmake", "make", "ninja", "shake", "tup"}
+ALL_BACKENDS = {"bazel", "cmake", "make", "ninja", "shake", "slurm", "tup"}
 
 
 def _args(style="pretty", show_all=False):
