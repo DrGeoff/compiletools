@@ -482,8 +482,8 @@ class SlurmBackend(ShakeBackend):
         )
         cap.add(
             "--slurm-mem",
-            default="2G",
-            help="Memory limit per compile job (e.g. 2G, 512M). Default: 2G",
+            default="16G",
+            help="Memory ceiling per compile job (e.g. 16G, 8G). Default: 16G",
         )
         cap.add(
             "--slurm-cpus",
@@ -571,9 +571,53 @@ class SlurmBackend(ShakeBackend):
                 index_map[array_job_id] = chunk
                 chunk_id += len(chunk)
 
-        # Phase 3: wait for all arrays to finish
+        # Phase 3: wait for all arrays to finish, with OOM retry.
+        # On OUT_OF_MEMORY, resubmit failed rules with doubled memory
+        # (capped at --slurm-mem).  Non-OOM failures are collected and
+        # reported after all retries are exhausted.
+        all_failures: list[SlurmBackend._TaskFailure] = []
         if index_map:
-            self._wait_for_arrays(index_map)
+            failures = self._wait_for_arrays(index_map)
+            mem_cap_mb = self._parse_mem(self.args.slurm_mem)
+
+            # Separate OOM from other failures
+            oom_rules = [f.rule for f in failures if f.state == self._OOM_STATE]
+            non_oom = [f for f in failures if f.state != self._OOM_STATE]
+            all_failures.extend(non_oom)
+
+            # Retry OOM failures with doubled memory, up to --slurm-mem
+            retry_mem_mb = max(
+                (self._parse_mem(self._estimate_memory(r)) for r in oom_rules),
+                default=0,
+            )
+            while oom_rules:
+                retry_mem_mb = retry_mem_mb * 2
+                if retry_mem_mb > mem_cap_mb:
+                    all_failures.extend(
+                        SlurmBackend._TaskFailure(rule=r, state=self._OOM_STATE, job_id="retry")
+                        for r in oom_rules
+                    )
+                    break
+                retry_mem = self._format_mem(retry_mem_mb)
+                logger.info(
+                    "Retrying %d OOM compile job(s) with %s memory (cap: %s)",
+                    len(oom_rules), retry_mem, self.args.slurm_mem,
+                )
+                retry_map: dict[str, list[BuildRule]] = {}
+                for retry_start in range(0, len(oom_rules), max_array):
+                    chunk = oom_rules[retry_start : retry_start + max_array]
+                    array_job_id = self._sbatch_array(chunk, chunk_id=chunk_id, mem=retry_mem)
+                    retry_map[array_job_id] = chunk
+                    chunk_id += len(chunk)
+
+                retry_failures = self._wait_for_arrays(retry_map)
+                oom_rules = [f.rule for f in retry_failures if f.state == self._OOM_STATE]
+                non_oom = [f for f in retry_failures if f.state != self._OOM_STATE]
+                all_failures.extend(non_oom)
+
+        if all_failures:
+            lines = [f"Job {f.job_id} ({f.rule.output}): {f.state}" for f in all_failures]
+            raise RuntimeError("Slurm compile jobs failed:\n" + "\n".join(lines))
 
         # Phase 4: record traces for successfully built compile rules
         for rule in to_submit:
@@ -601,23 +645,24 @@ class SlurmBackend(ShakeBackend):
     # framework headers and triggers template instantiation.  Unity-build
     # #include "*.C" patterns contribute naturally to this count.
     _MEMORY_TIERS: list[tuple[int, str]] = [
-        (1, "512M"),
-        (2, "1G"),
+        (1, "2G"),
+        (2, "4G"),
     ]
-    _MEMORY_TIER_MAX = "4G"
 
-    @classmethod
-    def _estimate_memory(cls, rule: BuildRule) -> str:
+    def _estimate_memory(self, rule: BuildRule) -> str:
         """Estimate Slurm memory from the source file's quoted-include count.
 
         rule.include_weight is ``len(FileAnalyzer.quoted_headers)`` for the
         source file, computed in BuildBackend._create_compile_rule() at zero
         cost (analyze_file results are cached from the header dep walk).
+
+        The max tier uses ``--slurm-mem`` (default 16G) so projects can raise
+        or lower the ceiling via ct.conf without modifying compiletools source.
         """
-        for threshold, mem in cls._MEMORY_TIERS:
+        for threshold, mem in self._MEMORY_TIERS:
             if rule.include_weight <= threshold:
                 return mem
-        return cls._MEMORY_TIER_MAX
+        return self.args.slurm_mem
 
     # ------------------------------------------------------------------
     # Slurm helpers
@@ -707,23 +752,50 @@ class SlurmBackend(ShakeBackend):
 
     _TERMINAL_STATES = frozenset({"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL"})
     _SUCCESS_STATE = "COMPLETED"
+    _OOM_STATE = "OUT_OF_MEMORY"
 
-    def _wait_for_arrays(self, index_map: dict[str, list[BuildRule]]) -> None:
+    @staticmethod
+    def _parse_mem(mem_str: str) -> int:
+        """Parse a Slurm memory string (e.g. '4G', '512M') to megabytes."""
+        s = mem_str.strip().upper()
+        if s.endswith("G"):
+            return int(s[:-1]) * 1024
+        if s.endswith("M"):
+            return int(s[:-1])
+        return int(s)  # assume megabytes
+
+    @staticmethod
+    def _format_mem(mb: int) -> str:
+        """Format megabytes as a Slurm memory string (e.g. '4G', '512M')."""
+        if mb >= 1024 and mb % 1024 == 0:
+            return f"{mb // 1024}G"
+        return f"{mb}M"
+
+    @staticmethod
+    def _double_mem(mem_str: str) -> str:
+        """Double a Slurm memory string (e.g. '4G' -> '8G')."""
+        return SlurmBackend._format_mem(SlurmBackend._parse_mem(mem_str) * 2)
+
+    @dataclass
+    class _TaskFailure:
+        """Structured info about a failed Slurm task."""
+        rule: BuildRule
+        state: str
+        job_id: str
+
+    def _wait_for_arrays(self, index_map: dict[str, list[BuildRule]]) -> list["SlurmBackend._TaskFailure"]:
         """Poll sacct until every task in every array reaches a terminal state.
 
         *index_map* maps array_job_id → ordered list of rules (index == task index).
-        Raises RuntimeError listing every failed task after all arrays finish, or if
-        sacct stops reporting tasks before all are terminal (e.g. accounting purge).
+        Returns a list of _TaskFailure for failed tasks (empty if all succeeded).
+        Raises RuntimeError if sacct polling times out.
         """
         poll_interval = self.args.slurm_poll_interval
-        # Cap polling to avoid hanging forever if sacct loses track of jobs.
-        # At the default 2s interval this gives ~15 minutes; callers with longer
-        # wall-time limits should increase --slurm-poll-interval accordingly.
         max_polls = max(1, int(1800 / max(poll_interval, 0.1)))
         polls = 0
 
         pending: set[str] = set(index_map)
-        failed: list[str] = []
+        failures: list[SlurmBackend._TaskFailure] = []
 
         while pending:
             if polls >= max_polls:
@@ -737,36 +809,31 @@ class SlurmBackend(ShakeBackend):
                 rules = index_map[array_job_id]
                 states = self._query_array_task_states(array_job_id)
 
-                # terminal_tasks: only array tasks (contain "_"), not the array root entry
                 terminal_tasks = {
                     jid: st
                     for jid, st in states.items()
-                    if st in self._TERMINAL_STATES and "_" in jid  # skip array root
+                    if st in self._TERMINAL_STATES and "_" in jid
                 }
                 if len(terminal_tasks) < len(rules):
                     still_pending.add(array_job_id)
                     continue
 
-                # All tasks terminal — check for failures
                 for jid, st in terminal_tasks.items():
                     if st != self._SUCCESS_STATE:
-                        # jid is "<array_job_id>_<index>"; strip the known prefix
-                        # to get the index robustly even if array_job_id has underscores.
                         try:
                             idx = int(jid[len(array_job_id) + 1 :])
-                            rule_output = rules[idx].output
-                            if os.path.exists(rule_output):
-                                os.remove(rule_output)  # remove corrupt/partial artifact
+                            rule = rules[idx]
+                            if os.path.exists(rule.output):
+                                os.remove(rule.output)
                         except (ValueError, IndexError, OSError):
-                            rule_output = "?"
-                        failed.append(f"Job {jid} ({rule_output}): {st}")
+                            rule = rules[0]  # fallback
+                        failures.append(SlurmBackend._TaskFailure(rule=rule, state=st, job_id=jid))
 
             pending = still_pending
             if pending:
                 time.sleep(poll_interval)
 
-        if failed:
-            raise RuntimeError("Slurm compile jobs failed:\n" + "\n".join(failed))
+        return failures
 
     # ------------------------------------------------------------------
     # Local execution for link/library rules

@@ -134,7 +134,7 @@ class TestSbatchSubmission:
         with SlurmBackendTestContext(graph) as (backend, tmpdir):
             with (
                 patch("subprocess.check_output", return_value="12345\n") as mock_sbatch,
-                patch.object(backend, "_wait_for_arrays"),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
             ):
                 backend.execute("build")
 
@@ -155,7 +155,7 @@ class TestSbatchSubmission:
         with SlurmBackendTestContext(graph) as (backend, tmpdir):
             with (
                 patch("subprocess.check_output", return_value="42\n") as mock_sbatch,
-                patch.object(backend, "_wait_for_arrays"),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
             ):
                 backend.execute("build")
 
@@ -181,7 +181,7 @@ class TestSbatchSubmission:
         with SlurmBackendTestContext(graph, slurm_partition="gpu") as (backend, tmpdir):
             with (
                 patch("subprocess.check_output", return_value="7\n") as mock_sbatch,
-                patch.object(backend, "_wait_for_arrays"),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
             ):
                 backend.execute("build")
 
@@ -198,7 +198,7 @@ class TestSbatchSubmission:
         with SlurmBackendTestContext(graph) as (backend, tmpdir):
             with (
                 patch("subprocess.check_output", return_value="7\n") as mock_sbatch,
-                patch.object(backend, "_wait_for_arrays"),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
             ):
                 backend.execute("build")
 
@@ -214,7 +214,7 @@ class TestSbatchSubmission:
         with SlurmBackendTestContext(graph, slurm_account="myproject") as (backend, tmpdir):
             with (
                 patch("subprocess.check_output", return_value="9\n") as mock_sbatch,
-                patch.object(backend, "_wait_for_arrays"),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
             ):
                 backend.execute("build")
 
@@ -234,7 +234,7 @@ class TestSbatchSubmission:
         with SlurmBackendTestContext(graph) as (backend, tmpdir):
             with (
                 patch("subprocess.check_output", return_value="55\n") as mock_sbatch,
-                patch.object(backend, "_wait_for_arrays"),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
             ):
                 backend.execute("build")
 
@@ -262,7 +262,7 @@ class TestSbatchSubmission:
         with SlurmBackendTestContext(graph, slurm_max_array=2) as (backend, tmpdir):
             with (
                 patch("subprocess.check_output", side_effect=sbatch_ids) as mock_sbatch,
-                patch.object(backend, "_wait_for_arrays"),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
             ):
                 backend.execute("build")
 
@@ -333,7 +333,7 @@ class TestCAShortCircuit:
         with SlurmBackendTestContext(graph) as (backend, tmpdir):
             with (
                 patch("subprocess.check_output", return_value="42\n") as mock_sbatch,
-                patch.object(backend, "_wait_for_arrays"),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
             ):
                 backend.execute("build")
 
@@ -617,28 +617,33 @@ class TestMemoryEstimation:
     """Test _estimate_memory tier boundaries.
 
     Tiers are based on include_weight (len(FileAnalyzer.quoted_headers)):
-      <= 1 -> 512M,  <= 2 -> 1G,  > 2 -> 4G
+      <= 1 -> 2G,  <= 2 -> 4G,  > 2 -> slurm_mem (default 16G)
     """
 
-    def test_zero_weight_gets_512M(self):
+    def _make_backend(self, slurm_mem="16G"):
+        b = SlurmBackend.__new__(SlurmBackend)
+        b.args = SimpleNamespace(slurm_mem=slurm_mem)
+        return b
+
+    def test_zero_weight_gets_2G(self):
         rule = make_compile_rule()  # include_weight=0
-        assert SlurmBackend._estimate_memory(rule) == "512M"
+        assert self._make_backend()._estimate_memory(rule) == "2G"
 
-    def test_weight_1_gets_512M(self):
+    def test_weight_1_gets_2G(self):
         rule = _make_rule_with_weight("a.o", "a.C", include_weight=1)
-        assert SlurmBackend._estimate_memory(rule) == "512M"
+        assert self._make_backend()._estimate_memory(rule) == "2G"
 
-    def test_weight_2_gets_1G(self):
+    def test_weight_2_gets_4G(self):
         rule = _make_rule_with_weight("a.o", "a.C", include_weight=2)
-        assert SlurmBackend._estimate_memory(rule) == "1G"
+        assert self._make_backend()._estimate_memory(rule) == "4G"
 
-    def test_weight_3_gets_4G(self):
+    def test_weight_3_gets_slurm_mem(self):
         rule = _make_rule_with_weight("a.o", "a.C", include_weight=3)
-        assert SlurmBackend._estimate_memory(rule) == "4G"
+        assert self._make_backend(slurm_mem="16G")._estimate_memory(rule) == "16G"
 
-    def test_weight_10_gets_4G(self):
+    def test_weight_10_gets_slurm_mem(self):
         rule = _make_rule_with_weight("a.o", "a.C", include_weight=10)
-        assert SlurmBackend._estimate_memory(rule) == "4G"
+        assert self._make_backend(slurm_mem="8G")._estimate_memory(rule) == "8G"
 
 
 class TestTieredSubmission:
@@ -647,9 +652,9 @@ class TestTieredSubmission:
     def test_mixed_tiers_produce_separate_sbatch_calls(self, tmp_path):
         """Rules with different memory needs get separate sbatch calls."""
         graph = BuildGraph()
-        # Small file: weight=0 -> 512M
+        # Small file: weight=0 -> 2G
         r_small = _make_rule_with_weight(str(tmp_path / "small.o"), "small.C", include_weight=0)
-        # Large file: weight=5 -> 4G
+        # Large file: weight=5 -> slurm_mem (16G)
         r_large = _make_rule_with_weight(str(tmp_path / "large.o"), "large.C", include_weight=5)
         graph.add_rule(r_small)
         graph.add_rule(r_large)
@@ -657,10 +662,10 @@ class TestTieredSubmission:
 
         sbatch_ids = iter(["100\n", "200\n"])
 
-        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+        with SlurmBackendTestContext(graph, slurm_mem="16G") as (backend, tmpdir):
             with (
                 patch("subprocess.check_output", side_effect=sbatch_ids) as mock_sbatch,
-                patch.object(backend, "_wait_for_arrays"),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
             ):
                 backend.execute("build")
 
@@ -672,13 +677,13 @@ class TestTieredSubmission:
             for arg in cmd:
                 if arg.startswith("--mem="):
                     mems.append(arg)
-        assert "--mem=512M" in mems
-        assert "--mem=4G" in mems
+        assert "--mem=2G" in mems
+        assert "--mem=16G" in mems
 
     def test_same_tier_uses_single_sbatch_call(self, tmp_path):
         """Rules in the same memory tier are batched into one array."""
         graph = BuildGraph()
-        # Both weight <= 1 -> same tier (512M)
+        # Both weight <= 1 -> same tier (2G)
         r1 = _make_rule_with_weight(str(tmp_path / "a.o"), "a.C", include_weight=0)
         r2 = _make_rule_with_weight(str(tmp_path / "b.o"), "b.C", include_weight=1)
         graph.add_rule(r1)
@@ -688,15 +693,15 @@ class TestTieredSubmission:
         with SlurmBackendTestContext(graph) as (backend, tmpdir):
             with (
                 patch("subprocess.check_output", return_value="55\n") as mock_sbatch,
-                patch.object(backend, "_wait_for_arrays"),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
             ):
                 backend.execute("build")
 
-        # Both in same tier (512M) -> one sbatch call
+        # Both in same tier (2G) -> one sbatch call
         assert len(_sbatch_calls(mock_sbatch)) == 1
         cmd = mock_sbatch.call_args[0][0]
         assert "--array=0-1" in cmd
-        assert "--mem=512M" in cmd
+        assert "--mem=2G" in cmd
 
     def test_sbatch_array_mem_parameter_overrides_default(self, tmp_path):
         """The mem parameter to _sbatch_array overrides self.args.slurm_mem."""
@@ -726,3 +731,127 @@ class TestTieredSubmission:
 
         cmd = mock_sbatch.call_args[0][0]
         assert "--mem=16G" in cmd
+
+
+# ---------------------------------------------------------------------------
+# Memory parsing helpers
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryHelpers:
+    def test_parse_mem_gigabytes(self):
+        assert SlurmBackend._parse_mem("4G") == 4096
+
+    def test_parse_mem_megabytes(self):
+        assert SlurmBackend._parse_mem("512M") == 512
+
+    def test_format_mem_gigabytes(self):
+        assert SlurmBackend._format_mem(4096) == "4G"
+
+    def test_format_mem_megabytes(self):
+        assert SlurmBackend._format_mem(1500) == "1500M"
+
+    def test_double_mem(self):
+        assert SlurmBackend._double_mem("4G") == "8G"
+        assert SlurmBackend._double_mem("512M") == "1G"
+
+
+# ---------------------------------------------------------------------------
+# OOM retry
+# ---------------------------------------------------------------------------
+
+
+class TestOOMRetry:
+    """Test that OUT_OF_MEMORY failures are retried with doubled memory."""
+
+    def test_oom_jobs_retried_with_doubled_memory(self, tmp_path):
+        """OOM jobs are resubmitted with 2x memory."""
+        out = str(tmp_path / "foo.o")
+        rule = _make_rule_with_weight(out, "foo.C", include_weight=1)  # -> 2G tier
+        graph = BuildGraph()
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [out]))
+
+        # OOM at 2G -> retry at 4G -> COMPLETED
+        with SlurmBackendTestContext(graph, slurm_mem="8G") as (backend, tmpdir):
+            with patch("subprocess.check_output", side_effect=[
+                "88\n",                                          # initial sbatch
+                _sacct_output(("88_0", "OUT_OF_MEMORY")),        # sacct poll
+                "99\n",                                          # retry sbatch
+                _sacct_output(("99_0", "COMPLETED")),            # sacct poll
+            ]) as mock_sbatch:
+                backend.execute("build")
+
+        sbatch_calls = _sbatch_calls(mock_sbatch)
+        assert len(sbatch_calls) == 2
+        # Verify retry used doubled memory (2G -> 4G)
+        retry_cmd = sbatch_calls[1][0][0]
+        assert "--mem=4G" in retry_cmd
+
+    def test_oom_retry_doubles_until_cap(self, tmp_path):
+        """OOM retries double memory each time, stopping at --slurm-mem cap."""
+        out = str(tmp_path / "foo.o")
+        rule = _make_rule_with_weight(out, "foo.C", include_weight=1)  # -> 2G tier
+        graph = BuildGraph()
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [out]))
+
+        # OOM at 2G -> retry 4G -> OOM at 4G -> retry 8G -> COMPLETED
+        with SlurmBackendTestContext(graph, slurm_mem="8G") as (backend, tmpdir):
+            with patch("subprocess.check_output", side_effect=[
+                "10\n",                                          # initial sbatch
+                _sacct_output(("10_0", "OUT_OF_MEMORY")),        # OOM
+                "20\n",                                          # retry at 4G
+                _sacct_output(("20_0", "OUT_OF_MEMORY")),        # OOM again
+                "30\n",                                          # retry at 8G
+                _sacct_output(("30_0", "COMPLETED")),            # success
+            ]) as mock_sbatch:
+                backend.execute("build")
+
+        sbatch_calls = _sbatch_calls(mock_sbatch)
+        assert len(sbatch_calls) == 3
+        mems = []
+        for c in sbatch_calls:
+            cmd = c[0][0]
+            for arg in cmd:
+                if arg.startswith("--mem="):
+                    mems.append(arg)
+        assert mems == ["--mem=2G", "--mem=4G", "--mem=8G"]
+
+    def test_oom_at_cap_raises(self, tmp_path):
+        """OOM at the memory cap raises RuntimeError."""
+        out = str(tmp_path / "foo.o")
+        rule = _make_rule_with_weight(out, "foo.C", include_weight=1)  # -> 2G tier
+        graph = BuildGraph()
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [out]))
+
+        # OOM at 2G -> retry 4G -> OOM at 4G -> cap is 4G, fail
+        with SlurmBackendTestContext(graph, slurm_mem="4G") as (backend, tmpdir):
+            with patch("subprocess.check_output", side_effect=[
+                "10\n",
+                _sacct_output(("10_0", "OUT_OF_MEMORY")),
+                "20\n",
+                _sacct_output(("20_0", "OUT_OF_MEMORY")),
+            ]):
+                with pytest.raises(RuntimeError, match="Slurm compile jobs failed"):
+                    backend.execute("build")
+
+    def test_non_oom_failure_not_retried(self, tmp_path):
+        """Non-OOM failures (FAILED, CANCELLED) are not retried."""
+        out = str(tmp_path / "foo.o")
+        rule = make_compile_rule(output=out)
+        graph = BuildGraph()
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [out]))
+
+        with SlurmBackendTestContext(graph, slurm_mem="16G") as (backend, tmpdir):
+            with patch("subprocess.check_output", side_effect=[
+                "88\n",
+                _sacct_output(("88_0", "FAILED")),
+            ]) as mock_sbatch:
+                with pytest.raises(RuntimeError, match="Slurm compile jobs failed"):
+                    backend.execute("build")
+
+        # Only one sbatch call — no retry for FAILED
+        assert len(_sbatch_calls(mock_sbatch)) == 1
