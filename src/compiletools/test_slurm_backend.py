@@ -441,8 +441,8 @@ class TestJobFailures:
         rule = make_compile_rule(output=str(tmp_path / "foo.o"))
 
         b = SlurmBackend.__new__(SlurmBackend)
-        # poll_interval=3600 → max_polls = max(1, int(3600/3600)) = 1: times out after 1 poll
-        b.args = SimpleNamespace(slurm_poll_interval=3600.0)
+        # poll_interval=1800 → max_polls = max(1, int(1800/1800)) = 1: times out after 1 poll
+        b.args = SimpleNamespace(slurm_poll_interval=1800.0)
         index_map = {"77": [rule]}
 
         with (

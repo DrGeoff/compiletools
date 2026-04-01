@@ -39,6 +39,7 @@ import collections
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import shlex
 import shutil
@@ -58,6 +59,8 @@ from compiletools.build_backend import (
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.global_hash_registry import get_file_hash
 from compiletools.locking import FileLock, atomic_compile
+
+logger = logging.getLogger(__name__)
 
 TRACE_VERSION = 1
 
@@ -124,7 +127,7 @@ def _atomic_copy(src: str, dst: str) -> None:
         os.close(tmp_fd)
         shutil.copy2(src, tmp_path)
         os.replace(tmp_path, dst)
-    except Exception:
+    except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp_path)
         raise
@@ -156,9 +159,15 @@ def _make_trace_entry(rule: BuildRule, output_hash: str | None = None) -> TraceE
     Pass *output_hash* when already computed (avoids a redundant disk read).
     """
     assert rule.command is not None, "only call _make_trace_entry after a rule executes"
+    input_hashes = {}
+    for p in rule.inputs:
+        if os.path.isfile(p):
+            input_hashes[p] = get_file_hash(p)
+        else:
+            logger.debug("_make_trace_entry: skipping non-file input %s for %s", p, rule.output)
     return TraceEntry(
         output_hash=output_hash if output_hash is not None else get_file_hash(rule.output),
-        input_hashes={p: get_file_hash(p) for p in rule.inputs if os.path.isfile(p)},
+        input_hashes=input_hashes,
         command_hash=hash_command(rule.command),
     )
 
@@ -639,6 +648,9 @@ class SlurmBackend(ShakeBackend):
         # Each array task reads its compile command and output path, then executes
         # the command. On failure the partial/empty output file is removed immediately
         # so that the CA short-circuit never treats a corrupt artifact as valid.
+        # Note: bash -c "$CMD" performs shell expansion.  This is safe because
+        # compiletools generates compile commands from compiler paths, flags, and
+        # file paths — none contain shell metacharacters ($, backticks).
         wrap = (
             f'CMD=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" {shlex.quote(cmds_file)}); '
             f'OUT=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" {shlex.quote(outs_file)}); '
@@ -705,9 +717,9 @@ class SlurmBackend(ShakeBackend):
         """
         poll_interval = self.args.slurm_poll_interval
         # Cap polling to avoid hanging forever if sacct loses track of jobs.
-        # At the default 2s interval this gives ~2 hours; callers with longer
+        # At the default 2s interval this gives ~15 minutes; callers with longer
         # wall-time limits should increase --slurm-poll-interval accordingly.
-        max_polls = max(1, int(3600 / max(poll_interval, 0.1)))
+        max_polls = max(1, int(1800 / max(poll_interval, 0.1)))
         polls = 0
 
         pending: set[str] = set(index_map)
@@ -760,7 +772,11 @@ class SlurmBackend(ShakeBackend):
     # Local execution for link/library rules
 
     def _run_local(self, rule: BuildRule, traces: TraceStore) -> None:
-        """Run a link/library/copy rule locally, with CA short-circuit."""
+        """Run a link/library/copy rule locally, with CA short-circuit.
+
+        Uses FileLock around CA target creation to prevent races when
+        concurrent ct-cake processes share the same objdir (e.g. on GPFS).
+        """
         if rule.command is None:
             return
 
@@ -780,10 +796,18 @@ class SlurmBackend(ShakeBackend):
             ca_dir = os.path.dirname(ca)
             if ca_dir:
                 os.makedirs(ca_dir, exist_ok=True)
-            _run_subprocess(ca_cmd, rule.command)
+            with FileLock(ca, self.args):
+                # FlockLock creates an empty file at the CA path via O_CREAT.
+                # ar -r treats an empty file as a corrupt archive and fails
+                # with "File format not recognized".  Remove the empty file
+                # so ar can create a fresh archive.
+                if os.path.exists(ca) and os.path.getsize(ca) == 0:
+                    os.unlink(ca)
+                _run_subprocess(ca_cmd, rule.command)
             _atomic_copy(ca, rule.output)
         else:
-            _run_subprocess(flat_cmd, rule.command)
+            with FileLock(rule.output, self.args):
+                _run_subprocess(flat_cmd, rule.command)
 
         traces.put(rule.output, _make_trace_entry(rule))
 
