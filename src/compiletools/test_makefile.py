@@ -286,6 +286,71 @@ class TestMakefileBackendFileLocking:
         captured = capsys.readouterr()
         assert "restrictive umask" not in captured.err
 
+    def test_link_rule_wrapped_with_lock_helper(self):
+        """Link rules include ct-lock-helper link when file_locking=True."""
+        import pytest
+        args = _make_args(file_locking=True, sleep_interval_lockdir=0.05)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        backend._filesystem_type = "nfs"
+        graph = _make_simple_graph(args)
+
+        buf = io.StringIO()
+        backend._write_makefile(graph, buf)
+        content = buf.getvalue()
+
+        # Find the link rule line
+        for line in content.splitlines():
+            if "/tmp/test_bin/foo" in line and "g++" in line and "-o" in line:
+                assert "ct-lock-helper link" in line, f"Link rule not wrapped: {line}"
+                assert "--strategy=lockdir" in line
+                break
+        else:
+            pytest.fail("link rule command not found in Makefile output")
+
+    def test_static_library_rule_wrapped_with_lock_helper(self):
+        """Static library (ar) rules include ct-lock-helper link when file_locking=True."""
+        import pytest
+        args = _make_args(file_locking=True, sleep_interval_lockdir=0.05)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        backend._filesystem_type = "nfs"
+
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="/tmp/test_obj/libfoo.a",
+                inputs=["/tmp/test_obj/foo.o"],
+                command=["ar", "rcs", "-o", "/tmp/test_obj/libfoo.a", "/tmp/test_obj/foo.o"],
+                rule_type="static_library",
+            )
+        )
+
+        buf = io.StringIO()
+        backend._write_makefile(graph, buf)
+        content = buf.getvalue()
+
+        for line in content.splitlines():
+            if "libfoo.a" in line and "ar" in line:
+                assert "ct-lock-helper link" in line, f"ar rule not wrapped: {line}"
+                break
+        else:
+            pytest.fail("static_library rule command not found in Makefile output")
+
+    def test_link_rule_not_wrapped_when_locking_disabled(self):
+        """Link rules are NOT wrapped when file_locking=False."""
+        args = _make_args(file_locking=False)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        backend._filesystem_type = None
+        graph = _make_simple_graph(args)
+
+        buf = io.StringIO()
+        backend._write_makefile(graph, buf)
+        content = buf.getvalue()
+
+        for line in content.splitlines():
+            if "/tmp/test_bin/foo" in line and "g++" in line:
+                assert "ct-lock-helper" not in line
+                break
+
 
 class TestWrapLinkWithLock:
     """Test wrap_link_with_lock() function in build_backend."""

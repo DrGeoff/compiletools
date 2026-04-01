@@ -185,7 +185,7 @@ class MakefileBackend(BuildBackend):
                 return f"@echo ... {source} ; {cmd_str}"
             return cmd_str
         elif rule.rule_type in ("link", "shared_library", "static_library"):
-            cmd_str = " ".join(rule.command)
+            cmd_str = self._wrap_link_cmd(rule.command)
             if self.args.verbose >= 1:
                 return f"+@echo ... {rule.output} ; {cmd_str}"
             return cmd_str
