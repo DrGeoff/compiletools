@@ -229,8 +229,8 @@ class TestNinjaFileLocking:
         assert "--strategy=cifs" in content
         assert "CT_LOCK_SLEEP_INTERVAL_CIFS=0.02" in content
 
-    def test_link_commands_not_wrapped(self):
-        """Link commands are never wrapped with ct-lock-helper."""
+    def test_link_commands_wrapped_when_locking_enabled(self):
+        """Link commands ARE wrapped with ct-lock-helper link when locking is on."""
         graph = _compile_graph()
         graph.add_rule(
             BuildRule(
@@ -251,13 +251,69 @@ class TestNinjaFileLocking:
             backend.generate(graph, output=buf)
             content = buf.getvalue()
 
-        # Link command should NOT have ct-lock-helper
+        # Link command SHOULD have ct-lock-helper link
         for line in content.splitlines():
-            if "cmd = g++ -o bin/foo" in line:
-                assert "ct-lock-helper" not in line
+            if "cmd = " in line and "bin/foo" in line:
+                assert "ct-lock-helper link" in line, f"Link not wrapped: {line}"
+                assert "--strategy=lockdir" in line
+                assert "--target=bin/foo" in line
                 break
         else:
             pytest.fail("link command not found in output")
+
+    def test_link_commands_not_wrapped_when_locking_disabled(self):
+        """Link commands pass through unchanged when file_locking=False."""
+        graph = _compile_graph()
+        graph.add_rule(
+            BuildRule(
+                output="bin/foo",
+                inputs=["obj/foo.o"],
+                command=["g++", "-o", "bin/foo", "obj/foo.o"],
+                rule_type="link",
+            )
+        )
+
+        args = self._make_args(file_locking=False)
+        hunter = MagicMock()
+        backend = NinjaBackend(args=args, hunter=hunter)
+
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        for line in content.splitlines():
+            if "cmd = " in line and "bin/foo" in line:
+                assert "ct-lock-helper" not in line
+                break
+
+    def test_static_library_wrapped_when_locking_enabled(self):
+        """Static library (ar) rules wrapped with ct-lock-helper link."""
+        graph = _compile_graph()
+        graph.add_rule(
+            BuildRule(
+                output="lib/libfoo.a",
+                inputs=["obj/foo.o"],
+                command=["ar", "rcs", "-o", "lib/libfoo.a", "obj/foo.o"],
+                rule_type="static_library",
+            )
+        )
+
+        args = self._make_args(file_locking=True, sleep_interval_lockdir=0.05)
+        hunter = MagicMock()
+        backend = NinjaBackend(args=args, hunter=hunter)
+
+        with patch("compiletools.build_backend.check_lock_helper_available", return_value=True), \
+             patch("compiletools.filesystem_utils.get_filesystem_type", return_value="nfs"):
+            buf = io.StringIO()
+            backend.generate(graph, output=buf)
+            content = buf.getvalue()
+
+        for line in content.splitlines():
+            if "cmd = " in line and "libfoo.a" in line:
+                assert "ct-lock-helper link" in line, f"ar rule not wrapped: {line}"
+                break
+        else:
+            pytest.fail("static_library command not found in output")
 
     def test_ct_lock_helper_missing_exits(self):
         """generate() exits with error when ct-lock-helper is missing."""
