@@ -289,6 +289,7 @@ class TestMakefileBackendFileLocking:
     def test_link_rule_wrapped_with_lock_helper(self):
         """Link rules include ct-lock-helper link when file_locking=True."""
         import pytest
+
         args = _make_args(file_locking=True, sleep_interval_lockdir=0.05)
         backend = MakefileBackend(args=args, hunter=MagicMock())
         backend._filesystem_type = "nfs"
@@ -310,6 +311,7 @@ class TestMakefileBackendFileLocking:
     def test_static_library_rule_wrapped_with_lock_helper(self):
         """Static library (ar) rules include ct-lock-helper link when file_locking=True."""
         import pytest
+
         args = _make_args(file_locking=True, sleep_interval_lockdir=0.05)
         backend = MakefileBackend(args=args, hunter=MagicMock())
         backend._filesystem_type = "nfs"
@@ -357,6 +359,7 @@ class TestWrapLinkWithLock:
 
     def test_wraps_link_with_lockdir(self):
         from compiletools.build_backend import wrap_link_with_lock
+
         args = _make_args(
             file_locking=True,
             sleep_interval_lockdir=0.05,
@@ -377,6 +380,7 @@ class TestWrapLinkWithLock:
 
     def test_wraps_link_with_flock(self):
         from compiletools.build_backend import wrap_link_with_lock
+
         args = _make_args(
             file_locking=True,
             sleep_interval_flock_fallback=0.03,
@@ -396,6 +400,7 @@ class TestWrapLinkWithLock:
 
     def test_no_wrap_when_locking_disabled(self):
         from compiletools.build_backend import wrap_link_with_lock
+
         args = _make_args(file_locking=False)
         result = wrap_link_with_lock(
             "g++ -o bin/foo obj/foo.o",
@@ -665,6 +670,7 @@ def _test_library(static_dynamic):
 def test_file_locking_registered_in_apptools():
     """--file-locking is registered centrally in add_locking_arguments(), not per-backend."""
     import configargparse
+
     from compiletools.apptools import add_locking_arguments
 
     cap = configargparse.ArgParser()

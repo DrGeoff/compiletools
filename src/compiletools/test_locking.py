@@ -416,8 +416,7 @@ class TestCIFSLock:
             lock = CIFSLock(target, args)
             lock.fd = None
             # Release without acquire - should handle gracefully
-            with patch("os.path.exists", return_value=True), \
-                 patch("os.unlink", side_effect=OSError("fail")):
+            with patch("os.path.exists", return_value=True), patch("os.unlink", side_effect=OSError("fail")):
                 lock.release()
             assert "Failed to release CIFS lock" in capsys.readouterr().err
 
@@ -487,9 +486,7 @@ class TestAtomicCompile:
             lock = FcntlLock(target, args)
 
             with patch("subprocess.run") as mock_run:
-                mock_run.return_value = subprocess.CompletedProcess(
-                    args=[], returncode=0, stdout="", stderr=""
-                )
+                mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
                 atomic_compile(lock, target, self._compile_cmd())
 
                 # Compiler should get -o target directly
@@ -508,11 +505,8 @@ class TestAtomicCompile:
             args = _make_lock_args()
             lock = FcntlLock(target, args)
 
-            with patch("subprocess.run") as mock_run, \
-                 patch("os.rename") as mock_rename:
-                mock_run.return_value = subprocess.CompletedProcess(
-                    args=[], returncode=0, stdout="", stderr=""
-                )
+            with patch("subprocess.run") as mock_run, patch("os.rename") as mock_rename:
+                mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
                 atomic_compile(lock, target, self._compile_cmd())
                 mock_rename.assert_not_called()
 
@@ -524,11 +518,8 @@ class TestAtomicCompile:
             args = _make_lock_args()
             lock = CIFSLock(target, args)
 
-            with patch("subprocess.run") as mock_run, \
-                 patch("os.rename") as mock_rename:
-                mock_run.return_value = subprocess.CompletedProcess(
-                    args=[], returncode=0, stdout="", stderr=""
-                )
+            with patch("subprocess.run") as mock_run, patch("os.rename") as mock_rename:
+                mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
                 atomic_compile(lock, target, self._compile_cmd())
 
                 # Compiler should get -o *.tmp
@@ -548,9 +539,7 @@ class TestAtomicCompile:
             lock = FcntlLock(target, args)
 
             with patch("subprocess.run") as mock_run:
-                mock_run.return_value = subprocess.CompletedProcess(
-                    args=[], returncode=1, stdout="", stderr="error"
-                )
+                mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error")
                 with pytest.raises(subprocess.CalledProcessError):
                     atomic_compile(lock, target, self._compile_cmd())
 
@@ -568,9 +557,7 @@ class TestAtomicCompile:
             lock = CIFSLock(target, args)
 
             with patch("subprocess.run") as mock_run:
-                mock_run.return_value = subprocess.CompletedProcess(
-                    args=[], returncode=1, stdout="", stderr="error"
-                )
+                mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error")
                 with pytest.raises(subprocess.CalledProcessError):
                     atomic_compile(lock, target, self._compile_cmd())
 
@@ -586,11 +573,9 @@ class TestAtomicCompile:
             args = _make_lock_args()
             lock = CIFSLock(target, args)
 
-            with patch("subprocess.run") as mock_run, \
-                 patch("os.rename", side_effect=OSError("cross-device")):
-                mock_run.return_value = subprocess.CompletedProcess(
-                    args=[], returncode=0, stdout="", stderr=""
-                )
+            with patch("subprocess.run") as mock_run, patch("os.rename", side_effect=OSError("cross-device")):
+                mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
                 # Create the temp file that subprocess.run would create
                 def create_temp(cmd, **kwargs):
                     output_file = cmd[cmd.index("-o") + 1]
@@ -634,9 +619,7 @@ class TestAtomicLink:
             lock.release = tracking_release
 
             with patch("subprocess.run") as mock_run:
-                mock_run.return_value = subprocess.CompletedProcess(
-                    args=[], returncode=0, stdout="", stderr=""
-                )
+                mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
                 def record_run(cmd, **kwargs):
                     call_order.append("run")
@@ -655,9 +638,7 @@ class TestAtomicLink:
             lock = CIFSLock(target, args)
 
             with patch("subprocess.run") as mock_run:
-                mock_run.return_value = subprocess.CompletedProcess(
-                    args=[], returncode=0, stdout="", stderr=""
-                )
+                mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
                 atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
 
                 # Command should be passed as-is, no -o manipulation
@@ -676,9 +657,7 @@ class TestAtomicLink:
             lock = FlockLock(target, args)
 
             with patch("subprocess.run") as mock_run:
-                mock_run.return_value = subprocess.CompletedProcess(
-                    args=[], returncode=0, stdout="", stderr=""
-                )
+                mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
                 result = atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
                 assert result == 0
 
@@ -728,8 +707,10 @@ class TestFileLock:
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args()
-            with patch("compiletools.filesystem_utils.get_filesystem_type", return_value="unknown"), \
-                 patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"):
+            with (
+                patch("compiletools.filesystem_utils.get_filesystem_type", return_value="unknown"),
+                patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"),
+            ):
                 lock = FileLock(target, args)
                 assert isinstance(lock.lock, FlockLock)
 
@@ -737,8 +718,10 @@ class TestFileLock:
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args()
-            with patch("compiletools.filesystem_utils.get_filesystem_type", return_value="nfs"), \
-                 patch("compiletools.filesystem_utils.get_lock_strategy", return_value="lockdir"):
+            with (
+                patch("compiletools.filesystem_utils.get_filesystem_type", return_value="nfs"),
+                patch("compiletools.filesystem_utils.get_lock_strategy", return_value="lockdir"),
+            ):
                 lock = FileLock(target, args)
                 assert isinstance(lock.lock, LockdirLock)
 
@@ -746,8 +729,10 @@ class TestFileLock:
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args()
-            with patch("compiletools.filesystem_utils.get_filesystem_type", return_value="gpfs"), \
-                 patch("compiletools.filesystem_utils.get_lock_strategy", return_value="fcntl"):
+            with (
+                patch("compiletools.filesystem_utils.get_filesystem_type", return_value="gpfs"),
+                patch("compiletools.filesystem_utils.get_lock_strategy", return_value="fcntl"),
+            ):
                 lock = FileLock(target, args)
                 assert isinstance(lock.lock, FcntlLock)
 
@@ -755,8 +740,10 @@ class TestFileLock:
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args()
-            with patch("compiletools.filesystem_utils.get_filesystem_type", return_value="cifs"), \
-                 patch("compiletools.filesystem_utils.get_lock_strategy", return_value="cifs"):
+            with (
+                patch("compiletools.filesystem_utils.get_filesystem_type", return_value="cifs"),
+                patch("compiletools.filesystem_utils.get_lock_strategy", return_value="cifs"),
+            ):
                 lock = FileLock(target, args)
                 assert isinstance(lock.lock, CIFSLock)
 

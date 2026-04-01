@@ -186,8 +186,10 @@ class TestNinjaFileLocking:
         hunter = MagicMock()
         backend = NinjaBackend(args=args, hunter=hunter)
 
-        with patch("compiletools.build_backend.check_lock_helper_available", return_value=True), \
-             patch("compiletools.filesystem_utils.get_filesystem_type", return_value="nfs"):
+        with (
+            patch("compiletools.build_backend.check_lock_helper_available", return_value=True),
+            patch("compiletools.filesystem_utils.get_filesystem_type", return_value="nfs"),
+        ):
             buf = io.StringIO()
             backend.generate(_compile_graph(), output=buf)
             content = buf.getvalue()
@@ -205,8 +207,10 @@ class TestNinjaFileLocking:
         hunter = MagicMock()
         backend = NinjaBackend(args=args, hunter=hunter)
 
-        with patch("compiletools.build_backend.check_lock_helper_available", return_value=True), \
-             patch("compiletools.filesystem_utils.get_filesystem_type", return_value="ext4"):
+        with (
+            patch("compiletools.build_backend.check_lock_helper_available", return_value=True),
+            patch("compiletools.filesystem_utils.get_filesystem_type", return_value="ext4"),
+        ):
             buf = io.StringIO()
             backend.generate(_compile_graph(), output=buf)
             content = buf.getvalue()
@@ -220,8 +224,10 @@ class TestNinjaFileLocking:
         hunter = MagicMock()
         backend = NinjaBackend(args=args, hunter=hunter)
 
-        with patch("compiletools.build_backend.check_lock_helper_available", return_value=True), \
-             patch("compiletools.filesystem_utils.get_filesystem_type", return_value="cifs"):
+        with (
+            patch("compiletools.build_backend.check_lock_helper_available", return_value=True),
+            patch("compiletools.filesystem_utils.get_filesystem_type", return_value="cifs"),
+        ):
             buf = io.StringIO()
             backend.generate(_compile_graph(), output=buf)
             content = buf.getvalue()
@@ -245,8 +251,10 @@ class TestNinjaFileLocking:
         hunter = MagicMock()
         backend = NinjaBackend(args=args, hunter=hunter)
 
-        with patch("compiletools.build_backend.check_lock_helper_available", return_value=True), \
-             patch("compiletools.filesystem_utils.get_filesystem_type", return_value="nfs"):
+        with (
+            patch("compiletools.build_backend.check_lock_helper_available", return_value=True),
+            patch("compiletools.filesystem_utils.get_filesystem_type", return_value="nfs"),
+        ):
             buf = io.StringIO()
             backend.generate(graph, output=buf)
             content = buf.getvalue()
@@ -302,8 +310,10 @@ class TestNinjaFileLocking:
         hunter = MagicMock()
         backend = NinjaBackend(args=args, hunter=hunter)
 
-        with patch("compiletools.build_backend.check_lock_helper_available", return_value=True), \
-             patch("compiletools.filesystem_utils.get_filesystem_type", return_value="nfs"):
+        with (
+            patch("compiletools.build_backend.check_lock_helper_available", return_value=True),
+            patch("compiletools.filesystem_utils.get_filesystem_type", return_value="nfs"),
+        ):
             buf = io.StringIO()
             backend.generate(graph, output=buf)
             content = buf.getvalue()
@@ -321,6 +331,8 @@ class TestNinjaFileLocking:
         hunter = MagicMock()
         backend = NinjaBackend(args=args, hunter=hunter)
 
-        with patch("compiletools.build_backend.check_lock_helper_available", return_value=False), \
-             pytest.raises(RuntimeError):
+        with (
+            patch("compiletools.build_backend.check_lock_helper_available", return_value=False),
+            pytest.raises(RuntimeError),
+        ):
             backend.generate(_compile_graph())

@@ -140,9 +140,7 @@ def extract_linkopts(command: list[str], object_files: set[str]) -> list[str]:
     return linkopts
 
 
-def build_obj_info(
-    graph: BuildGraph, *, strip_includes: bool = False
-) -> dict[str, tuple[str, list[str], list[str]]]:
+def build_obj_info(graph: BuildGraph, *, strip_includes: bool = False) -> dict[str, tuple[str, list[str], list[str]]]:
     """Build mapping from object file path to (source, headers, copts).
 
     Args:

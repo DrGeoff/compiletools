@@ -543,9 +543,7 @@ def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.Comp
             cmd = list(compile_cmd) + ["-o", target]
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
-                raise subprocess.CalledProcessError(
-                    result.returncode, cmd, result.stdout, result.stderr
-                )
+                raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
             return result
         finally:
             lock.release()
@@ -560,9 +558,7 @@ def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.Comp
         cmd = list(compile_cmd) + ["-o", tempfile_path]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            raise subprocess.CalledProcessError(
-                result.returncode, cmd, result.stdout, result.stderr
-            )
+            raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
 
         os.rename(tempfile_path, target)
         return result
@@ -603,8 +599,10 @@ def atomic_link(lock, target: str, link_cmd: list[str]) -> int:
         result = subprocess.run(link_cmd, capture_output=True, text=True)
         if result.returncode != 0:
             raise subprocess.CalledProcessError(
-                result.returncode, link_cmd,
-                output=result.stdout, stderr=result.stderr,
+                result.returncode,
+                link_cmd,
+                output=result.stdout,
+                stderr=result.stderr,
             )
         return result.returncode
     finally:

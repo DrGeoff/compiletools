@@ -76,9 +76,7 @@ class NinjaBackend(BuildBackend):
                 f.write(line + "\n")
 
                 if rule.rule_type == "compile":
-                    cmd_str = self._wrap_compile_cmd(
-                        rule.command + ["-MMD", "-MF", rule.output + ".d"]
-                    )
+                    cmd_str = self._wrap_compile_cmd(rule.command + ["-MMD", "-MF", rule.output + ".d"])
                 elif rule.rule_type in ("link", "static_library", "shared_library"):
                     cmd_str = self._wrap_link_cmd(rule.command)
                 else:
