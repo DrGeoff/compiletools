@@ -56,9 +56,7 @@ class FcntlLock:
             raise RuntimeError("fcntl module not available (Windows?); cannot use fcntl lock strategy")
 
         # Ensure parent directory exists
-        parent_dir = compiletools.wrappedos.dirname(self.lockfile)
-        if parent_dir and not os.path.exists(parent_dir):
-            os.makedirs(parent_dir, exist_ok=True)
+        compiletools.lock_utils.ensure_parent_dir(self.lockfile)
 
         self.fd = os.open(self.lockfile, os.O_CREAT | os.O_RDWR, 0o666)
         try:
@@ -272,9 +270,7 @@ class LockdirLock:
             RuntimeError: If lock acquisition fails after 3 retries
         """
         # Ensure parent directory exists before attempting lock
-        parent_dir = compiletools.wrappedos.dirname(self.lockdir)
-        if parent_dir and not os.path.exists(parent_dir):
-            os.makedirs(parent_dir, exist_ok=True)
+        compiletools.lock_utils.ensure_parent_dir(self.lockdir)
 
         for attempt in range(1, 4):
             last_warn_time = 0
@@ -377,9 +373,7 @@ class CIFSLock:
         Algorithm mirrors ct-lock-helper cifs strategy.
         """
         # Ensure parent directory exists
-        parent_dir = os.path.dirname(self.lockfile)
-        if parent_dir and not os.path.exists(parent_dir):
-            os.makedirs(parent_dir, exist_ok=True)
+        compiletools.lock_utils.ensure_parent_dir(self.lockfile)
 
         # Open base lockfile (non-exclusive, for reference)
         self.fd = os.open(self.lockfile, os.O_CREAT | os.O_WRONLY, 0o666)
@@ -440,9 +434,7 @@ class FlockLock:
             raise RuntimeError("fcntl module not available (Windows?); cannot use flock lock strategy")
 
         # Ensure parent directory exists
-        parent_dir = compiletools.wrappedos.dirname(self.lockfile)
-        if parent_dir and not os.path.exists(parent_dir):
-            os.makedirs(parent_dir, exist_ok=True)
+        compiletools.lock_utils.ensure_parent_dir(self.lockfile)
 
         self.fd = os.open(self.lockfile, os.O_CREAT | os.O_RDWR, 0o666)
         try:

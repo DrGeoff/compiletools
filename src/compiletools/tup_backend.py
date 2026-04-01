@@ -24,14 +24,7 @@ class TupBackend(BuildBackend):
         return "Tupfile"
 
     def generate(self, graph: BuildGraph, output=None) -> None:
-        self._graph = graph
-
-        # Apply build_only_changed filtering if requested
-        build_only_changed = getattr(self.args, "build_only_changed", None)
-        if isinstance(build_only_changed, str):
-            changed = set(build_only_changed.split())
-            graph = graph.filter_to_changed(changed, verbose=self.args.verbose)
-            self._graph = graph
+        graph = self._apply_build_only_changed(graph)
 
         if output is not None:
             self._write_tupfile(graph, output)
@@ -58,14 +51,7 @@ class TupBackend(BuildBackend):
             else:
                 f.write(f": {inputs} |> {cmd} |> {rule.output}\n")
 
-    def execute(self, target: str = "build") -> None:
-        if target == "runtests":
-            self._run_tests()
-            return
-
-        if self._graph is not None and self._all_outputs_current(self._graph):
-            return
-
+    def _execute_build(self, target: str) -> None:
         if shutil.which("tup") is None:
             raise RuntimeError("tup not found on PATH")
 
@@ -78,5 +64,3 @@ class TupBackend(BuildBackend):
         if parallel:
             cmd.extend(["-j", str(parallel)])
         subprocess.check_call(cmd, text=True)
-        if self._graph is not None:
-            self._record_link_signatures(self._graph)

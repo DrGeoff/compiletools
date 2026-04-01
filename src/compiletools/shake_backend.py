@@ -166,6 +166,10 @@ class ShakeBackend(BuildBackend):
         name, ext = os.path.splitext(base)
         return os.path.join(os.path.dirname(rule.output), f"{name}_{h}{ext}")
 
+    def _execute_build(self, target: str) -> None:
+        # Not used: ShakeBackend overrides execute() with its own build engine.
+        raise NotImplementedError  # pragma: no cover
+
     def execute(self, target: str = "build") -> None:
         if target == "runtests":
             self._run_tests()

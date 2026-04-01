@@ -13,6 +13,13 @@ import sys
 import time
 
 
+def ensure_parent_dir(path: str) -> None:
+    """Create parent directory of path if it does not exist."""
+    parent = os.path.dirname(path)
+    if parent and not os.path.exists(parent):
+        os.makedirs(parent, exist_ok=True)
+
+
 def get_lock_age_seconds(lockdir, verbose=0):
     """Calculate lock age from mtime.
 

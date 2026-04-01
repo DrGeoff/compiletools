@@ -41,6 +41,9 @@ class TestBuildBackendContract:
             def execute(self, target="build"):
                 pass
 
+            def _execute_build(self, target):
+                pass
+
             @staticmethod
             def name():
                 return "minimal"
@@ -61,6 +64,9 @@ class TestBuildBackendContract:
                 self.received_output = output
 
             def execute(self, target="build"):
+                pass
+
+            def _execute_build(self, target):
                 pass
 
             @staticmethod
@@ -85,6 +91,9 @@ class TestBuildBackendContract:
                 self.received_output = output
 
             def execute(self, target="build"):
+                pass
+
+            def _execute_build(self, target):
                 pass
 
             @staticmethod
@@ -120,6 +129,9 @@ class TestBackendRegistry:
                 pass
 
             def execute(self, target="build"):
+                pass
+
+            def _execute_build(self, target):
                 pass
 
             @staticmethod

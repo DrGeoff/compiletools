@@ -771,6 +771,9 @@ def make_stub_backend_class():
         def execute(self, target="build"):
             pass
 
+        def _execute_build(self, target: str) -> None:
+            pass
+
         @staticmethod
         def name():
             return "stub_test"

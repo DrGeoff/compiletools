@@ -7,17 +7,13 @@ import functools
 import os
 import re
 import subprocess
-import sys
 
 import compiletools.filesystem_utils
 import compiletools.utils
 import compiletools.wrappedos
 from compiletools.build_backend import (
     BuildBackend,
-    check_lock_helper_available,
     register_backend,
-    report_lock_helper_missing,
-    wrap_compile_with_lock,
 )
 from compiletools.build_graph import BuildGraph
 
@@ -92,25 +88,8 @@ class MakefileBackend(BuildBackend):
             output: A file-like object to write to. If None, writes to
                 the file specified by args.makefilename.
         """
-        self._graph = graph
-
-        # Setup file-locking infrastructure if needed
-        if getattr(self.args, "file_locking", False):
-            if not check_lock_helper_available():
-                report_lock_helper_missing()
-            self._filesystem_type = compiletools.filesystem_utils.get_filesystem_type(self.args.objdir)
-            if self.args.verbose >= 3:
-                print(f"Detected filesystem type: {self._filesystem_type}")
-            self._validate_umask_for_file_locking()
-        else:
-            self._filesystem_type = None
-
-        # Apply build_only_changed filtering if requested
-        build_only_changed = getattr(self.args, "build_only_changed", None)
-        if isinstance(build_only_changed, str):
-            changed = set(build_only_changed.split())
-            graph = graph.filter_to_changed(changed, verbose=self.args.verbose)
-            self._graph = graph
+        self._setup_file_locking()
+        graph = self._apply_build_only_changed(graph)
 
         if output is not None:
             self._write_makefile(graph, output)
@@ -121,20 +100,6 @@ class MakefileBackend(BuildBackend):
                 self.args.makefilename, mode="w", encoding="utf-8"
             ) as f:
                 self._write_makefile(graph, f)
-
-    def _validate_umask_for_file_locking(self) -> None:
-        """Log warning if umask may affect multi-user file-locking mode."""
-        current_umask = os.umask(0)
-        os.umask(current_umask)  # Restore immediately
-
-        if (current_umask & 0o060) and self.args.verbose >= 1:
-            print(
-                f"Warning: file-locking enabled with restrictive umask {oct(current_umask)}\n"
-                f"  Single-user mode: Works fine (you can always remove your own locks)\n"
-                f"  Multi-user mode: Requires umask 0002 or 0007 for cross-user lock cleanup\n"
-                f"  If using multi-user cache, set: umask 0002",
-                file=sys.stderr,
-            )
 
     def _build_file_uptodate(self, graph: BuildGraph) -> bool:
         """Check if the Makefile needs regeneration.
@@ -184,26 +149,6 @@ class MakefileBackend(BuildBackend):
         if self.args.verbose > 9:
             print("Makefile is up to date.  Not recreating.")
         return True
-
-    def _wrap_compile_cmd(self, command: list[str]) -> str:
-        """Return the command string for a compile rule, lock-wrapped if needed.
-
-        The command list is expected to end with [..., "-o", target].
-        When file_locking is enabled, the -o and target are stripped and
-        ct-lock-helper wraps the remainder.
-        """
-        if not getattr(self.args, "file_locking", False) or self._filesystem_type is None:
-            return " ".join(command)
-
-        try:
-            o_idx = command.index("-o")
-        except ValueError:
-            return " ".join(command)
-
-        compile_part = command[:o_idx]
-        target = command[o_idx + 1]
-
-        return wrap_compile_with_lock(" ".join(compile_part), target, self.args, self._filesystem_type)
 
     def _write_makefile(self, graph: BuildGraph, f) -> None:
         """Write a complete Makefile from the BuildGraph."""
@@ -291,15 +236,7 @@ class MakefileBackend(BuildBackend):
         f.write("realclean:\n")
         f.write(f"\t-{realclean_recipe}\n\n")
 
-    def execute(self, target: str = "build") -> None:
-        """Run GNU make, or delegate test execution to _run_tests()."""
-        if target == "runtests":
-            self._run_tests()
-            return
-
-        if self._graph is not None and self._all_outputs_current(self._graph):
-            return
-
+    def _execute_build(self, target: str) -> None:
         make_version = _get_make_version()
         cmd = ["make"]
         if self.args.verbose <= 1:
@@ -316,5 +253,3 @@ class MakefileBackend(BuildBackend):
         if self.args.verbose >= 1:
             print(" ".join(cmd))
         subprocess.check_call(cmd, text=True)
-        if self._graph is not None:
-            self._record_link_signatures(self._graph)

@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import sys
 
+import compiletools.filesystem_utils
 import compiletools.namer
 import compiletools.utils
 import compiletools.wrappedos
@@ -139,6 +140,25 @@ def extract_linkopts(command: list[str], object_files: set[str]) -> list[str]:
     return linkopts
 
 
+def build_obj_info(
+    graph: BuildGraph, *, strip_includes: bool = False
+) -> dict[str, tuple[str, list[str], list[str]]]:
+    """Build mapping from object file path to (source, headers, copts).
+
+    Args:
+        graph: The BuildGraph to extract compile rules from.
+        strip_includes: When True, drop -I/-isystem/-iquote flags from copts
+            (needed by Bazel which manages include paths itself).
+    """
+    obj_info: dict[str, tuple[str, list[str], list[str]]] = {}
+    for rule in graph.rules_by_type("compile"):
+        source = rule.inputs[0] if rule.inputs else ""
+        headers = rule.inputs[1:] if len(rule.inputs) > 1 else []
+        copts = extract_copts(rule.command, strip_includes=strip_includes) if rule.command else []
+        obj_info[rule.output] = (source, headers, copts)
+    return obj_info
+
+
 def mangle_target_name(basename: str) -> str:
     """Convert a filename to a valid build-system target name."""
     return basename.replace(".", "_").replace("-", "_")
@@ -198,9 +218,26 @@ class BuildBackend(abc.ABC):
                 backend's default file path.
         """
 
-    @abc.abstractmethod
     def execute(self, target: str = "build") -> None:
-        """Invoke the native build tool to execute the build."""
+        """Invoke the native build tool to execute the build.
+
+        Handles the common template: runtests delegation, early exit when all
+        outputs are current, backend-specific build, and link signature recording.
+        Override this method entirely for backends with non-standard execution
+        (e.g. ShakeBackend which uses its own build engine).
+        """
+        if target == "runtests":
+            self._run_tests()
+            return
+        if self._graph is not None and self._all_outputs_current(self._graph):
+            return
+        self._execute_build(target)
+        if self._graph is not None:
+            self._record_link_signatures(self._graph)
+
+    @abc.abstractmethod
+    def _execute_build(self, target: str) -> None:
+        """Backend-specific build invocation (subprocess call to native tool)."""
 
     def clean(self) -> None:
         """Remove build artifacts. Override for backend-specific cleanup."""
@@ -480,6 +517,68 @@ class BuildBackend(abc.ABC):
         unnecessary regeneration by checking args signatures and mtimes.
         """
         return False
+
+    def _validate_umask_for_file_locking(self) -> None:
+        """Log warning if umask may affect multi-user file-locking mode."""
+        current_umask = os.umask(0)
+        os.umask(current_umask)  # Restore immediately
+
+        if (current_umask & 0o060) and self.args.verbose >= 1:
+            print(
+                f"Warning: file-locking enabled with restrictive umask {oct(current_umask)}\n"
+                f"  Single-user mode: Works fine (you can always remove your own locks)\n"
+                f"  Multi-user mode: Requires umask 0002 or 0007 for cross-user lock cleanup\n"
+                f"  If using multi-user cache, set: umask 0002",
+                file=sys.stderr,
+            )
+
+    def _setup_file_locking(self) -> None:
+        """Configure file-locking infrastructure for this backend.
+
+        Sets self._filesystem_type to the detected filesystem type when
+        file_locking is enabled, or None when disabled.
+        """
+        if getattr(self.args, "file_locking", False):
+            if not check_lock_helper_available():
+                report_lock_helper_missing()
+            self._filesystem_type = compiletools.filesystem_utils.get_filesystem_type(self.args.objdir)
+            if self.args.verbose >= 3:
+                print(f"Detected filesystem type: {self._filesystem_type}")
+            self._validate_umask_for_file_locking()
+        else:
+            self._filesystem_type = None
+
+    def _apply_build_only_changed(self, graph: BuildGraph) -> BuildGraph:
+        """Filter graph to changed files if --build-only-changed is set.
+
+        Always updates self._graph and returns the (possibly filtered) graph.
+        """
+        build_only_changed = getattr(self.args, "build_only_changed", None)
+        if isinstance(build_only_changed, str):
+            changed = set(build_only_changed.split())
+            graph = graph.filter_to_changed(changed, verbose=self.args.verbose)
+        self._graph = graph
+        return graph
+
+    def _wrap_compile_cmd(self, command: list[str]) -> str:
+        """Return the command string for a compile rule, lock-wrapped if needed.
+
+        The command list is expected to end with [..., "-o", target].
+        When file_locking is enabled, the -o and target are stripped and
+        ct-lock-helper wraps the remainder.
+        """
+        if not getattr(self.args, "file_locking", False) or self._filesystem_type is None:
+            return " ".join(command)
+
+        try:
+            o_idx = command.index("-o")
+        except ValueError:
+            return " ".join(command)
+
+        compile_part = command[:o_idx]
+        target = command[o_idx + 1]
+
+        return wrap_compile_with_lock(" ".join(compile_part), target, self.args, self._filesystem_type)
 
     def _all_outputs_current(self, graph: BuildGraph) -> bool:
         """Pre-check: all compile outputs exist and all link sigs match?

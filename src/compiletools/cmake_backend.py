@@ -16,7 +16,7 @@ import compiletools.utils
 from compiletools.build_backend import (
     BuildBackend,
     aggregate_rule_sources,
-    extract_copts,
+    build_obj_info,
     extract_linkopts,
     mangle_target_name,
     register_backend,
@@ -54,14 +54,7 @@ class CMakeBackend(BuildBackend):
         return "CMakeLists.txt"
 
     def generate(self, graph: BuildGraph, output=None) -> None:
-        self._graph = graph
-
-        # Apply build_only_changed filtering if requested
-        build_only_changed = getattr(self.args, "build_only_changed", None)
-        if isinstance(build_only_changed, str):
-            changed = set(build_only_changed.split())
-            graph = graph.filter_to_changed(changed, verbose=self.args.verbose)
-            self._graph = graph
+        graph = self._apply_build_only_changed(graph)
 
         if output is not None:
             self._write_cmake(graph, output)
@@ -94,12 +87,7 @@ class CMakeBackend(BuildBackend):
             lang = "CXX"
         f.write(f"project(compiletools_build {lang})\n")
 
-        obj_info: dict[str, tuple[str, list[str], list[str]]] = {}
-        for rule in graph.rules_by_type("compile"):
-            source = rule.inputs[0] if rule.inputs else ""
-            headers = rule.inputs[1:] if len(rule.inputs) > 1 else []
-            copts = extract_copts(rule.command) if rule.command else []
-            obj_info[rule.output] = (source, headers, copts)
+        obj_info = build_obj_info(graph)
 
         for lib_type in ("static_library", "shared_library"):
             for rule in graph.rules_by_type(lib_type):
@@ -170,14 +158,7 @@ class CMakeBackend(BuildBackend):
                     quoted = " ".join(f'"{opt}"' for opt in other_opts)
                     f.write(f"target_link_options({target_name} PRIVATE {quoted})\n")
 
-    def execute(self, target: str = "build") -> None:
-        if target == "runtests":
-            self._run_tests()
-            return
-
-        if self._graph is not None and self._all_outputs_current(self._graph):
-            return
-
+    def _execute_build(self, target: str) -> None:
         cmake = shutil.which("cmake")
         if cmake is None:
             raise RuntimeError("'cmake' not found on PATH")
@@ -212,7 +193,6 @@ class CMakeBackend(BuildBackend):
         # cake.main() (linking the exe) can find them via -L/-l flags.
         if self._graph is not None:
             self._copy_built_libraries(build_dir, self._graph)
-            self._record_link_signatures(self._graph)
 
     def _copy_built_libraries(self, build_dir: str, graph) -> None:
         """Copy built libraries from cmake-build to namer library paths.

@@ -15,7 +15,7 @@ import compiletools.filesystem_utils
 from compiletools.build_backend import (
     BuildBackend,
     aggregate_rule_sources,
-    extract_copts,
+    build_obj_info,
     extract_linkopts,
     mangle_target_name,
     register_backend,
@@ -36,14 +36,7 @@ class BazelBackend(BuildBackend):
         return "BUILD.bazel"
 
     def generate(self, graph: BuildGraph, output=None) -> None:
-        self._graph = graph
-
-        # Apply build_only_changed filtering if requested
-        build_only_changed = getattr(self.args, "build_only_changed", None)
-        if isinstance(build_only_changed, str):
-            changed = set(build_only_changed.split())
-            graph = graph.filter_to_changed(changed, verbose=self.args.verbose)
-            self._graph = graph
+        graph = self._apply_build_only_changed(graph)
 
         if output is not None:
             # When writing to a file handle, try to determine the base directory
@@ -72,12 +65,7 @@ class BazelBackend(BuildBackend):
         if base_dir is None:
             base_dir = os.getcwd()
 
-        obj_info: dict[str, tuple[str, list[str], list[str]]] = {}
-        for rule in graph.rules_by_type("compile"):
-            source = rule.inputs[0] if rule.inputs else ""
-            headers = rule.inputs[1:] if len(rule.inputs) > 1 else []
-            copts = extract_copts(rule.command, strip_includes=True) if rule.command else []
-            obj_info[rule.output] = (source, headers, copts)
+        obj_info = build_obj_info(graph, strip_includes=True)
 
         for rule in graph.rules_by_type("static_library"):
             srcs, all_copts = aggregate_rule_sources(rule, obj_info)
@@ -205,14 +193,7 @@ class BazelBackend(BuildBackend):
                 f.write('module(name = "compiletools_project")\n')
                 f.write('bazel_dep(name = "rules_cc", version = "0.1.1")\n')
 
-    def execute(self, target: str = "build") -> None:
-        if target == "runtests":
-            self._run_tests()
-            return
-
-        if self._graph is not None and self._all_outputs_current(self._graph):
-            return
-
+    def _execute_build(self, target: str) -> None:
         tool = shutil.which("bazelisk") or shutil.which("bazel")
         if tool is None:
             raise RuntimeError("Neither 'bazelisk' nor 'bazel' found on PATH")
@@ -252,8 +233,6 @@ class BazelBackend(BuildBackend):
             dest = getattr(self.args, "output", None) or self.namer.topbindir()
             self._copy_built_executables(bazel_bin, dest_dir=dest)
             self._copy_bazel_libraries(bazel_bin)
-        if self._graph is not None:
-            self._record_link_signatures(self._graph)
 
     def _copy_bazel_libraries(self, bazel_bin: str) -> None:
         """Copy Bazel-built libraries to namer paths.
