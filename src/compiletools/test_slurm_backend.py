@@ -73,6 +73,15 @@ def _sacct_output(*rows):
     return "\n".join(f"{jid}|{state}" for jid, state in rows) + "\n"
 
 
+def _sbatch_calls(mock_check_output):
+    """Return only the sbatch calls from a check_output mock.
+
+    The broad subprocess.check_output patch also catches unrelated calls
+    (e.g. git rev-parse from find_git_root).  Filter to sbatch only.
+    """
+    return [c for c in mock_check_output.call_args_list if c[0][0][0] == "sbatch"]
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
@@ -130,7 +139,7 @@ class TestSbatchSubmission:
                 backend.execute("build")
 
         # One sbatch call (the array submission)
-        mock_sbatch.assert_called_once()
+        assert len(_sbatch_calls(mock_sbatch)) == 1
         cmd = mock_sbatch.call_args[0][0]
         assert cmd[0] == "sbatch"
         assert "--parsable" in cmd
@@ -230,7 +239,7 @@ class TestSbatchSubmission:
                 backend.execute("build")
 
         # Both rules in one sbatch call with --array=0-1
-        mock_sbatch.assert_called_once()
+        assert len(_sbatch_calls(mock_sbatch)) == 1
         cmd = mock_sbatch.call_args[0][0]
         assert "--array=0-1" in cmd
 
@@ -304,7 +313,7 @@ class TestCAShortCircuit:
             with patch("subprocess.check_output") as mock_sbatch:
                 backend.execute("build")
 
-        mock_sbatch.assert_not_called()
+        assert len(_sbatch_calls(mock_sbatch)) == 0
 
     def test_existing_output_without_trace_is_resubmitted(self, tmp_path):
         """Compile rules whose output exists but has no trace are resubmitted.
@@ -329,7 +338,7 @@ class TestCAShortCircuit:
                 backend.execute("build")
 
         # Must resubmit despite the file existing — no trace means untrusted
-        mock_sbatch.assert_called_once()
+        assert len(_sbatch_calls(mock_sbatch)) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -372,7 +381,7 @@ class TestTraceVerification:
             with patch("subprocess.check_output") as mock_sbatch:
                 backend.execute("build")
 
-        mock_sbatch.assert_not_called()
+        assert len(_sbatch_calls(mock_sbatch)) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -684,7 +693,7 @@ class TestTieredSubmission:
                 backend.execute("build")
 
         # Both in same tier (512M) -> one sbatch call
-        mock_sbatch.assert_called_once()
+        assert len(_sbatch_calls(mock_sbatch)) == 1
         cmd = mock_sbatch.call_args[0][0]
         assert "--array=0-1" in cmd
         assert "--mem=512M" in cmd
