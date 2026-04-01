@@ -580,6 +580,24 @@ class BuildBackend(abc.ABC):
 
         return wrap_compile_with_lock(" ".join(compile_part), target, self.args, self._filesystem_type)
 
+    def _wrap_link_cmd(self, command: list[str]) -> str:
+        """Return the command string for a link rule, lock-wrapped if needed.
+
+        Unlike _wrap_compile_cmd, the command is passed through as-is
+        (including -o flag) since atomic_link does not manipulate output paths.
+        """
+        if not getattr(self.args, "file_locking", False) or self._filesystem_type is None:
+            return " ".join(command)
+
+        # Extract target from -o flag for locking
+        try:
+            o_idx = command.index("-o")
+            target = command[o_idx + 1]
+        except (ValueError, IndexError):
+            return " ".join(command)
+
+        return wrap_link_with_lock(" ".join(command), target, self.args, self._filesystem_type)
+
     def _all_outputs_current(self, graph: BuildGraph) -> bool:
         """Pre-check: all compile outputs exist and all link sigs match?
 
@@ -819,6 +837,51 @@ def wrap_compile_with_lock(compile_cmd: str, target: str, args, filesystem_type:
     env_prefix = " ".join(env_vars) + " " if env_vars else ""
 
     return f"{env_prefix}ct-lock-helper compile --target={target} --strategy={strategy} -- {compile_cmd}"
+
+
+def wrap_link_with_lock(link_cmd: str, target: str, args, filesystem_type: str) -> str:
+    """Wrap a link/ar command with ct-lock-helper for file locking.
+
+    Unlike wrap_compile_with_lock, the command is passed through unchanged
+    (including any -o flag) since atomic_link does not manipulate output paths.
+
+    Args:
+        link_cmd: Complete link command string (e.g., "g++ -o bin/foo obj/foo.o")
+        target: Target file for locking (e.g., "$@" for Make, or an actual path)
+        args: Namespace with file_locking, sleep_interval_lockdir, etc.
+        filesystem_type: Result of filesystem_utils.get_filesystem_type()
+
+    Returns:
+        Complete command string, lock-wrapped if file_locking is enabled.
+    """
+    if not args.file_locking:
+        return link_cmd
+
+    import compiletools.filesystem_utils
+
+    strategy = compiletools.filesystem_utils.get_lock_strategy(filesystem_type)
+
+    env_vars = []
+
+    if strategy == "lockdir":
+        if args.sleep_interval_lockdir is not None:
+            sleep_interval = args.sleep_interval_lockdir
+        else:
+            sleep_interval = compiletools.filesystem_utils.get_lockdir_sleep_interval(filesystem_type)
+        env_vars.append(f"CT_LOCK_SLEEP_INTERVAL={sleep_interval}")
+    elif strategy == "fcntl":
+        pass  # fcntl.lockf() blocks in kernel, no sleep interval needed
+    elif strategy == "cifs":
+        env_vars.append(f"CT_LOCK_SLEEP_INTERVAL_CIFS={args.sleep_interval_cifs}")
+    else:  # flock
+        env_vars.append(f"CT_LOCK_SLEEP_INTERVAL_FLOCK={args.sleep_interval_flock_fallback}")
+
+    env_vars.append(f"CT_LOCK_WARN_INTERVAL={args.lock_warn_interval}")
+    env_vars.append(f"CT_LOCK_TIMEOUT={args.lock_cross_host_timeout}")
+
+    env_prefix = " ".join(env_vars) + " " if env_vars else ""
+
+    return f"{env_prefix}ct-lock-helper link --target={target} --strategy={strategy} -- {link_cmd}"
 
 
 def check_lock_helper_available() -> bool:

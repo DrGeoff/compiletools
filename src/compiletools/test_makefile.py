@@ -287,6 +287,61 @@ class TestMakefileBackendFileLocking:
         assert "restrictive umask" not in captured.err
 
 
+class TestWrapLinkWithLock:
+    """Test wrap_link_with_lock() function in build_backend."""
+
+    def test_wraps_link_with_lockdir(self):
+        from compiletools.build_backend import wrap_link_with_lock
+        args = _make_args(
+            file_locking=True,
+            sleep_interval_lockdir=0.05,
+            lock_warn_interval=30,
+            lock_cross_host_timeout=600,
+        )
+        result = wrap_link_with_lock(
+            "g++ -o /tmp/test_bin/foo /tmp/test_obj/foo.o",
+            "/tmp/test_bin/foo",
+            args,
+            "nfs",
+        )
+        assert "ct-lock-helper link" in result
+        assert "--strategy=lockdir" in result
+        assert "--target=/tmp/test_bin/foo" in result
+        assert "CT_LOCK_SLEEP_INTERVAL=0.05" in result
+        assert "g++ -o /tmp/test_bin/foo /tmp/test_obj/foo.o" in result
+
+    def test_wraps_link_with_flock(self):
+        from compiletools.build_backend import wrap_link_with_lock
+        args = _make_args(
+            file_locking=True,
+            sleep_interval_flock_fallback=0.03,
+            lock_warn_interval=30,
+            lock_cross_host_timeout=600,
+        )
+        with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"):
+            result = wrap_link_with_lock(
+                "g++ -o bin/foo obj/foo.o",
+                "bin/foo",
+                args,
+                "ext4",
+            )
+        assert "ct-lock-helper link" in result
+        assert "--strategy=flock" in result
+        assert "CT_LOCK_SLEEP_INTERVAL_FLOCK=0.03" in result
+
+    def test_no_wrap_when_locking_disabled(self):
+        from compiletools.build_backend import wrap_link_with_lock
+        args = _make_args(file_locking=False)
+        result = wrap_link_with_lock(
+            "g++ -o bin/foo obj/foo.o",
+            "bin/foo",
+            args,
+            "nfs",
+        )
+        assert "ct-lock-helper" not in result
+        assert result == "g++ -o bin/foo obj/foo.o"
+
+
 class TestMakefileBackendUptodate:
     """Test _build_file_uptodate()."""
 
