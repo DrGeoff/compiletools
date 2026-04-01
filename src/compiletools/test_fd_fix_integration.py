@@ -33,7 +33,7 @@ class TestFilesystemIntegration:
         cwd = os.getcwd()
         fstype = get_filesystem_type(cwd)
         strategy = get_lock_strategy(fstype)
-        assert strategy in ["lockdir", "cifs", "flock"]
+        assert strategy in ["fcntl", "lockdir", "cifs", "flock"]
 
     def test_mmap_safety_for_cwd(self):
         """Test that mmap safety check works for current directory."""
