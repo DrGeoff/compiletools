@@ -43,7 +43,12 @@ def _separate_include_dirs(copts: list[str]) -> tuple[list[str], list[str]]:
 
 @register_backend
 class CMakeBackend(BuildBackend):
-    """Generate and execute CMake build files."""
+    """Generate and execute CMake build files.
+
+    Note: --file-locking is not applied to this backend. CMake manages its
+    own build system with its own parallelism and output handling; external
+    file locking would conflict with its internal coordination.
+    """
 
     @staticmethod
     def name() -> str:

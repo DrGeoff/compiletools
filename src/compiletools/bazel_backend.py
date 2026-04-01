@@ -25,7 +25,12 @@ from compiletools.build_graph import BuildGraph
 
 @register_backend
 class BazelBackend(BuildBackend):
-    """Generate and execute Bazel build files."""
+    """Generate and execute Bazel build files.
+
+    Note: --file-locking is not applied to this backend. Bazel manages its
+    own build sandbox and parallelism; external file locking would conflict
+    with its internal coordination.
+    """
 
     @staticmethod
     def name() -> str:

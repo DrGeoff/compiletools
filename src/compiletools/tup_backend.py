@@ -13,7 +13,12 @@ from compiletools.build_graph import BuildGraph
 
 @register_backend
 class TupBackend(BuildBackend):
-    """Generate and execute Tup build files."""
+    """Generate and execute Tup build files.
+
+    Note: --file-locking is not applied to this backend. Tup manages its
+    own file monitoring and parallelism; external file locking would
+    conflict with its internal coordination.
+    """
 
     @staticmethod
     def name() -> str:
