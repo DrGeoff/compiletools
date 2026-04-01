@@ -579,3 +579,33 @@ def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.Comp
                     pass
         finally:
             lock.release()
+
+
+def atomic_link(lock, target: str, link_cmd: list[str]) -> int:
+    """Execute a link/ar command under lock. No temp-file logic.
+
+    Unlike atomic_compile, this does not use temp-file-then-rename.
+    The lock serializes access; the linker/ar replaces the target in place.
+
+    Args:
+        lock: Lock object with acquire()/release() methods.
+        target: Target file path (for documentation; not modified by this function).
+        link_cmd: Complete link command including output flag.
+
+    Returns:
+        0 on success.
+
+    Raises:
+        subprocess.CalledProcessError: If the link command fails.
+    """
+    lock.acquire()
+    try:
+        result = subprocess.run(link_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode, link_cmd,
+                output=result.stdout, stderr=result.stderr,
+            )
+        return result.returncode
+    finally:
+        lock.release()

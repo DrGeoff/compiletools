@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 
 import compiletools.apptools
-from compiletools.locking import CIFSLock, FcntlLock, FileLock, FlockLock, LockdirLock, atomic_compile
+from compiletools.locking import CIFSLock, FcntlLock, FileLock, FlockLock, LockdirLock, atomic_compile, atomic_link
 from compiletools.testhelper import requires_functional_compiler
 
 
@@ -606,6 +606,101 @@ class TestAtomicCompile:
             # No temp files should remain
             for f in os.listdir(tmpdir):
                 assert ".tmp" not in f, f"Stale temp file found: {f}"
+
+
+class TestAtomicLink:
+    """Test atomic_link — simpler than atomic_compile, no temp file logic."""
+
+    def test_atomic_link_runs_command_under_lock(self):
+        """Lock is acquired before command runs and released after."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.a")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+
+            call_order = []
+            orig_acquire = lock.acquire
+            orig_release = lock.release
+
+            def tracking_acquire():
+                call_order.append("acquire")
+                return orig_acquire()
+
+            def tracking_release():
+                call_order.append("release")
+                return orig_release()
+
+            lock.acquire = tracking_acquire
+            lock.release = tracking_release
+
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                )
+
+                def record_run(cmd, **kwargs):
+                    call_order.append("run")
+                    return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+                mock_run.side_effect = record_run
+                atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
+
+            assert call_order == ["acquire", "run", "release"]
+
+    def test_atomic_link_no_temp_file(self):
+        """atomic_link does NOT create temp files (unlike atomic_compile indirect)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.a")
+            args = _make_lock_args()
+            lock = CIFSLock(target, args)
+
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                )
+                atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
+
+                # Command should be passed as-is, no -o manipulation
+                call_args = mock_run.call_args[0][0]
+                assert call_args == ["ar", "rcs", target, "foo.o"]
+
+            # No temp files should exist
+            for f in os.listdir(tmpdir):
+                assert ".tmp" not in f
+
+    def test_atomic_link_returns_zero_on_success(self):
+        """Successful link returns 0."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.a")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                )
+                result = atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
+                assert result == 0
+
+    def test_atomic_link_raises_on_failure(self):
+        """Failed link raises CalledProcessError and releases lock."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.a")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=1, stdout="", stderr="ar: error"
+                )
+                with pytest.raises(subprocess.CalledProcessError) as exc_info:
+                    atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
+                assert exc_info.value.returncode == 1
+
+            # Lock must be released — verify by acquiring again
+            lock2 = FlockLock(target, args)
+            lock2.acquire()
+            lock2.release()
 
 
 class TestFileLock:
