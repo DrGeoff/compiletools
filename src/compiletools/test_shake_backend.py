@@ -12,11 +12,11 @@ from unittest import mock
 
 import pytest
 
-import compiletools.shake_backend  # noqa: F401 — ensure registered
+import compiletools.trace_backend  # noqa: F401 — ensure registered
 from compiletools.build_backend import available_backends, get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.global_hash_registry import get_file_hash
-from compiletools.shake_backend import (
+from compiletools.trace_backend import (
     ShakeBackend,
     TraceEntry,
     TraceStore,
@@ -167,7 +167,7 @@ class TestTraceVerification:
             store.save()
 
             # Build — subprocess should NOT be called
-            with mock.patch("compiletools.shake_backend.subprocess.run") as mock_run:
+            with mock.patch("compiletools.trace_backend.subprocess.run") as mock_run:
                 backend.execute("build")
                 mock_run.assert_not_called()
 
@@ -216,7 +216,7 @@ class TestTraceVerification:
                     f.write(b"\x7fELF rebuilt")
                 return fake_subprocess_result()
 
-            with mock.patch("compiletools.shake_backend.subprocess.run", side_effect=fake_run) as mock_run:
+            with mock.patch("compiletools.trace_backend.subprocess.run", side_effect=fake_run) as mock_run:
                 backend.execute("build")
                 mock_run.assert_called_once()
 
@@ -260,7 +260,7 @@ class TestTraceVerification:
 
             mock_result = fake_subprocess_result()
 
-            with mock.patch("compiletools.shake_backend.subprocess.run", return_value=mock_result) as mock_run:
+            with mock.patch("compiletools.trace_backend.subprocess.run", return_value=mock_result) as mock_run:
                 backend.execute("build")
                 mock_run.assert_called_once()
 
@@ -306,7 +306,7 @@ class TestTraceVerification:
 
             mock_result = fake_subprocess_result()
 
-            with mock.patch("compiletools.shake_backend.subprocess.run", return_value=mock_result) as mock_run:
+            with mock.patch("compiletools.trace_backend.subprocess.run", return_value=mock_result) as mock_run:
                 backend.execute("build")
                 # subprocess.run may also be called by git_utils (e.g. git rev-parse
                 # via check_output which delegates to run in Python 3.14+), so check
@@ -355,7 +355,7 @@ class TestEarlyCutoff:
             with open(ca, "wb") as f:
                 f.write(b"\x7fELF cached executable")
 
-            with mock.patch("compiletools.shake_backend.subprocess.run") as mock_run:
+            with mock.patch("compiletools.trace_backend.subprocess.run") as mock_run:
                 backend.execute("build")
                 # Compile skipped (content-addressable, foo.o exists),
                 # link skipped (CA target exists, copied to human target)
@@ -405,7 +405,7 @@ class TestEarlyCutoff:
 
             with (
                 mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic),
-                mock.patch("compiletools.shake_backend.subprocess.run", side_effect=fake_run) as mock_run,
+                mock.patch("compiletools.trace_backend.subprocess.run", side_effect=fake_run) as mock_run,
             ):
                 backend.execute("build")
                 assert len(compile_calls) == 1  # compile via atomic
@@ -681,7 +681,7 @@ class TestContentAddressableShortCircuit:
             (td / "foo.o").write_bytes(b"\x7fELF fake object")
             os.makedirs(td / "obj", exist_ok=True)
 
-            with mock.patch("compiletools.shake_backend.subprocess.run") as mock_run:
+            with mock.patch("compiletools.trace_backend.subprocess.run") as mock_run:
                 backend.execute("build")
                 mock_run.assert_not_called()
 
@@ -748,7 +748,7 @@ class TestContentAddressableShortCircuit:
             with open(ca, "wb") as f:
                 f.write(b"\x7fELF cached executable")
 
-            with mock.patch("compiletools.shake_backend.subprocess.run") as mock_run:
+            with mock.patch("compiletools.trace_backend.subprocess.run") as mock_run:
                 backend.execute("build")
                 mock_run.assert_not_called()
 
@@ -783,7 +783,7 @@ class TestContentAddressableShortCircuit:
                     f.write(b"\x7fELF new executable")
                 return mock_result
 
-            with mock.patch("compiletools.shake_backend.subprocess.run", side_effect=fake_run) as mock_run:
+            with mock.patch("compiletools.trace_backend.subprocess.run", side_effect=fake_run) as mock_run:
                 backend.execute("build")
                 mock_run.assert_called_once()
 
@@ -864,7 +864,7 @@ class TestCALinkShortCircuit:
                     f.write(b"\x7fELF new exe")
                 return mock_result
 
-            with mock.patch("compiletools.shake_backend.subprocess.run", side_effect=fake_run):
+            with mock.patch("compiletools.trace_backend.subprocess.run", side_effect=fake_run):
                 backend.execute("build")
 
             assert not os.path.exists("foo.ct-sig")
@@ -897,7 +897,7 @@ class TestAtomicCompile:
                     f.write(b"\x7fELF fake object")
             return fake_subprocess_result()
 
-        with mock.patch("compiletools.shake_backend.subprocess.run", side_effect=spy_run):
+        with mock.patch("compiletools.trace_backend.subprocess.run", side_effect=spy_run):
             ShakeBackend._atomic_compile_no_lock(target, ["g++", "-c", "foo.cpp"])
 
         # Verify temp file was used
@@ -924,7 +924,7 @@ class TestAtomicCompile:
                     f.write(b"partial")
             return fake_subprocess_result(returncode=1, stderr="error: compilation failed")
 
-        with mock.patch("compiletools.shake_backend.subprocess.run", side_effect=failing_run):
+        with mock.patch("compiletools.trace_backend.subprocess.run", side_effect=failing_run):
             with pytest.raises(subprocess.CalledProcessError):
                 ShakeBackend._atomic_compile_no_lock(target, ["g++", "-c", "foo.cpp"])
 

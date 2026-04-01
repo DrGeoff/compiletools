@@ -20,7 +20,7 @@ import compiletools.magicflags
 import compiletools.makefile_backend
 import compiletools.namer
 import compiletools.ninja_backend
-import compiletools.shake_backend
+import compiletools.trace_backend
 import compiletools.testhelper as uth
 import compiletools.tup_backend
 import compiletools.utils

@@ -115,7 +115,7 @@ PreprocessingCache                    # Two-tier caching
 | `ninja_backend.py` | Ninja backend (with file-locking support) |
 | `bazel_backend.py` | Bazel backend |
 | `cmake_backend.py` | CMake backend |
-| `shake_backend.py` | Shake backend (self-executing, verifying traces) |
+| `trace_backend.py` | Shake + Slurm backends (self-executing, verifying traces; both classes here) |
 | `tup_backend.py` | Tup backend |
 | `compilation_database.py` | `compile_commands.json` generation |
 | `locking.py` | Cross-platform atomic file locking |

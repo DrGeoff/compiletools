@@ -28,8 +28,7 @@ def _ensure_backends_registered():
     import compiletools.cmake_backend
     import compiletools.makefile_backend
     import compiletools.ninja_backend
-    import compiletools.shake_backend
-    import compiletools.slurm_backend
+    import compiletools.trace_backend
     import compiletools.tup_backend  # noqa: F401
 
 
@@ -82,7 +81,7 @@ class Cake:
 
         # Make backend-specific arguments
         from compiletools.makefile_backend import MakefileBackend
-        from compiletools.slurm_backend import SlurmBackend
+        from compiletools.trace_backend import SlurmBackend
 
         MakefileBackend.add_arguments(cap)
         SlurmBackend.add_arguments(cap)

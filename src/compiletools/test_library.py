@@ -320,7 +320,7 @@ class TestBazelLibraryOutput:
 
 class TestShakeLibrarySummary:
     def test_shake_static_library_summary(self):
-        from compiletools.shake_backend import ShakeBackend
+        from compiletools.trace_backend import ShakeBackend
 
         with _layer3_context(ShakeBackend, _make_library_graph) as (output, _args):
             assert "static_library" in output

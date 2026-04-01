@@ -7,7 +7,7 @@ import compiletools.bazel_backend
 import compiletools.cmake_backend
 import compiletools.makefile_backend
 import compiletools.ninja_backend
-import compiletools.shake_backend
+import compiletools.trace_backend
 import compiletools.tup_backend
 from compiletools.build_backend import available_backends, get_backend_class
 from compiletools.testhelper import CakeTestContext

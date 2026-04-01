@@ -11,11 +11,10 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-import compiletools.slurm_backend  # noqa: F401 — ensure registered
+import compiletools.trace_backend  # noqa: F401 — ensure registered
 from compiletools.build_backend import available_backends, get_backend_class, is_backend_available
 from compiletools.build_graph import BuildGraph, BuildRule
-from compiletools.shake_backend import TraceEntry, TraceStore, hash_command
-from compiletools.slurm_backend import SlurmBackend
+from compiletools.trace_backend import SlurmBackend, TraceEntry, TraceStore, hash_command
 from compiletools.testhelper import TempDirContextNoChange, make_backend_args
 
 

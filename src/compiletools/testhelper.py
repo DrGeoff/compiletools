@@ -881,7 +881,7 @@ def ShakeBackendTestContext(graph, **arg_overrides):
         with ShakeBackendTestContext(graph) as (backend, tmpdir):
             backend.execute("build")
     """
-    from compiletools.shake_backend import ShakeBackend
+    from compiletools.trace_backend import ShakeBackend
 
     with TempDirContextNoChange() as tmpdir:
         args = make_backend_args(tmpdir, **arg_overrides)
@@ -905,7 +905,7 @@ def CakeTestContext(backend_name="make", **arg_overrides):
     import compiletools.cmake_backend
     import compiletools.makefile_backend
     import compiletools.ninja_backend
-    import compiletools.shake_backend
+    import compiletools.trace_backend
     import compiletools.tup_backend  # noqa: F401
     from compiletools.cake import Cake
 
