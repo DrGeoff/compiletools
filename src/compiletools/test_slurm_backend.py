@@ -29,11 +29,11 @@ def SlurmBackendTestContext(graph, **arg_overrides):
     """Context manager yielding (backend, tmpdir) with a SlurmBackend wired to *graph*."""
     slurm_defaults = dict(
         slurm_partition=None,
-        slurm_time="00:10:00",
+        slurm_time="00:30:00",
         slurm_mem="2G",
         slurm_cpus=1,
         slurm_account=None,
-        slurm_max_jobs=500,
+        slurm_max_array=1000,
         slurm_poll_interval=0.0,  # no sleep in tests
     )
     slurm_defaults.update(arg_overrides)
@@ -112,7 +112,7 @@ class TestAvailability:
 
 
 # ---------------------------------------------------------------------------
-# Slurm job submission
+# Slurm job array submission
 # ---------------------------------------------------------------------------
 
 
@@ -126,17 +126,19 @@ class TestSbatchSubmission:
         with SlurmBackendTestContext(graph) as (backend, tmpdir):
             with (
                 patch("subprocess.check_output", return_value="12345\n") as mock_sbatch,
-                patch.object(backend, "_wait_for_jobs"),
+                patch.object(backend, "_wait_for_arrays"),
             ):
                 backend.execute("build")
 
-        # sbatch must have been called exactly once for the compile rule
+        # One sbatch call (the array submission)
         mock_sbatch.assert_called_once()
         cmd = mock_sbatch.call_args[0][0]
         assert cmd[0] == "sbatch"
         assert "--parsable" in cmd
+        assert "--array=0-0" in cmd
 
-    def test_sbatch_wrap_contains_compile_command(self, tmp_path):
+    def test_sbatch_wrap_reads_from_cmds_file(self, tmp_path):
+        """The --wrap script reads the compile command from the commands file."""
         graph = BuildGraph()
         rule = make_compile_rule(output=str(tmp_path / "foo.o"))
         graph.add_rule(rule)
@@ -145,15 +147,22 @@ class TestSbatchSubmission:
         with SlurmBackendTestContext(graph) as (backend, tmpdir):
             with (
                 patch("subprocess.check_output", return_value="42\n") as mock_sbatch,
-                patch.object(backend, "_wait_for_jobs"),
+                patch.object(backend, "_wait_for_arrays"),
             ):
                 backend.execute("build")
 
-        cmd = mock_sbatch.call_args[0][0]
-        wrap_idx = cmd.index("--wrap")
-        wrap_value = cmd[wrap_idx + 1]
-        assert "g++" in wrap_value
-        assert "foo.o" in wrap_value
+            cmd = mock_sbatch.call_args[0][0]
+            wrap_idx = cmd.index("--wrap")
+            wrap_value = cmd[wrap_idx + 1]
+            # The wrap runs sed to read the commands file
+            assert "sed" in wrap_value
+            assert "SLURM_ARRAY_TASK_ID" in wrap_value
+            # The commands file written to objdir must contain the compile command
+            # (chunk 0 → chunk_id=0 → filename suffix -0)
+            cmds_file = os.path.join(backend.args.objdir, ".ct-slurm-cmds-0.txt")
+            content = open(cmds_file).read()
+            assert "g++" in content
+            assert "foo.o" in content
 
     def test_partition_added_when_specified(self, tmp_path):
         graph = BuildGraph()
@@ -164,7 +173,7 @@ class TestSbatchSubmission:
         with SlurmBackendTestContext(graph, slurm_partition="gpu") as (backend, tmpdir):
             with (
                 patch("subprocess.check_output", return_value="7\n") as mock_sbatch,
-                patch.object(backend, "_wait_for_jobs"),
+                patch.object(backend, "_wait_for_arrays"),
             ):
                 backend.execute("build")
 
@@ -181,7 +190,7 @@ class TestSbatchSubmission:
         with SlurmBackendTestContext(graph) as (backend, tmpdir):
             with (
                 patch("subprocess.check_output", return_value="7\n") as mock_sbatch,
-                patch.object(backend, "_wait_for_jobs"),
+                patch.object(backend, "_wait_for_arrays"),
             ):
                 backend.execute("build")
 
@@ -197,7 +206,7 @@ class TestSbatchSubmission:
         with SlurmBackendTestContext(graph, slurm_account="myproject") as (backend, tmpdir):
             with (
                 patch("subprocess.check_output", return_value="9\n") as mock_sbatch,
-                patch.object(backend, "_wait_for_jobs"),
+                patch.object(backend, "_wait_for_arrays"),
             ):
                 backend.execute("build")
 
@@ -205,7 +214,8 @@ class TestSbatchSubmission:
         assert "--account" in cmd
         assert "myproject" in cmd
 
-    def test_multiple_compile_rules_all_submitted(self, tmp_path):
+    def test_multiple_compile_rules_in_one_array(self, tmp_path):
+        """Multiple compile rules are submitted as a single job array, not N individual jobs."""
         graph = BuildGraph()
         r1 = make_compile_rule(output=str(tmp_path / "a.o"), src="a.cpp")
         r2 = make_compile_rule(output=str(tmp_path / "b.o"), src="b.cpp")
@@ -213,21 +223,48 @@ class TestSbatchSubmission:
         graph.add_rule(r2)
         graph.add_rule(make_phony_rule("build", [r1.output, r2.output]))
 
-        call_count = 0
-
-        def fake_check_output(cmd, **kw):
-            nonlocal call_count
-            call_count += 1
-            return f"{call_count}\n"
-
         with SlurmBackendTestContext(graph) as (backend, tmpdir):
             with (
-                patch("subprocess.check_output", side_effect=fake_check_output),
-                patch.object(backend, "_wait_for_jobs"),
+                patch("subprocess.check_output", return_value="55\n") as mock_sbatch,
+                patch.object(backend, "_wait_for_arrays"),
             ):
                 backend.execute("build")
 
-        assert call_count == 2
+        # Both rules in one sbatch call with --array=0-1
+        mock_sbatch.assert_called_once()
+        cmd = mock_sbatch.call_args[0][0]
+        assert "--array=0-1" in cmd
+
+    def test_large_project_uses_multiple_arrays_with_unique_filenames(self, tmp_path):
+        """Projects larger than slurm-max-array get split into multiple job arrays.
+
+        Each chunk must write to uniquely-named command/output files so that
+        concurrent chunks do not overwrite each other's task lists.
+        """
+        graph = BuildGraph()
+        rules = []
+        for i in range(5):
+            r = make_compile_rule(output=str(tmp_path / f"rule{i}.o"), src=f"src{i}.cpp")
+            graph.add_rule(r)
+            rules.append(r)
+        graph.add_rule(make_phony_rule("build", [r.output for r in rules]))
+
+        sbatch_ids = iter(["10\n", "20\n", "30\n"])
+
+        with SlurmBackendTestContext(graph, slurm_max_array=2) as (backend, tmpdir):
+            with (
+                patch("subprocess.check_output", side_effect=sbatch_ids) as mock_sbatch,
+                patch.object(backend, "_wait_for_arrays"),
+            ):
+                backend.execute("build")
+
+            # 5 rules / max_array=2 → ceil(5/2) = 3 sbatch calls
+            assert mock_sbatch.call_count == 3
+
+            # Each chunk must have used a distinct cmds/outs filename (inside context
+            # so tmpdir still exists)
+            cmds_files = [f for f in os.listdir(backend.args.objdir) if f.startswith(".ct-slurm-cmds-")]
+            assert len(cmds_files) == 3, f"Expected 3 unique cmds files, got: {cmds_files}"
 
 
 # ---------------------------------------------------------------------------
@@ -236,22 +273,64 @@ class TestSbatchSubmission:
 
 
 class TestCAShortCircuit:
-    def test_existing_output_skips_sbatch(self, tmp_path):
-        """Compile rules whose output already exists are skipped (CA short-circuit)."""
+    def test_existing_output_with_valid_trace_skips_sbatch(self, tmp_path):
+        """Compile rules whose output exists AND has a valid trace are skipped."""
+        src = str(tmp_path / "foo.cpp")
+        out = str(tmp_path / "foo.o")
+        open(src, "w").write("int x;")
+        open(out, "w").write("compiled")
+
+        rule = make_compile_rule(output=out, src=src)
+        graph = BuildGraph()
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [out]))
+
+        from compiletools.global_hash_registry import get_file_hash
+
+        # Write a valid trace so the file is trusted
+        trace_path = str(tmp_path / ".ct-slurm-traces.json")
+        store = TraceStore(trace_path)
+        store.put(
+            out,
+            TraceEntry(
+                output_hash=get_file_hash(out),
+                input_hashes={src: get_file_hash(src)},
+                command_hash=hash_command(rule.command or []),
+            ),
+        )
+        store.save()
+
+        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+            backend.args.objdir = str(tmp_path)
+            with patch("subprocess.check_output") as mock_sbatch:
+                backend.execute("build")
+
+        mock_sbatch.assert_not_called()
+
+    def test_existing_output_without_trace_is_resubmitted(self, tmp_path):
+        """Compile rules whose output exists but has no trace are resubmitted.
+
+        A file with no trace was produced by a crashed build (Phase 4 trace-recording
+        never ran) and cannot be trusted even if it appears valid on disk.
+        """
         out = str(tmp_path / "foo.o")
         graph = BuildGraph()
         rule = make_compile_rule(output=out)
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [out]))
 
-        # Create the output file to simulate a prior build
+        # File exists on disk but no trace was recorded for it
         open(out, "w").close()
 
         with SlurmBackendTestContext(graph) as (backend, tmpdir):
-            with patch("subprocess.check_output") as mock_sbatch:
+            with (
+                patch("subprocess.check_output", return_value="42\n") as mock_sbatch,
+                patch.object(backend, "_wait_for_arrays"),
+            ):
                 backend.execute("build")
 
-        mock_sbatch.assert_not_called()
+        # Must resubmit despite the file existing — no trace means untrusted
+        mock_sbatch.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -310,14 +389,10 @@ class TestJobFailures:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [out]))
 
-        def fake_sacct(cmd, **kw):
-            # Return FAILED state for job 99
-            return _sacct_output(("99", "FAILED"))
-
         with SlurmBackendTestContext(graph) as (backend, tmpdir):
             with patch("subprocess.check_output", side_effect=[
-                "99\n",              # sbatch returns job ID
-                fake_sacct(None),    # sacct query
+                "99\n",                                     # sbatch returns array job ID
+                _sacct_output(("99_0", "FAILED")),          # sacct for array task
             ]):
                 with pytest.raises(RuntimeError, match="Slurm compile jobs failed"):
                     backend.execute("build")
@@ -332,14 +407,55 @@ class TestJobFailures:
         with SlurmBackendTestContext(graph) as (backend, tmpdir):
             with patch("subprocess.check_output", side_effect=[
                 "88\n",
-                _sacct_output(("88", "CANCELLED")),
+                _sacct_output(("88_0", "CANCELLED")),
             ]):
                 with pytest.raises(RuntimeError, match="Slurm compile jobs failed"):
                     backend.execute("build")
 
+    def test_failed_job_deletes_corrupt_output_file(self, tmp_path):
+        """_wait_for_arrays removes the output file when a task fails (monitoring layer)."""
+        out = str(tmp_path / "foo.o")
+        open(out, "w").close()  # simulate corrupt artifact from prior crash
+
+        rule = make_compile_rule(output=out)
+        graph = BuildGraph()
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [out]))
+
+        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+            with patch("subprocess.check_output", side_effect=[
+                "99\n",
+                _sacct_output(("99_0", "FAILED")),
+            ]):
+                with pytest.raises(RuntimeError, match="Slurm compile jobs failed"):
+                    backend.execute("build")
+
+        # Monitoring layer must delete the corrupt file on failure
+        assert not os.path.exists(out)
+
+    def test_wait_for_arrays_times_out_when_sacct_stops_reporting(self, tmp_path):
+        """_wait_for_arrays raises RuntimeError if tasks never reach a terminal state.
+
+        Exercises the poll cap added to prevent infinite hangs when sacct loses
+        track of jobs (e.g. accounting history purge or cluster issue).
+        """
+        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
+
+        b = SlurmBackend.__new__(SlurmBackend)
+        # poll_interval=3600 → max_polls = max(1, int(3600/3600)) = 1: times out after 1 poll
+        b.args = SimpleNamespace(slurm_poll_interval=3600.0)
+        index_map = {"77": [rule]}
+
+        with (
+            patch("subprocess.check_output", return_value=_sacct_output(("77_0", "RUNNING"))),
+            patch("time.sleep"),  # don't actually sleep
+        ):
+            with pytest.raises(RuntimeError, match="Timed out"):
+                b._wait_for_arrays(index_map)
+
 
 # ---------------------------------------------------------------------------
-# _query_states parsing
+# _query_array_task_states parsing
 # ---------------------------------------------------------------------------
 
 
@@ -348,11 +464,11 @@ class TestQueryStates:
         args = SimpleNamespace(
             objdir=str(tmp_path),
             slurm_partition=None,
-            slurm_time="00:10:00",
+            slurm_time="00:30:00",
             slurm_mem="2G",
             slurm_cpus=1,
             slurm_account=None,
-            slurm_max_jobs=500,
+            slurm_max_array=1000,
             slurm_poll_interval=0.0,
         )
         b = SlurmBackend.__new__(SlurmBackend)
@@ -361,30 +477,32 @@ class TestQueryStates:
 
     def test_parses_completed(self, tmp_path):
         b = self._make_backend(tmp_path)
-        sacct_out = _sacct_output(("123", "COMPLETED"), ("456", "RUNNING"))
+        sacct_out = _sacct_output(("123_0", "COMPLETED"), ("123_1", "RUNNING"))
         with patch("subprocess.check_output", return_value=sacct_out):
-            states = b._query_states({"123", "456"})
-        assert states["123"] == "COMPLETED"
-        assert states["456"] == "RUNNING"
+            states = b._query_array_task_states("123")
+        assert states["123_0"] == "COMPLETED"
+        assert states["123_1"] == "RUNNING"
 
     def test_skips_batch_substeps(self, tmp_path):
         b = self._make_backend(tmp_path)
-        sacct_out = "123|COMPLETED\n123.batch|COMPLETED\n123.extern|COMPLETED\n"
+        sacct_out = "123|RUNNING\n123_0|COMPLETED\n123_0.batch|COMPLETED\n123_0.extern|COMPLETED\n"
         with patch("subprocess.check_output", return_value=sacct_out):
-            states = b._query_states({"123"})
-        assert list(states.keys()) == ["123"]
+            states = b._query_array_task_states("123")
+        # Only top-level entries (no dots); includes the overall job and array tasks
+        assert all("." not in k for k in states)
+        assert states["123_0"] == "COMPLETED"
 
     def test_strips_state_reason(self, tmp_path):
         b = self._make_backend(tmp_path)
-        sacct_out = "77|CANCELLED by 1001\n"
+        sacct_out = "77_0|CANCELLED by 1001\n"
         with patch("subprocess.check_output", return_value=sacct_out):
-            states = b._query_states({"77"})
-        assert states["77"] == "CANCELLED"
+            states = b._query_array_task_states("77")
+        assert states["77_0"] == "CANCELLED"
 
     def test_handles_empty_output(self, tmp_path):
         b = self._make_backend(tmp_path)
         with patch("subprocess.check_output", return_value=""):
-            states = b._query_states({"999"})
+            states = b._query_array_task_states("999")
         assert states == {}
 
 
@@ -395,45 +513,35 @@ class TestQueryStates:
 
 class TestLocalLink:
     def test_link_rule_runs_locally_not_via_sbatch(self, tmp_path):
+        src = str(tmp_path / "foo.cpp")
         obj = str(tmp_path / "foo.o")
         exe = str(tmp_path / "foo")
-        open(obj, "w").close()  # pretend compile happened
+        open(src, "w").write("int main(){}")
+        open(obj, "w").write("compiled")  # pretend compile happened
 
-        compile_rule = make_compile_rule(output=obj)
+        compile_rule = make_compile_rule(output=obj, src=src)
         link_rule = make_link_rule(output=exe, inputs=[obj])
         graph = BuildGraph()
         graph.add_rule(compile_rule)
         graph.add_rule(link_rule)
         graph.add_rule(make_phony_rule("build", [exe]))
 
-        sbatch_calls = []
-        local_calls = []
-
-        def fake_check_output(cmd, **kw):
-            sbatch_calls.append(cmd)
-            return "5\n"
-
-        def fake_check_call(cmd, **kw):
-            # Create the output file to simulate a successful link
-            for arg in cmd:
-                if arg == exe:
-                    # The link cmd is redirected to a CA target, find it
-                    pass
-            local_calls.append(cmd)
-            # Create exe so traces can hash it — find -o TARGET in cmd
-            try:
-                idx = cmd.index("-o")
-                out_file = cmd[idx + 1]
-                open(out_file, "w").close()
-            except (ValueError, IndexError):
-                pass
-
         with SlurmBackendTestContext(graph) as (backend, tmpdir):
-            # compile output already exists → no sbatch
-            with (
-                patch("subprocess.check_output", side_effect=fake_check_output),
-                patch("subprocess.run") as mock_run,
-            ):
+            # Record a valid trace for the compile output so it is trusted and skipped.
+            from compiletools.global_hash_registry import get_file_hash
+
+            store = TraceStore(os.path.join(backend.args.objdir, ".ct-slurm-traces.json"))
+            store.put(
+                obj,
+                TraceEntry(
+                    output_hash=get_file_hash(obj),
+                    input_hashes={src: get_file_hash(src)},
+                    command_hash=hash_command(compile_rule.command or []),
+                ),
+            )
+            store.save()
+
+            with patch("subprocess.run") as mock_run:
                 result = subprocess.CompletedProcess([], 0, "", "")
 
                 def fake_run(cmd, **kw):
@@ -447,8 +555,8 @@ class TestLocalLink:
                 mock_run.side_effect = fake_run
                 backend.execute("build")
 
-        # sbatch not called (compile output existed)
-        assert not sbatch_calls
+        # sbatch not called (compile output had a valid trace)
+        mock_run.assert_called()
         # link ran locally via subprocess.run
         mock_run.assert_called()
 
@@ -466,11 +574,11 @@ class TestLocalLink:
         args = SimpleNamespace(
             objdir="/tmp",
             slurm_partition=None,
-            slurm_time="00:10:00",
+            slurm_time="00:30:00",
             slurm_mem="2G",
             slurm_cpus=1,
             slurm_account=None,
-            slurm_max_jobs=500,
+            slurm_max_array=1000,
             slurm_poll_interval=0.0,
         )
         backend = SlurmBackend.__new__(SlurmBackend)
