@@ -638,7 +638,7 @@ class SlurmBackend(ShakeBackend):
 
     # Tier thresholds: (max_quoted_includes, slurm_mem_string)
     #
-    # Derived from profiling C++20 builds on an HPC cluster (gcc-12, , -O3, with a large C++
+    # Derived from profiling C++20 builds on an HPC cluster (gcc-12, -O3, with a large C++
     # framework).  The number of quoted #include "..." directives in the
     # source file (FileAnalyzer.quoted_headers) correlates strongly with
     # peak RSS (r=0.85) because each quoted include transitively pulls in
