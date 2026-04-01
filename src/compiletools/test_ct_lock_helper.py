@@ -132,3 +132,68 @@ class TestLockHelper:
         assert "lockdir" in result.stdout
         assert "cifs" in result.stdout
         assert "flock" in result.stdout
+
+
+class TestLockHelperLink:
+    """Tests for ct-lock-helper link subcommand."""
+
+    @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock"])
+    def test_successful_link(self, temp_target, strategy):
+        """Test that ct-lock-helper link runs a command under lock."""
+        # Use 'touch' as a simple link stand-in
+        result = subprocess.run(
+            [
+                "ct-lock-helper",
+                "link",
+                f"--target={temp_target}",
+                f"--strategy={strategy}",
+                "--",
+                "touch",
+                temp_target,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+        assert result.returncode == 0, f"Link failed: {result.stderr}"
+        assert os.path.exists(temp_target), "Target file not created"
+
+        # Verify lock was cleaned up
+        if strategy == "lockdir":
+            assert not os.path.exists(temp_target + ".lockdir"), "Lock not cleaned up"
+
+    @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock"])
+    def test_link_error_propagates(self, temp_target, strategy):
+        """Test that link command errors cause non-zero exit."""
+        result = subprocess.run(
+            [
+                "ct-lock-helper",
+                "link",
+                f"--target={temp_target}",
+                f"--strategy={strategy}",
+                "--",
+                "false",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+        assert result.returncode != 0, "Should fail when command fails"
+
+        # Verify lock was cleaned up even on error
+        if strategy == "lockdir":
+            assert not os.path.exists(temp_target + ".lockdir"), "Lock not cleaned up on error"
+
+    def test_help_shows_link(self):
+        """Test that help output includes link subcommand."""
+        result = subprocess.run(["ct-lock-helper", "--help"], capture_output=True, text=True)
+        assert result.returncode == 0
+        assert "link" in result.stdout
+
+        # Link subcommand help
+        result = subprocess.run(["ct-lock-helper", "link", "--help"], capture_output=True, text=True)
+        assert result.returncode == 0
+        assert "--target" in result.stdout
+        assert "--strategy" in result.stdout

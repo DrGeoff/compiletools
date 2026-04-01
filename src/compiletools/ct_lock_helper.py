@@ -100,6 +100,23 @@ def cmd_compile(args, exit_handler):
     atomic_compile(lock, args.target, args.compile_cmd)
 
 
+def cmd_link(args, exit_handler):
+    """Handle 'link' subcommand.
+
+    Args:
+        args: Parsed arguments
+        exit_handler: GracefulExit instance
+    """
+    from compiletools.locking import atomic_link
+
+    lock_args = create_args_from_env()
+    lock = create_lock(args.strategy, args.target, lock_args)
+
+    exit_handler.lock = lock
+
+    atomic_link(lock, args.target, args.link_cmd)
+
+
 def main(argv=None):
     """Main entry point.
 
@@ -135,6 +152,17 @@ def main(argv=None):
     )
     compile_parser.add_argument("compile_cmd", nargs="+", help="Compile command and arguments")
 
+    # Link subcommand
+    link_parser = subparsers.add_parser("link", help="Link/archive with file locking")
+    link_parser.add_argument("--target", required=True, help="Target output file (e.g., file.a or executable)")
+    link_parser.add_argument(
+        "--strategy",
+        required=True,
+        choices=["lockdir", "cifs", "flock", "fcntl"],
+        help="Lock strategy: lockdir (NFS/Lustre), fcntl (GPFS), cifs (CIFS/SMB), flock (local)",
+    )
+    link_parser.add_argument("link_cmd", nargs="+", help="Link command and arguments")
+
     # Parse
     args = parser.parse_args(argv)
 
@@ -146,6 +174,8 @@ def main(argv=None):
     try:
         if args.command == "compile":
             cmd_compile(args, exit_handler)
+        elif args.command == "link":
+            cmd_link(args, exit_handler)
         return 0
     except subprocess.CalledProcessError as e:
         # Compilation failed, return compiler's exit code
