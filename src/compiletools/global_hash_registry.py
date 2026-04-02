@@ -1,9 +1,11 @@
 """Global hash registry for efficient file content hashing.
 
-This module provides a simple module-level cache that computes Git blob hashes
-for all files once on first use, then serves hash lookups for cache operations.
-This eliminates the need for individual hashlib calls and leverages the
-git-sha-report functionality efficiently.
+This module provides a cache that computes Git blob hashes for all files
+once on first use, then serves hash lookups for cache operations.
+
+State can live either in a BuildContext (preferred) or in module-level
+globals (legacy / backward-compatible).  When a ``context`` argument is
+passed the module-level state is not touched.
 
 DUPLICATE HASH DETECTION:
 
@@ -28,116 +30,90 @@ add a unique comment to each file explaining its purpose. For example:
 This makes each file's purpose explicit and ensures each has a unique hash.
 """
 
+from __future__ import annotations
+
 import hashlib
 import os
 import threading
 from functools import cache
-from typing import Optional
+from typing import TYPE_CHECKING
 
 from compiletools import wrappedos
 
-# Module-level cache: None = not loaded, Dict = loaded hashes
-_HASHES: Optional[dict[str, str]] = None
-_REVERSE_HASHES: Optional[dict[str, list[str]]] = None  # hash -> list of filepaths cache
-_lock = threading.Lock()
+if TYPE_CHECKING:
+    from compiletools.build_context import BuildContext
 
-# Hash operation counters
+# ---- module-level (legacy) state ----
+_HASHES: dict[str, str] | None = None
+_REVERSE_HASHES: dict[str, list[str]] | None = None
+_lock = threading.Lock()
 _hash_ops = {"registry_hits": 0, "computed_hashes": 0}
 
 
-def _compute_external_file_hash(filepath: str) -> Optional[str]:
+# ---- helpers (shared by both paths) ----
+
+def _compute_external_file_hash(filepath: str, hash_ops: dict[str, int]) -> str | None:
     """Compute git blob hash for a file using git's algorithm."""
-    with _lock:
-        _hash_ops["computed_hashes"] += 1
+    hash_ops["computed_hashes"] += 1
     try:
         with open(filepath, "rb") as f:
             content = f.read()
-
-        # Git blob hash: sha1("blob {size}\0{content}")
         blob_data = f"blob {len(content)}\0".encode() + content
         return hashlib.sha1(blob_data).hexdigest()
     except OSError:
         return None
 
 
-def load_hashes(verbose: int = 0) -> None:
-    """Load all file hashes once with thread safety.
+def _load_hashes_into(hashes_ref: list, reverse_ref: list, verbose: int = 0) -> None:
+    """Populate *hashes_ref[0]* and *reverse_ref[0]* from git.
 
-    Args:
-        verbose: Verbosity level (0 = silent, higher = more output)
+    Uses list-of-one as a mutable reference so the caller can capture the
+    newly-created dicts regardless of whether they are stored on a context
+    or in module globals.
     """
     import gc
 
-    global _HASHES, _REVERSE_HASHES
+    try:
+        from compiletools.git_sha_report import get_complete_working_directory_hashes
 
-    if _HASHES is not None:
-        return  # Already loaded
+        all_hashes = get_complete_working_directory_hashes()
+        hashes = {str(path): sha for path, sha in all_hashes.items()}
 
-    with _lock:
-        if _HASHES is not None:
-            return  # Double-check after acquiring lock
+        reverse: dict[str, list[str]] = {}
+        for path, sha in all_hashes.items():
+            filepath = str(path)
+            if sha not in reverse:
+                reverse[sha] = []
+            reverse[sha].append(filepath)
 
-        try:
-            from compiletools.git_sha_report import get_complete_working_directory_hashes
+        if verbose >= 3:
+            print(f"GlobalHashRegistry: Loaded {len(hashes)} file hashes from git")
 
-            # Single call to get all file hashes
-            all_hashes = get_complete_working_directory_hashes()
+        del all_hashes
+        gc.collect()
 
-            # Convert Path keys to string keys for easier lookup
-            _HASHES = {str(path): sha for path, sha in all_hashes.items()}
+    except Exception as e:
+        if verbose >= 3:
+            print(f"GlobalHashRegistry: Git not available, using fallback mode: {e}")
+        hashes = {}
+        reverse = {}
 
-            # Build reverse lookup cache: hash -> list of filepaths
-            _REVERSE_HASHES = {}
-            for path, sha in all_hashes.items():
-                filepath = str(path)
-                if sha not in _REVERSE_HASHES:
-                    _REVERSE_HASHES[sha] = []
-                _REVERSE_HASHES[sha].append(filepath)
-
-            if verbose >= 3:
-                print(f"GlobalHashRegistry: Loaded {len(_HASHES)} file hashes from git")
-
-            # Explicitly clean up Path objects and force garbage collection
-            # to ensure file descriptors are released
-            del all_hashes
-            gc.collect()
-
-        except Exception as e:
-            # Gracefully handle git failures (e.g., in test environments, non-git directories)
-            if verbose >= 3:
-                print(f"GlobalHashRegistry: Git not available, using fallback mode: {e}")
-            _HASHES = {}  # Empty hash registry - will compute hashes on demand
-            _REVERSE_HASHES = {}
+    hashes_ref[0] = hashes
+    reverse_ref[0] = reverse
 
 
-@cache
-def get_file_hash(filepath: str) -> str:
-    """Get hash for a file, loading hashes on first call.
-
-    For files tracked in git, uses cached hashes from git registry.
-    For external files (system libraries, etc.), computes git blob hash on-demand.
-
-    Args:
-        filepath: Path to file (absolute or relative)
-
-    Returns:
-        Git blob hash
-
-    Raises:
-        FileNotFoundError: If filepath does not exist
-    """
-    # Ensure hashes are loaded
-    if _HASHES is None:
-        load_hashes()
-
-    # Convert to absolute path for consistent lookup
-    # If path is relative, first try relative to current directory
+def _get_file_hash_impl(
+    filepath: str,
+    hashes: dict[str, str],
+    reverse_hashes: dict[str, list[str]],
+    hash_ops: dict[str, int],
+) -> str:
+    """Core hash-lookup logic used by both context and legacy paths."""
     abs_path = wrappedos.realpath(filepath)
-    result = _HASHES.get(abs_path)
+    result = hashes.get(abs_path)
 
     if result is not None:
-        with _lock:
-            _hash_ops["registry_hits"] += 1
+        hash_ops["registry_hits"] += 1
 
     # If not found and path was relative, try relative to git root
     if result is None and not os.path.isabs(filepath):
@@ -145,44 +121,122 @@ def get_file_hash(filepath: str) -> str:
             from compiletools.git_utils import find_git_root
 
             git_root = find_git_root()
-            git_relative_path = os.path.join(git_root, filepath)
-            abs_git_path = wrappedos.realpath(git_relative_path)
-            result = _HASHES.get(abs_git_path)
+            abs_git_path = wrappedos.realpath(os.path.join(git_root, filepath))
+            result = hashes.get(abs_git_path)
         except Exception:
-            pass  # Git root not available, stick with original result
+            pass
 
-    # If still not found, check if file exists and compute hash on-demand
+    # If still not found, compute hash on-demand
     if result is None:
         if not os.path.exists(abs_path):
             raise FileNotFoundError(f"global_hash_registry encountered File not found: {filepath}")
 
-        result = _compute_external_file_hash(abs_path)
+        result = _compute_external_file_hash(abs_path, hash_ops)
         if result:
-            # Cache the computed hash for future lookups (both forward and reverse)
-            with _lock:
-                _HASHES[abs_path] = result
-                # _REVERSE_HASHES is guaranteed to be initialized by load_hashes()
-                assert _REVERSE_HASHES is not None
-                if result not in _REVERSE_HASHES:
-                    _REVERSE_HASHES[result] = [abs_path]
+            hashes[abs_path] = result
+            if result not in reverse_hashes:
+                reverse_hashes[result] = [abs_path]
         else:
-            raise FileNotFoundError(f"global_hash_registry encountered Failed to compute hash for file: {filepath}")
+            raise FileNotFoundError(
+                f"global_hash_registry encountered Failed to compute hash for file: {filepath}"
+            )
 
     return result
 
 
-# Public API functions for compatibility
+def _get_filepath_by_hash_impl(
+    file_hash: str,
+    reverse_hashes: dict[str, list[str]],
+) -> str:
+    """Core reverse-lookup logic used by both context and legacy paths."""
+    filepaths = reverse_hashes.get(file_hash)
+    if filepaths is None:
+        raise FileNotFoundError(
+            f"File with hash {file_hash} not found in working directory. "
+            f"File may have been deleted or moved outside git working tree."
+        )
+    if len(filepaths) > 1:
+        raise RuntimeError(
+            f"Hash {file_hash} maps to {len(filepaths)} files with identical content: "
+            f"{', '.join(filepaths)}. Cannot determine which file to use."
+        )
+    return filepaths[0]
 
 
-def get_tracked_files() -> dict[str, str]:
+# ---- context-aware public API ----
+
+
+def load_hashes(verbose: int = 0, context: BuildContext | None = None) -> None:
+    """Load all file hashes (lazy, thread-safe for the legacy path)."""
+    if context is not None:
+        if context.file_hashes is not None:
+            return
+        h: list = [None]
+        r: list = [None]
+        _load_hashes_into(h, r, verbose)
+        context.file_hashes = h[0]
+        context.reverse_hashes = r[0]
+        return
+
+    # Legacy path
+    global _HASHES, _REVERSE_HASHES
+    if _HASHES is not None:
+        return
+    with _lock:
+        if _HASHES is not None:
+            return
+        h = [None]
+        r = [None]
+        _load_hashes_into(h, r, verbose)
+        _HASHES = h[0]
+        _REVERSE_HASHES = r[0]
+
+
+@cache
+def get_file_hash(filepath: str) -> str:
+    """Get hash for a file using the **legacy** module-level registry.
+
+    Prefer ``get_file_hash_ctx`` when a BuildContext is available.
+    """
+    if _HASHES is None:
+        load_hashes()
+    assert _HASHES is not None and _REVERSE_HASHES is not None
+    with _lock:
+        return _get_file_hash_impl(filepath, _HASHES, _REVERSE_HASHES, _hash_ops)
+
+
+def get_file_hash_ctx(filepath: str, context: BuildContext) -> str:
+    """Get hash for a file using the given BuildContext."""
+    if context.file_hashes is None:
+        load_hashes(context=context)
+    assert context.file_hashes is not None and context.reverse_hashes is not None
+    return _get_file_hash_impl(filepath, context.file_hashes, context.reverse_hashes, context.hash_ops)
+
+
+def get_tracked_files(context: BuildContext | None = None) -> dict[str, str]:
     """Get all file paths and their hashes from the registry."""
+    if context is not None:
+        if context.file_hashes is None:
+            load_hashes(context=context)
+        assert context.file_hashes is not None
+        return context.file_hashes
+
     if _HASHES is None:
         load_hashes()
     return _HASHES
 
 
-def get_registry_stats() -> dict[str, int]:
+def get_registry_stats(context: BuildContext | None = None) -> dict:
     """Get global registry statistics."""
+    if context is not None:
+        if context.file_hashes is None:
+            return {"total_files": 0, "is_loaded": False}
+        return {
+            "total_files": len(context.file_hashes),
+            "is_loaded": True,
+            **context.hash_ops,
+        }
+
     if _HASHES is None:
         return {"total_files": 0, "is_loaded": False}
     return {
@@ -193,51 +247,30 @@ def get_registry_stats() -> dict[str, int]:
     }
 
 
-def clear_global_registry() -> None:
-    """Clear the global registry (mainly for testing).
+def clear_global_registry(context: BuildContext | None = None) -> None:
+    """Clear the registry (mainly for testing)."""
+    if context is not None:
+        context.file_hashes = None
+        context.reverse_hashes = None
+        context.hash_ops = {"registry_hits": 0, "computed_hashes": 0}
+        return
 
-    Also clears the LRU cache on get_file_hash() to ensure consistency.
-    When the registry is cleared, cached hash values would be stale because
-    they wouldn't be in _REVERSE_HASHES for reverse lookups.
-    """
     global _HASHES, _REVERSE_HASHES
     with _lock:
         _HASHES = None
         _REVERSE_HASHES = None
-    # Clear the LRU cache on get_file_hash() to prevent stale hash lookups
-    # Without this, get_file_hash() returns cached hashes that aren't in _REVERSE_HASHES
     get_file_hash.cache_clear()
 
 
-def get_filepath_by_hash(file_hash: str) -> str:
-    """Reverse lookup: get filepath from hash.
+def get_filepath_by_hash(file_hash: str, context: BuildContext | None = None) -> str:
+    """Reverse lookup: get filepath from hash."""
+    if context is not None:
+        if context.reverse_hashes is None:
+            load_hashes(context=context)
+        assert context.reverse_hashes is not None
+        return _get_filepath_by_hash_impl(file_hash, context.reverse_hashes)
 
-    Args:
-        file_hash: Git blob hash
-
-    Returns:
-        Absolute realpath (already normalized in registry)
-
-    Raises:
-        FileNotFoundError: If hash not found in registry (file deleted/moved outside git)
-        RuntimeError: If hash maps to multiple files (duplicate content detected)
-    """
     if _REVERSE_HASHES is None:
         load_hashes()
-
-    # load_hashes() always sets _REVERSE_HASHES to a dict (empty or populated)
     assert _REVERSE_HASHES is not None
-    filepaths = _REVERSE_HASHES.get(file_hash)
-    if filepaths is None:
-        raise FileNotFoundError(
-            f"File with hash {file_hash} not found in working directory. "
-            f"File may have been deleted or moved outside git working tree."
-        )
-
-    if len(filepaths) > 1:
-        raise RuntimeError(
-            f"Hash {file_hash} maps to {len(filepaths)} files with identical content: "
-            f"{', '.join(filepaths)}. Cannot determine which file to use."
-        )
-
-    return filepaths[0]
+    return _get_filepath_by_hash_impl(file_hash, _REVERSE_HASHES)
