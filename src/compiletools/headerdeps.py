@@ -1,4 +1,3 @@
-import functools
 import os
 from pathlib import Path
 
@@ -23,7 +22,7 @@ from compiletools.preprocessing_cache import (
     get_or_compute_preprocessing,
     is_permanently_invariant,
 )
-from compiletools.utils import split_command_cached
+from compiletools.utils import instance_cache, split_command_cached
 
 # Cache for filtered include lists
 # Variant cache: (content_hash, macro_cache_key) -> (includes, file_defines)
@@ -282,7 +281,7 @@ class DirectHeaderDeps(HeaderDepsBase):
                                         compiler_path=getattr(self.args, "CXX", ""),
                                         cppflags=getattr(self.args, "CPPFLAGS", ""))
 
-    @functools.cache
+    @instance_cache
     def _search_project_includes(self, include: sz.Str):
         """Internal use.  Find the given include file in the project include paths"""
         for inc_dir in self.includes:
@@ -293,7 +292,7 @@ class DirectHeaderDeps(HeaderDepsBase):
         # TODO: Try system include paths if the user sets (the currently nonexistent) "use-system" flag
         return None
 
-    @functools.cache
+    @instance_cache
     def _find_include(self, include: sz.Str, cwd: str):
         """Internal use.  Find the given include file.
         Start at the current working directory then try the project includes
@@ -306,7 +305,7 @@ class DirectHeaderDeps(HeaderDepsBase):
 
         return self._search_project_includes(include)
 
-    @functools.cache
+    @instance_cache
     def _process_impl(self, realpath, initial_macro_key):
         """Process file with macro state in cache key.
 
@@ -493,18 +492,16 @@ class DirectHeaderDeps(HeaderDepsBase):
         results_order.append(realpath)
 
     def clear_instance_cache(self):
-        """Clear this instance's _process_impl cache."""
-        self._process_impl.cache_clear()
+        """Clear this instance's per-instance caches."""
+        for method in (self._search_project_includes, self._find_include,
+                       self._process_impl):
+            self.__dict__.pop(method.cache_attr, None)
         if self.args.verbose >= 5:
             print("DirectHeaderDeps::clear_instance_cache completed")
 
     @staticmethod
     def clear_cache():
-        # print("DirectHeaderDeps::clear_cache")
-        DirectHeaderDeps._search_project_includes.cache_clear()
-        DirectHeaderDeps._find_include.cache_clear()
-        # Note: Cannot clear instance-level _process_impl caches from static method
-        # Each DirectHeaderDeps instance will retain its cache until destroyed
+        pass  # Instance caches are per-instance; nothing class-level to clear
 
 
 class CppHeaderDeps(HeaderDepsBase):

@@ -49,14 +49,13 @@ class TestMovingHeaders(compiletools.test_base.BaseCompileToolsTestCase):
             from compiletools.file_analyzer import analyze_file
             from compiletools.global_hash_registry import clear_global_registry, get_file_hash
             from compiletools.headerdeps import HeaderDepsBase
-            from compiletools.magicflags import DirectMagicFlags, MagicFlagsBase
+            from compiletools.magicflags import MagicFlagsBase
 
             clear_global_registry()
             get_file_hash.cache_clear()
             analyze_file.cache_clear()
             HeaderDepsBase.clear_cache()
             MagicFlagsBase.clear_cache()
-            DirectMagicFlags._compute_file_processing_result.cache_clear()
 
             with uth.ParserContext():
                 compiletools.cake.main(argv)

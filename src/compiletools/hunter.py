@@ -1,12 +1,11 @@
-import functools
 import os
-from typing import ClassVar
 
 import compiletools.apptools
 import compiletools.headerdeps
 import compiletools.magicflags
 import compiletools.utils
 import compiletools.wrappedos
+from compiletools.utils import instance_cache
 
 
 def add_arguments(cap):
@@ -35,21 +34,12 @@ class Hunter:
     other required source files, other required compile/link flags.
     """
 
-    # Class-level cache for magic parsing results
-    _magic_cache: ClassVar[dict] = {}
-
     def __init__(self, args, headerdeps, magicparser):
         self.args = args
         self.headerdeps = headerdeps
         self.magicparser = magicparser
-        # Clear lru_cache on instance methods to prevent stale cache across builds
-        # The cache is bound to the method, not the instance, so it persists
-        Hunter._get_immediate_deps.cache_clear()
-        Hunter._parse_magic.cache_clear()
-        Hunter._required_files_impl.cache_clear()
-        Hunter._extractSOURCE.cache_clear()
 
-    @functools.cache
+    @instance_cache
     def _extractSOURCE(self, realpath):
         import stringzilla as sz
 
@@ -66,7 +56,7 @@ class Hunter:
             print("Hunter::_extractSOURCE. realpath=", realpath, " SOURCE flag:", ess)
         return ess
 
-    @functools.cache
+    @instance_cache
     def _get_immediate_deps(self, realpath, macro_state_key):
         """Get immediate dependencies for a single file (cached by realpath + macro_state_key).
 
@@ -111,7 +101,7 @@ class Hunter:
             if dep not in processed:
                 self._expand_deps_recursive(dep, macro_state_key, processed)
 
-    @functools.cache
+    @instance_cache
     def _required_files_impl(self, realpath, macro_state_key):
         """Get all transitive dependencies for a file (cached by realpath + macro_state_key)."""
         if self.args.verbose >= 7:
@@ -169,28 +159,22 @@ class Hunter:
 
     @staticmethod
     def clear_cache():
-        # print("Hunter::clear_cache")
         compiletools.wrappedos.clear_cache()
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
         compiletools.magicflags.MagicFlagsBase.clear_cache()
-        # Clear class-level cache
-        # Hunter._magic_cache.clear()  # This cache doesn't exist
-        # Note: Cannot clear instance-level _parse_magic caches from static method
-        # Each Hunter instance will retain its own cache until the instance is destroyed
 
     def clear_instance_cache(self):
         """Clear this instance's caches."""
-        self._parse_magic.cache_clear()
-        self._get_immediate_deps.cache_clear()
-        self._required_files_impl.cache_clear()
-        self._extractSOURCE.cache_clear()
+        for method in (self._parse_magic, self._get_immediate_deps,
+                       self._required_files_impl, self._extractSOURCE):
+            self.__dict__.pop(method.cache_attr, None)
         # Clear project-level source discovery caches (these are set dynamically)
         if hasattr(self, "_hunted_sources"):
             del self._hunted_sources
         if hasattr(self, "_test_sources"):
             del self._test_sources
 
-    @functools.cache
+    @instance_cache
     def _parse_magic(self, filename):
         """Cache the magic parse result to avoid duplicate processing."""
         return self.magicparser.parse(filename)

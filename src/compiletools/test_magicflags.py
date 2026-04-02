@@ -621,9 +621,8 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         analyze_file.cache_clear()
         # Clear headerdeps caches
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
-        # Clear DirectMagicFlags LRU cache
-        compiletools.magicflags.DirectMagicFlags._compute_file_processing_result.cache_clear()
-        # Clear instance caches (these persist across static clear_cache() calls)
+        # Clear instance caches
+        mf.__dict__.pop(mf._compute_file_processing_result.cache_attr, None)
         mf._headerdeps.clear_instance_cache()
         mf._structured_data_cache.clear()
 
@@ -665,9 +664,8 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         analyze_file.cache_clear()
         # Clear headerdeps caches
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
-        # Clear DirectMagicFlags LRU cache
-        compiletools.magicflags.DirectMagicFlags._compute_file_processing_result.cache_clear()
         # Clear instance caches
+        mf.__dict__.pop(mf._compute_file_processing_result.cache_attr, None)
         mf._headerdeps.clear_instance_cache()
         mf._structured_data_cache.clear()
 

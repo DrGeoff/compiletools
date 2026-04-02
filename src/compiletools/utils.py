@@ -197,6 +197,37 @@ def implied_header(filename: str) -> str | None:
     return _find_file_with_extensions(filename, HEADER_EXTS_WITH_CASE)
 
 
+def instance_cache(method):
+    """Decorator that caches method results per-instance (not per-class).
+
+    Unlike @functools.cache on instance methods (which creates a class-level
+    cache shared across all instances), this stores the cache dict on each
+    instance via self.__dict__.
+
+    The decorated method gets a ``cache_attr`` attribute holding the name of
+    the dict stored on each instance, useful for clearing::
+
+        self.__dict__.pop(method.cache_attr, None)
+    """
+    cache_attr = f"_cache_{method.__name__}"
+
+    @functools.wraps(method)
+    def wrapper(self, *args):
+        cache = self.__dict__.get(cache_attr)
+        if cache is None:
+            cache = {}
+            self.__dict__[cache_attr] = cache
+        try:
+            return cache[args]
+        except KeyError:
+            result = method(self, *args)
+            cache[args] = result
+            return result
+
+    wrapper.cache_attr = cache_attr
+    return wrapper
+
+
 def clear_cache() -> None:
     """Clear all function caches."""
     _get_lower_ext.cache_clear()

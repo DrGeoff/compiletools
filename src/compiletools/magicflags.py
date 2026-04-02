@@ -1,5 +1,4 @@
 import argparse
-import functools
 import re
 import sys
 from collections import defaultdict
@@ -19,6 +18,7 @@ import compiletools.wrappedos
 from compiletools.file_analyzer import FileAnalysisResult
 from compiletools.preprocessing_cache import MacroState, get_or_compute_preprocessing
 from compiletools.stringzilla_utils import strip_sz
+from compiletools.utils import instance_cache
 
 # Type aliases for clarity
 MacroDict = dict[sz.Str, sz.Str]
@@ -504,7 +504,7 @@ class DirectMagicFlags(MagicFlagsBase):
         # Update macro state immutably (use empty core since these are variable macros)
         self.defined_macros = self.defined_macros.with_updates(macros)
 
-    @functools.cache
+    @instance_cache
     def _compute_file_processing_result(self, fname: str, macro_key):
         """Pure function: compute file processing result without mutating state.
 
@@ -922,12 +922,7 @@ class DirectMagicFlags(MagicFlagsBase):
 
     @staticmethod
     def clear_cache():
-        # Clear instance method lru_caches on the class
-        # These are shared across all instances
-        try:
-            DirectMagicFlags._compute_file_processing_result.cache_clear()
-        except AttributeError:
-            pass  # Method doesn't exist yet
+        pass  # Instance caches are per-instance; nothing class-level to clear
 
 
 class CppMagicFlags(MagicFlagsBase):
