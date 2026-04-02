@@ -82,6 +82,11 @@ KEY FEATURES
     Support for debug, release, and custom build configurations.
     Use ``--variant=release`` to select. See ct-config(1).
 
+**Pluggable Build Backends**
+    Choose from Make (default), Ninja, CMake, Bazel, Tup, or the builtin
+    Shake backend.  Distribute compilation across an HPC cluster with the
+    Slurm backend.  Use ``--backend=<name>`` to select.  See ct-backends(7).
+
 **File Locking**
     Multi-user/multi-host object file caching with filesystem-aware locking
     for faster builds in team environments. Enable with ``file-locking = true``.
@@ -113,6 +118,9 @@ CORE TOOLS
 
 **ct-cleanup-locks**
     Clean stale locks from file locking.
+
+**ct-list-backends**
+    List available build backends (make, ninja, cmake, bazel, shake, tup).
 
 **Shell Wrappers**
     Convenience scripts in ``scripts/``: ct-build, ct-build-static-library,
@@ -157,6 +165,7 @@ continues the development and maintenance of the compiletools project.
 
 SEE ALSO
 ========
+* ct-backends (7) -- build backend architecture and selection guide
 * ct-build
 * ct-build-dynamic-library
 * ct-build-static-library
@@ -172,6 +181,7 @@ SEE ALSO
 * ct-gitroot
 * ct-headertree
 * ct-jobs
+* ct-list-backends
 * ct-list-variants
 * ct-lock-helper
 * ct-magicflags

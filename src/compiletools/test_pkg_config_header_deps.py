@@ -10,7 +10,7 @@ The bug occurs when:
 3. Header B contains a #PKG-CONFIG directive
 4. The caching system doesn't properly track the dependency on Header B
 
-Regression test for: https://github.com/yourcompany/compiletools/issues/XXXX
+Regression test for PKG-CONFIG cache invalidation with nested macro headers.
 """
 
 import os
