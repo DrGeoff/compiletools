@@ -37,6 +37,8 @@ def create(args, headerdeps):
 
 def add_arguments(cap, variant=None):
     """Add the command line arguments that the MagicFlags classes require"""
+    if compiletools.apptools._parser_has_option(cap, "--magic"):
+        return
     compiletools.apptools.add_common_arguments(cap, variant=variant)
     compiletools.preprocessor.PreProcessor.add_arguments(cap)
     alldepscls = [st[:-10].lower() for st in dict(globals()) if st.endswith("MagicFlags")]
@@ -46,12 +48,13 @@ def add_arguments(cap, variant=None):
         default="direct",
         help="Methodology for reading file when processing magic flags",
     )
-    cap.add(
-        "--max-file-read-size",
-        type=int,
-        default=0,
-        help="Maximum bytes to read from files (0 = entire file)",
-    )
+    if not compiletools.apptools._parser_has_option(cap, "--max-file-read-size"):
+        cap.add(
+            "--max-file-read-size",
+            type=int,
+            default=0,
+            help="Maximum bytes to read from files (0 = entire file)",
+        )
 
 
 class MagicFlagsBase:

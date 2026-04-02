@@ -57,6 +57,8 @@ def _cpu_count():
 
 
 def add_arguments(cap):
+    if compiletools.apptools._parser_has_option(cap, "--jobs"):
+        return
     cap.add(
         "-j",
         "--jobs",

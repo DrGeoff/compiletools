@@ -52,11 +52,22 @@ if _rich_rst_available and sys.version_info >= (3, 9):
                 sys.exit(0)
 
 
+def _parser_has_option(cap, option_string):
+    """Check whether *cap* already has an action for *option_string*."""
+    return any(option_string in a.option_strings for a in cap._actions)
+
+
 def add_base_arguments(cap, argv=None, variant=None):
     """All compiletools applications MUST call this function.
 
     Note that it is usually called indirectly from add_common_arguments.
+
+    Safe to call more than once on the same parser — duplicate calls are
+    silently ignored.
     """
+    if _parser_has_option(cap, "--variant"):
+        return
+
     # Even though the variant is actually sucked out of the command line by
     # parsing the sys.argv directly, we put it into the configargparse to get
     # the help.
@@ -123,7 +134,13 @@ def _add_xxpend_arguments(cap, xxpendableargs):
 
 
 def add_common_arguments(cap, argv=None, variant=None):
-    """Insert common arguments into the configargparse object"""
+    """Insert common arguments into the configargparse object.
+
+    Safe to call more than once on the same parser — duplicate calls are
+    silently ignored.
+    """
+    if _parser_has_option(cap, "--variable-handling-method"):
+        return
     add_base_arguments(cap, argv=argv, variant=variant)
     cap.add(
         "--variable-handling-method",
@@ -184,7 +201,12 @@ def add_common_arguments(cap, argv=None, variant=None):
 
 
 def add_locking_arguments(cap):
-    """Add file locking configuration arguments"""
+    """Add file locking configuration arguments.
+
+    Safe to call more than once on the same parser.
+    """
+    if _parser_has_option(cap, "--file-locking"):
+        return
     compiletools.utils.add_boolean_argument(
         parser=cap,
         name="file-locking",
@@ -225,7 +247,12 @@ def add_locking_arguments(cap):
 
 
 def add_link_arguments(cap):
-    """Insert the link arguments into the configargparse singleton"""
+    """Insert the link arguments into the parser.
+
+    Safe to call more than once on the same parser.
+    """
+    if _parser_has_option(cap, "--LD"):
+        return
     cap.add("--LD", help="Linker (override)", default="unsupplied_implies_use_CXX")
     cap.add(
         "--LDFLAGS",
@@ -243,6 +270,8 @@ def add_link_arguments(cap):
 
 
 def add_output_directory_arguments(cap, variant):
+    if _parser_has_option(cap, "--bindir"):
+        return
     cap.add(
         "--bindir",
         help="Output directory for executables",
@@ -261,12 +290,13 @@ def add_output_directory_arguments(cap, variant):
 
 
 def add_target_arguments(cap):
-    """Insert the arguments that control what targets get created
-    into the configargparse singleton.
+    """Insert the arguments that control what targets get created.
+
+    Safe to call more than once on the same parser.
     """
-    # Don't re-add filename if it is already in the configargparsea
-    if not any("filename" in action.dest for action in cap._actions):
-        cap.add("filename", nargs="*", help="File(s) to compile to an executable(s)")
+    if _parser_has_option(cap, "--dynamic"):
+        return
+    cap.add("filename", nargs="*", help="File(s) to compile to an executable(s)")
     cap.add(
         "--dynamic",
         "--dynamic-library",
@@ -284,8 +314,12 @@ def add_target_arguments(cap):
 
 def add_target_arguments_ex(cap):
     """Add the target arguments and the extra arguments that augment
-    the target arguments
+    the target arguments.
+
+    Safe to call more than once on the same parser.
     """
+    if _parser_has_option(cap, "--TESTPREFIX"):
+        return
     add_target_arguments(cap)
     cap.add(
         "--TESTPREFIX",
@@ -1256,12 +1290,13 @@ def create_parser(description, argv=None, include_config=True, include_write_con
             "default_config_files": config_files,
             "args_for_setting_config_path": ["-c", "--config"],
             "ignore_unknown_config_file_keys": True,
+            "conflict_handler": "resolve",
         }
         if include_write_config:
             kwargs["args_for_writing_out_config_file"] = ["-w", "--write-out-config-file"]
-        return configargparse.getArgumentParser(**kwargs)
+        return configargparse.ArgumentParser(**kwargs)
     else:
-        cap = configargparse.ArgumentParser(description=description)
+        cap = configargparse.ArgumentParser(description=description, conflict_handler="resolve")
         add_base_arguments(cap, argv=argv)
         return cap
 
@@ -1270,6 +1305,7 @@ def parseargs(cap, argv, verbose=None):
     """argv must be the logical equivalent of sys.argv[1:]"""
     # command-line values override environment variables which override config file values which override defaults.
     args = cap.parse_args(args=argv)
+    args._parser = cap
 
     if "verbose" not in vars(args):
         raise ValueError(
@@ -1324,8 +1360,7 @@ def terminalcolumns():
 def verboseprintconfig(args):
     if args.verbose >= 3:
         print(" ".join(["Using variant =", args.variant]))
-        cap = configargparse.getArgumentParser()
-        cap.print_values()
+        args._parser.print_values()
 
     if args.verbose >= 2:
         verbose_print_args(args)

@@ -62,6 +62,8 @@ def create(args):
 
 def add_arguments(cap):
     """Add the command line arguments that the HeaderDeps classes require"""
+    if compiletools.apptools._parser_has_option(cap, "--headerdeps"):
+        return
     compiletools.apptools.add_common_arguments(cap)
     alldepscls = [st[:-10].lower() for st in dict(globals()) if st.endswith("HeaderDeps")]
     cap.add(
@@ -70,12 +72,13 @@ def add_arguments(cap):
         default="direct",
         help="Methodology for determining header dependencies",
     )
-    cap.add(
-        "--max-file-read-size",
-        type=int,
-        default=0,
-        help="Maximum bytes to read from files (0 = entire file)",
-    )
+    if not compiletools.apptools._parser_has_option(cap, "--max-file-read-size"):
+        cap.add(
+            "--max-file-read-size",
+            type=int,
+            default=0,
+            help="Maximum bytes to read from files (0 = entire file)",
+        )
 
     # Add FileAnalyzer arguments for file reading strategy control
     compiletools.file_analyzer.FileAnalyzer.add_arguments(cap)

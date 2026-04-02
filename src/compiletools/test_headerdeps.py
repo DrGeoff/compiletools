@@ -73,7 +73,7 @@ def _generatecache(tempdir, name, realpaths, extraargs=None):
             temp_config_name,
         ] + extraargs
         cachename = os.path.join(tempdir, name)
-        cap = configargparse.getArgumentParser()
+        cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
         compiletools.headerdeps.add_arguments(cap)
         args = compiletools.apptools.parseargs(cap, argv)
         headerdeps = compiletools.headerdeps.create(args)
@@ -83,11 +83,12 @@ def _generatecache(tempdir, name, realpaths, extraargs=None):
 class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
     def setup_method(self):
         super().setup_method()
-        cap = configargparse.getArgumentParser(
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
             description="Configargparser in test code",
             formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
             args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=False,
+            ignore_unknown_config_file_keys=True,
         )
         compiletools.headerdeps.add_arguments(cap)
 
@@ -371,7 +372,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         ]
 
         for cppflags, expected_includes in test_cases:
-            cap = configargparse.getArgumentParser()
+            cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
             compiletools.headerdeps.add_arguments(cap)
             compiletools.apptools.add_common_arguments(cap)
 
@@ -396,7 +397,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         # This is the critical test case that exposes the bug
         expected_includes = ["/path with spaces/include"]
 
-        cap = configargparse.getArgumentParser()
+        cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
         compiletools.headerdeps.add_arguments(cap)
         compiletools.apptools.add_common_arguments(cap)
 
@@ -429,7 +430,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         ]
 
         for cppflags in test_cases:
-            cap = configargparse.getArgumentParser()
+            cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
             compiletools.headerdeps.add_arguments(cap)
             compiletools.apptools.add_common_arguments(cap)
 
@@ -478,11 +479,12 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
 
     def _make_args(self, cppflags="", verbose=0):
         """Helper to create args with a fresh parser."""
-        cap = configargparse.getArgumentParser(
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
             description="unit test parser",
             formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
             args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=False,
+            ignore_unknown_config_file_keys=True,
         )
         compiletools.headerdeps.add_arguments(cap)
         argv = ["-q"]

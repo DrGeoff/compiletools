@@ -15,7 +15,8 @@ def test_executable_pathname():
     try:
         config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
         config_files = [os.path.join(config_dir, "gcc.debug.conf")]
-        cap = configargparse.getArgumentParser(
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
             description="TestNamer",
             formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
             default_config_files=config_files,
@@ -57,7 +58,8 @@ def test_object_name_with_dependencies():
             # Setup namer
             config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
             config_files = [os.path.join(config_dir, "gcc.debug.conf")]
-            cap = configargparse.getArgumentParser(
+            cap = configargparse.ArgumentParser(
+                conflict_handler="resolve",
                 description="TestNamer",
                 formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
                 default_config_files=config_files,
@@ -140,7 +142,8 @@ def test_dep_hash_xor_properties():
             # Setup namer
             config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
             config_files = [os.path.join(config_dir, "gcc.debug.conf")]
-            cap = configargparse.getArgumentParser(
+            cap = configargparse.ArgumentParser(
+                conflict_handler="resolve",
                 description="TestNamer",
                 formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
                 default_config_files=config_files,
@@ -196,7 +199,8 @@ def test_dep_hash_handles_missing_generated_headers():
             # Setup namer
             config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
             config_files = [os.path.join(config_dir, "gcc.debug.conf")]
-            cap = configargparse.getArgumentParser(
+            cap = configargparse.ArgumentParser(
+                conflict_handler="resolve",
                 description="TestNamer",
                 formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
                 default_config_files=config_files,
@@ -267,7 +271,7 @@ def test_source_magic_produces_different_hash_with_different_flags():
 
             def create_hunter_with_cppflags(cppflags_value):
                 """Create a Hunter instance with specific CPPFLAGS."""
-                cap = configargparse.getArgumentParser()
+                cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
                 compiletools.hunter.add_arguments(cap)
                 argv = [f"--append-CPPFLAGS={cppflags_value}", "-q"]
                 args = compiletools.apptools.parseargs(cap, argv)
@@ -346,7 +350,8 @@ def test_different_cppflags_produce_different_object_names():
             # Setup namer
             config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
             config_files = [os.path.join(config_dir, "gcc.debug.conf")]
-            cap = configargparse.getArgumentParser(
+            cap = configargparse.ArgumentParser(
+                conflict_handler="resolve",
                 description="TestNamerCPPFLAGS",
                 formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
                 default_config_files=config_files,

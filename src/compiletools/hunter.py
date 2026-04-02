@@ -10,7 +10,12 @@ import compiletools.wrappedos
 
 
 def add_arguments(cap):
-    """Add the command line arguments that the Hunter classes require"""
+    """Add the command line arguments that the Hunter classes require.
+
+    Safe to call more than once on the same parser.
+    """
+    if compiletools.apptools._parser_has_option(cap, "--allow-magic-source-in-header"):
+        return
     compiletools.apptools.add_common_arguments(cap)
     compiletools.headerdeps.add_arguments(cap)
     compiletools.magicflags.add_arguments(cap)

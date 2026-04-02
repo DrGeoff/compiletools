@@ -5,7 +5,7 @@ import compiletools.testhelper as uth
 
 def add_to_parser_in_func(recursion_depth=0):
     if recursion_depth < 6:
-        cap = configargparse.getArgumentParser()
+        cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
         cap.add(
             "-v",
             "--verbose",
@@ -36,12 +36,14 @@ def test_multiple_parse_known_args():
 
     try:
         non_existent_config_files = ["/blah/foo.conf", "/usr/bin/ba.conf"]
-        cap = configargparse.getArgumentParser(
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
             prog="UnitTest",
             description="unit testing",
             formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
             default_config_files=non_existent_config_files,
             args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
         )
 
         cap.add(

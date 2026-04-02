@@ -20,6 +20,8 @@ class Namer:
 
     @staticmethod
     def add_arguments(cap, argv=None, variant=None):
+        if compiletools.apptools._parser_has_option(cap, "--bindir"):
+            return
         compiletools.apptools.add_common_arguments(cap, argv=argv, variant=variant)
         if variant is None:
             variant = "unsupplied"

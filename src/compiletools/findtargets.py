@@ -1,4 +1,3 @@
-import argparse
 import os
 import sys
 
@@ -11,16 +10,14 @@ from compiletools.file_analyzer import MarkerType
 
 
 def add_arguments(cap):
-    """Add the command line arguments that the HeaderDeps classes require"""
-    compiletools.namer.Namer.add_arguments(cap)
+    """Add the command line arguments that findtargets requires.
 
-    # Add FileAnalyzer arguments if not already added
-    # (may already be added via headerdeps when called from cake)
-    try:
-        compiletools.file_analyzer.FileAnalyzer.add_arguments(cap)
-    except argparse.ArgumentError:
-        # Arguments already added (likely via headerdeps in a parent tool)
-        pass
+    Safe to call more than once on the same parser.
+    """
+    if compiletools.apptools._parser_has_option(cap, "--exemarkers"):
+        return
+    compiletools.namer.Namer.add_arguments(cap)
+    compiletools.file_analyzer.FileAnalyzer.add_arguments(cap)
     cap.add(
         "--exemarkers",
         action="append",

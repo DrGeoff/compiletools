@@ -253,8 +253,10 @@ class TestCake(BaseCompileToolsTestCase):
         """
 
         # Create a namer so that we get the names of the object files correct
-        cap = configargparse.getArgumentParser()
-        args = compiletools.apptools.parseargs(cap, self._create_argv(), verbose=0)
+        argv = self._create_argv()
+        cap = compiletools.apptools.create_parser("test cake", argv=argv)
+        compiletools.cake.Cake.add_arguments(cap)
+        args = compiletools.apptools.parseargs(cap, argv, verbose=0)
         nmr = compiletools.namer.Namer(args)
 
         # These are the basic filenames

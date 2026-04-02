@@ -77,18 +77,14 @@ def create_magic_parser(extraargs=None, tempdir=None):
 
     config_files = compiletools.configutils.config_files_from_variant(argv=argv, exedir=uth.cakedir())
 
-    # Check if parser already exists and use it, otherwise create new one
-    try:
-        cap = configargparse.getArgumentParser(
-            description="TestMagicFlagsModule",
-            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-            default_config_files=config_files,
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-    except ValueError:
-        # Parser already exists, get it without parameters
-        cap = configargparse.getArgumentParser()
+    cap = configargparse.ArgumentParser(
+        conflict_handler="resolve",
+        description="TestMagicFlagsModule",
+        formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+        default_config_files=config_files,
+        args_for_setting_config_path=["-c", "--config"],
+        ignore_unknown_config_file_keys=True,
+    )
 
     compiletools.apptools.add_common_arguments(cap)
     compiletools.headerdeps.add_arguments(cap)
@@ -183,7 +179,7 @@ def compare_direct_cpp_headers(test_case, filename, extraargs=None):
     with uth.TempConfigContext() as temp_config_name:
         argv = ["--config=" + temp_config_name] + extraargs
 
-        cap = configargparse.getArgumentParser()
+        cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
         compiletools.headerdeps.add_arguments(cap)
         argvdirect = argv + ["--headerdeps=direct"]
         argsdirect = compiletools.apptools.parseargs(cap, argvdirect)

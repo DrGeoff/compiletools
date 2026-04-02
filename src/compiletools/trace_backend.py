@@ -420,6 +420,8 @@ class SlurmBackend(ShakeBackend):
 
     @staticmethod
     def add_arguments(cap) -> None:
+        if compiletools.apptools._parser_has_option(cap, "--slurm-partition"):
+            return
         cap.add(
             "--slurm-partition",
             default=None,

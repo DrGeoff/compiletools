@@ -556,7 +556,7 @@ def HeaderDepsTestContext(argv, config_extralines=None):
     import compiletools.headerdeps
 
     # Create and configure parser
-    cap = configargparse.getArgumentParser()
+    cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
     compiletools.headerdeps.add_arguments(cap)
     args = compiletools.apptools.parseargs(cap, argv)
 

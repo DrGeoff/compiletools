@@ -21,17 +21,18 @@ def callprocess(headerobj, filenames):
 class TestHunterModule:
     def setup_method(self):
         uth.reset()
-        configargparse.getArgumentParser(
+        configargparse.ArgumentParser(
+            conflict_handler="resolve",
             description="Configargparser in test code",
             formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
             args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=False,
+            ignore_unknown_config_file_keys=True,
         )
 
     def test_hunter_follows_source_files_from_header(self):
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
             argv = ["-c", temp_config, "--include", uth.ctdir()]
-            cap = configargparse.getArgumentParser()
+            cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
             compiletools.hunter.add_arguments(cap)
             args = compiletools.apptools.parseargs(cap, argv)
             headerdeps = compiletools.headerdeps.create(args)
@@ -57,7 +58,7 @@ class TestHunterModule:
         bulkpaths = [os.path.join(samplesdir, filename) for filename in relativepaths]
         with uth.TempConfigContext() as temp_config:
             argv = ["--config", temp_config, "--include", uth.ctdir()]
-            cap = configargparse.getArgumentParser()
+            cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
             compiletools.hunter.add_arguments(cap)
             args = compiletools.apptools.parseargs(cap, argv)
             headerdeps = compiletools.headerdeps.create(args)
@@ -94,7 +95,7 @@ def _make_hunter(argv_extra=None, temp_config=None):
     if argv_extra is None:
         argv_extra = []
     argv = ["-c", temp_config, "--include", uth.ctdir()] + argv_extra
-    cap = configargparse.getArgumentParser()
+    cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
     compiletools.hunter.add_arguments(cap)
     args = compiletools.apptools.parseargs(cap, argv)
     headerdeps = compiletools.headerdeps.create(args)
@@ -107,11 +108,12 @@ class TestHunterClearCache:
 
     def setup_method(self):
         uth.reset()
-        configargparse.getArgumentParser(
+        configargparse.ArgumentParser(
+            conflict_handler="resolve",
             description="Configargparser in test code",
             formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
             args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=False,
+            ignore_unknown_config_file_keys=True,
         )
 
     def teardown_method(self):
@@ -149,11 +151,12 @@ class TestHunterRequiredFiles:
 
     def setup_method(self):
         uth.reset()
-        configargparse.getArgumentParser(
+        configargparse.ArgumentParser(
+            conflict_handler="resolve",
             description="Configargparser in test code",
             formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
             args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=False,
+            ignore_unknown_config_file_keys=True,
         )
 
     def teardown_method(self):
@@ -229,11 +232,12 @@ class TestHunterHuntSource:
 
     def setup_method(self):
         uth.reset()
-        configargparse.getArgumentParser(
+        configargparse.ArgumentParser(
+            conflict_handler="resolve",
             description="Configargparser in test code",
             formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
             args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=False,
+            ignore_unknown_config_file_keys=True,
         )
 
     def teardown_method(self):
@@ -350,11 +354,12 @@ class TestHunterVerbose:
 
     def setup_method(self):
         uth.reset()
-        configargparse.getArgumentParser(
+        configargparse.ArgumentParser(
+            conflict_handler="resolve",
             description="Configargparser in test code",
             formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
             args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=False,
+            ignore_unknown_config_file_keys=True,
         )
 
     def teardown_method(self):

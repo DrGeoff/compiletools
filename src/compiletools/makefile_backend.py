@@ -45,7 +45,12 @@ class MakefileBackend(BuildBackend):
 
     @staticmethod
     def add_arguments(cap) -> None:
-        """Register Make-specific CLI arguments."""
+        """Register Make-specific CLI arguments.
+
+        Safe to call more than once on the same parser.
+        """
+        if compiletools.apptools._parser_has_option(cap, "--makefilename"):
+            return
         cap.add(
             "--makefilename",
             default="Makefile",
@@ -56,13 +61,7 @@ class MakefileBackend(BuildBackend):
             help="Only build the binaries depending on the source or header absolute "
             "filenames in this space-delimited list.",
         )
-        compiletools.utils.add_boolean_argument(
-            parser=cap,
-            name="file-locking",
-            dest="file_locking",
-            default=True,
-            help="Enable file locking for concurrent multi-user/multi-host builds",
-        )
+        compiletools.apptools.add_locking_arguments(cap)
         compiletools.utils.add_flag_argument(
             parser=cap,
             name="serialise-tests",

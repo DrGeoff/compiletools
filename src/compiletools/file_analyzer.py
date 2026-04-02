@@ -1106,10 +1106,16 @@ class FileAnalyzer:
     def add_arguments(cap):
         """Add file analyzer specific arguments.
 
+        Safe to call more than once on the same parser.
+
         Args:
             cap: ConfigArgParse parser instance
         """
+        import compiletools.apptools
         import compiletools.utils
+
+        if compiletools.apptools._parser_has_option(cap, "--use-mmap"):
+            return
 
         # Manual overrides for testing/debugging
         compiletools.utils.add_flag_argument(

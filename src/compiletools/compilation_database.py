@@ -35,7 +35,12 @@ class CompilationDatabaseCreator:
 
     @staticmethod
     def add_arguments(cap):
-        """Add command-line arguments for standalone ct-compilation-database"""
+        """Add command-line arguments for standalone ct-compilation-database.
+
+        Safe to call more than once on the same parser.
+        """
+        if compiletools.apptools._parser_has_option(cap, "--compilation-database-output"):
+            return
         # Add standard target arguments that define what sources to process
         compiletools.apptools.add_target_arguments_ex(cap)
 
@@ -53,13 +58,7 @@ class CompilationDatabaseCreator:
             help="Use relative paths instead of absolute paths",
         )
 
-        compiletools.utils.add_boolean_argument(
-            parser=cap,
-            name="file-locking",
-            dest="file_locking",
-            default=True,
-            help="Enable file locking for concurrent compilation database writes",
-        )
+        compiletools.apptools.add_locking_arguments(cap)
 
     def _get_compiler_command(self, source_file: str) -> list[str]:
         """Generate compiler command arguments for a source file with StringZilla optimization"""

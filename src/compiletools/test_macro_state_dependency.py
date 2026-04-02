@@ -27,7 +27,7 @@ def test_macro_state_dependency_is_fixed():
 
     # Test 1: Process without DEBUG macro
     print("Test 1: Processing without DEBUG macro...")
-    cap = configargparse.getArgumentParser()
+    cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
     compiletools.headerdeps.add_arguments(cap)
     compiletools.apptools.add_common_arguments(cap)
 
@@ -48,7 +48,7 @@ def test_macro_state_dependency_is_fixed():
     # Test 2: Process WITH DEBUG macro using fresh instance
     print("\nTest 2: Processing WITH DEBUG macro...")
 
-    cap2 = configargparse.getArgumentParser()
+    cap2 = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
     compiletools.headerdeps.add_arguments(cap2)
     compiletools.apptools.add_common_arguments(cap2)
 
@@ -108,7 +108,7 @@ def test_hunter_respects_macro_state_changes():
 
     def create_hunter_with_macros(debug_enabled=False):
         """Helper to create Hunter instance with specified macro configuration"""
-        cap = configargparse.getArgumentParser()
+        cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
         compiletools.headerdeps.add_arguments(cap)
         compiletools.magicflags.add_arguments(cap)
         hunter.add_arguments(cap)

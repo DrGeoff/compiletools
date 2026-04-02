@@ -61,6 +61,8 @@ class Filelist:
 
     @staticmethod
     def add_arguments(cap):
+        if compiletools.apptools._parser_has_option(cap, "--extrafile"):
+            return
         compiletools.apptools.add_target_arguments(cap)
         cap.add("--extrafile", help="Extra files to directly add to the filelist", nargs="*")
         cap.add(
@@ -166,7 +168,7 @@ class Filelist:
 
 
 def main(argv=None):
-    cap = compiletools.apptools.create_parser("Generate file lists for packaging", argv=argv, include_config=False)
+    cap = compiletools.apptools.create_parser("Generate file lists for packaging", argv=argv)
     Filelist.add_arguments(cap)
     args = compiletools.apptools.parseargs(cap, argv)
     headerdeps = compiletools.headerdeps.create(args)

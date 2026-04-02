@@ -82,7 +82,8 @@ class TestFindTargetsModule:
             expectedtests = {os.path.realpath(os.path.join(uth.samplesdir(), tt)) for tt in relativeexpectedtests}
 
         config_files = compiletools.configutils.config_files_from_variant(exedir=uth.cakedir(), argv=[])
-        cap = configargparse.getArgumentParser(
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
             description="TestFindTargetsModule",
             formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
             default_config_files=config_files,
@@ -182,7 +183,8 @@ class TestFindTargetsProcess:
     def test_process_populates_args(self):
         """Test that process() adds targets to args.filename and args.tests."""
         config_files = compiletools.configutils.config_files_from_variant(exedir=uth.cakedir(), argv=[])
-        cap = configargparse.getArgumentParser(
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
             description="TestFindTargetsProcess",
             formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
             default_config_files=config_files,
@@ -206,7 +208,8 @@ class TestFindTargetsProcess:
     def test_process_verbose(self):
         """Test that process() with verbose >= 2 prints style output."""
         config_files = compiletools.configutils.config_files_from_variant(exedir=uth.cakedir(), argv=[])
-        cap = configargparse.getArgumentParser(
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
             description="TestFindTargetsProcessVerbose",
             formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
             default_config_files=config_files,
@@ -237,7 +240,8 @@ class TestFindTargetsNoExemarkers:
     def test_no_exemarkers_exits(self):
         """Test that None exemarkers causes sys.exit(1)."""
         config_files = compiletools.configutils.config_files_from_variant(exedir=uth.cakedir(), argv=[])
-        cap = configargparse.getArgumentParser(
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
             description="TestNoExemarkers",
             formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
             default_config_files=config_files,
@@ -274,7 +278,8 @@ class TestFindTargetsOsWalkFallback:
                 f.write('#include <iostream>\nint main() { return 0; }\n')
 
             config_files = compiletools.configutils.config_files_from_variant(exedir=uth.cakedir(), argv=[])
-            cap = configargparse.getArgumentParser(
+            cap = configargparse.ArgumentParser(
+                conflict_handler="resolve",
                 description="TestWalkFallback",
                 formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
                 default_config_files=config_files,

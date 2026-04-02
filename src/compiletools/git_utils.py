@@ -77,6 +77,8 @@ class NameAdjuster:
 
     @staticmethod
     def add_arguments(cap):
+        if compiletools.apptools._parser_has_option(cap, "--shorten"):
+            return
         compiletools.utils.add_flag_argument(
             cap,
             "shorten",
