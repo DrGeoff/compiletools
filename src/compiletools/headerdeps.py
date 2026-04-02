@@ -34,19 +34,26 @@ _include_list_cache = {}
 _invariant_include_cache = {}
 
 
-def clear_caches():
+def clear_caches(context=None):
     """Clear all module-level caches. Used by test framework between tests."""
+    if context is not None:
+        context.include_list_cache.clear()
+        context.invariant_include_cache.clear()
+        return
     global _include_list_cache, _invariant_include_cache
     _include_list_cache = {}
     _invariant_include_cache = {}
 
 
-def clear_include_list_cache():
+def clear_include_list_cache(context=None):
     """Clear the include list cache.
 
     Used during two-pass header discovery to ensure Pass 2 gets fresh results.
     """
-    _include_list_cache.clear()
+    if context is not None:
+        context.include_list_cache.clear()
+    else:
+        _include_list_cache.clear()
 
 
 def create(args, context=None):
@@ -371,12 +378,17 @@ class DirectHeaderDeps(HeaderDepsBase):
         # Get analysis result first - needed for invariant check
         analysis_result = analyze_file(content_hash)
 
+        # Select cache storage: context or module-level globals
+        ctx = getattr(self, "context", None)
+        inv_inc_cache = ctx.invariant_include_cache if ctx is not None else _invariant_include_cache
+        var_inc_cache = ctx.include_list_cache if ctx is not None else _include_list_cache
+
         # Check if file is permanently invariant (no conditionals at all)
         # This is a fast check based on file content, not macro state
         if is_permanently_invariant(analysis_result):
             # Invariant file - use content_hash only as cache key
-            if content_hash in _invariant_include_cache:
-                cached_includes, cached_file_defines, cached_file_undefs = _invariant_include_cache[content_hash]
+            if content_hash in inv_inc_cache:
+                cached_includes, cached_file_defines, cached_file_undefs = inv_inc_cache[content_hash]
                 if cached_file_defines:
                     self.defined_macros = self.defined_macros.with_updates(cached_file_defines)
                 if cached_file_undefs:
@@ -384,22 +396,24 @@ class DirectHeaderDeps(HeaderDepsBase):
                 return cached_includes
 
             # Cache miss for invariant file - compute and store
-            result = get_or_compute_preprocessing(analysis_result, self.defined_macros, self.args.verbose)
+            result = get_or_compute_preprocessing(
+                analysis_result, self.defined_macros, self.args.verbose, context=ctx
+            )
 
             include_list = [
                 sz.Str(inc["filename"]) for inc in result.active_includes if not inc.get("is_commented", False)
             ]
 
             self.defined_macros = result.updated_macros
-            _invariant_include_cache[content_hash] = (include_list, result.file_defines, result.file_undefs)
+            inv_inc_cache[content_hash] = (include_list, result.file_defines, result.file_undefs)
             return include_list
 
         # Variant file - use file-specific macro key (only macros that affect this file)
         macro_key = self.defined_macros.get_relevant_key(analysis_result.conditional_macros)
         cache_key = (content_hash, macro_key)
 
-        if cache_key in _include_list_cache:
-            cached_includes, cached_file_defines, cached_file_undefs = _include_list_cache[cache_key]
+        if cache_key in var_inc_cache:
+            cached_includes, cached_file_defines, cached_file_undefs = var_inc_cache[cache_key]
             if cached_file_defines:
                 self.defined_macros = self.defined_macros.with_updates(cached_file_defines)
             if cached_file_undefs:
@@ -413,12 +427,14 @@ class DirectHeaderDeps(HeaderDepsBase):
                 f"{len(analysis_result.include_positions)} includes in {realpath}"
             )
 
-        result = get_or_compute_preprocessing(analysis_result, self.defined_macros, self.args.verbose)
+        result = get_or_compute_preprocessing(
+            analysis_result, self.defined_macros, self.args.verbose, context=ctx
+        )
 
         include_list = [sz.Str(inc["filename"]) for inc in result.active_includes if not inc.get("is_commented", False)]
 
         self.defined_macros = result.updated_macros
-        _include_list_cache[cache_key] = (include_list, result.file_defines, result.file_undefs)
+        var_inc_cache[cache_key] = (include_list, result.file_defines, result.file_undefs)
 
         return include_list
 
