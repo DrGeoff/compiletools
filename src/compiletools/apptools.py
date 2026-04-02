@@ -1261,7 +1261,7 @@ def create_parser(description, argv=None, include_config=True, include_write_con
             kwargs["args_for_writing_out_config_file"] = ["-w", "--write-out-config-file"]
         return configargparse.getArgumentParser(**kwargs)
     else:
-        cap = configargparse.getArgumentParser(description=description)
+        cap = configargparse.ArgumentParser(description=description)
         add_base_arguments(cap, argv=argv)
         return cap
 
