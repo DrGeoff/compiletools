@@ -106,6 +106,34 @@ class MagicFlagsBase:
         # (global + per-file magic) so get_hash(include_core=True) captures everything.
         self._final_macro_states = {}
 
+    def _initialize_macro_state(self) -> MacroState:
+        """Initialize MacroState with command-line and compiler macros as core.
+
+        Returns:
+            MacroState: Initialized with core (compiler + cmdline) and empty variable macros
+        """
+        core_macros = {}
+
+        # Get compiler built-in macros - these are the stable base (~378 macros)
+        compiler_macros = compiletools.compiler_macros.get_compiler_macros(self._args.CXX, self._args.verbose)
+        core_macros.update({sz.Str(k): sz.Str(v) for k, v in compiler_macros.items()})
+
+        # Add command-line macros to core - they're also static for the entire build
+        cmd_macros = compiletools.apptools.extract_command_line_macros(
+            self._args, flag_sources=["CPPFLAGS", "CXXFLAGS"], include_compiler_macros=False, verbose=self._args.verbose
+        )
+        core_macros.update({sz.Str(k): sz.Str(v) for k, v in cmd_macros.items()})
+
+        # Create MacroState with core macros, empty variable macros
+        return MacroState(
+            core_macros,
+            {},
+            compiler_path=self._args.CXX,
+            cppflags=self._args.CPPFLAGS,
+            cflags=self._args.CFLAGS,
+            cxxflags=self._args.CXXFLAGS,
+        )
+
     def get_final_macro_state_key(self, filename: str):
         """Get the final converged macro state key for a specific file.
 
@@ -458,34 +486,6 @@ class DirectMagicFlags(MagicFlagsBase):
         # deps_hash: XOR of dependency file content hashes (headers + READMACROS)
         # Cached result stores content_hash (not filepath) - current paths resolved via global hash registry
         self._structured_data_cache = {}
-
-    def _initialize_macro_state(self) -> MacroState:
-        """Initialize MacroState with command-line and compiler macros as core.
-
-        Returns:
-            MacroState: Initialized with core (compiler + cmdline) and empty variable macros
-        """
-        core_macros = {}
-
-        # Get compiler built-in macros - these are the stable base (~378 macros)
-        compiler_macros = compiletools.compiler_macros.get_compiler_macros(self._args.CXX, self._args.verbose)
-        core_macros.update({sz.Str(k): sz.Str(v) for k, v in compiler_macros.items()})
-
-        # Add command-line macros to core - they're also static for the entire build
-        cmd_macros = compiletools.apptools.extract_command_line_macros(
-            self._args, flag_sources=["CPPFLAGS", "CXXFLAGS"], include_compiler_macros=False, verbose=self._args.verbose
-        )
-        core_macros.update({sz.Str(k): sz.Str(v) for k, v in cmd_macros.items()})
-
-        # Create MacroState with core macros, empty variable macros
-        return MacroState(
-            core_macros,
-            {},
-            compiler_path=self._args.CXX,
-            cppflags=self._args.CPPFLAGS,
-            cflags=self._args.CFLAGS,
-            cxxflags=self._args.CXXFLAGS,
-        )
 
     def _extract_macros_from_magic_flags(self, magic_flags_result):
         """Extract -D macros from magic flag CPPFLAGS and CXXFLAGS."""
@@ -938,30 +938,6 @@ class CppMagicFlags(MagicFlagsBase):
 
         # Compute initial macro state once (compiler built-ins + command-line macros)
         self._initial_macro_state = self._initialize_macro_state()
-
-    def _initialize_macro_state(self) -> MacroState:
-        """Initialize MacroState with command-line and compiler macros as core."""
-        core_macros = {}
-
-        # Get compiler built-in macros - these are the stable base (~378 macros)
-        compiler_macros = compiletools.compiler_macros.get_compiler_macros(self._args.CXX, self._args.verbose)
-        core_macros.update({sz.Str(k): sz.Str(v) for k, v in compiler_macros.items()})
-
-        # Add command-line macros to core - they're also static for the entire build
-        cmd_macros = compiletools.apptools.extract_command_line_macros(
-            self._args, flag_sources=["CPPFLAGS", "CXXFLAGS"], include_compiler_macros=False, verbose=self._args.verbose
-        )
-        core_macros.update({sz.Str(k): sz.Str(v) for k, v in cmd_macros.items()})
-
-        # Create MacroState with core macros, empty variable macros
-        return MacroState(
-            core_macros,
-            {},
-            compiler_path=self._args.CXX,
-            cppflags=self._args.CPPFLAGS,
-            cflags=self._args.CFLAGS,
-            cxxflags=self._args.CXXFLAGS,
-        )
 
     def _extract_macros_from_preprocessor(self, filename: str) -> MacroState:
         """Extract all macro definitions from preprocessor using -dM flag.

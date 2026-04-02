@@ -534,31 +534,46 @@ class SlurmBackend(ShakeBackend):
             non_oom = [f for f in failures if f.state != self._OOM_STATE]
             all_failures.extend(non_oom)
 
-            # Retry OOM failures with doubled memory, up to --slurm-mem
-            retry_mem_mb = max(
-                (self._parse_mem(self._estimate_memory(r)) for r in oom_rules),
-                default=0,
-            )
+            # Retry OOM failures: double each rule's last memory allocation,
+            # capped at --slurm-mem.  Rules are grouped by their doubled memory
+            # tier so each Slurm array requests only what its tasks need.
+            # Track last memory per rule (starts at original estimate).
+            rule_mem: dict[str, str] = {r.output: self._estimate_memory(r) for r in oom_rules}
             while oom_rules:
-                retry_mem_mb = retry_mem_mb * 2
-                if retry_mem_mb > mem_cap_mb:
-                    all_failures.extend(
-                        SlurmBackend._TaskFailure(rule=r, state=self._OOM_STATE, job_id="retry") for r in oom_rules
-                    )
+                # Double each rule's memory; separate those that exceed the cap.
+                capped: list[BuildRule] = []
+                retryable: list[tuple[BuildRule, str]] = []
+                for r in oom_rules:
+                    doubled = self._double_mem(rule_mem[r.output])
+                    if self._parse_mem(doubled) > mem_cap_mb:
+                        capped.append(r)
+                    else:
+                        rule_mem[r.output] = doubled
+                        retryable.append((r, doubled))
+                all_failures.extend(
+                    SlurmBackend._TaskFailure(rule=r, state=self._OOM_STATE, job_id="retry") for r in capped
+                )
+                if not retryable:
                     break
-                retry_mem = self._format_mem(retry_mem_mb)
+
+                # Group retryable rules by memory tier for efficient array submission.
+                retry_tiers: dict[str, list[BuildRule]] = collections.defaultdict(list)
+                for r, mem in retryable:
+                    retry_tiers[mem].append(r)
+
                 logger.info(
-                    "Retrying %d OOM compile job(s) with %s memory (cap: %s)",
-                    len(oom_rules),
-                    retry_mem,
+                    "Retrying %d OOM compile job(s) across %d memory tier(s) (cap: %s)",
+                    len(retryable),
+                    len(retry_tiers),
                     self.args.slurm_mem,
                 )
                 retry_map: dict[str, list[BuildRule]] = {}
-                for retry_start in range(0, len(oom_rules), max_array):
-                    chunk = oom_rules[retry_start : retry_start + max_array]
-                    array_job_id = self._sbatch_array(chunk, chunk_id=chunk_id, mem=retry_mem)
-                    retry_map[array_job_id] = chunk
-                    chunk_id += len(chunk)
+                for mem, tier_rules in retry_tiers.items():
+                    for retry_start in range(0, len(tier_rules), max_array):
+                        chunk = tier_rules[retry_start : retry_start + max_array]
+                        array_job_id = self._sbatch_array(chunk, chunk_id=chunk_id, mem=mem)
+                        retry_map[array_job_id] = chunk
+                        chunk_id += len(chunk)
 
                 retry_failures = self._wait_for_arrays(retry_map)
                 oom_rules = [f.rule for f in retry_failures if f.state == self._OOM_STATE]
