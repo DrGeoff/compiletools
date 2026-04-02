@@ -60,9 +60,7 @@ def list_backends(args=None):
 
 
 def main(argv=None):
-    cap = compiletools.apptools.create_parser(
-        "List available build backends", argv=argv, include_config=False
-    )
+    cap = compiletools.apptools.create_parser("List available build backends", argv=argv, include_config=False)
     add_arguments(cap)
     args = cap.parse_args(args=argv)
     print(list_backends(args=args), end="")

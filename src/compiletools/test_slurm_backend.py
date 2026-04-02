@@ -6,17 +6,15 @@ import contextlib
 import os
 import subprocess
 from types import SimpleNamespace
-from unittest import mock
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 import compiletools.trace_backend  # noqa: F401 — ensure registered
 from compiletools.build_backend import available_backends, get_backend_class, is_backend_available
 from compiletools.build_graph import BuildGraph, BuildRule
-from compiletools.trace_backend import SlurmBackend, TraceEntry, TraceStore, hash_command
 from compiletools.testhelper import TempDirContextNoChange, make_backend_args
-
+from compiletools.trace_backend import SlurmBackend, TraceEntry, TraceStore, hash_command
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -25,7 +23,7 @@ from compiletools.testhelper import TempDirContextNoChange, make_backend_args
 
 @contextlib.contextmanager
 def SlurmBackendTestContext(graph, **arg_overrides):
-    """Context manager yielding (backend, tmpdir) with a SlurmBackend wired to *graph*."""
+    """Context manager yielding (backend, _tmpdir) with a SlurmBackend wired to *graph*."""
     slurm_defaults = dict(
         slurm_partition=None,
         slurm_time="00:30:00",
@@ -131,7 +129,7 @@ class TestSbatchSubmission:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [rule.output]))
 
-        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             with (
                 patch("subprocess.check_output", return_value="12345\n") as mock_sbatch,
                 patch.object(backend, "_wait_for_arrays", return_value=[]),
@@ -152,7 +150,7 @@ class TestSbatchSubmission:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [rule.output]))
 
-        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             with (
                 patch("subprocess.check_output", return_value="42\n") as mock_sbatch,
                 patch.object(backend, "_wait_for_arrays", return_value=[]),
@@ -168,7 +166,7 @@ class TestSbatchSubmission:
             # The commands file written to objdir must contain the compile command
             # (chunk 0 → chunk_id=0 → filename suffix -0)
             cmds_file = os.path.join(backend.args.objdir, ".ct-slurm-cmds-0.txt")
-            content = open(cmds_file).read()
+            content = open(cmds_file).read()  # noqa: SIM115
             assert "g++" in content
             assert "foo.o" in content
 
@@ -178,7 +176,7 @@ class TestSbatchSubmission:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [rule.output]))
 
-        with SlurmBackendTestContext(graph, slurm_partition="gpu") as (backend, tmpdir):
+        with SlurmBackendTestContext(graph, slurm_partition="gpu") as (backend, _tmpdir):
             with (
                 patch("subprocess.check_output", return_value="7\n") as mock_sbatch,
                 patch.object(backend, "_wait_for_arrays", return_value=[]),
@@ -195,7 +193,7 @@ class TestSbatchSubmission:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [rule.output]))
 
-        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             with (
                 patch("subprocess.check_output", return_value="7\n") as mock_sbatch,
                 patch.object(backend, "_wait_for_arrays", return_value=[]),
@@ -211,7 +209,7 @@ class TestSbatchSubmission:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [rule.output]))
 
-        with SlurmBackendTestContext(graph, slurm_account="myproject") as (backend, tmpdir):
+        with SlurmBackendTestContext(graph, slurm_account="myproject") as (backend, _tmpdir):
             with (
                 patch("subprocess.check_output", return_value="9\n") as mock_sbatch,
                 patch.object(backend, "_wait_for_arrays", return_value=[]),
@@ -231,7 +229,7 @@ class TestSbatchSubmission:
         graph.add_rule(r2)
         graph.add_rule(make_phony_rule("build", [r1.output, r2.output]))
 
-        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             with (
                 patch("subprocess.check_output", return_value="55\n") as mock_sbatch,
                 patch.object(backend, "_wait_for_arrays", return_value=[]),
@@ -259,7 +257,7 @@ class TestSbatchSubmission:
 
         sbatch_ids = iter(["10\n", "20\n", "30\n"])
 
-        with SlurmBackendTestContext(graph, slurm_max_array=2) as (backend, tmpdir):
+        with SlurmBackendTestContext(graph, slurm_max_array=2) as (backend, _tmpdir):
             with (
                 patch("subprocess.check_output", side_effect=sbatch_ids) as mock_sbatch,
                 patch.object(backend, "_wait_for_arrays", return_value=[]),
@@ -285,8 +283,8 @@ class TestCAShortCircuit:
         """Compile rules whose output exists AND has a valid trace are skipped."""
         src = str(tmp_path / "foo.cpp")
         out = str(tmp_path / "foo.o")
-        open(src, "w").write("int x;")
-        open(out, "w").write("compiled")
+        (tmp_path / "foo.cpp").write_text("int x;")
+        (tmp_path / "foo.o").write_text("compiled")
 
         rule = make_compile_rule(output=out, src=src)
         graph = BuildGraph()
@@ -308,7 +306,7 @@ class TestCAShortCircuit:
         )
         store.save()
 
-        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             backend.args.objdir = str(tmp_path)
             with patch("subprocess.check_output") as mock_sbatch:
                 backend.execute("build")
@@ -330,7 +328,7 @@ class TestCAShortCircuit:
         # File exists on disk but no trace was recorded for it
         open(out, "w").close()
 
-        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             with (
                 patch("subprocess.check_output", return_value="42\n") as mock_sbatch,
                 patch.object(backend, "_wait_for_arrays", return_value=[]),
@@ -375,7 +373,7 @@ class TestTraceVerification:
         )
         store.save()
 
-        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             # Point objdir to tmp_path so the trace file is found
             backend.args.objdir = str(tmp_path)
             with patch("subprocess.check_output") as mock_sbatch:
@@ -397,11 +395,14 @@ class TestJobFailures:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [out]))
 
-        with SlurmBackendTestContext(graph) as (backend, tmpdir):
-            with patch("subprocess.check_output", side_effect=[
-                "99\n",                                     # sbatch returns array job ID
-                _sacct_output(("99_0", "FAILED")),          # sacct for array task
-            ]):
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            with patch(
+                "subprocess.check_output",
+                side_effect=[
+                    "99\n",  # sbatch returns array job ID
+                    _sacct_output(("99_0", "FAILED")),  # sacct for array task
+                ],
+            ):
                 with pytest.raises(RuntimeError, match="Slurm compile jobs failed"):
                     backend.execute("build")
 
@@ -412,11 +413,14 @@ class TestJobFailures:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [out]))
 
-        with SlurmBackendTestContext(graph) as (backend, tmpdir):
-            with patch("subprocess.check_output", side_effect=[
-                "88\n",
-                _sacct_output(("88_0", "CANCELLED")),
-            ]):
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            with patch(
+                "subprocess.check_output",
+                side_effect=[
+                    "88\n",
+                    _sacct_output(("88_0", "CANCELLED")),
+                ],
+            ):
                 with pytest.raises(RuntimeError, match="Slurm compile jobs failed"):
                     backend.execute("build")
 
@@ -430,11 +434,14 @@ class TestJobFailures:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [out]))
 
-        with SlurmBackendTestContext(graph) as (backend, tmpdir):
-            with patch("subprocess.check_output", side_effect=[
-                "99\n",
-                _sacct_output(("99_0", "FAILED")),
-            ]):
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            with patch(
+                "subprocess.check_output",
+                side_effect=[
+                    "99\n",
+                    _sacct_output(("99_0", "FAILED")),
+                ],
+            ):
                 with pytest.raises(RuntimeError, match="Slurm compile jobs failed"):
                     backend.execute("build")
 
@@ -524,8 +531,8 @@ class TestLocalLink:
         src = str(tmp_path / "foo.cpp")
         obj = str(tmp_path / "foo.o")
         exe = str(tmp_path / "foo")
-        open(src, "w").write("int main(){}")
-        open(obj, "w").write("compiled")  # pretend compile happened
+        (tmp_path / "foo.cpp").write_text("int main(){}")
+        (tmp_path / "foo.o").write_text("compiled")  # pretend compile happened
 
         compile_rule = make_compile_rule(output=obj, src=src)
         link_rule = make_link_rule(output=exe, inputs=[obj])
@@ -534,7 +541,7 @@ class TestLocalLink:
         graph.add_rule(link_rule)
         graph.add_rule(make_phony_rule("build", [exe]))
 
-        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             # Record a valid trace for the compile output so it is trusted and skipped.
             from compiletools.global_hash_registry import get_file_hash
 
@@ -572,7 +579,7 @@ class TestLocalLink:
         graph = BuildGraph()
         graph.add_rule(make_phony_rule("build"))
 
-        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             with patch.object(backend, "_run_tests") as mock_run_tests:
                 backend.execute("runtests")
 
@@ -662,7 +669,7 @@ class TestTieredSubmission:
 
         sbatch_ids = iter(["100\n", "200\n"])
 
-        with SlurmBackendTestContext(graph, slurm_mem="16G") as (backend, tmpdir):
+        with SlurmBackendTestContext(graph, slurm_mem="16G") as (backend, _tmpdir):
             with (
                 patch("subprocess.check_output", side_effect=sbatch_ids) as mock_sbatch,
                 patch.object(backend, "_wait_for_arrays", return_value=[]),
@@ -690,7 +697,7 @@ class TestTieredSubmission:
         graph.add_rule(r2)
         graph.add_rule(make_phony_rule("build", [r1.output, r2.output]))
 
-        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             with (
                 patch("subprocess.check_output", return_value="55\n") as mock_sbatch,
                 patch.object(backend, "_wait_for_arrays", return_value=[]),
@@ -710,7 +717,7 @@ class TestTieredSubmission:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [rule.output]))
 
-        with SlurmBackendTestContext(graph, slurm_mem="16G") as (backend, tmpdir):
+        with SlurmBackendTestContext(graph, slurm_mem="16G") as (backend, _tmpdir):
             with patch("subprocess.check_output", return_value="42\n") as mock_sbatch:
                 backend._sbatch_array([rule], chunk_id=0, mem="1G")
 
@@ -725,7 +732,7 @@ class TestTieredSubmission:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [rule.output]))
 
-        with SlurmBackendTestContext(graph, slurm_mem="16G") as (backend, tmpdir):
+        with SlurmBackendTestContext(graph, slurm_mem="16G") as (backend, _tmpdir):
             with patch("subprocess.check_output", return_value="42\n") as mock_sbatch:
                 backend._sbatch_array([rule], chunk_id=0)
 
@@ -773,13 +780,16 @@ class TestOOMRetry:
         graph.add_rule(make_phony_rule("build", [out]))
 
         # OOM at 2G -> retry at 4G -> COMPLETED
-        with SlurmBackendTestContext(graph, slurm_mem="8G") as (backend, tmpdir):
-            with patch("subprocess.check_output", side_effect=[
-                "88\n",                                          # initial sbatch
-                _sacct_output(("88_0", "OUT_OF_MEMORY")),        # sacct poll
-                "99\n",                                          # retry sbatch
-                _sacct_output(("99_0", "COMPLETED")),            # sacct poll
-            ]) as mock_sbatch:
+        with SlurmBackendTestContext(graph, slurm_mem="8G") as (backend, _tmpdir):
+            with patch(
+                "subprocess.check_output",
+                side_effect=[
+                    "88\n",  # initial sbatch
+                    _sacct_output(("88_0", "OUT_OF_MEMORY")),  # sacct poll
+                    "99\n",  # retry sbatch
+                    _sacct_output(("99_0", "COMPLETED")),  # sacct poll
+                ],
+            ) as mock_sbatch:
                 backend.execute("build")
 
         sbatch_calls = _sbatch_calls(mock_sbatch)
@@ -797,15 +807,18 @@ class TestOOMRetry:
         graph.add_rule(make_phony_rule("build", [out]))
 
         # OOM at 2G -> retry 4G -> OOM at 4G -> retry 8G -> COMPLETED
-        with SlurmBackendTestContext(graph, slurm_mem="8G") as (backend, tmpdir):
-            with patch("subprocess.check_output", side_effect=[
-                "10\n",                                          # initial sbatch
-                _sacct_output(("10_0", "OUT_OF_MEMORY")),        # OOM
-                "20\n",                                          # retry at 4G
-                _sacct_output(("20_0", "OUT_OF_MEMORY")),        # OOM again
-                "30\n",                                          # retry at 8G
-                _sacct_output(("30_0", "COMPLETED")),            # success
-            ]) as mock_sbatch:
+        with SlurmBackendTestContext(graph, slurm_mem="8G") as (backend, _tmpdir):
+            with patch(
+                "subprocess.check_output",
+                side_effect=[
+                    "10\n",  # initial sbatch
+                    _sacct_output(("10_0", "OUT_OF_MEMORY")),  # OOM
+                    "20\n",  # retry at 4G
+                    _sacct_output(("20_0", "OUT_OF_MEMORY")),  # OOM again
+                    "30\n",  # retry at 8G
+                    _sacct_output(("30_0", "COMPLETED")),  # success
+                ],
+            ) as mock_sbatch:
                 backend.execute("build")
 
         sbatch_calls = _sbatch_calls(mock_sbatch)
@@ -827,13 +840,16 @@ class TestOOMRetry:
         graph.add_rule(make_phony_rule("build", [out]))
 
         # OOM at 2G -> retry 4G -> OOM at 4G -> cap is 4G, fail
-        with SlurmBackendTestContext(graph, slurm_mem="4G") as (backend, tmpdir):
-            with patch("subprocess.check_output", side_effect=[
-                "10\n",
-                _sacct_output(("10_0", "OUT_OF_MEMORY")),
-                "20\n",
-                _sacct_output(("20_0", "OUT_OF_MEMORY")),
-            ]):
+        with SlurmBackendTestContext(graph, slurm_mem="4G") as (backend, _tmpdir):
+            with patch(
+                "subprocess.check_output",
+                side_effect=[
+                    "10\n",
+                    _sacct_output(("10_0", "OUT_OF_MEMORY")),
+                    "20\n",
+                    _sacct_output(("20_0", "OUT_OF_MEMORY")),
+                ],
+            ):
                 with pytest.raises(RuntimeError, match="Slurm compile jobs failed"):
                     backend.execute("build")
 
@@ -845,11 +861,14 @@ class TestOOMRetry:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [out]))
 
-        with SlurmBackendTestContext(graph, slurm_mem="16G") as (backend, tmpdir):
-            with patch("subprocess.check_output", side_effect=[
-                "88\n",
-                _sacct_output(("88_0", "FAILED")),
-            ]) as mock_sbatch:
+        with SlurmBackendTestContext(graph, slurm_mem="16G") as (backend, _tmpdir):
+            with patch(
+                "subprocess.check_output",
+                side_effect=[
+                    "88\n",
+                    _sacct_output(("88_0", "FAILED")),
+                ],
+            ) as mock_sbatch:
                 with pytest.raises(RuntimeError, match="Slurm compile jobs failed"):
                     backend.execute("build")
 

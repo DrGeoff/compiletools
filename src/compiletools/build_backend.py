@@ -631,7 +631,7 @@ class BuildBackend(abc.ABC):
         # Compute include_weight for SLURM memory estimation.
         # len(quoted_headers) from FileAnalyzer correlates with peak RSS (r=0.85)
         # because each quoted include transitively pulls in framework templates.
-        # analyze_file is already cached from the header dep walk — zero cost.
+        # analyze_file is already cached from the header dep walk -- zero cost.
         from compiletools.file_analyzer import analyze_file
         from compiletools.global_hash_registry import get_file_hash
 

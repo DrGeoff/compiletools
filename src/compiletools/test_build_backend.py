@@ -159,12 +159,8 @@ class TestBuildGraphPopulation:
 
     def _make_backend(self, tmp_path, args=None, hunter=None):
         StubClass = make_stub_backend_class()
-        args = args or make_backend_args(
-            tmp_path, filename=["/src/main.cpp"], CXXFLAGS="-O2 -std=c++17"
-        )
-        hunter = hunter or make_mock_hunter(
-            sources=["/src/main.cpp"], headers=["/src/util.h"]
-        )
+        args = args or make_backend_args(tmp_path, filename=["/src/main.cpp"], CXXFLAGS="-O2 -std=c++17")
+        hunter = hunter or make_mock_hunter(sources=["/src/main.cpp"], headers=["/src/util.h"])
         backend = StubClass(args=args, hunter=hunter)
         backend.namer = make_mock_namer(args)
         return backend

@@ -832,9 +832,7 @@ def make_mock_namer(args):
     namer.object_pathname = MagicMock(
         side_effect=lambda f, mh, dh: f"{objdir}/{f.split('/')[-1].replace('.cpp', '.o')}"
     )
-    namer.executable_pathname = MagicMock(
-        side_effect=lambda f: f"{bindir}/{f.split('/')[-1].replace('.cpp', '')}"
-    )
+    namer.executable_pathname = MagicMock(side_effect=lambda f: f"{bindir}/{f.split('/')[-1].replace('.cpp', '')}")
     namer.staticlibrary_pathname = MagicMock(return_value=f"{bindir}/libmylib.a")
     namer.dynamiclibrary_pathname = MagicMock(return_value=f"{bindir}/libmylib.so")
     namer.compute_dep_hash = MagicMock(return_value="dep_hash_12345")

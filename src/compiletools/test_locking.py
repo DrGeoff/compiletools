@@ -594,7 +594,7 @@ class TestAtomicCompile:
 
 
 class TestAtomicLink:
-    """Test atomic_link — simpler than atomic_compile, no temp file logic."""
+    """Test atomic_link -- simpler than atomic_compile, no temp file logic."""
 
     def test_atomic_link_runs_command_under_lock(self):
         """Lock is acquired before command runs and released after."""
