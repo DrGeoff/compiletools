@@ -729,15 +729,17 @@ class BuildBackend(abc.ABC):
             order_only_deps=[exe_dir],
         )
 
-    def _get_library_object_names(self, sources: list[str]) -> tuple[list[str], set[str]]:
+    def _get_library_object_names(self, sources: list[str]) -> tuple[list[str], list[str]]:
         """Get object file names and source files for library targets.
 
         Returns:
             (object_names, all_source_files) tuple.
         """
-        all_source_files = set()
-        for source in sources:
-            all_source_files.update(self.hunter.required_source_files(source))
+        # Use ordered_union instead of set() to preserve deterministic
+        # ordering — required for stable link commands and CA cache hits.
+        all_source_files = compiletools.utils.ordered_union(
+            *(self.hunter.required_source_files(source) for source in sources)
+        )
 
         object_names = compiletools.utils.ordered_unique(
             [

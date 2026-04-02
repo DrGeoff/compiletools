@@ -88,11 +88,18 @@ class Hunter:
         return (headers, sources)
 
     def _expand_deps_recursive(self, realpath, macro_state_key, processed):
-        """Recursively expand dependencies (internal helper)."""
+        """Recursively expand dependencies (internal helper).
+
+        processed is a dict used as an insertion-ordered set (Python 3.7+).
+        Using a dict rather than a set ensures the link command has
+        deterministic argument ordering across runs, which is required for
+        the content-addressable build cache in trace_backend to produce
+        stable cache keys.
+        """
         if realpath in processed:
             return
 
-        processed.add(realpath)
+        processed[realpath] = None
         headers, sources = self._get_immediate_deps(realpath, macro_state_key)
 
         for dep in headers + sources:
@@ -105,7 +112,11 @@ class Hunter:
         if self.args.verbose >= 7:
             print(f"Hunter::_required_files_impl for {realpath}")
 
-        processed = set()
+        # Use dict as insertion-ordered set (Python 3.7+) rather than set()
+        # to ensure deterministic ordering of dependencies.  Non-deterministic
+        # ordering causes the link command to change on every invocation,
+        # defeating the content-addressable cache and forcing a re-link (~2s).
+        processed = {}
         self._expand_deps_recursive(realpath, macro_state_key, processed)
 
         if self.args.verbose >= 9:
