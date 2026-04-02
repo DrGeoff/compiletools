@@ -12,9 +12,10 @@ already exists on disk it is correct by construction, so verifying traces
 degenerates to a single os.path.exists() call — skipping all hashing, trace
 lookup, and input comparison for no-op rebuilds.
 
-ShakeBackend drives compilation directly from Python using a ThreadPoolExecutor.
+ShakeBackend drives compilation directly from Python using asyncio coroutines
+with a semaphore to limit subprocess concurrency.
 
-SlurmBackend replaces the ThreadPoolExecutor compile phase with batch Slurm job
+SlurmBackend replaces the async compile phase with batch Slurm job
 submission, distributing compile rules across an HPC cluster:
 
 1. Identify compile rules that need rebuilding (trace verify).
@@ -35,6 +36,7 @@ directly from Python.
 
 from __future__ import annotations
 
+import asyncio
 import collections
 import contextlib
 import hashlib
@@ -46,10 +48,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
+from typing import ClassVar
 
 import compiletools.filesystem_utils
 from compiletools.build_backend import (
@@ -233,138 +234,112 @@ class ShakeBackend(BuildBackend):
 
         trace_path = os.path.join(self.args.objdir, self.build_filename())
         traces = TraceStore(trace_path)
-        done: set[str] = set()
-        lock = threading.Lock()
 
         parallel = getattr(self.args, "parallel", 1)
         max_workers = parallel if parallel and parallel > 0 else 1
+        sem = asyncio.Semaphore(max_workers)
+        memo: dict[str, asyncio.Task[bool]] = {}
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            self._build(target, self._graph, traces, done, lock, executor, max_workers)
+        asyncio.run(self._build_async(target, self._graph, traces, memo, sem))
 
         traces.save()
 
-    def _build(
+    async def _build_async(
         self,
         target: str,
         graph: BuildGraph,
         traces: TraceStore,
-        done: set[str],
-        lock: threading.Lock,
-        executor: ThreadPoolExecutor,
-        max_workers: int = 1,
+        memo: dict[str, asyncio.Task[bool]],
+        sem: asyncio.Semaphore,
     ) -> bool:
-        """Suspending scheduler with verifying traces and early cutoff.
+        """Async suspending scheduler with verifying traces and early cutoff.
+
+        Uses asyncio.gather for fan-out (no deadlock risk) and a semaphore
+        to limit subprocess concurrency.  Memoization via the memo dict
+        ensures each target is built at most once (diamond deps await the
+        same task).
 
         Returns True if the target's output changed (dependents should rebuild).
         """
-        with lock:
-            if target in done:
-                return False
+        if target not in memo:
+            memo[target] = asyncio.ensure_future(self._do_build(target, graph, traces, memo, sem))
+        return await memo[target]
 
+    async def _do_build(
+        self,
+        target: str,
+        graph: BuildGraph,
+        traces: TraceStore,
+        memo: dict[str, asyncio.Task[bool]],
+        sem: asyncio.Semaphore,
+    ) -> bool:
+        """Build a single target, recursing into dependencies via gather."""
         rule = graph.get_rule(target)
         if rule is None:
-            # Leaf node (source/header file) — no rule to run
-            with lock:
-                done.add(target)
-            return False
+            return False  # Leaf node (source/header file)
 
         if rule.rule_type == "phony":
-            # Phony targets aggregate independent builds — parallelise them.
-            # Guard against nested phony targets: if an input is itself phony,
-            # build it sequentially to avoid ThreadPoolExecutor deadlock (all
-            # workers blocking on f.result() for queued-but-unstarted tasks).
-            futures: list[Future[bool]] = []
-            sequential_results: list[bool] = []
-            for inp in rule.inputs:
-                inp_rule = graph.get_rule(inp)
-                if inp_rule is not None and inp_rule.rule_type == "phony":
-                    sequential_results.append(self._build(inp, graph, traces, done, lock, executor, max_workers))
-                else:
-                    futures.append(executor.submit(self._build, inp, graph, traces, done, lock, executor, max_workers))
-            any_rebuilt = any(f.result() for f in futures) or any(sequential_results)
-            with lock:
-                done.add(target)
-            return any_rebuilt
+            results = await asyncio.gather(*(self._build_async(inp, graph, traces, memo, sem) for inp in rule.inputs))
+            return any(results)
 
         # Ensure order-only deps (directories) exist
         for dep in rule.order_only_deps:
             os.makedirs(dep, exist_ok=True)
 
         # CONTENT-ADDRESSABLE SHORT-CIRCUIT
-        # For compile rules, the object filename encodes all inputs.
-        # For link/library rules, we compute a CA target from the rule's
-        # inputs + command; if that CA file exists, copy it to the
-        # human-readable target and skip.
         if _is_build_artifact(rule):
             if rule.rule_type == "compile":
-                # Compile: target IS the CA name
                 if os.path.exists(target):
-                    with lock:
-                        done.add(target)
                     return False
             else:
-                # Link/library: CA name differs from graph target
                 ca = self._ca_target(rule)
                 if os.path.exists(ca):
                     _atomic_copy(ca, target)
-                    with lock:
-                        done.add(target)
                     return False
 
-        # SUSPEND: build all inputs.  The dependency graph is fully static
-        # (pre-computed by Hunter), so all inputs are known upfront and can
-        # be started concurrently when workers are available (§6.2 of Mokhov
-        # et al. 2018).  Shared deps are safe: the ``done`` set prevents
-        # duplicate work.  With max_workers == 1, submitting from inside a
-        # worker would deadlock (the worker blocks on f.result() while no
-        # other worker can pick up the submitted task), so we fall back to
-        # sequential execution.
-        if max_workers > 1 and len(rule.inputs) > 1:
-            futures = [
-                executor.submit(self._build, inp, graph, traces, done, lock, executor, max_workers)
-                for inp in rule.inputs
-            ]
-            # Collect *all* results (no short-circuit) so that every input
-            # is built before we proceed to the EXECUTE step.
-            results = [f.result() for f in futures]
-            any_input_rebuilt = any(results)
-        else:
-            any_input_rebuilt = False
-            for inp in rule.inputs:
-                if self._build(inp, graph, traces, done, lock, executor, max_workers):
-                    any_input_rebuilt = True
+        # SUSPEND: build all inputs concurrently via gather.
+        results = await asyncio.gather(*(self._build_async(inp, graph, traces, memo, sem) for inp in rule.inputs))
+        any_input_rebuilt = any(results)
 
         # VERIFY TRACE (non-CA rules only)
         if not _is_build_artifact(rule) and not any_input_rebuilt:
-            with lock:
-                trace = traces.get(target)
+            trace = traces.get(target)
             if trace is not None and self._verify(rule, trace):
-                with lock:
-                    done.add(target)
                 return False  # up to date
 
-        # EXECUTE
+        # EXECUTE (semaphore limits subprocess concurrency)
         old_hash = None
         if not _is_build_artifact(rule):
             old_hash = get_file_hash(target) if os.path.exists(target) else None
 
         assert rule.command is not None, "only rules with commands reach EXECUTE"
-        cmd = rule.command  # bind locally so Pyright narrows to list[str]
+        cmd = rule.command
         verbose = getattr(self.args, "verbose", 0)
         if verbose >= 1:
             print(" ".join(cmd), file=sys.stderr)
 
         flat_cmd = _flatten_command(cmd)
 
+        loop = asyncio.get_running_loop()
+        async with sem:
+            await loop.run_in_executor(None, self._execute_rule, rule, target, flat_cmd, cmd)
+
+        # CA outputs don't need trace recording or early cutoff
+        if _is_build_artifact(rule):
+            return True  # New output -> dependents must rebuild
+
+        new_hash = get_file_hash(target)
+        traces.put(target, _make_trace_entry(rule, output_hash=new_hash))
+
+        # EARLY CUTOFF
+        return old_hash != new_hash
+
+    def _execute_rule(self, rule: BuildRule, target: str, flat_cmd: list[str], cmd: list[str]) -> None:
+        """Run the subprocess for a single build rule (called from a thread)."""
         if rule.rule_type == "compile":
-            # Compile rules: use atomic_compile to prevent TOCTOU races.
-            # The target file never exists in a partial state (compile to
-            # temp file, then atomic rename). Strip the trailing -o <target>
-            # from flat_cmd since atomic_compile appends -o <tempfile>.
             cmd_without_output = flat_cmd[:-2]  # remove [-o, target]
             file_lock = FileLock(target, self.args)
-            lock_impl = file_lock.lock  # underlying lock (or None if disabled)
+            lock_impl = file_lock.lock
             if lock_impl is not None:
                 try:
                     atomic_compile(lock_impl, target, cmd_without_output)
@@ -373,44 +348,18 @@ class ShakeBackend(BuildBackend):
                     print(e.stderr or "", end="", file=sys.stderr)
                     raise
             else:
-                # File locking disabled — still use temp+rename for atomicity
-                # but without cross-process locking
                 self._atomic_compile_no_lock(target, cmd_without_output)
         elif _is_build_artifact(rule):
-            # Link/library rules: build to CA target, then copy to human target.
             ca = self._ca_target(rule)
             ca_cmd = [ca if a == target else a for a in flat_cmd]
             with FileLock(ca, self.args):
-                # FlockLock creates an empty file at the CA path via O_CREAT.
-                # ar -r treats an empty file as a corrupt archive and fails
-                # with "File format not recognized".  Remove the empty file
-                # so ar can create a fresh archive.  The flock fd stays valid
-                # after unlink on Unix, so the lock is still held.
                 if os.path.exists(ca) and os.path.getsize(ca) == 0:
                     os.unlink(ca)
                 _run_subprocess(ca_cmd, cmd)
             _atomic_copy(ca, target)
         else:
-            # Non-CA rules (shouldn't normally reach here)
             with FileLock(target, self.args):
                 _run_subprocess(flat_cmd, cmd)
-
-        with lock:
-            done.add(target)
-
-        # CA outputs don't need trace recording or early cutoff —
-        # existence implies correctness.
-        if _is_build_artifact(rule):
-            return True  # New output → dependents must rebuild
-
-        new_hash = get_file_hash(target)
-
-        # RECORD TRACE (only for non-content-addressable rules)
-        with lock:
-            traces.put(target, _make_trace_entry(rule, output_hash=new_hash))
-
-        # EARLY CUTOFF
-        return old_hash != new_hash
 
     @staticmethod
     def _atomic_compile_no_lock(target: str, compile_cmd: list[str]) -> subprocess.CompletedProcess:
@@ -511,7 +460,7 @@ class SlurmBackend(ShakeBackend):
         )
 
     # ------------------------------------------------------------------
-    # Core execute() — overrides ShakeBackend's ThreadPoolExecutor engine
+    # Core execute() — overrides ShakeBackend's async engine
 
     def execute(self, target: str = "build") -> None:
         if target == "runtests":
@@ -594,14 +543,15 @@ class SlurmBackend(ShakeBackend):
                 retry_mem_mb = retry_mem_mb * 2
                 if retry_mem_mb > mem_cap_mb:
                     all_failures.extend(
-                        SlurmBackend._TaskFailure(rule=r, state=self._OOM_STATE, job_id="retry")
-                        for r in oom_rules
+                        SlurmBackend._TaskFailure(rule=r, state=self._OOM_STATE, job_id="retry") for r in oom_rules
                     )
                     break
                 retry_mem = self._format_mem(retry_mem_mb)
                 logger.info(
                     "Retrying %d OOM compile job(s) with %s memory (cap: %s)",
-                    len(oom_rules), retry_mem, self.args.slurm_mem,
+                    len(oom_rules),
+                    retry_mem,
+                    self.args.slurm_mem,
                 )
                 retry_map: dict[str, list[BuildRule]] = {}
                 for retry_start in range(0, len(oom_rules), max_array):
@@ -644,7 +594,7 @@ class SlurmBackend(ShakeBackend):
     # peak RSS (r=0.85) because each quoted include transitively pulls in
     # framework headers and triggers template instantiation.  Unity-build
     # #include "*.C" patterns contribute naturally to this count.
-    _MEMORY_TIERS: list[tuple[int, str]] = [
+    _MEMORY_TIERS: ClassVar[list[tuple[int, str]]] = [
         (1, "2G"),
         (2, "4G"),
     ]
@@ -779,11 +729,12 @@ class SlurmBackend(ShakeBackend):
     @dataclass
     class _TaskFailure:
         """Structured info about a failed Slurm task."""
+
         rule: BuildRule
         state: str
         job_id: str
 
-    def _wait_for_arrays(self, index_map: dict[str, list[BuildRule]]) -> list["SlurmBackend._TaskFailure"]:
+    def _wait_for_arrays(self, index_map: dict[str, list[BuildRule]]) -> list[SlurmBackend._TaskFailure]:
         """Poll sacct until every task in every array reaches a terminal state.
 
         *index_map* maps array_job_id → ordered list of rules (index == task index).
@@ -809,11 +760,7 @@ class SlurmBackend(ShakeBackend):
                 rules = index_map[array_job_id]
                 states = self._query_array_task_states(array_job_id)
 
-                terminal_tasks = {
-                    jid: st
-                    for jid, st in states.items()
-                    if st in self._TERMINAL_STATES and "_" in jid
-                }
+                terminal_tasks = {jid: st for jid, st in states.items() if st in self._TERMINAL_STATES and "_" in jid}
                 if len(terminal_tasks) < len(rules):
                     still_pending.add(array_job_id)
                     continue

@@ -16,6 +16,7 @@ import compiletools.trace_backend  # noqa: F401 — ensure registered
 from compiletools.build_backend import available_backends, get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.global_hash_registry import get_file_hash
+from compiletools.testhelper import ShakeBackendTestContext, fake_subprocess_result
 from compiletools.trace_backend import (
     ShakeBackend,
     TraceEntry,
@@ -23,7 +24,6 @@ from compiletools.trace_backend import (
     _is_build_artifact,
     hash_command,
 )
-from compiletools.testhelper import ShakeBackendTestContext, fake_subprocess_result
 
 # ---------------------------------------------------------------------------
 # Registration
@@ -686,7 +686,7 @@ class TestContentAddressableShortCircuit:
                 mock_run.assert_not_called()
 
     def test_compile_returns_true_when_object_new(self, monkeypatch):
-        """Object file does NOT exist, compile executes. _build returns True
+        """Object file does NOT exist, compile executes. _build_async returns True
         (signaling dependents should rebuild)."""
         graph = BuildGraph()
         compile_rule = BuildRule(
@@ -707,8 +707,6 @@ class TestContentAddressableShortCircuit:
             os.makedirs(td / "obj", exist_ok=True)
 
             traces = TraceStore(str(td / ".ct-traces.json"))
-            done: set[str] = set()
-            lock = threading.Lock()
 
             compile_calls = []
 
@@ -717,13 +715,14 @@ class TestContentAddressableShortCircuit:
                 (td / "foo.o").write_bytes(b"\x7fELF new object")
                 return fake_subprocess_result()
 
-            from concurrent.futures import ThreadPoolExecutor
+            import asyncio
 
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic):
-                    changed = backend._build("foo.o", graph, traces, done, lock, executor)
-                    assert changed is True
-                    assert len(compile_calls) == 1
+            memo: dict[str, asyncio.Task[bool]] = {}
+            sem = asyncio.Semaphore(1)
+            with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic):
+                changed = asyncio.run(backend._build_async("foo.o", graph, traces, memo, sem))
+                assert changed is True
+                assert len(compile_calls) == 1
 
     def test_link_skipped_when_ca_target_exists(self, monkeypatch):
         """Link uses CA short-circuit: if the CA-named file exists, the link
