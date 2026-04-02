@@ -49,13 +49,14 @@ def clear_include_list_cache():
     _include_list_cache.clear()
 
 
-def create(args):
+def create(args, context=None):
     """HeaderDeps Factory"""
     classname = args.headerdeps.title() + "HeaderDeps"
     if args.verbose >= 4:
         print("Creating " + classname + " to process header dependencies.")
     depsclass = globals()[classname]
     depsobject = depsclass(args)
+    depsobject.context = context
     return depsobject
 
 

@@ -25,13 +25,14 @@ MacroDict = dict[sz.Str, sz.Str]
 FlagsDict = dict[sz.Str, list[sz.Str]]
 
 
-def create(args, headerdeps):
+def create(args, headerdeps, context=None):
     """MagicFlags Factory"""
     classname = args.magic.title() + "MagicFlags"
     if args.verbose >= 4:
         print("Creating " + classname + " to process magicflags.")
     magicclass = globals()[classname]
     magicobject = magicclass(args, headerdeps)
+    magicobject.context = context
     return magicobject
 
 

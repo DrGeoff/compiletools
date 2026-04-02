@@ -34,10 +34,11 @@ class Hunter:
     other required source files, other required compile/link flags.
     """
 
-    def __init__(self, args, headerdeps, magicparser):
+    def __init__(self, args, headerdeps, magicparser, context=None):
         self.args = args
         self.headerdeps = headerdeps
         self.magicparser = magicparser
+        self.context = context
 
     @instance_cache
     def _extractSOURCE(self, realpath):

@@ -16,6 +16,7 @@ import compiletools.namer
 import compiletools.utils
 import compiletools.wrappedos
 from compiletools.build_backend import available_backends, get_backend_class
+from compiletools.build_context import BuildContext
 
 
 def _ensure_backends_registered():
@@ -35,6 +36,7 @@ def _ensure_backends_registered():
 class Cake:
     def __init__(self, args):
         self.args = args
+        self.context = BuildContext()
         self.namer = None
         self.headerdeps = None
         self.magicparser = None
@@ -65,9 +67,9 @@ class Cake:
     def _createctobjs(self):
         """Has to be separate because --auto fiddles with the args"""
         self.namer = compiletools.namer.Namer(self.args)
-        self.headerdeps = compiletools.headerdeps.create(self.args)
-        self.magicparser = compiletools.magicflags.create(self.args, self.headerdeps)
-        self.hunter = compiletools.hunter.Hunter(self.args, self.headerdeps, self.magicparser)
+        self.headerdeps = compiletools.headerdeps.create(self.args, context=self.context)
+        self.magicparser = compiletools.magicflags.create(self.args, self.headerdeps, context=self.context)
+        self.hunter = compiletools.hunter.Hunter(self.args, self.headerdeps, self.magicparser, context=self.context)
 
     @staticmethod
     def add_arguments(cap):
