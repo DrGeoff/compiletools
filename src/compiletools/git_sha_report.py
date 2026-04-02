@@ -1,3 +1,4 @@
+import logging
 import os
 import shlex
 import subprocess
@@ -6,6 +7,46 @@ from typing import Optional
 
 from compiletools import wrappedos
 from compiletools.git_utils import find_git_root
+
+logger = logging.getLogger(__name__)
+
+# Cached result of symlink detection within the repo tree.
+# None = not yet checked, True/False = result.
+_repo_has_symlinks: Optional[bool] = None
+
+
+def _check_repo_has_symlinks(resolved_root: str, sample_paths: list[str]) -> bool:
+    """Sample a few paths to detect if the repo tree contains symlinks.
+
+    If any sampled path differs between join and realpath, the repo has
+    symlinks and we must fall back to per-file realpath.
+    """
+    for rel in sample_paths[:20]:
+        joined = os.path.join(resolved_root, rel)
+        if os.path.realpath(joined) != joined:
+            return True
+    return False
+
+
+def _resolve_paths(git_root: str, relative_paths: list[str]) -> list[str]:
+    """Resolve relative git paths to absolute canonical paths.
+
+    Fast path: resolve git_root once, then use os.path.join for each file.
+    Fallback: per-file os.path.realpath if in-repo symlinks are detected.
+    """
+    global _repo_has_symlinks
+
+    resolved_root = os.path.realpath(git_root)
+
+    if _repo_has_symlinks is None:
+        _repo_has_symlinks = _check_repo_has_symlinks(resolved_root, relative_paths)
+        if _repo_has_symlinks:
+            logger.info("In-repo symlinks detected; using per-file realpath (slower)")
+
+    if _repo_has_symlinks:
+        return [wrappedos.realpath(os.path.join(git_root, p)) for p in relative_paths]
+
+    return [os.path.join(resolved_root, p) for p in relative_paths]
 
 
 def run_git(cmd: str, input_data: Optional[str] = None) -> str:
@@ -57,22 +98,23 @@ def get_index_hashes() -> dict[Path, str]:
     # Get git root once outside the loop
     git_root = find_git_root()
 
-    hashes = {}
+    # Parse all entries first, then resolve paths in bulk.
+    entries: list[tuple[str, str]] = []
     for line in output.splitlines():
-        # Parse "<mode> <blob_sha> <stage> <path>"
         parts = line.split(None, 3)
         if len(parts) != 4:
             continue
-
         _mode, blob_sha, _stage, path_str = parts
-        # Since we run git commands from git root, paths are relative to git root
-        abs_path_str = os.path.join(git_root, path_str)
+        entries.append((path_str, blob_sha))
 
+    resolved = _resolve_paths(git_root, [e[0] for e in entries])
+
+    hashes = {}
+    for (_, blob_sha), abs_path_str in zip(entries, resolved):
         # Skip files that have been deleted but not committed
         if not wrappedos.isfile(abs_path_str):
             continue
-
-        hashes[Path(wrappedos.realpath(abs_path_str))] = blob_sha
+        hashes[Path(abs_path_str)] = blob_sha
 
     return hashes
 
@@ -92,9 +134,9 @@ def get_untracked_files() -> list[Path]:
     output = run_git(cmd)
     if not output:
         return []
-    # Since we run git commands from git root, paths are relative to git root
     git_root = find_git_root()
-    return [Path(wrappedos.realpath(os.path.join(git_root, line))) for line in output.splitlines()]
+    rel_paths = output.splitlines()
+    return [Path(p) for p in _resolve_paths(git_root, rel_paths)]
 
 
 def batch_hash_objects(paths) -> dict[Path, str]:
@@ -177,14 +219,9 @@ def get_modified_but_unstaged_files() -> list[Path]:
         return []
 
     git_root = find_git_root()
-    # Only return files that actually exist (exclude deleted files)
-    result = []
-    for line in output.splitlines():
-        abs_path_str = os.path.join(git_root, line)
-        # Use cached isfile check to avoid repeated filesystem operations
-        if wrappedos.isfile(abs_path_str):
-            result.append(Path(wrappedos.realpath(abs_path_str)))
-    return result
+    rel_paths = output.splitlines()
+    resolved = _resolve_paths(git_root, rel_paths)
+    return [Path(p) for p in resolved if wrappedos.isfile(p)]
 
 
 def get_complete_working_directory_hashes() -> dict[Path, str]:

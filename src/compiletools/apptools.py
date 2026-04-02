@@ -854,8 +854,20 @@ def filter_pkg_config_cflags(cflags_str, verbose=0):
 
 
 def _add_flags_from_pkg_config(args):
-    for pkg in args.pkg_config:
-        raw_cflags = cached_pkg_config(pkg, "--cflags")
+    packages = list(args.pkg_config)
+    if not packages:
+        return
+
+    # Batch pkg-config calls: query all packages at once instead of one subprocess
+    # per package.  Falls back to per-package calls if the batch fails (e.g. a
+    # package is missing and we need to identify which one).
+    want_libs = hasattr(args, "LDFLAGS")
+
+    batch_cflags = _batch_pkg_config(packages, "--cflags")
+    batch_libs = _batch_pkg_config(packages, "--libs") if want_libs else {}
+
+    for pkg in packages:
+        raw_cflags = batch_cflags.get(pkg, "")
         cflags = filter_pkg_config_cflags(raw_cflags, args.verbose)
 
         if cflags:
@@ -865,14 +877,42 @@ def _add_flags_from_pkg_config(args):
             if args.verbose >= 6:
                 print(f"pkg-config --cflags {pkg} added FLAGS={cflags}")
 
-        # Only query pkg-config for libs if LDFLAGS is defined in the args namespace.
-        # Some tools (like ct-magicflags) don't call add_link_arguments() so LDFLAGS won't exist.
-        if hasattr(args, "LDFLAGS"):
-            libs = cached_pkg_config(pkg, "--libs")
+        if want_libs:
+            libs = batch_libs.get(pkg, "")
             if libs:
                 args.LDFLAGS += f" {libs}"
                 if args.verbose >= 6:
                     print(f"pkg-config --libs {pkg} added LDFLAGS={libs}")
+
+
+def _batch_pkg_config(packages: list[str], option: str) -> dict[str, str]:
+    """Query pkg-config for all *packages* at once, returning {pkg: output}.
+
+    Fast path: validate all packages with a single ``--exists`` call, then
+    query each with *option* (skipping the per-package ``--exists``).
+    If the batch ``--exists`` fails, fall back to per-package cached calls
+    which handle missing packages individually.
+    """
+    # Single --exists check for all packages at once
+    exists = subprocess.run(
+        ["pkg-config", "--exists"] + packages,
+        capture_output=True,
+        check=False,
+    )
+    if exists.returncode != 0:
+        # At least one package is missing — fall back to per-package
+        return {pkg: cached_pkg_config(pkg, option) for pkg in packages}
+
+    # All packages exist — query each without the redundant --exists check.
+    out: dict[str, str] = {}
+    for pkg in packages:
+        r = subprocess.run(
+            ["pkg-config", option, pkg],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        out[pkg] = r.stdout.rstrip()
+    return out
 
 
 def _set_project_version(args):
