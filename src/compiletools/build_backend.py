@@ -192,7 +192,8 @@ class BuildBackend(abc.ABC):
     def __init__(self, args, hunter):
         self.args = args
         self.hunter = hunter
-        self.namer = compiletools.namer.Namer(args)
+        self.context = getattr(hunter, "context", None)
+        self.namer = compiletools.namer.Namer(args, context=self.context)
         self._graph: BuildGraph | None = None
         self._dynamic_sources: set[str] = set()
 
@@ -636,8 +637,8 @@ class BuildBackend(abc.ABC):
         from compiletools.global_hash_registry import get_file_hash
 
         try:
-            content_hash = get_file_hash(filename)
-            analysis = analyze_file(content_hash)
+            content_hash = get_file_hash(filename, self.context)
+            analysis = analyze_file(content_hash, self.context)
             include_weight = len(analysis.quoted_headers)
         except (FileNotFoundError, OSError, RuntimeError):
             include_weight = 0

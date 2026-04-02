@@ -34,9 +34,12 @@ def main(argv=None):
     args = compiletools.apptools.parseargs(cap, argv)
 
     try:
-        headerdeps = compiletools.headerdeps.create(args)
-        magicparser = compiletools.magicflags.create(args, headerdeps)
-        hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser)
+        from compiletools.build_context import BuildContext
+
+        context = BuildContext()
+        headerdeps = compiletools.headerdeps.create(args, context=context)
+        magicparser = compiletools.magicflags.create(args, headerdeps, context=context)
+        hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=context)
 
         backend = MakefileBackend(args=args, hunter=hunter)
         graph = backend.build_graph()

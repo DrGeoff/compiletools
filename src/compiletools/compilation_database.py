@@ -20,17 +20,23 @@ from compiletools.locking import FileLock
 class CompilationDatabaseCreator:
     """Creates compile_commands.json files for clang tooling integration"""
 
-    def __init__(self, args, namer=None, headerdeps=None, magicparser=None, hunter=None):
+    def __init__(self, args, namer=None, headerdeps=None, magicparser=None, hunter=None, context=None):
         self.args = args
+        self.context = context
 
         # Use provided objects or create new ones
-        self.namer = namer if namer is not None else compiletools.namer.Namer(args)
-        self.headerdeps = headerdeps if headerdeps is not None else compiletools.headerdeps.create(args)
+        self.namer = namer if namer is not None else compiletools.namer.Namer(args, context=context)
+        self.headerdeps = (
+            headerdeps if headerdeps is not None
+            else compiletools.headerdeps.create(args, context=context)
+        )
         self.magicparser = (
-            magicparser if magicparser is not None else compiletools.magicflags.create(args, self.headerdeps)
+            magicparser if magicparser is not None
+            else compiletools.magicflags.create(args, self.headerdeps, context=context)
         )
         self.hunter = (
-            hunter if hunter is not None else compiletools.hunter.Hunter(args, self.headerdeps, self.magicparser)
+            hunter if hunter is not None
+            else compiletools.hunter.Hunter(args, self.headerdeps, self.magicparser, context=context)
         )
 
     @staticmethod
@@ -282,17 +288,21 @@ def main(argv=None):
     # Parse arguments
     args = compiletools.apptools.parseargs(cap, argv)
 
+    from compiletools.build_context import BuildContext
+
+    context = BuildContext()
+
     # Handle --auto mode: discover targets if no explicit targets provided
     if args.auto and not any([args.filename, args.static, args.dynamic, args.tests]):
         if args.verbose >= 2:
             print("Auto-detecting targets...")
-        findtargets = compiletools.findtargets.FindTargets(args)
+        findtargets = compiletools.findtargets.FindTargets(args, context=context)
         findtargets.process(args)
         # Re-run substitutions after targets are discovered
         compiletools.apptools.substitutions(args, verbose=0)
 
     # Create and run the compilation database creator
-    creator = CompilationDatabaseCreator(args)
+    creator = CompilationDatabaseCreator(args, context=context)
     creator.write_compilation_database()
 
     return 0

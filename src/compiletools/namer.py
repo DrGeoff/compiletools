@@ -13,8 +13,9 @@ class Namer:
     like executable name, object name, etc.
     """
 
-    def __init__(self, args, argv=None, variant=None, exedir=None):
+    def __init__(self, args, argv=None, variant=None, exedir=None, context=None):
         self.args = args
+        self.context = context
         self._project = compiletools.git_utils.Project(args)
         self._cached_macros = None
 
@@ -107,7 +108,7 @@ class Namer:
         combined = 0
         for header_path in sorted(unique_paths):
             try:
-                file_hash = get_file_hash(header_path)
+                file_hash = get_file_hash(header_path, self.context)
                 # Use first 56 bits (14 hex chars)
                 combined ^= int(file_hash[:14], 16)
             except FileNotFoundError:
@@ -151,7 +152,7 @@ class Namer:
         basename = os.path.splitext(name)[0]
 
         # Get file content hash (12 chars to match git short hash convention)
-        file_hash = get_file_hash(sourcefilename)
+        file_hash = get_file_hash(sourcefilename, self.context)
         file_hash_short = file_hash[:12]
 
         # Use precomputed dependency hash (14 chars) - MIDDLE POSITION

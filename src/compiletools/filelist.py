@@ -171,9 +171,12 @@ def main(argv=None):
     cap = compiletools.apptools.create_parser("Generate file lists for packaging", argv=argv)
     Filelist.add_arguments(cap)
     args = compiletools.apptools.parseargs(cap, argv)
-    headerdeps = compiletools.headerdeps.create(args)
-    magicparser = compiletools.magicflags.create(args, headerdeps)
-    hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser)
+    from compiletools.build_context import BuildContext
+
+    context = BuildContext()
+    headerdeps = compiletools.headerdeps.create(args, context=context)
+    magicparser = compiletools.magicflags.create(args, headerdeps, context=context)
+    hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=context)
     filelist = Filelist(args, hunter)
     filelist.process()
 

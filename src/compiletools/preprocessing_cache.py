@@ -701,16 +701,13 @@ def clear_cache(context=None):
     _cache_stats["variant_misses"] = 0
     _cache_stats["total_calls"] = 0
 
-    # Clear file analyzer cache since analysis results are used by preprocessing
-    from compiletools.file_analyzer import analyze_file
+    # When context is provided, also clear dependent caches
+    if context is not None:
+        from compiletools.file_analyzer import cache_clear as fa_cache_clear
+        from compiletools.global_hash_registry import clear_global_registry
 
-    analyze_file.cache_clear()
-
-    # Clear global hash registry to prevent stale hash lookups in tests
-    from compiletools.global_hash_registry import clear_global_registry, get_file_hash
-
-    clear_global_registry()
-    get_file_hash.cache_clear()
+        fa_cache_clear(context)
+        clear_global_registry(context)
 
 
 def print_preprocessing_stats():

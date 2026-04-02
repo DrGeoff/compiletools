@@ -66,7 +66,7 @@ class Cake:
 
     def _createctobjs(self):
         """Has to be separate because --auto fiddles with the args"""
-        self.namer = compiletools.namer.Namer(self.args)
+        self.namer = compiletools.namer.Namer(self.args, context=self.context)
         self.headerdeps = compiletools.headerdeps.create(self.args, context=self.context)
         self.magicparser = compiletools.magicflags.create(self.args, self.headerdeps, context=self.context)
         self.hunter = compiletools.hunter.Hunter(self.args, self.headerdeps, self.magicparser, context=self.context)
@@ -178,7 +178,8 @@ class Cake:
 
         # Reuse existing objects to avoid duplicating work
         creator = compiletools.compilation_database.CompilationDatabaseCreator(
-            self.args, namer=self.namer, headerdeps=self.headerdeps, magicparser=self.magicparser, hunter=self.hunter
+            self.args, namer=self.namer, headerdeps=self.headerdeps,
+            magicparser=self.magicparser, hunter=self.hunter, context=self.context,
         )
         creator.write_compilation_database()
 
@@ -285,7 +286,7 @@ class Cake:
             recreateobjs = True
 
         if self.args.auto and not any([self.args.filename, self.args.static, self.args.dynamic, self.args.tests]):
-            findtargets = compiletools.findtargets.FindTargets(self.args)
+            findtargets = compiletools.findtargets.FindTargets(self.args, context=self.context)
             findtargets.process(self.args)
             recreateobjs = True
 

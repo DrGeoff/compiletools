@@ -155,7 +155,7 @@ def _run_subprocess(cmd: list[str], original_cmd: list[str]) -> subprocess.Compl
     return result
 
 
-def _make_trace_entry(rule: BuildRule, output_hash: str | None = None) -> TraceEntry:
+def _make_trace_entry(rule: BuildRule, context, output_hash: str | None = None) -> TraceEntry:
     """Build a TraceEntry for a successfully executed rule.
 
     Pass *output_hash* when already computed (avoids a redundant disk read).
@@ -164,11 +164,11 @@ def _make_trace_entry(rule: BuildRule, output_hash: str | None = None) -> TraceE
     input_hashes = {}
     for p in rule.inputs:
         if os.path.isfile(p):
-            input_hashes[p] = get_file_hash(p)
+            input_hashes[p] = get_file_hash(p, context)
         else:
             logger.debug("_make_trace_entry: skipping non-file input %s for %s", p, rule.output)
     return TraceEntry(
-        output_hash=output_hash if output_hash is not None else get_file_hash(rule.output),
+        output_hash=output_hash if output_hash is not None else get_file_hash(rule.output, context),
         input_hashes=input_hashes,
         command_hash=hash_command(rule.command),
     )
@@ -311,7 +311,7 @@ class ShakeBackend(BuildBackend):
         # EXECUTE (semaphore limits subprocess concurrency)
         old_hash = None
         if not _is_build_artifact(rule):
-            old_hash = get_file_hash(target) if os.path.exists(target) else None
+            old_hash = get_file_hash(target, self.context) if os.path.exists(target) else None
 
         assert rule.command is not None, "only rules with commands reach EXECUTE"
         cmd = rule.command
@@ -329,8 +329,8 @@ class ShakeBackend(BuildBackend):
         if _is_build_artifact(rule):
             return True  # New output -> dependents must rebuild
 
-        new_hash = get_file_hash(target)
-        traces.put(target, _make_trace_entry(rule, output_hash=new_hash))
+        new_hash = get_file_hash(target, self.context)
+        traces.put(target, _make_trace_entry(rule, self.context, output_hash=new_hash))
 
         # EARLY CUTOFF
         return old_hash != new_hash
@@ -384,7 +384,7 @@ class ShakeBackend(BuildBackend):
         """Check if a trace is still valid (output exists, inputs unchanged, same command)."""
         # Verify output file still exists and matches the recorded hash
         try:
-            if get_file_hash(rule.output) != trace.output_hash:
+            if get_file_hash(rule.output, self.context) != trace.output_hash:
                 return False
         except (FileNotFoundError, OSError):
             return False
@@ -397,7 +397,7 @@ class ShakeBackend(BuildBackend):
 
         for inp, stored_hash in trace.input_hashes.items():
             try:
-                current_hash = get_file_hash(inp)
+                current_hash = get_file_hash(inp, self.context)
             except (FileNotFoundError, OSError):
                 return False
             if current_hash != stored_hash:
@@ -596,7 +596,7 @@ class SlurmBackend(ShakeBackend):
         # Phase 4: record traces for successfully built compile rules
         for rule in to_submit:
             if os.path.exists(rule.output):
-                traces.put(rule.output, _make_trace_entry(rule))
+                traces.put(rule.output, _make_trace_entry(rule, self.context))
 
         # Phase 5: run link/library/other non-compile rules locally in graph order
         for rule in graph.rules:
@@ -881,7 +881,7 @@ class SlurmBackend(ShakeBackend):
             with FileLock(rule.output, self.args):
                 _run_subprocess(flat_cmd, rule.command)
 
-        traces.put(rule.output, _make_trace_entry(rule))
+        traces.put(rule.output, _make_trace_entry(rule, self.context))
 
     def _execute_build(self, target: str) -> None:
         # SlurmBackend is self-executing via execute(); this path is never used.

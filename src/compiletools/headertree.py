@@ -212,8 +212,11 @@ def main(argv=None):
     compiletools.magicflags.add_arguments(cap)
     compiletools.headerdeps.add_arguments(cap)
     args = compiletools.apptools.parseargs(cap, argv)
-    ht = compiletools.headerdeps.DirectHeaderDeps(args)
-    magicparser = compiletools.magicflags.create(args, ht)
+    from compiletools.build_context import BuildContext
+
+    context = BuildContext()
+    ht = compiletools.headerdeps.DirectHeaderDeps(args, context=context)
+    magicparser = compiletools.magicflags.create(args, ht, context=context)
 
     if not compiletools.wrappedos.isfile(args.filename[0]):
         sys.stderr.write(

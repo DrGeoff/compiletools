@@ -11,8 +11,10 @@ import resource
 import sys
 from dataclasses import dataclass, field
 from enum import Enum
-from functools import cache
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from compiletools.build_context import BuildContext
 
 import stringzilla
 
@@ -279,25 +281,11 @@ def parse_directive_struct(
     return directive
 
 
-# Global args storage for file analysis (set once per build)
-_analyzer_args = None
-
-# Module-level warning flags for one-time warnings
-_warned_low_ulimit = False
-_file_reading_strategy = None  # Cache the chosen strategy
-
-
-def _warn_low_ulimit(total_files: int, soft_limit: int, context=None):
+def _warn_low_ulimit(total_files: int, soft_limit: int, context: "BuildContext"):
     """Warn once about low file descriptor limit."""
-    if context is not None:
-        if context.warned_low_ulimit:
-            return
-        args = context.analyzer_args
-    else:
-        global _warned_low_ulimit
-        if _warned_low_ulimit:
-            return
-        args = _analyzer_args
+    if context.warned_low_ulimit:
+        return
+    args = context.analyzer_args
 
     if args and getattr(args, "suppress_fd_warnings", False):
         return
@@ -308,26 +296,14 @@ def _warn_low_ulimit(total_files: int, soft_limit: int, context=None):
     print("  This is ~0.1-0.2ms slower per file but prevents EMFILE errors", file=sys.stderr)
     print(f"  To use faster mmap mode: ulimit -n {total_files * 2}", file=sys.stderr)
     print("  To suppress this warning: add '--suppress-fd-warnings' flag or config", file=sys.stderr)
-    if context is not None:
-        context.warned_low_ulimit = True
-    else:
-        _warned_low_ulimit = True
+    context.warned_low_ulimit = True
 
 
-_warned_mmap_failure = False
-
-
-def _warn_mmap_failure(filepath: str, error: Exception, context=None):
+def _warn_mmap_failure(filepath: str, error: Exception, context: "BuildContext"):
     """Warn once about unexpected mmap failure and fallback."""
-    if context is not None:
-        if context.warned_mmap_failure:
-            return
-        args = context.analyzer_args
-    else:
-        global _warned_mmap_failure
-        if _warned_mmap_failure:
-            return
-        args = _analyzer_args
+    if context.warned_mmap_failure:
+        return
+    args = context.analyzer_args
 
     if args and getattr(args, "suppress_fd_warnings", False):
         return
@@ -335,44 +311,29 @@ def _warn_mmap_failure(filepath: str, error: Exception, context=None):
     print(f"Warning: mmap failed for {filepath}: {error}", file=sys.stderr)
     print("  Falling back to traditional file reading for this and subsequent files", file=sys.stderr)
     print("  To suppress this warning: add '--suppress-fd-warnings' flag or config", file=sys.stderr)
-    if context is not None:
-        context.warned_mmap_failure = True
-    else:
-        _warned_mmap_failure = True
+    context.warned_mmap_failure = True
 
 
-def _determine_file_reading_strategy(context=None) -> str:
+def _determine_file_reading_strategy(context: "BuildContext") -> str:
     """Determine which file reading strategy to use for this session.
 
     Returns:
         'mmap' - Use Str(File(filepath)) directly (best performance)
         'no_mmap' - Use traditional open()/read() (for low ulimit or problematic filesystems)
     """
-    if context is not None:
-        if context.file_reading_strategy is not None:
-            return context.file_reading_strategy
-        args = context.analyzer_args
-    else:
-        global _file_reading_strategy
-        if _file_reading_strategy is not None:
-            return _file_reading_strategy
-        args = _analyzer_args
+    if context.file_reading_strategy is not None:
+        return context.file_reading_strategy
+    args = context.analyzer_args
 
     # Check for manual overrides first
     if args and not getattr(args, "use_mmap", True):
         strategy = "no_mmap"
-        if context is not None:
-            context.file_reading_strategy = strategy
-        else:
-            _file_reading_strategy = strategy
+        context.file_reading_strategy = strategy
         return strategy
 
     if args and getattr(args, "force_mmap", False):
         strategy = "mmap"
-        if context is not None:
-            context.file_reading_strategy = strategy
-        else:
-            _file_reading_strategy = strategy
+        context.file_reading_strategy = strategy
         return strategy
 
     # Get total file count from global hash registry
@@ -394,27 +355,21 @@ def _determine_file_reading_strategy(context=None) -> str:
     # If ulimit is dangerously low (< 100), always use no_mmap mode
     if soft_limit < 100:
         if total_files > 0:
-            _warn_low_ulimit(total_files, soft_limit, context=context)
+            _warn_low_ulimit(total_files, soft_limit, context)
         strategy = "no_mmap"
-        if context is not None:
-            context.file_reading_strategy = strategy
-        else:
-            _file_reading_strategy = strategy
+        context.file_reading_strategy = strategy
         return strategy
 
     # Compare file count to available fd limit
     safe_fd_limit = int(soft_limit * 0.9)
 
     if total_files > 0 and total_files > safe_fd_limit:
-        _warn_low_ulimit(total_files, soft_limit, context=context)
+        _warn_low_ulimit(total_files, soft_limit, context)
         strategy = "no_mmap"
     else:
         strategy = "mmap"
 
-    if context is not None:
-        context.file_reading_strategy = strategy
-    else:
-        _file_reading_strategy = strategy
+    context.file_reading_strategy = strategy
 
     return strategy
 
@@ -436,48 +391,42 @@ def _read_file_with_strategy(filepath: str, strategy: str):
     return compiletools.filesystem_utils.safe_read_text_file(filepath, encoding="utf-8", force_no_mmap=force_no_mmap)
 
 
-def set_analyzer_args(args, context=None):
+def set_analyzer_args(args, context: "BuildContext"):
     """Set args for file analysis. Must be called once at build start.
 
     Args:
         args: Args object containing max_read_size, verbose, exemarkers, testmarkers, librarymarkers
-        context: Optional BuildContext; when provided, state is stored there
+        context: BuildContext where state is stored
     """
-    if context is not None:
-        context.analyzer_args = args
-        context.file_reading_strategy = None
-        _determine_file_reading_strategy(context=context)
-        return
-
-    global _analyzer_args, _file_reading_strategy
-    _analyzer_args = args
-    # Clear cached strategy to force re-evaluation with new args
-    # This is important when tools like ct-cake call _createctobjs() multiple times
-    _file_reading_strategy = None
-    # Determine strategy with new args
-    _determine_file_reading_strategy()
+    context.analyzer_args = args
+    context.file_reading_strategy = None
+    _determine_file_reading_strategy(context)
 
 
-@cache
-def analyze_file(content_hash: str) -> "FileAnalysisResult":
-    """Direct file analysis with LRU caching - content hash based.
+def analyze_file(content_hash: str, context: "BuildContext") -> "FileAnalysisResult":
+    """File analysis with per-context caching - content hash based.
 
     Args:
         content_hash: Git blob hash of file content
+        context: BuildContext where cache and args are stored
 
     Raises:
         FileNotFoundError: If file with given hash not found
         RuntimeError: If analyzer args not set via set_analyzer_args()
     """
-    if _analyzer_args is None:
-        raise RuntimeError("analyze_file: analyzer args not set. Call set_analyzer_args() first.")
+    cached = context.analyze_file_cache.get(content_hash)
+    if cached is not None:
+        return cached
 
-    args = _analyzer_args
+    if context.analyzer_args is None:
+        raise RuntimeError("analyze_file: analyzer args not set on context. Call set_analyzer_args() first.")
+
+    args = context.analyzer_args
 
     # Reverse lookup to get filepath (already realpath from registry)
     from compiletools.global_hash_registry import get_filepath_by_hash
 
-    filepath = get_filepath_by_hash(content_hash)
+    filepath = get_filepath_by_hash(content_hash, context)
 
     from stringzilla import Str
 
@@ -490,7 +439,7 @@ def analyze_file(content_hash: str) -> "FileAnalysisResult":
     file_size = compiletools.wrappedos.getsize(filepath)
 
     # Determine file reading strategy
-    strategy = _determine_file_reading_strategy()
+    strategy = _determine_file_reading_strategy(context)
 
     # Handle empty files - StringZilla cannot memory-map zero-byte files
     if file_size == 0:
@@ -809,79 +758,33 @@ def analyze_file(content_hash: str) -> "FileAnalysisResult":
         marker_type=marker_type,
     )
 
-    return result
-
-
-def analyze_file_ctx(content_hash: str, context) -> "FileAnalysisResult":
-    """Context-aware file analysis with per-context caching.
-
-    Prefer this over analyze_file() when a BuildContext is available.
-    Uses context.analyze_file_cache instead of the module-level @cache.
-    """
-    cached = context.analyze_file_cache.get(content_hash)
-    if cached is not None:
-        return cached
-
-    if context.analyzer_args is None:
-        raise RuntimeError("analyze_file_ctx: analyzer args not set on context.")
-
-    # Reuse the core logic from analyze_file — call it and cache the result.
-    # The module-level @cache on analyze_file is keyed by content_hash, so
-    # calling it is safe even when a context is also in play.
-    result = analyze_file(content_hash)
     context.analyze_file_cache[content_hash] = result
     return result
 
 
-def cache_clear(context=None):
+def cache_clear(context: "BuildContext"):
     """Clear the file analysis cache and reset analyzer args."""
-    if context is not None:
-        context.analyzer_args = None
-        context.file_reading_strategy = None
-        context.warned_low_ulimit = False
-        context.warned_mmap_failure = False
-        context.analyze_file_cache.clear()
-        return
-
-    global _analyzer_args
-    _analyzer_args = None
-    analyze_file.cache_clear()
+    context.analyzer_args = None
+    context.file_reading_strategy = None
+    context.warned_low_ulimit = False
+    context.warned_mmap_failure = False
+    context.analyze_file_cache.clear()
 
 
-def get_cache_stats():
-    """Get cache statistics from LRU cache."""
-    info = analyze_file.cache_info()
+def get_cache_stats(context: "BuildContext"):
+    """Get cache statistics from context cache."""
+    cache_size = len(context.analyze_file_cache)
     return {
-        "hits": info.hits,
-        "misses": info.misses,
-        "total_calls": info.hits + info.misses,
-        "cache_size": info.currsize,
-        "max_size": info.maxsize,
+        "cache_size": cache_size,
     }
 
 
-def print_cache_stats():
+def print_cache_stats(context: "BuildContext"):
     """Print cache statistics."""
-    stats = get_cache_stats()
-    total = stats["total_calls"]
-    hits = stats["hits"]
-    misses = stats["misses"]
-
-    if total == 0:
-        hit_rate = 0.0
-    else:
-        hit_rate = (hits / total) * 100
+    stats = get_cache_stats(context)
 
     print("\n=== FileAnalyzer Cache Statistics ===")
-    print(f"Total calls:    {total:,}")
-    print(f"Cache hits:     {hits:,} ({hit_rate:.1f}%)")
-    print(f"Cache misses:   {misses:,}")
     print(f"Cache size:     {stats['cache_size']:,}")
-
-
-# Attach cache management functions
-analyze_file.get_cache_stats = get_cache_stats
-analyze_file.print_cache_stats = print_cache_stats
 
 
 def read_file_mmap(filepath, max_size=0):
@@ -1217,21 +1120,23 @@ class FileAnalyzer:
             help="Suppress filesystem compatibility warnings",
         )
 
-    def __init__(self, content_hash: str, args):
+    def __init__(self, content_hash: str, args, context: "BuildContext"):
         """Initialize file analyzer.
 
         Args:
             content_hash: Git blob hash of file content
             args: Args object containing max_read_size, verbose, exemarkers, testmarkers, librarymarkers
+            context: BuildContext where state is stored
         """
         if content_hash is None:
             raise ValueError("content_hash must be provided")
 
         self.content_hash = content_hash
         self.args = args
+        self.context = context
 
-        # Set global analyzer args for LRU caching
-        set_analyzer_args(args)
+        # Set analyzer args on context
+        set_analyzer_args(args, context)
 
         # StringZilla is now mandatory - no fallbacks
         import stringzilla as sz
@@ -1248,9 +1153,8 @@ class FileAnalyzer:
         return bool(file_size and file_size <= max_read_size)
 
     def analyze(self) -> FileAnalysisResult:
-        """Analyze file using shared module-level LRU cache."""
-        # Args must be set globally via set_analyzer_args before calling analyze
-        return analyze_file(self.content_hash)
+        """Analyze file using context-based cache."""
+        return analyze_file(self.content_hash, self.context)
 
     # _parse_directive_struct method removed - now uses stringzilla_utils module
 

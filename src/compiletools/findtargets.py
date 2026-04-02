@@ -112,13 +112,15 @@ class FindTargets:
     all the C/C++ files with main functions and unit tests.
     """
 
-    def __init__(self, args, argv=None, variant=None, exedir=None):
+    def __init__(self, args, argv=None, variant=None, exedir=None, context=None):
         self._args = args
-        # Set global analyzer args for FileAnalyzer caching
-        from compiletools.file_analyzer import set_analyzer_args
+        self.context = context
+        # Set analyzer args for FileAnalyzer caching
+        if context is not None:
+            from compiletools.file_analyzer import set_analyzer_args
 
-        set_analyzer_args(args)
-        self.namer = compiletools.namer.Namer(self._args, argv=argv, variant=variant, exedir=exedir)
+            set_analyzer_args(args, context)
+        self.namer = compiletools.namer.Namer(self._args, argv=argv, variant=variant, exedir=exedir, context=context)
 
     def process(self, args, path=None):
         """Put the output of __call__ into the args"""
@@ -162,7 +164,7 @@ class FindTargets:
         # Fall back to os.walk for non-git directories.
         from compiletools.global_hash_registry import get_file_hash, get_tracked_files
 
-        tracked = get_tracked_files()
+        tracked = get_tracked_files(self.context) if self.context is not None else {}
 
         prefix = os.path.realpath(path)
         if not prefix.endswith(os.sep):
@@ -184,7 +186,7 @@ class FindTargets:
                         pathname = os.path.realpath(os.path.join(root, fname))
                         if compiletools.utils.is_source(pathname):
                             try:
-                                yield pathname, get_file_hash(pathname)
+                                yield pathname, get_file_hash(pathname, self.context)
                             except FileNotFoundError:
                                 continue
 
@@ -192,7 +194,7 @@ class FindTargets:
 
         for filepath, content_hash in source_files:
             try:
-                result = compiletools.file_analyzer.analyze_file(content_hash)
+                result = compiletools.file_analyzer.analyze_file(content_hash, self.context)
 
                 filename = os.path.basename(filepath)
 
@@ -230,7 +232,10 @@ def main(argv=None):
     compiletools.findtargets.add_arguments(cap)
 
     args = compiletools.apptools.parseargs(cap, argv)
-    findtargets = FindTargets(args)
+    from compiletools.build_context import BuildContext
+
+    context = BuildContext()
+    findtargets = FindTargets(args, context=context)
 
     styleclass = globals()[args.style.title() + "Style"]
     styleobj = styleclass()

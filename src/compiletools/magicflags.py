@@ -31,9 +31,7 @@ def create(args, headerdeps, context=None):
     if args.verbose >= 4:
         print("Creating " + classname + " to process magicflags.")
     magicclass = globals()[classname]
-    magicobject = magicclass(args, headerdeps)
-    magicobject.context = context
-    return magicobject
+    return magicclass(args, headerdeps, context=context)
 
 
 def add_arguments(cap, variant=None):
@@ -93,14 +91,18 @@ class MagicFlagsBase:
         }
     """
 
-    def __init__(self, args: argparse.Namespace, headerdeps: compiletools.headerdeps.HeaderDepsBase) -> None:
+    def __init__(
+        self, args: argparse.Namespace, headerdeps: compiletools.headerdeps.HeaderDepsBase, context=None,
+    ) -> None:
         self._args = args
         self._headerdeps = headerdeps
+        self.context = context
 
-        # Set global analyzer args for FileAnalyzer caching
-        from compiletools.file_analyzer import set_analyzer_args
+        # Set analyzer args for FileAnalyzer caching
+        if context is not None:
+            from compiletools.file_analyzer import set_analyzer_args
 
-        set_analyzer_args(args)
+            set_analyzer_args(args, context)
 
         # The magic pattern is //#key=value with whitespace ignored
         self.magicpattern = re.compile(r"^[\s]*//#([\S]*?)[\s]*=[\s]*(.*)", re.MULTILINE)
@@ -196,8 +198,8 @@ class MagicFlagsBase:
         from compiletools.file_analyzer import analyze_file
         from compiletools.global_hash_registry import get_file_hash
 
-        content_hash = get_file_hash(filename)
-        return analyze_file(content_hash)
+        content_hash = get_file_hash(filename, self.context)
+        return analyze_file(content_hash, self.context)
 
     def __call__(self, filename: str) -> FlagsDict:
         return self.parse(filename)
@@ -369,7 +371,7 @@ class MagicFlagsBase:
 
         for file_data in file_analysis_data:
             content_hash = file_data["content_hash"]
-            filepath = get_filepath_by_hash(content_hash)
+            filepath = get_filepath_by_hash(content_hash, self.context)
             active_magic_flags = file_data["active_magic_flags"]
 
             for magic_flag in active_magic_flags:
@@ -468,15 +470,11 @@ class MagicFlagsBase:
         # Clear LRU caches
         compiletools.utils.split_command_cached.cache_clear()
         compiletools.utils.split_command_cached_sz.cache_clear()
-        # Clear FileAnalyzer module-level cache
-        from compiletools.file_analyzer import analyze_file
-
-        analyze_file.cache_clear()
 
 
 class DirectMagicFlags(MagicFlagsBase):
-    def __init__(self, args, headerdeps):
-        MagicFlagsBase.__init__(self, args, headerdeps)
+    def __init__(self, args, headerdeps, context=None):
+        MagicFlagsBase.__init__(self, args, headerdeps, context=context)
         # Create namer instance for dependency hash computation
         self._namer = compiletools.namer.Namer(args)
         # Compute initial macro state once (compiler built-ins + command-line macros)
@@ -531,7 +529,9 @@ class DirectMagicFlags(MagicFlagsBase):
             return None
 
         # Process conditional compilation to get active lines using current macro state
-        result = get_or_compute_preprocessing(file_result, self.defined_macros, self._args.verbose)
+        result = get_or_compute_preprocessing(
+            file_result, self.defined_macros, self._args.verbose, context=self.context,
+        )
         active_line_set = set(result.active_lines)
 
         # Extract macros from active magic flag CPPFLAGS and CXXFLAGS
@@ -770,7 +770,7 @@ class DirectMagicFlags(MagicFlagsBase):
         self._reset_state()
 
         # Get file hash and initial macro state
-        file_hash = get_file_hash(filename)
+        file_hash = get_file_hash(filename, self.context)
         input_macro_key = self.defined_macros.get_cache_key()
 
         # PASS 1: Initial discovery with core macros (compiler built-ins + command-line)
@@ -825,8 +825,8 @@ class DirectMagicFlags(MagicFlagsBase):
             import compiletools.headerdeps
             import compiletools.preprocessing_cache
 
-            compiletools.headerdeps.clear_include_list_cache()
-            compiletools.preprocessing_cache.clear_variant_cache()
+            compiletools.headerdeps.clear_include_list_cache(context=self.context)
+            compiletools.preprocessing_cache.clear_variant_cache(context=self.context)
 
             # Re-discover headers with converged macros (includes file-defined macros)
             headers = self._headerdeps.process(filename, pass1_macro_key)
@@ -887,7 +887,7 @@ class DirectMagicFlags(MagicFlagsBase):
             if self._args.verbose >= 9:
                 print(f"DirectMagicFlags: Using stored magic flags for {filepath}: {len(active_magic_flags)} active")
 
-            content_hash = get_file_hash(filepath)
+            content_hash = get_file_hash(filepath, self.context)
             result.append({"content_hash": content_hash, "active_magic_flags": active_magic_flags})
 
         return result
@@ -927,8 +927,8 @@ class DirectMagicFlags(MagicFlagsBase):
 
 
 class CppMagicFlags(MagicFlagsBase):
-    def __init__(self, args, headerdeps):
-        MagicFlagsBase.__init__(self, args, headerdeps)
+    def __init__(self, args, headerdeps, context=None):
+        MagicFlagsBase.__init__(self, args, headerdeps, context=context)
         # Reuse preprocessor from CppHeaderDeps if available to avoid duplicate instances
         if hasattr(headerdeps, "preprocessor") and headerdeps.__class__.__name__ == "CppHeaderDeps":
             self.preprocessor = headerdeps.preprocessor
@@ -1108,7 +1108,7 @@ class CppMagicFlags(MagicFlagsBase):
 
         from compiletools.global_hash_registry import get_file_hash
 
-        content_hash = get_file_hash(filename)
+        content_hash = get_file_hash(filename, self.context)
 
         return [{"content_hash": content_hash, "active_magic_flags": magic_flags}]
 

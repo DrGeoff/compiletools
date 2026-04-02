@@ -400,7 +400,7 @@ class SimplePreprocessor:
         expanded = str(self._recursive_expand_macros_sz(sz.Str(inner)))
         return expanded if expanded != inner else None
 
-    def process_structured(self, file_result: "FileAnalysisResult") -> list[int]:
+    def process_structured(self, file_result: "FileAnalysisResult", context=None) -> list[int]:
         """Process FileAnalysisResult and return active line numbers using structured directive data.
 
         Args:
@@ -412,7 +412,10 @@ class SimplePreprocessor:
         # Lookup filepath from content hash for logging
         from compiletools.global_hash_registry import get_filepath_by_hash
 
-        filepath = get_filepath_by_hash(file_result.content_hash)
+        if context is not None:
+            filepath = get_filepath_by_hash(file_result.content_hash, context)
+        else:
+            filepath = file_result.content_hash
 
         # Store include guard so _handle_define_structured can skip it
         # Include guards should not be added to macro state as they only prevent

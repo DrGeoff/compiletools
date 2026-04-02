@@ -62,9 +62,7 @@ def create(args, context=None):
     if args.verbose >= 4:
         print("Creating " + classname + " to process header dependencies.")
     depsclass = globals()[classname]
-    depsobject = depsclass(args)
-    depsobject.context = context
-    return depsobject
+    return depsclass(args, context=context)
 
 
 def add_arguments(cap):
@@ -96,10 +94,12 @@ class HeaderDepsBase:
     searching classes.  This really should be an abstract base class.
     """
 
-    def __init__(self, args):
+    def __init__(self, args, context=None):
         self.args = args
-        # Set global analyzer args for FileAnalyzer caching
-        set_analyzer_args(args)
+        self.context = context
+        # Set analyzer args for FileAnalyzer caching
+        if context is not None:
+            set_analyzer_args(args, context)
 
     def _process_impl(self, realpath: str, macro_cache_key: MacroCacheKey) -> list[str]:
         """Derived classes implement this function"""
@@ -236,8 +236,8 @@ class HeaderDepsBase:
 class DirectHeaderDeps(HeaderDepsBase):
     """Create a tree structure that shows the header include tree"""
 
-    def __init__(self, args):
-        HeaderDepsBase.__init__(self, args)
+    def __init__(self, args, context=None):
+        HeaderDepsBase.__init__(self, args, context=context)
 
         # Keep track of ancestor paths so that we can do header cycle detection
         self.ancestor_paths = []
@@ -373,13 +373,9 @@ class DirectHeaderDeps(HeaderDepsBase):
 
         This dramatically improves cache hit rate since most files are invariant.
         """
-        content_hash = get_file_hash(realpath)
-
-        # Get analysis result first - needed for invariant check
-        analysis_result = analyze_file(content_hash)
-
-        # Select cache storage: context or module-level globals
-        ctx = getattr(self, "context", None)
+        ctx = self.context
+        content_hash = get_file_hash(realpath, ctx)
+        analysis_result = analyze_file(content_hash, ctx)
         inv_inc_cache = ctx.invariant_include_cache if ctx is not None else _invariant_include_cache
         var_inc_cache = ctx.include_list_cache if ctx is not None else _include_list_cache
 
@@ -524,8 +520,8 @@ class DirectHeaderDeps(HeaderDepsBase):
 class CppHeaderDeps(HeaderDepsBase):
     """Using the C Pre Processor, create the list of headers that the given file depends upon."""
 
-    def __init__(self, args):
-        HeaderDepsBase.__init__(self, args)
+    def __init__(self, args, context=None):
+        HeaderDepsBase.__init__(self, args, context=context)
         self.preprocessor = compiletools.preprocessor.PreProcessor(args)
 
     def process(self, filename: str, macro_cache_key: MacroCacheKey) -> list[str]:
