@@ -287,12 +287,19 @@ _warned_low_ulimit = False
 _file_reading_strategy = None  # Cache the chosen strategy
 
 
-def _warn_low_ulimit(total_files: int, soft_limit: int):
+def _warn_low_ulimit(total_files: int, soft_limit: int, context=None):
     """Warn once about low file descriptor limit."""
-    global _warned_low_ulimit
-    if _warned_low_ulimit:
-        return
-    if _analyzer_args and getattr(_analyzer_args, "suppress_fd_warnings", False):
+    if context is not None:
+        if context.warned_low_ulimit:
+            return
+        args = context.analyzer_args
+    else:
+        global _warned_low_ulimit
+        if _warned_low_ulimit:
+            return
+        args = _analyzer_args
+
+    if args and getattr(args, "suppress_fd_warnings", False):
         return
 
     print(f"Warning: File descriptor limit too low for mmap mode (ulimit -n = {soft_limit})", file=sys.stderr)
@@ -301,57 +308,79 @@ def _warn_low_ulimit(total_files: int, soft_limit: int):
     print("  This is ~0.1-0.2ms slower per file but prevents EMFILE errors", file=sys.stderr)
     print(f"  To use faster mmap mode: ulimit -n {total_files * 2}", file=sys.stderr)
     print("  To suppress this warning: add '--suppress-fd-warnings' flag or config", file=sys.stderr)
-    _warned_low_ulimit = True
+    if context is not None:
+        context.warned_low_ulimit = True
+    else:
+        _warned_low_ulimit = True
 
 
 _warned_mmap_failure = False
 
 
-def _warn_mmap_failure(filepath: str, error: Exception):
+def _warn_mmap_failure(filepath: str, error: Exception, context=None):
     """Warn once about unexpected mmap failure and fallback."""
-    global _warned_mmap_failure
-    if _warned_mmap_failure:
-        return
-    if _analyzer_args and getattr(_analyzer_args, "suppress_fd_warnings", False):
+    if context is not None:
+        if context.warned_mmap_failure:
+            return
+        args = context.analyzer_args
+    else:
+        global _warned_mmap_failure
+        if _warned_mmap_failure:
+            return
+        args = _analyzer_args
+
+    if args and getattr(args, "suppress_fd_warnings", False):
         return
 
     print(f"Warning: mmap failed for {filepath}: {error}", file=sys.stderr)
     print("  Falling back to traditional file reading for this and subsequent files", file=sys.stderr)
     print("  To suppress this warning: add '--suppress-fd-warnings' flag or config", file=sys.stderr)
-    _warned_mmap_failure = True
+    if context is not None:
+        context.warned_mmap_failure = True
+    else:
+        _warned_mmap_failure = True
 
 
-def _determine_file_reading_strategy() -> str:
+def _determine_file_reading_strategy(context=None) -> str:
     """Determine which file reading strategy to use for this session.
-
-    Called once at file_analyzer initialization.
 
     Returns:
         'mmap' - Use Str(File(filepath)) directly (best performance)
         'no_mmap' - Use traditional open()/read() (for low ulimit or problematic filesystems)
     """
-    global _file_reading_strategy
-    if _file_reading_strategy is not None:
-        return _file_reading_strategy
-
-    args = _analyzer_args
+    if context is not None:
+        if context.file_reading_strategy is not None:
+            return context.file_reading_strategy
+        args = context.analyzer_args
+    else:
+        global _file_reading_strategy
+        if _file_reading_strategy is not None:
+            return _file_reading_strategy
+        args = _analyzer_args
 
     # Check for manual overrides first
     if args and not getattr(args, "use_mmap", True):
-        _file_reading_strategy = "no_mmap"
-        return _file_reading_strategy
+        strategy = "no_mmap"
+        if context is not None:
+            context.file_reading_strategy = strategy
+        else:
+            _file_reading_strategy = strategy
+        return strategy
 
     if args and getattr(args, "force_mmap", False):
-        _file_reading_strategy = "mmap"
-        return _file_reading_strategy
+        strategy = "mmap"
+        if context is not None:
+            context.file_reading_strategy = strategy
+        else:
+            _file_reading_strategy = strategy
+        return strategy
 
     # Get total file count from global hash registry
-    # IMPORTANT: Must load the registry first to get accurate file count
     try:
         from compiletools.global_hash_registry import get_registry_stats, load_hashes
 
-        load_hashes()  # Ensure registry is loaded before checking stats
-        stats = get_registry_stats()
+        load_hashes(context=context)
+        stats = get_registry_stats(context=context)
         total_files = stats.get("total_files", 0)
     except (ImportError, AttributeError):
         total_files = 0
@@ -363,30 +392,31 @@ def _determine_file_reading_strategy() -> str:
         soft_limit = 1024  # Reasonable fallback
 
     # If ulimit is dangerously low (< 100), always use no_mmap mode
-    # This handles shells with ulimit 20, test environments, etc.
     if soft_limit < 100:
         if total_files > 0:
-            _warn_low_ulimit(total_files, soft_limit)
-        _file_reading_strategy = "no_mmap"
-        return _file_reading_strategy
-
-    # Check filesystem type (use first file's filesystem as representative)
-    # We'll check this per-file in actual implementation
-    # For now, assume local filesystem and check per-file later
+            _warn_low_ulimit(total_files, soft_limit, context=context)
+        strategy = "no_mmap"
+        if context is not None:
+            context.file_reading_strategy = strategy
+        else:
+            _file_reading_strategy = strategy
+        return strategy
 
     # Compare file count to available fd limit
-    # Use 90% of soft limit to leave headroom for Python/system overhead
     safe_fd_limit = int(soft_limit * 0.9)
 
     if total_files > 0 and total_files > safe_fd_limit:
-        # Too many files for available fds - use traditional file I/O
-        _warn_low_ulimit(total_files, soft_limit)
-        _file_reading_strategy = "no_mmap"
+        _warn_low_ulimit(total_files, soft_limit, context=context)
+        strategy = "no_mmap"
     else:
-        # Default to mmap mode
-        _file_reading_strategy = "mmap"
+        strategy = "mmap"
 
-    return _file_reading_strategy
+    if context is not None:
+        context.file_reading_strategy = strategy
+    else:
+        _file_reading_strategy = strategy
+
+    return strategy
 
 
 def _read_file_with_strategy(filepath: str, strategy: str):
@@ -406,12 +436,19 @@ def _read_file_with_strategy(filepath: str, strategy: str):
     return compiletools.filesystem_utils.safe_read_text_file(filepath, encoding="utf-8", force_no_mmap=force_no_mmap)
 
 
-def set_analyzer_args(args):
-    """Set global args for file analysis. Must be called once at build start.
+def set_analyzer_args(args, context=None):
+    """Set args for file analysis. Must be called once at build start.
 
     Args:
         args: Args object containing max_read_size, verbose, exemarkers, testmarkers, librarymarkers
+        context: Optional BuildContext; when provided, state is stored there
     """
+    if context is not None:
+        context.analyzer_args = args
+        context.file_reading_strategy = None
+        _determine_file_reading_strategy(context=context)
+        return
+
     global _analyzer_args, _file_reading_strategy
     _analyzer_args = args
     # Clear cached strategy to force re-evaluation with new args
@@ -775,8 +812,37 @@ def analyze_file(content_hash: str) -> "FileAnalysisResult":
     return result
 
 
-def cache_clear():
+def analyze_file_ctx(content_hash: str, context) -> "FileAnalysisResult":
+    """Context-aware file analysis with per-context caching.
+
+    Prefer this over analyze_file() when a BuildContext is available.
+    Uses context.analyze_file_cache instead of the module-level @cache.
+    """
+    cached = context.analyze_file_cache.get(content_hash)
+    if cached is not None:
+        return cached
+
+    if context.analyzer_args is None:
+        raise RuntimeError("analyze_file_ctx: analyzer args not set on context.")
+
+    # Reuse the core logic from analyze_file — call it and cache the result.
+    # The module-level @cache on analyze_file is keyed by content_hash, so
+    # calling it is safe even when a context is also in play.
+    result = analyze_file(content_hash)
+    context.analyze_file_cache[content_hash] = result
+    return result
+
+
+def cache_clear(context=None):
     """Clear the file analysis cache and reset analyzer args."""
+    if context is not None:
+        context.analyzer_args = None
+        context.file_reading_strategy = None
+        context.warned_low_ulimit = False
+        context.warned_mmap_failure = False
+        context.analyze_file_cache.clear()
+        return
+
     global _analyzer_args
     _analyzer_args = None
     analyze_file.cache_clear()
