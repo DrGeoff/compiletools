@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import glob
 import hashlib
 import json
 import logging
@@ -582,7 +583,13 @@ class SlurmBackend(ShakeBackend):
 
         if all_failures:
             lines = [f"Job {f.job_id} ({f.rule.output}): {f.state}" for f in all_failures]
-            raise RuntimeError("Slurm compile jobs failed:\n" + "\n".join(lines))
+            diag = self._read_slurm_logs_for_failures(all_failures)
+            msg = "Slurm compile jobs failed:\n" + "\n".join(lines)
+            if diag:
+                msg += "\n\n" + diag
+            raise RuntimeError(msg)
+
+        self._cleanup_slurm_logs()
 
         # Phase 4: record traces for successfully built compile rules
         for rule in to_submit:
@@ -668,6 +675,11 @@ class SlurmBackend(ShakeBackend):
         )
 
         effective_mem = mem if mem is not None else self.args.slurm_mem
+        # Direct slurm logs into the objdir so they don't litter the working
+        # directory.  At low verbosity the logs are cleaned up after a
+        # successful build (see _cleanup_slurm_logs); at -vv they are kept
+        # unconditionally for debugging.
+        slurm_log = os.path.join(self.args.objdir, f"slurm-ct-{chunk_id}-%a.out")
         cmd = [
             "sbatch",
             "--parsable",
@@ -677,6 +689,8 @@ class SlurmBackend(ShakeBackend):
             f"--time={self.args.slurm_time}",
             f"--mem={effective_mem}",
             f"--cpus-per-task={self.args.slurm_cpus}",
+            f"--output={slurm_log}",
+            f"--error={slurm_log}",
         ]
         if self.args.slurm_partition:
             cmd += ["--partition", self.args.slurm_partition]
@@ -684,6 +698,33 @@ class SlurmBackend(ShakeBackend):
             cmd += ["--account", self.args.slurm_account]
         cmd += ["--wrap", wrap]
         return subprocess.check_output(cmd, text=True).strip()
+
+    def _cleanup_slurm_logs(self) -> None:
+        """Remove slurm log files from objdir when verbosity is low."""
+        verbose = getattr(self.args, "verbose", 0)
+        if verbose >= 2:
+            return
+        for f in glob.glob(os.path.join(self.args.objdir, "slurm-ct-*.out")):
+            with contextlib.suppress(OSError):
+                os.remove(f)
+
+    def _read_slurm_logs_for_failures(self, failures: list[SlurmBackend._TaskFailure]) -> str:
+        """Read slurm log content for failed tasks and return formatted diagnostics."""
+        diagnostics: list[str] = []
+        for f in failures:
+            # Log files are named slurm-ct-<chunk_id>-<array_index>.out;
+            # the job_id is "<array_job_id>_<index>".
+            parts = f.job_id.rsplit("_", 1)
+            if len(parts) == 2:
+                _, task_idx = parts
+                for log_path in glob.glob(os.path.join(self.args.objdir, f"slurm-ct-*-{task_idx}.out")):
+                    try:
+                        content = open(log_path).read().strip()
+                        if content:
+                            diagnostics.append(f"--- {f.rule.output} (job {f.job_id}) ---\n{content}")
+                    except OSError:
+                        pass
+        return "\n".join(diagnostics)
 
     def _query_array_task_states(self, array_job_id: str) -> dict[str, str]:
         """Return ``{task_id: state}`` for every task in *array_job_id* via sacct.
