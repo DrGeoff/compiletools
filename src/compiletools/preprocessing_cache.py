@@ -413,6 +413,7 @@ def get_or_compute_preprocessing(
     file_result,
     input_macros: "MacroState",
     verbose: int = 0,
+    context=None,
 ) -> ProcessingResult:
     """Get preprocessing result from cache or compute if not cached.
 
@@ -435,7 +436,17 @@ def get_or_compute_preprocessing(
     """
     from compiletools.simple_preprocessor import SimplePreprocessor
 
-    _cache_stats["total_calls"] += 1
+    # Select cache storage: context or module-level globals
+    if context is not None:
+        inv_cache = context.invariant_preprocessing_cache
+        var_cache = context.variant_preprocessing_cache
+        stats = context.preprocessing_stats
+    else:
+        inv_cache = _invariant_cache
+        var_cache = _variant_cache
+        stats = _cache_stats
+
+    stats["total_calls"] += 1
 
     content_hash = file_result.content_hash
     invariant = is_macro_invariant(file_result, input_macros)
@@ -443,10 +454,10 @@ def get_or_compute_preprocessing(
     # Check appropriate cache
     if invariant:
         # Macro-invariant: cache key is content_hash only
-        if content_hash in _invariant_cache:
-            _cache_stats["hits"] += 1
-            _cache_stats["invariant_hits"] += 1
-            cached = _invariant_cache[content_hash]
+        if content_hash in inv_cache:
+            stats["hits"] += 1
+            stats["invariant_hits"] += 1
+            cached = inv_cache[content_hash]
             # Reconstruct updated_macros from caller's input + file's defines
             # to prevent stale macro pollution from first caller's context
             reconstructed_macros = input_macros
@@ -464,18 +475,18 @@ def get_or_compute_preprocessing(
                 file_undefs=cached.file_undefs,
             )
 
-        _cache_stats["misses"] += 1
-        _cache_stats["invariant_misses"] += 1
+        stats["misses"] += 1
+        stats["invariant_misses"] += 1
     else:
         # Macro-variant: cache key is (content_hash, file_specific_macro_key)
         # Use file-specific key: only macros that affect this file's conditionals
         macro_key = input_macros.get_relevant_key(file_result.conditional_macros)
         cache_key = (content_hash, macro_key)
 
-        if cache_key in _variant_cache:
-            _cache_stats["hits"] += 1
-            _cache_stats["variant_hits"] += 1
-            cached = _variant_cache[cache_key]
+        if cache_key in var_cache:
+            stats["hits"] += 1
+            stats["variant_hits"] += 1
+            cached = var_cache[cache_key]
             reconstructed_macros = input_macros
             if cached.file_defines:
                 reconstructed_macros = reconstructed_macros.with_updates(cached.file_defines)
@@ -491,8 +502,8 @@ def get_or_compute_preprocessing(
                 file_undefs=cached.file_undefs,
             )
 
-        _cache_stats["misses"] += 1
-        _cache_stats["variant_misses"] += 1
+        stats["misses"] += 1
+        stats["variant_misses"] += 1
 
     # Compute result - pass all macros to preprocessor
     all_macros = input_macros.all_macros()
@@ -583,14 +594,14 @@ def get_or_compute_preprocessing(
 
     # Store in appropriate cache
     if invariant:
-        _invariant_cache[content_hash] = result
+        inv_cache[content_hash] = result
     else:
-        _variant_cache[cache_key] = result
+        var_cache[cache_key] = result
 
     return result
 
 
-def get_cache_stats() -> dict:
+def get_cache_stats(context=None) -> dict:
     """Return cache statistics for debugging and monitoring.
 
     Returns:
@@ -609,15 +620,24 @@ def get_cache_stats() -> dict:
         - memory_bytes: Approximate memory usage
         - memory_mb: Memory usage in MB
     """
+    if context is not None:
+        inv_c = context.invariant_preprocessing_cache
+        var_c = context.variant_preprocessing_cache
+        st = context.preprocessing_stats
+    else:
+        inv_c = _invariant_cache
+        var_c = _variant_cache
+        st = _cache_stats
+
     total_size = 0
-    for result in _invariant_cache.values():
+    for result in inv_c.values():
         total_size += sys.getsizeof(result.active_lines)
         total_size += sys.getsizeof(result.active_includes)
         total_size += sys.getsizeof(result.active_magic_flags)
         total_size += sys.getsizeof(result.active_defines)
         total_size += sys.getsizeof(result.updated_macros)
 
-    for result in _variant_cache.values():
+    for result in var_c.values():
         total_size += sys.getsizeof(result.active_lines)
         total_size += sys.getsizeof(result.active_includes)
         total_size += sys.getsizeof(result.active_magic_flags)
@@ -625,52 +645,52 @@ def get_cache_stats() -> dict:
         total_size += sys.getsizeof(result.updated_macros)
 
     hit_rate = 0.0
-    if _cache_stats["total_calls"] > 0:
-        hit_rate = (_cache_stats["hits"] / _cache_stats["total_calls"]) * 100
+    if st["total_calls"] > 0:
+        hit_rate = (st["hits"] / st["total_calls"]) * 100
 
     return {
-        "entries": len(_invariant_cache) + len(_variant_cache),
-        "invariant_entries": len(_invariant_cache),
-        "variant_entries": len(_variant_cache),
-        "hits": _cache_stats["hits"],
-        "invariant_hits": _cache_stats["invariant_hits"],
-        "variant_hits": _cache_stats["variant_hits"],
-        "misses": _cache_stats["misses"],
-        "invariant_misses": _cache_stats["invariant_misses"],
-        "variant_misses": _cache_stats["variant_misses"],
-        "total_calls": _cache_stats["total_calls"],
+        "entries": len(inv_c) + len(var_c),
+        "invariant_entries": len(inv_c),
+        "variant_entries": len(var_c),
+        "hits": st["hits"],
+        "invariant_hits": st["invariant_hits"],
+        "variant_hits": st["variant_hits"],
+        "misses": st["misses"],
+        "invariant_misses": st["invariant_misses"],
+        "variant_misses": st["variant_misses"],
+        "total_calls": st["total_calls"],
         "hit_rate": hit_rate,
         "memory_bytes": total_size,
         "memory_mb": total_size / (1024 * 1024),
     }
 
 
-def clear_variant_cache():
+def clear_variant_cache(context=None):
     """Clear only the macro-variant preprocessing cache.
 
     Used during two-pass header discovery to ensure Pass 2 gets fresh results
     with converged macros. The invariant cache is preserved since those files
     have no conditionals and their results are truly macro-independent.
-
-    This is more efficient than clearing all caches because it avoids clearing
-    the invariant cache unnecessarily - those results are reusable across passes.
     """
-    _variant_cache.clear()
+    if context is not None:
+        context.variant_preprocessing_cache.clear()
+    else:
+        _variant_cache.clear()
 
 
-def clear_cache():
+def clear_cache(context=None):
     """Clear the preprocessing cache and reset statistics.
 
     Also clears the file_analyzer.analyze_file() cache since preprocessed
     results depend on file analysis.
-
-    NOTE: For tests, this clears everything including any MacroState optimizations.
-
-    Useful for:
-    - Testing to ensure clean state
-    - Benchmarking to measure from scratch
-    - Memory management in long-running processes
     """
+    if context is not None:
+        context.invariant_preprocessing_cache.clear()
+        context.variant_preprocessing_cache.clear()
+        for key in context.preprocessing_stats:
+            context.preprocessing_stats[key] = 0
+        return
+
     _invariant_cache.clear()
     _variant_cache.clear()
     _cache_stats["hits"] = 0
