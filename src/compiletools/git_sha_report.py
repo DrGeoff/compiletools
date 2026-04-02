@@ -28,22 +28,29 @@ def _check_repo_has_symlinks(resolved_root: str, sample_paths: list[str]) -> boo
     return False
 
 
-def _resolve_paths(git_root: str, relative_paths: list[str]) -> list[str]:
+def _resolve_paths(git_root: str, relative_paths: list[str], context=None) -> list[str]:
     """Resolve relative git paths to absolute canonical paths.
 
     Fast path: resolve git_root once, then use os.path.join for each file.
     Fallback: per-file os.path.realpath if in-repo symlinks are detected.
     """
-    global _repo_has_symlinks
-
     resolved_root = os.path.realpath(git_root)
 
-    if _repo_has_symlinks is None:
-        _repo_has_symlinks = _check_repo_has_symlinks(resolved_root, relative_paths)
-        if _repo_has_symlinks:
-            logger.info("In-repo symlinks detected; using per-file realpath (slower)")
+    if context is not None:
+        if context.repo_has_symlinks is None:
+            context.repo_has_symlinks = _check_repo_has_symlinks(resolved_root, relative_paths)
+            if context.repo_has_symlinks:
+                logger.info("In-repo symlinks detected; using per-file realpath (slower)")
+        has_symlinks = context.repo_has_symlinks
+    else:
+        global _repo_has_symlinks
+        if _repo_has_symlinks is None:
+            _repo_has_symlinks = _check_repo_has_symlinks(resolved_root, relative_paths)
+            if _repo_has_symlinks:
+                logger.info("In-repo symlinks detected; using per-file realpath (slower)")
+        has_symlinks = _repo_has_symlinks
 
-    if _repo_has_symlinks:
+    if has_symlinks:
         return [wrappedos.realpath(os.path.join(git_root, p)) for p in relative_paths]
 
     return [os.path.join(resolved_root, p) for p in relative_paths]
