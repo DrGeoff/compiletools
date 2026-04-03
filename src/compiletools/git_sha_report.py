@@ -30,7 +30,7 @@ def _resolve_paths(git_root: str, relative_paths: list[str], context) -> list[st
     Fast path: resolve git_root once, then use os.path.join for each file.
     Fallback: per-file os.path.realpath if in-repo symlinks are detected.
     """
-    resolved_root = os.path.realpath(git_root)
+    resolved_root = wrappedos.realpath(git_root)
 
     if context.repo_has_symlinks is None:
         context.repo_has_symlinks = _check_repo_has_symlinks(resolved_root, relative_paths)

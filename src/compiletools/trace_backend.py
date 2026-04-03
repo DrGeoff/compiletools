@@ -54,6 +54,7 @@ from dataclasses import asdict, dataclass
 from typing import ClassVar
 
 import compiletools.filesystem_utils
+import compiletools.wrappedos
 from compiletools.build_backend import (
     BuildBackend,
     register_backend,
@@ -654,15 +655,24 @@ class SlurmBackend(ShakeBackend):
         *mem* overrides ``--slurm-mem`` for this array (used for per-tier sizing).
         """
         n = len(rules)
+        # Resolve objdir once so all sbatch file references are absolute —
+        # the Slurm job may run on a different node with a different cwd.
+        real_objdir = compiletools.wrappedos.realpath(self.args.objdir)
         # Write one shell-quoted compile command per line (1-based for sed).
         # Use chunk_id in the filename so concurrent chunks don't collide.
-        cmds_file = os.path.join(self.args.objdir, f".ct-slurm-cmds-{chunk_id}.txt")
-        outs_file = os.path.join(self.args.objdir, f".ct-slurm-outs-{chunk_id}.txt")
+        cmds_file = os.path.join(real_objdir, f".ct-slurm-cmds-{chunk_id}.txt")
+        outs_file = os.path.join(real_objdir, f".ct-slurm-outs-{chunk_id}.txt")
         with open(cmds_file, "w") as fc, open(outs_file, "w") as fo:
             for rule in rules:
                 assert rule.command is not None, "compile rules always have a command"
                 fc.write(shlex.join(_flatten_command(rule.command)) + "\n")
                 fo.write(rule.output + "\n")
+            # Flush to OS before closing so the data is visible on other nodes
+            # (GPFS close-to-open consistency requires the writer to flush).
+            fc.flush()
+            fo.flush()
+            os.fsync(fc.fileno())
+            os.fsync(fo.fileno())
 
         # Each array task reads its compile command and output path, then executes
         # the command. On failure the partial/empty output file is removed immediately
@@ -673,6 +683,7 @@ class SlurmBackend(ShakeBackend):
         wrap = (
             f'CMD=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" {shlex.quote(cmds_file)}); '
             f'OUT=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" {shlex.quote(outs_file)}); '
+            f'[ -n "$CMD" ] || {{ echo "ct-compile: empty command (index $SLURM_ARRAY_TASK_ID)" >&2; exit 1; }}; '
             f'bash -c "$CMD" || {{ rm -f "$OUT"; exit 1; }}'
         )
 
@@ -681,11 +692,12 @@ class SlurmBackend(ShakeBackend):
         # directory.  At low verbosity the logs are cleaned up after a
         # successful build (see _cleanup_slurm_logs); at -vv they are kept
         # unconditionally for debugging.
-        slurm_log = os.path.join(self.args.objdir, f"slurm-ct-{chunk_id}-%a.out")
+        slurm_log = os.path.join(real_objdir, f"slurm-ct-{chunk_id}-%a.out")
         cmd = [
             "sbatch",
             "--parsable",
             "--export=ALL",
+            f"--chdir={os.getcwd()}",
             f"--array=0-{n - 1}",
             "--job-name=ct-compile",
             f"--time={self.args.slurm_time}",

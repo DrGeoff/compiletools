@@ -949,10 +949,10 @@ class TestConcurrentCompilationDatabase:
 
             # Verify it contains entries for both source files
             files_in_db = {entry["file"] for entry in compile_commands}
-            assert source1 in files_in_db or os.path.abspath(source1) in files_in_db, (
+            assert source1 in files_in_db or os.path.realpath(source1) in files_in_db, (
                 f"{source1} not found in compilation database"
             )
-            assert source2 in files_in_db or os.path.abspath(source2) in files_in_db, (
+            assert source2 in files_in_db or os.path.realpath(source2) in files_in_db, (
                 f"{source2} not found in compilation database"
             )
 

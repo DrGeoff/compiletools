@@ -13,6 +13,7 @@ import subprocess
 
 import compiletools.filesystem_utils
 import compiletools.utils
+import compiletools.wrappedos
 from compiletools.build_backend import (
     BuildBackend,
     aggregate_rule_sources,
@@ -148,7 +149,7 @@ class CMakeBackend(BuildBackend):
                 for opt in linkopts:
                     if opt.startswith("-L"):
                         path = opt[2:]
-                        lib_dirs.append(os.path.abspath(path) if not os.path.isabs(path) else path)
+                        lib_dirs.append(compiletools.wrappedos.realpath(path) if not os.path.isabs(path) else path)
                     elif opt.startswith("-l"):
                         lib_names.append(opt[2:])
                     else:
@@ -169,7 +170,7 @@ class CMakeBackend(BuildBackend):
             raise RuntimeError("'cmake' not found on PATH")
 
         # Use out-of-source build in {objdir}/cmake-build
-        source_dir = os.path.dirname(os.path.abspath(self.build_filename()))
+        source_dir = os.path.dirname(compiletools.wrappedos.realpath(self.build_filename()))
         build_dir = os.path.join(self.args.objdir, "cmake-build")
         os.makedirs(build_dir, exist_ok=True)
 

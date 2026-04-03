@@ -4,6 +4,7 @@ import subprocess
 
 import compiletools.apptools
 import compiletools.utils
+import compiletools.wrappedos
 
 
 def find_git_root(filename=None):
@@ -11,7 +12,7 @@ def find_git_root(filename=None):
     # Note: You can't functools.lru_cache(maxsize=None) this one since the None parameter will
     # return different results as the cwd changes
     if filename:
-        directory = os.path.dirname(os.path.realpath(filename))
+        directory = os.path.dirname(compiletools.wrappedos.realpath(filename))
     else:
         directory = os.getcwd()
     return _find_git_root(directory)

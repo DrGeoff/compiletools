@@ -122,7 +122,7 @@ class CompilationDatabaseCreator:
         if self.args.compilation_database_relative:
             args.append(os.path.relpath(source_file, os.getcwd()))
         else:
-            args.append(os.path.realpath(source_file))
+            args.append(compiletools.wrappedos.realpath(source_file))
 
         return args
 
@@ -130,13 +130,13 @@ class CompilationDatabaseCreator:
         """Create a single command object for the compilation database"""
 
         # Directory is always absolute (working directory)
-        directory = os.path.realpath(os.getcwd())
+        directory = compiletools.wrappedos.realpath(os.getcwd())
 
         # Get file path - relative or absolute based on option
         if self.args.compilation_database_relative:
             file_path = os.path.relpath(source_file, os.getcwd())
         else:
-            file_path = os.path.realpath(source_file)
+            file_path = compiletools.wrappedos.realpath(source_file)
 
         # Generate arguments
         arguments = self._get_compiler_command(source_file)

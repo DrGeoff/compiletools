@@ -6,6 +6,7 @@ import compiletools.configutils
 import compiletools.file_analyzer
 import compiletools.namer
 import compiletools.utils
+import compiletools.wrappedos
 from compiletools.file_analyzer import MarkerType
 
 
@@ -165,7 +166,7 @@ class FindTargets:
 
         tracked = get_tracked_files(self.context)
 
-        prefix = os.path.realpath(path)
+        prefix = compiletools.wrappedos.realpath(path)
         if not prefix.endswith(os.sep):
             prefix += os.sep
 
@@ -182,7 +183,7 @@ class FindTargets:
                     if bindir in root or self._args.objdir in root:
                         continue
                     for fname in files:
-                        pathname = os.path.realpath(os.path.join(root, fname))
+                        pathname = compiletools.wrappedos.realpath(os.path.join(root, fname))
                         if compiletools.utils.is_source(pathname):
                             try:
                                 yield pathname, get_file_hash(pathname, self.context)

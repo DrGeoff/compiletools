@@ -12,6 +12,7 @@ import shutil
 import subprocess
 
 import compiletools.filesystem_utils
+import compiletools.wrappedos
 from compiletools.build_backend import (
     BuildBackend,
     aggregate_rule_sources,
@@ -48,11 +49,11 @@ class BazelBackend(BuildBackend):
             # from the file's name attribute (set when opened with open()).
             base_dir = None
             if hasattr(output, "name") and isinstance(output.name, str):
-                base_dir = os.path.dirname(os.path.abspath(output.name))
+                base_dir = os.path.dirname(compiletools.wrappedos.realpath(output.name))
             self._write_build(graph, output, base_dir=base_dir)
         else:
             filename = self.build_filename()
-            base_dir = os.path.dirname(os.path.abspath(filename)) or "."
+            base_dir = os.path.dirname(compiletools.wrappedos.realpath(filename)) or "."
             with compiletools.filesystem_utils.atomic_output_file(filename, mode="w", encoding="utf-8") as f:
                 self._write_build(graph, f, base_dir=base_dir)
             self._ensure_workspace(base_dir)
@@ -154,7 +155,7 @@ class BazelBackend(BuildBackend):
         resolved = []
         for opt in linkopts:
             if opt.startswith("-L") and not os.path.isabs(opt[2:]):
-                resolved.append(f"-L{os.path.abspath(opt[2:])}")
+                resolved.append(f"-L{compiletools.wrappedos.realpath(opt[2:])}")
             else:
                 resolved.append(opt)
         return resolved
@@ -184,7 +185,7 @@ class BazelBackend(BuildBackend):
             return os.path.relpath(dest, base_dir)
 
         # Source doesn't exist (e.g. mock/test paths) — use absolute path
-        return os.path.abspath(source)
+        return compiletools.wrappedos.realpath(source)
 
     def _ensure_workspace(self, output_dir: str) -> None:
         """Create minimal WORKSPACE and MODULE.bazel files if none exist."""

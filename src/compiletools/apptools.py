@@ -16,6 +16,7 @@ import configargparse
 import compiletools.configutils
 import compiletools.git_utils
 import compiletools.utils
+import compiletools.wrappedos
 from compiletools.utils import split_command_cached
 from compiletools.version import __version__
 
@@ -40,7 +41,7 @@ if _rich_rst_available and sys.version_info >= (3, 9):
                 import rich
                 from rich_rst import RestructuredText
 
-                this_dir = os.path.dirname(os.path.abspath(inspect.getsourcefile(lambda: 0)))
+                this_dir = os.path.dirname(compiletools.wrappedos.realpath(inspect.getsourcefile(lambda: 0)))
                 doc_filename = os.path.join(this_dir, f"README.{parser.prog}.rst")
                 try:
                     with open(doc_filename) as docfile:

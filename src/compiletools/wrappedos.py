@@ -24,12 +24,6 @@ def realpath(path: str) -> str:
 
 
 @functools.cache
-def abspath(path: str) -> str:
-    """Cached os.path.abspath for Python strings."""
-    return os.path.abspath(path)
-
-
-@functools.cache
 def dirname(path: str) -> str:
     """Cached os.path.dirname for Python strings."""
     return os.path.dirname(path)
@@ -84,12 +78,6 @@ def realpath_sz(path: sz.Str) -> sz.Str:
 
 
 @functools.cache
-def abspath_sz(path: sz.Str) -> sz.Str:
-    """Cached abspath for StringZilla - avoids conversions when cached."""
-    return sz.Str(abspath(path.decode("utf-8")))
-
-
-@functools.cache
 def dirname_sz(path: sz.Str) -> sz.Str:
     """Cached dirname for StringZilla - avoids conversions when cached."""
     return sz.Str(dirname(path.decode("utf-8")))
@@ -140,7 +128,6 @@ def clear_cache() -> None:
     """Clear all LRU caches to free memory."""
     # Python str API caches
     realpath.cache_clear()
-    abspath.cache_clear()
     dirname.cache_clear()
     basename.cache_clear()
     getmtime.cache_clear()
@@ -151,7 +138,6 @@ def clear_cache() -> None:
 
     # StringZilla API caches
     realpath_sz.cache_clear()
-    abspath_sz.cache_clear()
     dirname_sz.cache_clear()
     basename_sz.cache_clear()
     getmtime_sz.cache_clear()

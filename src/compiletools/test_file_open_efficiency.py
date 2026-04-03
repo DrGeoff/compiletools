@@ -30,7 +30,7 @@ class FileOpenTracker:
     def tracking_open(self, filepath, *args, **kwargs):
         """Wrapper around open() that tracks source file access."""
         if isinstance(filepath, str):
-            abs_path = os.path.abspath(filepath)
+            abs_path = os.path.realpath(filepath)
             if abs_path.endswith(self.track_extensions):
                 self.counter[abs_path] += 1
         return self.original_open(filepath, *args, **kwargs)
