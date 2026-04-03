@@ -35,7 +35,7 @@ def test_macro_state_dependency_is_fixed():
     argv = [f"--CPPFLAGS=-I{sample_dir}", "-q"]
     args = compiletools.apptools.parseargs(cap, argv)
     headerdeps.HeaderDepsBase.clear_cache()
-    preprocessing_cache.clear_cache()
+    preprocessing_cache.clear_cache(BuildContext())
 
     ctx1 = BuildContext()
     deps1 = headerdeps.DirectHeaderDeps(args, context=ctx1)
@@ -59,7 +59,7 @@ def test_macro_state_dependency_is_fixed():
 
     # Clear cache before Test 2 since we're using different cmdline args
     headerdeps.HeaderDepsBase.clear_cache()
-    preprocessing_cache.clear_cache()
+    preprocessing_cache.clear_cache(BuildContext())
 
     ctx2 = BuildContext()
     deps2 = headerdeps.DirectHeaderDeps(args2, context=ctx2)
@@ -131,7 +131,7 @@ def test_hunter_respects_macro_state_changes():
 
     # Test 1: Without DEBUG macro should include release.h
     hunter.Hunter.clear_cache()
-    preprocessing_cache.clear_cache()
+    preprocessing_cache.clear_cache(BuildContext())
     hunter_no_debug = create_hunter_with_macros(debug_enabled=False)
     files_no_debug = set(hunter_no_debug.required_files(str(test_cpp)))
 
@@ -145,7 +145,7 @@ def test_hunter_respects_macro_state_changes():
     # Test 2: With DEBUG macro should include debug.h
     # Clear cache since we're using different cmdline args
     hunter.Hunter.clear_cache()
-    preprocessing_cache.clear_cache()
+    preprocessing_cache.clear_cache(BuildContext())
 
     hunter_with_debug = create_hunter_with_macros(debug_enabled=True)
     files_with_debug = set(hunter_with_debug.required_files(str(test_cpp)))
@@ -161,7 +161,7 @@ def test_hunter_respects_macro_state_changes():
     # This test would fail if someone reintroduced @lru_cache decorators
     # Clear cache since we're using different cmdline args again
     hunter.Hunter.clear_cache()
-    preprocessing_cache.clear_cache()
+    preprocessing_cache.clear_cache(BuildContext())
 
     hunter_instance = create_hunter_with_macros(debug_enabled=False)
 
@@ -182,7 +182,7 @@ def test_hunter_respects_macro_state_changes():
 
     # Clear cache after mutating the instance's dependencies (different cmdline args)
     hunter.Hunter.clear_cache()
-    preprocessing_cache.clear_cache()
+    preprocessing_cache.clear_cache(BuildContext())
     hunter_instance.clear_instance_cache()
 
     # Second call with changed macro state - this is the regression test

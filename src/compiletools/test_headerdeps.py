@@ -498,12 +498,13 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
         return args
 
     def test_clear_caches(self):
-        """Test clear_caches resets both module-level caches."""
-        compiletools.headerdeps._include_list_cache["dummy"] = "value"
-        compiletools.headerdeps._invariant_include_cache["dummy"] = "value"
-        compiletools.headerdeps.clear_caches()
-        assert compiletools.headerdeps._include_list_cache == {}
-        assert compiletools.headerdeps._invariant_include_cache == {}
+        """Test clear_caches resets both caches on BuildContext."""
+        ctx = BuildContext()
+        ctx.include_list_cache["dummy"] = "value"
+        ctx.invariant_include_cache["dummy"] = "value"
+        compiletools.headerdeps.clear_caches(ctx)
+        assert ctx.include_list_cache == {}
+        assert ctx.invariant_include_cache == {}
 
     def test_create_verbose(self):
         """Test create() with verbose >= 4 prints classname."""

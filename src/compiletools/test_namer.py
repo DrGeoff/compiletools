@@ -293,7 +293,7 @@ def test_source_magic_produces_different_hash_with_different_flags():
 
             # Clear caches between configurations
             compiletools.hunter.Hunter.clear_cache()
-            compiletools.preprocessing_cache.clear_cache()
+            compiletools.preprocessing_cache.clear_cache(BuildContext())
 
             # Config 2: same files, different CPPFLAGS
             hunter2, magic2 = create_hunter_with_cppflags("-I/opt/libfoo/v2/include")
@@ -338,7 +338,7 @@ def test_different_cppflags_produce_different_object_names():
                 parser1.parse(source_file)
                 hash1 = parser1.get_final_macro_state_hash(source_file)
 
-                compiletools.preprocessing_cache.clear_cache()
+                compiletools.preprocessing_cache.clear_cache(BuildContext())
                 parser2 = tb.create_magic_parser(
                     ["--magic=direct", "--append-CPPFLAGS=-I/opt/libfoo/v2/include"], tempdir=tmpdir, context=BuildContext()
                 )

@@ -20,9 +20,11 @@ class TestSimplePreprocessor:
         import stringzilla as sz
 
         # Clear preprocessing cache before each test
+        from compiletools.build_context import BuildContext
         from compiletools.preprocessing_cache import clear_cache
 
-        clear_cache()
+        self.ctx = BuildContext()
+        clear_cache(self.ctx)
 
         # Mock get_filepath_by_hash since tests don't have real files in registry
         self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
@@ -508,9 +510,11 @@ class TestExpandHasFunctions:
     def setup_method(self):
         import stringzilla as sz
 
+        from compiletools.build_context import BuildContext
         from compiletools.preprocessing_cache import clear_cache
 
-        clear_cache()
+        self.ctx = BuildContext()
+        clear_cache(self.ctx)
 
         self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
         self.mock_get_filepath = self.patcher.start()
@@ -676,7 +680,7 @@ class TestExpandHasFunctions:
 
         from compiletools.preprocessing_cache import MacroState, clear_cache, get_or_compute_preprocessing
 
-        clear_cache()
+        clear_cache(self.ctx)
 
         text = "#if __has_include(<iostream>)\n#include <special.h>\n#endif"
         file_result = self._create_file_analysis_result(text)
@@ -685,7 +689,7 @@ class TestExpandHasFunctions:
         macros = MacroState(core, compiler_path="gcc", cppflags="-I/usr/include")
 
         with patch("compiletools.compiler_macros.query_has_function", return_value=1):
-            result = get_or_compute_preprocessing(file_result, macros, verbose=0)
+            result = get_or_compute_preprocessing(file_result, macros, verbose=0, context=self.ctx)
             assert 1 in result.active_lines
 
     def test_get_or_compute_preprocessing_without_compiler(self):
@@ -694,7 +698,7 @@ class TestExpandHasFunctions:
 
         from compiletools.preprocessing_cache import MacroState, clear_cache, get_or_compute_preprocessing
 
-        clear_cache()
+        clear_cache(self.ctx)
 
         text = "#if __has_include(<iostream>)\n#include <special.h>\n#endif"
         file_result = self._create_file_analysis_result(text)
@@ -702,7 +706,7 @@ class TestExpandHasFunctions:
         core = {sz.Str("__GNUC__"): sz.Str("11")}
         macros = MacroState(core)
 
-        result = get_or_compute_preprocessing(file_result, macros, verbose=0)
+        result = get_or_compute_preprocessing(file_result, macros, verbose=0, context=self.ctx)
         assert 1 not in result.active_lines
 
     def _create_file_analysis_result(self, text):
@@ -789,9 +793,11 @@ class TestSimplePreprocessorEdgeCases:
     def setup_method(self):
         import stringzilla as sz
 
+        from compiletools.build_context import BuildContext
         from compiletools.preprocessing_cache import clear_cache
 
-        clear_cache()
+        self.ctx = BuildContext()
+        clear_cache(self.ctx)
 
         self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
         self.mock_get_filepath = self.patcher.start()

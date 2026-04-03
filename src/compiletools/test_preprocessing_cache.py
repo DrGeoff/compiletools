@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import stringzilla as sz
 
+from compiletools.build_context import BuildContext
 from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
 from compiletools.preprocessing_cache import MacroState, clear_cache, get_cache_stats, get_or_compute_preprocessing
 
@@ -20,7 +21,8 @@ class TestPreprocessingCache:
 
     def setup_method(self):
         """Clear cache before each test."""
-        clear_cache()
+        self.ctx = BuildContext()
+        clear_cache(self.ctx)
 
         # Mock get_filepath_by_hash since tests don't have real files in registry
         self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
@@ -30,6 +32,12 @@ class TestPreprocessingCache:
     def teardown_method(self):
         """Clean up after each test method."""
         self.patcher.stop()
+
+    def _get_stats(self):
+        return get_cache_stats(self.ctx)
+
+    def _clear(self):
+        clear_cache(self.ctx)
 
     def _create_simple_file_result(self, text: str, content_hash: str = "test_hash_001") -> FileAnalysisResult:
         """Helper to create FileAnalysisResult for testing."""
@@ -130,17 +138,17 @@ class TestPreprocessingCache:
         macros = MacroState({}, {sz.Str("TEST_MACRO"): sz.Str("1")})
 
         # First call - cache miss
-        result1 = get_or_compute_preprocessing(file_result, macros, 0)
+        result1 = get_or_compute_preprocessing(file_result, macros, 0, context=self.ctx)
 
         # Second call - cache hit
-        result2 = get_or_compute_preprocessing(file_result, macros, 0)
+        result2 = get_or_compute_preprocessing(file_result, macros, 0, context=self.ctx)
 
         # Results should be identical
         assert result1.active_lines == result2.active_lines
         assert result1.active_includes == result2.active_includes
 
         # Verify cache was used
-        stats = get_cache_stats()
+        stats = get_cache_stats(self.ctx)
         assert stats["hits"] == 1
         assert stats["misses"] == 1
         assert stats["total_calls"] == 2
@@ -158,8 +166,8 @@ class TestPreprocessingCache:
         macros1 = MacroState({}, {sz.Str("FOO"): sz.Str("1")})
         macros2 = MacroState({}, {sz.Str("FOO"): sz.Str("2")})
 
-        result1 = get_or_compute_preprocessing(file_result, macros1, 0)
-        result2 = get_or_compute_preprocessing(file_result, macros2, 0)
+        result1 = get_or_compute_preprocessing(file_result, macros1, 0, context=self.ctx)
+        result2 = get_or_compute_preprocessing(file_result, macros2, 0, context=self.ctx)
 
         # Both should include the file (FOO is defined in both cases)
         # But cache keys should be different
@@ -167,7 +175,7 @@ class TestPreprocessingCache:
         assert 1 in result2.active_lines
 
         # Different macro values = different cache keys
-        stats = get_cache_stats()
+        stats = get_cache_stats(self.ctx)
         assert stats["misses"] == 2  # Both are misses
 
     @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
@@ -183,8 +191,8 @@ class TestPreprocessingCache:
         macros1 = MacroState({}, {sz.Str("FOO"): sz.Str("1")})
         macros2 = MacroState({}, {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("1")})
 
-        result1 = get_or_compute_preprocessing(file_result, macros1, 0)
-        result2 = get_or_compute_preprocessing(file_result, macros2, 0)
+        result1 = get_or_compute_preprocessing(file_result, macros1, 0, context=self.ctx)
+        result2 = get_or_compute_preprocessing(file_result, macros2, 0, context=self.ctx)
 
         # Both should have same active lines (FOO is defined in both)
         assert result1.active_lines == result2.active_lines
@@ -192,7 +200,7 @@ class TestPreprocessingCache:
 
         # BAR is not in conditional_macros, so it's ignored in cache key
         # Second call should be a cache HIT (optimization working)
-        stats = get_cache_stats()
+        stats = get_cache_stats(self.ctx)
         assert stats["misses"] == 1  # Only first call is a miss
         assert stats["hits"] == 1  # Second call is a hit (same relevant macros)
 
@@ -209,15 +217,15 @@ class TestPreprocessingCache:
         macros1 = MacroState({}, {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("1")})
         macros2 = MacroState({}, {sz.Str("FOO"): sz.Str("1")})
 
-        result1 = get_or_compute_preprocessing(file_result, macros1, 0)
-        result2 = get_or_compute_preprocessing(file_result, macros2, 0)
+        result1 = get_or_compute_preprocessing(file_result, macros1, 0, context=self.ctx)
+        result2 = get_or_compute_preprocessing(file_result, macros2, 0, context=self.ctx)
 
         # Same active lines (FOO unchanged)
         assert result1.active_lines == result2.active_lines
 
         # BAR is not in conditional_macros, so it's ignored in cache key
         # Second call should be a cache HIT (optimization working)
-        stats = get_cache_stats()
+        stats = get_cache_stats(self.ctx)
         assert stats["misses"] == 1  # Only first call is a miss
         assert stats["hits"] == 1  # Second call is a hit (same relevant macros)
 
@@ -238,8 +246,8 @@ class TestPreprocessingCache:
         macros1 = MacroState({}, {sz.Str("FOO"): sz.Str("1")})
         macros2 = MacroState({}, {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("1")})
 
-        result1 = get_or_compute_preprocessing(file_result, macros1, 0)
-        result2 = get_or_compute_preprocessing(file_result, macros2, 0)
+        result1 = get_or_compute_preprocessing(file_result, macros1, 0, context=self.ctx)
+        result2 = get_or_compute_preprocessing(file_result, macros2, 0, context=self.ctx)
 
         # Different active lines (BAR adds the second include)
         assert result1.active_lines != result2.active_lines
@@ -248,7 +256,7 @@ class TestPreprocessingCache:
 
         # BAR IS in conditional_macros, so it creates a different cache key
         # Both calls should be misses
-        stats = get_cache_stats()
+        stats = get_cache_stats(self.ctx)
         assert stats["misses"] == 2
 
     @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
@@ -270,8 +278,8 @@ class TestPreprocessingCache:
         file_result2 = self._create_simple_file_result(text2, "hash_005b")
         macros = MacroState({}, {sz.Str("FOO"): sz.Str("1")})
 
-        result1 = get_or_compute_preprocessing(file_result1, macros, 0)
-        result2 = get_or_compute_preprocessing(file_result2, macros, 0)
+        result1 = get_or_compute_preprocessing(file_result1, macros, 0, context=self.ctx)
+        result2 = get_or_compute_preprocessing(file_result2, macros, 0, context=self.ctx)
 
         # Both should have active lines (FOO is defined)
         assert 1 in result1.active_lines  # #include line is active
@@ -284,7 +292,7 @@ class TestPreprocessingCache:
         assert str(result2.active_includes[0]["filename"]) == "test2.h"
 
         # Different content_hash = different cache keys
-        stats = get_cache_stats()
+        stats = get_cache_stats(self.ctx)
         assert stats["misses"] == 2
 
     def test_macro_state_propagation(self):
@@ -325,7 +333,7 @@ class TestPreprocessingCache:
         )
 
         initial_macros = MacroState({}, {})
-        result = get_or_compute_preprocessing(file_result, initial_macros, 0)
+        result = get_or_compute_preprocessing(file_result, initial_macros, 0, context=self.ctx)
 
         # Verify NEW_MACRO is in updated_macros
         assert sz.Str("NEW_MACRO") in result.updated_macros
@@ -371,11 +379,11 @@ class TestPreprocessingCache:
         initial_macros = MacroState({}, {sz.Str("REMOVED_MACRO"): sz.Str("1")})
 
         # First call computes result and should drop REMOVED_MACRO from updated macros
-        result1 = get_or_compute_preprocessing(file_result, initial_macros, 0)
+        result1 = get_or_compute_preprocessing(file_result, initial_macros, 0, context=self.ctx)
         assert sz.Str("REMOVED_MACRO") not in result1.updated_macros, "#undef should remove macro on initial processing"
 
         # Second call hits invariant cache but must preserve the removal semantics
-        result2 = get_or_compute_preprocessing(file_result, initial_macros, 0)
+        result2 = get_or_compute_preprocessing(file_result, initial_macros, 0, context=self.ctx)
         assert sz.Str("REMOVED_MACRO") not in result2.updated_macros, (
             "Invariant cache should not reintroduce macros removed via #undef"
         )
@@ -390,13 +398,13 @@ class TestPreprocessingCache:
         file_result = self._create_simple_file_result(text, "hash_007")
         empty_macros = MacroState({}, {})
 
-        result1 = get_or_compute_preprocessing(file_result, empty_macros, 0)
-        result2 = get_or_compute_preprocessing(file_result, empty_macros, 0)
+        result1 = get_or_compute_preprocessing(file_result, empty_macros, 0, context=self.ctx)
+        result2 = get_or_compute_preprocessing(file_result, empty_macros, 0, context=self.ctx)
 
         # Cache should work with empty macros
         assert result1.active_lines == result2.active_lines
 
-        stats = get_cache_stats()
+        stats = get_cache_stats(self.ctx)
         assert stats["hits"] == 1
 
     @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
@@ -410,29 +418,29 @@ class TestPreprocessingCache:
         macros = MacroState({}, {})
 
         # Clear stats
-        clear_cache()
-        initial_stats = get_cache_stats()
+        clear_cache(self.ctx)
+        initial_stats = get_cache_stats(self.ctx)
         assert initial_stats["entries"] == 0
         assert initial_stats["hits"] == 0
         assert initial_stats["misses"] == 0
 
         # First call - miss
-        get_or_compute_preprocessing(file_result, macros, 0)
-        stats1 = get_cache_stats()
+        get_or_compute_preprocessing(file_result, macros, 0, context=self.ctx)
+        stats1 = get_cache_stats(self.ctx)
         assert stats1["entries"] == 1
         assert stats1["misses"] == 1
         assert stats1["hits"] == 0
 
         # Second call - hit
-        get_or_compute_preprocessing(file_result, macros, 0)
-        stats2 = get_cache_stats()
+        get_or_compute_preprocessing(file_result, macros, 0, context=self.ctx)
+        stats2 = get_cache_stats(self.ctx)
         assert stats2["entries"] == 1
         assert stats2["misses"] == 1
         assert stats2["hits"] == 1
 
         # Third call - hit
-        get_or_compute_preprocessing(file_result, macros, 0)
-        stats3 = get_cache_stats()
+        get_or_compute_preprocessing(file_result, macros, 0, context=self.ctx)
+        stats3 = get_cache_stats(self.ctx)
         assert stats3["hits"] == 2
         assert stats3["hit_rate"] > 66.0  # 2/3 = 66.7%
 
@@ -442,7 +450,8 @@ class TestCacheManagement:
 
     def setup_method(self):
         """Clear cache before each test."""
-        clear_cache()
+        self.ctx = BuildContext()
+        clear_cache(self.ctx)
 
         # Mock get_filepath_by_hash since tests don't have real files in registry
         self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
@@ -476,13 +485,13 @@ class TestCacheManagement:
         )
 
         # Add entry to cache
-        get_or_compute_preprocessing(file_result, MacroState({}, {}), 0)
-        stats1 = get_cache_stats()
+        get_or_compute_preprocessing(file_result, MacroState({}, {}), 0, context=self.ctx)
+        stats1 = get_cache_stats(self.ctx)
         assert stats1["entries"] == 1
 
         # Clear cache
-        clear_cache()
-        stats2 = get_cache_stats()
+        clear_cache(self.ctx)
+        stats2 = get_cache_stats(self.ctx)
         assert stats2["entries"] == 0
         assert stats2["hits"] == 0
         assert stats2["misses"] == 0
@@ -490,8 +499,8 @@ class TestCacheManagement:
     @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
     def test_get_cache_stats_memory(self):
         """Test that cache stats include memory information."""
-        clear_cache()
-        stats = get_cache_stats()
+        clear_cache(self.ctx)
+        stats = get_cache_stats(self.ctx)
 
         assert "memory_bytes" in stats
         assert "memory_mb" in stats
@@ -503,7 +512,7 @@ class TestCacheManagement:
         """Test that cache memory usage stays reasonable."""
         import tracemalloc
 
-        clear_cache()
+        clear_cache(self.ctx)
         tracemalloc.start()
 
         # Create 100 cache entries
@@ -526,20 +535,20 @@ class TestCacheManagement:
                 include_guard=None,
             )
             macros = MacroState({}, {sz.Str(f"MACRO_{i}"): sz.Str(str(i))})
-            get_or_compute_preprocessing(file_result, macros, 0)
+            get_or_compute_preprocessing(file_result, macros, 0, context=self.ctx)
 
         _current, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
 
         # Verify cache has 100 entries
-        stats = get_cache_stats()
+        stats = get_cache_stats(self.ctx)
         assert stats["entries"] == 100
 
         # Peak memory should be reasonable (< 20MB for 100 entries including baseline overhead)
         peak_mb = peak / (1024 * 1024)
         assert peak_mb < 20.0, f"Peak memory {peak_mb:.1f} MB exceeds 20 MB limit"
 
-        clear_cache()
+        clear_cache(self.ctx)
 
 
 class TestMacroStateImmutability:

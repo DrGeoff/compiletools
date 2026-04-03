@@ -241,13 +241,10 @@ def reset():
     import compiletools.git_utils as git_utils
 
     git_utils.clear_cache()
-    # Note: global_hash_registry, file_analyzer, and preprocessing_cache
-    # state now lives on BuildContext instances.  Creating a fresh
-    # BuildContext gives clean state, so no module-level clearing needed.
-    # Clear headerdeps caches to prevent stale include list results
-    import compiletools.headerdeps as headerdeps
-
-    headerdeps.clear_caches()
+    # Note: global_hash_registry, file_analyzer, preprocessing_cache,
+    # and headerdeps include-list caches now live on BuildContext instances.
+    # Creating a fresh BuildContext gives clean state, so no module-level
+    # clearing is needed for those.
 
 
 def delete_existing_parsers():

@@ -24,36 +24,19 @@ from compiletools.preprocessing_cache import (
 )
 from compiletools.utils import instance_cache, split_command_cached
 
-# Cache for filtered include lists
-# Variant cache: (content_hash, macro_cache_key) -> (includes, file_defines)
-# Used for files with conditionals that depend on macro state
-_include_list_cache = {}
 
-# Invariant cache: content_hash -> (includes, file_defines)
-# Used for files without conditionals - much higher hit rate
-_invariant_include_cache = {}
+def clear_caches(context):
+    """Clear all caches on the BuildContext. Used by test framework between tests."""
+    context.include_list_cache.clear()
+    context.invariant_include_cache.clear()
 
 
-def clear_caches(context=None):
-    """Clear all module-level caches. Used by test framework between tests."""
-    if context is not None:
-        context.include_list_cache.clear()
-        context.invariant_include_cache.clear()
-        return
-    global _include_list_cache, _invariant_include_cache
-    _include_list_cache = {}
-    _invariant_include_cache = {}
-
-
-def clear_include_list_cache(context=None):
+def clear_include_list_cache(context):
     """Clear the include list cache.
 
     Used during two-pass header discovery to ensure Pass 2 gets fresh results.
     """
-    if context is not None:
-        context.include_list_cache.clear()
-    else:
-        _include_list_cache.clear()
+    context.include_list_cache.clear()
 
 
 def create(args, context=None):
@@ -228,7 +211,9 @@ class HeaderDepsBase:
         import compiletools.apptools
 
         compiletools.apptools.clear_cache()
-        clear_include_list_cache()
+        # Note: clear_include_list_cache() requires a BuildContext;
+        # include list caches live on BuildContext instances and are
+        # cleaned up when the context is discarded.
         DirectHeaderDeps.clear_cache()
         CppHeaderDeps.clear_cache()
 
@@ -376,8 +361,8 @@ class DirectHeaderDeps(HeaderDepsBase):
         ctx = self.context
         content_hash = get_file_hash(realpath, ctx)
         analysis_result = analyze_file(content_hash, ctx)
-        inv_inc_cache = ctx.invariant_include_cache if ctx is not None else _invariant_include_cache
-        var_inc_cache = ctx.include_list_cache if ctx is not None else _include_list_cache
+        inv_inc_cache = ctx.invariant_include_cache
+        var_inc_cache = ctx.include_list_cache
 
         # Check if file is permanently invariant (no conditionals at all)
         # This is a fast check based on file content, not macro state

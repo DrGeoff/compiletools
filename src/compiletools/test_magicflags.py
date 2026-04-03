@@ -51,7 +51,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         # Also clear preprocessing cache when args change (for MacroState correctness)
         from compiletools.preprocessing_cache import clear_cache as clear_preprocessing_cache
 
-        clear_preprocessing_cache()
+        clear_preprocessing_cache(BuildContext())
 
         try:
             return parser.parse(self._get_sample_path(source_file))

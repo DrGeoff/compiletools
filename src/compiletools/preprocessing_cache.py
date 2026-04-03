@@ -394,26 +394,12 @@ def is_macro_invariant(file_result, input_macros: "MacroState") -> bool:
 # 2. Cache key must be extracted from file_result and macros
 # 3. We need full objects to compute results, not just hashes
 # 4. Provides enhanced debugging (dump_cache_keys with file path resolution)
-_invariant_cache: dict[str, ProcessingResult] = {}  # str = content_hash (SHA1)
-_variant_cache: dict[tuple[str, MacroCacheKey], ProcessingResult] = {}  # str = content_hash (SHA1)
-
-# Cache statistics
-_cache_stats = {
-    "hits": 0,
-    "misses": 0,
-    "total_calls": 0,
-    "invariant_hits": 0,
-    "variant_hits": 0,
-    "invariant_misses": 0,
-    "variant_misses": 0,
-}
-
-
 def get_or_compute_preprocessing(
     file_result,
     input_macros: "MacroState",
     verbose: int = 0,
-    context=None,
+    *,
+    context,
 ) -> ProcessingResult:
     """Get preprocessing result from cache or compute if not cached.
 
@@ -436,15 +422,9 @@ def get_or_compute_preprocessing(
     """
     from compiletools.simple_preprocessor import SimplePreprocessor
 
-    # Select cache storage: context or module-level globals
-    if context is not None:
-        inv_cache = context.invariant_preprocessing_cache
-        var_cache = context.variant_preprocessing_cache
-        stats = context.preprocessing_stats
-    else:
-        inv_cache = _invariant_cache
-        var_cache = _variant_cache
-        stats = _cache_stats
+    inv_cache = context.invariant_preprocessing_cache
+    var_cache = context.variant_preprocessing_cache
+    stats = context.preprocessing_stats
 
     stats["total_calls"] += 1
 
@@ -601,7 +581,7 @@ def get_or_compute_preprocessing(
     return result
 
 
-def get_cache_stats(context=None) -> dict:
+def get_cache_stats(context) -> dict:
     """Return cache statistics for debugging and monitoring.
 
     Returns:
@@ -620,14 +600,9 @@ def get_cache_stats(context=None) -> dict:
         - memory_bytes: Approximate memory usage
         - memory_mb: Memory usage in MB
     """
-    if context is not None:
-        inv_c = context.invariant_preprocessing_cache
-        var_c = context.variant_preprocessing_cache
-        st = context.preprocessing_stats
-    else:
-        inv_c = _invariant_cache
-        var_c = _variant_cache
-        st = _cache_stats
+    inv_c = context.invariant_preprocessing_cache
+    var_c = context.variant_preprocessing_cache
+    st = context.preprocessing_stats
 
     total_size = 0
     for result in inv_c.values():
@@ -665,54 +640,31 @@ def get_cache_stats(context=None) -> dict:
     }
 
 
-def clear_variant_cache(context=None):
+def clear_variant_cache(context):
     """Clear only the macro-variant preprocessing cache.
 
     Used during two-pass header discovery to ensure Pass 2 gets fresh results
     with converged macros. The invariant cache is preserved since those files
     have no conditionals and their results are truly macro-independent.
     """
-    if context is not None:
-        context.variant_preprocessing_cache.clear()
-    else:
-        _variant_cache.clear()
+    context.variant_preprocessing_cache.clear()
 
 
-def clear_cache(context=None):
+def clear_cache(context):
     """Clear the preprocessing cache and reset statistics.
 
     Also clears the file_analyzer.analyze_file() cache since preprocessed
     results depend on file analysis.
     """
-    if context is not None:
-        context.invariant_preprocessing_cache.clear()
-        context.variant_preprocessing_cache.clear()
-        for key in context.preprocessing_stats:
-            context.preprocessing_stats[key] = 0
-        return
-
-    _invariant_cache.clear()
-    _variant_cache.clear()
-    _cache_stats["hits"] = 0
-    _cache_stats["misses"] = 0
-    _cache_stats["invariant_hits"] = 0
-    _cache_stats["variant_hits"] = 0
-    _cache_stats["invariant_misses"] = 0
-    _cache_stats["variant_misses"] = 0
-    _cache_stats["total_calls"] = 0
-
-    # When context is provided, also clear dependent caches
-    if context is not None:
-        from compiletools.file_analyzer import cache_clear as fa_cache_clear
-        from compiletools.global_hash_registry import clear_global_registry
-
-        fa_cache_clear(context)
-        clear_global_registry(context)
+    context.invariant_preprocessing_cache.clear()
+    context.variant_preprocessing_cache.clear()
+    for key in context.preprocessing_stats:
+        context.preprocessing_stats[key] = 0
 
 
-def print_preprocessing_stats():
+def print_preprocessing_stats(context):
     """Print preprocessing cache and SimplePreprocessor statistics."""
-    stats = get_cache_stats()
+    stats = get_cache_stats(context)
 
     print("\n=== Preprocessing Cache Statistics ===")
     print(f"Total preprocessing calls: {stats['total_calls']}")

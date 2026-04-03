@@ -28,9 +28,10 @@ class BaseCompileToolsTestCase:
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
         compiletools.magicflags.MagicFlagsBase.clear_cache()
         # Clear preprocessing cache
+        from compiletools.build_context import BuildContext
         from compiletools.preprocessing_cache import clear_cache
 
-        clear_cache()
+        clear_cache(BuildContext())
         # Note: namer and hunter caches are cleared per-instance, not globally
 
     def setup_method(self):
