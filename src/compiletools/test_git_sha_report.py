@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import compiletools.git_sha_report as gsr
+from compiletools.build_context import BuildContext
 
 
 @pytest.fixture()
@@ -56,7 +57,7 @@ def test_run_git_failure():
 
 def test_get_index_hashes(tmp_git_repo):
     """get_index_hashes returns dict of Path -> sha."""
-    hashes = gsr.get_index_hashes()
+    hashes = gsr.get_index_hashes(BuildContext())
     assert isinstance(hashes, dict)
     assert len(hashes) > 0
     for path, sha in list(hashes.items())[:3]:
@@ -74,20 +75,20 @@ def test_get_file_stat(tmp_git_repo):
 
 def test_get_untracked_files(tmp_git_repo):
     """get_untracked_files returns list of Paths."""
-    files = gsr.get_untracked_files()
+    files = gsr.get_untracked_files(BuildContext())
     assert isinstance(files, list)
 
 
 def test_get_current_blob_hashes(tmp_git_repo):
     """get_current_blob_hashes returns dict."""
-    hashes = gsr.get_current_blob_hashes()
+    hashes = gsr.get_current_blob_hashes(BuildContext())
     assert isinstance(hashes, dict)
     assert len(hashes) > 0
 
 
 def test_get_modified_but_unstaged_files(tmp_git_repo):
     """get_modified_but_unstaged_files returns list."""
-    files = gsr.get_modified_but_unstaged_files()
+    files = gsr.get_modified_but_unstaged_files(BuildContext())
     assert isinstance(files, list)
 
 

@@ -112,14 +112,13 @@ class FindTargets:
     all the C/C++ files with main functions and unit tests.
     """
 
-    def __init__(self, args, argv=None, variant=None, exedir=None, context=None):
+    def __init__(self, args, argv=None, variant=None, exedir=None, *, context):
         self._args = args
         self.context = context
         # Set analyzer args for FileAnalyzer caching
-        if context is not None:
-            from compiletools.file_analyzer import set_analyzer_args
+        from compiletools.file_analyzer import set_analyzer_args
 
-            set_analyzer_args(args, context)
+        set_analyzer_args(args, context)
         self.namer = compiletools.namer.Namer(self._args, argv=argv, variant=variant, exedir=exedir, context=context)
 
     def process(self, args, path=None):

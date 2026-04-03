@@ -55,7 +55,7 @@ def _compute_external_file_hash(filepath: str, hash_ops: dict[str, int]) -> str 
         return None
 
 
-def _load_hashes_into(hashes_ref: list, reverse_ref: list, verbose: int = 0) -> None:
+def _load_hashes_into(hashes_ref: list, reverse_ref: list, verbose: int = 0, *, context: BuildContext) -> None:
     """Populate *hashes_ref[0]* and *reverse_ref[0]* from git.
 
     Uses list-of-one as a mutable reference so the caller can capture the
@@ -66,7 +66,7 @@ def _load_hashes_into(hashes_ref: list, reverse_ref: list, verbose: int = 0) -> 
     try:
         from compiletools.git_sha_report import get_complete_working_directory_hashes
 
-        all_hashes = get_complete_working_directory_hashes()
+        all_hashes = get_complete_working_directory_hashes(context)
         hashes = {str(path): sha for path, sha in all_hashes.items()}
 
         reverse: dict[str, list[str]] = {}
@@ -162,7 +162,7 @@ def load_hashes(verbose: int = 0, *, context: BuildContext) -> None:
         return
     h: list = [None]
     r: list = [None]
-    _load_hashes_into(h, r, verbose)
+    _load_hashes_into(h, r, verbose, context=context)
     context.file_hashes = h[0]
     context.reverse_hashes = r[0]
 

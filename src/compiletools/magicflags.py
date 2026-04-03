@@ -25,7 +25,7 @@ MacroDict = dict[sz.Str, sz.Str]
 FlagsDict = dict[sz.Str, list[sz.Str]]
 
 
-def create(args, headerdeps, context=None):
+def create(args, headerdeps, context):
     """MagicFlags Factory"""
     classname = args.magic.title() + "MagicFlags"
     if args.verbose >= 4:
@@ -92,17 +92,16 @@ class MagicFlagsBase:
     """
 
     def __init__(
-        self, args: argparse.Namespace, headerdeps: compiletools.headerdeps.HeaderDepsBase, context=None,
+        self, args: argparse.Namespace, headerdeps: compiletools.headerdeps.HeaderDepsBase, context,
     ) -> None:
         self._args = args
         self._headerdeps = headerdeps
         self.context = context
 
         # Set analyzer args for FileAnalyzer caching
-        if context is not None:
-            from compiletools.file_analyzer import set_analyzer_args
+        from compiletools.file_analyzer import set_analyzer_args
 
-            set_analyzer_args(args, context)
+        set_analyzer_args(args, context)
 
         # The magic pattern is //#key=value with whitespace ignored
         self.magicpattern = re.compile(r"^[\s]*//#([\S]*?)[\s]*=[\s]*(.*)", re.MULTILINE)
@@ -473,7 +472,7 @@ class MagicFlagsBase:
 
 
 class DirectMagicFlags(MagicFlagsBase):
-    def __init__(self, args, headerdeps, context=None):
+    def __init__(self, args, headerdeps, context):
         MagicFlagsBase.__init__(self, args, headerdeps, context=context)
         # Create namer instance for dependency hash computation
         self._namer = compiletools.namer.Namer(args, context=context)
@@ -927,7 +926,7 @@ class DirectMagicFlags(MagicFlagsBase):
 
 
 class CppMagicFlags(MagicFlagsBase):
-    def __init__(self, args, headerdeps, context=None):
+    def __init__(self, args, headerdeps, context):
         MagicFlagsBase.__init__(self, args, headerdeps, context=context)
         # Reuse preprocessor from CppHeaderDeps if available to avoid duplicate instances
         if hasattr(headerdeps, "preprocessor") and headerdeps.__class__.__name__ == "CppHeaderDeps":
@@ -1155,8 +1154,11 @@ def main(argv=None):
     cap.add("--style", choices=styles, default="pretty", help="Output formatting style")
 
     args = compiletools.apptools.parseargs(cap, argv)
-    headerdeps = compiletools.headerdeps.create(args)
-    magicparser = create(args, headerdeps)
+    from compiletools.build_context import BuildContext
+
+    context = BuildContext()
+    headerdeps = compiletools.headerdeps.create(args, context=context)
+    magicparser = create(args, headerdeps, context=context)
 
     styleclass = globals()[args.style.title() + "Style"]
     styleobject = styleclass(args)

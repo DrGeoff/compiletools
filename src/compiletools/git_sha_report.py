@@ -10,10 +10,6 @@ from compiletools.git_utils import find_git_root
 
 logger = logging.getLogger(__name__)
 
-# Cached result of symlink detection within the repo tree.
-# None = not yet checked, True/False = result.
-_repo_has_symlinks: Optional[bool] = None
-
 
 def _check_repo_has_symlinks(resolved_root: str, sample_paths: list[str]) -> bool:
     """Sample a few paths to detect if the repo tree contains symlinks.
@@ -28,7 +24,7 @@ def _check_repo_has_symlinks(resolved_root: str, sample_paths: list[str]) -> boo
     return False
 
 
-def _resolve_paths(git_root: str, relative_paths: list[str], context=None) -> list[str]:
+def _resolve_paths(git_root: str, relative_paths: list[str], context) -> list[str]:
     """Resolve relative git paths to absolute canonical paths.
 
     Fast path: resolve git_root once, then use os.path.join for each file.
@@ -36,19 +32,11 @@ def _resolve_paths(git_root: str, relative_paths: list[str], context=None) -> li
     """
     resolved_root = os.path.realpath(git_root)
 
-    if context is not None:
-        if context.repo_has_symlinks is None:
-            context.repo_has_symlinks = _check_repo_has_symlinks(resolved_root, relative_paths)
-            if context.repo_has_symlinks:
-                logger.info("In-repo symlinks detected; using per-file realpath (slower)")
-        has_symlinks = context.repo_has_symlinks
-    else:
-        global _repo_has_symlinks
-        if _repo_has_symlinks is None:
-            _repo_has_symlinks = _check_repo_has_symlinks(resolved_root, relative_paths)
-            if _repo_has_symlinks:
-                logger.info("In-repo symlinks detected; using per-file realpath (slower)")
-        has_symlinks = _repo_has_symlinks
+    if context.repo_has_symlinks is None:
+        context.repo_has_symlinks = _check_repo_has_symlinks(resolved_root, relative_paths)
+        if context.repo_has_symlinks:
+            logger.info("In-repo symlinks detected; using per-file realpath (slower)")
+    has_symlinks = context.repo_has_symlinks
 
     if has_symlinks:
         return [wrappedos.realpath(os.path.join(git_root, p)) for p in relative_paths]
@@ -92,7 +80,7 @@ def run_git(cmd: str, input_data: Optional[str] = None) -> str:
         raise RuntimeError(f"Unexpected error running git command '{cmd}': {e}") from e
 
 
-def get_index_hashes() -> dict[Path, str]:
+def get_index_hashes(context) -> dict[Path, str]:
     """
     Return blob hashes for all tracked files from git index:
     { path: blob_sha }
@@ -114,7 +102,7 @@ def get_index_hashes() -> dict[Path, str]:
         _mode, blob_sha, _stage, path_str = parts
         entries.append((path_str, blob_sha))
 
-    resolved = _resolve_paths(git_root, [e[0] for e in entries])
+    resolved = _resolve_paths(git_root, [e[0] for e in entries], context)
 
     hashes = {}
     for (_, blob_sha), abs_path_str in zip(entries, resolved):
@@ -132,7 +120,7 @@ def get_file_stat(path: Path) -> tuple[int, int]:
     return st.st_size, st.st_mtime_ns // 1_000_000_000
 
 
-def get_untracked_files() -> list[Path]:
+def get_untracked_files(context) -> list[Path]:
     """
     Get all untracked files in the working directory.
     Returns files that are not tracked by git and not ignored.
@@ -143,7 +131,7 @@ def get_untracked_files() -> list[Path]:
         return []
     git_root = find_git_root()
     rel_paths = output.splitlines()
-    return [Path(p) for p in _resolve_paths(git_root, rel_paths)]
+    return [Path(p) for p in _resolve_paths(git_root, rel_paths, context)]
 
 
 def batch_hash_objects(paths) -> dict[Path, str]:
@@ -205,16 +193,16 @@ def batch_hash_objects(paths) -> dict[Path, str]:
     return result
 
 
-def get_current_blob_hashes() -> dict[Path, str]:
+def get_current_blob_hashes(context) -> dict[Path, str]:
     """
     Get the blob hash for every tracked file as it exists now.
     Simply uses index hashes directly - git status will detect real changes.
     This is much faster and avoids file descriptor exhaustion.
     """
-    return get_index_hashes()
+    return get_index_hashes(context)
 
 
-def get_modified_but_unstaged_files() -> list[Path]:
+def get_modified_but_unstaged_files(context) -> list[Path]:
     """
     Get list of tracked files that have been modified but not staged.
     Uses git diff-files which only reports changed files without opening them all.
@@ -227,11 +215,11 @@ def get_modified_but_unstaged_files() -> list[Path]:
 
     git_root = find_git_root()
     rel_paths = output.splitlines()
-    resolved = _resolve_paths(git_root, rel_paths)
+    resolved = _resolve_paths(git_root, rel_paths, context)
     return [Path(p) for p in resolved if wrappedos.isfile(p)]
 
 
-def get_complete_working_directory_hashes() -> dict[Path, str]:
+def get_complete_working_directory_hashes(context) -> dict[Path, str]:
     """
     Get blob hashes for ALL files in the working directory:
     - Tracked files (from git index, with updates for modified-but-unstaged files)
@@ -243,10 +231,10 @@ def get_complete_working_directory_hashes() -> dict[Path, str]:
     import gc
 
     # Get hashes for all tracked files from index (no file opening)
-    tracked_hashes = get_index_hashes()
+    tracked_hashes = get_index_hashes(context)
 
     # Identify modified but unstaged files and re-hash only those
-    modified_files = get_modified_but_unstaged_files()
+    modified_files = get_modified_but_unstaged_files(context)
     if modified_files:
         modified_hashes = batch_hash_objects(modified_files)
         tracked_hashes.update(modified_hashes)
@@ -256,7 +244,7 @@ def get_complete_working_directory_hashes() -> dict[Path, str]:
     # (e.g. core dumps) that would never be used by the build system.
     from compiletools.utils import is_header, is_source
 
-    untracked_files = [f for f in get_untracked_files() if is_source(str(f)) or is_header(str(f))]
+    untracked_files = [f for f in get_untracked_files(context) if is_source(str(f)) or is_header(str(f))]
     if untracked_files:
         untracked_hashes = batch_hash_objects(untracked_files)
     else:
@@ -275,15 +263,19 @@ def main():
     """Main entry point for ct-git-sha-report command."""
     import sys
 
+    from compiletools.build_context import BuildContext
+
+    context = BuildContext()
+
     # Check for command line arguments
     include_untracked = "--all" in sys.argv or "--untracked" in sys.argv
 
     if include_untracked:
         print("# Complete working directory fingerprint (tracked + untracked files)")
-        blob_map = get_complete_working_directory_hashes()
+        blob_map = get_complete_working_directory_hashes(context)
     else:
         print("# Tracked files only (use --all or --untracked to include untracked files)")
-        blob_map = get_current_blob_hashes()
+        blob_map = get_current_blob_hashes(context)
 
     for path, sha in sorted(blob_map.items()):
         print(f"{sha}  {path}")

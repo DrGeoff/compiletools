@@ -490,7 +490,7 @@ def get_or_compute_preprocessing(
     preprocessor = SimplePreprocessor(
         all_macros, verbose=verbose, compiler_path=input_macros.compiler_path, cppflags=input_macros.cppflags
     )
-    active_lines = preprocessor.process_structured(file_result)
+    active_lines = preprocessor.process_structured(file_result, context)
     active_line_set = set(active_lines)
 
     # Extract active includes

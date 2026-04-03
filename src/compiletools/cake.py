@@ -50,7 +50,9 @@ class Cake:
         """
         if getattr(args, "backend", "make") != "make":
             return
-        namer = compiletools.namer.Namer(args)
+        from compiletools.build_context import BuildContext
+
+        namer = compiletools.namer.Namer(args, context=BuildContext())
         if namer.executable_dir() not in args.makefilename:
             movedmakefile = os.path.join(namer.executable_dir(), args.makefilename)
             if args.verbose > 4:

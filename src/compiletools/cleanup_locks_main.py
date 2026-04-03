@@ -92,7 +92,9 @@ def main(argv=None):
         cleaner = compiletools.cleanup_locks.LockCleaner(args)
 
         # Get objdir from namer (respects ct.conf settings)
-        namer = compiletools.namer.Namer(args, argv=argv)
+        from compiletools.build_context import BuildContext
+
+        namer = compiletools.namer.Namer(args, argv=argv, context=BuildContext())
         objdir = namer.object_dir()
 
         if args.verbose >= 1:

@@ -111,7 +111,7 @@ class TestCompilationDatabase:
 
                 with uth.ParserContext():
                     # Test the creator class
-                    creator = compiletools.compilation_database.CompilationDatabaseCreator(args)
+                    creator = compiletools.compilation_database.CompilationDatabaseCreator(args, context=BuildContext())
 
                     # Test command object creation
                     if realpaths and os.path.exists(realpaths[0]):
@@ -324,7 +324,7 @@ class TestCompilationDatabase:
                     )
 
                     # Create compilation database with the discovered files
-                    creator = compiletools.compilation_database.CompilationDatabaseCreator(args)
+                    creator = compiletools.compilation_database.CompilationDatabaseCreator(args, context=BuildContext())
 
                     comp_db_output = "compile_commands_findtargets.json"
                     args.compilation_database_output = comp_db_output
@@ -579,7 +579,7 @@ class TestCompilationDatabase:
                     compiletools.hunter.add_arguments(cap)
                     args = compiletools.apptools.parseargs(cap, ["--config=" + temp_config_name])
                     # Create CompilationDatabaseCreator instance for testing
-                    compiletools.compilation_database.CompilationDatabaseCreator(args)
+                    compiletools.compilation_database.CompilationDatabaseCreator(args, context=BuildContext())
 
                     # Test path normalization caching with enhanced wrappedos
                     path1 = compiletools.wrappedos.realpath("./test.cpp")
@@ -862,7 +862,7 @@ def _concurrent_write_worker(work_queue, result_queue, source_file, output_file)
             )
 
             # Write compilation database
-            creator = compiletools.compilation_database.CompilationDatabaseCreator(args)
+            creator = compiletools.compilation_database.CompilationDatabaseCreator(args, context=BuildContext())
             creator.write_compilation_database()
 
             result_queue.put(("success", source_file))

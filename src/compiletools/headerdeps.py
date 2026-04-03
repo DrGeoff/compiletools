@@ -39,7 +39,7 @@ def clear_include_list_cache(context):
     context.include_list_cache.clear()
 
 
-def create(args, context=None):
+def create(args, context):
     """HeaderDeps Factory"""
     classname = args.headerdeps.title() + "HeaderDeps"
     if args.verbose >= 4:
@@ -77,12 +77,11 @@ class HeaderDepsBase:
     searching classes.  This really should be an abstract base class.
     """
 
-    def __init__(self, args, context=None):
+    def __init__(self, args, context):
         self.args = args
         self.context = context
         # Set analyzer args for FileAnalyzer caching
-        if context is not None:
-            set_analyzer_args(args, context)
+        set_analyzer_args(args, context)
 
     def _process_impl(self, realpath: str, macro_cache_key: MacroCacheKey) -> list[str]:
         """Derived classes implement this function"""
@@ -221,7 +220,7 @@ class HeaderDepsBase:
 class DirectHeaderDeps(HeaderDepsBase):
     """Create a tree structure that shows the header include tree"""
 
-    def __init__(self, args, context=None):
+    def __init__(self, args, context):
         HeaderDepsBase.__init__(self, args, context=context)
 
         # Keep track of ancestor paths so that we can do header cycle detection
@@ -505,7 +504,7 @@ class DirectHeaderDeps(HeaderDepsBase):
 class CppHeaderDeps(HeaderDepsBase):
     """Using the C Pre Processor, create the list of headers that the given file depends upon."""
 
-    def __init__(self, args, context=None):
+    def __init__(self, args, context):
         HeaderDepsBase.__init__(self, args, context=context)
         self.preprocessor = compiletools.preprocessor.PreProcessor(args)
 

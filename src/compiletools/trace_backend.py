@@ -721,7 +721,8 @@ class SlurmBackend(ShakeBackend):
                 _, task_idx = parts
                 for log_path in glob.glob(os.path.join(self.args.objdir, f"slurm-ct-*-{task_idx}.out")):
                     try:
-                        content = open(log_path).read().strip()
+                        with open(log_path) as fh:
+                            content = fh.read().strip()
                         if content:
                             diagnostics.append(f"--- {f.rule.output} (job {f.job_id}) ---\n{content}")
                     except OSError:

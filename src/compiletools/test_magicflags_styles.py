@@ -51,6 +51,6 @@ class TestMagicFlagsFactory:
         args.verbose = 4
         # Patch the class constructor to avoid deep initialization
         with patch.object(magicflags.DirectMagicFlags, "__init__", return_value=None):
-            magicflags.create(args, Mock())
+            magicflags.create(args, Mock(), Mock())
         out = capsys.readouterr().out
         assert "Creating DirectMagicFlags" in out

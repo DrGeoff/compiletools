@@ -2,14 +2,13 @@ import os
 import os.path
 import shutil
 
-import configargparse
-
 import compiletools.apptools
 import compiletools.cake
 import compiletools.namer
 
 # import pdb
 import compiletools.testhelper as uth
+from compiletools.build_context import BuildContext
 from compiletools.test_base import BaseCompileToolsTestCase
 
 
@@ -257,7 +256,7 @@ class TestCake(BaseCompileToolsTestCase):
         cap = compiletools.apptools.create_parser("test cake", argv=argv)
         compiletools.cake.Cake.add_arguments(cap)
         args = compiletools.apptools.parseargs(cap, argv, verbose=0)
-        nmr = compiletools.namer.Namer(args)
+        nmr = compiletools.namer.Namer(args, context=BuildContext())
 
         # These are the basic filenames
         fnames = [
@@ -557,7 +556,7 @@ class TestCake(BaseCompileToolsTestCase):
             args.makefilename = "Makefile"
             compiletools.cake.Cake._hide_makefilename(args)
             # makefilename should now include the executable dir
-            namer = compiletools.namer.Namer(args)
+            namer = compiletools.namer.Namer(args, context=BuildContext())
             assert namer.executable_dir() in args.makefilename
 
     def _make_cake_args(self, extra=None):

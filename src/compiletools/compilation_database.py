@@ -20,7 +20,7 @@ from compiletools.locking import FileLock
 class CompilationDatabaseCreator:
     """Creates compile_commands.json files for clang tooling integration"""
 
-    def __init__(self, args, namer=None, headerdeps=None, magicparser=None, hunter=None, context=None):
+    def __init__(self, args, namer=None, headerdeps=None, magicparser=None, hunter=None, *, context):
         self.args = args
         self.context = context
 

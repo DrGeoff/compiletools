@@ -28,7 +28,7 @@ def test_executable_pathname():
         compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
         compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
         args = compiletools.apptools.parseargs(cap, argv)
-        namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug")
+        namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=BuildContext())
         exename = namer.executable_pathname("/home/user/code/my.cpp")
         assert exename == "bin/gcc.debug/my"
     finally:

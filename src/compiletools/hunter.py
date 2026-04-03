@@ -34,7 +34,7 @@ class Hunter:
     other required source files, other required compile/link flags.
     """
 
-    def __init__(self, args, headerdeps, magicparser, context=None):
+    def __init__(self, args, headerdeps, magicparser, context):
         self.args = args
         self.headerdeps = headerdeps
         self.magicparser = magicparser

@@ -272,7 +272,7 @@ class TestSimplePreprocessor:
             #endif
         """).strip()
         file_result = self._create_file_analysis_result(text)
-        active_lines = self.processor.process_structured(file_result)
+        active_lines = self.processor.process_structured(file_result, self.ctx)
         # Line 1 contains '#include "test.h"'
         assert 1 in active_lines
 
@@ -284,7 +284,7 @@ class TestSimplePreprocessor:
             #endif
         """).strip()
         file_result = self._create_file_analysis_result(text)
-        active_lines = self.processor.process_structured(file_result)
+        active_lines = self.processor.process_structured(file_result, self.ctx)
         # Line 1 contains '#include "test.h"'
         assert 1 in active_lines
 
@@ -296,7 +296,7 @@ class TestSimplePreprocessor:
             #endif
         """).strip()
         file_result = self._create_file_analysis_result(text)
-        active_lines = self.processor.process_structured(file_result)
+        active_lines = self.processor.process_structured(file_result, self.ctx)
         # Line 1 contains '#include "version3.h"'
         assert 1 in active_lines
 
@@ -308,7 +308,7 @@ class TestSimplePreprocessor:
             #endif
         """).strip()
         file_result = self._create_file_analysis_result(text)
-        active_lines = self.processor.process_structured(file_result)
+        active_lines = self.processor.process_structured(file_result, self.ctx)
         # Line 1 contains '#include "advanced.h"'
         assert 1 in active_lines
 
@@ -320,7 +320,7 @@ class TestSimplePreprocessor:
             #endif
         """).strip()
         file_result = self._create_file_analysis_result(text)
-        active_lines = self.processor.process_structured(file_result)
+        active_lines = self.processor.process_structured(file_result, self.ctx)
         # Line 1 contains '#include "nonzero.h"'
         assert 1 in active_lines
 
@@ -334,7 +334,7 @@ class TestSimplePreprocessor:
             #endif
         """).strip()
         file_result = self._create_file_analysis_result(text)
-        active_lines = self.processor.process_structured(file_result)
+        active_lines = self.processor.process_structured(file_result, self.ctx)
         # Line 2 contains '#include "test_v3.h"'
         assert 2 in active_lines
 
@@ -348,7 +348,7 @@ class TestSimplePreprocessor:
             #endif
         """).strip()
         file_result = self._create_file_analysis_result(text)
-        active_lines = self.processor.process_structured(file_result)
+        active_lines = self.processor.process_structured(file_result, self.ctx)
         # Line 3 contains '#include "defined.h"', line 1 should not be active
         assert 3 in active_lines
         assert 1 not in active_lines
@@ -367,7 +367,7 @@ class TestSimplePreprocessor:
             #endif
         """).strip()
         file_result = self._create_file_analysis_result(text)
-        active_lines = self.processor.process_structured(file_result)
+        active_lines = self.processor.process_structured(file_result, self.ctx)
         # Line 5 contains '#include "version3.h"', others should not be active
         assert 5 in active_lines
         assert 1 not in active_lines
@@ -383,7 +383,7 @@ class TestSimplePreprocessor:
             #endif
         """).strip()
         file_result = self._create_file_analysis_result(text)
-        active_lines = self.processor.process_structured(file_result)
+        active_lines = self.processor.process_structured(file_result, self.ctx)
         # Line 0 contains #define, line 2 contains '#include "forty_two.h"'
         assert 0 in active_lines
         assert 2 in active_lines
@@ -400,7 +400,7 @@ class TestSimplePreprocessor:
             #endif
         """).strip()
         file_result = self._create_file_analysis_result(text)
-        active_lines = self.processor.process_structured(file_result)
+        active_lines = self.processor.process_structured(file_result, self.ctx)
         # Line 1 should be active, line 3 has #undef, line 5 should not be active
         assert 1 in active_lines
         assert 3 in active_lines  # #undef directive
@@ -437,7 +437,7 @@ class TestSimplePreprocessor:
             #endif
         """).strip()
         file_result = self._create_file_analysis_result(text)
-        active_lines = processor.process_structured(file_result)
+        active_lines = processor.process_structured(file_result, self.ctx)
 
         # These should be included (lines 3 and 6)
         assert 3 in active_lines  # #include "linux_epoll_threading.hpp"
@@ -489,7 +489,7 @@ class TestSimplePreprocessor:
             #endif
         """).strip()
         file_result = self._create_file_analysis_result(text)
-        active_lines = self.processor.process_structured(file_result)
+        active_lines = self.processor.process_structured(file_result, self.ctx)
         assert 1 in active_lines
 
     def test_block_comment_stripping(self):
@@ -500,7 +500,7 @@ class TestSimplePreprocessor:
             #endif
         """).strip()
         file_result = self._create_file_analysis_result(text)
-        active_lines = self.processor.process_structured(file_result)
+        active_lines = self.processor.process_structured(file_result, self.ctx)
         assert 1 in active_lines
 
 
@@ -650,7 +650,7 @@ class TestExpandHasFunctions:
         file_result = self._create_file_analysis_result(text)
 
         with patch("compiletools.compiler_macros.query_has_function", return_value=1):
-            active_lines = processor.process_structured(file_result)
+            active_lines = processor.process_structured(file_result, self.ctx)
             # Line 1 (0-based) is "#include <special.h>" — should be active
             assert 1 in active_lines
 
@@ -668,7 +668,7 @@ class TestExpandHasFunctions:
         file_result = self._create_file_analysis_result(text)
 
         with patch("compiletools.compiler_macros.query_has_function", return_value=0):
-            active_lines = processor.process_structured(file_result)
+            active_lines = processor.process_structured(file_result, self.ctx)
             # Line 1 should NOT be active
             assert 1 not in active_lines
 
@@ -897,7 +897,7 @@ class TestSimplePreprocessorEdgeCases:
             #endif
         """).strip()
         file_result = self._create_file_analysis_result(text)
-        verbose_proc.process_structured(file_result)
+        verbose_proc.process_structured(file_result, self.ctx)
         out = capsys.readouterr().out
         assert "#ifdef" in out
         assert "#endif" in out
@@ -911,7 +911,7 @@ class TestSimplePreprocessorEdgeCases:
             #undef FOO
         """).strip()
         file_result = self._create_file_analysis_result(text)
-        verbose_proc.process_structured(file_result)
+        verbose_proc.process_structured(file_result, self.ctx)
         out = capsys.readouterr().out
         assert "defined macro FOO" in out
         assert "undefined macro FOO" in out
@@ -926,7 +926,7 @@ class TestSimplePreprocessorEdgeCases:
             #endif
         """).strip()
         file_result = self._create_file_analysis_result(text)
-        verbose_proc.process_structured(file_result)
+        verbose_proc.process_structured(file_result, self.ctx)
         out = capsys.readouterr().out
         assert "#ifndef" in out
 
@@ -947,7 +947,7 @@ class TestSimplePreprocessorEdgeCases:
             #endif
         """).strip()
         file_result = self._create_file_analysis_result(text)
-        verbose_proc.process_structured(file_result)
+        verbose_proc.process_structured(file_result, self.ctx)
         out = capsys.readouterr().out
         assert "#if" in out
         assert "#elif" in out
@@ -964,7 +964,7 @@ class TestSimplePreprocessorEdgeCases:
         """).strip()
         # __has_cpp_attribute isn't a known function, will fail to eval
         file_result = self._create_file_analysis_result(text)
-        active_lines = processor.process_structured(file_result)
+        active_lines = processor.process_structured(file_result, self.ctx)
         assert 1 not in active_lines  # 'included' line should not be active
 
     def test_elif_evaluation_failure_assumes_false(self):
@@ -981,7 +981,7 @@ class TestSimplePreprocessorEdgeCases:
             #endif
         """).strip()
         file_result = self._create_file_analysis_result(text)
-        active_lines = processor.process_structured(file_result)
+        active_lines = processor.process_structured(file_result, self.ctx)
         assert 3 not in active_lines  # 'b' should not be active
         assert 5 in active_lines  # 'c' should be active
 
@@ -1032,7 +1032,7 @@ class TestSimplePreprocessorEdgeCases:
             bytes_analyzed=60, was_truncated=False,
             includes=[], defines=[], magic_flags=[],
         )
-        active_lines = self.processor.process_structured(file_result)
+        active_lines = self.processor.process_structured(file_result, self.ctx)
         assert 0 in active_lines  # directive line
         assert 1 in active_lines  # continuation line
         assert 2 in active_lines  # regular line
@@ -1050,7 +1050,7 @@ class TestSimplePreprocessorEdgeCases:
         """).strip()
         file_result = self._create_file_analysis_result(text)
         file_result.include_guard = sz.Str("MY_HEADER_H")
-        processor.process_structured(file_result)
+        processor.process_structured(file_result, self.ctx)
         assert sz.Str("MY_HEADER_H") not in processor.macros
 
     def test_unknown_directive_verbose(self, capsys):

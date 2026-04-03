@@ -13,7 +13,7 @@ class Namer:
     like executable name, object name, etc.
     """
 
-    def __init__(self, args, argv=None, variant=None, exedir=None, context=None):
+    def __init__(self, args, argv=None, variant=None, exedir=None, *, context):
         self.args = args
         self.context = context
         self._project = compiletools.git_utils.Project(args)

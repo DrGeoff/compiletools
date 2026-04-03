@@ -381,7 +381,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
             argv = [f"--CPPFLAGS={cppflags}", "-q"]
             args = compiletools.apptools.parseargs(cap, argv)
 
-            deps = compiletools.headerdeps.DirectHeaderDeps(args)
+            deps = compiletools.headerdeps.DirectHeaderDeps(args, context=BuildContext())
             assert deps.includes == expected_includes, (
                 f"CPPFLAGS: {cppflags}, Expected: {expected_includes}, Got: {deps.includes}"
             )
@@ -410,7 +410,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         # Set the CPPFLAGS with properly quoted string directly
         args.CPPFLAGS = '-I "/path with spaces/include"'
 
-        deps = compiletools.headerdeps.DirectHeaderDeps(args)
+        deps = compiletools.headerdeps.DirectHeaderDeps(args, context=BuildContext())
         actual_includes = deps.includes
 
         # This assertion should now PASS after the shlex.split() fix
@@ -440,7 +440,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
             args = compiletools.apptools.parseargs(cap, argv)
 
             # This should not raise an exception - the isystem parsing should work
-            compiletools.headerdeps.DirectHeaderDeps(args)
+            compiletools.headerdeps.DirectHeaderDeps(args, context=BuildContext())
 
     def test_computed_include_no_macro(self):
         """Without COMPILETIME_INCLUDE_FILE, the #else branch includes default_extra.h."""
@@ -509,13 +509,13 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
     def test_create_verbose(self):
         """Test create() with verbose >= 4 prints classname."""
         args = self._make_args(verbose=4)
-        deps = compiletools.headerdeps.create(args)
+        deps = compiletools.headerdeps.create(args, context=BuildContext())
         assert isinstance(deps, compiletools.headerdeps.DirectHeaderDeps)
 
     def test_base_process_impl_raises(self):
         """Test HeaderDepsBase._process_impl raises NotImplementedError."""
         args = self._make_args()
-        base = compiletools.headerdeps.HeaderDepsBase(args)
+        base = compiletools.headerdeps.HeaderDepsBase(args, context=BuildContext())
         try:
             base._process_impl("somepath", frozenset())
             assert False, "Should have raised NotImplementedError"
@@ -525,7 +525,7 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
     def test_base_process_oserror_retry(self):
         """Test HeaderDepsBase.process retries on OSError."""
         args = self._make_args()
-        base = compiletools.headerdeps.HeaderDepsBase(args)
+        base = compiletools.headerdeps.HeaderDepsBase(args, context=BuildContext())
         call_count = [0]
 
         def fake_process_impl(realpath, macro_cache_key):
@@ -542,14 +542,14 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
     def test_extract_isystem_empty(self):
         """Test _extract_isystem_paths_from_flags with empty input."""
         args = self._make_args()
-        base = compiletools.headerdeps.HeaderDepsBase(args)
+        base = compiletools.headerdeps.HeaderDepsBase(args, context=BuildContext())
         assert base._extract_isystem_paths_from_flags("") == []
         assert base._extract_isystem_paths_from_flags(None) == []
 
     def test_extract_isystem_shlex_fallback(self):
         """Test _extract_isystem_paths_from_flags falls back on shlex ValueError."""
         args = self._make_args()
-        base = compiletools.headerdeps.HeaderDepsBase(args)
+        base = compiletools.headerdeps.HeaderDepsBase(args, context=BuildContext())
         # Unclosed quote causes shlex ValueError
         result = base._extract_isystem_paths_from_flags("-isystem /usr/include 'unclosed")
         assert "/usr/include" in result
@@ -557,28 +557,28 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
     def test_extract_isystem_dangling(self):
         """Test -isystem at end of string with no following path."""
         args = self._make_args()
-        base = compiletools.headerdeps.HeaderDepsBase(args)
+        base = compiletools.headerdeps.HeaderDepsBase(args, context=BuildContext())
         result = base._extract_isystem_paths_from_flags("-isystem")
         assert result == []
 
     def test_extract_isystem_joined_format(self):
         """Test -isystem/path format (joined without space)."""
         args = self._make_args()
-        base = compiletools.headerdeps.HeaderDepsBase(args)
+        base = compiletools.headerdeps.HeaderDepsBase(args, context=BuildContext())
         result = base._extract_isystem_paths_from_flags("-isystem/usr/local/include")
         assert result == ["/usr/local/include"]
 
     def test_extract_include_empty(self):
         """Test _extract_include_paths_from_flags with empty input."""
         args = self._make_args()
-        base = compiletools.headerdeps.HeaderDepsBase(args)
+        base = compiletools.headerdeps.HeaderDepsBase(args, context=BuildContext())
         assert base._extract_include_paths_from_flags("") == []
         assert base._extract_include_paths_from_flags(None) == []
 
     def test_extract_include_list_input(self):
         """Test _extract_include_paths_from_flags with list input."""
         args = self._make_args()
-        base = compiletools.headerdeps.HeaderDepsBase(args)
+        base = compiletools.headerdeps.HeaderDepsBase(args, context=BuildContext())
         result = base._extract_include_paths_from_flags(["-I", "/usr/include", "-Ilocal"])
         assert "/usr/include" in result
         assert "local" in result
@@ -586,21 +586,21 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
     def test_extract_include_shlex_fallback(self):
         """Test _extract_include_paths_from_flags falls back on shlex ValueError."""
         args = self._make_args()
-        base = compiletools.headerdeps.HeaderDepsBase(args)
+        base = compiletools.headerdeps.HeaderDepsBase(args, context=BuildContext())
         result = base._extract_include_paths_from_flags("-I /usr/include 'unclosed")
         assert "/usr/include" in result
 
     def test_extract_include_dangling_I(self):
         """Test -I at end of string with no following path."""
         args = self._make_args()
-        base = compiletools.headerdeps.HeaderDepsBase(args)
+        base = compiletools.headerdeps.HeaderDepsBase(args, context=BuildContext())
         result = base._extract_include_paths_from_flags("-I")
         assert result == []
 
     def test_cpp_header_deps_with_macro_cache_key_raises(self):
         """Test CppHeaderDeps.process raises NotImplementedError with non-empty macro_cache_key."""
         args = self._make_args()
-        cpp = compiletools.headerdeps.CppHeaderDeps(args)
+        cpp = compiletools.headerdeps.CppHeaderDeps(args, context=BuildContext())
         try:
             cpp.process("/tmp/test.cpp", frozenset({("FOO", "1")}))
             assert False, "Should have raised NotImplementedError"
@@ -610,7 +610,7 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
     def test_direct_clear_instance_cache(self):
         """Test DirectHeaderDeps.clear_instance_cache."""
         args = self._make_args()
-        deps = compiletools.headerdeps.DirectHeaderDeps(args)
+        deps = compiletools.headerdeps.DirectHeaderDeps(args, context=BuildContext())
         # Just call it - should not raise
         deps.clear_instance_cache()
 
