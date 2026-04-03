@@ -22,6 +22,7 @@ from types import SimpleNamespace
 import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
+from compiletools.build_context import BuildContext
 
 
 def test_hunter_propagates_macros_to_header_dependencies():
@@ -62,9 +63,10 @@ def test_hunter_propagates_macros_to_header_dependencies():
         args.CXX = "g++"
 
         # Create components
-        headerdeps = compiletools.headerdeps.DirectHeaderDeps(args)
-        magicparser = compiletools.magicflags.DirectMagicFlags(args, headerdeps)
-        hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser)
+        ctx = BuildContext()
+        headerdeps = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
+        magicparser = compiletools.magicflags.DirectMagicFlags(args, headerdeps, context=ctx)
+        hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
 
         config_h_path = str(sample_dir / "config.h")
 

@@ -5,6 +5,7 @@ import resource
 
 import pytest
 
+from compiletools.build_context import BuildContext
 from compiletools.file_analyzer import (
     FileAnalyzer,
     _determine_file_reading_strategy,
@@ -68,11 +69,8 @@ class TestFileReadingStrategy:
     """Tests for file reading strategy selection."""
 
     def setup_method(self):
-        """Reset cached strategy before each test."""
-        import compiletools.file_analyzer
-
-        compiletools.file_analyzer._file_reading_strategy = None
-        compiletools.file_analyzer._analyzer_args = None
+        """Create fresh BuildContext before each test."""
+        self.ctx = BuildContext()
 
     def test_default_strategy(self):
         """Test default strategy selection."""
@@ -92,8 +90,8 @@ class TestFileReadingStrategy:
             },
         )()
 
-        set_analyzer_args(args)
-        strategy = _determine_file_reading_strategy()
+        set_analyzer_args(args, self.ctx)
+        strategy = _determine_file_reading_strategy(self.ctx)
         assert strategy in ["mmap", "no_mmap"]
 
     def test_manual_override_no_use_mmap(self):
@@ -114,8 +112,8 @@ class TestFileReadingStrategy:
             },
         )()
 
-        set_analyzer_args(args)
-        strategy = _determine_file_reading_strategy()
+        set_analyzer_args(args, self.ctx)
+        strategy = _determine_file_reading_strategy(self.ctx)
         assert strategy == "no_mmap"
 
     def test_manual_override_force_mmap(self):
@@ -136,8 +134,8 @@ class TestFileReadingStrategy:
             },
         )()
 
-        set_analyzer_args(args)
-        strategy = _determine_file_reading_strategy()
+        set_analyzer_args(args, self.ctx)
+        strategy = _determine_file_reading_strategy(self.ctx)
         assert strategy == "mmap"
 
     def test_low_ulimit_auto_no_mmap(self):
@@ -166,8 +164,8 @@ class TestFileReadingStrategy:
                     },
                 )()
 
-                set_analyzer_args(args)
-                strategy = _determine_file_reading_strategy()
+                set_analyzer_args(args, self.ctx)
+                strategy = _determine_file_reading_strategy(self.ctx)
                 assert strategy == "no_mmap", f"Expected no_mmap with ulimit {soft}, got {strategy}"
         except (OSError, AttributeError):
             pytest.skip("Cannot read ulimit on this system")
@@ -212,12 +210,8 @@ class TestFileReadingWithRealFiles:
     """Tests that verify file reading strategies work with real sample files."""
 
     def setup_method(self):
-        """Reset cached strategy before each test."""
-        import compiletools.file_analyzer
-
-        compiletools.file_analyzer._file_reading_strategy = None
-        compiletools.file_analyzer._analyzer_args = None
-        compiletools.file_analyzer._filesystem_override_strategy = None
+        """Create fresh BuildContext before each test."""
+        self.ctx = BuildContext()
 
     def test_no_mmap_mode_reads_real_file(self):
         """Test that no_mmap mode actually reads and analyzes real files correctly."""
@@ -230,8 +224,8 @@ class TestFileReadingWithRealFiles:
         assert os.path.exists(sample_file), f"Sample file not found: {sample_file}"
 
         # Load hash registry
-        load_hashes()
-        content_hash = get_file_hash(sample_file)
+        load_hashes(context=self.ctx)
+        content_hash = get_file_hash(sample_file, self.ctx)
 
         # Configure no_mmap mode
         args = type(
@@ -250,14 +244,14 @@ class TestFileReadingWithRealFiles:
             },
         )()
 
-        set_analyzer_args(args)
-        strategy = _determine_file_reading_strategy()
+        set_analyzer_args(args, self.ctx)
+        strategy = _determine_file_reading_strategy(self.ctx)
         assert strategy == "no_mmap"
 
         # Analyze the file - this exercises _read_file_with_strategy
         from compiletools.file_analyzer import analyze_file
 
-        result = analyze_file(content_hash)
+        result = analyze_file(content_hash, self.ctx)
 
         # Verify the analysis worked correctly
         assert result.line_count > 0
@@ -274,8 +268,8 @@ class TestFileReadingWithRealFiles:
         sample_file = compiletools.wrappedos.realpath(sample_file)
         assert os.path.exists(sample_file)
 
-        load_hashes()
-        content_hash = get_file_hash(sample_file)
+        load_hashes(context=self.ctx)
+        content_hash = get_file_hash(sample_file, self.ctx)
 
         args = type(
             "Args",
@@ -293,13 +287,13 @@ class TestFileReadingWithRealFiles:
             },
         )()
 
-        set_analyzer_args(args)
-        strategy = _determine_file_reading_strategy()
+        set_analyzer_args(args, self.ctx)
+        strategy = _determine_file_reading_strategy(self.ctx)
         assert strategy == "mmap"
 
         from compiletools.file_analyzer import analyze_file
 
-        result = analyze_file(content_hash)
+        result = analyze_file(content_hash, self.ctx)
 
         assert result.line_count > 0
         assert len(result.includes) > 0
@@ -314,8 +308,8 @@ class TestFileReadingWithRealFiles:
         sample_file = compiletools.wrappedos.realpath(sample_file)
         assert os.path.exists(sample_file)
 
-        load_hashes()
-        content_hash = get_file_hash(sample_file)
+        load_hashes(context=self.ctx)
+        content_hash = get_file_hash(sample_file, self.ctx)
 
         args = type(
             "Args",
@@ -333,13 +327,13 @@ class TestFileReadingWithRealFiles:
             },
         )()
 
-        set_analyzer_args(args)
-        strategy = _determine_file_reading_strategy()
+        set_analyzer_args(args, self.ctx)
+        strategy = _determine_file_reading_strategy(self.ctx)
         assert strategy == "no_mmap"
 
         from compiletools.file_analyzer import analyze_file
 
-        result = analyze_file(content_hash)
+        result = analyze_file(content_hash, self.ctx)
 
         assert result.line_count > 0
         assert len(result.includes) > 0

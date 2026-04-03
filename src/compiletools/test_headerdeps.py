@@ -9,6 +9,7 @@ import compiletools.test_base as tb
 import compiletools.testhelper as uth
 import compiletools.utils
 import compiletools.wrappedos
+from compiletools.build_context import BuildContext
 
 
 def _make_cppflags_path(relative_path):
@@ -76,7 +77,8 @@ def _generatecache(tempdir, name, realpaths, extraargs=None):
         cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
         compiletools.headerdeps.add_arguments(cap)
         args = compiletools.apptools.parseargs(cap, argv)
-        headerdeps = compiletools.headerdeps.create(args)
+        ctx = BuildContext()
+        headerdeps = compiletools.headerdeps.create(args, context=ctx)
         return cachename, _callprocess(headerdeps, realpaths)
 
 
@@ -615,7 +617,8 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
         """Test generatetree with a macro_cache_key."""
         filename = os.path.join(uth.samplesdir(), "simple/helloworld_cpp.cpp")
         args = self._make_args()
-        deps = compiletools.headerdeps.DirectHeaderDeps(args)
+        ctx = BuildContext()
+        deps = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
         result = deps.generatetree(filename, macro_cache_key=frozenset())
         assert result is not None
 
@@ -623,6 +626,7 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
         """Test generatetree with non-empty macro_cache_key initializes macros."""
         filename = os.path.join(uth.samplesdir(), "simple/helloworld_cpp.cpp")
         args = self._make_args()
-        deps = compiletools.headerdeps.DirectHeaderDeps(args)
+        ctx = BuildContext()
+        deps = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
         result = deps.generatetree(filename, macro_cache_key=frozenset({("TEST_MACRO", "1")}))
         assert result is not None

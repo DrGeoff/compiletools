@@ -7,6 +7,7 @@ import compiletools.apptools
 import compiletools.configutils
 import compiletools.namer
 import compiletools.testhelper as uth
+from compiletools.build_context import BuildContext
 
 
 def test_executable_pathname():
@@ -70,7 +71,8 @@ def test_object_name_with_dependencies():
             compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
             compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
             args = compiletools.apptools.parseargs(cap, argv)
-            namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug")
+            ctx = BuildContext()
+            namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=ctx)
 
             # Test with no dependencies
             dep_hash_empty = namer.compute_dep_hash([])
@@ -154,7 +156,7 @@ def test_dep_hash_xor_properties():
             compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
             compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
             args = compiletools.apptools.parseargs(cap, argv)
-            namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug")
+            namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=BuildContext())
 
             # Test 1: XOR commutativity A⊕B = B⊕A (order-independent via sorting)
             hash_ab = namer.compute_dep_hash([h1_file, h2_file])
@@ -211,7 +213,7 @@ def test_dep_hash_handles_missing_generated_headers():
             compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
             compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
             args = compiletools.apptools.parseargs(cap, argv)
-            namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug")
+            namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=BuildContext())
 
             missing_gen = os.path.join(tmpdir, "generated.h")
 
@@ -275,9 +277,10 @@ def test_source_magic_produces_different_hash_with_different_flags():
                 compiletools.hunter.add_arguments(cap)
                 argv = [f"--append-CPPFLAGS={cppflags_value}", "-q"]
                 args = compiletools.apptools.parseargs(cap, argv)
-                hdeps = compiletools.headerdeps.create(args)
-                magic = compiletools.magicflags.create(args, hdeps)
-                return compiletools.hunter.Hunter(args, hdeps, magic), magic
+                ctx = BuildContext()
+                hdeps = compiletools.headerdeps.create(args, context=ctx)
+                magic = compiletools.magicflags.create(args, hdeps, context=ctx)
+                return compiletools.hunter.Hunter(args, hdeps, magic, context=ctx), magic
 
             # Config 1: trigger _extractSOURCE via required_source_files
             hunter1, magic1 = create_hunter_with_cppflags("-I/opt/libfoo/v1/include")
@@ -330,14 +333,14 @@ def test_different_cppflags_produce_different_object_names():
             with tempfile.TemporaryDirectory() as tmpdir:
                 # Build two magicflag parsers with different CPPFLAGS
                 parser1 = tb.create_magic_parser(
-                    ["--magic=direct", "--append-CPPFLAGS=-I/opt/libfoo/v1/include"], tempdir=tmpdir
+                    ["--magic=direct", "--append-CPPFLAGS=-I/opt/libfoo/v1/include"], tempdir=tmpdir, context=BuildContext()
                 )
                 parser1.parse(source_file)
                 hash1 = parser1.get_final_macro_state_hash(source_file)
 
                 compiletools.preprocessing_cache.clear_cache()
                 parser2 = tb.create_magic_parser(
-                    ["--magic=direct", "--append-CPPFLAGS=-I/opt/libfoo/v2/include"], tempdir=tmpdir
+                    ["--magic=direct", "--append-CPPFLAGS=-I/opt/libfoo/v2/include"], tempdir=tmpdir, context=BuildContext()
                 )
                 parser2.parse(source_file)
                 hash2 = parser2.get_final_macro_state_hash(source_file)
@@ -362,7 +365,7 @@ def test_different_cppflags_produce_different_object_names():
             compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
             compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
             args = compiletools.apptools.parseargs(cap, argv)
-            namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug")
+            namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=BuildContext())
 
             dep_hash = namer.compute_dep_hash([])
 

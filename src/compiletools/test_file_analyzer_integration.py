@@ -14,6 +14,7 @@ import compiletools.headerdeps
 import compiletools.magicflags
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
+from compiletools.build_context import BuildContext
 
 
 class TestHeaderDepsIntegration(tb.BaseCompileToolsTestCase):
@@ -46,7 +47,8 @@ class TestHeaderDepsIntegration(tb.BaseCompileToolsTestCase):
             ["--headerdeps=direct", f"--max-file-read-size={max_file_read_size}", f"--include={self.temp_dir}"]
         )
 
-        return compiletools.headerdeps.DirectHeaderDeps(args)
+        ctx = BuildContext()
+        return compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
 
     def test_header_deps_with_max_read_size_zero(self):
         """Test HeaderDeps with max_read_size=0 (entire file)."""
@@ -172,8 +174,9 @@ class TestMagicFlagsIntegration(tb.BaseCompileToolsTestCase):
         )
 
         # Create instances using the shared args
-        headerdeps = compiletools.headerdeps.DirectHeaderDeps(args)
-        return compiletools.magicflags.DirectMagicFlags(args, headerdeps)
+        ctx = BuildContext()
+        headerdeps = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
+        return compiletools.magicflags.DirectMagicFlags(args, headerdeps, context=ctx)
 
     @uth.requires_functional_compiler
     def test_magic_flags_basic_detection(self):

@@ -68,10 +68,14 @@ class BaseCompileToolsTestCase:
         return os.path.join(uth.samplesdir(), relative_path)
 
 
-def create_magic_parser(extraargs=None, tempdir=None):
+def create_magic_parser(extraargs=None, tempdir=None, context=None):
     """Factory function for creating magic flag parsers"""
+    from compiletools.build_context import BuildContext
+
     if not extraargs:
         extraargs = []
+    if context is None:
+        context = BuildContext()
     temp_config_name = uth.create_temp_config(tempdir)
     argv = ["--config=" + temp_config_name] + extraargs
 
@@ -90,12 +94,12 @@ def create_magic_parser(extraargs=None, tempdir=None):
     compiletools.headerdeps.add_arguments(cap)
     compiletools.magicflags.add_arguments(cap)
     args = compiletools.apptools.parseargs(cap, argv)
-    headerdeps = compiletools.headerdeps.create(args)
-    return compiletools.magicflags.create(args, headerdeps)
+    headerdeps = compiletools.headerdeps.create(args, context=context)
+    return compiletools.magicflags.create(args, headerdeps, context=context)
 
 
 @uth.requires_functional_compiler
-def compare_direct_cpp_magic(test_case, relativepath, tempdir=None, expected_values=None, parsers=None):
+def compare_direct_cpp_magic(test_case, relativepath, tempdir=None, expected_values=None, parsers=None, context=None):
     """Utility to test that DirectMagicFlags and CppMagicFlags produce identical results
 
     Args:
@@ -105,7 +109,12 @@ def compare_direct_cpp_magic(test_case, relativepath, tempdir=None, expected_val
         expected_values: Optional dict of expected values to verify correctness
                         Format: {"LDFLAGS": ["-lm"], "SOURCE": ["path/to/file.cpp"]}
         parsers: Optional tuple of (magicparser_direct, magicparser_cpp) to reuse
+        context: Optional BuildContext (created if not provided)
     """
+    from compiletools.build_context import BuildContext
+
+    if context is None:
+        context = BuildContext()
 
     with uth.TempDirContext() as _:
         if tempdir is not None:
@@ -132,7 +141,7 @@ def compare_direct_cpp_magic(test_case, relativepath, tempdir=None, expected_val
         else:
             # Test direct parser with isolated context
             with uth.ParserContext():
-                magicparser_direct = create_magic_parser(["--magic", "direct"], tempdir=os.getcwd())
+                magicparser_direct = create_magic_parser(["--magic", "direct"], tempdir=os.getcwd(), context=context)
                 try:
                     result_direct = magicparser_direct.parse(realpath)
                 except RuntimeError as e:
@@ -143,7 +152,7 @@ def compare_direct_cpp_magic(test_case, relativepath, tempdir=None, expected_val
 
             # Test cpp parser with fresh isolated context
             with uth.ParserContext():
-                magicparser_cpp = create_magic_parser(["--magic", "cpp"], tempdir=os.getcwd())
+                magicparser_cpp = create_magic_parser(["--magic", "cpp"], tempdir=os.getcwd(), context=BuildContext())
                 try:
                     result_cpp = magicparser_cpp.parse(realpath)
                 except RuntimeError as e:
@@ -170,10 +179,14 @@ def compare_direct_cpp_magic(test_case, relativepath, tempdir=None, expected_val
                 )
 
 
-def compare_direct_cpp_headers(test_case, filename, extraargs=None):
+def compare_direct_cpp_headers(test_case, filename, extraargs=None, context=None):
     """Utility to test that DirectHeaderDeps and CppHeaderDeps produce identical results"""
+    from compiletools.build_context import BuildContext
+
     if extraargs is None:
         extraargs = []
+    if context is None:
+        context = BuildContext()
     realpath = compiletools.wrappedos.realpath(filename)
 
     with uth.TempConfigContext() as temp_config_name:
@@ -187,8 +200,8 @@ def compare_direct_cpp_headers(test_case, filename, extraargs=None):
         argvcpp = argv + ["--headerdeps", "cpp"]
         argscpp = compiletools.apptools.parseargs(cap, argvcpp)
 
-        hdirect = compiletools.headerdeps.create(argsdirect)
-        hcpp = compiletools.headerdeps.create(argscpp)
+        hdirect = compiletools.headerdeps.create(argsdirect, context=context)
+        hcpp = compiletools.headerdeps.create(argscpp, context=context)
         hdirectresult = hdirect.process(realpath, frozenset())
         hcppresult = hcpp.process(realpath, frozenset())
         assert set(hdirectresult) == set(hcppresult)

@@ -476,7 +476,7 @@ class DirectMagicFlags(MagicFlagsBase):
     def __init__(self, args, headerdeps, context=None):
         MagicFlagsBase.__init__(self, args, headerdeps, context=context)
         # Create namer instance for dependency hash computation
-        self._namer = compiletools.namer.Namer(args)
+        self._namer = compiletools.namer.Namer(args, context=context)
         # Compute initial macro state once (compiler built-ins + command-line macros)
         # This is computed once and reused via copy() to avoid redundant initialization
         self._initial_macro_state = self._initialize_macro_state()

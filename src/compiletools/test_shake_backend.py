@@ -149,8 +149,8 @@ class TestTraceVerification:
             (td / "foo.o").write_bytes(b"\x7fELF fake object")
             os.makedirs(td / "obj", exist_ok=True)
 
-            source_hash = get_file_hash(str(td / "foo.cpp"))
-            obj_hash = get_file_hash(str(td / "foo.o"))
+            source_hash = get_file_hash(str(td / "foo.cpp"), backend.context)
+            obj_hash = get_file_hash(str(td / "foo.o"), backend.context)
             cmd = ["g++", "-c", "foo.cpp", "-o", "foo.o"]
 
             # Pre-populate trace store with matching hashes
@@ -242,8 +242,8 @@ class TestTraceVerification:
             (td / "foo.o").write_bytes(b"\x7fELF fake object")
             os.makedirs(td / "obj", exist_ok=True)
 
-            source_hash = get_file_hash(str(td / "foo.cpp"))
-            obj_hash = get_file_hash(str(td / "foo.o"))
+            source_hash = get_file_hash(str(td / "foo.cpp"), backend.context)
+            obj_hash = get_file_hash(str(td / "foo.o"), backend.context)
 
             # Trace has a DIFFERENT command hash
             trace_path = str(td / ".ct-traces.json")
@@ -288,7 +288,7 @@ class TestTraceVerification:
             (td / "foo.o").write_bytes(b"\x7fELF fake object")
             os.makedirs(td / "obj", exist_ok=True)
 
-            source_hash = get_file_hash(str(td / "foo.cpp"))
+            source_hash = get_file_hash(str(td / "foo.cpp"), backend.context)
             cmd = ["cp", "foo.cpp", "foo.o"]
 
             # Trace only knows about ONE input
@@ -297,7 +297,7 @@ class TestTraceVerification:
             store.put(
                 "foo.o",
                 TraceEntry(
-                    output_hash=get_file_hash(str(td / "foo.o")),
+                    output_hash=get_file_hash(str(td / "foo.o"), backend.context),
                     input_hashes={"foo.cpp": source_hash},
                     command_hash=hash_command(cmd),
                 ),
@@ -610,7 +610,7 @@ class TestOutputDeletion:
             os.makedirs(td / "obj", exist_ok=True)
             # Note: foo.o does NOT exist (simulates deletion)
 
-            source_hash = get_file_hash(str(td / "foo.cpp"))
+            source_hash = get_file_hash(str(td / "foo.cpp"), backend.context)
             cmd = ["g++", "-c", "foo.cpp", "-o", "foo.o"]
 
             # Pre-populate trace as if foo.o was previously built successfully

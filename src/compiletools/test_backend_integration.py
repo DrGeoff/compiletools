@@ -25,6 +25,7 @@ import compiletools.trace_backend
 import compiletools.tup_backend
 import compiletools.utils
 from compiletools.build_backend import available_backends, get_backend_class
+from compiletools.build_context import BuildContext
 from compiletools.makefile_backend import MakefileBackend
 from compiletools.test_base import BaseCompileToolsTestCase
 
@@ -62,9 +63,10 @@ def _setup_backend_for_source(backend_name, tmp_path, src_file="helloworld_cpp.c
     _add_backend_arguments(cap)
     args = compiletools.apptools.parseargs(cap, argv)
 
-    headerdeps = compiletools.headerdeps.create(args)
-    magicparser = compiletools.magicflags.create(args, headerdeps)
-    hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser)
+    ctx = BuildContext()
+    headerdeps = compiletools.headerdeps.create(args, context=ctx)
+    magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
+    hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
 
     BackendClass = get_backend_class(backend_name)
     backend = BackendClass(args=args, hunter=hunter)
@@ -282,9 +284,10 @@ class TestBackendBuildGraphWithTests(BaseCompileToolsTestCase):
             _add_backend_arguments(cap)
             args = compiletools.apptools.parseargs(cap, argv)
 
-            headerdeps = compiletools.headerdeps.create(args)
-            magicparser = compiletools.magicflags.create(args, headerdeps)
-            hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser)
+            ctx = BuildContext()
+            headerdeps = compiletools.headerdeps.create(args, context=ctx)
+            magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
+            hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
 
             BackendClass = get_backend_class("ninja")
             backend = BackendClass(args=args, hunter=hunter)

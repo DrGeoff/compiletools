@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import compiletools.headerdeps
+from compiletools.build_context import BuildContext
 
 
 def test_sequential_dependency_analysis_consistency():
@@ -38,7 +39,8 @@ def test_sequential_dependency_analysis_consistency():
         args.CXX = "g++"
 
         # Create single DirectHeaderDeps instance (simulates ct-cake behavior)
-        headerdeps = compiletools.headerdeps.DirectHeaderDeps(args)
+        ctx = BuildContext()
+        headerdeps = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
 
         # First analysis: main.cpp (defines FEATURE_A_ENABLED -> FEATURE_B_ENABLED)
         # This should include module_b.h via config.h -> core.h chain

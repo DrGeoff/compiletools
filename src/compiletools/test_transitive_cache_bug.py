@@ -30,6 +30,7 @@ import compiletools.hunter
 import compiletools.magicflags
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
+from compiletools.build_context import BuildContext
 
 
 class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
@@ -71,7 +72,8 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
 
         # Create DirectHeaderDeps instance
-        deps = compiletools.headerdeps.DirectHeaderDeps(args)
+        ctx = BuildContext()
+        deps = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
 
         # Process task_scheduler.cpp
         task_scheduler_cpp = self._get_engine_file("systems", "task_scheduler.cpp")
@@ -125,7 +127,8 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
 
         # Use SINGLE DirectHeaderDeps instance for all files (like ct-cake does)
-        deps = compiletools.headerdeps.DirectHeaderDeps(args)
+        ctx = BuildContext()
+        deps = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
 
         # Process files in alphabetical order (typical make behavior)
         files_to_process = [
@@ -181,9 +184,10 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
         compiletools.magicflags.MagicFlagsBase.clear_cache()
 
         # Create Hunter with headerdeps and magicflags (like ct-cake does)
-        headerdeps = compiletools.headerdeps.create(args)
-        magicparser = compiletools.magicflags.create(args, headerdeps)
-        hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser)
+        ctx = BuildContext()
+        headerdeps = compiletools.headerdeps.create(args, context=ctx)
+        magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
+        hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
 
         # Process files in alphabetical order (like make does)
         files_to_process = [
@@ -231,13 +235,15 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
 
         # Test 1: Process task_scheduler first
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
-        deps1 = compiletools.headerdeps.DirectHeaderDeps(args)
+        ctx1 = BuildContext()
+        deps1 = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx1)
         result1_task = set(deps1.process(task_scheduler, frozenset()))
         result1_audio = set(deps1.process(audio_system, frozenset()))
 
         # Test 2: Process audio_system first (different order)
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
-        deps2 = compiletools.headerdeps.DirectHeaderDeps(args)
+        ctx2 = BuildContext()
+        deps2 = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx2)
         result2_audio = set(deps2.process(audio_system, frozenset()))
         result2_task = set(deps2.process(task_scheduler, frozenset()))
 

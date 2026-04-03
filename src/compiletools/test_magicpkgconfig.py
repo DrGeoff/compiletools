@@ -12,6 +12,7 @@ import compiletools.magicflags
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
 import compiletools.utils
+from compiletools.build_context import BuildContext
 
 # Although this is virtually identical to the test_cake.py, we can't merge
 # the tests due to memoized results.
@@ -95,8 +96,9 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                 args = MockArgs()
 
                 # Create magicflags parser
-                headerdeps = compiletools.headerdeps.create(args)
-                magicparser = compiletools.magicflags.create(args, headerdeps)
+                ctx = BuildContext()
+                headerdeps = compiletools.headerdeps.create(args, context=ctx)
+                magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
 
                 # Test the sample file that contains //#PKG-CONFIG=conditional nested
                 sample_file = os.path.join(tmpmagicpkgconfig, "main.cpp")
@@ -162,8 +164,9 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
             args = MockArgs()
 
             # Create magicflags parser
-            headerdeps = compiletools.headerdeps.create(args)
-            magicparser = compiletools.magicflags.create(args, headerdeps)
+            ctx = BuildContext()
+            headerdeps = compiletools.headerdeps.create(args, context=ctx)
+            magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
 
             # Use the actual magicpkgconfig sample file
             sample_file = os.path.join(tmpmagicpkgconfig, "main.cpp")
@@ -223,7 +226,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
         source_file = str(files["test.cpp"])
 
         # Create parser
-        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir)
+        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir, context=BuildContext())
 
         # Parse
         result = mf.parse(source_file)

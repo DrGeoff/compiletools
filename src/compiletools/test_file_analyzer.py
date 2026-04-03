@@ -4,6 +4,7 @@ import os
 import tempfile
 from types import SimpleNamespace
 
+from compiletools.build_context import BuildContext
 from compiletools.file_analyzer import FileAnalysisResult, FileAnalyzer, read_file_mmap, read_file_traditional
 
 
@@ -38,6 +39,7 @@ class TestFileAnalyzer:
     def setup_method(self):
         """Set up test fixtures."""
         self.test_files = {}
+        self.ctx = BuildContext()
 
     def teardown_method(self):
         """Clean up test files."""
@@ -66,9 +68,9 @@ int main() {
         filepath = self.create_test_file("test.c", content)
         from compiletools.global_hash_registry import get_file_hash
 
-        content_hash = get_file_hash(filepath)
+        content_hash = get_file_hash(filepath, self.ctx)
         args = SimpleNamespace(max_read_size=0, verbose=0)
-        analyzer = FileAnalyzer(content_hash, args)
+        analyzer = FileAnalyzer(content_hash, args, self.ctx)
         result = analyzer.analyze()
 
         # Should have 2 include positions (not the commented one)
@@ -92,9 +94,9 @@ int main() {
         filepath = self.create_test_file("magic.c", content)
         from compiletools.global_hash_registry import get_file_hash
 
-        content_hash = get_file_hash(filepath)
+        content_hash = get_file_hash(filepath, self.ctx)
         args = SimpleNamespace(max_read_size=0, verbose=0)
-        analyzer = FileAnalyzer(content_hash, args)
+        analyzer = FileAnalyzer(content_hash, args, self.ctx)
         result = analyzer.analyze()
 
         # Should detect 2 magic flags
@@ -304,23 +306,23 @@ class TestCacheStatsFunctions:
     def test_get_cache_stats(self):
         from compiletools.file_analyzer import get_cache_stats
 
-        stats = get_cache_stats()
-        assert "hits" in stats
-        assert "misses" in stats
-        assert "total_calls" in stats
+        ctx = BuildContext()
+        stats = get_cache_stats(ctx)
         assert "cache_size" in stats
 
     def test_print_cache_stats(self, capsys):
         from compiletools.file_analyzer import print_cache_stats
 
-        print_cache_stats()
+        ctx = BuildContext()
+        print_cache_stats(ctx)
         captured = capsys.readouterr()
         assert "Cache" in captured.out
 
     def test_cache_clear(self):
         from compiletools.file_analyzer import cache_clear
 
-        cache_clear()  # Should not raise
+        ctx = BuildContext()
+        cache_clear(ctx)  # Should not raise
 
 
 class TestReadFileTraditionalEdgeCases:
@@ -351,6 +353,7 @@ class TestFileAnalyzerFactory:
 
     def test_analyzer_constructor(self):
         """Test that FileAnalyzer constructor works correctly."""
+        ctx = BuildContext()
         with tempfile.NamedTemporaryFile(mode="w", suffix=".c", delete=False) as f:
             f.write("int main() { return 0; }")
             filepath = f.name
@@ -358,9 +361,9 @@ class TestFileAnalyzerFactory:
         try:
             from compiletools.global_hash_registry import get_file_hash
 
-            content_hash = get_file_hash(filepath)
+            content_hash = get_file_hash(filepath, ctx)
             args = SimpleNamespace(max_read_size=0, verbose=0)
-            analyzer = FileAnalyzer(content_hash, args)
+            analyzer = FileAnalyzer(content_hash, args, ctx)
             assert isinstance(analyzer, FileAnalyzer)
         finally:
             os.unlink(filepath)
@@ -369,13 +372,17 @@ class TestFileAnalyzerFactory:
         """Test that FileAnalyzer raises ValueError for None content_hash."""
         import pytest
 
+        ctx = BuildContext()
         args = SimpleNamespace(max_read_size=0, verbose=0)
         with pytest.raises(ValueError, match="content_hash must be provided"):
-            FileAnalyzer(None, args)
+            FileAnalyzer(None, args, ctx)
 
 
 class TestShouldReadEntireFile:
     """Test FileAnalyzer._should_read_entire_file method."""
+
+    def setup_method(self):
+        self.ctx = BuildContext()
 
     def test_max_read_size_zero_reads_entire(self):
         """When max_read_size is 0, should always read entire file."""
@@ -385,9 +392,9 @@ class TestShouldReadEntireFile:
         try:
             from compiletools.global_hash_registry import get_file_hash
 
-            content_hash = get_file_hash(filepath)
+            content_hash = get_file_hash(filepath, self.ctx)
             args = SimpleNamespace(max_read_size=0, verbose=0)
-            analyzer = FileAnalyzer(content_hash, args)
+            analyzer = FileAnalyzer(content_hash, args, self.ctx)
             assert analyzer._should_read_entire_file(1000) is True
         finally:
             os.unlink(filepath)
@@ -400,9 +407,9 @@ class TestShouldReadEntireFile:
         try:
             from compiletools.global_hash_registry import get_file_hash
 
-            content_hash = get_file_hash(filepath)
+            content_hash = get_file_hash(filepath, self.ctx)
             args = SimpleNamespace(max_read_size=1000, verbose=0)
-            analyzer = FileAnalyzer(content_hash, args)
+            analyzer = FileAnalyzer(content_hash, args, self.ctx)
             assert analyzer._should_read_entire_file(500) is True
         finally:
             os.unlink(filepath)
@@ -415,9 +422,9 @@ class TestShouldReadEntireFile:
         try:
             from compiletools.global_hash_registry import get_file_hash
 
-            content_hash = get_file_hash(filepath)
+            content_hash = get_file_hash(filepath, self.ctx)
             args = SimpleNamespace(max_read_size=100, verbose=0)
-            analyzer = FileAnalyzer(content_hash, args)
+            analyzer = FileAnalyzer(content_hash, args, self.ctx)
             assert analyzer._should_read_entire_file(500) is False
         finally:
             os.unlink(filepath)
@@ -430,9 +437,9 @@ class TestShouldReadEntireFile:
         try:
             from compiletools.global_hash_registry import get_file_hash
 
-            content_hash = get_file_hash(filepath)
+            content_hash = get_file_hash(filepath, self.ctx)
             args = SimpleNamespace(max_read_size=100, verbose=0)
-            analyzer = FileAnalyzer(content_hash, args)
+            analyzer = FileAnalyzer(content_hash, args, self.ctx)
             assert analyzer._should_read_entire_file(None) is False
         finally:
             os.unlink(filepath)
@@ -442,14 +449,15 @@ class TestInstanceBulkMethods:
     """Test FileAnalyzer instance-level bulk search methods (fallback paths)."""
 
     def setup_method(self):
+        self.ctx = BuildContext()
         with tempfile.NamedTemporaryFile(mode="w", suffix=".c", delete=False) as f:
             f.write("int x;")
             self.filepath = f.name
         from compiletools.global_hash_registry import get_file_hash
 
-        content_hash = get_file_hash(self.filepath)
+        content_hash = get_file_hash(self.filepath, self.ctx)
         args = SimpleNamespace(max_read_size=0, verbose=0)
-        self.analyzer = FileAnalyzer(content_hash, args)
+        self.analyzer = FileAnalyzer(content_hash, args, self.ctx)
 
     def teardown_method(self):
         os.unlink(self.filepath)
@@ -710,8 +718,7 @@ class TestAnalyzeFileFeatures:
 
     def setup_method(self):
         self.test_files = []
-        from compiletools.file_analyzer import cache_clear
-        cache_clear()
+        self.ctx = BuildContext()
 
     def teardown_method(self):
         for fp in self.test_files:
@@ -730,13 +737,11 @@ class TestAnalyzeFileFeatures:
             f.write(unique_content)
             filepath = f.name
         self.test_files.append(filepath)
-        from compiletools.file_analyzer import cache_clear
         from compiletools.global_hash_registry import get_file_hash
 
-        cache_clear()
-        content_hash = get_file_hash(filepath)
+        content_hash = get_file_hash(filepath, self.ctx)
         args = SimpleNamespace(max_read_size=0, verbose=0, **extra_args)
-        analyzer = FileAnalyzer(content_hash, args)
+        analyzer = FileAnalyzer(content_hash, args, self.ctx)
         return analyzer.analyze()
 
     def test_defines_extraction(self):
@@ -809,13 +814,13 @@ class TestAnalyzeFileFeatures:
             f.write(content)
             filepath = f.name
         self.test_files.append(filepath)
-        from compiletools.file_analyzer import cache_clear
         from compiletools.global_hash_registry import get_file_hash
 
-        cache_clear()
-        content_hash = get_file_hash(filepath)
+        # Use fresh context to avoid cache hits from other tests
+        ctx = BuildContext()
+        content_hash = get_file_hash(filepath, ctx)
         args = SimpleNamespace(max_read_size=50, verbose=0)
-        analyzer = FileAnalyzer(content_hash, args)
+        analyzer = FileAnalyzer(content_hash, args, ctx)
         result = analyzer.analyze()
         assert result.was_truncated is True
         assert result.bytes_analyzed <= 50
@@ -868,9 +873,9 @@ class TestPrintCacheStatsWithCalls:
         """Test that hit rate is computed when there are calls."""
         import time
 
-        from compiletools.file_analyzer import cache_clear, print_cache_stats
+        from compiletools.file_analyzer import print_cache_stats
 
-        cache_clear()
+        ctx = BuildContext()
         # Create a file with unique content to avoid hash collisions
         unique = f"int x_{time.time_ns()};"
         with tempfile.NamedTemporaryFile(mode="w", suffix=".c", delete=False) as f:
@@ -879,17 +884,16 @@ class TestPrintCacheStatsWithCalls:
         try:
             from compiletools.global_hash_registry import get_file_hash
 
-            content_hash = get_file_hash(filepath)
+            content_hash = get_file_hash(filepath, ctx)
             args = SimpleNamespace(max_read_size=0, verbose=0)
-            analyzer = FileAnalyzer(content_hash, args)
+            analyzer = FileAnalyzer(content_hash, args, ctx)
             analyzer.analyze()  # miss
             analyzer.analyze()  # hit
-            print_cache_stats()
+            print_cache_stats(ctx)
             captured = capsys.readouterr()
-            assert "Cache hits:" in captured.out
+            assert "Cache size:" in captured.out
         finally:
             os.unlink(filepath)
-            cache_clear()
 
 
 class TestAddArguments:
@@ -913,28 +917,20 @@ class TestDetermineFileReadingStrategy:
     """Test _determine_file_reading_strategy."""
 
     def test_no_mmap_flag(self):
-        import compiletools.file_analyzer as fa
         from compiletools.file_analyzer import set_analyzer_args
 
-        old = fa._file_reading_strategy
-        try:
-            args = SimpleNamespace(use_mmap=False)
-            set_analyzer_args(args)
-            assert fa._file_reading_strategy == "no_mmap"
-        finally:
-            fa._file_reading_strategy = old
+        ctx = BuildContext()
+        args = SimpleNamespace(use_mmap=False)
+        set_analyzer_args(args, ctx)
+        assert ctx.file_reading_strategy == "no_mmap"
 
     def test_force_mmap_flag(self):
-        import compiletools.file_analyzer as fa
         from compiletools.file_analyzer import set_analyzer_args
 
-        old = fa._file_reading_strategy
-        try:
-            args = SimpleNamespace(use_mmap=True, force_mmap=True)
-            set_analyzer_args(args)
-            assert fa._file_reading_strategy == "mmap"
-        finally:
-            fa._file_reading_strategy = old
+        ctx = BuildContext()
+        args = SimpleNamespace(use_mmap=True, force_mmap=True)
+        set_analyzer_args(args, ctx)
+        assert ctx.file_reading_strategy == "mmap"
 
 
 class TestExtractConditionalMacros:

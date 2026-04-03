@@ -241,19 +241,9 @@ def reset():
     import compiletools.git_utils as git_utils
 
     git_utils.clear_cache()
-    # Clear global hash registry to prevent stale file hash lookups
-    from compiletools.global_hash_registry import clear_global_registry, get_file_hash
-
-    clear_global_registry()
-    get_file_hash.cache_clear()
-    # Clear file analyzer cache to prevent stale analysis results
-    from compiletools.file_analyzer import analyze_file
-
-    analyze_file.cache_clear()
-    # Clear preprocessing cache to prevent stale preprocessing results
-    from compiletools.preprocessing_cache import clear_cache as clear_preprocessing_cache
-
-    clear_preprocessing_cache()
+    # Note: global_hash_registry, file_analyzer, and preprocessing_cache
+    # state now lives on BuildContext instances.  Creating a fresh
+    # BuildContext gives clean state, so no module-level clearing needed.
     # Clear headerdeps caches to prevent stale include list results
     import compiletools.headerdeps as headerdeps
 
@@ -554,14 +544,20 @@ def HeaderDepsTestContext(argv, config_extralines=None):
 
     import compiletools.apptools
     import compiletools.headerdeps
+    from compiletools.build_context import BuildContext
 
     # Create and configure parser
-    cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
+    cap = configargparse.ArgumentParser(
+        conflict_handler="resolve",
+        args_for_setting_config_path=["-c", "--config"],
+        ignore_unknown_config_file_keys=True,
+    )
     compiletools.headerdeps.add_arguments(cap)
     args = compiletools.apptools.parseargs(cap, argv)
 
-    # Create headerdeps object
-    headerdeps = compiletools.headerdeps.create(args)
+    # Create headerdeps object with fresh BuildContext
+    ctx = BuildContext()
+    headerdeps = compiletools.headerdeps.create(args, context=ctx)
     yield headerdeps
 
 
@@ -633,11 +629,10 @@ def headerdeps_result(filename, kind="direct", cppflags=None, include=None, extr
     if cppflags:
         config_extralines.append(f'CPPFLAGS="-std=c++20 {cppflags}"')
 
+    from compiletools.build_context import BuildContext
+
     with TempConfigContext(extralines=config_extralines) as temp_config_name:
         # Clear all caches for test isolation
-        import compiletools.preprocessing_cache
-
-        compiletools.preprocessing_cache.clear_cache()
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
 
         # Create fresh parser with complete isolation
@@ -651,7 +646,8 @@ def headerdeps_result(filename, kind="direct", cppflags=None, include=None, extr
             compiletools.headerdeps.add_arguments(cap)
             argv = ["--config=" + temp_config_name, f"--headerdeps={kind}", "--include", include] + extra_args
             args = compiletools.apptools.parseargs(cap, argv)
-            h = compiletools.headerdeps.create(args)
+            ctx = BuildContext()
+            h = compiletools.headerdeps.create(args, context=ctx)
             return set(h.process(filename, frozenset()))
 
 
@@ -697,15 +693,8 @@ def touch(*paths):
         with builtins.open(path, "a") as f:
             f.write(f"\n// touched at {time.time()}\n")
 
-    # Clear all relevant caches to ensure modified files are detected
-    from compiletools.global_hash_registry import clear_global_registry, get_file_hash
-
-    clear_global_registry()
-    get_file_hash.cache_clear()
-
-    from compiletools.file_analyzer import analyze_file
-
-    analyze_file.cache_clear()
+    # Note: global_hash_registry and file_analyzer caches now live on
+    # BuildContext instances, so no module-level clearing needed here.
 
     import compiletools.wrappedos as wo
 
@@ -879,6 +868,7 @@ def ShakeBackendTestContext(graph, **arg_overrides):
         with ShakeBackendTestContext(graph) as (backend, tmpdir):
             backend.execute("build")
     """
+    from compiletools.build_context import BuildContext
     from compiletools.trace_backend import ShakeBackend
 
     with TempDirContextNoChange() as tmpdir:
@@ -886,6 +876,7 @@ def ShakeBackendTestContext(graph, **arg_overrides):
         backend = ShakeBackend.__new__(ShakeBackend)
         backend.args = args
         backend._graph = graph
+        backend.context = BuildContext()
         yield backend, tmpdir
 
 

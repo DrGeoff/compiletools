@@ -9,6 +9,7 @@ import compiletools.configutils
 import compiletools.findtargets
 import compiletools.testhelper as uth
 import compiletools.utils
+from compiletools.build_context import BuildContext
 
 
 class TestFindTargetsModule:
@@ -97,7 +98,7 @@ class TestFindTargetsModule:
         if disable_exes:
             argv.append("--disable-exes")
         args = compiletools.apptools.parseargs(cap, argv=argv)
-        findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir())
+        findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir(), context=BuildContext())
         executabletargets, testtargets = findtargets(path=uth.cakedir())
         assert expectedexes == set(executabletargets)
         assert expectedtests == set(testtargets)
@@ -194,7 +195,7 @@ class TestFindTargetsProcess:
         compiletools.findtargets.add_arguments(cap)
         argv = ["--shorten"]
         args = compiletools.apptools.parseargs(cap, argv=argv)
-        findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir())
+        findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir(), context=BuildContext())
 
         # Set up args for process()
         args.filename = []
@@ -220,7 +221,7 @@ class TestFindTargetsProcess:
         argv = ["--shorten"]
         args = compiletools.apptools.parseargs(cap, argv=argv)
         args.verbose = 2
-        findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir())
+        findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir(), context=BuildContext())
 
         args.filename = []
         args.tests = None
@@ -252,7 +253,7 @@ class TestFindTargetsNoExemarkers:
         argv = ["--shorten"]
         args = compiletools.apptools.parseargs(cap, argv=argv)
         args.exemarkers = None  # Force None
-        findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir())
+        findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir(), context=BuildContext())
         try:
             findtargets()
             assert False, "Should have called sys.exit"
@@ -289,7 +290,7 @@ class TestFindTargetsOsWalkFallback:
             compiletools.findtargets.add_arguments(cap)
             argv = ["--shorten"]
             args = compiletools.apptools.parseargs(cap, argv=argv)
-            findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir())
+            findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir(), context=BuildContext())
 
             # Mock get_tracked_files to return empty dict (non-git)
             with patch("compiletools.global_hash_registry.get_tracked_files", return_value={}):

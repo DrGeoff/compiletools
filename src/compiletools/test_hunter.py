@@ -8,6 +8,7 @@ import compiletools.magicflags
 import compiletools.testhelper
 import compiletools.testhelper as uth
 import compiletools.wrappedos
+from compiletools.build_context import BuildContext
 
 
 def callprocess(headerobj, filenames):
@@ -35,9 +36,10 @@ class TestHunterModule:
             cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
             compiletools.hunter.add_arguments(cap)
             args = compiletools.apptools.parseargs(cap, argv)
-            headerdeps = compiletools.headerdeps.create(args)
-            magicparser = compiletools.magicflags.create(args, headerdeps)
-            hntr = compiletools.hunter.Hunter(args, headerdeps, magicparser)
+            ctx = BuildContext()
+            headerdeps = compiletools.headerdeps.create(args, context=ctx)
+            magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
+            hntr = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
 
             relativepath = "factory/widget_factory.hpp"
             realpath = os.path.join(uth.samplesdir(), relativepath)
@@ -61,9 +63,10 @@ class TestHunterModule:
             cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
             compiletools.hunter.add_arguments(cap)
             args = compiletools.apptools.parseargs(cap, argv)
-            headerdeps = compiletools.headerdeps.create(args)
-            magicparser = compiletools.magicflags.create(args, headerdeps)
-            hntr = compiletools.hunter.Hunter(args, headerdeps, magicparser)
+            ctx = BuildContext()
+            headerdeps = compiletools.headerdeps.create(args, context=ctx)
+            magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
+            hntr = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
 
         realpath = os.path.join(samplesdir, "dottypaths/dottypaths.cpp")
         if precall:
@@ -98,9 +101,10 @@ def _make_hunter(argv_extra=None, temp_config=None):
     cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
     compiletools.hunter.add_arguments(cap)
     args = compiletools.apptools.parseargs(cap, argv)
-    headerdeps = compiletools.headerdeps.create(args)
-    magicparser = compiletools.magicflags.create(args, headerdeps)
-    return compiletools.hunter.Hunter(args, headerdeps, magicparser), args
+    ctx = BuildContext()
+    headerdeps = compiletools.headerdeps.create(args, context=ctx)
+    magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
+    return compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx), args
 
 
 class TestHunterClearCache:

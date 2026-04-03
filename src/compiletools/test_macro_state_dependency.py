@@ -10,6 +10,7 @@ import compiletools.hunter as hunter
 import compiletools.magicflags as magicflags
 import compiletools.preprocessing_cache as preprocessing_cache
 import compiletools.testhelper as uth
+from compiletools.build_context import BuildContext
 
 
 @uth.requires_functional_compiler
@@ -36,7 +37,8 @@ def test_macro_state_dependency_is_fixed():
     headerdeps.HeaderDepsBase.clear_cache()
     preprocessing_cache.clear_cache()
 
-    deps1 = headerdeps.DirectHeaderDeps(args)
+    ctx1 = BuildContext()
+    deps1 = headerdeps.DirectHeaderDeps(args, context=ctx1)
     includes1 = set(deps1.process(str(test_cpp), frozenset()))
 
     has_release = any("release.h" in str(inc) for inc in includes1)
@@ -59,7 +61,8 @@ def test_macro_state_dependency_is_fixed():
     headerdeps.HeaderDepsBase.clear_cache()
     preprocessing_cache.clear_cache()
 
-    deps2 = headerdeps.DirectHeaderDeps(args2)
+    ctx2 = BuildContext()
+    deps2 = headerdeps.DirectHeaderDeps(args2, context=ctx2)
 
     includes2 = set(deps2.process(str(test_cpp), frozenset()))
 
@@ -121,9 +124,10 @@ def test_hunter_respects_macro_state_changes():
         argv = [f"--CPPFLAGS={cppflags}", "-q"]
         args = compiletools.apptools.parseargs(cap, argv)
 
-        deps = headerdeps.DirectHeaderDeps(args)
-        magic = magicflags.create(args, deps)
-        return hunter.Hunter(args, deps, magic)
+        ctx = BuildContext()
+        deps = headerdeps.DirectHeaderDeps(args, context=ctx)
+        magic = magicflags.create(args, deps, context=ctx)
+        return hunter.Hunter(args, deps, magic, context=ctx)
 
     # Test 1: Without DEBUG macro should include release.h
     hunter.Hunter.clear_cache()

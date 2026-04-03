@@ -44,16 +44,12 @@ class TestMovingHeaders(compiletools.test_base.BaseCompileToolsTestCase):
 
             shutil.rmtree(os.path.join(tmpdir, "bin"), ignore_errors=True)
 
-            # Clear all module-level caches to simulate fresh ct-cake invocation
-            # In real usage, each ct-cake run loads all caches fresh in a new process
-            from compiletools.file_analyzer import analyze_file
-            from compiletools.global_hash_registry import clear_global_registry, get_file_hash
+            # In real usage, each ct-cake run starts with a fresh BuildContext,
+            # so all caches (hash registry, file analyzer, preprocessing) are clean.
+            # cake.main() creates its own BuildContext, so no manual clearing needed.
             from compiletools.headerdeps import HeaderDepsBase
             from compiletools.magicflags import MagicFlagsBase
 
-            clear_global_registry()
-            get_file_hash.cache_clear()
-            analyze_file.cache_clear()
             HeaderDepsBase.clear_cache()
             MagicFlagsBase.clear_cache()
 

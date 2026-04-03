@@ -24,6 +24,7 @@ import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
 import compiletools.wrappedos
+from compiletools.build_context import BuildContext
 from compiletools.test_base import BaseCompileToolsTestCase
 
 
@@ -93,9 +94,10 @@ class TestEmptyMacroBug(BaseCompileToolsTestCase):
 
         args = compiletools.apptools.parseargs(cap, argv)
 
-        headerdeps = compiletools.headerdeps.create(args)
-        magicparser = compiletools.magicflags.create(args, headerdeps)
-        hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser)
+        ctx = BuildContext()
+        headerdeps = compiletools.headerdeps.create(args, context=ctx)
+        magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
+        hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
 
         print("\n=== Testing Empty Macro Bug ===")
 

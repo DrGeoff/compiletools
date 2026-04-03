@@ -7,6 +7,7 @@ import compiletools.apptools
 import compiletools.magicflags
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
+from compiletools.build_context import BuildContext
 
 
 class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
@@ -41,7 +42,8 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
         # Get or create parser for this configuration
         if cache_key not in self._parser_cache:
-            self._parser_cache[cache_key] = tb.create_magic_parser(args, tempdir=self._tmpdir)
+            ctx = BuildContext()
+            self._parser_cache[cache_key] = tb.create_magic_parser(args, tempdir=self._tmpdir, context=ctx)
 
         parser = self._parser_cache[cache_key]
         parser.clear_cache()  # Clear cache for test isolation
@@ -137,8 +139,9 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
         # Create parsers once and reuse across all files
         with uth.ParserContext():
-            magicparser_direct = tb.create_magic_parser(["--magic", "direct"], tempdir=self._tmpdir)
-            magicparser_cpp = tb.create_magic_parser(["--magic", "cpp"], tempdir=self._tmpdir)
+            ctx = BuildContext()
+            magicparser_direct = tb.create_magic_parser(["--magic", "direct"], tempdir=self._tmpdir, context=ctx)
+            magicparser_cpp = tb.create_magic_parser(["--magic", "cpp"], tempdir=self._tmpdir, context=ctx)
             parsers = (magicparser_direct, magicparser_cpp)
 
             failures = []
@@ -594,8 +597,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         import stringzilla as sz
 
         import compiletools.headerdeps
-        from compiletools.file_analyzer import analyze_file
-        from compiletools.global_hash_registry import clear_global_registry, get_file_hash
 
         # Clear all caches for test isolation
         compiletools.magicflags.MagicFlagsBase.clear_cache()
@@ -604,8 +605,9 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         files = uth.write_sources({"test.cpp": '#include "test.h"\nint main() {}', "test.h": "//#LDFLAGS=-lversion1\n"})
         source_file = str(files["test.cpp"])
 
-        # Create properly initialized parser using test helper
-        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir)
+        # Create properly initialized parser using test helper with a BuildContext
+        ctx = BuildContext()
+        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir, context=ctx)
 
         # First pass
         result1 = mf.parse(source_file)
@@ -614,20 +616,13 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         # Modify header
         uth.write_sources({"test.h": "//#LDFLAGS=-lversion2\n"})
 
-        # CRITICAL: Clear all caches after file modification
-        # Without this, cached data returns stale results
-        clear_global_registry()
-        get_file_hash.cache_clear()
-        analyze_file.cache_clear()
-        # Clear headerdeps caches
+        # Simulate fresh build invocation with new BuildContext (clean caches)
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
-        # Clear instance caches
-        mf.__dict__.pop(mf._compute_file_processing_result.cache_attr, None)
-        mf._headerdeps.clear_instance_cache()
-        mf._structured_data_cache.clear()
+        ctx2 = BuildContext()
+        mf2 = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir, context=ctx2)
 
-        # Second pass - should see new flags (cache invalidated)
-        result2 = mf.parse(source_file)
+        # Second pass - should see new flags (fresh context = clean caches)
+        result2 = mf2.parse(source_file)
         assert sz.Str("-lversion2") in result2.get(sz.Str("LDFLAGS"), [])
         assert sz.Str("-lversion1") not in result2.get(sz.Str("LDFLAGS"), [])
 
@@ -636,8 +631,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         import stringzilla as sz
 
         import compiletools.headerdeps
-        from compiletools.file_analyzer import analyze_file
-        from compiletools.global_hash_registry import clear_global_registry, get_file_hash
 
         # Clear all caches for test isolation
         compiletools.magicflags.MagicFlagsBase.clear_cache()
@@ -648,8 +641,9 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         )
         source_file = str(files["test.cpp"])
 
-        # Create properly initialized parser
-        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir)
+        # Create properly initialized parser with a BuildContext
+        ctx = BuildContext()
+        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir, context=ctx)
 
         # First pass
         result1 = mf.parse(source_file)
@@ -658,19 +652,13 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         # Modify macros file
         uth.write_sources({"macros.h": "#define FOO 2\n//#LDFLAGS=-lfoo2\n"})
 
-        # CRITICAL: Clear all caches after file modification
-        clear_global_registry()
-        get_file_hash.cache_clear()
-        analyze_file.cache_clear()
-        # Clear headerdeps caches
+        # Simulate fresh build invocation with new BuildContext (clean caches)
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
-        # Clear instance caches
-        mf.__dict__.pop(mf._compute_file_processing_result.cache_attr, None)
-        mf._headerdeps.clear_instance_cache()
-        mf._structured_data_cache.clear()
+        ctx2 = BuildContext()
+        mf2 = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir, context=ctx2)
 
-        # Second pass - should reprocess (cache invalidated)
-        result2 = mf.parse(source_file)
+        # Second pass - should reprocess (fresh context = clean caches)
+        result2 = mf2.parse(source_file)
 
         # Results should show new LDFLAGS (cache miss occurred)
         assert sz.Str("-lfoo2") in result2.get(sz.Str("LDFLAGS"), [])
@@ -694,7 +682,8 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         source_file = str(files["test.cpp"])
 
         # Create properly initialized parser
-        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir)
+        ctx = BuildContext()
+        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir, context=ctx)
 
         # First parse - cache miss
         result1 = mf.parse(source_file)
@@ -841,7 +830,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         )
         source_file = str(files["test_unified.cpp"])
 
-        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir)
+        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir, context=BuildContext())
         result = mf.parse(source_file)
 
         cpp_flags = [str(f) for f in result.get(sz.Str("CPPFLAGS"), [])]
@@ -858,7 +847,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         )
         source_file = str(files["test_unified2.cpp"])
 
-        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir)
+        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir, context=BuildContext())
         result = mf.parse(source_file)
 
         cpp_flags = [str(f) for f in result.get(sz.Str("CPPFLAGS"), [])]
@@ -875,7 +864,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         )
         source_file = str(files["test_separate.cpp"])
 
-        mf = tb.create_magic_parser(["--magic=direct", "--separate-flags-CPP-CXX"], tempdir=self._tmpdir)
+        mf = tb.create_magic_parser(["--magic=direct", "--separate-flags-CPP-CXX"], tempdir=self._tmpdir, context=BuildContext())
         result = mf.parse(source_file)
 
         cpp_flags = [str(f) for f in result.get(sz.Str("CPPFLAGS"), [])]

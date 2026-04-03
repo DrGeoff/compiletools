@@ -56,6 +56,7 @@ _BUILD_SCRIPT = textwrap.dedent("""\
     import compiletools.testhelper as uth
     import compiletools.trace_backend  # ensure registered
     from compiletools.build_backend import get_backend_class
+    from compiletools.build_context import BuildContext
     from compiletools.test_backend_integration import _add_backend_arguments
 
     tmp_path = sys.argv[1]
@@ -76,9 +77,10 @@ _BUILD_SCRIPT = textwrap.dedent("""\
     _add_backend_arguments(cap)
     args = compiletools.apptools.parseargs(cap, argv)
 
-    headerdeps = compiletools.headerdeps.create(args)
-    magicparser = compiletools.magicflags.create(args, headerdeps)
-    hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser)
+    ctx = BuildContext()
+    headerdeps = compiletools.headerdeps.create(args, context=ctx)
+    magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
+    hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
 
     BackendClass = get_backend_class("shake")
     backend = BackendClass(args=args, hunter=hunter)

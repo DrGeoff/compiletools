@@ -5,6 +5,7 @@ import compiletools.compilation_database
 import compiletools.findtargets
 import compiletools.makefile
 import compiletools.testhelper as uth
+from compiletools.build_context import BuildContext
 
 
 class TestCompilationDatabase:
@@ -314,7 +315,7 @@ class TestCompilationDatabase:
                     )
 
                     # Use FindTargets to discover source files (following cake.py pattern)
-                    findtargets = compiletools.findtargets.FindTargets(args)
+                    findtargets = compiletools.findtargets.FindTargets(args, context=BuildContext())
                     findtargets.process(args)
 
                     # Verify that targets were found

@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 import compiletools.headerdeps
+from compiletools.build_context import BuildContext
 
 
 @pytest.fixture
@@ -78,7 +79,8 @@ def test_macro_state_isolation_with_temp_files(temp_sample_dir):
     try:
         # Create single DirectHeaderDeps instance
         # This is where macro state pollution occurs
-        headerdeps = compiletools.headerdeps.DirectHeaderDeps(args)
+        ctx = BuildContext()
+        headerdeps = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
 
         # First analysis: file WITH macro
         # Should include enabled_feature.h

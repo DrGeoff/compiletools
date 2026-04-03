@@ -13,6 +13,7 @@ import compiletools.apptools
 import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
+from compiletools.build_context import BuildContext
 from compiletools.test_base import BaseCompileToolsTestCase
 from compiletools.testhelper import samplesdir
 
@@ -50,9 +51,10 @@ class TestUndefBugSample(BaseCompileToolsTestCase):
 
         args = compiletools.apptools.parseargs(cap, argv)
 
-        headerdeps = compiletools.headerdeps.create(args)
-        magicparser = compiletools.magicflags.create(args, headerdeps)
-        hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser)
+        ctx = BuildContext()
+        headerdeps = compiletools.headerdeps.create(args, context=ctx)
+        magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
+        hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
 
         # Get header dependencies
         headers = hunter.header_dependencies(str(main_cpp))

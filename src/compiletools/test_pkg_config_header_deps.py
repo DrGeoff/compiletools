@@ -25,6 +25,7 @@ import compiletools.global_hash_registry
 import compiletools.headerdeps
 import compiletools.magicflags
 import compiletools.wrappedos
+from compiletools.build_context import BuildContext
 from compiletools.test_base import BaseCompileToolsTestCase
 
 
@@ -90,8 +91,9 @@ class TestPkgConfigHeaderDeps(BaseCompileToolsTestCase):
             args = compiletools.apptools.parseargs(cap, argv)
 
             # Create headerdeps and magicflags
-            headerdeps = compiletools.headerdeps.create(args)
-            magicflags = compiletools.magicflags.create(args, headerdeps)
+            ctx = BuildContext()
+            headerdeps = compiletools.headerdeps.create(args, context=ctx)
+            magicflags = compiletools.magicflags.create(args, headerdeps, context=ctx)
 
             # Get magic flags
             flags = magicflags.parse(str(self.source_file.resolve()))
@@ -143,8 +145,9 @@ class TestPkgConfigHeaderDeps(BaseCompileToolsTestCase):
             args = compiletools.apptools.parseargs(cap, argv)
 
             # First pass - extract flags with nested
-            headerdeps1 = compiletools.headerdeps.create(args)
-            magicflags1 = compiletools.magicflags.create(args, headerdeps1)
+            ctx1 = BuildContext()
+            headerdeps1 = compiletools.headerdeps.create(args, context=ctx1)
+            magicflags1 = compiletools.magicflags.create(args, headerdeps1, context=ctx1)
             flags1 = magicflags1.parse(str(self.source_file.resolve()))
 
             # Verify nested is present
@@ -155,8 +158,6 @@ class TestPkgConfigHeaderDeps(BaseCompileToolsTestCase):
             pkg_configs1 = [str(f) for f in flags1[pkg_config_key]]
             assert "nested" in pkg_configs1
 
-            # Clear global hash registry to simulate new build
-            compiletools.global_hash_registry.clear_global_registry()
             # Also clear the magicflags cache
             compiletools.magicflags.MagicFlagsBase.clear_cache()
 
@@ -171,9 +172,10 @@ void testpkg2_function();
 #endif
 """)
 
-            # Second pass - should pick up the change
-            headerdeps2 = compiletools.headerdeps.create(args)
-            magicflags2 = compiletools.magicflags.create(args, headerdeps2)
+            # Second pass with fresh BuildContext - should pick up the change
+            ctx2 = BuildContext()
+            headerdeps2 = compiletools.headerdeps.create(args, context=ctx2)
+            magicflags2 = compiletools.magicflags.create(args, headerdeps2, context=ctx2)
             flags2 = magicflags2.parse(str(self.source_file.resolve()))
 
             # Verify modified is present and nested is NOT present

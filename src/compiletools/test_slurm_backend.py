@@ -12,6 +12,7 @@ import pytest
 
 import compiletools.trace_backend  # noqa: F401 — ensure registered
 from compiletools.build_backend import available_backends, get_backend_class, is_backend_available
+from compiletools.build_context import BuildContext
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.testhelper import TempDirContextNoChange, make_backend_args
 from compiletools.trace_backend import SlurmBackend, TraceEntry, TraceStore, hash_command
@@ -41,6 +42,7 @@ def SlurmBackendTestContext(graph, **arg_overrides):
         backend.args = args
         backend._graph = graph
         backend.namer = MagicMock()
+        backend.context = BuildContext()
         yield backend, tmpdir
 
 
@@ -293,25 +295,27 @@ class TestCAShortCircuit:
 
         from compiletools.global_hash_registry import get_file_hash
 
-        # Write a valid trace so the file is trusted
-        trace_path = str(tmp_path / ".ct-slurm-traces.json")
-        store = TraceStore(trace_path)
-        store.put(
-            out,
-            TraceEntry(
-                output_hash=get_file_hash(out),
-                input_hashes={src: get_file_hash(src)},
-                command_hash=hash_command(rule.command or []),
-            ),
-        )
-        store.save()
-
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             backend.args.objdir = str(tmp_path)
+            ctx = backend.context
+
+            # Write a valid trace so the file is trusted
+            trace_path = str(tmp_path / ".ct-slurm-traces.json")
+            store = TraceStore(trace_path)
+            store.put(
+                out,
+                TraceEntry(
+                    output_hash=get_file_hash(out, ctx),
+                    input_hashes={src: get_file_hash(src, ctx)},
+                    command_hash=hash_command(rule.command or []),
+                ),
+            )
+            store.save()
+
             with patch("subprocess.check_output") as mock_sbatch:
                 backend.execute("build")
 
-        assert len(_sbatch_calls(mock_sbatch)) == 0
+            assert len(_sbatch_calls(mock_sbatch)) == 0
 
     def test_existing_output_without_trace_is_resubmitted(self, tmp_path):
         """Compile rules whose output exists but has no trace are resubmitted.
@@ -361,25 +365,27 @@ class TestTraceVerification:
 
         from compiletools.global_hash_registry import get_file_hash
 
-        trace_path = str(tmp_path / ".ct-slurm-traces.json")
-        store = TraceStore(trace_path)
-        store.put(
-            out,
-            TraceEntry(
-                output_hash=get_file_hash(out),
-                input_hashes={src: get_file_hash(src)},
-                command_hash=hash_command(rule.command or []),
-            ),
-        )
-        store.save()
-
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             # Point objdir to tmp_path so the trace file is found
             backend.args.objdir = str(tmp_path)
+            ctx = backend.context
+
+            trace_path = str(tmp_path / ".ct-slurm-traces.json")
+            store = TraceStore(trace_path)
+            store.put(
+                out,
+                TraceEntry(
+                    output_hash=get_file_hash(out, ctx),
+                    input_hashes={src: get_file_hash(src, ctx)},
+                    command_hash=hash_command(rule.command or []),
+                ),
+            )
+            store.save()
+
             with patch("subprocess.check_output") as mock_sbatch:
                 backend.execute("build")
 
-        assert len(_sbatch_calls(mock_sbatch)) == 0
+            assert len(_sbatch_calls(mock_sbatch)) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -545,12 +551,13 @@ class TestLocalLink:
             # Record a valid trace for the compile output so it is trusted and skipped.
             from compiletools.global_hash_registry import get_file_hash
 
+            ctx = backend.context
             store = TraceStore(os.path.join(backend.args.objdir, ".ct-slurm-traces.json"))
             store.put(
                 obj,
                 TraceEntry(
-                    output_hash=get_file_hash(obj),
-                    input_hashes={src: get_file_hash(src)},
+                    output_hash=get_file_hash(obj, ctx),
+                    input_hashes={src: get_file_hash(src, ctx)},
                     command_hash=hash_command(compile_rule.command or []),
                 ),
             )
