@@ -28,7 +28,7 @@ def _backend_tool_available(backend_name):
         return shutil.which("cmake") is not None
     if backend_name == "tup":
         return shutil.which("tup") is not None
-    tool = {"make": "make", "ninja": "ninja"}.get(backend_name)
+    tool = {"make": "make", "ninja": "ninja", "slurm": "sbatch"}.get(backend_name)
     if tool is None:
         return False
     return shutil.which(tool) is not None
