@@ -50,11 +50,11 @@ class Cake:
         """
         if getattr(args, "backend", "make") != "make":
             return
-        from compiletools.build_context import BuildContext
-
-        namer = compiletools.namer.Namer(args, context=BuildContext())
-        if namer.executable_dir() not in args.makefilename:
-            movedmakefile = os.path.join(namer.executable_dir(), args.makefilename)
+        # Namer.executable_dir() just returns args.bindir, so read it directly
+        # to avoid creating a throwaway Namer and BuildContext.
+        bindir = args.bindir
+        if bindir not in args.makefilename:
+            movedmakefile = os.path.join(bindir, args.makefilename)
             if args.verbose > 4:
                 print(f"Makefile location is being altered.  New location is {movedmakefile}")
             args.makefilename = movedmakefile
@@ -180,8 +180,12 @@ class Cake:
 
         # Reuse existing objects to avoid duplicating work
         creator = compiletools.compilation_database.CompilationDatabaseCreator(
-            self.args, namer=self.namer, headerdeps=self.headerdeps,
-            magicparser=self.magicparser, hunter=self.hunter, context=self.context,
+            self.args,
+            namer=self.namer,
+            headerdeps=self.headerdeps,
+            magicparser=self.magicparser,
+            hunter=self.hunter,
+            context=self.context,
         )
         creator.write_compilation_database()
 
@@ -234,7 +238,7 @@ class Cake:
         """Dispatch to the selected build backend."""
         backend_name = getattr(self.args, "backend", "make")
         BackendClass = get_backend_class(backend_name)
-        backend = BackendClass(args=self.args, hunter=self.hunter)
+        backend = BackendClass(args=self.args, hunter=self.hunter, context=self.context)
 
         graph = backend.build_graph()
         backend.generate(graph)

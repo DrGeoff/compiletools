@@ -69,7 +69,7 @@ def _setup_backend_for_source(backend_name, tmp_path, src_file="helloworld_cpp.c
     hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
 
     BackendClass = get_backend_class(backend_name)
-    backend = BackendClass(args=args, hunter=hunter)
+    backend = BackendClass(args=args, hunter=hunter, context=ctx)
     graph = backend.build_graph()
 
     return backend, graph, args
@@ -249,7 +249,7 @@ class TestBackendRunTestsDispatch:
         args.tests = ["/src/test_foo.cpp"]
         args.verbose = 0
         hunter = MagicMock()
-        backend = BackendClass(args=args, hunter=hunter)
+        backend = BackendClass(args=args, hunter=hunter, context=BuildContext())
 
         with patch.object(backend, "_run_tests") as mock_run_tests:
             backend.execute("runtests")
@@ -290,7 +290,7 @@ class TestBackendBuildGraphWithTests(BaseCompileToolsTestCase):
             hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
 
             BackendClass = get_backend_class("ninja")
-            backend = BackendClass(args=args, hunter=hunter)
+            backend = BackendClass(args=args, hunter=hunter, context=ctx)
             graph = backend.build_graph()
 
             assert "runtests" in graph.outputs

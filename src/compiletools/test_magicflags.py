@@ -48,11 +48,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         parser = self._parser_cache[cache_key]
         parser.clear_cache()  # Clear cache for test isolation
 
-        # Also clear preprocessing cache when args change (for MacroState correctness)
-        from compiletools.preprocessing_cache import clear_cache as clear_preprocessing_cache
-
-        clear_preprocessing_cache(BuildContext())
-
         try:
             return parser.parse(self._get_sample_path(source_file))
         except RuntimeError as e:
@@ -864,7 +859,9 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         )
         source_file = str(files["test_separate.cpp"])
 
-        mf = tb.create_magic_parser(["--magic=direct", "--separate-flags-CPP-CXX"], tempdir=self._tmpdir, context=BuildContext())
+        mf = tb.create_magic_parser(
+            ["--magic=direct", "--separate-flags-CPP-CXX"], tempdir=self._tmpdir, context=BuildContext()
+        )
         result = mf.parse(source_file)
 
         cpp_flags = [str(f) for f in result.get(sz.Str("CPPFLAGS"), [])]

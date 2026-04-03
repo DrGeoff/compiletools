@@ -30,11 +30,11 @@ _SOURCES = {
         #include "charlie.H"
         int main() { return alpha() + bravo() + charlie(); }
     """),
-    "alpha.H": '#pragma once\nint alpha();\n',
+    "alpha.H": "#pragma once\nint alpha();\n",
     "alpha.cpp": '#include "alpha.H"\nint alpha() { return 0; }\n',
-    "bravo.H": '#pragma once\nint bravo();\n',
+    "bravo.H": "#pragma once\nint bravo();\n",
     "bravo.cpp": '#include "bravo.H"\nint bravo() { return 0; }\n',
-    "charlie.H": '#pragma once\nint charlie();\n',
+    "charlie.H": "#pragma once\nint charlie();\n",
     "charlie.cpp": '#include "charlie.H"\nint charlie() { return 0; }\n',
 }
 
@@ -83,7 +83,7 @@ _BUILD_SCRIPT = textwrap.dedent("""\
     hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
 
     BackendClass = get_backend_class("shake")
-    backend = BackendClass(args=args, hunter=hunter)
+    backend = BackendClass(args=args, hunter=hunter, context=ctx)
     graph = backend.build_graph()
 
     os.makedirs(bindir, exist_ok=True)
@@ -149,6 +149,5 @@ class TestNoopRebuild:
         # Nothing should compile or link.
         report2 = _run_build(tmp_path, "report2.json", seed=999)
         assert report2["subprocess_calls"] == 0, (
-            f"Expected zero compiler/linker calls on repeat build, "
-            f"got {report2['subprocess_calls']}"
+            f"Expected zero compiler/linker calls on repeat build, got {report2['subprocess_calls']}"
         )

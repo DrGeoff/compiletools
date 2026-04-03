@@ -19,12 +19,9 @@ class TestSimplePreprocessor:
         """Set up test fixtures before each test method."""
         import stringzilla as sz
 
-        # Clear preprocessing cache before each test
         from compiletools.build_context import BuildContext
-        from compiletools.preprocessing_cache import clear_cache
 
         self.ctx = BuildContext()
-        clear_cache(self.ctx)
 
         # Mock get_filepath_by_hash since tests don't have real files in registry
         self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
@@ -511,10 +508,8 @@ class TestExpandHasFunctions:
         import stringzilla as sz
 
         from compiletools.build_context import BuildContext
-        from compiletools.preprocessing_cache import clear_cache
 
         self.ctx = BuildContext()
-        clear_cache(self.ctx)
 
         self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
         self.mock_get_filepath = self.patcher.start()
@@ -678,9 +673,7 @@ class TestExpandHasFunctions:
         """get_or_compute_preprocessing should read compiler_path from MacroState."""
         import stringzilla as sz
 
-        from compiletools.preprocessing_cache import MacroState, clear_cache, get_or_compute_preprocessing
-
-        clear_cache(self.ctx)
+        from compiletools.preprocessing_cache import MacroState, get_or_compute_preprocessing
 
         text = "#if __has_include(<iostream>)\n#include <special.h>\n#endif"
         file_result = self._create_file_analysis_result(text)
@@ -696,9 +689,7 @@ class TestExpandHasFunctions:
         """Without compiler_path on MacroState, __has_include should evaluate to 0."""
         import stringzilla as sz
 
-        from compiletools.preprocessing_cache import MacroState, clear_cache, get_or_compute_preprocessing
-
-        clear_cache(self.ctx)
+        from compiletools.preprocessing_cache import MacroState, get_or_compute_preprocessing
 
         text = "#if __has_include(<iostream>)\n#include <special.h>\n#endif"
         file_result = self._create_file_analysis_result(text)
@@ -794,10 +785,8 @@ class TestSimplePreprocessorEdgeCases:
         import stringzilla as sz
 
         from compiletools.build_context import BuildContext
-        from compiletools.preprocessing_cache import clear_cache
 
         self.ctx = BuildContext()
-        clear_cache(self.ctx)
 
         self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
         self.mock_get_filepath = self.patcher.start()
@@ -888,9 +877,7 @@ class TestSimplePreprocessorEdgeCases:
         """Verbose mode prints debug info for directive handling."""
         import stringzilla as sz
 
-        verbose_proc = SimplePreprocessor(
-            {sz.Str("X"): sz.Str("1")}, verbose=9
-        )
+        verbose_proc = SimplePreprocessor({sz.Str("X"): sz.Str("1")}, verbose=9)
         text = dedent("""
             #ifdef X
             line
@@ -934,9 +921,7 @@ class TestSimplePreprocessorEdgeCases:
         """Verbose mode prints debug for #if, #elif, #else."""
         import stringzilla as sz
 
-        verbose_proc = SimplePreprocessor(
-            {sz.Str("V"): sz.Str("2")}, verbose=9
-        )
+        verbose_proc = SimplePreprocessor({sz.Str("V"): sz.Str("2")}, verbose=9)
         text = dedent("""
             #if V == 1
             a
@@ -990,8 +975,13 @@ class TestSimplePreprocessorEdgeCases:
         from compiletools.file_analyzer import PreprocessorDirective
 
         directive = PreprocessorDirective(
-            line_num=0, byte_pos=0, directive_type="if",
-            continuation_lines=0, condition=None, macro_name=None, macro_value=None,
+            line_num=0,
+            byte_pos=0,
+            directive_type="if",
+            continuation_lines=0,
+            condition=None,
+            macro_name=None,
+            macro_value=None,
         )
         condition_stack = [(True, False, False)]
         self.processor._handle_if_structured(directive, condition_stack)
@@ -1002,8 +992,13 @@ class TestSimplePreprocessorEdgeCases:
         from compiletools.file_analyzer import PreprocessorDirective
 
         directive = PreprocessorDirective(
-            line_num=0, byte_pos=0, directive_type="elif",
-            continuation_lines=0, condition=None, macro_name=None, macro_value=None,
+            line_num=0,
+            byte_pos=0,
+            directive_type="elif",
+            continuation_lines=0,
+            condition=None,
+            macro_name=None,
+            macro_value=None,
         )
         condition_stack = [(True, False, False), (False, False, False)]
         self.processor._handle_elif_structured(directive, condition_stack)
@@ -1017,20 +1012,27 @@ class TestSimplePreprocessorEdgeCases:
 
         # Simulate a #define with a continuation line
         directive = PreprocessorDirective(
-            line_num=0, byte_pos=0, directive_type="define",
+            line_num=0,
+            byte_pos=0,
+            directive_type="define",
             continuation_lines=1,
-            macro_name=sz.Str("MULTI"), macro_value=sz.Str("line1 line2"),
+            macro_name=sz.Str("MULTI"),
+            macro_value=sz.Str("line1 line2"),
             condition=None,
         )
         file_result = FileAnalysisResult(
             line_count=3,
             line_byte_offsets=[0, 20, 40],
-            include_positions=[], magic_positions=[],
+            include_positions=[],
+            magic_positions=[],
             directive_positions={"define": [0]},
             directives=[directive],
             directive_by_line={0: directive},
-            bytes_analyzed=60, was_truncated=False,
-            includes=[], defines=[], magic_flags=[],
+            bytes_analyzed=60,
+            was_truncated=False,
+            includes=[],
+            defines=[],
+            magic_flags=[],
         )
         active_lines = self.processor.process_structured(file_result, self.ctx)
         assert 0 in active_lines  # directive line
@@ -1060,8 +1062,13 @@ class TestSimplePreprocessorEdgeCases:
 
         verbose_proc = SimplePreprocessor({}, verbose=8)
         directive = PreprocessorDirective(
-            line_num=0, byte_pos=0, directive_type="pragma",
-            continuation_lines=0, condition=None, macro_name=None, macro_value=None,
+            line_num=0,
+            byte_pos=0,
+            directive_type="pragma",
+            continuation_lines=0,
+            condition=None,
+            macro_name=None,
+            macro_value=None,
         )
         condition_stack = [(True, False, False)]
         result = verbose_proc._handle_directive_structured(directive, condition_stack, 1)

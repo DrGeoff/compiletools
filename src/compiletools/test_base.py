@@ -18,7 +18,11 @@ class BaseCompileToolsTestCase:
     """Base test case with common setup/teardown for compiletools tests"""
 
     def _clear_all_caches(self):
-        """Clear all LRU and module caches to ensure test isolation"""
+        """Clear all LRU and module caches to ensure test isolation.
+
+        Per-build caches (preprocessing, file_analyzer, headerdeps, global_hash_registry)
+        live on BuildContext and are cleaned up by creating a fresh context per test.
+        """
         compiletools.wrappedos.clear_cache()
         compiletools.utils.clear_cache()
         compiletools.git_utils.clear_cache()
@@ -27,12 +31,6 @@ class BaseCompileToolsTestCase:
         compiletools.compiler_macros.clear_cache()
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
         compiletools.magicflags.MagicFlagsBase.clear_cache()
-        # Clear preprocessing cache
-        from compiletools.build_context import BuildContext
-        from compiletools.preprocessing_cache import clear_cache
-
-        clear_cache(BuildContext())
-        # Note: namer and hunter caches are cleared per-instance, not globally
 
     def setup_method(self):
         self._clear_all_caches()  # Clear before setup
@@ -193,7 +191,11 @@ def compare_direct_cpp_headers(test_case, filename, extraargs=None, context=None
     with uth.TempConfigContext() as temp_config_name:
         argv = ["--config=" + temp_config_name] + extraargs
 
-        cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
         compiletools.headerdeps.add_arguments(cap)
         argvdirect = argv + ["--headerdeps=direct"]
         argsdirect = compiletools.apptools.parseargs(cap, argvdirect)

@@ -189,10 +189,17 @@ def aggregate_rule_sources(
 class BuildBackend(abc.ABC):
     """Abstract base class for build system backends."""
 
-    def __init__(self, args, hunter):
+    def __init__(self, args, hunter, *, context=None):
         self.args = args
         self.hunter = hunter
-        self.context = getattr(hunter, "context", None)
+        if context is not None:
+            self.context = context
+        elif hunter is not None:
+            self.context = hunter.context
+        else:
+            from compiletools.build_context import BuildContext
+
+            self.context = BuildContext()
         self.namer = compiletools.namer.Namer(args, context=self.context)
         self._graph: BuildGraph | None = None
         self._dynamic_sources: set[str] = set()

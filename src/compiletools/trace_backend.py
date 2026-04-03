@@ -178,8 +178,8 @@ def _make_trace_entry(rule: BuildRule, context, output_hash: str | None = None) 
 class ShakeBackend(BuildBackend):
     """Self-executing backend using Shake-style verifying traces."""
 
-    def __init__(self, args, hunter):
-        super().__init__(args, hunter)
+    def __init__(self, args, hunter, *, context=None):
+        super().__init__(args, hunter, context=context)
         self._graph: BuildGraph | None = None
 
     @staticmethod

@@ -4,15 +4,25 @@ BuildContext replaces module-level singletons by holding all mutable
 state that was previously stored in module globals.  One BuildContext
 is created per build invocation (by Cake or by tests) and threaded
 through the object graph.
+
+All per-build caches live here.  Creating a fresh BuildContext gives a
+clean slate — there is no separate ``clear_cache()`` step needed.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+import argparse
+from typing import TYPE_CHECKING
+
+import stringzilla as sz
 
 if TYPE_CHECKING:
     from compiletools.file_analyzer import FileAnalysisResult
-    from compiletools.preprocessing_cache import MacroCacheKey, ProcessingResult
+    from compiletools.preprocessing_cache import MacroCacheKey, MacroDict, ProcessingResult
+
+# Type alias for headerdeps cache values:
+# (include_list, file_defines, file_undefs)
+IncludeCacheValue = tuple[list[sz.Str], "MacroDict", frozenset]
 
 
 class BuildContext:
@@ -43,11 +53,11 @@ class BuildContext:
         }
 
         # -- headerdeps module-level caches --
-        self.include_list_cache: dict[tuple[str, Any], Any] = {}
-        self.invariant_include_cache: dict[str, Any] = {}
+        self.include_list_cache: dict[tuple[str, MacroCacheKey], IncludeCacheValue] = {}
+        self.invariant_include_cache: dict[str, IncludeCacheValue] = {}
 
         # -- file_analyzer state --
-        self.analyzer_args: Any = None
+        self.analyzer_args: argparse.Namespace | None = None
         self.file_reading_strategy: str | None = None
         self.warned_low_ulimit: bool = False
         self.warned_mmap_failure: bool = False

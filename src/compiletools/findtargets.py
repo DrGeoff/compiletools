@@ -163,7 +163,7 @@ class FindTargets:
         # Fall back to os.walk for non-git directories.
         from compiletools.global_hash_registry import get_file_hash, get_tracked_files
 
-        tracked = get_tracked_files(self.context) if self.context is not None else {}
+        tracked = get_tracked_files(self.context)
 
         prefix = os.path.realpath(path)
         if not prefix.endswith(os.sep):

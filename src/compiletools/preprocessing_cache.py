@@ -640,6 +640,18 @@ def get_cache_stats(context) -> dict:
     }
 
 
+def clear_cache(context):
+    """Clear the preprocessing cache and reset statistics on the given context.
+
+    In production code, creating a fresh BuildContext is preferred over clearing.
+    This function exists for tests that need to reset mid-test.
+    """
+    context.invariant_preprocessing_cache.clear()
+    context.variant_preprocessing_cache.clear()
+    for key in context.preprocessing_stats:
+        context.preprocessing_stats[key] = 0
+
+
 def clear_variant_cache(context):
     """Clear only the macro-variant preprocessing cache.
 
@@ -648,18 +660,6 @@ def clear_variant_cache(context):
     have no conditionals and their results are truly macro-independent.
     """
     context.variant_preprocessing_cache.clear()
-
-
-def clear_cache(context):
-    """Clear the preprocessing cache and reset statistics.
-
-    Also clears the file_analyzer.analyze_file() cache since preprocessed
-    results depend on file analysis.
-    """
-    context.invariant_preprocessing_cache.clear()
-    context.variant_preprocessing_cache.clear()
-    for key in context.preprocessing_stats:
-        context.preprocessing_stats[key] = 0
 
 
 def print_preprocessing_stats(context):

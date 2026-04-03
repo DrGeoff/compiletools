@@ -11,6 +11,12 @@ import compiletools.wrappedos
 class Namer:
     """From a source filename, calculate related names
     like executable name, object name, etc.
+
+    Uses @functools.cache on methods rather than instance_cache because the
+    methods are pure functions of (self, args) — ``self`` is part of the cache
+    key, so different Namer instances get separate cache entries.  The explicit
+    clear_cache() method breaks the strong references that @functools.cache
+    holds on ``self``, allowing garbage collection at end-of-build.
     """
 
     def __init__(self, args, argv=None, variant=None, exedir=None, *, context):

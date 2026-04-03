@@ -258,7 +258,6 @@ def test_source_magic_produces_different_hash_with_different_flags():
         import compiletools.headerdeps
         import compiletools.hunter
         import compiletools.magicflags
-        import compiletools.preprocessing_cache
 
         with tempfile.TemporaryDirectory() as srcdir:
             src = uth.write_sources(
@@ -273,7 +272,11 @@ def test_source_magic_produces_different_hash_with_different_flags():
 
             def create_hunter_with_cppflags(cppflags_value):
                 """Create a Hunter instance with specific CPPFLAGS."""
-                cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
+                cap = configargparse.ArgumentParser(
+                    conflict_handler="resolve",
+                    args_for_setting_config_path=["-c", "--config"],
+                    ignore_unknown_config_file_keys=True,
+                )
                 compiletools.hunter.add_arguments(cap)
                 argv = [f"--append-CPPFLAGS={cppflags_value}", "-q"]
                 args = compiletools.apptools.parseargs(cap, argv)
@@ -291,9 +294,8 @@ def test_source_magic_produces_different_hash_with_different_flags():
             hash1_main = magic1.get_final_macro_state_hash(main_file)
             hash1_helper = magic1.get_final_macro_state_hash(helper_file)
 
-            # Clear caches between configurations
+            # Clear class-level caches between configurations
             compiletools.hunter.Hunter.clear_cache()
-            compiletools.preprocessing_cache.clear_cache(BuildContext())
 
             # Config 2: same files, different CPPFLAGS
             hunter2, magic2 = create_hunter_with_cppflags("-I/opt/libfoo/v2/include")
@@ -319,7 +321,6 @@ def test_different_cppflags_produce_different_object_names():
     uth.reset()
 
     try:
-        import compiletools.preprocessing_cache
         import compiletools.test_base as tb
 
         # Create a source file in a temp directory
@@ -333,14 +334,17 @@ def test_different_cppflags_produce_different_object_names():
             with tempfile.TemporaryDirectory() as tmpdir:
                 # Build two magicflag parsers with different CPPFLAGS
                 parser1 = tb.create_magic_parser(
-                    ["--magic=direct", "--append-CPPFLAGS=-I/opt/libfoo/v1/include"], tempdir=tmpdir, context=BuildContext()
+                    ["--magic=direct", "--append-CPPFLAGS=-I/opt/libfoo/v1/include"],
+                    tempdir=tmpdir,
+                    context=BuildContext(),
                 )
                 parser1.parse(source_file)
                 hash1 = parser1.get_final_macro_state_hash(source_file)
 
-                compiletools.preprocessing_cache.clear_cache(BuildContext())
                 parser2 = tb.create_magic_parser(
-                    ["--magic=direct", "--append-CPPFLAGS=-I/opt/libfoo/v2/include"], tempdir=tmpdir, context=BuildContext()
+                    ["--magic=direct", "--append-CPPFLAGS=-I/opt/libfoo/v2/include"],
+                    tempdir=tmpdir,
+                    context=BuildContext(),
                 )
                 parser2.parse(source_file)
                 hash2 = parser2.get_final_macro_state_hash(source_file)

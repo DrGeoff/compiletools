@@ -55,12 +55,8 @@ def _compute_external_file_hash(filepath: str, hash_ops: dict[str, int]) -> str 
         return None
 
 
-def _load_hashes_into(hashes_ref: list, reverse_ref: list, verbose: int = 0, *, context: BuildContext) -> None:
-    """Populate *hashes_ref[0]* and *reverse_ref[0]* from git.
-
-    Uses list-of-one as a mutable reference so the caller can capture the
-    newly-created dicts.
-    """
+def _load_hashes(verbose: int = 0, *, context: BuildContext) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """Load file hashes from git and build forward/reverse lookup dicts."""
     import gc
 
     try:
@@ -88,8 +84,7 @@ def _load_hashes_into(hashes_ref: list, reverse_ref: list, verbose: int = 0, *, 
         hashes = {}
         reverse = {}
 
-    hashes_ref[0] = hashes
-    reverse_ref[0] = reverse
+    return hashes, reverse
 
 
 def _get_file_hash_impl(
@@ -127,9 +122,7 @@ def _get_file_hash_impl(
             if result not in reverse_hashes:
                 reverse_hashes[result] = [abs_path]
         else:
-            raise FileNotFoundError(
-                f"global_hash_registry encountered Failed to compute hash for file: {filepath}"
-            )
+            raise FileNotFoundError(f"global_hash_registry encountered Failed to compute hash for file: {filepath}")
 
     return result
 
@@ -160,11 +153,7 @@ def load_hashes(verbose: int = 0, *, context: BuildContext) -> None:
     """Load all file hashes into the given BuildContext."""
     if context.file_hashes is not None:
         return
-    h: list = [None]
-    r: list = [None]
-    _load_hashes_into(h, r, verbose, context=context)
-    context.file_hashes = h[0]
-    context.reverse_hashes = r[0]
+    context.file_hashes, context.reverse_hashes = _load_hashes(verbose, context=context)
 
 
 def get_file_hash(filepath: str, context: BuildContext) -> str:
