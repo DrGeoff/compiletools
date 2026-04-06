@@ -40,3 +40,12 @@ vgcore.*
 #Python files
 *.pyc
 compiletools.egg-info/
+
+# Local directories
+docs/superpowers/
+shared-objdir/
+tmp0727b5fl/
+tmp4zhl2bgr/
+tmp9kjntfb5/
+tmpfx0ejao_/
+tmpwzmt13xj/
