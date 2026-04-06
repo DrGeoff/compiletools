@@ -1,6 +1,8 @@
 import os
+import warnings
 
 import pytest
+import stringzilla as sz
 
 import compiletools.testhelper as uth
 import compiletools.utils as utils
@@ -158,3 +160,133 @@ class TestOrderedUnique:
         result = utils.ordered_difference(source, subtract)
         expected = ["a", "c", "e"]
         assert result == expected
+
+
+class TestMergeLdflagsTopoSort:
+    """Test constraint-based topological sorting of -l flags across files."""
+
+    def test_single_file_preserves_order(self):
+        """Single file's -l ordering should be preserved exactly."""
+        per_file = [["-llibnext", "-llibbase"]]
+        result = utils.merge_ldflags_with_topo_sort(per_file)
+        assert result == ["-llibnext", "-llibbase"]
+
+    def test_two_files_conflicting_discovery_order(self):
+        """The exact bug scenario: file one only needs libbase,
+        file two needs libnext before libbase. Naive concat produces
+        [-llibbase, -llibnext] which is wrong for static linking."""
+        per_file = [
+            ["-llibbase"],
+            ["-llibnext", "-llibbase"],
+        ]
+        result = utils.merge_ldflags_with_topo_sort(per_file)
+        idx_next = result.index("-llibnext")
+        idx_base = result.index("-llibbase")
+        assert idx_next < idx_base, f"libnext must precede libbase, got {result}"
+
+    def test_three_level_chain(self):
+        """A -> B -> C dependency chain across files."""
+        per_file = [
+            ["-la", "-lb"],
+            ["-lb", "-lc"],
+        ]
+        result = utils.merge_ldflags_with_topo_sort(per_file)
+        assert result.index("-la") < result.index("-lb")
+        assert result.index("-lb") < result.index("-lc")
+
+    def test_diamond_dependency(self):
+        """Diamond: top depends on left and right, both depend on bottom."""
+        per_file = [
+            ["-ltop", "-lleft", "-lbottom"],
+            ["-ltop", "-lright", "-lbottom"],
+        ]
+        result = utils.merge_ldflags_with_topo_sort(per_file)
+        assert result.index("-ltop") < result.index("-lleft")
+        assert result.index("-ltop") < result.index("-lright")
+        assert result.index("-lleft") < result.index("-lbottom")
+        assert result.index("-lright") < result.index("-lbottom")
+
+    def test_non_l_flags_preserved(self):
+        """-L and -pthread etc. should pass through unchanged."""
+        per_file = [
+            ["-L/usr/lib", "-pthread", "-llibnext", "-llibbase"],
+        ]
+        result = utils.merge_ldflags_with_topo_sort(per_file)
+        assert "-L/usr/lib" in result
+        assert "-pthread" in result
+        assert result.index("-llibnext") < result.index("-llibbase")
+
+    def test_non_l_flags_deduplicated(self):
+        """Same -L from two files should appear once."""
+        per_file = [
+            ["-L/usr/lib", "-llibbase"],
+            ["-L/usr/lib", "-llibnext"],
+        ]
+        result = utils.merge_ldflags_with_topo_sort(per_file)
+        assert result.count("-L/usr/lib") == 1
+
+    def test_separate_l_form(self):
+        """Handle -l as separate token: ['-l', 'next', '-l', 'base']."""
+        per_file = [
+            ["-l", "next", "-l", "base"],
+        ]
+        result = utils.merge_ldflags_with_topo_sort(per_file)
+        # Should contain -lnext before -lbase (combined form in output)
+        assert result.index("-lnext") < result.index("-lbase")
+
+    def test_empty_input(self):
+        assert utils.merge_ldflags_with_topo_sort([]) == []
+
+    def test_single_empty_file(self):
+        assert utils.merge_ldflags_with_topo_sort([[]]) == []
+
+    def test_cycle_does_not_crash(self):
+        """Cycles should not crash; break deterministically with a warning."""
+        per_file = [
+            ["-la", "-lb"],
+            ["-lb", "-la"],
+        ]
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = utils.merge_ldflags_with_topo_sort(per_file)
+        assert "-la" in result
+        assert "-lb" in result
+        assert any("ycle" in str(warning.message) for warning in w)
+
+    def test_deterministic_output(self):
+        """Same input must always produce same output (CA cache requirement)."""
+        per_file = [
+            ["-lc", "-lb"],
+            ["-la", "-lb"],
+        ]
+        result1 = utils.merge_ldflags_with_topo_sort(per_file)
+        result2 = utils.merge_ldflags_with_topo_sort(per_file)
+        assert result1 == result2
+
+    def test_no_l_flags_passthrough(self):
+        """If no -l flags exist, non-l flags should just be deduplicated."""
+        per_file = [
+            ["-L/usr/lib", "-pthread"],
+            ["-L/other/lib"],
+        ]
+        result = utils.merge_ldflags_with_topo_sort(per_file)
+        assert "-L/usr/lib" in result
+        assert "-L/other/lib" in result
+        assert "-pthread" in result
+
+    def test_stringzilla_str_input(self):
+        """Function should handle stringzilla Str inputs."""
+        per_file = [
+            [sz.Str("-llibnext"), sz.Str("-llibbase")],
+        ]
+        result = utils.merge_ldflags_with_topo_sort(per_file)
+        assert result == ["-llibnext", "-llibbase"]
+
+    def test_l_flags_deduplicated(self):
+        """Same -l lib from multiple files should appear only once."""
+        per_file = [
+            ["-llibbase"],
+            ["-llibbase"],
+        ]
+        result = utils.merge_ldflags_with_topo_sort(per_file)
+        assert result.count("-llibbase") == 1

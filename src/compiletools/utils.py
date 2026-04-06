@@ -32,6 +32,7 @@ __all__ = [
     "is_header",
     "is_non_string_iterable",
     "is_source",
+    "merge_ldflags_with_topo_sort",
     "ordered_difference",
     "ordered_union",
     "ordered_unique",
@@ -440,6 +441,98 @@ def deduplicate_compiler_flags(flags: list[str]) -> list[str]:
             i += 1
 
     return deduplicated
+
+
+def merge_ldflags_with_topo_sort(per_file_ldflags: list[list]) -> list[str]:
+    """Merge per-file LDFLAGS using topological sort for -l flag ordering.
+
+    Each file's -l flag sequence defines pairwise ordering constraints:
+    [-llibnext, -llibbase] means libnext must appear before libbase.
+    Non -l flags are deduplicated and placed before the sorted -l flags.
+    """
+    if not per_file_ldflags:
+        return []
+
+    import warnings
+    from collections import defaultdict
+
+    non_l_flags: list[str] = []
+    per_file_l_names: list[list[str]] = []
+
+    for file_flags in per_file_ldflags:
+        file_l_names: list[str] = []
+        str_flags = [str(f) for f in file_flags]
+        i = 0
+        while i < len(str_flags):
+            flag = str_flags[i]
+            if flag == "-l" and i + 1 < len(str_flags):
+                file_l_names.append(str_flags[i + 1])
+                i += 2
+            elif flag.startswith("-l") and len(flag) > 2:
+                file_l_names.append(flag[2:])
+                i += 1
+            else:
+                non_l_flags.append(flag)
+                i += 1
+        if file_l_names:
+            per_file_l_names.append(file_l_names)
+
+    # Build constraint graph from pairwise orderings
+    graph: dict[str, set[str]] = defaultdict(set)
+    in_degree: dict[str, int] = defaultdict(int)
+    all_libs: list[str] = []
+    seen_libs: set[str] = set()
+
+    for file_l_names in per_file_l_names:
+        for name in file_l_names:
+            if name not in seen_libs:
+                all_libs.append(name)
+                seen_libs.add(name)
+        for j in range(len(file_l_names) - 1):
+            pred, succ = file_l_names[j], file_l_names[j + 1]
+            if succ not in graph[pred]:
+                graph[pred].add(succ)
+                in_degree[succ] = in_degree.get(succ, 0) + 1
+            # Ensure pred has an in_degree entry
+            if pred not in in_degree:
+                in_degree[pred] = 0
+
+    if not all_libs:
+        return list(dict.fromkeys(non_l_flags))
+
+    # Ensure all libs have in_degree entries
+    for lib in all_libs:
+        if lib not in in_degree:
+            in_degree[lib] = 0
+
+    # Kahn's algorithm with alphabetical tie-breaking for determinism
+    queue = sorted([lib for lib in all_libs if in_degree[lib] == 0])
+    sorted_libs: list[str] = []
+    remaining = set(all_libs)
+
+    while queue:
+        node = queue.pop(0)
+        sorted_libs.append(node)
+        remaining.discard(node)
+        next_ready = []
+        for succ in sorted(graph.get(node, [])):
+            in_degree[succ] -= 1
+            if in_degree[succ] == 0:
+                next_ready.append(succ)
+        queue = sorted(queue + next_ready)
+
+    # Handle cycles
+    if remaining:
+        cycle_libs = sorted(remaining)
+        warnings.warn(
+            f"Cycle detected in library dependencies: {cycle_libs}. "
+            f"Breaking cycle with alphabetical ordering.",
+            stacklevel=2,
+        )
+        sorted_libs.extend(cycle_libs)
+
+    deduped_non_l = list(dict.fromkeys(non_l_flags))
+    return deduped_non_l + [f"-l{name}" for name in sorted_libs]
 
 
 def _process_flag_source(source: Union[str, list[str], tuple[str, ...]]) -> list[str]:

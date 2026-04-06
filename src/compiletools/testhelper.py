@@ -796,8 +796,16 @@ def make_backend_args(tmpdir, **overrides):
     return SimpleNamespace(**defaults)
 
 
-def make_mock_hunter(sources=None, headers=None, magicflags_map=None):
-    """Create a MagicMock hunter with standard behavior."""
+def make_mock_hunter(sources=None, headers=None, magicflags_map=None, per_file_magicflags=None):
+    """Create a MagicMock hunter with standard behavior.
+
+    Args:
+        sources: List of source files.
+        headers: List of header files.
+        magicflags_map: Single magicflags dict returned for all files.
+        per_file_magicflags: Dict mapping source_path -> magicflags_dict.
+            When provided, overrides magicflags_map.
+    """
     hunter = MagicMock()
     hunter.huntsource = MagicMock()
     sources = sources or []
@@ -805,7 +813,12 @@ def make_mock_hunter(sources=None, headers=None, magicflags_map=None):
     hunter.required_source_files = MagicMock(side_effect=lambda s: sources)
     headers = headers or []
     hunter.header_dependencies = MagicMock(return_value=headers)
-    hunter.magicflags = MagicMock(return_value=magicflags_map or {})
+    if per_file_magicflags is not None:
+        hunter.magicflags = MagicMock(
+            side_effect=lambda s: per_file_magicflags.get(s, {})
+        )
+    else:
+        hunter.magicflags = MagicMock(return_value=magicflags_map or {})
     hunter.macro_state_hash = MagicMock(return_value="abcdef1234567890")
     return hunter
 

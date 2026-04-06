@@ -705,12 +705,15 @@ class BuildBackend(abc.ABC):
 
         import stringzilla as sz
 
-        all_magic_ldflags = []
+        per_file_ldflags = []
         for s in completesources:
             magic_flags = self.hunter.magicflags(s)
-            all_magic_ldflags.extend(magic_flags.get(sz.Str("LDFLAGS"), []))
+            file_ldflags = magic_flags.get(sz.Str("LDFLAGS"), [])
+            if file_ldflags:
+                per_file_ldflags.append(list(file_ldflags))
 
-        link_cmd = [self.args.LD, "-o", exename] + list(object_names) + [str(f) for f in all_magic_ldflags]
+        merged_ldflags = compiletools.utils.merge_ldflags_with_topo_sort(per_file_ldflags)
+        link_cmd = [self.args.LD, "-o", exename] + list(object_names) + merged_ldflags
 
         inputs = list(object_names)
         if library_outputs:
@@ -783,13 +786,16 @@ class BuildBackend(abc.ABC):
 
         import stringzilla as sz
 
-        all_magic_ldflags = []
+        per_file_ldflags = []
         for s in all_source_files:
             magic_flags = self.hunter.magicflags(s)
-            all_magic_ldflags.extend(magic_flags.get(sz.Str("LDFLAGS"), []))
+            file_ldflags = magic_flags.get(sz.Str("LDFLAGS"), [])
+            if file_ldflags:
+                per_file_ldflags.append(list(file_ldflags))
 
+        merged_ldflags = compiletools.utils.merge_ldflags_with_topo_sort(per_file_ldflags)
         lib_cmd = [self.args.LD, "-shared", "-o", lib_path] + list(object_names)
-        lib_cmd.extend([str(f) for f in all_magic_ldflags])
+        lib_cmd.extend(merged_ldflags)
         if self.args.LDFLAGS:
             lib_cmd.append(self.args.LDFLAGS)
 

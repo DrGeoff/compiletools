@@ -523,3 +523,62 @@ class TestAllOutputsCurrent:
         graph = BuildGraph()
         graph.add_rule(BuildRule(output="build", inputs=[], command=None, rule_type="phony"))
         assert backend._all_outputs_current(graph) is False
+
+
+class TestLinkOrderCorrectness:
+    """Test that link rules produce correctly ordered -l flags
+    when different source files contribute different LDFLAGS."""
+
+    def test_link_rule_respects_dependency_order(self, tmp_path):
+        """When one.cpp has -llibbase and two.cpp has -llibnext -llibbase,
+        the link command must have -llibnext before -llibbase."""
+        import stringzilla as sz
+
+        sources = ["/src/one.cpp", "/src/two.cpp"]
+        per_file = {
+            "/src/one.cpp": {sz.Str("LDFLAGS"): [sz.Str("-llibbase")]},
+            "/src/two.cpp": {sz.Str("LDFLAGS"): [sz.Str("-llibnext"), sz.Str("-llibbase")]},
+        }
+        args = make_backend_args(tmp_path, filename=sources, CXXFLAGS="-O2")
+        hunter = make_mock_hunter(sources=sources, per_file_magicflags=per_file)
+        StubClass = make_stub_backend_class()
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+
+        graph = backend.build_graph()
+
+        link_rules = [r for r in graph.rules if r.rule_type == "link"]
+        assert len(link_rules) >= 1
+        link_cmd = link_rules[0].command
+        l_flags = [f for f in link_cmd if f.startswith("-l")]
+        assert "-llibnext" in l_flags, f"Expected -llibnext in link command, got: {link_cmd}"
+        assert "-llibbase" in l_flags, f"Expected -llibbase in link command, got: {link_cmd}"
+        idx_next = l_flags.index("-llibnext")
+        idx_base = l_flags.index("-llibbase")
+        assert idx_next < idx_base, (
+            f"Expected -llibnext before -llibbase in link command, got: {l_flags}"
+        )
+
+    def test_link_rule_deduplicates_l_flags(self, tmp_path):
+        """Same -l flag from multiple files should appear only once."""
+        import stringzilla as sz
+
+        sources = ["/src/one.cpp", "/src/two.cpp"]
+        per_file = {
+            "/src/one.cpp": {sz.Str("LDFLAGS"): [sz.Str("-llibbase")]},
+            "/src/two.cpp": {sz.Str("LDFLAGS"): [sz.Str("-llibbase")]},
+        }
+        args = make_backend_args(tmp_path, filename=sources, CXXFLAGS="-O2")
+        hunter = make_mock_hunter(sources=sources, per_file_magicflags=per_file)
+        StubClass = make_stub_backend_class()
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+
+        graph = backend.build_graph()
+
+        link_rules = [r for r in graph.rules if r.rule_type == "link"]
+        link_cmd = link_rules[0].command
+        l_flags = [f for f in link_cmd if f.startswith("-llib")]
+        assert l_flags.count("-llibbase") == 1, (
+            f"Expected -llibbase exactly once, got: {l_flags}"
+        )
