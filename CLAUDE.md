@@ -165,6 +165,16 @@ scripts/profile-ct ct-compilation-database -d /path/to/project -- --include "dir
 py-spy record -o profile.svg -- python ct-cake --auto
 ```
 
+## Build Timing
+
+```bash
+ct-cake --auto --timing                              # build with timing
+ct-timing-report .ct-timing.json                     # interactive TUI
+ct-timing-report --summary                           # static Rich table
+ct-timing-report --compare before.json after.json    # diff two runs
+ct-timing-report --chrome-trace out.json             # export for Perfetto
+```
+
 ## Dependencies
 
 - **stringzilla** -- SIMD-accelerated string operations (core to FileAnalyzer performance)

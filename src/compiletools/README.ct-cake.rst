@@ -362,6 +362,11 @@ Common Options
 **--compilation-database-output**
     Custom output path for the compilation database.
 
+**--timing**
+    Collect and report build timing information.  Writes
+    ``.ct-timing.json`` to the object directory and prints a summary
+    table after the build.  Analyze the results with ``ct-timing-report``.
+
 **--static / --dynamic**
     Build a static or dynamic library instead of an executable.
     Example: ``ct-cake --static mylib.cpp``
@@ -412,4 +417,4 @@ The non-recursive Makefile generation was informed by:
 
 SEE ALSO
 ========
-``compiletools`` (1), ``ct-list-variants`` (1), ``ct-config`` (1)
+``compiletools`` (1), ``ct-timing-report`` (1), ``ct-list-variants`` (1), ``ct-config`` (1)

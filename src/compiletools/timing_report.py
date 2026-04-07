@@ -11,11 +11,11 @@ Usage::
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import sys
 
+import compiletools.apptools
 from compiletools.build_timer import BuildTimer
 
 
@@ -23,28 +23,29 @@ from compiletools.build_timer import BuildTimer
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="ct-timing-report",
-        description="Analyze and display build timing reports from ct-cake --timing.",
+    parser = compiletools.apptools.create_parser(
+        "Analyze and display build timing reports from ct-cake --timing.",
+        argv=argv,
+        include_config=False,
     )
-    parser.add_argument(
+    parser.add(
         "timing_file",
         nargs="?",
         default=None,
         help="Path to .ct-timing.json (default: auto-detect in cwd)",
     )
-    parser.add_argument(
+    parser.add(
         "--summary",
         action="store_true",
         help="Print summary table to stdout (non-interactive)",
     )
-    parser.add_argument(
+    parser.add(
         "--compare",
         nargs=2,
         metavar=("BEFORE", "AFTER"),
         help="Compare two timing files and show deltas",
     )
-    parser.add_argument(
+    parser.add(
         "--chrome-trace",
         metavar="OUTPUT",
         help="Export Chrome Trace JSON for Perfetto (https://ui.perfetto.dev/)",
