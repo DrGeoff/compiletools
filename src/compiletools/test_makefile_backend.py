@@ -85,10 +85,7 @@ class TestMakefileGenerate:
         content = buf.getvalue()
 
         assert ".DELETE_ON_ERROR:" in content
-        # Compile rules omit normal prerequisites (content-addressed naming
-        # makes timestamp checking redundant); only order-only deps remain.
-        assert "obj/foo.o:" in content
-        assert "foo.cpp foo.h" not in content
+        assert "obj/foo.o: foo.cpp foo.h" in content
         assert "| /tmp/obj" in content
         assert "g++ -c foo.cpp -o obj/foo.o" in content
         assert "bin/foo: obj/foo.o" in content
