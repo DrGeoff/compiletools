@@ -37,6 +37,16 @@ class Cake:
     def __init__(self, args, context=None):
         self.args = args
         self.context = context if context is not None else BuildContext()
+
+        from compiletools.build_timer import BuildTimer
+
+        timing_enabled = getattr(args, "timing", False)
+        self.context.timer = BuildTimer(
+            enabled=timing_enabled,
+            variant=getattr(args, "variant", ""),
+            backend=getattr(args, "backend", "make"),
+        )
+
         self.namer = None
         self.headerdeps = None
         self.magicparser = None
@@ -167,6 +177,15 @@ class Cake:
             help="When there is only a single build product, rename it to this name.",
         )
 
+        compiletools.utils.add_flag_argument(
+            parser=cap,
+            name="timing",
+            dest="timing",
+            default=False,
+            help="Collect and report build timing information. Writes .ct-timing.json "
+            "and prints a summary table after the build.",
+        )
+
     def _callfilelist(self):
         filelist = compiletools.filelist.Filelist(self.args, self.hunter, style="flat")
         filelist.process()
@@ -236,12 +255,15 @@ class Cake:
 
     def _call_backend(self):
         """Dispatch to the selected build backend."""
+        timer = self.context.timer
         backend_name = getattr(self.args, "backend", "make")
         BackendClass = get_backend_class(backend_name)
         backend = BackendClass(args=self.args, hunter=self.hunter, context=self.context)
 
-        graph = backend.build_graph()
-        backend.generate(graph)
+        with timer.phase("build_graph"):
+            graph = backend.build_graph()
+        with timer.phase("generate"):
+            backend.generate(graph)
 
         self._call_compilation_database()
 
@@ -265,10 +287,12 @@ class Cake:
                     except OSError:
                         pass
         else:
-            backend.execute("build")
+            with timer.phase("build_execution"):
+                backend.execute("build")
 
             if self.args.tests and "runtests" in graph.outputs:
-                backend.execute("runtests")
+                with timer.phase("test_execution"):
+                    backend.execute("runtests")
 
             self._copyexes()
 
@@ -276,42 +300,52 @@ class Cake:
         """Transform the arguments into suitable versions for ct-* tools
         and call the appropriate tool.
         """
-        # If the user specified only a single file to be turned into a library, guess that
-        # they mean for ct-cake to chase down all the implied files.
-        if self.args.verbose > 4:
-            print("Early scanning. Cake determining targets and implied files")
-
-        self._createctobjs()
-        recreateobjs = False
-        if self.args.static and len(self.args.static) == 1:
-            self.args.static.extend(self.hunter.required_source_files(self.args.static[0]))
-            recreateobjs = True
-
-        if self.args.dynamic and len(self.args.dynamic) == 1:
-            self.args.dynamic.extend(self.hunter.required_source_files(self.args.dynamic[0]))
-            recreateobjs = True
-
-        if self.args.auto and not any([self.args.filename, self.args.static, self.args.dynamic, self.args.tests]):
-            findtargets = compiletools.findtargets.FindTargets(self.args, context=self.context)
-            findtargets.process(self.args)
-            recreateobjs = True
-
-        if recreateobjs:
-            # Since we've fiddled with the args,
-            # run the substitutions again
-            # Primarily, this fixes the --includes for the git root of the
-            # targets. And recreate the ct objects
+        timer = self.context.timer
+        try:
+            # If the user specified only a single file to be turned into a library, guess that
+            # they mean for ct-cake to chase down all the implied files.
             if self.args.verbose > 4:
-                print("Cake recreating objects and reparsing for second stage processing")
-            compiletools.apptools.substitutions(self.args, verbose=0)
-            self._createctobjs()
+                print("Early scanning. Cake determining targets and implied files")
 
-        compiletools.apptools.verboseprintconfig(self.args)
+            with timer.phase("target_discovery"):
+                self._createctobjs()
+                recreateobjs = False
+                if self.args.static and len(self.args.static) == 1:
+                    self.args.static.extend(self.hunter.required_source_files(self.args.static[0]))
+                    recreateobjs = True
 
-        if self.args.filelist:
-            self._callfilelist()
-        else:
-            self._call_backend()
+                if self.args.dynamic and len(self.args.dynamic) == 1:
+                    self.args.dynamic.extend(self.hunter.required_source_files(self.args.dynamic[0]))
+                    recreateobjs = True
+
+                if self.args.auto and not any(
+                    [self.args.filename, self.args.static, self.args.dynamic, self.args.tests]
+                ):
+                    findtargets = compiletools.findtargets.FindTargets(self.args, context=self.context)
+                    findtargets.process(self.args)
+                    recreateobjs = True
+
+                if recreateobjs:
+                    # Since we've fiddled with the args,
+                    # run the substitutions again
+                    # Primarily, this fixes the --includes for the git root of the
+                    # targets. And recreate the ct objects
+                    if self.args.verbose > 4:
+                        print("Cake recreating objects and reparsing for second stage processing")
+                    compiletools.apptools.substitutions(self.args, verbose=0)
+                    self._createctobjs()
+
+            compiletools.apptools.verboseprintconfig(self.args)
+
+            if self.args.filelist:
+                self._callfilelist()
+            else:
+                self._call_backend()
+        finally:
+            if timer.enabled:
+                objdir = getattr(self.args, "objdir", ".")
+                timer.to_json(os.path.join(objdir, ".ct-timing.json"))
+                timer.print_summary()
 
     def clear_cache(self):
         """Only useful in test scenarios where you need to reset to a pristine state"""

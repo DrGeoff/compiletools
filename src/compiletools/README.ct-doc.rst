@@ -116,6 +116,10 @@ CORE TOOLS
 **ct-filelist**
     Generate file lists for packaging and distribution.
 
+**ct-timing-report**
+    Analyze build timing data from ``ct-cake --timing``.  Interactive TUI,
+    static summary, run comparison, and Chrome Trace export.
+
 **ct-cleanup-locks**
     Clean stale locks from file locking.
 
@@ -186,4 +190,5 @@ SEE ALSO
 * ct-lock-helper
 * ct-magicflags
 * ct-release
+* ct-timing-report
 * ct-watch-build

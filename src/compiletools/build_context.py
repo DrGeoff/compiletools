@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 import stringzilla as sz
 
 if TYPE_CHECKING:
+    from compiletools.build_timer import BuildTimer
     from compiletools.file_analyzer import FileAnalysisResult
     from compiletools.preprocessing_cache import MacroCacheKey, MacroDict, ProcessingResult
 
@@ -62,6 +63,9 @@ class BuildContext:
         self.warned_low_ulimit: bool = False
         self.warned_mmap_failure: bool = False
         self.analyze_file_cache: dict[str, FileAnalysisResult] = {}
+
+        # -- build timer --
+        self.timer: BuildTimer | None = None
 
         # -- git_sha_report state --
         self.repo_has_symlinks: bool | None = None

@@ -204,6 +204,13 @@ class BuildBackend(abc.ABC):
         self._graph: BuildGraph | None = None
         self._dynamic_sources: set[str] = set()
 
+    @property
+    def _timer(self):
+        """Return the enabled BuildTimer from context, or None."""
+        from compiletools.build_timer import get_timer
+
+        return get_timer(self.context)
+
     @staticmethod
     @abc.abstractmethod
     def name() -> str:
