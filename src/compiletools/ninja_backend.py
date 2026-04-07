@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 import compiletools.filesystem_utils
@@ -86,6 +87,14 @@ class NinjaBackend(BuildBackend):
 
     def _execute_build(self, target: str) -> None:
         filename = getattr(self.args, "ninja_filename", "build.ninja")
+        ninja_log = os.path.join(os.path.dirname(filename) or ".", ".ninja_log")
+
+        # Record log offset before build for timing parsing
+        timer = self._timer
+        log_offset = 0
+        if timer and os.path.exists(ninja_log):
+            log_offset = os.path.getsize(ninja_log)
+
         cmd = ["ninja", "-f", filename]
         parallel = getattr(self.args, "parallel", None)
         if parallel:
@@ -94,3 +103,7 @@ class NinjaBackend(BuildBackend):
             cmd.append("-v")
         cmd.append(target)
         subprocess.check_call(cmd, text=True)
+
+        # Parse timing from newly appended ninja log entries
+        if timer:
+            timer.record_rules_from_ninja_log(ninja_log, offset=log_offset, graph=self._graph)
