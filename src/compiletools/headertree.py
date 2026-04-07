@@ -211,10 +211,10 @@ def main(argv=None):
 
     compiletools.magicflags.add_arguments(cap)
     compiletools.headerdeps.add_arguments(cap)
-    args = compiletools.apptools.parseargs(cap, argv)
     from compiletools.build_context import BuildContext
 
     context = BuildContext()
+    args = compiletools.apptools.parseargs(cap, argv, context=context)
     ht = compiletools.headerdeps.DirectHeaderDeps(args, context=context)
     magicparser = compiletools.magicflags.create(args, ht, context=context)
 

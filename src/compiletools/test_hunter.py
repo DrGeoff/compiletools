@@ -35,8 +35,8 @@ class TestHunterModule:
             argv = ["-c", temp_config, "--include", uth.ctdir()]
             cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
             compiletools.hunter.add_arguments(cap)
-            args = compiletools.apptools.parseargs(cap, argv)
             ctx = BuildContext()
+            args = compiletools.apptools.parseargs(cap, argv, context=ctx)
             headerdeps = compiletools.headerdeps.create(args, context=ctx)
             magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
             hntr = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
@@ -62,8 +62,8 @@ class TestHunterModule:
             argv = ["--config", temp_config, "--include", uth.ctdir()]
             cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
             compiletools.hunter.add_arguments(cap)
-            args = compiletools.apptools.parseargs(cap, argv)
             ctx = BuildContext()
+            args = compiletools.apptools.parseargs(cap, argv, context=ctx)
             headerdeps = compiletools.headerdeps.create(args, context=ctx)
             magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
             hntr = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
@@ -100,8 +100,8 @@ def _make_hunter(argv_extra=None, temp_config=None):
     argv = ["-c", temp_config, "--include", uth.ctdir()] + argv_extra
     cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
     compiletools.hunter.add_arguments(cap)
-    args = compiletools.apptools.parseargs(cap, argv)
     ctx = BuildContext()
+    args = compiletools.apptools.parseargs(cap, argv, context=ctx)
     headerdeps = compiletools.headerdeps.create(args, context=ctx)
     magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
     return compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx), args

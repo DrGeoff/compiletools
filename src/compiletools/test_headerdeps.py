@@ -76,8 +76,8 @@ def _generatecache(tempdir, name, realpaths, extraargs=None):
         cachename = os.path.join(tempdir, name)
         cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
         compiletools.headerdeps.add_arguments(cap)
-        args = compiletools.apptools.parseargs(cap, argv)
         ctx = BuildContext()
+        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
         headerdeps = compiletools.headerdeps.create(args, context=ctx)
         return cachename, _callprocess(headerdeps, realpaths)
 
@@ -379,7 +379,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
             compiletools.apptools.add_common_arguments(cap)
 
             argv = [f"--CPPFLAGS={cppflags}", "-q"]
-            args = compiletools.apptools.parseargs(cap, argv)
+            args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
 
             deps = compiletools.headerdeps.DirectHeaderDeps(args, context=BuildContext())
             assert deps.includes == expected_includes, (
@@ -405,7 +405,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
 
         # Bypass command line parsing issues by setting CPPFLAGS directly
         argv = ["-q"]
-        args = compiletools.apptools.parseargs(cap, argv)
+        args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
 
         # Set the CPPFLAGS with properly quoted string directly
         args.CPPFLAGS = '-I "/path with spaces/include"'
@@ -437,7 +437,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
             compiletools.apptools.add_common_arguments(cap)
 
             argv = [f"--CPPFLAGS={cppflags}", "-q"]
-            args = compiletools.apptools.parseargs(cap, argv)
+            args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
 
             # This should not raise an exception - the isystem parsing should work
             compiletools.headerdeps.DirectHeaderDeps(args, context=BuildContext())
@@ -492,7 +492,7 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
         argv = ["-q"]
         if cppflags:
             argv.append(f"--CPPFLAGS={cppflags}")
-        args = compiletools.apptools.parseargs(cap, argv)
+        args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
         if verbose:
             args.verbose = verbose
         return args

@@ -107,7 +107,7 @@ class TestCompilationDatabase:
                 cap = compiletools.apptools.create_parser("Generate compile_commands.json for clang tooling", argv=argv)
                 compiletools.compilation_database.CompilationDatabaseCreator.add_arguments(cap)
                 compiletools.hunter.add_arguments(cap)
-                args = compiletools.apptools.parseargs(cap, argv)
+                args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
 
                 with uth.ParserContext():
                     # Test the creator class
@@ -312,6 +312,7 @@ class TestCompilationDatabase:
                             "--testmarkers=test(",  # Tell it how to identify test files
                             "--auto",  # Enable auto-discovery
                         ],
+                        context=BuildContext(),
                     )
 
                     # Use FindTargets to discover source files (following cake.py pattern)
@@ -577,7 +578,7 @@ class TestCompilationDatabase:
                     cap = compiletools.apptools.create_parser("test", argv=["--config=" + temp_config_name])
                     compiletools.compilation_database.CompilationDatabaseCreator.add_arguments(cap)
                     compiletools.hunter.add_arguments(cap)
-                    args = compiletools.apptools.parseargs(cap, ["--config=" + temp_config_name])
+                    args = compiletools.apptools.parseargs(cap, ["--config=" + temp_config_name], context=BuildContext())
                     # Create CompilationDatabaseCreator instance for testing
                     compiletools.compilation_database.CompilationDatabaseCreator(args, context=BuildContext())
 
@@ -858,7 +859,8 @@ def _concurrent_write_worker(work_queue, result_queue, source_file, output_file)
             compiletools.compilation_database.CompilationDatabaseCreator.add_arguments(cap)
             compiletools.hunter.add_arguments(cap)
             args = compiletools.apptools.parseargs(
-                cap, ["--file-locking", "--compilation-database-output=" + output_file, source_file]
+                cap, ["--file-locking", "--compilation-database-output=" + output_file, source_file],
+                context=BuildContext(),
             )
 
             # Write compilation database

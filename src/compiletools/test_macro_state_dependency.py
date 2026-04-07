@@ -36,10 +36,10 @@ def test_macro_state_dependency_is_fixed():
     compiletools.apptools.add_common_arguments(cap)
 
     argv = [f"--CPPFLAGS=-I{sample_dir}", "-q"]
-    args = compiletools.apptools.parseargs(cap, argv)
     headerdeps.HeaderDepsBase.clear_cache()
 
     ctx1 = BuildContext()
+    args = compiletools.apptools.parseargs(cap, argv, context=ctx1)
     deps1 = headerdeps.DirectHeaderDeps(args, context=ctx1)
     includes1 = set(deps1.process(str(test_cpp), frozenset()))
 
@@ -61,12 +61,12 @@ def test_macro_state_dependency_is_fixed():
     compiletools.apptools.add_common_arguments(cap2)
 
     argv2 = [f"--CPPFLAGS=-I{sample_dir} -DDEBUG", "-q"]
-    args2 = compiletools.apptools.parseargs(cap2, argv2)
 
     # Clear cache before Test 2 since we're using different cmdline args
     headerdeps.HeaderDepsBase.clear_cache()
 
     ctx2 = BuildContext()
+    args2 = compiletools.apptools.parseargs(cap2, argv2, context=ctx2)
     deps2 = headerdeps.DirectHeaderDeps(args2, context=ctx2)
 
     includes2 = set(deps2.process(str(test_cpp), frozenset()))
@@ -131,9 +131,8 @@ def test_hunter_respects_macro_state_changes():
             cppflags += " -DDEBUG"
 
         argv = [f"--CPPFLAGS={cppflags}", "-q"]
-        args = compiletools.apptools.parseargs(cap, argv)
-
         ctx = BuildContext()
+        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
         deps = headerdeps.DirectHeaderDeps(args, context=ctx)
         magic = magicflags.create(args, deps, context=ctx)
         return hunter.Hunter(args, deps, magic, context=ctx)

@@ -61,9 +61,8 @@ def _setup_backend_for_source(backend_name, tmp_path, src_file="helloworld_cpp.c
 
     cap = compiletools.apptools.create_parser("Backend integration test", argv=argv)
     _add_backend_arguments(cap)
-    args = compiletools.apptools.parseargs(cap, argv)
-
     ctx = BuildContext()
+    args = compiletools.apptools.parseargs(cap, argv, context=ctx)
     headerdeps = compiletools.headerdeps.create(args, context=ctx)
     magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
     hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
@@ -282,9 +281,8 @@ class TestBackendBuildGraphWithTests(BaseCompileToolsTestCase):
 
             cap = compiletools.apptools.create_parser("Backend integration test", argv=argv)
             _add_backend_arguments(cap)
-            args = compiletools.apptools.parseargs(cap, argv)
-
             ctx = BuildContext()
+            args = compiletools.apptools.parseargs(cap, argv, context=ctx)
             headerdeps = compiletools.headerdeps.create(args, context=ctx)
             magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
             hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)

@@ -92,9 +92,8 @@ class TestEmptyMacroBug(BaseCompileToolsTestCase):
         compiletools.hunter.add_arguments(cap)
         cap.add("filename", nargs="+")
 
-        args = compiletools.apptools.parseargs(cap, argv)
-
         ctx = BuildContext()
+        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
         headerdeps = compiletools.headerdeps.create(args, context=ctx)
         magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
         hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)

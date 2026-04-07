@@ -888,6 +888,54 @@ def filter_pkg_config_cflags(cflags_str, verbose=0):
     return " ".join(processed_flags)
 
 
+def _setup_pkg_config_overrides(context, verbose=0):
+    """Prepend project-level ct.conf.d/pkgconfig/ to PKG_CONFIG_PATH.
+
+    If {gitroot}/ct.conf.d/pkgconfig/ exists, prepend it to the
+    PKG_CONFIG_PATH environment variable so that project-local .pc
+    files take priority over system ones.
+
+    Args:
+        context: BuildContext instance tracking per-build state.
+        verbose: verbosity level for diagnostic output.
+
+    Must be called before any pkg-config subprocess invocation
+    (i.e., before _add_flags_from_pkg_config and before magicflags
+    processing).
+    """
+    if context.pkg_config_overrides_applied:
+        return
+
+    gitroot = compiletools.git_utils.find_git_root()
+    if not gitroot:
+        context.pkg_config_overrides_applied = True
+        return
+
+    project_pkgconfig_dir = os.path.join(gitroot, "ct.conf.d", "pkgconfig")
+
+    if not compiletools.wrappedos.isdir(project_pkgconfig_dir):
+        context.pkg_config_overrides_applied = True
+        return
+
+    # Check if already present (guards against duplicate prepends when
+    # multiple BuildContext instances are used in the same process).
+    existing = os.environ.get("PKG_CONFIG_PATH", "")
+    existing_dirs = existing.split(os.pathsep) if existing else []
+    if project_pkgconfig_dir in existing_dirs:
+        context.pkg_config_overrides_applied = True
+        return
+
+    if existing:
+        os.environ["PKG_CONFIG_PATH"] = project_pkgconfig_dir + os.pathsep + existing
+    else:
+        os.environ["PKG_CONFIG_PATH"] = project_pkgconfig_dir
+
+    context.pkg_config_overrides_applied = True
+
+    if verbose >= 4:
+        print(f"Prepended project pkg-config overrides: {project_pkgconfig_dir}")
+
+
 def _add_flags_from_pkg_config(args):
     packages = list(args.pkg_config)
     if not packages:
@@ -1176,6 +1224,7 @@ def _commonsubstitutions(args):
     _tier_one_modifications(args)
     _extend_includes_using_git_root(args)
     _add_include_paths_to_flags(args)
+    _setup_pkg_config_overrides(args._context, args.verbose)
     _add_flags_from_pkg_config(args)
     _set_project_version(args)
     _unify_cpp_cxx_flags(args)
@@ -1302,11 +1351,18 @@ def create_parser(description, argv=None, include_config=True, include_write_con
         return cap
 
 
-def parseargs(cap, argv, verbose=None):
-    """argv must be the logical equivalent of sys.argv[1:]"""
+def parseargs(cap, argv, verbose=None, *, context):
+    """argv must be the logical equivalent of sys.argv[1:]
+
+    Args:
+        context: BuildContext for per-build state. Stored as args._context
+            and used by substitution callbacks (e.g. to set up project-level
+            pkg-config overrides).
+    """
     # command-line values override environment variables which override config file values which override defaults.
     args = cap.parse_args(args=argv)
     args._parser = cap
+    args._context = context
 
     if "verbose" not in vars(args):
         raise ValueError(

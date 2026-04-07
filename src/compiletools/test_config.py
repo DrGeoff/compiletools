@@ -65,7 +65,7 @@ def test_main_calls_parseargs():
         mock_create.return_value = cap
         argv = ["--verbose"]
         config.main(argv=argv)
-        mock_parse.assert_called_once_with(cap, argv)
+        mock_parse.assert_called_once_with(cap, argv, context=mock.ANY)
 
 
 def test_main_prints_newline(capsys):

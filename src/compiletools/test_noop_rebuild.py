@@ -75,9 +75,9 @@ _BUILD_SCRIPT = textwrap.dedent("""\
     uth.reset()
     cap = compiletools.apptools.create_parser("noop rebuild test", argv=argv)
     _add_backend_arguments(cap)
-    args = compiletools.apptools.parseargs(cap, argv)
 
     ctx = BuildContext()
+    args = compiletools.apptools.parseargs(cap, argv, context=ctx)
     headerdeps = compiletools.headerdeps.create(args, context=ctx)
     magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
     hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)

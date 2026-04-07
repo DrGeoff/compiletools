@@ -285,12 +285,12 @@ def main(argv=None):
     # Add findtargets arguments to support --auto mode
     compiletools.findtargets.add_arguments(cap)
 
-    # Parse arguments
-    args = compiletools.apptools.parseargs(cap, argv)
-
     from compiletools.build_context import BuildContext
 
     context = BuildContext()
+
+    # Parse arguments
+    args = compiletools.apptools.parseargs(cap, argv, context=context)
 
     # Handle --auto mode: discover targets if no explicit targets provided
     if args.auto and not any([args.filename, args.static, args.dynamic, args.tests]):

@@ -1,0 +1,5 @@
+Name: OverriddenConditional
+Description: Project-level override of the conditional package for testing
+Version: 2.0.0
+Cflags: -I/project/override/include -DPROJECT_OVERRIDE_ENABLED
+Libs: -L/project/override/lib -lprojectoverride

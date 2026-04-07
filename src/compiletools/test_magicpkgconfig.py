@@ -209,6 +209,76 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                 pass
 
     @uth.requires_functional_compiler
+    def test_project_pkgconfig_override(self, pkgconfig_env):
+        """Test that ct.conf.d/pkgconfig/ overrides take priority over system/base .pc files.
+
+        Uses the existing pkgconfig_env fixture (which sets PKG_CONFIG_PATH to
+        samples/pkgs/) and layers a project-level override on top.
+        """
+        with uth.CompileToolsTestContext() as (tmpdir, _config_path):
+            # Create the project override directory
+            project_pkgconfig = os.path.join(tmpdir, "ct.conf.d", "pkgconfig")
+            os.makedirs(project_pkgconfig)
+
+            # Write an override .pc file for "conditional" with distinctive flags
+            override_pc = os.path.join(project_pkgconfig, "conditional.pc")
+            with open(override_pc, "w") as f:
+                f.write(
+                    "Name: OverriddenPackage\n"
+                    "Description: Project-level override\n"
+                    "Version: 2.0.0\n"
+                    "Cflags: -I/project/override/include -DPROJECT_OVERRIDE\n"
+                    "Libs: -L/project/override/lib -lprojectoverride\n"
+                )
+
+            # Point find_git_root at our temp dir so the override is discovered
+            from unittest.mock import patch
+
+            with patch(
+                "compiletools.git_utils.find_git_root", return_value=tmpdir
+            ):
+                compiletools.apptools.clear_cache()
+
+                # Apply the override (prepends ct.conf.d/pkgconfig/ to PKG_CONFIG_PATH)
+                ctx = BuildContext()
+                compiletools.apptools._setup_pkg_config_overrides(ctx)
+
+                # Create a source file that requests the 'conditional' package
+                source_content = "//#PKG-CONFIG=conditional\nint main() { return 0; }\n"
+                files = uth.write_sources({"test_override.cpp": source_content})
+                source_file = str(files["test_override.cpp"])
+
+                # Create parser and parse (reuse same ctx for consistency)
+                mf = tb.create_magic_parser(
+                    ["--magic=direct"], tempdir=self._tmpdir, context=ctx
+                )
+                result = mf.parse(source_file)
+
+                # Verify the OVERRIDE flags are used, not the base conditional.pc flags
+                assert sz.Str("CPPFLAGS") in result
+                cppflags = " ".join(str(f) for f in result[sz.Str("CPPFLAGS")])
+                assert "-DPROJECT_OVERRIDE" in cppflags, (
+                    f"Expected project override flags, got: {cppflags}"
+                )
+                # The base conditional.pc has -DTEST_PKG_ENABLED — should NOT appear
+                assert "-DTEST_PKG_ENABLED" not in cppflags, (
+                    f"Base flags should be overridden, got: {cppflags}"
+                )
+
+                # Check LDFLAGS
+                assert sz.Str("LDFLAGS") in result
+                ldflags = " ".join(str(f) for f in result[sz.Str("LDFLAGS")])
+                assert "-lprojectoverride" in ldflags, (
+                    f"Expected override libs, got: {ldflags}"
+                )
+                assert "-ltestpkg" not in ldflags, (
+                    f"Base libs should be overridden, got: {ldflags}"
+                )
+
+            # clear_cache resets the override guard for other tests
+            compiletools.apptools.clear_cache()
+
+    @uth.requires_functional_compiler
     def test_pkg_config_flags_are_split(self, pkgconfig_env):
         """Test that pkg-config output is split into individual flags.
 

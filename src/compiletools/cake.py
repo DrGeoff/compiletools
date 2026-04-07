@@ -34,9 +34,9 @@ def _ensure_backends_registered():
 
 
 class Cake:
-    def __init__(self, args):
+    def __init__(self, args, context=None):
         self.args = args
-        self.context = BuildContext()
+        self.context = context if context is not None else BuildContext()
         self.namer = None
         self.headerdeps = None
         self.magicparser = None
@@ -335,7 +335,8 @@ def main(argv=None):
     Cake.add_arguments(cap)
     Cake.registercallback()
 
-    args = compiletools.apptools.parseargs(cap, argv)
+    context = BuildContext()
+    args = compiletools.apptools.parseargs(cap, argv, context=context)
 
     if not any([args.filename, args.static, args.dynamic, args.tests, args.auto]):
         print("Nothing for cake to do.  Did you mean cake --auto? Use cake --help for help.")
@@ -345,7 +346,7 @@ def main(argv=None):
     signal.signal(signal.SIGPIPE, signal_handler)
 
     try:
-        cake = Cake(args)
+        cake = Cake(args, context=context)
         cake.process()
         # For testing purposes, clear out the memcaches for the times when main is called more than once.
         cake.clear_cache()

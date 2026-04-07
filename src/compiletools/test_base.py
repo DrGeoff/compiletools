@@ -92,7 +92,7 @@ def create_magic_parser(extraargs=None, tempdir=None, context=None):
     compiletools.apptools.add_common_arguments(cap)
     compiletools.headerdeps.add_arguments(cap)
     compiletools.magicflags.add_arguments(cap)
-    args = compiletools.apptools.parseargs(cap, argv)
+    args = compiletools.apptools.parseargs(cap, argv, context=context)
     headerdeps = compiletools.headerdeps.create(args, context=context)
     return compiletools.magicflags.create(args, headerdeps, context=context)
 
@@ -198,10 +198,10 @@ def compare_direct_cpp_headers(test_case, filename, extraargs=None, context=None
         )
         compiletools.headerdeps.add_arguments(cap)
         argvdirect = argv + ["--headerdeps=direct"]
-        argsdirect = compiletools.apptools.parseargs(cap, argvdirect)
+        argsdirect = compiletools.apptools.parseargs(cap, argvdirect, context=context)
 
         argvcpp = argv + ["--headerdeps", "cpp"]
-        argscpp = compiletools.apptools.parseargs(cap, argvcpp)
+        argscpp = compiletools.apptools.parseargs(cap, argvcpp, context=context)
 
         hdirect = compiletools.headerdeps.create(argsdirect, context=context)
         hcpp = compiletools.headerdeps.create(argscpp, context=context)

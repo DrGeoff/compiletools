@@ -18,6 +18,7 @@ from compiletools.apptools import (
     _do_xxpend,
     _flatten_variables,
     _safely_unquote_string,
+    _setup_pkg_config_overrides,
     _strip_quotes,
     _substitute_CXX_for_missing,
     _test_compiler_functionality,
@@ -44,6 +45,7 @@ from compiletools.apptools import (
     verbose_print_args,
     verboseprintconfig,
 )
+from compiletools.build_context import BuildContext
 
 
 class TestExtractCommandLineMacrosSz:
@@ -583,6 +585,42 @@ class TestCachedPkgConfig:
         assert "/opt/pkg/include" in result
         clear_cache()
 
+    def test_override_pc_takes_priority(self, monkeypatch, tmp_path):
+        """A .pc file in the override dir takes priority over one in the base dir."""
+        clear_cache()
+
+        override_dir = tmp_path / "override"
+        override_dir.mkdir()
+        base_dir = tmp_path / "base"
+        base_dir.mkdir()
+
+        pc_content_override = (
+            "Name: TestPkg\nDescription: Override\nVersion: 1.0\n"
+            "Cflags: -I/override/include -DOVERRIDE\n"
+            "Libs: -L/override/lib -loverride\n"
+        )
+        pc_content_base = (
+            "Name: TestPkg\nDescription: Base\nVersion: 1.0\n"
+            "Cflags: -I/base/include -DBASE\n"
+            "Libs: -L/base/lib -lbase\n"
+        )
+
+        (override_dir / "testoverridepkg.pc").write_text(pc_content_override)
+        (base_dir / "testoverridepkg.pc").write_text(pc_content_base)
+
+        monkeypatch.setenv(
+            "PKG_CONFIG_PATH", f"{override_dir}{os.pathsep}{base_dir}"
+        )
+
+        result = cached_pkg_config("testoverridepkg", "--cflags")
+        assert "-DOVERRIDE" in result
+        assert "-DBASE" not in result
+
+        result_libs = cached_pkg_config("testoverridepkg", "--libs")
+        assert "-loverride" in result_libs
+        assert "-lbase" not in result_libs
+        clear_cache()
+
 
 class TestTestCompilerFunctionality:
     def test_nonexistent_compiler(self):
@@ -609,3 +647,87 @@ class TestVerbosePrintConfig:
         verboseprintconfig(args)
         captured = capsys.readouterr()
         assert captured.out == "", "verbose=0 should produce no output"
+
+
+class TestSetupPkgConfigOverrides:
+    """Tests for _setup_pkg_config_overrides()."""
+
+    def test_prepends_when_override_dir_exists(self, monkeypatch, tmp_path):
+        """When ct.conf.d/pkgconfig/ exists, it is prepended to PKG_CONFIG_PATH."""
+        pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
+        pkgconfig_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(
+            "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
+        )
+        monkeypatch.setenv("PKG_CONFIG_PATH", "/existing/path")
+
+        ctx = BuildContext()
+        _setup_pkg_config_overrides(ctx)
+
+        pkg_config_path = os.environ["PKG_CONFIG_PATH"]
+        assert pkg_config_path.startswith(str(pkgconfig_dir))
+        assert "/existing/path" in pkg_config_path
+
+    def test_noop_when_no_override_dir(self, monkeypatch, tmp_path):
+        """When ct.conf.d/pkgconfig/ does not exist, PKG_CONFIG_PATH is unchanged."""
+        monkeypatch.setattr(
+            "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
+        )
+        monkeypatch.setenv("PKG_CONFIG_PATH", "/original/path")
+
+        ctx = BuildContext()
+        _setup_pkg_config_overrides(ctx)
+
+        assert os.environ["PKG_CONFIG_PATH"] == "/original/path"
+
+    def test_works_when_pkg_config_path_unset(self, monkeypatch, tmp_path):
+        """When PKG_CONFIG_PATH is not set, sets it to just the override dir."""
+        pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
+        pkgconfig_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(
+            "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
+        )
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+
+        ctx = BuildContext()
+        _setup_pkg_config_overrides(ctx)
+
+        assert os.environ["PKG_CONFIG_PATH"] == str(pkgconfig_dir)
+
+    def test_idempotency(self, monkeypatch, tmp_path):
+        """Calling twice does not duplicate the path in PKG_CONFIG_PATH."""
+        pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
+        pkgconfig_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(
+            "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
+        )
+        monkeypatch.setenv("PKG_CONFIG_PATH", "/existing/path")
+
+        ctx = BuildContext()
+        _setup_pkg_config_overrides(ctx)
+        first_value = os.environ["PKG_CONFIG_PATH"]
+
+        _setup_pkg_config_overrides(ctx)
+        second_value = os.environ["PKG_CONFIG_PATH"]
+
+        assert first_value == second_value
+
+    def test_verbose_output(self, monkeypatch, tmp_path, capsys):
+        """Verbose >= 4 prints the override path."""
+        pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
+        pkgconfig_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(
+            "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
+        )
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+
+        ctx = BuildContext()
+        _setup_pkg_config_overrides(ctx, verbose=4)
+
+        captured = capsys.readouterr()
+        assert "Prepended project pkg-config overrides" in captured.out
+        assert str(pkgconfig_dir) in captured.out

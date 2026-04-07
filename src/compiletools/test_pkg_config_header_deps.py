@@ -88,10 +88,9 @@ class TestPkgConfigHeaderDeps(BaseCompileToolsTestCase):
         try:
             os.chdir(self.test_dir)
 
-            args = compiletools.apptools.parseargs(cap, argv)
-
             # Create headerdeps and magicflags
             ctx = BuildContext()
+            args = compiletools.apptools.parseargs(cap, argv, context=ctx)
             headerdeps = compiletools.headerdeps.create(args, context=ctx)
             magicflags = compiletools.magicflags.create(args, headerdeps, context=ctx)
 
@@ -142,10 +141,9 @@ class TestPkgConfigHeaderDeps(BaseCompileToolsTestCase):
         try:
             os.chdir(self.test_dir)
 
-            args = compiletools.apptools.parseargs(cap, argv)
-
             # First pass - extract flags with nested
             ctx1 = BuildContext()
+            args = compiletools.apptools.parseargs(cap, argv, context=ctx1)
             headerdeps1 = compiletools.headerdeps.create(args, context=ctx1)
             magicflags1 = compiletools.magicflags.create(args, headerdeps1, context=ctx1)
             flags1 = magicflags1.parse(str(self.source_file.resolve()))

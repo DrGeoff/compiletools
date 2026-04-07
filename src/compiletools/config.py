@@ -18,7 +18,9 @@ def main(argv=None):
     if argv is None:
         # Output of stdout is done via increasing the verbosity
         sys.argv.append("-vvv")
-    compiletools.apptools.parseargs(cap, argv)
+    from compiletools.build_context import BuildContext
+
+    compiletools.apptools.parseargs(cap, argv, context=BuildContext())
 
     # Note that when the "--write-out-config-file" is in effect that
     # we never get to this print.  configargparse exits before this which is

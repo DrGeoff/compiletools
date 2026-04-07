@@ -550,10 +550,10 @@ def HeaderDepsTestContext(argv, config_extralines=None):
         ignore_unknown_config_file_keys=True,
     )
     compiletools.headerdeps.add_arguments(cap)
-    args = compiletools.apptools.parseargs(cap, argv)
 
     # Create headerdeps object with fresh BuildContext
     ctx = BuildContext()
+    args = compiletools.apptools.parseargs(cap, argv, context=ctx)
     headerdeps = compiletools.headerdeps.create(args, context=ctx)
     yield headerdeps
 
@@ -642,8 +642,8 @@ def headerdeps_result(filename, kind="direct", cppflags=None, include=None, extr
             )
             compiletools.headerdeps.add_arguments(cap)
             argv = ["--config=" + temp_config_name, f"--headerdeps={kind}", "--include", include] + extra_args
-            args = compiletools.apptools.parseargs(cap, argv)
             ctx = BuildContext()
+            args = compiletools.apptools.parseargs(cap, argv, context=ctx)
             h = compiletools.headerdeps.create(args, context=ctx)
             return set(h.process(filename, frozenset()))
 

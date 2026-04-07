@@ -255,7 +255,7 @@ class TestCake(BaseCompileToolsTestCase):
         argv = self._create_argv()
         cap = compiletools.apptools.create_parser("test cake", argv=argv)
         compiletools.cake.Cake.add_arguments(cap)
-        args = compiletools.apptools.parseargs(cap, argv, verbose=0)
+        args = compiletools.apptools.parseargs(cap, argv, verbose=0, context=BuildContext())
         nmr = compiletools.namer.Namer(args, context=BuildContext())
 
         # These are the basic filenames
@@ -570,7 +570,7 @@ class TestCake(BaseCompileToolsTestCase):
         cap = compiletools.apptools.create_parser("test cake", argv=argv)
         compiletools.cake.Cake.add_arguments(cap)
         compiletools.cake.Cake.registercallback()
-        return compiletools.apptools.parseargs(cap, argv)
+        return compiletools.apptools.parseargs(cap, argv, context=BuildContext())
 
     def test_copyexes_with_output_filename(self):
         """Test _copyexes when args.output is set with a filename target."""
@@ -813,7 +813,7 @@ class TestCake(BaseCompileToolsTestCase):
             cap = compiletools.apptools.create_parser("test", argv=argv)
             compiletools.cake.Cake.add_arguments(cap)
             compiletools.cake.Cake.registercallback()
-            args = compiletools.apptools.parseargs(cap, argv)
+            args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
 
             cake = compiletools.cake.Cake(args)
             with patch.object(cake, "_call_backend"):
@@ -843,7 +843,7 @@ class TestCake(BaseCompileToolsTestCase):
             cap = compiletools.apptools.create_parser("test", argv=argv)
             compiletools.cake.Cake.add_arguments(cap)
             compiletools.cake.Cake.registercallback()
-            args = compiletools.apptools.parseargs(cap, argv)
+            args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
 
             cake = compiletools.cake.Cake(args)
             with patch.object(cake, "_call_backend"):

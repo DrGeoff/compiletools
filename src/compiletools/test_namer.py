@@ -27,7 +27,7 @@ def test_executable_pathname():
         argv = ["--no-git-root"]
         compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
         compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
-        args = compiletools.apptools.parseargs(cap, argv)
+        args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
         namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=BuildContext())
         exename = namer.executable_pathname("/home/user/code/my.cpp")
         assert exename == "bin/gcc.debug/my"
@@ -70,8 +70,8 @@ def test_object_name_with_dependencies():
             argv = ["--no-git-root"]
             compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
             compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
-            args = compiletools.apptools.parseargs(cap, argv)
             ctx = BuildContext()
+            args = compiletools.apptools.parseargs(cap, argv, context=ctx)
             namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=ctx)
 
             # Test with no dependencies
@@ -155,7 +155,7 @@ def test_dep_hash_xor_properties():
             argv = ["--no-git-root"]
             compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
             compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
-            args = compiletools.apptools.parseargs(cap, argv)
+            args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
             namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=BuildContext())
 
             # Test 1: XOR commutativity A⊕B = B⊕A (order-independent via sorting)
@@ -212,7 +212,7 @@ def test_dep_hash_handles_missing_generated_headers():
             argv = ["--no-git-root"]
             compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
             compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
-            args = compiletools.apptools.parseargs(cap, argv)
+            args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
             namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=BuildContext())
 
             missing_gen = os.path.join(tmpdir, "generated.h")
@@ -279,8 +279,8 @@ def test_source_magic_produces_different_hash_with_different_flags():
                 )
                 compiletools.hunter.add_arguments(cap)
                 argv = [f"--append-CPPFLAGS={cppflags_value}", "-q"]
-                args = compiletools.apptools.parseargs(cap, argv)
                 ctx = BuildContext()
+                args = compiletools.apptools.parseargs(cap, argv, context=ctx)
                 hdeps = compiletools.headerdeps.create(args, context=ctx)
                 magic = compiletools.magicflags.create(args, hdeps, context=ctx)
                 return compiletools.hunter.Hunter(args, hdeps, magic, context=ctx), magic
@@ -368,7 +368,7 @@ def test_different_cppflags_produce_different_object_names():
             argv = ["--no-git-root"]
             compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
             compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
-            args = compiletools.apptools.parseargs(cap, argv)
+            args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
             namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=BuildContext())
 
             dep_hash = namer.compute_dep_hash([])

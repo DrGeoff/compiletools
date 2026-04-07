@@ -13,10 +13,10 @@ def main(argv=None):
 
     # This will add the common arguments as a side effect
     compiletools.headerdeps.add_arguments(cap)
-    args = compiletools.apptools.parseargs(cap, argv)
     from compiletools.build_context import BuildContext
 
     context = BuildContext()
+    args = compiletools.apptools.parseargs(cap, argv, context=context)
     hh = compiletools.headerdeps.CppHeaderDeps(args, context=context)
 
     if not compiletools.wrappedos.isfile(args.filename[0]):

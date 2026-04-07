@@ -231,10 +231,10 @@ def main(argv=None):
     cap = compiletools.apptools.create_parser("Find C/C++ files with main functions and unit tests", argv=argv)
     compiletools.findtargets.add_arguments(cap)
 
-    args = compiletools.apptools.parseargs(cap, argv)
     from compiletools.build_context import BuildContext
 
     context = BuildContext()
+    args = compiletools.apptools.parseargs(cap, argv, context=context)
     findtargets = FindTargets(args, context=context)
 
     styleclass = globals()[args.style.title() + "Style"]

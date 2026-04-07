@@ -48,6 +48,7 @@ class TestFindTargetsModule:
             "nestedconfig/nc.cpp",
             "nestedconfig/subdir/nc.cpp",
             "pkgconfig/main.cpp",
+            "project_pkgconfig_override/main.cpp",
             "simple/helloworld_c.c",
             "simple/helloworld_cpp.cpp",
             "calculator/main.cpp",
@@ -98,7 +99,7 @@ class TestFindTargetsModule:
             argv.append("--disable-tests")
         if disable_exes:
             argv.append("--disable-exes")
-        args = compiletools.apptools.parseargs(cap, argv=argv)
+        args = compiletools.apptools.parseargs(cap, argv=argv, context=BuildContext())
         findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir(), context=BuildContext())
         executabletargets, testtargets = findtargets(path=uth.cakedir())
         assert expectedexes == set(executabletargets)
@@ -195,7 +196,7 @@ class TestFindTargetsProcess:
         )
         compiletools.findtargets.add_arguments(cap)
         argv = ["--shorten"]
-        args = compiletools.apptools.parseargs(cap, argv=argv)
+        args = compiletools.apptools.parseargs(cap, argv=argv, context=BuildContext())
         findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir(), context=BuildContext())
 
         # Set up args for process()
@@ -220,7 +221,7 @@ class TestFindTargetsProcess:
         )
         compiletools.findtargets.add_arguments(cap)
         argv = ["--shorten"]
-        args = compiletools.apptools.parseargs(cap, argv=argv)
+        args = compiletools.apptools.parseargs(cap, argv=argv, context=BuildContext())
         args.verbose = 2
         findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir(), context=BuildContext())
 
@@ -252,7 +253,7 @@ class TestFindTargetsNoExemarkers:
         )
         compiletools.findtargets.add_arguments(cap)
         argv = ["--shorten"]
-        args = compiletools.apptools.parseargs(cap, argv=argv)
+        args = compiletools.apptools.parseargs(cap, argv=argv, context=BuildContext())
         args.exemarkers = None  # Force None
         findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir(), context=BuildContext())
         try:
@@ -290,7 +291,7 @@ class TestFindTargetsOsWalkFallback:
             )
             compiletools.findtargets.add_arguments(cap)
             argv = ["--shorten"]
-            args = compiletools.apptools.parseargs(cap, argv=argv)
+            args = compiletools.apptools.parseargs(cap, argv=argv, context=BuildContext())
             findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir(), context=BuildContext())
 
             # Mock get_tracked_files to return empty dict (non-git)

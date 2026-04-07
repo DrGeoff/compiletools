@@ -31,12 +31,11 @@ def main(argv=None):
     # Make-specific arguments
     MakefileBackend.add_arguments(cap)
 
-    args = compiletools.apptools.parseargs(cap, argv)
-
     try:
         from compiletools.build_context import BuildContext
 
         context = BuildContext()
+        args = compiletools.apptools.parseargs(cap, argv, context=context)
         headerdeps = compiletools.headerdeps.create(args, context=context)
         magicparser = compiletools.magicflags.create(args, headerdeps, context=context)
         hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=context)

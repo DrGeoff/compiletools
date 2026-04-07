@@ -1153,10 +1153,10 @@ def main(argv=None):
     styles = [st[:-5].lower() for st in dict(globals()) if st.endswith("Style")]
     cap.add("--style", choices=styles, default="pretty", help="Output formatting style")
 
-    args = compiletools.apptools.parseargs(cap, argv)
     from compiletools.build_context import BuildContext
 
     context = BuildContext()
+    args = compiletools.apptools.parseargs(cap, argv, context=context)
     headerdeps = compiletools.headerdeps.create(args, context=context)
     magicparser = create(args, headerdeps, context=context)
 

@@ -66,13 +66,13 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
         sample_dir = os.path.join(uth.samplesdir(), "transitive_cache_bug")
         engine_dir = os.path.join(sample_dir, "engine")
         argv = ["--headerdeps", "direct", "--INCLUDE", sample_dir, "--INCLUDE", engine_dir, "-q"]
-        args = compiletools.apptools.parseargs(cap, argv)
 
         # Clear module-level caches to start fresh
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
 
         # Create DirectHeaderDeps instance
         ctx = BuildContext()
+        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
         deps = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
 
         # Process task_scheduler.cpp
@@ -121,13 +121,13 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
         sample_dir = os.path.join(uth.samplesdir(), "transitive_cache_bug")
         engine_dir = os.path.join(sample_dir, "engine")
         argv = ["--headerdeps", "direct", "--INCLUDE", sample_dir, "--INCLUDE", engine_dir, "-q"]
-        args = compiletools.apptools.parseargs(cap, argv)
 
         # Clear module-level caches to start fresh
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
 
         # Use SINGLE DirectHeaderDeps instance for all files (like ct-cake does)
         ctx = BuildContext()
+        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
         deps = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
 
         # Process files in alphabetical order (typical make behavior)
@@ -177,7 +177,6 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
         sample_dir = os.path.join(uth.samplesdir(), "transitive_cache_bug")
         engine_dir = os.path.join(sample_dir, "engine")
         argv = ["--headerdeps", "direct", "--magic", "direct", "--INCLUDE", sample_dir, "--INCLUDE", engine_dir, "-q"]
-        args = compiletools.apptools.parseargs(cap, argv)
 
         # Clear all caches
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
@@ -185,6 +184,7 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
 
         # Create Hunter with headerdeps and magicflags (like ct-cake does)
         ctx = BuildContext()
+        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
         headerdeps = compiletools.headerdeps.create(args, context=ctx)
         magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
         hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
@@ -228,7 +228,7 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
         sample_dir = os.path.join(uth.samplesdir(), "transitive_cache_bug")
         engine_dir = os.path.join(sample_dir, "engine")
         argv = ["--headerdeps", "direct", "--INCLUDE", sample_dir, "--INCLUDE", engine_dir, "-q"]
-        args = compiletools.apptools.parseargs(cap, argv)
+        args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
 
         task_scheduler = self._get_engine_file("systems", "task_scheduler.cpp")
         audio_system = self._get_engine_file("systems", "audio_system.cpp")

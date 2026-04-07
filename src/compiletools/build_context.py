@@ -65,3 +65,6 @@ class BuildContext:
 
         # -- git_sha_report state --
         self.repo_has_symlinks: bool | None = None
+
+        # -- apptools pkg-config state --
+        self.pkg_config_overrides_applied: bool = False

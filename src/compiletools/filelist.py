@@ -170,10 +170,10 @@ class Filelist:
 def main(argv=None):
     cap = compiletools.apptools.create_parser("Generate file lists for packaging", argv=argv)
     Filelist.add_arguments(cap)
-    args = compiletools.apptools.parseargs(cap, argv)
     from compiletools.build_context import BuildContext
 
     context = BuildContext()
+    args = compiletools.apptools.parseargs(cap, argv, context=context)
     headerdeps = compiletools.headerdeps.create(args, context=context)
     magicparser = compiletools.magicflags.create(args, headerdeps, context=context)
     hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=context)
