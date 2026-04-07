@@ -25,6 +25,13 @@ submission, distributing compile rules across an HPC cluster:
 5. Run link/library rules locally (they are few, fast, and serial-dependent).
 6. Save traces.
 
+Assumes a shared network filesystem (GPFS, Lustre, NFS, etc.) visible to
+both the submission node and all compute nodes — source files, object
+directories, and the working directory must be accessible at the same
+paths on every node.  The implementation accounts for metadata-visibility
+lag common on network filesystems (fsync before close, polling for output
+files after job completion).
+
 The dependency graph is static (pre-computed by Hunter), not dynamic as in the
 original Shake (which uses monadic tasks for dynamic dependency discovery).
 This is sufficient because compiletools resolves all dependencies at a higher
@@ -623,11 +630,12 @@ class SlurmBackend(ShakeBackend):
 
         self._cleanup_slurm_logs()
 
-        # GPFS metadata barrier: sacct may report COMPLETED before the
-        # output files are visible on the submission node (close-to-open
-        # consistency lag).  Poll briefly so Phase 5 link steps don't fail
-        # with missing .o files.  Only needed when link/library rules will
-        # consume the compiled outputs.
+        # Network filesystem metadata barrier: sacct may report COMPLETED
+        # before the output files are visible on the submission node
+        # (close-to-open consistency lag on GPFS, Lustre, NFS, etc.).
+        # Poll briefly so Phase 5 link steps don't fail with missing .o
+        # files.  Only needed when link/library rules will consume the
+        # compiled outputs.
         has_link_rules = any(
             r.rule_type not in ("phony", "mkdir", "compile", "clean")
             for r in graph.rules
@@ -723,7 +731,8 @@ class SlurmBackend(ShakeBackend):
                 fc.write(shlex.join(_flatten_command(rule.command)) + "\n")
                 fo.write(rule.output + "\n")
             # Flush to OS before closing so the data is visible on other nodes
-            # (GPFS close-to-open consistency requires the writer to flush).
+            # (network filesystem close-to-open consistency requires the
+            # writer to flush).
             fc.flush()
             fo.flush()
             os.fsync(fc.fileno())
@@ -962,9 +971,10 @@ class SlurmBackend(ShakeBackend):
     def _wait_for_output_files(self, rules: list[BuildRule], timeout: float = 30.0) -> None:
         """Wait for compiled output files to become visible on this node.
 
-        On GPFS, sacct may report a job as COMPLETED before the output file
-        metadata has propagated to the submission node.  This polls briefly
-        so that subsequent link steps don't fail with missing .o files.
+        On network filesystems, sacct may report a job as COMPLETED before
+        the output file metadata has propagated to the submission node.
+        This polls briefly so that subsequent link steps don't fail with
+        missing .o files.
         """
         missing = [r for r in rules if not os.path.exists(r.output)]
         if not missing:
@@ -980,7 +990,7 @@ class SlurmBackend(ShakeBackend):
         if missing:
             names = ", ".join(os.path.basename(r.output) for r in missing[:5])
             logger.warning(
-                "Output files not visible after %.0fs (GPFS metadata lag?): %s",
+                "Output files not visible after %.0fs (network filesystem metadata lag?): %s",
                 timeout,
                 names,
             )
@@ -992,7 +1002,8 @@ class SlurmBackend(ShakeBackend):
         """Run a link/library/copy rule locally, with CA short-circuit.
 
         Uses FileLock around CA target creation to prevent races when
-        concurrent ct-cake processes share the same objdir (e.g. on GPFS).
+        concurrent ct-cake processes share the same objdir on a network
+        filesystem.
         """
         if rule.command is None:
             return
