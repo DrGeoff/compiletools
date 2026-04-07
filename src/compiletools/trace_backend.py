@@ -156,6 +156,20 @@ def _run_subprocess(cmd: list[str], original_cmd: list[str]) -> subprocess.Compl
     return result
 
 
+def _parse_slurm_elapsed(elapsed_str: str) -> float:
+    """Parse sacct Elapsed field (HH:MM:SS or D-HH:MM:SS) to seconds."""
+    days = 0
+    if "-" in elapsed_str:
+        day_part, elapsed_str = elapsed_str.split("-", 1)
+        days = int(day_part)
+    parts = elapsed_str.split(":")
+    if len(parts) == 3:
+        return days * 86400 + int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+    if len(parts) == 2:
+        return days * 86400 + int(parts[0]) * 60 + float(parts[1])
+    return float(elapsed_str)
+
+
 def _make_trace_entry(rule: BuildRule, context, output_hash: str | None = None) -> TraceEntry:
     """Build a TraceEntry for a successfully executed rule.
 
@@ -338,6 +352,7 @@ class ShakeBackend(BuildBackend):
 
     def _execute_rule(self, rule: BuildRule, target: str, flat_cmd: list[str], cmd: list[str]) -> None:
         """Run the subprocess for a single build rule (called from a thread)."""
+        start = time.monotonic()
         if rule.rule_type == "compile":
             cmd_without_output = flat_cmd[:-2]  # remove [-o, target]
             file_lock = FileLock(target, self.args)
@@ -362,6 +377,20 @@ class ShakeBackend(BuildBackend):
         else:
             with FileLock(target, self.args):
                 _run_subprocess(flat_cmd, cmd)
+
+        # Record per-rule timing
+        elapsed = time.monotonic() - start
+        timer = self._timer
+        if timer:
+            source = rule.inputs[0] if rule.inputs else ""
+            timer.record_rule(
+                rule_type=rule.rule_type,
+                target=target,
+                source=source,
+                elapsed_s=elapsed,
+                start_s=start,
+                end_s=start + elapsed,
+            )
 
     @staticmethod
     def _atomic_compile_no_lock(target: str, compile_cmd: list[str]) -> subprocess.CompletedProcess:
@@ -594,16 +623,30 @@ class SlurmBackend(ShakeBackend):
 
         self._cleanup_slurm_logs()
 
+        # Collect per-job timing from Slurm accounting
+        self._collect_timing(index_map)
+
         # Phase 4: record traces for successfully built compile rules
         for rule in to_submit:
             if os.path.exists(rule.output):
                 traces.put(rule.output, _make_trace_entry(rule, self.context))
 
         # Phase 5: run link/library/other non-compile rules locally in graph order
+        timer = self._timer
         for rule in graph.rules:
             if rule.rule_type in ("phony", "mkdir", "compile", "clean"):
                 continue
+            start = time.monotonic()
             self._run_local(rule, traces)
+            if timer:
+                elapsed = time.monotonic() - start
+                source = rule.inputs[0] if rule.inputs else ""
+                timer.record_rule(
+                    rule_type=rule.rule_type,
+                    target=rule.output,
+                    source=source,
+                    elapsed_s=elapsed,
+                )
 
         traces.save()
         self._record_link_signatures(graph)
@@ -712,6 +755,57 @@ class SlurmBackend(ShakeBackend):
             cmd += ["--account", self.args.slurm_account]
         cmd += ["--wrap", wrap]
         return subprocess.check_output(cmd, text=True).strip()
+
+    def _collect_timing(self, index_map: dict[str, list[BuildRule]]) -> None:
+        """Collect per-job timing from Slurm accounting via sacct."""
+        timer = self._timer
+        if not timer or not index_map:
+            return
+        for array_job_id, rules in index_map.items():
+            try:
+                out = subprocess.check_output(
+                    [
+                        "sacct",
+                        "-j",
+                        array_job_id,
+                        "--format=JobID,Elapsed,State",
+                        "--noheader",
+                        "--parsable2",
+                    ],
+                    text=True,
+                )
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                continue
+            for line in out.splitlines():
+                parts = line.strip().split("|")
+                if len(parts) < 3:
+                    continue
+                jid = parts[0]
+                if "." in jid:
+                    continue  # skip sub-steps
+                elapsed_str = parts[1]
+                state = parts[2].split()[0]
+                if state != "COMPLETED":
+                    continue
+                # Parse task index from job ID (format: "array_job_id_index")
+                jid_parts = jid.rsplit("_", 1)
+                if len(jid_parts) != 2:
+                    continue
+                try:
+                    task_idx = int(jid_parts[1])
+                except ValueError:
+                    continue
+                if task_idx >= len(rules):
+                    continue
+                rule = rules[task_idx]
+                elapsed_s = _parse_slurm_elapsed(elapsed_str)
+                source = rule.inputs[0] if rule.inputs else ""
+                timer.record_rule(
+                    rule_type=rule.rule_type,
+                    target=rule.output,
+                    source=source,
+                    elapsed_s=elapsed_s,
+                )
 
     def _cleanup_slurm_logs(self) -> None:
         """Remove slurm log files from objdir when verbosity is low."""
