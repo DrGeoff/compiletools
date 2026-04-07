@@ -201,8 +201,8 @@ class TestNinjaFileLocking:
         # The compile command should appear after the -- separator
         assert "-- g++ -O2 -c foo.cpp" in content
 
-    def test_compile_wrapped_with_flock_strategy(self):
-        """Compile commands use flock strategy on local filesystems."""
+    def test_compile_wrapped_with_native_flock(self):
+        """Compile commands use native flock binary on local filesystems."""
         args = self._make_args(file_locking=True, sleep_interval_flock_fallback=0.03)
         hunter = MagicMock()
         backend = NinjaBackend(args=args, hunter=hunter)
@@ -210,6 +210,25 @@ class TestNinjaFileLocking:
         with (
             patch("compiletools.build_backend.check_lock_helper_available", return_value=True),
             patch("compiletools.filesystem_utils.get_filesystem_type", return_value="ext4"),
+            patch("compiletools.build_backend._native_flock_available", return_value=True),
+        ):
+            buf = io.StringIO()
+            backend.generate(_compile_graph(), output=buf)
+            content = buf.getvalue()
+
+        assert "flock " in content
+        assert "ct-lock-helper" not in content
+
+    def test_compile_wrapped_with_flock_fallback(self):
+        """Falls back to ct-lock-helper when native flock is unavailable."""
+        args = self._make_args(file_locking=True, sleep_interval_flock_fallback=0.03)
+        hunter = MagicMock()
+        backend = NinjaBackend(args=args, hunter=hunter)
+
+        with (
+            patch("compiletools.build_backend.check_lock_helper_available", return_value=True),
+            patch("compiletools.filesystem_utils.get_filesystem_type", return_value="ext4"),
+            patch("compiletools.build_backend._native_flock_available", return_value=False),
         ):
             buf = io.StringIO()
             backend.generate(_compile_graph(), output=buf)

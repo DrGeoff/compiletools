@@ -263,6 +263,157 @@ class TestBackendBuildApplication(BaseCompileToolsTestCase):
             )
 
 
+class TestBackendBuildPCH(BaseCompileToolsTestCase):
+    """Build a PCH-enabled project with each available backend."""
+
+    @uth.requires_functional_compiler
+    @uth.requires_backend_tool()
+    @pytest.mark.parametrize("backend_name", available_backends())
+    def test_build_pch(self, backend_name, tmp_path, monkeypatch):
+        """Build pch sample with each registered backend."""
+        if backend_name == "slurm":
+            pytest.skip("Slurm PCH test not supported (requires shared filesystem)")
+
+        with uth.ParserContext():
+            # Copy PCH sample files to temp dir
+            pch_sample = os.path.join(uth.samplesdir(), "pch")
+            for f in os.listdir(pch_sample):
+                shutil.copy2(os.path.join(pch_sample, f), tmp_path)
+
+            source_path = os.path.realpath(os.path.join(tmp_path, "pch_user.cpp"))
+            objdir = os.path.join(str(tmp_path), "obj")
+            bindir = os.path.join(str(tmp_path), "bin")
+            argv = [
+                "--include", str(tmp_path),
+                "--objdir", objdir,
+                "--bindir", bindir,
+                source_path,
+            ]
+
+            cap = compiletools.apptools.create_parser("PCH integration test", argv=argv)
+            _add_backend_arguments(cap)
+            ctx = BuildContext()
+            args = compiletools.apptools.parseargs(cap, argv, context=ctx)
+            headerdeps = compiletools.headerdeps.create(args, context=ctx)
+            magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
+            hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
+
+            BackendClass = get_backend_class(backend_name)
+            backend = BackendClass(args=args, hunter=hunter, context=ctx)
+            graph = backend.build_graph()
+
+            # Verify graph has a .gch compile rule
+            compile_rules = graph.rules_by_type("compile")
+            gch_rules = [r for r in compile_rules if r.output.endswith(".gch")]
+            assert len(gch_rules) >= 1, (
+                f"{backend_name}: expected a .gch compile rule, got outputs: "
+                f"{[r.output for r in compile_rules]}"
+            )
+            gch_rule = gch_rules[0]
+            assert "-x" in gch_rule.command
+            assert "c++-header" in gch_rule.command
+
+            # Generate and execute the build
+            os.makedirs(bindir, exist_ok=True)
+
+            if backend_name in ("shake",):
+                backend.generate(graph)
+                backend.execute("build")
+            elif backend_name == "cmake":
+                build_file = os.path.join(str(tmp_path), "CMakeLists.txt")
+                with open(build_file, "w") as f:
+                    backend.generate(graph, output=f)
+                cmake_build_dir = os.path.join(str(tmp_path), "cmake-build")
+                os.makedirs(cmake_build_dir, exist_ok=True)
+                result = subprocess.run(
+                    ["cmake", "-S", str(tmp_path), "-B", cmake_build_dir],
+                    cwd=str(tmp_path), capture_output=True, text=True, timeout=30,
+                )
+                assert result.returncode == 0, (
+                    f"cmake configure failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+                )
+                result = subprocess.run(
+                    ["cmake", "--build", cmake_build_dir],
+                    cwd=str(tmp_path), capture_output=True, text=True, timeout=30,
+                )
+                assert result.returncode == 0, (
+                    f"cmake build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+                )
+                for dirpath, _dirs, files in os.walk(cmake_build_dir):
+                    for fname in files:
+                        full = os.path.join(dirpath, fname)
+                        if os.access(full, os.X_OK) and not fname.endswith(".cmake"):
+                            shutil.copy2(full, os.path.join(bindir, fname))
+            elif backend_name == "tup":
+                build_file = os.path.join(str(tmp_path), "Tupfile")
+                with open(build_file, "w") as f:
+                    backend.generate(graph, output=f)
+                subprocess.check_call(["tup", "init"], cwd=str(tmp_path), timeout=10)
+                result = subprocess.run(
+                    ["tup"], cwd=str(tmp_path), capture_output=True, text=True, timeout=30,
+                )
+                assert result.returncode == 0, (
+                    f"tup build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+                )
+            elif backend_name == "bazel":
+                build_file = os.path.join(str(tmp_path), "BUILD.bazel")
+                with open(build_file, "w") as f:
+                    backend.generate(graph, output=f)
+                with open(os.path.join(str(tmp_path), "WORKSPACE"), "w") as f:
+                    f.write("# WORKSPACE generated by compiletools\n")
+                with open(os.path.join(str(tmp_path), "MODULE.bazel"), "w") as f:
+                    f.write('module(name = "compiletools_test")\n')
+                    f.write('bazel_dep(name = "rules_cc", version = "0.1.1")\n')
+                monkeypatch.chdir(str(tmp_path))
+                try:
+                    backend.execute("build")
+                except subprocess.CalledProcessError as e:
+                    stderr = getattr(e, "stderr", "") or ""
+                    if "certificate" in stderr.lower():
+                        pytest.skip(f"bazel TLS error: {stderr[:200]}")
+                    raise
+            else:
+                build_file = os.path.join(str(tmp_path), type(backend).build_filename())
+                with open(build_file, "w") as f:
+                    backend.generate(graph, output=f)
+                if backend_name == "make":
+                    cmd = ["make", "-s", "-j1", "-f", build_file, "build"]
+                elif backend_name == "ninja":
+                    cmd = ["ninja", "-f", build_file, "build"]
+                else:
+                    pytest.skip(f"Don't know how to invoke {backend_name}")
+                result = subprocess.run(
+                    cmd, cwd=str(tmp_path), capture_output=True, text=True, timeout=30,
+                )
+                assert result.returncode == 0, (
+                    f"{backend_name} build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+                )
+
+            # Verify an executable was produced and runs correctly
+            exe_name = "pch_user"
+            candidates = []
+            for dirpath, _dirs, files in os.walk(str(tmp_path)):
+                for f in files:
+                    full = os.path.join(dirpath, f)
+                    if compiletools.utils.is_executable(full) and exe_name in f:
+                        candidates.append(full)
+            assert candidates, (
+                f"{backend_name}: no executable '{exe_name}' found.\n"
+                f"Files in bindir: {list(os.listdir(bindir)) if os.path.isdir(bindir) else 'N/A'}\n"
+                f"Files in objdir: {list(os.listdir(objdir)) if os.path.isdir(objdir) else 'N/A'}"
+            )
+
+            run_result = subprocess.run(
+                [candidates[0]], capture_output=True, text=True, timeout=10,
+            )
+            assert run_result.returncode == 0, (
+                f"{backend_name}: executable failed:\nstdout: {run_result.stdout}\nstderr: {run_result.stderr}"
+            )
+            assert "pch works" in run_result.stdout, (
+                f"{backend_name}: expected 'pch works' in output, got: {run_result.stdout}"
+            )
+
+
 class TestBackendRunTestsDispatch:
     """Verify each non-make backend dispatches execute('runtests') to _run_tests()."""
 

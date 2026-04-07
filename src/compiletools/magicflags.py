@@ -438,6 +438,19 @@ class MagicFlagsBase:
         if magic == sz.Str("READMACROS"):
             return
 
+        # PCH-HEADER=path/to/header.h marks a header for precompilation.
+        # Resolve the path relative to the file containing the annotation,
+        # matching SOURCE semantics.
+        if magic == sz.Str("PCH-HEADER"):
+            if compiletools.wrappedos.isabs_sz(flag):
+                resolved = compiletools.wrappedos.realpath_sz(flag)
+            else:
+                context_dir = compiletools.wrappedos.dirname(filename)
+                resolved = compiletools.wrappedos.realpath_sz(
+                    compiletools.wrappedos.join_sz(sz.Str(context_dir), strip_sz(flag)))
+            flagsforfilename[magic].append(resolved)
+            return
+
         # If the magic was SOURCE then fix up the path in the flag
         if magic == sz.Str("SOURCE"):
             flag = self._handle_source(flag, magic_flag_data, filename, magic)

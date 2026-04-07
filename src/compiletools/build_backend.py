@@ -15,6 +15,7 @@ backend-specific CLI arguments (see MakefileBackend for an example).
 from __future__ import annotations
 
 import abc
+import functools
 import hashlib
 import json
 import os
@@ -151,7 +152,9 @@ def build_obj_info(graph: BuildGraph, *, strip_includes: bool = False) -> dict[s
     obj_info: dict[str, tuple[str, list[str], list[str]]] = {}
     for rule in graph.rules_by_type("compile"):
         source = rule.inputs[0] if rule.inputs else ""
-        headers = rule.inputs[1:] if len(rule.inputs) > 1 else []
+        # Filter out .gch files — they are build artifacts (precompiled headers),
+        # not source files that backends like CMake/Bazel should list.
+        headers = [h for h in rule.inputs[1:] if not h.endswith(".gch")] if len(rule.inputs) > 1 else []
         copts = extract_copts(rule.command, strip_includes=strip_includes) if rule.command else []
         obj_info[rule.output] = (source, headers, copts)
     return obj_info
@@ -390,6 +393,37 @@ class BuildBackend(abc.ABC):
                 self._dynamic_sources.update(self.hunter.required_source_files(source))
         else:
             self._dynamic_sources = set()
+
+        # Discover PCH headers from magic flags and create PCH compile rules
+        import stringzilla as sz
+
+        pch_gch_paths = {}  # header_abs_path -> gch_output_path
+        for filename in all_compile_sources:
+            magicflags = self.hunter.magicflags(filename)
+            for pch_header in magicflags.get(sz.Str("PCH-HEADER"), []):
+                pch_header = str(pch_header)
+                if pch_header not in pch_gch_paths:
+                    pch_gch_paths[pch_header] = _gch_path(pch_header)
+
+        for pch_header, gch_path in pch_gch_paths.items():
+            pch_deps = [pch_header] + sorted(
+                str(d) for d in self.hunter.header_dependencies(pch_header))
+            pch_magicflags = self.hunter.magicflags(pch_header)
+            magic_cpp_flags = pch_magicflags.get(sz.Str("CPPFLAGS"), [])
+            magic_cxx_flags = pch_magicflags.get(sz.Str("CXXFLAGS"), [])
+            pch_cmd = (
+                [self.args.CXX, self.args.CXXFLAGS]
+                + [str(f) for f in magic_cpp_flags]
+                + [str(f) for f in magic_cxx_flags]
+                + ["-x", "c++-header", pch_header, "-o", gch_path]
+            )
+            graph.add_rule(BuildRule(
+                output=gch_path,
+                inputs=pch_deps,
+                command=pch_cmd,
+                rule_type="compile",
+                order_only_deps=[self.args.objdir],
+            ))
 
         for filename in all_compile_sources:
             rule = self._create_compile_rule(filename)
@@ -684,6 +718,13 @@ class BuildBackend(abc.ABC):
         import stringzilla as sz
 
         magicflags = self.hunter.magicflags(filename)
+
+        # Add PCH .gch dependency if this source uses a precompiled header
+        for pch_header in magicflags.get(sz.Str("PCH-HEADER"), []):
+            gch_path = _gch_path(str(pch_header))
+            if gch_path not in prerequisites:
+                prerequisites.append(gch_path)
+
         macro_state_hash = self.hunter.macro_state_hash(filename)
         dep_hash = self.namer.compute_dep_hash(deplist)
         obj_name = self.namer.object_pathname(filename, macro_state_hash, dep_hash)
@@ -839,8 +880,58 @@ class BuildBackend(abc.ABC):
         )
 
 
+def _gch_path(header: str) -> str:
+    """Return the precompiled header output path for a header file."""
+    return header + ".gch"
+
+
+@functools.lru_cache(maxsize=1)
+def _native_flock_available() -> bool:
+    """Check if native flock binary (util-linux) is available."""
+    return shutil.which("flock") is not None
+
+
+def _build_lock_env_prefix(strategy: str, args, filesystem_type: str) -> str:
+    """Build the CT_LOCK_* environment variable prefix for ct-lock-helper.
+
+    Args:
+        strategy: Lock strategy (lockdir, fcntl, cifs, flock)
+        args: Namespace with sleep_interval_lockdir, sleep_interval_cifs,
+              sleep_interval_flock_fallback, lock_warn_interval, lock_cross_host_timeout
+        filesystem_type: Result of filesystem_utils.get_filesystem_type()
+
+    Returns:
+        Space-terminated env var prefix string, or empty string if no vars needed.
+    """
+    import compiletools.filesystem_utils
+
+    env_vars = []
+
+    if strategy == "lockdir":
+        if args.sleep_interval_lockdir is not None:
+            sleep_interval = args.sleep_interval_lockdir
+        else:
+            sleep_interval = compiletools.filesystem_utils.get_lockdir_sleep_interval(filesystem_type)
+        env_vars.append(f"CT_LOCK_SLEEP_INTERVAL={sleep_interval}")
+    elif strategy == "fcntl":
+        pass  # fcntl.lockf() blocks in kernel, no sleep interval needed
+    elif strategy == "cifs":
+        env_vars.append(f"CT_LOCK_SLEEP_INTERVAL_CIFS={args.sleep_interval_cifs}")
+    else:  # flock (fallback when native flock unavailable)
+        env_vars.append(f"CT_LOCK_SLEEP_INTERVAL_FLOCK={args.sleep_interval_flock_fallback}")
+
+    env_vars.append(f"CT_LOCK_WARN_INTERVAL={args.lock_warn_interval}")
+    env_vars.append(f"CT_LOCK_TIMEOUT={args.lock_cross_host_timeout}")
+
+    return " ".join(env_vars) + " " if env_vars else ""
+
+
 def wrap_compile_with_lock(compile_cmd: str, target: str, args, filesystem_type: str) -> str:
-    """Wrap a compile command with ct-lock-helper for file locking.
+    """Wrap a compile command with file locking.
+
+    For flock strategy, uses native ``flock`` binary (util-linux) to avoid
+    the overhead of spawning a Python ct-lock-helper process per compilation.
+    Other strategies (lockdir, fcntl, cifs) continue to use ct-lock-helper.
 
     Shared by Make and Ninja backends. When args.file_locking is False,
     returns the command with ``-o target`` appended unchanged.
@@ -863,31 +954,20 @@ def wrap_compile_with_lock(compile_cmd: str, target: str, args, filesystem_type:
 
     strategy = compiletools.filesystem_utils.get_lock_strategy(filesystem_type)
 
-    env_vars = []
+    # Fast path: use native flock binary for flock strategy (avoids Python startup)
+    if strategy == "flock" and _native_flock_available():
+        return f"flock {target} {compile_cmd} -o {target}"
 
-    if strategy == "lockdir":
-        if args.sleep_interval_lockdir is not None:
-            sleep_interval = args.sleep_interval_lockdir
-        else:
-            sleep_interval = compiletools.filesystem_utils.get_lockdir_sleep_interval(filesystem_type)
-        env_vars.append(f"CT_LOCK_SLEEP_INTERVAL={sleep_interval}")
-    elif strategy == "fcntl":
-        pass  # fcntl.lockf() blocks in kernel, no sleep interval needed
-    elif strategy == "cifs":
-        env_vars.append(f"CT_LOCK_SLEEP_INTERVAL_CIFS={args.sleep_interval_cifs}")
-    else:  # flock
-        env_vars.append(f"CT_LOCK_SLEEP_INTERVAL_FLOCK={args.sleep_interval_flock_fallback}")
-
-    env_vars.append(f"CT_LOCK_WARN_INTERVAL={args.lock_warn_interval}")
-    env_vars.append(f"CT_LOCK_TIMEOUT={args.lock_cross_host_timeout}")
-
-    env_prefix = " ".join(env_vars) + " " if env_vars else ""
-
+    env_prefix = _build_lock_env_prefix(strategy, args, filesystem_type)
     return f"{env_prefix}ct-lock-helper compile --target={target} --strategy={strategy} -- {compile_cmd}"
 
 
 def wrap_link_with_lock(link_cmd: str, target: str, args, filesystem_type: str) -> str:
-    """Wrap a link/ar command with ct-lock-helper for file locking.
+    """Wrap a link/ar command with file locking.
+
+    For flock strategy, uses native ``flock`` binary (util-linux) to avoid
+    the overhead of spawning a Python ct-lock-helper process per link.
+    Other strategies (lockdir, fcntl, cifs) continue to use ct-lock-helper.
 
     Unlike wrap_compile_with_lock, the command is passed through unchanged
     (including any -o flag) since atomic_link does not manipulate output paths.
@@ -908,26 +988,11 @@ def wrap_link_with_lock(link_cmd: str, target: str, args, filesystem_type: str) 
 
     strategy = compiletools.filesystem_utils.get_lock_strategy(filesystem_type)
 
-    env_vars = []
+    # Fast path: use native flock binary for flock strategy (avoids Python startup)
+    if strategy == "flock" and _native_flock_available():
+        return f"flock {target} {link_cmd}"
 
-    if strategy == "lockdir":
-        if args.sleep_interval_lockdir is not None:
-            sleep_interval = args.sleep_interval_lockdir
-        else:
-            sleep_interval = compiletools.filesystem_utils.get_lockdir_sleep_interval(filesystem_type)
-        env_vars.append(f"CT_LOCK_SLEEP_INTERVAL={sleep_interval}")
-    elif strategy == "fcntl":
-        pass  # fcntl.lockf() blocks in kernel, no sleep interval needed
-    elif strategy == "cifs":
-        env_vars.append(f"CT_LOCK_SLEEP_INTERVAL_CIFS={args.sleep_interval_cifs}")
-    else:  # flock
-        env_vars.append(f"CT_LOCK_SLEEP_INTERVAL_FLOCK={args.sleep_interval_flock_fallback}")
-
-    env_vars.append(f"CT_LOCK_WARN_INTERVAL={args.lock_warn_interval}")
-    env_vars.append(f"CT_LOCK_TIMEOUT={args.lock_cross_host_timeout}")
-
-    env_prefix = " ".join(env_vars) + " " if env_vars else ""
-
+    env_prefix = _build_lock_env_prefix(strategy, args, filesystem_type)
     return f"{env_prefix}ct-lock-helper link --target={target} --strategy={strategy} -- {link_cmd}"
 
 

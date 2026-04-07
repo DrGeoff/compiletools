@@ -294,6 +294,42 @@ class TestBuildGraphPopulation:
         assert all_rule is not None
         assert "runtests" in all_rule.inputs
 
+    def test_pch_header_creates_gch_compile_rule(self, tmp_path):
+        """PCH-HEADER magic flag creates a compile rule for the .gch file."""
+        import stringzilla as sz
+
+        pch_flags = {
+            "/src/main.cpp": {sz.Str("PCH-HEADER"): [sz.Str("/src/stdafx.h")]},
+            "/src/stdafx.h": {sz.Str("CPPFLAGS"): [sz.Str("-DPCH_ACTIVE")]},
+        }
+        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], CXXFLAGS="-O2")
+        hunter = make_mock_hunter(
+            sources=["/src/main.cpp"],
+            headers=["/src/util.h"],
+            per_file_magicflags=pch_flags,
+        )
+        backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+
+        graph = backend.build_graph()
+
+        # Should have a compile rule producing the .gch file
+        gch_rules = [r for r in graph.rules if r.output.endswith(".gch")]
+        assert len(gch_rules) == 1, f"Expected one .gch rule, got {[r.output for r in gch_rules]}"
+        gch_rule = gch_rules[0]
+        assert gch_rule.rule_type == "compile"
+        assert "-x" in gch_rule.command
+        assert "c++-header" in gch_rule.command
+        assert "/src/stdafx.h" in gch_rule.command
+
+        # PCH rule should include magic CPPFLAGS from the header
+        assert "-DPCH_ACTIVE" in gch_rule.command
+
+        # Source compile rule should depend on the .gch file
+        source_rules = [r for r in graph.rules if r.output.endswith("main.o")]
+        assert len(source_rules) == 1
+        assert gch_rule.output in source_rules[0].inputs
+
 
 class TestRunTests:
     """Test the _run_tests() method."""

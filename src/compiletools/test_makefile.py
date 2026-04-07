@@ -2,6 +2,7 @@
 
 import io
 import os
+import shutil
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -257,7 +258,25 @@ class TestMakefileBackendFileLocking:
         graph = _make_simple_graph(args)
 
         buf = io.StringIO()
-        with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"):
+        with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"), \
+             patch("compiletools.build_backend._native_flock_available", return_value=True):
+            backend._write_makefile(graph, buf)
+        content = buf.getvalue()
+
+        # Native flock binary used instead of ct-lock-helper
+        assert "flock " in content
+        assert "ct-lock-helper" not in content
+
+    def test_compile_with_flock_strategy_fallback(self):
+        """Falls back to ct-lock-helper when native flock binary is unavailable."""
+        args = _make_args(file_locking=True, sleep_interval_flock_fallback=0.03)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        backend._filesystem_type = "ext4"
+        graph = _make_simple_graph(args)
+
+        buf = io.StringIO()
+        with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"), \
+             patch("compiletools.build_backend._native_flock_available", return_value=False):
             backend._write_makefile(graph, buf)
         content = buf.getvalue()
 
@@ -387,7 +406,30 @@ class TestWrapLinkWithLock:
             lock_warn_interval=30,
             lock_cross_host_timeout=600,
         )
-        with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"):
+        with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"), \
+             patch("compiletools.build_backend._native_flock_available", return_value=True):
+            result = wrap_link_with_lock(
+                "g++ -o bin/foo obj/foo.o",
+                "bin/foo",
+                args,
+                "ext4",
+            )
+        # Native flock binary used instead of ct-lock-helper
+        assert result == "flock bin/foo g++ -o bin/foo obj/foo.o"
+        assert "ct-lock-helper" not in result
+
+    def test_wraps_link_with_flock_fallback(self):
+        """Falls back to ct-lock-helper when native flock is unavailable."""
+        from compiletools.build_backend import wrap_link_with_lock
+
+        args = _make_args(
+            file_locking=True,
+            sleep_interval_flock_fallback=0.03,
+            lock_warn_interval=30,
+            lock_cross_host_timeout=600,
+        )
+        with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"), \
+             patch("compiletools.build_backend._native_flock_available", return_value=False):
             result = wrap_link_with_lock(
                 "g++ -o bin/foo obj/foo.o",
                 "bin/foo",
@@ -627,8 +669,8 @@ int main() {
 
                 with open(makefilename[0]) as f:
                     makefile_content = f.read()
-                    assert "ct-lock-helper" in makefile_content, (
-                        "Makefile should use ct-lock-helper (which has set -euo pipefail)"
+                    assert "ct-lock-helper" in makefile_content or "flock " in makefile_content, (
+                        "Makefile should use ct-lock-helper or native flock for file locking"
                     )
 
                 cmd = ["make", "-f"] + makefilename
@@ -638,6 +680,68 @@ int main() {
 
                 combined_output = result.stdout + result.stderr
                 assert "error" in combined_output.lower(), "Compiler error message should be visible in output"
+
+    @uth.requires_functional_compiler
+    def test_pch_header_builds(self):
+        """PCH-HEADER magic flag generates .gch and the executable links correctly."""
+        with uth.TempDirContextWithChange() as tempdir:
+            # Copy PCH sample to temp dir
+            pch_sample = os.path.join(uth.samplesdir(), "pch")
+            for f in os.listdir(pch_sample):
+                shutil.copy2(os.path.join(pch_sample, f), tempdir)
+
+            source = os.path.join(tempdir, "pch_user.cpp")
+            header = os.path.join(tempdir, "stdafx.h")
+            assert os.path.isfile(source)
+            assert os.path.isfile(header)
+
+            with uth.TempConfigContext(tempdir=tempdir) as temp_config_name:
+                with uth.ParserContext():
+                    compiletools.makefile.main(
+                        ["--config=" + temp_config_name, "--no-file-locking", source]
+                    )
+
+                filelist = os.listdir(".")
+                makefilename = [ff for ff in filelist if ff.startswith("Makefile")]
+                assert makefilename, "Makefile should have been generated"
+
+                with open(makefilename[0]) as f:
+                    makefile_content = f.read()
+                assert "c++-header" in makefile_content, (
+                    "Makefile should contain PCH compile rule with -x c++-header"
+                )
+                assert ".gch" in makefile_content, (
+                    "Makefile should reference .gch output"
+                )
+
+                # Build and verify success
+                result = subprocess.run(
+                    ["make", "-f"] + makefilename,
+                    capture_output=True, text=True,
+                )
+                assert result.returncode == 0, (
+                    f"Build should succeed.\nstdout: {result.stdout}\nstderr: {result.stderr}"
+                )
+
+                # Verify the .gch was produced
+                gch_files = []
+                for root, _dirs, files in os.walk(tempdir):
+                    for ff in files:
+                        if ff.endswith(".gch"):
+                            gch_files.append(os.path.join(root, ff))
+                assert gch_files, "Build should have produced a .gch file"
+
+                # Verify the executable was produced and runs
+                exe_found = False
+                for root, _dirs, files in os.walk(tempdir):
+                    for ff in files:
+                        full = os.path.join(root, ff)
+                        if compiletools.utils.is_executable(full) and "pch_user" in ff:
+                            exe_found = True
+                            run_result = subprocess.run([full], capture_output=True, text=True)
+                            assert run_result.returncode == 0
+                            assert "pch works" in run_result.stdout
+                assert exe_found, "Build should have produced the pch_user executable"
 
     def teardown_method(self):
         uth.reset()

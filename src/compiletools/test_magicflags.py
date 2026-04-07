@@ -963,6 +963,41 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert hash1 != hash2, f"CppMagicFlags: different CXXFLAGS should produce different hash: {hash1} vs {hash2}"
 
     @uth.requires_functional_compiler
+    def test_pch_header_resolves_flag_value(self):
+        """PCH-HEADER stores resolved path from flag value, not the containing file."""
+        import stringzilla as sz
+
+        files = uth.write_sources(
+            {
+                "main.cpp": "//#PCH-HEADER=myheader.h\nint main() { return 0; }\n",
+                "myheader.h": "#pragma once\n",
+            }
+        )
+        source = str(files["main.cpp"])
+        header = str(files["myheader.h"])
+
+        result = self._parse_with_magic("direct", source)
+
+        pch_values = result.get(sz.Str("PCH-HEADER"), [])
+        assert len(pch_values) == 1, f"Expected one PCH-HEADER value, got {pch_values}"
+        resolved = str(pch_values[0])
+        assert resolved == header, (
+            f"PCH-HEADER should resolve to header path {header}, got {resolved}"
+        )
+
+    def test_pch_header_from_sample(self):
+        """PCH-HEADER is correctly parsed from the pch sample."""
+        import stringzilla as sz
+
+        source = self._get_sample_path("pch/pch_user.cpp")
+        result = self._parse_with_magic("direct", source)
+
+        pch_values = result.get(sz.Str("PCH-HEADER"), [])
+        assert len(pch_values) == 1, f"Expected one PCH-HEADER, got {pch_values}"
+        resolved = str(pch_values[0])
+        assert resolved.endswith("stdafx.h"), f"PCH-HEADER should point to stdafx.h, got {resolved}"
+        assert os.path.isfile(resolved), f"Resolved PCH header should exist: {resolved}"
+
     def test_cpp_mode_macro_state_hash_captures_per_file_magic(self):
         """CppMagicFlags: per-file magic CPPFLAGS must affect macro_state_hash."""
         files1 = uth.write_sources(
