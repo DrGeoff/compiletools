@@ -261,6 +261,30 @@ class BuildBackend(abc.ABC):
         if obj_dir != exe_dir and os.path.isdir(obj_dir):
             shutil.rmtree(obj_dir)
 
+    def realclean(self, graph: BuildGraph) -> None:
+        """Remove bin/ entirely and selectively clean this build's objects from the shared objdir.
+
+        Unlike clean(), which removes the entire exe_dir and obj_dir trees,
+        realclean() only removes individual build products listed in the graph
+        from the obj_dir.  This is important when obj_dir is a shared location
+        (e.g. shared-objdir/) used by multiple sub-projects -- we must not
+        destroy other sub-projects' objects.
+
+        The exe_dir is still removed entirely since it is per-project.
+        """
+        exe_dir = self.namer.executable_dir()
+        if os.path.isdir(exe_dir):
+            shutil.rmtree(exe_dir)
+
+        # Selectively remove only this build's products from the objdir
+        obj_dir = self.namer.object_dir()
+        if obj_dir != exe_dir and os.path.isdir(obj_dir):
+            for rule in graph.rules:
+                if rule.rule_type in ("compile", "link", "static_library", "shared_library"):
+                    target = rule.output
+                    if os.path.isfile(target):
+                        os.remove(target)
+
     def _copy_built_executables(self, build_output_dir: str, dest_dir: str | None = None) -> None:
         """Copy built executables from a build output dir to dest_dir.
 

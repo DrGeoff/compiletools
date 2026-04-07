@@ -78,6 +78,24 @@ class TestCakeBackendDispatch:
                 cake.process()
                 mock_clean.assert_called_once()
 
+    def test_realclean_calls_backend_realclean_method(self):
+        """--realclean should call backend.realclean(graph) instead of clean()."""
+        with CakeTestContext("ninja", realclean=True) as (cake, tmpdir):
+            cake.args.output = tmpdir + "/out"
+            expected_class = get_backend_class("ninja")
+
+            mock_graph = MagicMock()
+            mock_graph.outputs = {"build", "all"}
+            with (
+                patch.object(expected_class, "build_graph", return_value=mock_graph),
+                patch.object(expected_class, "generate"),
+                patch.object(expected_class, "realclean") as mock_realclean,
+                patch.object(expected_class, "clean") as mock_clean,
+            ):
+                cake.process()
+                mock_realclean.assert_called_once_with(mock_graph)
+                mock_clean.assert_not_called()
+
     def test_backend_dispatch_runs_tests_when_runtests_in_graph(self):
         """When args.tests is set and 'runtests' is in graph.outputs, execute('runtests') should be called."""
         with CakeTestContext("ninja", tests=["test_main.cpp"]) as (cake, _tmpdir):

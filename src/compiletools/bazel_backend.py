@@ -266,3 +266,13 @@ class BazelBackend(BuildBackend):
             except subprocess.CalledProcessError:
                 pass
         super().clean()
+
+    def realclean(self, graph) -> None:
+        """Run bazel clean --expunge, then selectively remove build products."""
+        tool = shutil.which("bazelisk") or shutil.which("bazel")
+        if tool is not None:
+            try:
+                subprocess.check_call([tool, "clean", "--expunge"], text=True)
+            except subprocess.CalledProcessError:
+                pass
+        super().realclean(graph)

@@ -436,6 +436,104 @@ class TestDefaultClean:
         backend.clean()
 
 
+class TestDefaultRealclean:
+    """Test the default realclean() method on BuildBackend."""
+
+    def _make_backend(self, exe_dir, obj_dir):
+        StubClass = make_stub_backend_class()
+        args = MagicMock()
+        hunter = MagicMock()
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = MagicMock()
+        backend.namer.executable_dir.return_value = str(exe_dir)
+        backend.namer.object_dir.return_value = str(obj_dir)
+        return backend
+
+    def test_realclean_removes_exe_dir_entirely(self, tmp_path):
+        """realclean() should rm -rf the exe dir."""
+        exe_dir = tmp_path / "exe"
+        obj_dir = tmp_path / "obj"
+        exe_dir.mkdir()
+        obj_dir.mkdir()
+        (exe_dir / "main").write_text("binary")
+
+        graph = BuildGraph()
+        backend = self._make_backend(exe_dir, obj_dir)
+        backend.realclean(graph)
+
+        assert not exe_dir.exists()
+
+    def test_realclean_selectively_removes_objects(self, tmp_path):
+        """realclean() should only remove objects listed in the build graph."""
+        exe_dir = tmp_path / "exe"
+        obj_dir = tmp_path / "obj"
+        exe_dir.mkdir()
+        obj_dir.mkdir()
+
+        # This build's object
+        our_obj = obj_dir / "main.o"
+        our_obj.write_text("our object")
+        # Another sub-project's object
+        other_obj = obj_dir / "other.o"
+        other_obj.write_text("other object")
+
+        graph = BuildGraph()
+        graph.add_rule(BuildRule(
+            output=str(our_obj),
+            inputs=["main.cpp"],
+            command=["g++", "-c", "main.cpp"],
+            rule_type="compile",
+        ))
+
+        backend = self._make_backend(exe_dir, obj_dir)
+        backend.realclean(graph)
+
+        assert not our_obj.exists(), "our object should be removed"
+        assert other_obj.exists(), "other sub-project's object should be preserved"
+        assert obj_dir.exists(), "shared objdir itself should be preserved"
+
+    def test_realclean_removes_link_outputs(self, tmp_path):
+        """realclean() should also remove link outputs from the graph."""
+        exe_dir = tmp_path / "exe"
+        obj_dir = tmp_path / "obj"
+        exe_dir.mkdir()
+        obj_dir.mkdir()
+
+        linked = obj_dir / "main"
+        linked.write_text("linked binary")
+
+        graph = BuildGraph()
+        graph.add_rule(BuildRule(
+            output=str(linked),
+            inputs=["main.o"],
+            command=["g++", "-o", str(linked), "main.o"],
+            rule_type="link",
+        ))
+
+        backend = self._make_backend(exe_dir, obj_dir)
+        backend.realclean(graph)
+
+        assert not linked.exists()
+
+    def test_realclean_skips_nonexistent_files(self, tmp_path):
+        """realclean() should not error when build products don't exist yet."""
+        exe_dir = tmp_path / "exe"
+        obj_dir = tmp_path / "obj"
+        obj_dir.mkdir()
+
+        graph = BuildGraph()
+        graph.add_rule(BuildRule(
+            output=str(obj_dir / "missing.o"),
+            inputs=["missing.cpp"],
+            command=["g++", "-c", "missing.cpp"],
+            rule_type="compile",
+        ))
+
+        backend = self._make_backend(exe_dir, obj_dir)
+        # Should not raise
+        backend.realclean(graph)
+
+
 class TestAllOutputsCurrent:
     """Test _all_outputs_current pre-check logic."""
 

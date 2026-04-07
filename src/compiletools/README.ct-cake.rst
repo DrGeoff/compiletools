@@ -351,6 +351,13 @@ Common Options
 **--clean**
     Remove all build artifacts.
 
+**--realclean, --real-clean**
+    Remove bin/ entirely and selectively clean this build's objects from
+    the shared objdir. Superset of ``--clean`` -- also removes copied
+    executables from the top-level output directory. Unlike ``--clean``,
+    only removes object files that belong to the current build, preserving
+    other sub-projects' objects in a shared object directory.
+
 **-j, --parallel**
     Number of parallel jobs. Defaults to the output of ``ct-jobs``
     (typically the number of CPU cores). Passed to the selected backend.

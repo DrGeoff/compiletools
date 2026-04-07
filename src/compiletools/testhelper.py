@@ -938,6 +938,7 @@ def CakeTestContext(backend_name="make", **arg_overrides):
             auto=False,
             filelist=False,
             clean=False,
+            realclean=False,
             output=None,
             compilation_database=False,
             makefilename="Makefile",

@@ -163,6 +163,13 @@ class Cake:
         )
 
         cap.add("--clean", action="store_true", help="Aggressively cleanup.")
+        cap.add(
+            "--realclean",
+            "--real-clean",
+            action="store_true",
+            default=False,
+            help="Remove bin/ and selectively clean this build's objects from the shared objdir.",
+        )
 
         cap.add(
             "--backend",
@@ -253,6 +260,23 @@ class Cake:
                         print(os.path.join(outputdir, filename))
                     shutil.copy2(src, outputdir)
 
+    def _clean_topbindir(self):
+        """Remove copied executables from the top-level bin directory."""
+        if self.args.output:
+            try:
+                os.remove(self.args.output)
+            except OSError:
+                pass
+        else:
+            outputdir = self.namer.topbindir()
+            filelist = os.listdir(outputdir)
+            for ff in filelist:
+                filename = os.path.join(outputdir, ff)
+                try:
+                    os.remove(filename)
+                except OSError:
+                    pass
+
     def _call_backend(self):
         """Dispatch to the selected build backend."""
         timer = self.context.timer
@@ -269,23 +293,12 @@ class Cake:
 
         os.makedirs(self.namer.executable_dir(), exist_ok=True)
 
-        if self.args.clean:
+        if getattr(self.args, "realclean", False):
+            backend.realclean(graph)
+            self._clean_topbindir()
+        elif self.args.clean:
             backend.clean()
-            # Remove the extra executables we copied
-            if self.args.output:
-                try:
-                    os.remove(self.args.output)
-                except OSError:
-                    pass
-            else:
-                outputdir = self.namer.topbindir()
-                filelist = os.listdir(outputdir)
-                for ff in filelist:
-                    filename = os.path.join(outputdir, ff)
-                    try:
-                        os.remove(filename)
-                    except OSError:
-                        pass
+            self._clean_topbindir()
         else:
             with timer.phase("build_execution"):
                 backend.execute("build")
