@@ -623,6 +623,18 @@ class SlurmBackend(ShakeBackend):
 
         self._cleanup_slurm_logs()
 
+        # GPFS metadata barrier: sacct may report COMPLETED before the
+        # output files are visible on the submission node (close-to-open
+        # consistency lag).  Poll briefly so Phase 5 link steps don't fail
+        # with missing .o files.  Only needed when link/library rules will
+        # consume the compiled outputs.
+        has_link_rules = any(
+            r.rule_type not in ("phony", "mkdir", "compile", "clean")
+            for r in graph.rules
+        )
+        if to_submit and has_link_rules:
+            self._wait_for_output_files(to_submit)
+
         # Collect per-job timing from Slurm accounting
         self._collect_timing(index_map)
 
@@ -946,6 +958,32 @@ class SlurmBackend(ShakeBackend):
                 time.sleep(poll_interval)
 
         return failures
+
+    def _wait_for_output_files(self, rules: list[BuildRule], timeout: float = 30.0) -> None:
+        """Wait for compiled output files to become visible on this node.
+
+        On GPFS, sacct may report a job as COMPLETED before the output file
+        metadata has propagated to the submission node.  This polls briefly
+        so that subsequent link steps don't fail with missing .o files.
+        """
+        missing = [r for r in rules if not os.path.exists(r.output)]
+        if not missing:
+            return
+
+        deadline = time.monotonic() + timeout
+        interval = 0.1
+        while missing and time.monotonic() < deadline:
+            time.sleep(interval)
+            interval = min(interval * 2, 2.0)
+            missing = [r for r in missing if not os.path.exists(r.output)]
+
+        if missing:
+            names = ", ".join(os.path.basename(r.output) for r in missing[:5])
+            logger.warning(
+                "Output files not visible after %.0fs (GPFS metadata lag?): %s",
+                timeout,
+                names,
+            )
 
     # ------------------------------------------------------------------
     # Local execution for link/library rules

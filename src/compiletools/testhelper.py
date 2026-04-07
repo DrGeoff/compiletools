@@ -6,6 +6,8 @@ import shutil
 import subprocess
 import tempfile
 import textwrap
+import time
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -320,6 +322,27 @@ def create_temp_ct_conf(tempdir, defaultvariant="dbg", extralines=None):
             ff.write(f"{line}\n")
 
 
+def _rmtree_onerror(func, path, exc_info):
+    """Retry handler for shutil.rmtree on distributed filesystems (GPFS/NFS).
+
+    On GPFS, rmtree can fail transiently when files are still being flushed
+    (e.g., Slurm output files). Retry once after a short delay. If the retry
+    also fails, warn instead of raising so test cleanup failures don't mask
+    test results.
+    """
+    exc_type, exc_value, _ = exc_info
+    if exc_type is FileNotFoundError:
+        return  # already gone
+    time.sleep(0.1)
+    try:
+        func(path)
+    except OSError:
+        warnings.warn(
+            f"Failed to clean up temp path during test teardown: {path} ({exc_value})",
+            stacklevel=2,
+        )
+
+
 class TempDirectoryContext:
     """Context manager for temporary directories with optional directory changing.
 
@@ -356,7 +379,7 @@ class TempDirectoryContext:
         if self.change_dir and self._origdir:
             os.chdir(self._origdir)
         if self._tmpdir:
-            shutil.rmtree(self._tmpdir, ignore_errors=True)
+            shutil.rmtree(self._tmpdir, onerror=_rmtree_onerror)
 
 
 # Backward compatibility aliases

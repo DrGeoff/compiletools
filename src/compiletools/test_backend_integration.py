@@ -4,8 +4,10 @@ source files -> Hunter -> BuildGraph -> Backend -> build file -> build tool -> e
 Tests each registered backend end-to-end with a real compiler.
 """
 
+import contextlib
 import io
 import os
+import pathlib
 import shutil
 import subprocess
 
@@ -88,8 +90,26 @@ class TestBackendBuildApplication(BaseCompileToolsTestCase):
     @pytest.mark.parametrize("backend_name", available_backends())
     def test_build_helloworld(self, backend_name, tmp_path, monkeypatch):
         """Build helloworld_cpp.cpp with each registered backend."""
-        with uth.ParserContext():
-            backend, graph, args = _setup_backend_for_source(backend_name, tmp_path)
+        # Slurm submits compile jobs to remote nodes, so the temp dir must
+        # be on a shared filesystem (not node-local scratch).
+        # Note: BaseCompileToolsTestCase.setup_method changes cwd to a local
+        # scratch tmpdir, so we resolve the git root from the test file's
+        # known location on GPFS.
+        if backend_name == "slurm":
+            this_file_dir = os.path.dirname(os.path.abspath(__file__))
+            gpfs_parent = os.path.dirname(
+                subprocess.check_output(
+                    ["git", "rev-parse", "--show-toplevel"],
+                    text=True,
+                    cwd=this_file_dir,
+                ).strip()
+            )
+            slurm_ctx = uth.TempDirContextNoChange(dir=gpfs_parent)
+        else:
+            slurm_ctx = contextlib.nullcontext(str(tmp_path))
+        with slurm_ctx as effective_tmp, uth.ParserContext():
+            effective_tmp = pathlib.Path(effective_tmp)
+            backend, graph, args = _setup_backend_for_source(backend_name, effective_tmp)
 
             # Verify graph has expected structure
             compile_rules = graph.rules_by_type("compile")
@@ -221,7 +241,7 @@ class TestBackendBuildApplication(BaseCompileToolsTestCase):
             if not os.path.exists(exe_path):
                 # Search for it
                 candidates = []
-                for dirpath, _dirs, files in os.walk(str(tmp_path)):
+                for dirpath, _dirs, files in os.walk(str(effective_tmp)):
                     for f in files:
                         full = os.path.join(dirpath, f)
                         if compiletools.utils.is_executable(full) and exe_name in f:
