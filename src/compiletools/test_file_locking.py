@@ -510,9 +510,9 @@ class TestConcurrentLocking:
             p.start()
             processes.append(p)
 
-        # Collect results
+        # Collect results (spawn processes need several seconds each to start)
         results = []
-        timeout = 5
+        timeout = 30
         start = time.time()
         while len(results) < 6 and time.time() - start < timeout:  # 3 acquire + 3 release
             try:
@@ -523,7 +523,7 @@ class TestConcurrentLocking:
 
         # Wait for processes
         for p in processes:
-            p.join(timeout=1)
+            p.join(timeout=10)
             if p.is_alive():
                 p.terminate()
 
