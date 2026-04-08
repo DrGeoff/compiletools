@@ -1,5 +1,4 @@
 import os
-import warnings
 
 import pytest
 import stringzilla as sz
@@ -240,18 +239,35 @@ class TestMergeLdflagsTopoSort:
     def test_single_empty_file(self):
         assert utils.merge_ldflags_with_topo_sort([[]]) == []
 
-    def test_cycle_does_not_crash(self):
-        """Cycles should not crash; break deterministically with a warning."""
+    def test_cycle_raises_error(self):
+        """Cycles should raise ValueError since no valid link order exists."""
         per_file = [
             ["-la", "-lb"],
             ["-lb", "-la"],
         ]
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            result = utils.merge_ldflags_with_topo_sort(per_file)
-        assert "-la" in result
-        assert "-lb" in result
-        assert any("ycle" in str(warning.message) for warning in w)
+        with pytest.raises(ValueError, match="Cyclic library dependency"):
+            utils.merge_ldflags_with_topo_sort(per_file)
+
+    def test_cycle_error_shows_cycle_path(self):
+        """The error message should show the actual cycle path."""
+        per_file = [
+            ["-la", "-lb"],
+            ["-lb", "-lc"],
+            ["-lc", "-la"],
+        ]
+        with pytest.raises(ValueError, match=r"a -> b -> c -> a"):
+            utils.merge_ldflags_with_topo_sort(per_file)
+
+    def test_cycle_error_shows_source_files(self):
+        """When source_files are provided, the error should name them."""
+        per_file = [
+            ["-la", "-lb"],
+            ["-lb", "-la"],
+        ]
+        source_files = ["src/foo.cpp", "src/bar.cpp"]
+        with pytest.raises(ValueError, match="src/foo.cpp") as exc_info:
+            utils.merge_ldflags_with_topo_sort(per_file, source_files=source_files)
+        assert "src/bar.cpp" in str(exc_info.value)
 
     def test_deterministic_output(self):
         """Same input must always produce same output (CA cache requirement)."""

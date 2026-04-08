@@ -443,17 +443,74 @@ def deduplicate_compiler_flags(flags: list[str]) -> list[str]:
     return deduplicated
 
 
-def merge_ldflags_with_topo_sort(per_file_ldflags: list[list]) -> list[str]:
+def _find_cycle(
+    graph: dict[str, set[str]], remaining: set[str]
+) -> list[str]:
+    """Find one cycle in the subgraph induced by *remaining* using DFS.
+
+    Returns a list like [a, b, c, a] showing the cycle path.
+    """
+    visited: set[str] = set()
+    on_stack: set[str] = set()
+    parent: dict[str, str] = {}
+
+    for start in sorted(remaining):  # sorted for determinism
+        if start in visited:
+            continue
+        stack = [start]
+        while stack:
+            node = stack[-1]
+            if node not in visited:
+                visited.add(node)
+                on_stack.add(node)
+            pushed = False
+            for succ in sorted(graph.get(node, [])):
+                if succ not in remaining:
+                    continue
+                if succ not in visited:
+                    parent[succ] = node
+                    stack.append(succ)
+                    pushed = True
+                    break
+                elif succ in on_stack:
+                    # Found a cycle — reconstruct the path
+                    cycle = [succ, node]
+                    cur = node
+                    while cur != succ:
+                        cur = parent[cur]
+                        cycle.append(cur)
+                    cycle.reverse()
+                    return cycle
+            if not pushed:
+                on_stack.discard(node)
+                stack.pop()
+
+    # Should not reach here if remaining is truly cyclic
+    return sorted(remaining) + [sorted(remaining)[0]]  # pragma: no cover
+
+
+def merge_ldflags_with_topo_sort(
+    per_file_ldflags: list[list],
+    source_files: list[str] | None = None,
+) -> list[str]:
     """Merge per-file LDFLAGS using topological sort for -l flag ordering.
 
     Each file's -l flag sequence defines pairwise ordering constraints:
     [-llibnext, -llibbase] means libnext must appear before libbase.
     Non -l flags are deduplicated and placed before the sorted -l flags.
+
+    Raises ValueError if the constraints contain a cycle, since the linker
+    resolves symbols left-to-right and no valid link order exists for
+    cyclic dependencies.
+
+    Args:
+        per_file_ldflags: Per-file lists of LDFLAGS (e.g. ["-llibnext", "-llibbase"]).
+        source_files: Optional parallel list of source file paths (one per entry
+            in per_file_ldflags) used to produce better error messages on cycles.
     """
     if not per_file_ldflags:
         return []
 
-    import warnings
     from collections import defaultdict
 
     non_l_flags: list[str] = []
@@ -482,14 +539,18 @@ def merge_ldflags_with_topo_sort(per_file_ldflags: list[list]) -> list[str]:
     in_degree: dict[str, int] = defaultdict(int)
     all_libs: list[str] = []
     seen_libs: set[str] = set()
+    # Track which source files contributed each edge (for cycle diagnostics)
+    edge_sources: dict[tuple[str, str], list[str]] = defaultdict(list)
 
-    for file_l_names in per_file_l_names:
+    for file_idx, file_l_names in enumerate(per_file_l_names):
         for name in file_l_names:
             if name not in seen_libs:
                 all_libs.append(name)
                 seen_libs.add(name)
         for j in range(len(file_l_names) - 1):
             pred, succ = file_l_names[j], file_l_names[j + 1]
+            if source_files is not None:
+                edge_sources[(pred, succ)].append(source_files[file_idx])
             if succ not in graph[pred]:
                 graph[pred].add(succ)
                 in_degree[succ] = in_degree.get(succ, 0) + 1
@@ -521,15 +582,39 @@ def merge_ldflags_with_topo_sort(per_file_ldflags: list[list]) -> list[str]:
                 next_ready.append(succ)
         queue = sorted(queue + next_ready)
 
-    # Handle cycles
+    # Cycles mean no valid link order exists — error out
     if remaining:
-        cycle_libs = sorted(remaining)
-        warnings.warn(
-            f"Cycle detected in library dependencies: {cycle_libs}. "
-            f"Breaking cycle with alphabetical ordering.",
-            stacklevel=2,
+        cycle_path = _find_cycle(graph, remaining)
+        cycle_str = " -> ".join(cycle_path)
+
+        lines = [
+            "Cyclic library dependency detected — link order cannot be determined.",
+            "",
+            f"  Cycle: {cycle_str}",
+        ]
+
+        # Show which source files contributed the conflicting edges
+        if source_files is not None:
+            lines.append("")
+            lines.append("  Constraints contributing to the cycle:")
+            for i in range(len(cycle_path) - 1):
+                edge = (cycle_path[i], cycle_path[i + 1])
+                files = edge_sources.get(edge, [])
+                if files:
+                    file_list = ", ".join(files)
+                    lines.append(
+                        f"    {edge[0]} must precede {edge[1]}  (from {file_list})"
+                    )
+                else:
+                    lines.append(f"    {edge[0]} must precede {edge[1]}")
+
+        lines.append("")
+        lines.append(
+            "Fix the LDFLAGS annotations in the source files above to remove "
+            "the contradictory ordering."
         )
-        sorted_libs.extend(cycle_libs)
+
+        raise ValueError("\n".join(lines))
 
     deduped_non_l = list(dict.fromkeys(non_l_flags))
     return deduped_non_l + [f"-l{name}" for name in sorted_libs]
