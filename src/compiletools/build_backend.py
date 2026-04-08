@@ -400,7 +400,7 @@ class BuildBackend(abc.ABC):
         pch_gch_paths = {}  # header_abs_path -> gch_output_path
         for filename in all_compile_sources:
             magicflags = self.hunter.magicflags(filename)
-            for pch_header in magicflags.get(sz.Str("PCH-HEADER"), []):
+            for pch_header in magicflags.get(sz.Str("PCH"), []):
                 pch_header = str(pch_header)
                 if pch_header not in pch_gch_paths:
                     pch_gch_paths[pch_header] = _gch_path(pch_header)
@@ -720,7 +720,7 @@ class BuildBackend(abc.ABC):
         magicflags = self.hunter.magicflags(filename)
 
         # Add PCH .gch dependency if this source uses a precompiled header
-        for pch_header in magicflags.get(sz.Str("PCH-HEADER"), []):
+        for pch_header in magicflags.get(sz.Str("PCH"), []):
             gch_path = _gch_path(str(pch_header))
             if gch_path not in prerequisites:
                 prerequisites.append(gch_path)

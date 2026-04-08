@@ -683,7 +683,7 @@ int main() {
 
     @uth.requires_functional_compiler
     def test_pch_header_builds(self):
-        """PCH-HEADER magic flag generates .gch and the executable links correctly."""
+        """PCH magic flag generates .gch and the executable links correctly."""
         with uth.TempDirContextWithChange() as tempdir:
             # Copy PCH sample to temp dir
             pch_sample = os.path.join(uth.samplesdir(), "pch")

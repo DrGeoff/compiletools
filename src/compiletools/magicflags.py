@@ -438,10 +438,10 @@ class MagicFlagsBase:
         if magic == sz.Str("READMACROS"):
             return
 
-        # PCH-HEADER=path/to/header.h marks a header for precompilation.
+        # PCH=path/to/header.h marks a header for precompilation.
         # Resolve the path relative to the file containing the annotation,
         # matching SOURCE semantics.
-        if magic == sz.Str("PCH-HEADER"):
+        if magic == sz.Str("PCH"):
             if compiletools.wrappedos.isabs_sz(flag):
                 resolved = compiletools.wrappedos.realpath_sz(flag)
             else:

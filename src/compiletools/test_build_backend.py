@@ -295,11 +295,11 @@ class TestBuildGraphPopulation:
         assert "runtests" in all_rule.inputs
 
     def test_pch_header_creates_gch_compile_rule(self, tmp_path):
-        """PCH-HEADER magic flag creates a compile rule for the .gch file."""
+        """PCH magic flag creates a compile rule for the .gch file."""
         import stringzilla as sz
 
         pch_flags = {
-            "/src/main.cpp": {sz.Str("PCH-HEADER"): [sz.Str("/src/stdafx.h")]},
+            "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
             "/src/stdafx.h": {sz.Str("CPPFLAGS"): [sz.Str("-DPCH_ACTIVE")]},
         }
         args = make_backend_args(tmp_path, filename=["/src/main.cpp"], CXXFLAGS="-O2")

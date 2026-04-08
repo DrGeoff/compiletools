@@ -1,5 +1,5 @@
 // ct-exemarker
-//#PCH-HEADER=stdafx.h
+//#PCH=stdafx.h
 #include "stdafx.h"
 
 int main() {

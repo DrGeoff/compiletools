@@ -62,6 +62,7 @@ class TestFindTargetsModule:
             "undef_bug/main.cpp",
             "computed_include/main.cpp",
             "static_link_order/main.cpp",
+            "pch/pch_user.cpp",
         }
         relativeexpectedtests = {
             "cross_platform/test_source.cpp",
