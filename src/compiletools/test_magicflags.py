@@ -206,6 +206,31 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
             "Direct magic should handle macros from CXXFLAGS correctly"
         )
 
+    def test_macro_expansion_in_magic_flag_values(self):
+        """Test that macros in magic flag values are expanded (e.g., LIB_SUFFIX -> O2)"""
+        source_file = "ldflags/macro_expanded_ldflags.cpp"
+
+        # With LIB_SUFFIX=O2, should get -lmylib-O2 -lother-O2
+        result = self._parse_with_magic("direct", source_file, ["--append-CPPFLAGS=-DLIB_SUFFIX=O2"])
+        assert self._check_flags(result, "LDFLAGS", ["-lmylib-O2", "-lother-O2"], ["LIB_SUFFIX"]), (
+            "Direct magic should expand LIB_SUFFIX=O2 in LDFLAGS values"
+        )
+
+        # With LIB_SUFFIX=g, should get -lmylib-g -lother-g
+        result_debug = self._parse_with_magic("direct", source_file, ["--append-CPPFLAGS=-DLIB_SUFFIX=g"])
+        assert self._check_flags(result_debug, "LDFLAGS", ["-lmylib-g", "-lother-g"], ["-lmylib-O2"]), (
+            "Direct magic should expand LIB_SUFFIX=g in LDFLAGS values"
+        )
+
+    def test_undefined_macro_in_magic_flag_values_unchanged(self):
+        """Undefined macros in magic flag values should remain as-is"""
+        source_file = "ldflags/macro_expanded_ldflags.cpp"
+        # Without defining LIB_SUFFIX, should keep literal text
+        result = self._parse_with_magic("direct", source_file)
+        assert self._check_flags(result, "LDFLAGS", ["LIB_SUFFIX"], ["-lmylib-O2"]), (
+            "Undefined macros should not be expanded in magic flag values"
+        )
+
     @uth.requires_functional_compiler
     def test_version_dependent_ldflags_requires_feature_parity(self):
         """Test that DirectMagicFlags must have feature parity with CppMagicFlags for complex #if expressions"""

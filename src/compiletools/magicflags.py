@@ -368,6 +368,20 @@ class MagicFlagsBase:
 
         file_analysis_data = self.get_structured_data(filename)
 
+        # Expand macros in magic flag values (e.g., LIB_SUFFIX -> O2)
+        abs_filename = compiletools.wrappedos.realpath(filename)
+        macro_state = self._final_macro_states.get(abs_filename)
+        expander = None
+        if macro_state:
+            from compiletools.simple_preprocessor import SimplePreprocessor
+
+            expander = SimplePreprocessor(
+                macro_state.all_macros(),
+                verbose=self._args.verbose,
+                compiler_path=getattr(self._args, "CXX", ""),
+                cppflags=getattr(self._args, "CPPFLAGS", ""),
+            )
+
         for file_data in file_analysis_data:
             content_hash = file_data["content_hash"]
             filepath = get_filepath_by_hash(content_hash, self.context)
@@ -376,6 +390,8 @@ class MagicFlagsBase:
             for magic_flag in active_magic_flags:
                 magic = magic_flag["key"]
                 flag = magic_flag["value"]
+                if expander:
+                    flag = expander._recursive_expand_macros_sz(flag)
                 # Pass magic_flag data and filepath for structured processing
                 self._process_magic_flag(magic, flag, flagsforfilename, magic_flag, filepath)
 
