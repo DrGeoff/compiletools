@@ -35,6 +35,7 @@ class TestFindTargetsModule:
             "hunter_macro_propagation/app.cpp",
             "isystem_include_bug/main.cpp",
             "ldflags/conditional_ldflags_test.cpp",
+            "ldflags/macro_expanded_ldflags.cpp",
             "ldflags/version_dependent_ldflags.cpp",
             "library/main.cpp",
             "lotsofmagic/lotsofmagic.cpp",
