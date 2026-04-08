@@ -765,6 +765,49 @@ def write_sources(mapping, target_dir=None):
 
 
 # ---------------------------------------------------------------------------
+# Slurm / shared-filesystem helpers
+# ---------------------------------------------------------------------------
+
+
+def _shared_filesystem_tmpdir_parent():
+    """Return a directory on a shared filesystem suitable for Slurm temp dirs.
+
+    Slurm submits compile jobs to remote nodes, so temp dirs must be on a
+    shared filesystem (GPFS/NFS/Lustre) rather than node-local scratch.
+
+    Uses the compiletools git root's parent directory (which is on GPFS
+    when running from the standard worktree layout).
+    """
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    try:
+        git_root = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            text=True,
+            cwd=this_dir,
+        ).strip()
+        return os.path.dirname(git_root)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return os.path.dirname(this_dir)
+
+
+@contextlib.contextmanager
+def shared_filesystem_tmpdir(backend_name, fallback_path):
+    """Provide a temp directory on a shared filesystem for distributed backends, or fallback_path for others.
+
+    Backends like Slurm dispatch compile jobs to remote nodes that need
+    access to the same files, so the temp directory must be on a shared
+    filesystem (GPFS, NFS, Lustre, etc.) rather than node-local scratch.
+
+    Yields a path string to use as the effective temp directory.
+    """
+    if backend_name == "slurm":
+        with TempDirContextNoChange(dir=_shared_filesystem_tmpdir_parent()) as tmpdir:
+            yield tmpdir
+    else:
+        yield str(fallback_path)
+
+
+# ---------------------------------------------------------------------------
 # Backend test helpers
 # ---------------------------------------------------------------------------
 

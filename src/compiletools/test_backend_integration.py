@@ -4,7 +4,6 @@ source files -> Hunter -> BuildGraph -> Backend -> build file -> build tool -> e
 Tests each registered backend end-to-end with a real compiler.
 """
 
-import contextlib
 import io
 import os
 import pathlib
@@ -90,24 +89,7 @@ class TestBackendBuildApplication(BaseCompileToolsTestCase):
     @pytest.mark.parametrize("backend_name", available_backends())
     def test_build_helloworld(self, backend_name, tmp_path, monkeypatch):
         """Build helloworld_cpp.cpp with each registered backend."""
-        # Slurm submits compile jobs to remote nodes, so the temp dir must
-        # be on a shared filesystem (not node-local scratch).
-        # Note: BaseCompileToolsTestCase.setup_method changes cwd to a local
-        # scratch tmpdir, so we resolve the git root from the test file's
-        # known location on GPFS.
-        if backend_name == "slurm":
-            this_file_dir = os.path.dirname(os.path.abspath(__file__))
-            gpfs_parent = os.path.dirname(
-                subprocess.check_output(
-                    ["git", "rev-parse", "--show-toplevel"],
-                    text=True,
-                    cwd=this_file_dir,
-                ).strip()
-            )
-            slurm_ctx = uth.TempDirContextNoChange(dir=gpfs_parent)
-        else:
-            slurm_ctx = contextlib.nullcontext(str(tmp_path))
-        with slurm_ctx as effective_tmp, uth.ParserContext():
+        with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp, uth.ParserContext():
             effective_tmp = pathlib.Path(effective_tmp)
             backend, graph, args = _setup_backend_for_source(backend_name, effective_tmp)
 
@@ -130,12 +112,7 @@ class TestBackendBuildApplication(BaseCompileToolsTestCase):
             if backend_name in ("shake", "slurm"):
                 # Self-executing backends — no external build file needed
                 backend.generate(graph)
-                try:
-                    backend.execute("build")
-                except (RuntimeError, subprocess.CalledProcessError):
-                    if backend_name == "slurm":
-                        pytest.skip("Slurm compile jobs failed (cluster scheduling issue)")
-                    raise
+                backend.execute("build")
             elif backend_name == "cmake":
                 # CMake needs CMakeLists.txt in the source directory
                 build_file = os.path.join(str(tmp_path), "CMakeLists.txt")
@@ -271,20 +248,18 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
     @pytest.mark.parametrize("backend_name", available_backends())
     def test_build_pch(self, backend_name, tmp_path, monkeypatch):
         """Build pch sample with each registered backend."""
-        if backend_name == "slurm":
-            pytest.skip("Slurm PCH test not supported (requires shared filesystem)")
-
-        with uth.ParserContext():
+        with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp, uth.ParserContext():
+            effective_tmp = pathlib.Path(effective_tmp)
             # Copy PCH sample files to temp dir
             pch_sample = os.path.join(uth.samplesdir(), "pch")
             for f in os.listdir(pch_sample):
-                shutil.copy2(os.path.join(pch_sample, f), tmp_path)
+                shutil.copy2(os.path.join(pch_sample, f), effective_tmp)
 
-            source_path = os.path.realpath(os.path.join(tmp_path, "pch_user.cpp"))
-            objdir = os.path.join(str(tmp_path), "obj")
-            bindir = os.path.join(str(tmp_path), "bin")
+            source_path = os.path.realpath(os.path.join(effective_tmp, "pch_user.cpp"))
+            objdir = os.path.join(str(effective_tmp), "obj")
+            bindir = os.path.join(str(effective_tmp), "bin")
             argv = [
-                "--include", str(tmp_path),
+                "--include", str(effective_tmp),
                 "--objdir", objdir,
                 "--bindir", bindir,
                 source_path,
@@ -316,25 +291,25 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
             # Generate and execute the build
             os.makedirs(bindir, exist_ok=True)
 
-            if backend_name in ("shake",):
+            if backend_name in ("shake", "slurm"):
                 backend.generate(graph)
                 backend.execute("build")
             elif backend_name == "cmake":
-                build_file = os.path.join(str(tmp_path), "CMakeLists.txt")
+                build_file = os.path.join(str(effective_tmp), "CMakeLists.txt")
                 with open(build_file, "w") as f:
                     backend.generate(graph, output=f)
-                cmake_build_dir = os.path.join(str(tmp_path), "cmake-build")
+                cmake_build_dir = os.path.join(str(effective_tmp), "cmake-build")
                 os.makedirs(cmake_build_dir, exist_ok=True)
                 result = subprocess.run(
-                    ["cmake", "-S", str(tmp_path), "-B", cmake_build_dir],
-                    cwd=str(tmp_path), capture_output=True, text=True, timeout=30,
+                    ["cmake", "-S", str(effective_tmp), "-B", cmake_build_dir],
+                    cwd=str(effective_tmp), capture_output=True, text=True, timeout=30,
                 )
                 assert result.returncode == 0, (
                     f"cmake configure failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
                 )
                 result = subprocess.run(
                     ["cmake", "--build", cmake_build_dir],
-                    cwd=str(tmp_path), capture_output=True, text=True, timeout=30,
+                    cwd=str(effective_tmp), capture_output=True, text=True, timeout=30,
                 )
                 assert result.returncode == 0, (
                     f"cmake build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
@@ -345,26 +320,26 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
                         if os.access(full, os.X_OK) and not fname.endswith(".cmake"):
                             shutil.copy2(full, os.path.join(bindir, fname))
             elif backend_name == "tup":
-                build_file = os.path.join(str(tmp_path), "Tupfile")
+                build_file = os.path.join(str(effective_tmp), "Tupfile")
                 with open(build_file, "w") as f:
                     backend.generate(graph, output=f)
-                subprocess.check_call(["tup", "init"], cwd=str(tmp_path), timeout=10)
+                subprocess.check_call(["tup", "init"], cwd=str(effective_tmp), timeout=10)
                 result = subprocess.run(
-                    ["tup"], cwd=str(tmp_path), capture_output=True, text=True, timeout=30,
+                    ["tup"], cwd=str(effective_tmp), capture_output=True, text=True, timeout=30,
                 )
                 assert result.returncode == 0, (
                     f"tup build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
                 )
             elif backend_name == "bazel":
-                build_file = os.path.join(str(tmp_path), "BUILD.bazel")
+                build_file = os.path.join(str(effective_tmp), "BUILD.bazel")
                 with open(build_file, "w") as f:
                     backend.generate(graph, output=f)
-                with open(os.path.join(str(tmp_path), "WORKSPACE"), "w") as f:
+                with open(os.path.join(str(effective_tmp), "WORKSPACE"), "w") as f:
                     f.write("# WORKSPACE generated by compiletools\n")
-                with open(os.path.join(str(tmp_path), "MODULE.bazel"), "w") as f:
+                with open(os.path.join(str(effective_tmp), "MODULE.bazel"), "w") as f:
                     f.write('module(name = "compiletools_test")\n')
                     f.write('bazel_dep(name = "rules_cc", version = "0.1.1")\n')
-                monkeypatch.chdir(str(tmp_path))
+                monkeypatch.chdir(str(effective_tmp))
                 try:
                     backend.execute("build")
                 except subprocess.CalledProcessError as e:
@@ -373,7 +348,7 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
                         pytest.skip(f"bazel TLS error: {stderr[:200]}")
                     raise
             else:
-                build_file = os.path.join(str(tmp_path), type(backend).build_filename())
+                build_file = os.path.join(str(effective_tmp), type(backend).build_filename())
                 with open(build_file, "w") as f:
                     backend.generate(graph, output=f)
                 if backend_name == "make":
@@ -383,7 +358,7 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
                 else:
                     pytest.skip(f"Don't know how to invoke {backend_name}")
                 result = subprocess.run(
-                    cmd, cwd=str(tmp_path), capture_output=True, text=True, timeout=30,
+                    cmd, cwd=str(effective_tmp), capture_output=True, text=True, timeout=30,
                 )
                 assert result.returncode == 0, (
                     f"{backend_name} build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
@@ -392,7 +367,7 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
             # Verify an executable was produced and runs correctly
             exe_name = "pch_user"
             candidates = []
-            for dirpath, _dirs, files in os.walk(str(tmp_path)):
+            for dirpath, _dirs, files in os.walk(str(effective_tmp)):
                 for f in files:
                     full = os.path.join(dirpath, f)
                     if compiletools.utils.is_executable(full) and exe_name in f:

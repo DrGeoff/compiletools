@@ -358,7 +358,7 @@ class TestLibrary:
         # Slurm submits compile jobs to remote nodes, so the temp dir must
         # be on a shared filesystem (not node-local scratch) and outside the
         # git tree to avoid hash registry interference from untracked files.
-        tmpdir_parent = os.path.dirname(os.getcwd()) if backend_name == "slurm" else None
+        tmpdir_parent = uth._shared_filesystem_tmpdir_parent() if backend_name == "slurm" else None
         with uth.TempDirContextWithChange(dir=tmpdir_parent) as tmpdir:
             # Mimic the build.sh and create the library in a 'mylib' subdirectory
             # Copy the sample source files into the test build location
@@ -389,8 +389,7 @@ class TestLibrary:
 
             with uth.DirectoryContext(mylibdir), uth.ParserContext():
                 ret = compiletools.cake.main(argv)
-            if backend_name == "slurm" and ret != 0:
-                pytest.skip("Slurm compile jobs failed (cluster scheduling issue)")
+            assert ret == 0, f"{backend_name}: library build failed (rc={ret})"
 
             # Copy the main that will link to the library into the test build location
             relativepaths = ["library/main.cpp"]
@@ -412,8 +411,7 @@ class TestLibrary:
             ] + realpaths
             with uth.ParserContext():
                 ret = compiletools.cake.main(argv)
-            if backend_name == "slurm" and ret != 0:
-                pytest.skip("Slurm compile jobs failed (cluster scheduling issue)")
+            assert ret == 0, f"{backend_name}: executable build failed (rc={ret})"
 
             # Check that an executable got built for each cpp
             actual_exes = set()
