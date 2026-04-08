@@ -89,6 +89,25 @@ preferred over manual ``LDFLAGS`` because:
 The PKG-CONFIG magic flag works with any library that provides a .pc file,
 including common libraries like gtk+-3.0, libpng, libcurl, openssl, and many more.
 
+Project-Level PKG-CONFIG Overrides
+----------------------------------
+If your project needs custom or patched ``.pc`` files (e.g., to pin a library
+version, override flags, or provide a package that isn't installed system-wide),
+place them in ``ct.conf.d/pkgconfig/`` at the root of your git repository::
+
+    myproject/
+        ct.conf.d/
+            pkgconfig/
+                zlib.pc        # overrides the system zlib.pc
+                mylib.pc       # provides a package not installed system-wide
+        src/
+            main.cpp
+
+compiletools prepends this directory to ``PKG_CONFIG_PATH`` before any
+pkg-config invocation, so project-level ``.pc`` files take priority over
+system-installed ones. This follows the same layering principle as the rest
+of the configuration system (project config overrides system config).
+
 CPPFLAGS and CXXFLAGS Unification
 ==================================
 By default, ``CPPFLAGS`` and ``CXXFLAGS`` magic flags are merged into a single
