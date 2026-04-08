@@ -80,9 +80,24 @@ When you are doing performance testing there are 2 caches you need to be aware o
 #
 # Profiling
 #
-To profile the ct-cake build process:
+Three methods for profiling ct-cake and other ct-* commands:
 
-source <compiletoolsrepo>/.venv/bin/activate && python -m cProfile -s cumulative $(which ct-cake)
+# 1. Inline cProfile
+source <compiletoolsrepo>/.venv/bin/activate && python -m cProfile -s cumulative $(which ct-cake) --auto
+
+# 2. Project profiling script (supports any ct-* command, temp output dirs, metrics summary)
+scripts/profile-ct ct-cake -d /path/to/project
+scripts/profile-ct ct-compilation-database -d /path/to/project -- --include "dir1 dir2"
+
+# 3. System-level profiling with py-spy (generates flame graph SVG)
+py-spy record -o profile.svg -- python $(which ct-cake) --auto
+
+#
+# Build Timing
+#
+ct-cake supports --timing to collect per-phase build timing data.
+See src/compiletools/README.ct-timing-report.rst for full documentation
+of ct-timing-report and its output modes (TUI, summary, compare, chrome-trace).
 
 #
 # Gotchas
