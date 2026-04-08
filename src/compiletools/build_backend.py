@@ -466,7 +466,28 @@ class BuildBackend(abc.ABC):
         all_deps = ["build"]
 
         if test_exe_paths:
-            graph.add_rule(BuildRule(output="runtests", inputs=test_exe_paths, command=None, rule_type="phony"))
+            # Create per-test execution rules so build files can run tests standalone
+            testprefix_parts = []
+            if getattr(self.args, "TESTPREFIX", ""):
+                testprefix_parts = self.args.TESTPREFIX.split()
+
+            test_result_paths = []
+            for exe_path in test_exe_paths:
+                result_path = exe_path + ".result"
+                test_cmd = (
+                    ["rm", "-f", result_path, "&&"]
+                    + testprefix_parts
+                    + [exe_path, "&&", "touch", result_path]
+                )
+                graph.add_rule(BuildRule(
+                    output=result_path,
+                    inputs=[exe_path],
+                    command=test_cmd,
+                    rule_type="test",
+                ))
+                test_result_paths.append(result_path)
+
+            graph.add_rule(BuildRule(output="runtests", inputs=test_result_paths, command=None, rule_type="phony"))
             all_deps.append("runtests")
 
         graph.add_rule(BuildRule(output="all", inputs=all_deps, command=None, rule_type="phony"))

@@ -164,6 +164,17 @@ class CMakeBackend(BuildBackend):
                     quoted = " ".join(f'"{opt}"' for opt in other_opts)
                     f.write(f"target_link_options({target_name} PRIVATE {quoted})\n")
 
+        # Register tests so `ctest` can run them standalone
+        test_rules = graph.rules_by_type("test")
+        if test_rules:
+            f.write("\nenable_testing()\n")
+            for rule in test_rules:
+                if rule.inputs:
+                    exe_path = rule.inputs[0]
+                    test_name = mangle_target_name(os.path.splitext(os.path.basename(exe_path))[0])
+                    f.write(f'add_test(NAME {test_name} COMMAND "{exe_path}")\n')
+            f.write("\n")
+
     def _execute_build(self, target: str) -> None:
         cmake = shutil.which("cmake")
         if cmake is None:

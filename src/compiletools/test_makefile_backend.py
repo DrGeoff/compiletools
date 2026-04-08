@@ -320,3 +320,120 @@ class TestMakefileExecute:
 
         cmd = mock_check_call.call_args[0][0]
         assert "--shuffle" not in cmd
+
+
+class TestMakefileTestRules:
+    """Test that test execution rules are rendered correctly in the Makefile."""
+
+    def _make_args(self, **overrides):
+        defaults = dict(
+            verbose=0,
+            objdir="/tmp/obj",
+            bindir="/tmp/bin",
+            git_root="",
+            file_locking=False,
+            makefilename="Makefile",
+            filename=[],
+            tests=[],
+            static=[],
+            dynamic=[],
+            CC="gcc",
+            CXX="g++",
+            CFLAGS="-O2",
+            CXXFLAGS="-O2",
+            LD="g++",
+            LDFLAGS="",
+            serialisetests=False,
+            build_only_changed=None,
+        )
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    def test_test_result_rule_in_makefile(self):
+        """Test rules should produce .result file recipes in the Makefile."""
+        graph = BuildGraph()
+        graph.add_rule(BuildRule(
+            output="bin/test_foo.result",
+            inputs=["bin/test_foo"],
+            command=["rm", "-f", "bin/test_foo.result", "&&", "bin/test_foo", "&&", "touch", "bin/test_foo.result"],
+            rule_type="test",
+        ))
+        graph.add_rule(BuildRule(
+            output="runtests",
+            inputs=["bin/test_foo.result"],
+            command=None,
+            rule_type="phony",
+        ))
+
+        args = self._make_args()
+        hunter = MagicMock()
+        backend = MakefileBackend(args=args, hunter=hunter)
+
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        assert "bin/test_foo.result: bin/test_foo" in content
+        assert "rm -f bin/test_foo.result && bin/test_foo && touch bin/test_foo.result" in content
+        assert ".PHONY: runtests" in content
+        assert "runtests: bin/test_foo.result" in content
+
+    def test_test_verbose_echo(self):
+        """Test rules should include echo when verbose >= 1."""
+        graph = BuildGraph()
+        graph.add_rule(BuildRule(
+            output="bin/test_foo.result",
+            inputs=["bin/test_foo"],
+            command=["rm", "-f", "bin/test_foo.result", "&&", "bin/test_foo", "&&", "touch", "bin/test_foo.result"],
+            rule_type="test",
+        ))
+
+        args = self._make_args(verbose=1)
+        hunter = MagicMock()
+        backend = MakefileBackend(args=args, hunter=hunter)
+
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        assert "@echo ... bin/test_foo" in content
+
+    def test_notparallel_when_serialise_tests(self):
+        """.NOTPARALLEL should be emitted when --serialise-tests is set."""
+        graph = BuildGraph()
+        graph.add_rule(BuildRule(
+            output="bin/test_foo.result",
+            inputs=["bin/test_foo"],
+            command=["rm", "-f", "bin/test_foo.result", "&&", "bin/test_foo", "&&", "touch", "bin/test_foo.result"],
+            rule_type="test",
+        ))
+
+        args = self._make_args(serialisetests=True)
+        hunter = MagicMock()
+        backend = MakefileBackend(args=args, hunter=hunter)
+
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        assert ".NOTPARALLEL: runtests" in content
+
+    def test_no_notparallel_when_not_serialised(self):
+        """.NOTPARALLEL should NOT be emitted when --serialise-tests is not set."""
+        graph = BuildGraph()
+        graph.add_rule(BuildRule(
+            output="bin/test_foo.result",
+            inputs=["bin/test_foo"],
+            command=["rm", "-f", "bin/test_foo.result", "&&", "bin/test_foo", "&&", "touch", "bin/test_foo.result"],
+            rule_type="test",
+        ))
+
+        args = self._make_args(serialisetests=False)
+        hunter = MagicMock()
+        backend = MakefileBackend(args=args, hunter=hunter)
+
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        assert ".NOTPARALLEL" not in content

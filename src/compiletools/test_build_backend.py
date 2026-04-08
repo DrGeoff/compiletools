@@ -271,7 +271,40 @@ class TestBuildGraphPopulation:
         runtests_rule = graph.get_rule("runtests")
         assert runtests_rule is not None
         assert runtests_rule.rule_type == "phony"
-        assert f"{bindir}/test_foo" in runtests_rule.inputs
+        # runtests depends on .result files, not raw executables
+        assert f"{bindir}/test_foo.result" in runtests_rule.inputs
+
+    def test_test_result_rules_created(self, tmp_path):
+        """build_graph() should create test result rules with execution commands."""
+        args = make_backend_args(tmp_path, filename=[], tests=["/src/test_foo.cpp"])
+        hunter = make_mock_hunter(sources=["/src/test_foo.cpp"])
+        backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+        bindir = str(tmp_path / "bin")
+
+        graph = backend.build_graph()
+
+        test_rules = graph.rules_by_type("test")
+        assert len(test_rules) == 1
+        rule = test_rules[0]
+        assert rule.output == f"{bindir}/test_foo.result"
+        assert rule.inputs == [f"{bindir}/test_foo"]
+        assert "rm" in rule.command
+        assert "touch" in rule.command
+        assert f"{bindir}/test_foo" in rule.command
+
+    def test_test_result_rules_include_testprefix(self, tmp_path):
+        """Test result rules should include TESTPREFIX when set."""
+        args = make_backend_args(tmp_path, filename=[], tests=["/src/test_foo.cpp"])
+        args.TESTPREFIX = "valgrind --leak-check=full"
+        hunter = make_mock_hunter(sources=["/src/test_foo.cpp"])
+        backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+
+        graph = backend.build_graph()
+
+        test_rules = graph.rules_by_type("test")
+        assert len(test_rules) == 1
+        assert "valgrind" in test_rules[0].command
+        assert "--leak-check=full" in test_rules[0].command
 
     def test_runtests_not_created_when_no_tests(self, tmp_path):
         """build_graph() should NOT create 'runtests' phony when no tests."""

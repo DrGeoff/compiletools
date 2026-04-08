@@ -188,6 +188,10 @@ class MakefileBackend(BuildBackend):
                 f.write("\t" + recipe + "\n")
             f.write("\n")
 
+        # Serialise tests: prevent Make from parallelising test execution
+        if getattr(self.args, "serialisetests", False) and graph.rules_by_type("test"):
+            f.write(".NOTPARALLEL: runtests\n\n")
+
         # Write clean rules
         self._write_clean_rules(graph, f)
 
@@ -205,6 +209,13 @@ class MakefileBackend(BuildBackend):
             cmd_str = self._wrap_link_cmd(rule.command)
             if self.args.verbose >= 1:
                 recipe = f"+@echo ... {rule.output} ; {cmd_str}"
+            else:
+                recipe = cmd_str
+        elif rule.rule_type == "test":
+            cmd_str = " ".join(rule.command)
+            if self.args.verbose >= 1:
+                exe_name = rule.output.removesuffix(".result")
+                recipe = f"@echo ... {exe_name} ; {cmd_str}"
             else:
                 recipe = cmd_str
         else:
