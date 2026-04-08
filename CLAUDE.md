@@ -56,7 +56,7 @@ The build process in `cake.py` follows this sequence:
 
 3. **Dependency Analysis** -- `hunter.py` recursively walks the dependency graph. For each source file:
    - `headerdeps.py` finds `#include` dependencies (factory: `DirectHeaderDeps` uses `FileAnalyzer`, `CppHeaderDeps` uses `cpp -MM`)
-   - `magicflags.py` extracts build flags from `//#` comment annotations (`CPPFLAGS=`, `PKG-CONFIG=`, `SOURCE=`, `LDFLAGS=`, etc.)
+   - `magicflags.py` extracts build flags from `//#` comment annotations (`CPPFLAGS=`, `PKG-CONFIG=`, `SOURCE=`, `LDFLAGS=`, `PCH=`, etc.)
    - Implied sources are discovered (e.g., `foo.h` implies `foo.cpp`)
 
 4. **Backend Dispatch** -- `cake.py:_call_backend()` uses the `--backend` flag (default: `make`) to select a build backend via the registry in `build_backend.py`. The backend calls `build_graph()` to populate a `BuildGraph` (backend-agnostic IR of `BuildRule` objects) from Hunter/Namer data, then `generate()` to write the native build file. Available backends: make (default), ninja, cmake, bazel, shake, tup. `compilation_database.py` generates `compile_commands.json` independently.

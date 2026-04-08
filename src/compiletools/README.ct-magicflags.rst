@@ -116,6 +116,8 @@ The known magic flags are::
     SOURCE       Inject an extra source file into the list of files to be built.
                  This is most commonly used in cross platform work.
     PKG-CONFIG   Extract the cflags and libs using pkg-config
+    PCH          Precompiled header. Specifies a header to precompile into a
+                 .gch file. The path is resolved relative to the source file.
     READMACROS   Read macro definitions from specified file before evaluating
                  conditional compilation. Useful for system headers.
     ===========  ==============================================================
@@ -152,6 +154,22 @@ depend on macros defined in system headers that aren't in the include path.
 
 The file path is resolved relative to the source file containing the READMACROS
 flag, or as an absolute path if specified.
+
+Using PCH (Precompiled Headers)
+===============================
+The PCH magic flag marks a header for precompilation. The build system
+compiles the header into a ``.gch`` file and ensures it is built before any
+source that references it.
+
+.. code-block:: cpp
+
+    //#PCH=stdafx.h
+    #include "stdafx.h"
+
+    int main() { return 0; }
+
+The header path is resolved relative to the source file containing the
+annotation, matching SOURCE semantics. Absolute paths are also accepted.
 
 EXAMPLES
 ========
