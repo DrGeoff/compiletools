@@ -109,5 +109,73 @@ class TestVariant:
                 os.path.join(os.getcwd(), "gcc.debug.conf"),
             ] == configs
 
+    def test_cwd_ct_conf_d_discovered(self):
+        """cwd/ct.conf.d/ appears in default_config_directories() output."""
+        with uth.TempDirContext() as _:
+            cwd_conf_d = os.path.join(os.getcwd(), "ct.conf.d")
+            os.makedirs(cwd_conf_d)
+
+            dirs = compiletools.configutils.default_config_directories(
+                user_config_dir="/var",
+                system_config_dir="/var",
+                exedir=uth.cakedir(),
+                gitroot=os.getcwd(),
+            )
+
+            assert cwd_conf_d in dirs
+
+    def test_cwd_ct_conf_d_variant_takes_priority(self):
+        """cwd/ct.conf.d/variant.conf overrides gitroot/ct.conf.d/variant.conf."""
+        with uth.TempDirContextNoChange() as repo_root:
+            subproject = os.path.join(repo_root, "subproject")
+            os.makedirs(subproject)
+
+            # Create ct.conf at repo root so extract_variant succeeds
+            uth.create_temp_ct_conf(repo_root, defaultvariant="gcc.debug")
+
+            # Create variant conf at repo level
+            repo_conf_d = os.path.join(repo_root, "ct.conf.d")
+            os.makedirs(repo_conf_d)
+            repo_variant = os.path.join(repo_conf_d, "gcc.debug.conf")
+            uth.create_temp_config(filename=repo_variant, extralines=["REPO_LEVEL=1"])
+
+            # Create variant conf at cwd level (subproject)
+            cwd_conf_d = os.path.join(subproject, "ct.conf.d")
+            os.makedirs(cwd_conf_d)
+            cwd_variant = os.path.join(cwd_conf_d, "gcc.debug.conf")
+            uth.create_temp_config(filename=cwd_variant, extralines=["CWD_LEVEL=1"])
+
+            with uth.DirectoryContext(subproject):
+                configs = compiletools.configutils.config_files_from_variant(
+                    variant="gcc.debug",
+                    argv=[],
+                    user_config_dir="/var",
+                    system_config_dir="/var",
+                    exedir=uth.cakedir(),
+                    verbose=0,
+                    gitroot=repo_root,
+                )
+
+                # Both should be found; cwd version should come first (highest priority,
+                # since config_files_from_variant iterates reversed/highest-first)
+                assert repo_variant in configs
+                assert cwd_variant in configs
+                assert configs.index(cwd_variant) < configs.index(repo_variant)
+
+    def test_cwd_ct_conf_d_dedup_when_cwd_equals_gitroot(self):
+        """No duplicate ct.conf.d entry when cwd is the git root."""
+        with uth.TempDirContext() as _:
+            conf_d = os.path.join(os.getcwd(), "ct.conf.d")
+            os.makedirs(conf_d)
+
+            dirs = compiletools.configutils.default_config_directories(
+                user_config_dir="/var",
+                system_config_dir="/var",
+                exedir=uth.cakedir(),
+                gitroot=os.getcwd(),
+            )
+
+            assert dirs.count(conf_d) == 1
+
     def teardown_method(self):
         uth.reset()

@@ -226,6 +226,11 @@ def default_config_directories(
     repo_config_dir = os.path.join(gitroot, "src", "compiletools", "ct.conf.d")
     if compiletools.wrappedos.isdir(repo_config_dir):
         results.append(repo_config_dir)
+
+    cwd_config_dir = os.path.join(current_dir, "ct.conf.d")
+    if compiletools.wrappedos.isdir(cwd_config_dir):
+        results.append(cwd_config_dir)
+
     if not repoonly:
         results.extend([user_config_dir] + system_dirs + [executable_config_dir])
     results = compiletools.utils.ordered_unique(results)
