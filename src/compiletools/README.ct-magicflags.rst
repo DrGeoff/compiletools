@@ -108,6 +108,16 @@ pkg-config invocation, so project-level ``.pc`` files take priority over
 system-installed ones. This follows the same layering principle as the rest
 of the configuration system (project config overrides system config).
 
+In monorepos, a subdirectory can have its own ``ct.conf.d/pkgconfig/`` that
+takes priority over the repo-wide one. When ``ct-cake`` is invoked from a
+subdirectory that contains ``ct.conf.d/pkgconfig/``, the resulting
+``PKG_CONFIG_PATH`` priority is::
+
+    cwd/ct.conf.d/pkgconfig/  >  gitroot/ct.conf.d/pkgconfig/  >  system
+
+This lets subprojects override repo-wide ``.pc`` files without shell-script
+workarounds.
+
 CPPFLAGS and CXXFLAGS Unification
 ==================================
 By default, ``CPPFLAGS`` and ``CXXFLAGS`` magic flags are merged into a single

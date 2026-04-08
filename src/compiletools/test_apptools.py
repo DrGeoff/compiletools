@@ -653,13 +653,14 @@ class TestSetupPkgConfigOverrides:
     """Tests for _setup_pkg_config_overrides()."""
 
     def test_prepends_when_override_dir_exists(self, monkeypatch, tmp_path):
-        """When ct.conf.d/pkgconfig/ exists, it is prepended to PKG_CONFIG_PATH."""
+        """When ct.conf.d/pkgconfig/ exists at gitroot, it is prepended to PKG_CONFIG_PATH."""
         pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
         pkgconfig_dir.mkdir(parents=True)
 
         monkeypatch.setattr(
             "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
         )
+        monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("PKG_CONFIG_PATH", "/existing/path")
 
         ctx = BuildContext()
@@ -674,6 +675,7 @@ class TestSetupPkgConfigOverrides:
         monkeypatch.setattr(
             "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
         )
+        monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("PKG_CONFIG_PATH", "/original/path")
 
         ctx = BuildContext()
@@ -689,6 +691,7 @@ class TestSetupPkgConfigOverrides:
         monkeypatch.setattr(
             "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
         )
+        monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
 
         ctx = BuildContext()
@@ -704,6 +707,7 @@ class TestSetupPkgConfigOverrides:
         monkeypatch.setattr(
             "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
         )
+        monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("PKG_CONFIG_PATH", "/existing/path")
 
         ctx = BuildContext()
@@ -723,6 +727,7 @@ class TestSetupPkgConfigOverrides:
         monkeypatch.setattr(
             "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
         )
+        monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
 
         ctx = BuildContext()
@@ -731,3 +736,60 @@ class TestSetupPkgConfigOverrides:
         captured = capsys.readouterr()
         assert "Prepended project pkg-config overrides" in captured.out
         assert str(pkgconfig_dir) in captured.out
+
+    def test_cwd_pkgconfig_takes_priority_over_gitroot(self, monkeypatch, tmp_path):
+        """cwd/ct.conf.d/pkgconfig/ is prepended before gitroot/ct.conf.d/pkgconfig/."""
+        repo_root = tmp_path / "repo"
+        project_dir = tmp_path / "repo" / "subproject"
+        repo_pkgconfig = repo_root / "ct.conf.d" / "pkgconfig"
+        cwd_pkgconfig = project_dir / "ct.conf.d" / "pkgconfig"
+        repo_pkgconfig.mkdir(parents=True)
+        cwd_pkgconfig.mkdir(parents=True)
+
+        monkeypatch.setattr(
+            "compiletools.git_utils.find_git_root", lambda filename=None: str(repo_root)
+        )
+        monkeypatch.chdir(project_dir)
+        monkeypatch.setenv("PKG_CONFIG_PATH", "/system/path")
+
+        ctx = BuildContext()
+        _setup_pkg_config_overrides(ctx)
+
+        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
+        assert dirs[0] == str(cwd_pkgconfig)
+        assert dirs[1] == str(repo_pkgconfig)
+        assert dirs[2] == "/system/path"
+
+    def test_cwd_only_no_gitroot(self, monkeypatch, tmp_path):
+        """When outside a git repo, cwd/ct.conf.d/pkgconfig/ is still discovered."""
+        cwd_pkgconfig = tmp_path / "ct.conf.d" / "pkgconfig"
+        cwd_pkgconfig.mkdir(parents=True)
+
+        monkeypatch.setattr(
+            "compiletools.git_utils.find_git_root", lambda filename=None: None
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+
+        ctx = BuildContext()
+        _setup_pkg_config_overrides(ctx)
+
+        assert os.environ["PKG_CONFIG_PATH"] == str(cwd_pkgconfig)
+
+    def test_dedup_when_cwd_equals_gitroot(self, monkeypatch, tmp_path):
+        """When cwd is the git root, only one entry is prepended."""
+        pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
+        pkgconfig_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(
+            "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+
+        ctx = BuildContext()
+        _setup_pkg_config_overrides(ctx)
+
+        pkg_config_path = os.environ["PKG_CONFIG_PATH"]
+        assert pkg_config_path == str(pkgconfig_dir)
+        assert pkg_config_path.count(str(pkgconfig_dir)) == 1

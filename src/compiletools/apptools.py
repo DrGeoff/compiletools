@@ -889,11 +889,15 @@ def filter_pkg_config_cflags(cflags_str, verbose=0):
 
 
 def _setup_pkg_config_overrides(context, verbose=0):
-    """Prepend project-level ct.conf.d/pkgconfig/ to PKG_CONFIG_PATH.
+    """Prepend project-level ct.conf.d/pkgconfig/ directories to PKG_CONFIG_PATH.
 
-    If {gitroot}/ct.conf.d/pkgconfig/ exists, prepend it to the
-    PKG_CONFIG_PATH environment variable so that project-local .pc
-    files take priority over system ones.
+    Searches two locations for ct.conf.d/pkgconfig/ directories:
+
+    1. The current working directory (highest priority)
+    2. The git repository root
+
+    Both are prepended (if they exist and differ) so that cwd-level
+    .pc files override repo-level ones, which override system ones.
 
     Args:
         context: BuildContext instance tracking per-build state.
@@ -906,34 +910,42 @@ def _setup_pkg_config_overrides(context, verbose=0):
     if context.pkg_config_overrides_applied:
         return
 
-    gitroot = compiletools.git_utils.find_git_root()
-    if not gitroot:
-        context.pkg_config_overrides_applied = True
-        return
-
-    project_pkgconfig_dir = os.path.join(gitroot, "ct.conf.d", "pkgconfig")
-
-    if not compiletools.wrappedos.isdir(project_pkgconfig_dir):
-        context.pkg_config_overrides_applied = True
-        return
-
-    # Check if already present (guards against duplicate prepends when
-    # multiple BuildContext instances are used in the same process).
-    existing = os.environ.get("PKG_CONFIG_PATH", "")
-    existing_dirs = existing.split(os.pathsep) if existing else []
-    if project_pkgconfig_dir in existing_dirs:
-        context.pkg_config_overrides_applied = True
-        return
-
-    if existing:
-        os.environ["PKG_CONFIG_PATH"] = project_pkgconfig_dir + os.pathsep + existing
-    else:
-        os.environ["PKG_CONFIG_PATH"] = project_pkgconfig_dir
-
     context.pkg_config_overrides_applied = True
 
+    gitroot = compiletools.git_utils.find_git_root()
+
+    # Collect candidate pkgconfig directories in priority order
+    # (highest priority first).
+    candidates = []
+
+    cwd_pkgconfig = os.path.join(os.getcwd(), "ct.conf.d", "pkgconfig")
+    if compiletools.wrappedos.isdir(cwd_pkgconfig):
+        candidates.append(os.path.normpath(cwd_pkgconfig))
+
+    if gitroot:
+        repo_pkgconfig = os.path.join(gitroot, "ct.conf.d", "pkgconfig")
+        if compiletools.wrappedos.isdir(repo_pkgconfig):
+            repo_pkgconfig = os.path.normpath(repo_pkgconfig)
+            if repo_pkgconfig not in candidates:
+                candidates.append(repo_pkgconfig)
+
+    if not candidates:
+        return
+
+    # Filter out directories already in PKG_CONFIG_PATH.
+    existing = os.environ.get("PKG_CONFIG_PATH", "")
+    existing_dirs = existing.split(os.pathsep) if existing else []
+    to_prepend = [d for d in candidates if d not in existing_dirs]
+
+    if not to_prepend:
+        return
+
+    parts = to_prepend + ([existing] if existing else [])
+    os.environ["PKG_CONFIG_PATH"] = os.pathsep.join(parts)
+
     if verbose >= 4:
-        print(f"Prepended project pkg-config overrides: {project_pkgconfig_dir}")
+        for d in to_prepend:
+            print(f"Prepended project pkg-config overrides: {d}")
 
 
 def _add_flags_from_pkg_config(args):
