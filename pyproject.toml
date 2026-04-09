@@ -70,6 +70,7 @@ ct-compilation-database = "compiletools.compilation_database:main"
 ct-cleanup-locks = "compiletools.cleanup_locks_main:main"
 ct-lock-helper = "compiletools.ct_lock_helper:main"
 ct-timing-report = "compiletools.timing_report:main"
+ct-trim-cache = "compiletools.trim_cache_main:main"
 
 [tool.pytest.ini_options]
 testpaths = ["src/compiletools"]
