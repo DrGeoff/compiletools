@@ -288,6 +288,15 @@ def add_output_directory_arguments(cap, variant):
         help="Output directory for object files",
         default=default_objdir,
     )
+    if git_root:
+        default_pchdir = os.path.join(git_root, "shared-pchdir", variant)
+    else:
+        default_pchdir = os.path.join("bin", variant, "pch")
+    cap.add(
+        "--pchdir",
+        help="Output directory for precompiled header cache (shared, content-addressable)",
+        default=default_pchdir,
+    )
 
 
 def add_target_arguments(cap):
@@ -1255,6 +1264,16 @@ def _commonsubstitutions(args):
         else:
             default_objdir = os.path.join(args.bindir, "obj")
         args.objdir = unsupplied_replacement(args.objdir, default_objdir, args.verbose, "objdir")
+    except AttributeError:
+        pass
+
+    try:
+        git_root = compiletools.git_utils.find_git_root()
+        if git_root:
+            default_pchdir = os.path.join(git_root, "shared-pchdir", args.variant)
+        else:
+            default_pchdir = os.path.join(args.bindir, "pch")
+        args.pchdir = unsupplied_replacement(args.pchdir, default_pchdir, args.verbose, "pchdir")
     except AttributeError:
         pass
 

@@ -258,10 +258,12 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
             source_path = os.path.realpath(os.path.join(effective_tmp, "pch_user.cpp"))
             objdir = os.path.join(str(effective_tmp), "obj")
             bindir = os.path.join(str(effective_tmp), "bin")
+            pchdir = os.path.join(str(effective_tmp), "pch")
             argv = [
                 "--include", str(effective_tmp),
                 "--objdir", objdir,
                 "--bindir", bindir,
+                "--pchdir", pchdir,
                 source_path,
             ]
 
@@ -287,6 +289,29 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
             gch_rule = gch_rules[0]
             assert "-x" in gch_rule.command
             assert "c++-header" in gch_rule.command
+
+            # Verify .gch is placed under pchdir with content-addressable hash dir
+            assert gch_rule.output.startswith(pchdir + "/"), (
+                f"{backend_name}: .gch should be under pchdir, got: {gch_rule.output}"
+            )
+            # Layout: <pchdir>/<16-char-hash>/stdafx.h.gch
+            rel = gch_rule.output[len(pchdir) + 1:]
+            parts = rel.split("/")
+            assert len(parts) == 2, f"Expected <hash>/header.gch, got: {rel}"
+            assert len(parts[0]) == 16, f"Hash dir should be 16 chars, got: {parts[0]}"
+            assert parts[1] == "stdafx.h.gch"
+
+            # Verify source compile command includes -I for the pchdir hash dir
+            source_rules = [r for r in compile_rules if not r.output.endswith(".gch")]
+            assert source_rules, f"{backend_name}: expected source compile rules"
+            source_cmd = source_rules[0].command
+            assert "-I" in source_cmd, (
+                f"{backend_name}: source compile should include -I for pchdir"
+            )
+            i_idx = source_cmd.index("-I")
+            assert source_cmd[i_idx + 1].startswith(pchdir + "/"), (
+                f"{backend_name}: -I should point to pchdir hash dir"
+            )
 
             # Generate and execute the build
             os.makedirs(bindir, exist_ok=True)

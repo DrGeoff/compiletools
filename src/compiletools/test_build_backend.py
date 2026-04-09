@@ -1,9 +1,12 @@
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from compiletools.build_backend import (
     BuildBackend,
+    _gch_path,
+    _pch_command_hash,
     available_backends,
     compute_link_signature,
     get_backend_class,
@@ -363,6 +366,356 @@ class TestBuildGraphPopulation:
         assert len(source_rules) == 1
         assert gch_rule.output in source_rules[0].inputs
 
+    def test_pch_with_pchdir_creates_content_addressable_gch(self, tmp_path):
+        """When pchdir is set, .gch files are placed under <pchdir>/<hash>/."""
+        import stringzilla as sz
+
+        pchdir = str(tmp_path / "pch")
+        pch_flags = {
+            "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
+            "/src/stdafx.h": {},
+        }
+        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], pchdir=pchdir)
+        hunter = make_mock_hunter(
+            sources=["/src/main.cpp"],
+            headers=["/src/util.h"],
+            per_file_magicflags=pch_flags,
+        )
+        backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        graph = backend.build_graph()
+
+        gch_rules = [r for r in graph.rules if r.output.endswith(".gch")]
+        assert len(gch_rules) == 1
+        gch_path = gch_rules[0].output
+        assert gch_path.startswith(pchdir + "/")
+        # Layout: <pchdir>/<hash>/stdafx.h.gch
+        parts = gch_path[len(pchdir) + 1 :].split("/")
+        assert len(parts) == 2
+        assert len(parts[0]) == 16  # 16-char hex hash
+        assert parts[1] == "stdafx.h.gch"
+
+    def test_pch_without_pchdir_uses_legacy_path(self, tmp_path):
+        """When pchdir is None, .gch files are placed next to the header."""
+        import stringzilla as sz
+
+        pch_flags = {
+            "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
+            "/src/stdafx.h": {},
+        }
+        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], pchdir=None)
+        hunter = make_mock_hunter(
+            sources=["/src/main.cpp"],
+            headers=["/src/util.h"],
+            per_file_magicflags=pch_flags,
+        )
+        backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        graph = backend.build_graph()
+
+        gch_rules = [r for r in graph.rules if r.output.endswith(".gch")]
+        assert len(gch_rules) == 1
+        assert gch_rules[0].output == "/src/stdafx.h.gch"
+
+    def test_source_compile_includes_pch_include_dir(self, tmp_path):
+        """Source compile commands get -I <pchdir>/<hash>/ when pchdir is set."""
+        import stringzilla as sz
+
+        pchdir = str(tmp_path / "pch")
+        pch_flags = {
+            "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
+            "/src/stdafx.h": {},
+        }
+        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], pchdir=pchdir)
+        hunter = make_mock_hunter(
+            sources=["/src/main.cpp"],
+            headers=["/src/util.h"],
+            per_file_magicflags=pch_flags,
+        )
+        backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        graph = backend.build_graph()
+
+        source_rules = [r for r in graph.rules if r.output.endswith("main.o")]
+        assert len(source_rules) == 1
+        cmd = source_rules[0].command
+        i_idx = cmd.index("-I")
+        include_dir = cmd[i_idx + 1]
+        assert include_dir.startswith(pchdir + "/")
+        assert len(include_dir.split("/")[-1]) == 16  # hash directory
+
+    def test_pchdir_mkdir_rule_created(self, tmp_path):
+        """A mkdir rule is created for each PCH hash subdirectory."""
+        import stringzilla as sz
+
+        pchdir = str(tmp_path / "pch")
+        pch_flags = {
+            "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
+            "/src/stdafx.h": {},
+        }
+        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], pchdir=pchdir)
+        hunter = make_mock_hunter(
+            sources=["/src/main.cpp"],
+            headers=["/src/util.h"],
+            per_file_magicflags=pch_flags,
+        )
+        backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        graph = backend.build_graph()
+
+        mkdir_rules = [r for r in graph.rules if r.rule_type == "mkdir" and r.output.startswith(pchdir)]
+        assert len(mkdir_rules) == 1
+        assert mkdir_rules[0].output.startswith(pchdir + "/")
+
+
+    def test_multiple_pch_headers_different_hashes(self, tmp_path):
+        """Two PCH headers with different magic flags get distinct hash dirs."""
+        import stringzilla as sz
+
+        pchdir = str(tmp_path / "pch")
+        pch_flags = {
+            "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/alpha.h"), sz.Str("/src/beta.h")]},
+            "/src/alpha.h": {sz.Str("CXXFLAGS"): [sz.Str("-DALPHA")]},
+            "/src/beta.h": {sz.Str("CXXFLAGS"): [sz.Str("-DBETA")]},
+        }
+        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], pchdir=pchdir)
+        hunter = make_mock_hunter(
+            sources=["/src/main.cpp"],
+            headers=["/src/util.h"],
+            per_file_magicflags=pch_flags,
+        )
+        backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        graph = backend.build_graph()
+
+        gch_rules = [r for r in graph.rules if r.output.endswith(".gch")]
+        assert len(gch_rules) == 2, f"Expected 2 .gch rules, got {[r.output for r in gch_rules]}"
+        hash_dirs = [os.path.basename(os.path.dirname(r.output)) for r in gch_rules]
+        assert hash_dirs[0] != hash_dirs[1], "Different magic flags should produce different hash dirs"
+        basenames = sorted(os.path.basename(r.output) for r in gch_rules)
+        assert basenames == ["alpha.h.gch", "beta.h.gch"]
+
+    def test_multiple_pch_headers_source_gets_multiple_include_dirs(self, tmp_path):
+        """Source using multiple PCH headers gets -I for each."""
+        import stringzilla as sz
+
+        pchdir = str(tmp_path / "pch")
+        pch_flags = {
+            "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/alpha.h"), sz.Str("/src/beta.h")]},
+            "/src/alpha.h": {},
+            "/src/beta.h": {sz.Str("CXXFLAGS"): [sz.Str("-DBETA")]},
+        }
+        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], pchdir=pchdir)
+        hunter = make_mock_hunter(
+            sources=["/src/main.cpp"],
+            headers=["/src/util.h"],
+            per_file_magicflags=pch_flags,
+        )
+        backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        graph = backend.build_graph()
+
+        source_rules = [r for r in graph.rules if r.output.endswith("main.o")]
+        assert len(source_rules) == 1
+        cmd = source_rules[0].command
+        i_indices = [i for i, v in enumerate(cmd) if v == "-I"]
+        assert len(i_indices) == 2, f"Expected 2 -I flags, got {len(i_indices)}"
+        include_dirs = [cmd[i + 1] for i in i_indices]
+        assert all(d.startswith(pchdir + "/") for d in include_dirs)
+
+    def test_no_pch_include_dir_when_pchdir_unset(self, tmp_path):
+        """When pchdir is None, no -I flags are injected for PCH."""
+        import stringzilla as sz
+
+        pch_flags = {
+            "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
+            "/src/stdafx.h": {},
+        }
+        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], pchdir=None)
+        hunter = make_mock_hunter(
+            sources=["/src/main.cpp"],
+            headers=["/src/util.h"],
+            per_file_magicflags=pch_flags,
+        )
+        backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        graph = backend.build_graph()
+
+        source_rules = [r for r in graph.rules if r.output.endswith("main.o")]
+        assert len(source_rules) == 1
+        assert "-I" not in source_rules[0].command
+
+
+class TestPchCommandHash:
+    """Test _pch_command_hash() determinism and sensitivity."""
+
+    def test_deterministic(self):
+        from types import SimpleNamespace
+        args = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
+        h1 = _pch_command_hash(args, "/src/foo.h", [], [])
+        h2 = _pch_command_hash(args, "/src/foo.h", [], [])
+        assert h1 == h2
+
+    def test_differs_for_different_flags(self):
+        from types import SimpleNamespace
+        args1 = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
+        args2 = SimpleNamespace(CXX="g++", CXXFLAGS="-O3")
+        h1 = _pch_command_hash(args1, "/src/foo.h", [], [])
+        h2 = _pch_command_hash(args2, "/src/foo.h", [], [])
+        assert h1 != h2
+
+    def test_differs_for_different_compiler(self):
+        from types import SimpleNamespace
+        args1 = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
+        args2 = SimpleNamespace(CXX="clang++", CXXFLAGS="-O2")
+        h1 = _pch_command_hash(args1, "/src/foo.h", [], [])
+        h2 = _pch_command_hash(args2, "/src/foo.h", [], [])
+        assert h1 != h2
+
+    def test_includes_magic_flags(self):
+        import stringzilla as sz
+        from types import SimpleNamespace
+        args = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
+        h1 = _pch_command_hash(args, "/src/foo.h", [sz.Str("-DFOO")], [])
+        h2 = _pch_command_hash(args, "/src/foo.h", [], [])
+        assert h1 != h2
+
+
+class TestGchPath:
+    """Test _gch_path() with and without pchdir."""
+
+    def test_legacy_path(self):
+        assert _gch_path("/src/foo.h") == "/src/foo.h.gch"
+
+    def test_pchdir_path(self):
+        result = _gch_path("/src/foo.h", pchdir="/cache/pch", command_hash="abc123")
+        assert result == "/cache/pch/abc123/foo.h.gch"
+
+    def test_pchdir_without_hash_falls_back(self):
+        assert _gch_path("/src/foo.h", pchdir="/cache/pch") == "/src/foo.h.gch"
+
+
+class TestPchFileLocking:
+    """Test that PCH compile rules are wrapped with file-locking like other compiles."""
+
+    def _make_backend_with_locking(self, tmp_path, pchdir=None):
+        import stringzilla as sz
+        StubClass = make_stub_backend_class()
+        pch_flags = {
+            "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
+            "/src/stdafx.h": {},
+        }
+        args = make_backend_args(
+            tmp_path, filename=["/src/main.cpp"], pchdir=pchdir,
+            file_locking=True,
+            sleep_interval_lockdir=0.1, sleep_interval_cifs=0.2,
+            sleep_interval_flock_fallback=0.1,
+            lock_warn_interval=60, lock_cross_host_timeout=600,
+        )
+        hunter = make_mock_hunter(
+            sources=["/src/main.cpp"],
+            headers=["/src/util.h"],
+            per_file_magicflags=pch_flags,
+        )
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        return backend
+
+    def test_pch_compile_rule_has_compile_type(self, tmp_path):
+        """PCH rules have rule_type='compile' so backends apply lock-wrapping."""
+        pchdir = str(tmp_path / "pch")
+        backend = self._make_backend_with_locking(tmp_path, pchdir=pchdir)
+        graph = backend.build_graph()
+
+        gch_rules = [r for r in graph.rules if r.output.endswith(".gch")]
+        assert len(gch_rules) == 1
+        assert gch_rules[0].rule_type == "compile"
+
+    def test_pch_compile_command_has_output_flag(self, tmp_path):
+        """PCH compile command ends with -o target, needed for _wrap_compile_cmd()."""
+        pchdir = str(tmp_path / "pch")
+        backend = self._make_backend_with_locking(tmp_path, pchdir=pchdir)
+        graph = backend.build_graph()
+
+        gch_rules = [r for r in graph.rules if r.output.endswith(".gch")]
+        assert len(gch_rules) == 1
+        cmd = gch_rules[0].command
+        o_idx = cmd.index("-o")
+        assert cmd[o_idx + 1] == gch_rules[0].output
+
+
+class TestPchIncrementalHash:
+    """Test that hash changes correctly track flag/compiler changes."""
+
+    def _build_graph_with_flags(self, tmp_path, cxxflags, pchdir):
+        import stringzilla as sz
+        pch_flags = {
+            "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
+            "/src/stdafx.h": {},
+        }
+        args = make_backend_args(
+            tmp_path, filename=["/src/main.cpp"], pchdir=pchdir,
+            CXXFLAGS=cxxflags,
+        )
+        hunter = make_mock_hunter(
+            sources=["/src/main.cpp"],
+            headers=["/src/util.h"],
+            per_file_magicflags=pch_flags,
+        )
+        StubClass = make_stub_backend_class()
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        return backend.build_graph()
+
+    def test_same_flags_produce_same_gch_path(self, tmp_path):
+        """Identical flags produce the same .gch path (cache hit)."""
+        pchdir = str(tmp_path / "pch")
+        g1 = self._build_graph_with_flags(tmp_path, "-O2", pchdir)
+        g2 = self._build_graph_with_flags(tmp_path, "-O2", pchdir)
+
+        gch1 = [r.output for r in g1.rules if r.output.endswith(".gch")]
+        gch2 = [r.output for r in g2.rules if r.output.endswith(".gch")]
+        assert gch1 == gch2
+
+    def test_different_flags_produce_different_gch_path(self, tmp_path):
+        """Different flags produce different .gch paths (cache miss)."""
+        pchdir = str(tmp_path / "pch")
+        g1 = self._build_graph_with_flags(tmp_path, "-O2", pchdir)
+        g2 = self._build_graph_with_flags(tmp_path, "-O3 -DNDEBUG", pchdir)
+
+        gch1 = [r.output for r in g1.rules if r.output.endswith(".gch")]
+        gch2 = [r.output for r in g2.rules if r.output.endswith(".gch")]
+        assert gch1 != gch2
+
+    def test_different_compiler_produces_different_gch_path(self, tmp_path):
+        """Different compiler produces different .gch paths."""
+        import stringzilla as sz
+        pchdir = str(tmp_path / "pch")
+        pch_flags = {
+            "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
+            "/src/stdafx.h": {},
+        }
+
+        args1 = make_backend_args(tmp_path, filename=["/src/main.cpp"], pchdir=pchdir, CXX="g++")
+        args2 = make_backend_args(tmp_path, filename=["/src/main.cpp"], pchdir=pchdir, CXX="clang++")
+        hunter = make_mock_hunter(
+            sources=["/src/main.cpp"], headers=["/src/util.h"],
+            per_file_magicflags=pch_flags,
+        )
+        StubClass = make_stub_backend_class()
+
+        b1 = StubClass(args=args1, hunter=hunter)
+        b1.namer = make_mock_namer(args1)
+        b2 = StubClass(args=args2, hunter=hunter)
+        b2.namer = make_mock_namer(args2)
+
+        g1 = b1.build_graph()
+        g2 = b2.build_graph()
+
+        gch1 = [r.output for r in g1.rules if r.output.endswith(".gch")]
+        gch2 = [r.output for r in g2.rules if r.output.endswith(".gch")]
+        assert gch1 != gch2
+
 
 class TestRunTests:
     """Test the _run_tests() method."""
@@ -601,6 +954,38 @@ class TestDefaultRealclean:
         backend = self._make_backend(exe_dir, obj_dir)
         # Should not raise
         backend.realclean(graph)
+
+    def test_realclean_removes_pch_gch_from_pchdir(self, tmp_path):
+        """realclean() should remove .gch files from shared pchdir."""
+        exe_dir = tmp_path / "exe"
+        obj_dir = tmp_path / "obj"
+        pch_dir = tmp_path / "pch" / "abc123"
+        exe_dir.mkdir()
+        obj_dir.mkdir()
+        pch_dir.mkdir(parents=True)
+
+        gch_file = pch_dir / "stdafx.h.gch"
+        gch_file.write_text("precompiled header")
+
+        # Another project's gch in a different hash dir — should NOT be removed
+        other_hash_dir = tmp_path / "pch" / "def456"
+        other_hash_dir.mkdir(parents=True)
+        other_gch = other_hash_dir / "stdafx.h.gch"
+        other_gch.write_text("other project's precompiled header")
+
+        graph = BuildGraph()
+        graph.add_rule(BuildRule(
+            output=str(gch_file),
+            inputs=["stdafx.h"],
+            command=["g++", "-x", "c++-header", "stdafx.h", "-o", str(gch_file)],
+            rule_type="compile",
+        ))
+
+        backend = self._make_backend(exe_dir, obj_dir)
+        backend.realclean(graph)
+
+        assert not gch_file.exists(), ".gch from this build should be removed"
+        assert other_gch.exists(), "other project's .gch should be preserved"
 
 
 class TestAllOutputsCurrent:

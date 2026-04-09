@@ -854,6 +854,7 @@ def make_backend_args(tmpdir, **overrides):
         CXXFLAGS="-O2",
         LD="g++",
         LDFLAGS="",
+        pchdir=os.path.join(tmpdir, "pch"),
         file_locking=False,
         serialisetests=False,
         build_only_changed=None,

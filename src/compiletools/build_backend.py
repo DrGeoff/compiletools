@@ -394,35 +394,57 @@ class BuildBackend(abc.ABC):
         else:
             self._dynamic_sources = set()
 
-        # Discover PCH headers from magic flags and create PCH compile rules
+        # Discover PCH headers from magic flags and create PCH compile rules.
+        # When pchdir is configured, .gch files are placed in a shared
+        # content-addressable cache: <pchdir>/<command_hash>/<header>.gch
         import stringzilla as sz
 
-        pch_gch_paths = {}  # header_abs_path -> gch_output_path
+        pchdir = getattr(self.args, "pchdir", None)
+        self._pch_gch_paths: dict[str, str] = {}   # header_abs -> gch_output
+        self._pch_include_dirs: dict[str, str] = {}  # header_abs -> -I dir
+
+        pch_headers: set[str] = set()
         for filename in all_compile_sources:
             magicflags = self.hunter.magicflags(filename)
             for pch_header in magicflags.get(sz.Str("PCH"), []):
-                pch_header = str(pch_header)
-                if pch_header not in pch_gch_paths:
-                    pch_gch_paths[pch_header] = _gch_path(pch_header)
+                pch_headers.add(str(pch_header))
 
-        for pch_header, gch_path in pch_gch_paths.items():
-            pch_deps = [pch_header] + sorted(
-                str(d) for d in self.hunter.header_dependencies(pch_header))
+        pch_mkdir_dirs: set[str] = set()
+        for pch_header in sorted(pch_headers):
             pch_magicflags = self.hunter.magicflags(pch_header)
             magic_cpp_flags = pch_magicflags.get(sz.Str("CPPFLAGS"), [])
             magic_cxx_flags = pch_magicflags.get(sz.Str("CXXFLAGS"), [])
+
+            cmd_hash = _pch_command_hash(self.args, pch_header, magic_cpp_flags, magic_cxx_flags) if pchdir else None
+            gch_path = _gch_path(pch_header, pchdir=pchdir, command_hash=cmd_hash)
+            self._pch_gch_paths[pch_header] = gch_path
+            if pchdir and cmd_hash:
+                self._pch_include_dirs[pch_header] = os.path.join(pchdir, cmd_hash)
+                pch_mkdir_dirs.add(os.path.join(pchdir, cmd_hash))
+
+            pch_deps = [pch_header] + sorted(
+                str(d) for d in self.hunter.header_dependencies(pch_header))
             pch_cmd = (
                 [self.args.CXX, self.args.CXXFLAGS]
                 + [str(f) for f in magic_cpp_flags]
                 + [str(f) for f in magic_cxx_flags]
                 + ["-x", "c++-header", pch_header, "-o", gch_path]
             )
+            order_deps = [os.path.join(pchdir, cmd_hash)] if pchdir and cmd_hash else [self.args.objdir]
             graph.add_rule(BuildRule(
                 output=gch_path,
                 inputs=pch_deps,
                 command=pch_cmd,
                 rule_type="compile",
-                order_only_deps=[self.args.objdir],
+                order_only_deps=order_deps,
+            ))
+
+        for pch_dir in sorted(pch_mkdir_dirs):
+            graph.add_rule(BuildRule(
+                output=pch_dir,
+                inputs=[],
+                command=["mkdir", "-p", pch_dir],
+                rule_type="mkdir",
             ))
 
         for filename in all_compile_sources:
@@ -740,11 +762,17 @@ class BuildBackend(abc.ABC):
 
         magicflags = self.hunter.magicflags(filename)
 
-        # Add PCH .gch dependency if this source uses a precompiled header
+        # Add PCH .gch dependency if this source uses a precompiled header.
+        # Collect -I flags for the shared pchdir so GCC finds the cached .gch.
+        pch_include_flags: list[str] = []
         for pch_header in magicflags.get(sz.Str("PCH"), []):
-            gch_path = _gch_path(str(pch_header))
+            pch_header_str = str(pch_header)
+            gch_path = self._pch_gch_paths.get(pch_header_str, _gch_path(pch_header_str))
             if gch_path not in prerequisites:
                 prerequisites.append(gch_path)
+            include_dir = self._pch_include_dirs.get(pch_header_str)
+            if include_dir:
+                pch_include_flags.extend(["-I", include_dir])
 
         macro_state_hash = self.hunter.macro_state_hash(filename)
         dep_hash = self.namer.compute_dep_hash(deplist)
@@ -755,6 +783,7 @@ class BuildBackend(abc.ABC):
             magic_c_flags = magicflags.get(sz.Str("CFLAGS"), [])
             compile_cmd = (
                 [self.args.CC, self.args.CFLAGS]
+                + pch_include_flags
                 + [str(flag) for flag in magic_cpp_flags]
                 + [str(flag) for flag in magic_c_flags]
             )
@@ -762,6 +791,7 @@ class BuildBackend(abc.ABC):
             magic_cxx_flags = magicflags.get(sz.Str("CXXFLAGS"), [])
             compile_cmd = (
                 [self.args.CXX, self.args.CXXFLAGS]
+                + pch_include_flags
                 + [str(flag) for flag in magic_cpp_flags]
                 + [str(flag) for flag in magic_cxx_flags]
             )
@@ -909,9 +939,33 @@ class BuildBackend(abc.ABC):
         )
 
 
-def _gch_path(header: str) -> str:
-    """Return the precompiled header output path for a header file."""
+def _gch_path(header: str, pchdir: str | None = None, command_hash: str | None = None) -> str:
+    """Return the precompiled header output path for a header file.
+
+    When *pchdir* and *command_hash* are provided the .gch is placed under
+    ``<pchdir>/<command_hash>/<basename>.gch`` so that GCC can find it via
+    ``-I <pchdir>/<command_hash>/``.  Otherwise falls back to the legacy
+    ``header.gch`` path next to the header.
+    """
+    if pchdir and command_hash:
+        return os.path.join(pchdir, command_hash, os.path.basename(header) + ".gch")
     return header + ".gch"
+
+
+def _pch_command_hash(
+    args, pch_header: str, magic_cpp_flags: list, magic_cxx_flags: list,
+) -> str:
+    """Compute a content-addressable hash for a PCH compile command.
+
+    The hash captures compiler identity, all flags, and the realpath of the
+    header so that different compilers/flags/headers produce distinct cache
+    entries while identical configurations share a single .gch file.
+    """
+    canonical_parts = [args.CXX, args.CXXFLAGS]
+    canonical_parts += [str(f) for f in magic_cpp_flags]
+    canonical_parts += [str(f) for f in magic_cxx_flags]
+    canonical_parts += ["-x", "c++-header", os.path.realpath(pch_header)]
+    return hashlib.sha256(" ".join(canonical_parts).encode()).hexdigest()[:16]
 
 
 @functools.lru_cache(maxsize=1)
