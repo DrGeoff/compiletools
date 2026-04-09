@@ -595,13 +595,39 @@ def merge_ldflags_with_topo_sort(
 
         # Show which source files contributed the conflicting edges
         if source_files is not None:
+            # Collect all files referenced in cycle edges
+            cycle_files: list[str] = []
+            for i in range(len(cycle_path) - 1):
+                edge = (cycle_path[i], cycle_path[i + 1])
+                cycle_files.extend(edge_sources.get(edge, []))
+
+            # Strip common directory prefix for compact display
+            common_root = ""
+            if cycle_files:
+                try:
+                    common_root = os.path.commonpath(cycle_files)
+                except ValueError:
+                    pass  # different drives on Windows
+                # Only strip if it's a real directory, not a partial filename
+                if common_root and not os.path.isdir(common_root):
+                    common_root = os.path.dirname(common_root)
+
+            if common_root:
+                lines.append("")
+                lines.append(f"  Root: {common_root}/")
+
+            def _shorten(filepath: str) -> str:
+                if common_root:
+                    return os.path.relpath(filepath, common_root)
+                return filepath
+
             lines.append("")
             lines.append("  Constraints contributing to the cycle:")
             for i in range(len(cycle_path) - 1):
                 edge = (cycle_path[i], cycle_path[i + 1])
                 files = edge_sources.get(edge, [])
                 if files:
-                    file_list = ", ".join(files)
+                    file_list = ", ".join(_shorten(f) for f in files)
                     lines.append(
                         f"    {edge[0]} must precede {edge[1]}  (from {file_list})"
                     )

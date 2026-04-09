@@ -375,6 +375,69 @@ def signal_handler(signal, frame):
     sys.exit(0)
 
 
+def _print_rich_error(err: ValueError) -> None:
+    """Format a ValueError with Rich styling, falling back to plain print."""
+    import re
+
+    msg = str(err)
+    try:
+        from rich.console import Console
+        from rich.panel import Panel
+        from rich.text import Text
+    except ImportError:
+        print(msg, file=sys.stderr)
+        return
+
+    text = Text()
+    for line in msg.split("\n"):
+        if line.startswith("Cyclic library dependency"):
+            text.append(line, style="bold red")
+        elif line.strip().startswith("Cycle:"):
+            label, _, path = line.partition("Cycle:")
+            text.append(label + "Cycle:", style="bold")
+            # Style each element: library names in cyan, arrows dim
+            for part in re.split(r"( -> )", path):
+                if part == " -> ":
+                    text.append(part, style="dim")
+                else:
+                    text.append(part, style="cyan")
+        elif line.strip().startswith("Root:"):
+            label, _, path = line.partition("Root:")
+            text.append(label + "Root:", style="bold")
+            text.append(path, style="green")
+        elif line.strip().startswith("Constraints"):
+            text.append(line, style="bold")
+        elif "must precede" in line:
+            # "    X must precede Y  (from src/foo.cpp)"
+            m = re.match(
+                r"(\s+)(\S+)( must precede )(\S+)(.*)", line
+            )
+            if m:
+                indent, lib_a, mid, lib_b, rest = m.groups()
+                text.append(indent)
+                text.append(lib_a, style="cyan")
+                text.append(mid)
+                text.append(lib_b, style="cyan")
+                # Highlight file paths in the "(from ...)" part
+                fm = re.match(r"(\s+\(from )(.*?)(\))", rest)
+                if fm:
+                    text.append(fm.group(1))
+                    text.append(fm.group(2), style="green")
+                    text.append(fm.group(3))
+                else:
+                    text.append(rest)
+            else:
+                text.append(line)
+        elif line.startswith("Fix the LDFLAGS"):
+            text.append(line, style="dim italic")
+        else:
+            text.append(line)
+        text.append("\n")
+
+    console = Console(stderr=True)
+    console.print(Panel(text, border_style="red", title="Error", title_align="left"))
+
+
 def main(argv=None):
     cap = compiletools.apptools.create_parser(
         "A convenience tool to aid migration from cake to the ct-* tools", argv=argv
@@ -400,6 +463,12 @@ def main(argv=None):
     except OSError as ioe:
         if args.verbose < 2:
             print(f"Error processing {ioe.filename}: {ioe.strerror}")
+            return 1
+        else:
+            raise
+    except ValueError as ve:
+        if args.verbose < 2:
+            _print_rich_error(ve)
             return 1
         else:
             raise

@@ -258,16 +258,23 @@ class TestMergeLdflagsTopoSort:
         with pytest.raises(ValueError, match=r"a -> b -> c -> a"):
             utils.merge_ldflags_with_topo_sort(per_file)
 
-    def test_cycle_error_shows_source_files(self):
-        """When source_files are provided, the error should name them."""
+    def test_cycle_error_shows_source_files(self, tmp_path):
+        """When source_files are provided, the error should show paths relative to their common root."""
         per_file = [
             ["-la", "-lb"],
             ["-lb", "-la"],
         ]
-        source_files = ["src/foo.cpp", "src/bar.cpp"]
-        with pytest.raises(ValueError, match="src/foo.cpp") as exc_info:
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        (src_dir / "foo.cpp").touch()
+        (src_dir / "bar.cpp").touch()
+        source_files = [str(src_dir / "foo.cpp"), str(src_dir / "bar.cpp")]
+        with pytest.raises(ValueError) as exc_info:
             utils.merge_ldflags_with_topo_sort(per_file, source_files=source_files)
-        assert "src/bar.cpp" in str(exc_info.value)
+        msg = str(exc_info.value)
+        assert f"Root: {src_dir}/" in msg
+        assert "foo.cpp" in msg
+        assert "bar.cpp" in msg
 
     def test_deterministic_output(self):
         """Same input must always produce same output (CA cache requirement)."""
