@@ -110,6 +110,7 @@ class MagicFlagsBase:
         # After _parse() runs, the MacroState carries effective compile flags
         # (global + per-file magic) so get_hash(include_core=True) captures everything.
         self._final_macro_states = {}
+        self._expander = None
 
     def _initialize_macro_state(self) -> MacroState:
         """Initialize MacroState with command-line and compiler macros as core.
@@ -258,10 +259,16 @@ class MagicFlagsBase:
 
             # Use the shared filtering logic from apptools
             cflags_str = compiletools.apptools.filter_pkg_config_cflags(cflags_raw, self._args.verbose)
-            cflags_list = compiletools.utils.split_command_cached_sz(sz.Str(cflags_str))
+            cflags_sz = sz.Str(cflags_str)
+            if cflags_str and self._expander:
+                cflags_sz = self._expander._recursive_expand_macros_sz(cflags_sz)
+            cflags_list = compiletools.utils.split_command_cached_sz(cflags_sz)
 
             libs_raw = compiletools.apptools.cached_pkg_config(pkg, "--libs")
-            libs_list = compiletools.utils.split_command_cached_sz(sz.Str(libs_raw))
+            libs_sz = sz.Str(libs_raw)
+            if libs_raw and self._expander:
+                libs_sz = self._expander._recursive_expand_macros_sz(libs_sz)
+            libs_list = compiletools.utils.split_command_cached_sz(libs_sz)
 
             # Add cflags to all C/C++ flag categories
             for key in (sz.Str("CPPFLAGS"), sz.Str("CFLAGS"), sz.Str("CXXFLAGS")):
@@ -381,6 +388,7 @@ class MagicFlagsBase:
                 compiler_path=getattr(self._args, "CXX", ""),
                 cppflags=getattr(self._args, "CPPFLAGS", ""),
             )
+        self._expander = expander
 
         for file_data in file_analysis_data:
             content_hash = file_data["content_hash"]

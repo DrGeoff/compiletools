@@ -222,6 +222,27 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
             "Direct magic should expand LIB_SUFFIX=g in LDFLAGS values"
         )
 
+    def test_macro_expansion_in_pkg_config_output(self, pkgconfig_env):
+        """Test that macros are expanded in pkg-config --cflags and --libs output.
+
+        Without the fix, pkg-config output like -lmylib-LIB_SUFFIX would not
+        be macro-expanded even when LIB_SUFFIX is defined, because
+        _handle_pkg_config did not have access to the expander.
+        """
+        files = uth.write_sources({
+            "test_pkg_macro.cpp": (
+                "#define LIB_SUFFIX O2\n"
+                "//#PKG-CONFIG=macro-in-output\n"
+                "int main() { return 0; }\n"
+            )
+        })
+        source = str(files["test_pkg_macro.cpp"])
+
+        result = self._parse_with_magic("direct", source)
+        assert self._check_flags(result, "LDFLAGS", ["-lmylib-O2"], ["LIB_SUFFIX"]), (
+            "LIB_SUFFIX should be expanded in pkg-config --libs output"
+        )
+
     def test_undefined_macro_in_magic_flag_values_unchanged(self):
         """Undefined macros in magic flag values should remain as-is"""
         source_file = "ldflags/macro_expanded_ldflags.cpp"
