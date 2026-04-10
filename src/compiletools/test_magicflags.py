@@ -8,6 +8,7 @@ import compiletools.magicflags
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
 from compiletools.build_context import BuildContext
+from compiletools.magicflags import _HARD_ORDERINGS_KEY
 
 
 class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
@@ -242,6 +243,65 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert self._check_flags(result, "LDFLAGS", ["-lmylib-O2"], ["LIB_SUFFIX"]), (
             "LIB_SUFFIX should be expanded in pkg-config --libs output"
         )
+
+    def test_hard_orderings_use_expanded_names(self, pkgconfig_env):
+        """Test that _HARD_ORDERINGS from multi-package PKG-CONFIG annotations
+        use macro-expanded library names, not raw pkg-config output.
+
+        Regression test: _collect_hard_orderings() previously called
+        cached_pkg_config() independently and got unexpanded names like
+        mylib-LIB_SUFFIX, while soft LDFLAGS constraints used expanded
+        names like mylib-O2, preventing cancellation in the topo sort.
+        """
+        files = uth.write_sources({
+            "test_hard_ordering_macro.cpp": (
+                "#define LIB_SUFFIX O2\n"
+                "//#PKG-CONFIG=macro-in-output conditional\n"
+                "int main() { return 0; }\n"
+            )
+        })
+        source = str(files["test_hard_ordering_macro.cpp"])
+
+        result = self._parse_with_magic("direct", source)
+        orderings = result.get(_HARD_ORDERINGS_KEY, [])
+        assert len(orderings) == 1, f"Expected 1 hard ordering, got {len(orderings)}"
+        pred, succ = orderings[0]
+        assert pred == "mylib-O2", (
+            f"Hard ordering should use expanded name 'mylib-O2', got '{pred}'"
+        )
+        assert succ == "testpkg", f"Expected 'testpkg', got '{succ}'"
+
+    def test_macro_expansion_debug_suffix_in_ldflags_and_hard_orderings(self, pkgconfig_env):
+        """Verify macro expansion works with debug-style suffixes (e.g. -g).
+
+        LIB_SUFFIX=g should expand -lmylib-LIB_SUFFIX to -lmylib-g in
+        both the LDFLAGS (soft constraints) and the _HARD_ORDERINGS
+        (hard constraints).
+        """
+        files = uth.write_sources({
+            "test_debug_suffix.cpp": (
+                "#define LIB_SUFFIX g\n"
+                "//#PKG-CONFIG=macro-in-output conditional\n"
+                "int main() { return 0; }\n"
+            )
+        })
+        source = str(files["test_debug_suffix.cpp"])
+
+        result = self._parse_with_magic("direct", source)
+
+        # LDFLAGS should contain the expanded form
+        assert self._check_flags(result, "LDFLAGS", ["-lmylib-g"], ["LIB_SUFFIX"]), (
+            "LIB_SUFFIX should be expanded to 'g' in pkg-config --libs output"
+        )
+
+        # Hard orderings must use the same expanded name
+        orderings = result.get(_HARD_ORDERINGS_KEY, [])
+        assert len(orderings) == 1, f"Expected 1 hard ordering, got {len(orderings)}"
+        pred, succ = orderings[0]
+        assert pred == "mylib-g", (
+            f"Hard ordering should use expanded name 'mylib-g', got '{pred}'"
+        )
+        assert succ == "testpkg", f"Expected 'testpkg', got '{succ}'"
 
     def test_undefined_macro_in_magic_flag_values_unchanged(self):
         """Undefined macros in magic flag values should remain as-is"""

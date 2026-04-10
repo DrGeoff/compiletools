@@ -18,6 +18,10 @@ import compiletools.wrappedos
 from compiletools.file_analyzer import FileAnalysisResult
 from compiletools.preprocessing_cache import MacroState, get_or_compute_preprocessing
 from compiletools.stringzilla_utils import strip_sz
+
+# Internal key for storing hard ordering constraints in the magic flags dict.
+# Shared between magicflags.py (producer) and build_backend.py (consumer).
+_HARD_ORDERINGS_KEY = sz.Str("_HARD_ORDERINGS")
 from compiletools.utils import instance_cache
 
 # Type aliases for clarity
@@ -252,8 +256,11 @@ class MagicFlagsBase:
 
         # Convert to string for splitting, as we need to iterate over packages
         flag_str = str(flag)
+        packages = flag_str.split()
 
-        for pkg in flag_str.split():
+        first_l_per_pkg = []  # Track first -l per package for hard orderings
+
+        for pkg in packages:
             # pkg is str. Call cached_pkg_config directly to avoid unnecessary sz conversions
             cflags_raw = compiletools.apptools.cached_pkg_config(pkg, "--cflags")
 
@@ -270,6 +277,14 @@ class MagicFlagsBase:
                 libs_sz = self._expander._recursive_expand_macros_sz(libs_sz)
             libs_list = compiletools.utils.split_command_cached_sz(libs_sz)
 
+            # Extract first -l from expanded libs — must use the same
+            # post-expansion list that feeds LDFLAGS so names match.
+            for token in libs_list:
+                token_str = str(token)
+                if token_str.startswith("-l") and len(token_str) > 2:
+                    first_l_per_pkg.append(token_str[2:])
+                    break
+
             # Add cflags to all C/C++ flag categories
             for key in (sz.Str("CPPFLAGS"), sz.Str("CFLAGS"), sz.Str("CXXFLAGS")):
                 flagsforfilename[key].extend(cflags_list)
@@ -279,6 +294,14 @@ class MagicFlagsBase:
                 print(f"Magic PKG-CONFIG = {pkg}:")
                 print(f"\tadded {cflags_list} to CPPFLAGS, CFLAGS, and CXXFLAGS")
                 print(f"\tadded {libs_list} to LDFLAGS")
+
+        # For multi-package annotations, store pairwise hard orderings
+        if len(first_l_per_pkg) >= 2:
+            for i in range(len(first_l_per_pkg) - 1):
+                flagsforfilename[_HARD_ORDERINGS_KEY].append(
+                    (first_l_per_pkg[i], first_l_per_pkg[i + 1])
+                )
+
         return flagsforfilename
 
     def _resolve_readmacros_path(self, flag, source_filename):
@@ -419,6 +442,8 @@ class MagicFlagsBase:
 
         # Deduplicate all flags while preserving order, with smart compiler flag handling
         for key in flagsforfilename:
+            if key == _HARD_ORDERINGS_KEY:
+                continue
             flagsforfilename[key] = compiletools.utils.deduplicate_compiler_flags(flagsforfilename[key])
 
         # Update _final_macro_states to carry effective compile flags

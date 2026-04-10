@@ -144,7 +144,9 @@ The known magic flags are::
     LINKFLAGS    Linker flags (deprecated, use LDFLAGS)
     SOURCE       Inject an extra source file into the list of files to be built.
                  This is most commonly used in cross platform work.
-    PKG-CONFIG   Extract the cflags and libs using pkg-config
+    PKG-CONFIG   Extract the cflags and libs using pkg-config.
+                 Multiple packages on one line (``PKG-CONFIG=a b``)
+                 create hard link-order constraints between them.
     PCH          Precompiled header. Specifies a header to precompile into a
                  .gch file. The path is resolved relative to the source file.
     READMACROS   Read macro definitions from specified file before evaluating
@@ -154,6 +156,56 @@ The known magic flags are::
 **Note:** Magic flags with arbitrary keys (not listed above) are also accepted
 and will be passed through to the output. This will allow for project-specific
 extensions in the future.
+
+Multi-Package PKG-CONFIG
+------------------------
+When a source file depends on multiple packages *and their relative link order
+matters*, list them in a single annotation:
+
+.. code-block:: cpp
+
+    //#PKG-CONFIG=libssh2 numa
+
+This tells compiletools that ``libssh2`` must be linked **before** ``numa``.
+The ordering is treated as a **hard constraint** — it will never be
+silently discarded, and contradictory hard constraints between files
+are reported as a cyclic-dependency error.
+
+Compare this with two separate single-package annotations:
+
+.. code-block:: cpp
+
+    //#PKG-CONFIG=libssh2
+    //#PKG-CONFIG=numa
+
+Here each package's ``pkg-config --libs`` output is collected independently.
+The ordering between ``libssh2`` and ``numa`` flags is a **soft constraint**
+— if another file's pkg-config output implies the opposite order (common
+with shared transitive dependencies like ``-lssl``/``-lcrypto``), compiletools
+cancels both directions and picks a deterministic order instead of raising an
+error.
+
+**Rule of thumb:** use a single multi-package annotation when you know the
+link order matters; use separate annotations when you just need both
+packages and don't care about their relative order.
+
+Library Link-Order Resolution
+-----------------------------
+When multiple source files contribute ``LDFLAGS`` or ``PKG-CONFIG`` flags,
+compiletools merges the ``-l`` flags using a topological sort:
+
+1. Each file's flag list defines pairwise ordering constraints
+   (``-la -lb`` means ``a`` before ``b``).
+2. Constraints from single-package ``PKG-CONFIG`` or plain ``LDFLAGS`` are
+   **soft**.  If two files disagree on the order of the same pair, both
+   edges are cancelled — this commonly happens when different packages
+   list shared transitive dependencies in different orders.
+3. Constraints from multi-package ``PKG-CONFIG`` annotations are **hard**.
+   A hard edge always wins over a soft edge for the same pair.
+4. If a genuine cycle remains after cancellation (e.g., two multi-package
+   annotations asserting opposite orders), compiletools reports a
+   ``Cyclic library dependency`` error with the cycle path and the
+   contributing source files.
 
 IMPORTANT: Library Linking
 ==========================

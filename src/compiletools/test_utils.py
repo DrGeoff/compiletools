@@ -240,10 +240,11 @@ class TestMergeLdflagsTopoSort:
         assert utils.merge_ldflags_with_topo_sort([[]]) == []
 
     def test_cycle_raises_error(self):
-        """Cycles should raise ValueError since no valid link order exists."""
+        """A genuine cycle (no mutual edges) should raise ValueError."""
         per_file = [
             ["-la", "-lb"],
-            ["-lb", "-la"],
+            ["-lb", "-lc"],
+            ["-lc", "-la"],
         ]
         with pytest.raises(ValueError, match="Cyclic library dependency"):
             utils.merge_ldflags_with_topo_sort(per_file)
@@ -262,19 +263,26 @@ class TestMergeLdflagsTopoSort:
         """When source_files are provided, the error should show paths relative to their common root."""
         per_file = [
             ["-la", "-lb"],
-            ["-lb", "-la"],
+            ["-lb", "-lc"],
+            ["-lc", "-la"],
         ]
         src_dir = tmp_path / "src"
         src_dir.mkdir()
         (src_dir / "foo.cpp").touch()
         (src_dir / "bar.cpp").touch()
-        source_files = [str(src_dir / "foo.cpp"), str(src_dir / "bar.cpp")]
+        (src_dir / "baz.cpp").touch()
+        source_files = [
+            str(src_dir / "foo.cpp"),
+            str(src_dir / "bar.cpp"),
+            str(src_dir / "baz.cpp"),
+        ]
         with pytest.raises(ValueError) as exc_info:
             utils.merge_ldflags_with_topo_sort(per_file, source_files=source_files)
         msg = str(exc_info.value)
         assert f"Root: {src_dir}/" in msg
         assert "foo.cpp" in msg
         assert "bar.cpp" in msg
+        assert "baz.cpp" in msg
 
     def test_deterministic_output(self):
         """Same input must always produce same output (CA cache requirement)."""
@@ -313,3 +321,128 @@ class TestMergeLdflagsTopoSort:
         ]
         result = utils.merge_ldflags_with_topo_sort(per_file)
         assert result.count("-llibbase") == 1
+
+    # --- Hard/soft edge distinction tests ---
+
+    def test_opposite_hard_orderings_is_cycle(self):
+        """Two multi-package annotations with opposite orderings is a
+        genuine contradiction — both files explicitly declare intent.
+        PKG-CONFIG=libssh2 numa vs PKG-CONFIG=numa libssh2."""
+        per_file = [
+            ["-lssh2", "-lnuma"],
+            ["-lnuma", "-lssh2"],
+        ]
+        hard_orderings = [("ssh2", "numa"), ("numa", "ssh2")]
+        with pytest.raises(ValueError, match="Cyclic library dependency"):
+            utils.merge_ldflags_with_topo_sort(
+                per_file, hard_orderings=hard_orderings,
+            )
+
+    def test_overlapping_transitive_deps_not_cycle(self):
+        """Two single-package files whose pkg-config output lists shared
+        transitive deps in different orders should NOT be treated as a
+        cycle — these are soft constraints from discovery, not intent."""
+        per_file = [
+            ["-lssh2", "-lssl", "-lcrypto"],   # pkg-config --libs libssh2
+            ["-lnuma", "-lcrypto", "-lssl"],    # pkg-config --libs numa
+        ]
+        # No hard_orderings: both files are single-package
+        result = utils.merge_ldflags_with_topo_sort(per_file)
+        assert "-lssh2" in result
+        assert "-lnuma" in result
+        assert "-lssl" in result
+        assert "-lcrypto" in result
+
+    def test_single_pkg_vs_multi_pkg_no_conflict(self):
+        """A single-package file (libssh2) does not constrain ordering
+        relative to a multi-package file (numa libssh2)."""
+        per_file = [
+            ["-lssh2"],                # single: PKG-CONFIG=libssh2
+            ["-lnuma", "-lssh2"],      # multi: PKG-CONFIG=numa libssh2
+        ]
+        hard_orderings = [("numa", "ssh2")]
+        result = utils.merge_ldflags_with_topo_sort(
+            per_file, hard_orderings=hard_orderings,
+        )
+        assert result.index("-lnuma") < result.index("-lssh2")
+
+    def test_single_file_hard_order_respected(self):
+        """When only one file constrains the order between two packages
+        (hard ordering) and other files have just one of the two,
+        the explicit ordering must be respected."""
+        per_file = [
+            ["-lnuma", "-lssh2"],   # PKG-CONFIG=numa libssh2
+            ["-lnuma"],             # PKG-CONFIG=numa
+            ["-lssh2"],             # PKG-CONFIG=libssh2
+        ]
+        hard_orderings = [("numa", "ssh2")]
+        result = utils.merge_ldflags_with_topo_sort(
+            per_file, hard_orderings=hard_orderings,
+        )
+        assert result.index("-lnuma") < result.index("-lssh2")
+
+    def test_genuine_three_pkg_cycle_with_hard_orderings(self):
+        """file A: PKG-CONFIG=libssh2 numa, file B: PKG-CONFIG=numa libz libssh2.
+        Hard cycle ssh2→numa→z→ssh2 — truly irreconcilable."""
+        per_file = [
+            ["-lssh2", "-lnuma"],
+            ["-lnuma", "-lz", "-lssh2"],
+        ]
+        hard_orderings = [("ssh2", "numa"), ("numa", "z"), ("z", "ssh2")]
+        with pytest.raises(ValueError, match="Cyclic library dependency"):
+            utils.merge_ldflags_with_topo_sort(
+                per_file, hard_orderings=hard_orderings,
+            )
+
+    def test_soft_contradiction_resolved_even_with_hard_elsewhere(self):
+        """A soft mutual pair is cancelled even when unrelated hard
+        orderings exist."""
+        per_file = [
+            ["-la", "-lb"],     # soft: a→b
+            ["-lb", "-la"],     # soft: b→a (contradicts above)
+            ["-lx", "-ly"],     # soft: x→y
+        ]
+        hard_orderings = [("x", "y")]   # hard: x must precede y
+        result = utils.merge_ldflags_with_topo_sort(
+            per_file, hard_orderings=hard_orderings,
+        )
+        # a<->b is soft-soft mutual, cancelled — no error
+        assert "-la" in result
+        assert "-lb" in result
+        # x→y hard ordering respected
+        assert result.index("-lx") < result.index("-ly")
+
+    def test_hard_soft_cancellation_with_same_expanded_names(self):
+        """When hard and soft constraints use the same (macro-expanded)
+        library name, mutual edges should cancel correctly even when
+        surrounded by unrelated packages in various positions.
+
+        The contested pair (foo-O2, bar) appears at different positions
+        across files — not always first — to verify cancellation doesn't
+        rely on positional assumptions.
+
+        Regression test: before the fix, _collect_hard_orderings() used
+        unexpanded names (e.g. foo-LIB_SUFFIX) while soft constraints
+        used expanded names (e.g. foo-O2), preventing cancellation and
+        causing false cyclic dependency errors."""
+        per_file = [
+            # file A: contested pair in the middle, unrelated on both sides
+            ["-lnuma", "-lfoo-O2", "-lbar", "-lssl"],
+            # file B: contested pair reversed, preceded by crypto
+            ["-lcrypto", "-lbar", "-lfoo-O2", "-lzip"],
+            # file C: only unrelated libs — pure noise
+            ["-lnuma", "-lcrypto", "-lssl"],
+            # file D: contested libs not adjacent (no direct soft edge),
+            # with zip between them
+            ["-lfoo-O2", "-lzip", "-lbar"],
+        ]
+        # Hard ordering with the same expanded name (foo-O2, not foo-LIB_SUFFIX)
+        hard_orderings = [("foo-O2", "bar")]
+        result = utils.merge_ldflags_with_topo_sort(
+            per_file, hard_orderings=hard_orderings,
+        )
+        # Hard wins: foo-O2 must precede bar, soft reverse is cancelled
+        assert result.index("-lfoo-O2") < result.index("-lbar")
+        # All libs present
+        for lib in ("-lnuma", "-lfoo-O2", "-lbar", "-lcrypto", "-lzip", "-lssl"):
+            assert lib in result, f"{lib} missing from result"

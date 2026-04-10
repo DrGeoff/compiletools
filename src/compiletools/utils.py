@@ -492,6 +492,8 @@ def _find_cycle(
 def merge_ldflags_with_topo_sort(
     per_file_ldflags: list[list],
     source_files: list[str] | None = None,
+    hard_orderings: list[tuple[str, str]] | None = None,
+    hard_ordering_sources: list[str] | None = None,
 ) -> list[str]:
     """Merge per-file LDFLAGS using topological sort for -l flag ordering.
 
@@ -499,14 +501,27 @@ def merge_ldflags_with_topo_sort(
     [-llibnext, -llibbase] means libnext must appear before libbase.
     Non -l flags are deduplicated and placed before the sorted -l flags.
 
-    Raises ValueError if the constraints contain a cycle, since the linker
-    resolves symbols left-to-right and no valid link order exists for
-    cyclic dependencies.
+    Constraints from per_file_ldflags are "soft" — when two files assert
+    opposite orderings for the same pair (A before B in one, B before A
+    in another), both edges are cancelled since neither is authoritative.
+    This commonly happens when different pkg-config packages list shared
+    transitive dependencies in different orders.
+
+    Constraints from hard_orderings are "hard" — they represent explicit
+    cross-package orderings from multi-package PKG-CONFIG annotations
+    (e.g. PKG-CONFIG=libssh2 numa means ssh2 must precede numa).
+
+    Raises ValueError if a genuine cycle exists after soft mutual edges
+    are cancelled.
 
     Args:
         per_file_ldflags: Per-file lists of LDFLAGS (e.g. ["-llibnext", "-llibbase"]).
         source_files: Optional parallel list of source file paths (one per entry
             in per_file_ldflags) used to produce better error messages on cycles.
+        hard_orderings: Optional list of (pred_lib, succ_lib) pairs representing
+            hard ordering constraints (lib names without -l prefix).
+        hard_ordering_sources: Optional parallel list of source file paths
+            for hard_orderings (used in cycle error messages).
     """
     if not per_file_ldflags:
         return []
@@ -558,13 +573,62 @@ def merge_ldflags_with_topo_sort(
             if pred not in in_degree:
                 in_degree[pred] = 0
 
+    # Add hard ordering constraints (from multi-package PKG-CONFIG annotations)
+    hard_edges: set[tuple[str, str]] = set()
+    if hard_orderings:
+        for idx, (pred, succ) in enumerate(hard_orderings):
+            hard_edges.add((pred, succ))
+            if pred not in seen_libs:
+                all_libs.append(pred)
+                seen_libs.add(pred)
+            if succ not in seen_libs:
+                all_libs.append(succ)
+                seen_libs.add(succ)
+            if hard_ordering_sources is not None:
+                edge_sources[(pred, succ)].append(hard_ordering_sources[idx])
+            if succ not in graph[pred]:
+                graph[pred].add(succ)
+                in_degree[succ] = in_degree.get(succ, 0) + 1
+            if pred not in in_degree:
+                in_degree[pred] = 0
+
     if not all_libs:
         return list(dict.fromkeys(non_l_flags))
 
-    # Ensure all libs have in_degree entries
-    for lib in all_libs:
-        if lib not in in_degree:
-            in_degree[lib] = 0
+    # Cancel soft mutual edges.  When both A→B and B→A exist:
+    #   - Both soft: cancel both (ambiguous pkg-config transitive dep ordering)
+    #   - One hard: keep the hard direction, remove the soft one
+    #   - Both hard: keep both (genuine conflict, detected as cycle below)
+    to_remove: set[tuple[str, str]] = set()
+    processed: set[tuple[str, str]] = set()
+    for node in list(graph):
+        for succ in list(graph.get(node, set())):
+            if node in graph.get(succ, set()):
+                pair = (min(node, succ), max(node, succ))
+                if pair in processed:
+                    continue
+                processed.add(pair)
+                a, b = pair
+                ab_hard = (a, b) in hard_edges
+                ba_hard = (b, a) in hard_edges
+                if ab_hard and ba_hard:
+                    pass  # genuine conflict, keep both
+                elif ab_hard:
+                    to_remove.add((b, a))
+                elif ba_hard:
+                    to_remove.add((a, b))
+                else:
+                    to_remove.add((a, b))
+                    to_remove.add((b, a))
+
+    for pred, succ in to_remove:
+        graph[pred].discard(succ)
+
+    # Recompute in_degree after edge removal
+    in_degree = {lib: 0 for lib in all_libs}
+    for node in graph:
+        for succ in graph[node]:
+            in_degree[succ] = in_degree.get(succ, 0) + 1
 
     # Kahn's algorithm with alphabetical tie-breaking for determinism
     queue = sorted([lib for lib in all_libs if in_degree[lib] == 0])

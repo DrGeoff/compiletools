@@ -29,6 +29,7 @@ import compiletools.namer
 import compiletools.utils
 import compiletools.wrappedos
 from compiletools.build_graph import BuildGraph, BuildRule
+from compiletools.magicflags import _HARD_ORDERINGS_KEY
 
 
 def _touch(path: str) -> None:
@@ -810,6 +811,31 @@ class BuildBackend(abc.ABC):
             include_weight=include_weight,
         )
 
+    def _merge_ldflags_for_sources(self, sources: list[str]) -> list[str]:
+        """Collect per-file LDFLAGS and hard orderings, then merge via topo sort."""
+        import stringzilla as sz
+
+        per_file_ldflags = []
+        ldflags_source_files = []
+        hard_orderings = []
+        hard_ordering_sources = []
+        for s in sources:
+            magic_flags = self.hunter.magicflags(s)
+            file_ldflags = magic_flags.get(sz.Str("LDFLAGS"), [])
+            if file_ldflags:
+                per_file_ldflags.append(list(file_ldflags))
+                ldflags_source_files.append(s)
+            for pred, succ in magic_flags.get(_HARD_ORDERINGS_KEY, []):
+                hard_orderings.append((str(pred), str(succ)))
+                hard_ordering_sources.append(s)
+
+        return compiletools.utils.merge_ldflags_with_topo_sort(
+            per_file_ldflags,
+            source_files=ldflags_source_files,
+            hard_orderings=hard_orderings or None,
+            hard_ordering_sources=hard_ordering_sources or None,
+        )
+
     def _create_link_rule(self, source: str, library_outputs: list[str] | None = None) -> BuildRule:
         """Create a link BuildRule for a source file (executable target)."""
         completesources = self.hunter.required_source_files(source)
@@ -826,20 +852,7 @@ class BuildBackend(abc.ABC):
             ]
         )
 
-        import stringzilla as sz
-
-        per_file_ldflags = []
-        ldflags_source_files = []
-        for s in completesources:
-            magic_flags = self.hunter.magicflags(s)
-            file_ldflags = magic_flags.get(sz.Str("LDFLAGS"), [])
-            if file_ldflags:
-                per_file_ldflags.append(list(file_ldflags))
-                ldflags_source_files.append(s)
-
-        merged_ldflags = compiletools.utils.merge_ldflags_with_topo_sort(
-            per_file_ldflags, source_files=ldflags_source_files
-        )
+        merged_ldflags = self._merge_ldflags_for_sources(completesources)
         link_cmd = [self.args.LD, "-o", exename] + list(object_names) + merged_ldflags
 
         inputs = list(object_names)
@@ -911,20 +924,7 @@ class BuildBackend(abc.ABC):
         object_names, all_source_files = self._get_library_object_names(self.args.dynamic)
         lib_path = self.namer.dynamiclibrary_pathname()
 
-        import stringzilla as sz
-
-        per_file_ldflags = []
-        ldflags_source_files = []
-        for s in all_source_files:
-            magic_flags = self.hunter.magicflags(s)
-            file_ldflags = magic_flags.get(sz.Str("LDFLAGS"), [])
-            if file_ldflags:
-                per_file_ldflags.append(list(file_ldflags))
-                ldflags_source_files.append(s)
-
-        merged_ldflags = compiletools.utils.merge_ldflags_with_topo_sort(
-            per_file_ldflags, source_files=ldflags_source_files
-        )
+        merged_ldflags = self._merge_ldflags_for_sources(all_source_files)
         lib_cmd = [self.args.LD, "-shared", "-o", lib_path] + list(object_names)
         lib_cmd.extend(merged_ldflags)
         if self.args.LDFLAGS:

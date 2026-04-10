@@ -59,9 +59,11 @@ The build process in `cake.py` follows this sequence:
    - `magicflags.py` extracts build flags from `//#` comment annotations (`CPPFLAGS=`, `PKG-CONFIG=`, `SOURCE=`, `LDFLAGS=`, `PCH=`, etc.)
    - Implied sources are discovered (e.g., `foo.h` implies `foo.cpp`)
 
-4. **Backend Dispatch** -- `cake.py:_call_backend()` uses the `--backend` flag (default: `make`) to select a build backend via the registry in `build_backend.py`. The backend calls `build_graph()` to populate a `BuildGraph` (backend-agnostic IR of `BuildRule` objects) from Hunter/Namer data, then `generate()` to write the native build file. Available backends: make (default), ninja, cmake, bazel, shake, tup. `compilation_database.py` generates `compile_commands.json` independently.
+4. **LDFLAGS Merging** -- `utils.merge_ldflags_with_topo_sort()` merges per-file `-l` flags via topological sort. Edges are classified as **soft** (from single-package `PKG-CONFIG` or plain `LDFLAGS` -- cancelled when two files disagree) or **hard** (from multi-package `PKG-CONFIG=a b` annotations -- always kept). Hard orderings are computed inside `magicflags._handle_pkg_config()` from the same macro-expanded `libs_list` that produces the soft-constraint LDFLAGS (stored under the `_HARD_ORDERINGS_KEY` sentinel in the flags dict, consumed by `build_backend._merge_ldflags_for_sources()`). Genuine cycles after cancellation raise `ValueError` with a diagnostic showing the cycle path and contributing source files.
 
-5. **Build Execution** -- `backend.execute("build")` invokes the native build tool (make, ninja, cmake --build, etc.). If tests exist, `backend.execute("runtests")` runs them (most backends delegate to the shared `BuildBackend._run_tests()` which runs test executables directly). Finally `_copyexes()` copies executables to the output directory.
+5. **Backend Dispatch** -- `cake.py:_call_backend()` uses the `--backend` flag (default: `make`) to select a build backend via the registry in `build_backend.py`. The backend calls `build_graph()` to populate a `BuildGraph` (backend-agnostic IR of `BuildRule` objects) from Hunter/Namer data, then `generate()` to write the native build file. Available backends: make (default), ninja, cmake, bazel, shake, tup. `compilation_database.py` generates `compile_commands.json` independently.
+
+6. **Build Execution** -- `backend.execute("build")` invokes the native build tool (make, ninja, cmake --build, etc.). If tests exist, `backend.execute("runtests")` runs them (most backends delegate to the shared `BuildBackend._run_tests()` which runs test executables directly). Finally `_copyexes()` copies executables to the output directory.
 
 ### Magic Detection Pipeline
 
