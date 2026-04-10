@@ -17,6 +17,7 @@ import compiletools.utils
 import compiletools.wrappedos
 from compiletools.build_backend import available_backends, get_backend_class
 from compiletools.build_context import BuildContext
+from compiletools.version import __version__, get_package_git_sha
 
 
 def _ensure_backends_registered():
@@ -439,6 +440,13 @@ def _print_rich_error(err: ValueError) -> None:
 
 
 def main(argv=None):
+    sha = get_package_git_sha()
+    version_str = f"🍰 ct-cake {__version__}"
+    if sha:
+        version_str += f" (git {sha})"
+    version_str += " 🍰"
+    print(version_str)
+
     cap = compiletools.apptools.create_parser(
         "A convenience tool to aid migration from cake to the ct-* tools", argv=argv
     )
