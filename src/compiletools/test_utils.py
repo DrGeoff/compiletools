@@ -239,33 +239,42 @@ class TestMergeLdflagsTopoSort:
     def test_single_empty_file(self):
         assert utils.merge_ldflags_with_topo_sort([[]]) == []
 
-    def test_cycle_raises_error(self):
-        """A genuine cycle (no mutual edges) should raise ValueError."""
+    def test_soft_cycle_resolved_by_breaking_soft_edges(self):
+        """An all-soft cycle should be resolved by breaking soft edges,
+        not by raising an error.  Soft constraints are hints from
+        per-file flag ordering, not explicit intent."""
         per_file = [
             ["-la", "-lb"],
             ["-lb", "-lc"],
             ["-lc", "-la"],
         ]
-        with pytest.raises(ValueError, match="Cyclic library dependency"):
-            utils.merge_ldflags_with_topo_sort(per_file)
+        result = utils.merge_ldflags_with_topo_sort(per_file)
+        # All libs present in deterministic alphabetical order (no hard
+        # constraints, so tie-breaking decides).
+        assert result == ["-la", "-lb", "-lc"]
 
-    def test_cycle_error_shows_cycle_path(self):
-        """The error message should show the actual cycle path."""
+    def test_hard_cycle_raises_error(self):
+        """A purely hard cycle should raise ValueError with cycle path."""
         per_file = [
             ["-la", "-lb"],
             ["-lb", "-lc"],
             ["-lc", "-la"],
         ]
+        hard_orderings = [("a", "b"), ("b", "c"), ("c", "a")]
         with pytest.raises(ValueError, match=r"a -> b -> c -> a"):
-            utils.merge_ldflags_with_topo_sort(per_file)
+            utils.merge_ldflags_with_topo_sort(
+                per_file, hard_orderings=hard_orderings,
+            )
 
-    def test_cycle_error_shows_source_files(self, tmp_path):
-        """When source_files are provided, the error should show paths relative to their common root."""
+    def test_hard_cycle_error_shows_source_files(self, tmp_path):
+        """When source_files are provided, the error should show paths
+        relative to their common root."""
         per_file = [
             ["-la", "-lb"],
             ["-lb", "-lc"],
             ["-lc", "-la"],
         ]
+        hard_orderings = [("a", "b"), ("b", "c"), ("c", "a")]
         src_dir = tmp_path / "src"
         src_dir.mkdir()
         (src_dir / "foo.cpp").touch()
@@ -277,18 +286,62 @@ class TestMergeLdflagsTopoSort:
             str(src_dir / "baz.cpp"),
         ]
         with pytest.raises(ValueError) as exc_info:
-            utils.merge_ldflags_with_topo_sort(per_file, source_files=source_files)
+            utils.merge_ldflags_with_topo_sort(
+                per_file,
+                source_files=source_files,
+                hard_orderings=hard_orderings,
+                hard_ordering_sources=source_files,
+            )
         msg = str(exc_info.value)
         assert f"Root: {src_dir}/" in msg
         assert "foo.cpp" in msg
         assert "bar.cpp" in msg
         assert "baz.cpp" in msg
 
+    def test_mixed_cycle_breaks_soft_edges(self):
+        """A cycle with both hard and soft edges should be resolved by
+        dropping the soft edges, preserving all hard orderings."""
+        per_file = [
+            ["-la", "-lb"],     # soft: a→b
+            ["-lb", "-lc"],     # soft: b→c
+            ["-lc", "-la"],     # soft: c→a (closes the cycle)
+        ]
+        hard_orderings = [("a", "b")]   # hard: a must precede b
+        result = utils.merge_ldflags_with_topo_sort(
+            per_file, hard_orderings=hard_orderings,
+        )
+        # Hard ordering a→b preserved
+        assert result.index("-la") < result.index("-lb")
+        # All libs present
+        assert "-la" in result
+        assert "-lb" in result
+        assert "-lc" in result
+
+    def test_multiple_disjoint_soft_cycles(self):
+        """Two independent non-mutual soft cycles should both be resolved."""
+        per_file = [
+            ["-la", "-lb"], ["-lb", "-lc"], ["-lc", "-la"],  # cycle 1
+            ["-lx", "-ly"], ["-ly", "-lz"], ["-lz", "-lx"],  # cycle 2
+        ]
+        result = utils.merge_ldflags_with_topo_sort(per_file)
+        assert len(result) == 6
+        for lib in ["-la", "-lb", "-lc", "-lx", "-ly", "-lz"]:
+            assert lib in result
+
     def test_deterministic_output(self):
         """Same input must always produce same output (CA cache requirement)."""
         per_file = [
             ["-lc", "-lb"],
             ["-la", "-lb"],
+        ]
+        result1 = utils.merge_ldflags_with_topo_sort(per_file)
+        result2 = utils.merge_ldflags_with_topo_sort(per_file)
+        assert result1 == result2
+
+    def test_deterministic_output_with_soft_cycle_breaking(self):
+        """Cycle-breaking path must also produce deterministic output."""
+        per_file = [
+            ["-la", "-lb"], ["-lb", "-lc"], ["-lc", "-la"],
         ]
         result1 = utils.merge_ldflags_with_topo_sort(per_file)
         result2 = utils.merge_ldflags_with_topo_sort(per_file)

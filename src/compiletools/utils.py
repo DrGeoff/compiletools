@@ -489,6 +489,60 @@ def _find_cycle(
     return sorted(remaining) + [sorted(remaining)[0]]  # pragma: no cover
 
 
+def _format_cycle_error(
+    cycle_path: list[str],
+    edge_sources: dict[tuple[str, str], list[str]],
+    source_files: list[str] | None,
+) -> str:
+    """Format a human-readable error message for a hard library cycle."""
+    cycle_str = " -> ".join(cycle_path)
+    lines = [
+        "Cyclic library dependency detected — link order cannot be determined.",
+        "",
+        f"  Cycle: {cycle_str}",
+    ]
+    if source_files is not None:
+        cycle_files: list[str] = []
+        for i in range(len(cycle_path) - 1):
+            edge = (cycle_path[i], cycle_path[i + 1])
+            cycle_files.extend(edge_sources.get(edge, []))
+        common_root = ""
+        if cycle_files:
+            try:
+                common_root = os.path.commonpath(cycle_files)
+            except ValueError:
+                pass  # different drives on Windows
+            if common_root and not os.path.isdir(common_root):
+                common_root = os.path.dirname(common_root)
+        if common_root:
+            lines.append("")
+            lines.append(f"  Root: {common_root}/")
+
+        def _shorten(filepath: str) -> str:
+            if common_root:
+                return os.path.relpath(filepath, common_root)
+            return filepath
+
+        lines.append("")
+        lines.append("  Constraints contributing to the cycle:")
+        for i in range(len(cycle_path) - 1):
+            edge = (cycle_path[i], cycle_path[i + 1])
+            files = edge_sources.get(edge, [])
+            if files:
+                file_list = ", ".join(_shorten(f) for f in files)
+                lines.append(
+                    f"    {edge[0]} must precede {edge[1]}  (from {file_list})"
+                )
+            else:
+                lines.append(f"    {edge[0]} must precede {edge[1]}")
+    lines.append("")
+    lines.append(
+        "Fix the LDFLAGS annotations in the source files above to "
+        "remove the contradictory ordering."
+    )
+    return "\n".join(lines)
+
+
 def merge_ldflags_with_topo_sort(
     per_file_ldflags: list[list],
     source_files: list[str] | None = None,
@@ -631,80 +685,54 @@ def merge_ldflags_with_topo_sort(
             in_degree[succ] = in_degree.get(succ, 0) + 1
 
     # Kahn's algorithm with alphabetical tie-breaking for determinism
-    queue = sorted([lib for lib in all_libs if in_degree[lib] == 0])
     sorted_libs: list[str] = []
     remaining = set(all_libs)
 
-    while queue:
-        node = queue.pop(0)
-        sorted_libs.append(node)
-        remaining.discard(node)
-        next_ready = []
-        for succ in sorted(graph.get(node, [])):
-            in_degree[succ] -= 1
-            if in_degree[succ] == 0:
-                next_ready.append(succ)
-        queue = sorted(queue + next_ready)
+    def _drain_kahn() -> None:
+        """Drain all zero-in-degree nodes from *remaining* into *sorted_libs*."""
+        queue = sorted(lib for lib in remaining if in_degree.get(lib, 0) == 0)
+        while queue:
+            node = queue.pop(0)
+            sorted_libs.append(node)
+            remaining.discard(node)
+            next_ready = []
+            for succ in sorted(graph.get(node, [])):
+                if succ in remaining:
+                    in_degree[succ] -= 1
+                    if in_degree[succ] == 0:
+                        next_ready.append(succ)
+            queue = sorted(queue + next_ready)
 
-    # Cycles mean no valid link order exists — error out
-    if remaining:
+    _drain_kahn()
+
+    # Break cycles that contain soft edges.  Soft constraints are hints
+    # from per-file flag ordering — when they form a cycle (even without
+    # mutual contradictions), we drop them and let the topological sort
+    # proceed.  Only purely hard cycles are genuine conflicts.
+    while remaining:
         cycle_path = _find_cycle(graph, remaining)
-        cycle_str = " -> ".join(cycle_path)
 
-        lines = [
-            "Cyclic library dependency detected — link order cannot be determined.",
-            "",
-            f"  Cycle: {cycle_str}",
+        soft_in_cycle = [
+            (cycle_path[i], cycle_path[i + 1])
+            for i in range(len(cycle_path) - 1)
+            if (cycle_path[i], cycle_path[i + 1]) not in hard_edges
         ]
 
-        # Show which source files contributed the conflicting edges
-        if source_files is not None:
-            # Collect all files referenced in cycle edges
-            cycle_files: list[str] = []
-            for i in range(len(cycle_path) - 1):
-                edge = (cycle_path[i], cycle_path[i + 1])
-                cycle_files.extend(edge_sources.get(edge, []))
+        if not soft_in_cycle:
+            # Purely hard cycle — genuine conflict, error out.
+            raise ValueError(
+                _format_cycle_error(cycle_path, edge_sources, source_files)
+            )
 
-            # Strip common directory prefix for compact display
-            common_root = ""
-            if cycle_files:
-                try:
-                    common_root = os.path.commonpath(cycle_files)
-                except ValueError:
-                    pass  # different drives on Windows
-                # Only strip if it's a real directory, not a partial filename
-                if common_root and not os.path.isdir(common_root):
-                    common_root = os.path.dirname(common_root)
-
-            if common_root:
-                lines.append("")
-                lines.append(f"  Root: {common_root}/")
-
-            def _shorten(filepath: str) -> str:
-                if common_root:
-                    return os.path.relpath(filepath, common_root)
-                return filepath
-
-            lines.append("")
-            lines.append("  Constraints contributing to the cycle:")
-            for i in range(len(cycle_path) - 1):
-                edge = (cycle_path[i], cycle_path[i + 1])
-                files = edge_sources.get(edge, [])
-                if files:
-                    file_list = ", ".join(_shorten(f) for f in files)
-                    lines.append(
-                        f"    {edge[0]} must precede {edge[1]}  (from {file_list})"
-                    )
-                else:
-                    lines.append(f"    {edge[0]} must precede {edge[1]}")
-
-        lines.append("")
-        lines.append(
-            "Fix the LDFLAGS annotations in the source files above to remove "
-            "the contradictory ordering."
-        )
-
-        raise ValueError("\n".join(lines))
+        # Break cycle by removing soft edges, recompute in_degree, and drain.
+        for pred, succ in soft_in_cycle:
+            graph[pred].discard(succ)
+        in_degree = {lib: 0 for lib in remaining}
+        for node in remaining:
+            for succ in graph.get(node, ()):
+                if succ in remaining:
+                    in_degree[succ] = in_degree.get(succ, 0) + 1
+        _drain_kahn()
 
     deduped_non_l = list(dict.fromkeys(non_l_flags))
     return deduped_non_l + [f"-l{name}" for name in sorted_libs]
