@@ -113,7 +113,7 @@ def _add_xxpend_argument(cap, name, destname=None, extrahelp=None):
     for xx in xxlist:
         cap.add(
             "".join(["--", xx, "-", name.upper()]),
-            dest="_".join([xx, destname.lower()]),
+            dest="_".join([xx, destname.lower().replace("-", "_")]),
             action="append",
             default=[],
             help=" ".join(
@@ -188,6 +188,11 @@ def add_common_arguments(cap, argv=None, variant=None):
         help="Query pkg-config to obtain libs and flags for these packages.",
         action="append",
         default=[],
+    )
+    _add_xxpend_argument(
+        cap,
+        "pkg-config-path",
+        extrahelp="Directories are applied to the PKG_CONFIG_PATH environment variable.",
     )
     compiletools.utils.add_flag_argument(
         parser=cap,
@@ -897,20 +902,22 @@ def filter_pkg_config_cflags(cflags_str, verbose=0):
     return " ".join(processed_flags)
 
 
-def _setup_pkg_config_overrides(context, verbose=0):
-    """Prepend project-level ct.conf.d/pkgconfig/ directories to PKG_CONFIG_PATH.
+def _setup_pkg_config_overrides(context, verbose=0, prepend_paths=None, append_paths=None):
+    """Apply project-level and CLI-specified pkg-config path overrides to PKG_CONFIG_PATH.
 
-    Searches two locations for ct.conf.d/pkgconfig/ directories:
+    Priority order (highest first):
 
-    1. The current working directory (highest priority)
-    2. The git repository root
-
-    Both are prepended (if they exist and differ) so that cwd-level
-    .pc files override repo-level ones, which override system ones.
+    1. ``--prepend-PKG-CONFIG-PATH`` directories (CLI)
+    2. ``<cwd>/ct.conf.d/pkgconfig/`` (project-local)
+    3. ``<gitroot>/ct.conf.d/pkgconfig/`` (repo-level)
+    4. Existing ``PKG_CONFIG_PATH`` entries
+    5. ``--append-PKG-CONFIG-PATH`` directories (CLI)
 
     Args:
         context: BuildContext instance tracking per-build state.
         verbose: verbosity level for diagnostic output.
+        prepend_paths: directories to prepend (from ``--prepend-PKG-CONFIG-PATH``).
+        append_paths: directories to append (from ``--append-PKG-CONFIG-PATH``).
 
     Must be called before any pkg-config subprocess invocation
     (i.e., before _add_flags_from_pkg_config and before magicflags
@@ -938,23 +945,36 @@ def _setup_pkg_config_overrides(context, verbose=0):
             if repo_pkgconfig not in candidates:
                 candidates.append(repo_pkgconfig)
 
-    if not candidates:
-        return
-
-    # Filter out directories already in PKG_CONFIG_PATH.
     existing = os.environ.get("PKG_CONFIG_PATH", "")
-    existing_dirs = existing.split(os.pathsep) if existing else []
-    to_prepend = [d for d in candidates if d not in existing_dirs]
+    existing_dirs = [os.path.normpath(d) for d in existing.split(os.pathsep)] if existing else []
 
-    if not to_prepend:
-        return
+    # Build final path: prepend_paths + candidates + existing + append_paths
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    final: list[str] = []
 
-    parts = to_prepend + ([existing] if existing else [])
-    os.environ["PKG_CONFIG_PATH"] = os.pathsep.join(parts)
+    for d in (prepend_paths or []) + candidates:
+        normd = os.path.normpath(d)
+        if normd not in seen and normd not in existing_dirs:
+            seen.add(normd)
+            final.append(normd)
+            if verbose >= 4:
+                print(f"Prepended pkg-config path: {normd}")
 
-    if verbose >= 4:
-        for d in to_prepend:
-            print(f"Prepended project pkg-config overrides: {d}")
+    # Existing entries in the middle.
+    if existing:
+        final.append(existing)
+
+    for d in (append_paths or []):
+        normd = os.path.normpath(d)
+        if normd not in seen and normd not in existing_dirs:
+            seen.add(normd)
+            final.append(normd)
+            if verbose >= 4:
+                print(f"Appended pkg-config path: {normd}")
+
+    if final:
+        os.environ["PKG_CONFIG_PATH"] = os.pathsep.join(final)
 
 
 def _add_flags_from_pkg_config(args):
@@ -1245,7 +1265,12 @@ def _commonsubstitutions(args):
     _tier_one_modifications(args)
     _extend_includes_using_git_root(args)
     _add_include_paths_to_flags(args)
-    _setup_pkg_config_overrides(args._context, args.verbose)
+    _setup_pkg_config_overrides(
+        args._context,
+        args.verbose,
+        prepend_paths=getattr(args, "prepend_pkg_config_path", None),
+        append_paths=getattr(args, "append_pkg_config_path", None),
+    )
     _add_flags_from_pkg_config(args)
     _set_project_version(args)
     _unify_cpp_cxx_flags(args)

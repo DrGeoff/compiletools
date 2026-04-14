@@ -499,3 +499,35 @@ class TestMergeLdflagsTopoSort:
         # All libs present
         for lib in ("-lnuma", "-lfoo-O2", "-lbar", "-lcrypto", "-lzip", "-lssl"):
             assert lib in result, f"{lib} missing from result"
+
+    def test_transitive_deps_from_pkg_config_preserved(self):
+        """Transitive -l deps (like rdma, verbs from a comms library) must
+        survive merging.  Simulates pkg-config --libs returning a primary lib
+        plus its transitive dependencies."""
+        per_file = [
+            # File 1: uses commslib which has transitive deps
+            ["-L/usr/lib/comms", "-lcommslib", "-lrdma", "-lverbs", "-lpacketio"],
+            # File 2: uses only applib
+            ["-L/usr/lib/app", "-lapplib"],
+        ]
+        result = utils.merge_ldflags_with_topo_sort(per_file)
+        # All -l flags from both files must be present
+        for lib in ("-lcommslib", "-lrdma", "-lverbs", "-lpacketio", "-lapplib"):
+            assert lib in result, f"{lib} missing from merged result: {result}"
+
+    def test_transitive_deps_shared_across_files(self):
+        """When two files both use a package with transitive deps, all deps
+        must still appear in the merged output (no accidental dedup loss)."""
+        per_file = [
+            # File 1: commslib -> rdma -> verbs -> packetio
+            ["-lcommslib", "-lrdma", "-lverbs", "-lpacketio"],
+            # File 2: also uses commslib (same transitive deps)
+            ["-lcommslib", "-lrdma", "-lverbs", "-lpacketio"],
+            # File 3: uses storagelib -> compression -> checksumlib
+            ["-lstoragelib", "-lcompression", "-lchecksumlib"],
+        ]
+        result = utils.merge_ldflags_with_topo_sort(per_file)
+        # All unique libs must be present (each once)
+        for lib in ("-lcommslib", "-lrdma", "-lverbs", "-lpacketio",
+                    "-lstoragelib", "-lcompression", "-lchecksumlib"):
+            assert lib in result, f"{lib} missing from merged result: {result}"

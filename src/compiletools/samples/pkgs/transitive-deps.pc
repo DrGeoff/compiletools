@@ -1,0 +1,5 @@
+Name: TransitiveDepsPackage
+Description: Package with transitive library dependencies for testing
+Version: 1.0.0
+Cflags: -I/usr/local/include/transitivepkg
+Libs: -L/usr/local/lib/transitive -ltransitivemain -ltransitiveutil -ltransitivecore

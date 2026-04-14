@@ -1,0 +1,5 @@
+Name: LinuxPathPkg
+Description: Package with 'linux' in paths (regression test for GCC linux macro)
+Version: 1.0.0
+Cflags: -I/opt/clickhouse-linux-x64/include
+Libs: -L/opt/clickhouse-linux-x64/lib -lclickhouse

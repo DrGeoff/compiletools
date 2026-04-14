@@ -303,6 +303,37 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         )
         assert succ == "testpkg", f"Expected 'testpkg', got '{succ}'"
 
+    def test_gcc_linux_macro_not_expanded_in_pkg_config_paths(self, pkgconfig_env):
+        """GCC predefines #define linux 1.  This must not corrupt
+        pkg-config paths that contain the word 'linux'.
+
+        Regression test: without the fix, pkg-config output like
+        -I/opt/clickhouse-linux-x64/include becomes
+        -I/opt/clickhouse-1-x64/include.
+        """
+        files = uth.write_sources({
+            "test_linux_path.cpp": (
+                "//#PKG-CONFIG=linux-path-pkg\n"
+                "int main() { return 0; }\n"
+            )
+        })
+        source = str(files["test_linux_path.cpp"])
+
+        result = self._parse_with_magic("direct", source)
+
+        # The word 'linux' in paths must survive expansion
+        assert self._check_flags(
+            result, "CPPFLAGS",
+            ["clickhouse-linux-x64"],
+            ["clickhouse-1-x64"],
+        ), "GCC's legacy #define linux 1 must not corrupt pkg-config paths"
+
+        assert self._check_flags(
+            result, "LDFLAGS",
+            ["clickhouse-linux-x64"],
+            ["clickhouse-1-x64"],
+        ), "GCC's legacy #define linux 1 must not corrupt pkg-config -L paths"
+
     def test_undefined_macro_in_magic_flag_values_unchanged(self):
         """Undefined macros in magic flag values should remain as-is"""
         source_file = "ldflags/macro_expanded_ldflags.cpp"

@@ -734,7 +734,7 @@ class TestSetupPkgConfigOverrides:
         _setup_pkg_config_overrides(ctx, verbose=4)
 
         captured = capsys.readouterr()
-        assert "Prepended project pkg-config overrides" in captured.out
+        assert "Prepended pkg-config path:" in captured.out
         assert str(pkgconfig_dir) in captured.out
 
     def test_cwd_pkgconfig_takes_priority_over_gitroot(self, monkeypatch, tmp_path):

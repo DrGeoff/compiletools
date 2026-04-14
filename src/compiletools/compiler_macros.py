@@ -72,6 +72,22 @@ def get_compiler_macros(compiler_path: str, verbose: int = 0) -> dict[str, str]:
         return {}
 
 
+def filter_for_expansion(compiler_macros: dict[str, str]) -> dict[str, str]:
+    """Filter compiler macros to those safe for string expansion.
+
+    GCC predefines legacy macros like ``linux`` and ``unix`` (without a
+    leading underscore) for backward compatibility.  These collide with
+    path components in pkg-config output, e.g. turning
+    ``clickhouse-linux-x64`` into ``clickhouse-1-x64``.
+
+    The C/C++ standard reserves identifiers starting with ``_`` for the
+    implementation, so all *standard* compiler macros (``__linux__``,
+    ``__GNUC__``, ``_LP64``, etc.) are safe.  This function strips the
+    non-conforming ones.
+    """
+    return {k: v for k, v in compiler_macros.items() if k.startswith("_")}
+
+
 @lru_cache(maxsize=256)
 def query_has_function(compiler_path: str, function_call: str, cppflags: str = "", verbose: int = 0) -> int:
     """Query the compiler to evaluate a __has_* preprocessor function call.

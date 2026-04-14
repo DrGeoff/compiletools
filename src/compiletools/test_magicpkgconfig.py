@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+from unittest.mock import patch
 
 import pytest
 import stringzilla as sz
@@ -232,8 +233,6 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                 )
 
             # Point find_git_root at our temp dir so the override is discovered
-            from unittest.mock import patch
-
             with patch(
                 "compiletools.git_utils.find_git_root", return_value=tmpdir
             ):
@@ -327,3 +326,177 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
         assert len(ldflags_str_list) >= 2, f"Expected multiple LDFLAGS, got: {ldflags_str_list}"
         assert "-L/usr/local/lib" in ldflags_str_list
         assert "-ltestpkg1" in ldflags_str_list
+
+    @uth.requires_functional_compiler
+    def test_transitive_deps_preserved_in_ldflags(self, pkgconfig_env):
+        """Transitive -l dependencies from pkg-config --libs must all appear
+        in the parsed LDFLAGS.
+
+        transitive-deps.pc has:
+          Libs: -L/usr/local/lib/transitive -ltransitivemain -ltransitiveutil -ltransitivecore
+
+        All three -l flags must survive magic flag parsing and deduplication.
+        """
+        files = uth.write_sources({
+            "test.cpp": "//#PKG-CONFIG=transitive-deps\nint main() { return 0; }"
+        })
+        source_file = str(files["test.cpp"])
+
+        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir, context=BuildContext())
+        result = mf.parse(source_file)
+
+        assert sz.Str("LDFLAGS") in result
+        ldflags = [str(f) for f in result[sz.Str("LDFLAGS")]]
+
+        assert "-L/usr/local/lib/transitive" in ldflags, f"-L path missing: {ldflags}"
+        assert "-ltransitivemain" in ldflags, f"-ltransitivemain missing: {ldflags}"
+        assert "-ltransitiveutil" in ldflags, f"-ltransitiveutil missing: {ldflags}"
+        assert "-ltransitivecore" in ldflags, f"-ltransitivecore missing: {ldflags}"
+
+    @uth.requires_functional_compiler
+    def test_transitive_deps_in_link_line_across_files(self, pkgconfig_env):
+        """When two source files use packages with transitive deps, all deps
+        must appear in the merged link output from merge_ldflags_with_topo_sort.
+
+        This is an end-to-end test: magic flag parsing -> per-file LDFLAGS -> merge.
+        """
+        files = uth.write_sources({
+            "a.cpp": "//#PKG-CONFIG=transitive-deps\nint fn_a() { return 0; }",
+            "b.cpp": "//#PKG-CONFIG=nested\nint fn_b() { return 0; }",
+        })
+
+        mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir, context=BuildContext())
+
+        result_a = mf.parse(str(files["a.cpp"]))
+        result_b = mf.parse(str(files["b.cpp"]))
+
+        ldflags_a = [str(f) for f in result_a.get(sz.Str("LDFLAGS"), [])]
+        ldflags_b = [str(f) for f in result_b.get(sz.Str("LDFLAGS"), [])]
+
+        per_file = [ldflags_a, ldflags_b]
+        merged = compiletools.utils.merge_ldflags_with_topo_sort(per_file)
+
+        # All transitive deps from transitive-deps.pc
+        for lib in ("-ltransitivemain", "-ltransitiveutil", "-ltransitivecore"):
+            assert lib in merged, f"{lib} missing from merged link: {merged}"
+        # Lib from nested.pc
+        assert "-ltestpkg1" in merged, f"-ltestpkg1 missing from merged link: {merged}"
+
+    @uth.requires_functional_compiler
+    def test_prepend_pkg_config_path_via_cli(self, pkgconfig_env):
+        """Test that --prepend-PKG-CONFIG-PATH overrides base PKG_CONFIG_PATH.
+
+        The pkgconfig_env fixture sets PKG_CONFIG_PATH to samples/pkgs/ which
+        contains conditional.pc.  We create a CLI-prepended directory with a
+        higher-priority conditional.pc and verify its flags win.
+        """
+        with uth.CompileToolsTestContext() as (tmpdir, _config_path):
+            # Create a CLI-prepended directory with a conditional.pc override
+            cli_pkgconfig = os.path.join(tmpdir, "cli-pkgconfig")
+            os.makedirs(cli_pkgconfig)
+            with open(os.path.join(cli_pkgconfig, "conditional.pc"), "w") as f:
+                f.write(
+                    "Name: CLIPrepended\n"
+                    "Description: CLI-prepended override\n"
+                    "Version: 9.0.0\n"
+                    "Cflags: -DCLI_PREPENDED_FLAG\n"
+                    "Libs: -lcliprepended\n"
+                )
+
+            source_content = "//#PKG-CONFIG=conditional\nint main() { return 0; }\n"
+            files = uth.write_sources({"test_prepend.cpp": source_content})
+            source_file = str(files["test_prepend.cpp"])
+
+            # Pass --prepend-PKG-CONFIG-PATH through the argument parser
+            mf = tb.create_magic_parser(
+                [
+                    "--magic=direct",
+                    f"--prepend-PKG-CONFIG-PATH={cli_pkgconfig}",
+                ],
+                tempdir=self._tmpdir,
+            )
+            result = mf.parse(source_file)
+
+            # CLI-prepended .pc should win over base conditional.pc
+            cppflags = " ".join(str(f) for f in result[sz.Str("CPPFLAGS")])
+            assert "-DCLI_PREPENDED_FLAG" in cppflags, (
+                f"Expected CLI-prepended flags, got: {cppflags}"
+            )
+            # Base conditional.pc defines -DTEST_PKG_ENABLED — should not appear
+            assert "-DTEST_PKG_ENABLED" not in cppflags, (
+                f"Base flags should be overridden, got: {cppflags}"
+            )
+
+            ldflags = " ".join(str(f) for f in result[sz.Str("LDFLAGS")])
+            assert "-lcliprepended" in ldflags, (
+                f"Expected CLI-prepended libs, got: {ldflags}"
+            )
+
+    @uth.requires_functional_compiler
+    def test_prepend_pkg_config_path_overrides_project(self, pkgconfig_env):
+        """Test that --prepend-PKG-CONFIG-PATH takes priority over ct.conf.d/pkgconfig/.
+
+        Creates both a project-level override (ct.conf.d/pkgconfig/) and a
+        CLI-prepended override, verifying the CLI override wins.
+        """
+        with uth.CompileToolsTestContext() as (tmpdir, _config_path):
+            # Create the project override directory with a .pc file
+            project_pkgconfig = os.path.join(tmpdir, "ct.conf.d", "pkgconfig")
+            os.makedirs(project_pkgconfig)
+            with open(os.path.join(project_pkgconfig, "conditional.pc"), "w") as f:
+                f.write(
+                    "Name: ProjectConditional\n"
+                    "Description: Project-level override\n"
+                    "Version: 2.0.0\n"
+                    "Cflags: -DPROJECT_LEVEL\n"
+                    "Libs: -lprojectlevel\n"
+                )
+
+            # Create a CLI-prepended override directory with higher priority
+            cli_pkgconfig = os.path.join(tmpdir, "cli-override-pkgconfig")
+            os.makedirs(cli_pkgconfig)
+            with open(os.path.join(cli_pkgconfig, "conditional.pc"), "w") as f:
+                f.write(
+                    "Name: CLIConditional\n"
+                    "Description: CLI-prepended override\n"
+                    "Version: 3.0.0\n"
+                    "Cflags: -DCLI_OVERRIDE\n"
+                    "Libs: -lclioverride\n"
+                )
+
+            with patch(
+                "compiletools.git_utils.find_git_root", return_value=tmpdir
+            ):
+                compiletools.apptools.clear_cache()
+
+                source_content = "//#PKG-CONFIG=conditional\nint main() { return 0; }\n"
+                files = uth.write_sources({"test_cli_override.cpp": source_content})
+                source_file = str(files["test_cli_override.cpp"])
+
+                # Pass --prepend-PKG-CONFIG-PATH through the argument parser
+                # so _setup_pkg_config_overrides is called once (from parseargs)
+                # with both project and CLI overrides in the correct priority.
+                mf = tb.create_magic_parser(
+                    [
+                        "--magic=direct",
+                        f"--prepend-PKG-CONFIG-PATH={cli_pkgconfig}",
+                    ],
+                    tempdir=self._tmpdir,
+                )
+                result = mf.parse(source_file)
+
+                # CLI override should win over project-level override
+                cppflags = " ".join(str(f) for f in result[sz.Str("CPPFLAGS")])
+                assert "-DCLI_OVERRIDE" in cppflags, (
+                    f"Expected CLI override flags, got: {cppflags}"
+                )
+                assert "-DPROJECT_LEVEL" not in cppflags, (
+                    f"Project flags should be overridden by CLI, got: {cppflags}"
+                )
+
+                ldflags = " ".join(str(f) for f in result[sz.Str("LDFLAGS")])
+                assert "-lclioverride" in ldflags, (
+                    f"Expected CLI override libs, got: {ldflags}"
+                )
+
+            compiletools.apptools.clear_cache()

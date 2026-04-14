@@ -405,8 +405,29 @@ class MagicFlagsBase:
         if macro_state:
             from compiletools.simple_preprocessor import SimplePreprocessor
 
+            # Filter out legacy compiler macros (e.g. 'linux', 'unix')
+            # that lack a leading underscore — they corrupt path
+            # components in pkg-config output.  Conditional compilation
+            # is unaffected because it uses a separate preprocessor
+            # instance that retains the full macro set.
+            all_macros = macro_state.all_macros()
+            compiler_predefined = compiletools.compiler_macros.get_compiler_macros(
+                getattr(self._args, "CXX", ""), self._args.verbose
+            )
+            legacy_names = {
+                sz.Str(k)
+                for k in compiler_predefined
+                if not k.startswith("_")
+            }
+            if legacy_names:
+                all_macros = {
+                    k: v
+                    for k, v in all_macros.items()
+                    if k not in legacy_names or k in macro_state.variable
+                }
+
             expander = SimplePreprocessor(
-                macro_state.all_macros(),
+                all_macros,
                 verbose=self._args.verbose,
                 compiler_path=getattr(self._args, "CXX", ""),
                 cppflags=getattr(self._args, "CPPFLAGS", ""),

@@ -161,6 +161,36 @@ class TestCompilerMacros:
             assert len(macros) > 50  # GCC typically defines 100+ macros
 
 
+class TestFilterForExpansion:
+    """Test filter_for_expansion() which strips non-standard legacy macros."""
+
+    def test_keeps_double_underscore_macros(self):
+        macros = {"__linux__": "1", "__GNUC__": "11", "__cplusplus": "201703L"}
+        assert cm.filter_for_expansion(macros) == macros
+
+    def test_keeps_single_underscore_macros(self):
+        macros = {"_LP64": "1", "_STDC_PREDEF_H": "1"}
+        assert cm.filter_for_expansion(macros) == macros
+
+    def test_removes_bare_linux_and_unix(self):
+        macros = {
+            "__linux__": "1",
+            "linux": "1",
+            "__unix__": "1",
+            "unix": "1",
+            "__GNUC__": "11",
+        }
+        filtered = cm.filter_for_expansion(macros)
+        assert "linux" not in filtered
+        assert "unix" not in filtered
+        assert "__linux__" in filtered
+        assert "__unix__" in filtered
+        assert "__GNUC__" in filtered
+
+    def test_empty_dict(self):
+        assert cm.filter_for_expansion({}) == {}
+
+
 class TestQueryHasFunction:
     """Test the query_has_function() functionality."""
 
