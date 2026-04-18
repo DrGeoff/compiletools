@@ -149,7 +149,9 @@ popd >/dev/null
 
 # Create a GitHub release with auto-generated notes
 if [[ "$HAS_GH" == "true" ]]; then
-    gh release create "$tag" --title "$tag" --generate-notes
+    # Derive the owner/repo from the git remote so gh works without a default repo
+    GH_REPO=$(git -C "$ctdd" remote get-url origin | sed -E 's#.+github\.com[:/]##; s/\.git$//')
+    gh release create "$tag" --repo "$GH_REPO" --title "$tag" --generate-notes
 else
     echo "No GitHub release notes generated (gh not available)."
 fi
