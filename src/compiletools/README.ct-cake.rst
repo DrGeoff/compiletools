@@ -420,6 +420,21 @@ Common Options
     object directory. Use ``ct-trim-cache --pchdir-only`` to clean aged entries.
     Example: ``ct-cake --pchdir=/shared/build/pch``
 
+**--prepend-PKG-CONFIG-PATH PATH**
+    Prepend PATH to ``PKG_CONFIG_PATH`` before any pkg-config invocation.
+    Takes highest priority — overrides both ``ct.conf.d/pkgconfig/`` directory
+    layers and the existing environment variable. Useful for CI pipelines or
+    one-off debugging where you need a specific ``.pc`` file to take precedence.
+    May be repeated to prepend multiple directories.
+    Example: ``ct-cake --prepend-PKG-CONFIG-PATH=/opt/custom/pkgconfig``
+
+**--append-PKG-CONFIG-PATH PATH**
+    Append PATH to ``PKG_CONFIG_PATH`` after any pkg-config invocation.
+    Takes lowest priority — only consulted when the package is not found via
+    any other mechanism. Useful for fallback paths or system-wide package
+    locations as a last resort. May be repeated to append multiple directories.
+    Example: ``ct-cake --append-PKG-CONFIG-PATH=/usr/local/lib/pkgconfig``
+
 **--static / --dynamic**
     Build a static or dynamic library instead of an executable.
     Example: ``ct-cake --static mylib.cpp``

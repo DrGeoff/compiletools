@@ -118,6 +118,18 @@ subdirectory that contains ``ct.conf.d/pkgconfig/``, the resulting
 This lets subprojects override repo-wide ``.pc`` files without shell-script
 workarounds.
 
+For one-off overrides that cannot be committed (e.g., CI pipelines, temporary
+debugging, or machine-specific paths), use the ``--prepend-PKG-CONFIG-PATH``
+and ``--append-PKG-CONFIG-PATH`` command-line flags. The complete priority
+order is::
+
+    --prepend-PKG-CONFIG-PATH  >  cwd/ct.conf.d/pkgconfig/  >  gitroot/ct.conf.d/pkgconfig/  >  $PKG_CONFIG_PATH  >  --append-PKG-CONFIG-PATH
+
+Use ``--prepend-PKG-CONFIG-PATH`` to override all project and system paths
+(e.g., ``ct-cake --prepend-PKG-CONFIG-PATH=/opt/custom/pkgconfig`` to test
+a patched version). Use ``--append-PKG-CONFIG-PATH`` as a fallback for
+system-wide or user-local package paths not in the environment.
+
 CPPFLAGS and CXXFLAGS Unification
 ==================================
 By default, ``CPPFLAGS`` and ``CXXFLAGS`` magic flags are merged into a single
