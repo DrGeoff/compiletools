@@ -96,13 +96,17 @@ PreprocessingCache                    # Two-tier caching
 
 `locking.py` provides four locking strategies auto-selected by filesystem type: `FcntlLock` (GPFS: `fcntl.lockf()`, cross-node, kernel-managed blocking), `LockdirLock` (NFS/Lustre: atomic `mkdir`, stale detection via `{hostname}:{pid}`), `CIFSLock` (CIFS/SMB: exclusive file creation), and `FlockLock` (local: POSIX `flock`). Polling intervals auto-detected (Lustre: 0.01s, NFS: 0.1s). `cleanup_locks.py` removes stale lockdirs (process liveness via psutil/SSH) and unheld fcntl lock files (non-blocking `lockf()` probe).
 
+### Precompiled Header (PCH) Caching
+
+`compiletools` supports content-addressable PCH caching via `--pchdir`. Headers marked with the `//#PCH=` magic flag are compiled into `.gch` files and cached in `{git_root}/shared-pchdir/{variant}` (or custom path via `--pchdir`). The cache key includes compiler, flags, and header path, preventing collisions across builds. PCH files are atomically created and cross-user safe. Enable `--pchdir` in `ct.conf.d/ct.conf` for automatic per-variant caching, or pass `--pchdir=<path>` at the CLI. Use `ct-trim-cache --pchdir-only` to selectively clean aged PCH entries while preserving active builds. Falls back to legacy `.gch` placement in the object directory if `--pchdir` is unset.
+
 ### Key Modules
 
 | Module | Role |
 |--------|------|
 | `cake.py` | Build orchestration (`Cake.process()`) |
 | `configutils.py` | Hierarchical config with variant system |
-| `magicflags.py` | Extract compiler flags from `//#` annotations (factory pattern) |
+| `magicflags.py` | Extract compiler flags from `//#` annotations (factory pattern); handles macro expansion in flag values |
 | `file_analyzer.py` | SIMD-optimized source scanning via StringZilla |
 | `preprocessing_cache.py` | Unified cache with `MacroState` tracking |
 | `simple_preprocessor.py` | C preprocessor for conditional compilation |
@@ -112,7 +116,9 @@ PreprocessingCache                    # Two-tier caching
 | `namer.py` | File naming, object paths (includes macro state hash) |
 | `makefile.py` | Makefile generation (`MakefileCreator`) |
 | `build_graph.py` | Backend-agnostic IR (`BuildRule`, `BuildGraph`) |
-| `build_backend.py` | `BuildBackend` ABC, registry, `build_graph()`, `_run_tests()` |
+| `build_backend.py` | `BuildBackend` ABC, registry, `build_graph()`, `_run_tests()`; PCH handling and hard orderings consolidation |
+| `build_context.py` | Per-build state and caches; tracks pkg-config overrides and build variants |
+| `build_timer.py` | Build timing instrumentation and reporting |
 | `makefile_backend.py` | Make backend (wraps `MakefileCreator`) |
 | `ninja_backend.py` | Ninja backend (with file-locking support) |
 | `bazel_backend.py` | Bazel backend |
@@ -123,6 +129,7 @@ PreprocessingCache                    # Two-tier caching
 | `locking.py` | Cross-platform atomic file locking |
 | `stringzilla_utils.py` | SIMD text operation helpers |
 | `global_hash_registry.py` | Content-addressable file hashing |
+| `trim_cache.py` | Cache trimming utility for object and PCH directories with configurable retention |
 
 ### Configuration Files
 
