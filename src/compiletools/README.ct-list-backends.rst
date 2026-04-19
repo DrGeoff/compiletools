@@ -8,7 +8,7 @@ List available build backends
 
 :Author: drgeoffathome@gmail.com
 :Date:   2026-03-31
-:Version: 8.0.1
+:Version: 8.0.2
 :Manual section: 1
 :Manual group: developers
 
