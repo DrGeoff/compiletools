@@ -34,7 +34,12 @@ def _get_make_version() -> tuple[int, int]:
 
 @register_backend
 class MakefileBackend(BuildBackend):
-    """Generate and execute GNU Makefiles."""
+    """Generate and execute GNU Makefiles.
+
+    PCH rules and link/library rules with merged LDFLAGS come from
+    BuildBackend.build_graph(); this class only renders the resulting
+    BuildGraph as Makefile syntax.
+    """
 
     @staticmethod
     def name() -> str:

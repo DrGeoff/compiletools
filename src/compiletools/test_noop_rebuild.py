@@ -89,18 +89,20 @@ _BUILD_SCRIPT = textwrap.dedent("""\
     os.makedirs(bindir, exist_ok=True)
     backend.generate(graph)
 
-    # Count all subprocess.run calls made by trace_backend during execute().
-    # This covers both compile (_atomic_compile_no_lock) and link (_run_local)
-    # invocations.  On a no-op rebuild, the count should be zero.
+    # Count all _run_with_signal_forwarding calls made during execute().
+    # This is the new boundary that wraps both compile (atomic_compile) and
+    # link (atomic_link) invocations.  On a no-op rebuild, the count should
+    # be zero.
+    import compiletools.locking
     call_count = 0
-    orig_run = subprocess.run
+    orig_swf = compiletools.locking._run_with_signal_forwarding
 
-    def counting_run(*a, **kw):
+    def counting_swf(cmd):
         global call_count
         call_count += 1
-        return orig_run(*a, **kw)
+        return orig_swf(cmd)
 
-    with mock.patch("compiletools.trace_backend.subprocess.run", side_effect=counting_run):
+    with mock.patch("compiletools.locking._run_with_signal_forwarding", side_effect=counting_swf):
         backend.execute("build")
 
     with open(report_path, "w") as f:

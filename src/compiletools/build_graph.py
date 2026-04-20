@@ -34,6 +34,11 @@ class BuildRule:
             "copy", "static_library", "shared_library".
         order_only_deps: Dependencies that must exist but whose timestamps are
             not checked (e.g., output directories).
+
+    Equality and hash are by ``output`` only — deliberate so that
+    BuildGraph._rules (a dict keyed by output) deduplicates rules. Rules
+    with the same output but different inputs/commands compare equal; use
+    explicit field comparison if structural equality is needed.
     """
 
     output: str

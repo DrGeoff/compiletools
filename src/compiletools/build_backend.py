@@ -610,7 +610,7 @@ class BuildBackend(abc.ABC):
             futures = {
                 executor.submit(self._run_single_test, exe_path, testprefix): exe_path for exe_path in tests_to_run
             }
-            # Collect results in submission order
+            # Collect results as they complete; reorder below to match submission order
             results = []
             for future in concurrent.futures.as_completed(futures):
                 results.append(future.result())

@@ -479,6 +479,12 @@ class SlurmBackend(ShakeBackend):
             type=float,
             help="Seconds between sacct polls when waiting for compile jobs. Default: 2.0",
         )
+        cap.add(
+            "--slurm-job-name",
+            default="ct-compile",
+            help="Name applied to submitted Slurm jobs (visible in squeue/sacct). "
+            "Default: ct-compile. Useful for distinguishing concurrent ct-cake invocations.",
+        )
 
     # ------------------------------------------------------------------
     # Core execute() — overrides ShakeBackend's async engine
@@ -741,7 +747,7 @@ class SlurmBackend(ShakeBackend):
             "--export=ALL",
             f"--chdir={os.getcwd()}",
             f"--array=0-{n - 1}",
-            "--job-name=ct-compile",
+            f"--job-name={getattr(self.args, 'slurm_job_name', 'ct-compile')}",
             f"--time={self.args.slurm_time}",
             f"--mem={effective_mem}",
             f"--cpus-per-task={self.args.slurm_cpus}",
@@ -773,7 +779,8 @@ class SlurmBackend(ShakeBackend):
                     ],
                     text=True,
                 )
-            except (subprocess.CalledProcessError, FileNotFoundError):
+            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                logger.debug("sacct unavailable for job %s: %s", array_job_id, e)
                 continue
             for line in out.splitlines():
                 parts = line.strip().split("|")

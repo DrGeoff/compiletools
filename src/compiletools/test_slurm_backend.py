@@ -490,7 +490,7 @@ class TestJobFailures:
             patch("time.monotonic", side_effect=[0.0, 100.0, 100.0, 100.0]),
             patch("time.sleep"),
         ):
-            with pytest.raises(RuntimeError, match="output file.*still missing"):
+            with pytest.raises(RuntimeError, match=r"output file.*still missing"):
                 b._wait_for_output_files([rule], timeout=30.0)
 
     def test_wait_for_output_files_returns_when_files_appear(self, tmp_path):
