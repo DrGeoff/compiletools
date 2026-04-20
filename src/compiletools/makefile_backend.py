@@ -109,7 +109,8 @@ class MakefileBackend(BuildBackend):
         """Check if the Makefile needs regeneration.
 
         Compares the args signature in the Makefile header and checks mtimes
-        of all source/header files referenced in compile rules.
+        of every input referenced by a build rule (compile, link, library,
+        test, copy). Phony and mkdir rules have no real inputs.
         """
         try:
             makefilemtime = compiletools.wrappedos.getmtime(self.args.makefilename)
@@ -131,24 +132,28 @@ class MakefileBackend(BuildBackend):
             elif self.args.verbose > 9:
                 print("Makefile header line is identical.  Testing mod time of all the files now.")
 
-        # Check mtimes of all compile rule inputs against the Makefile's mtime
+        # Check mtimes of every build-rule input against the Makefile's mtime.
+        # Includes link/library inputs (e.g. linker scripts, additional .o
+        # files) so a change to a non-compile dependency triggers regen.
+        skip_types = {"phony", "mkdir"}
         for rule in graph.rules:
-            if rule.rule_type == "compile":
-                for dep in rule.inputs:
-                    try:
-                        dep_mtime = compiletools.wrappedos.getmtime(dep)
-                    except OSError:
-                        continue
-                    if dep_mtime > makefilemtime:
-                        if self.args.verbose > 7:
-                            print("Regenerating Makefile.")
-                            print(f"mtime {dep_mtime} for {dep} is newer than mtime for the Makefile")
-                        return False
-                    elif self.args.verbose > 9:
-                        print(
-                            f"mtime {dep_mtime} for {dep} is older than "
-                            f"mtime for the Makefile. This wont trigger regeneration of the Makefile."
-                        )
+            if rule.rule_type in skip_types:
+                continue
+            for dep in rule.inputs:
+                try:
+                    dep_mtime = compiletools.wrappedos.getmtime(dep)
+                except OSError:
+                    continue
+                if dep_mtime > makefilemtime:
+                    if self.args.verbose > 7:
+                        print("Regenerating Makefile.")
+                        print(f"mtime {dep_mtime} for {dep} is newer than mtime for the Makefile")
+                    return False
+                elif self.args.verbose > 9:
+                    print(
+                        f"mtime {dep_mtime} for {dep} is older than "
+                        f"mtime for the Makefile. This wont trigger regeneration of the Makefile."
+                    )
 
         if self.args.verbose > 9:
             print("Makefile is up to date.  Not recreating.")
