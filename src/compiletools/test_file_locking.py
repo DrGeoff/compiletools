@@ -59,11 +59,12 @@ class TestLockdirLock:
         assert os.path.exists(lock.lockdir)
         assert os.path.exists(lock.pid_file)
 
-        # Verify pid file content
+        # Verify pid file content (host:pid:start_time format)
         with open(lock.pid_file) as f:
             content = f.read().strip()
-            assert ":" in content
-            _hostname, pid = content.split(":", 1)
+            parts = content.split(":")
+            assert len(parts) >= 2
+            _hostname, pid = parts[0], parts[1]
             assert int(pid) == os.getpid()
 
         # Release lock
@@ -108,8 +109,8 @@ class TestLockdirLock:
         # Verify new PID is ours
         with open(lock.pid_file) as f:
             content = f.read().strip()
-            _, pid = content.split(":", 1)
-            assert int(pid) == os.getpid()
+            parts = content.split(":")
+            assert int(parts[1]) == os.getpid()
 
         lock.release()
 
@@ -248,12 +249,12 @@ class TestLockdirLock:
             # Verify we retried (2 attempts: 1 failed + 1 succeeded)
             assert attempt_count["value"] == 2, f"Expected 2 attempts, got {attempt_count['value']}"
 
-            # Verify pid file has correct content
+            # Verify pid file has correct content (host:pid:start_time)
             with open(lock.pid_file) as f:
                 content = f.read().strip()
-            assert ":" in content, "PID file should have hostname:pid format"
-            _, pid = content.split(":", 1)
-            assert int(pid) == os.getpid(), "PID file should contain our PID"
+            parts = content.split(":")
+            assert len(parts) >= 2, "PID file should have hostname:pid[:start] format"
+            assert int(parts[1]) == os.getpid(), "PID file should contain our PID"
 
             lock.release()
             assert not os.path.exists(lock.lockdir), "Lockdir should be removed after release"

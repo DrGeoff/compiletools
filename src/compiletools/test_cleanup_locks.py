@@ -64,14 +64,28 @@ class TestLockCleanerUnit:
     """Unit tests with full mocking - no real SSH or filesystem complexity."""
 
     def test_read_lock_info_valid(self, tmpdir_with_locks, mock_args):
-        """Test reading valid lock info."""
+        """Test reading valid lock info (legacy host:pid format)."""
         cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
         lockdir = create_lockdir(tmpdir_with_locks, "test1", "host1", 12345)
 
-        hostname, pid = cleaner._read_lock_info(lockdir)
+        hostname, pid, start_time = cleaner._read_lock_info(lockdir)
 
         assert hostname == "host1"
         assert pid == 12345
+        assert start_time is None  # legacy format has no start_time
+
+    def test_read_lock_info_with_start_time(self, tmpdir_with_locks, mock_args):
+        """Test reading the new host:pid:start_time format."""
+        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
+        lockdir = os.path.join(tmpdir_with_locks, "x.lockdir")
+        os.makedirs(lockdir)
+        with open(os.path.join(lockdir, "pid"), "w") as f:
+            f.write("host1:12345:1700000000.5\n")
+
+        hostname, pid, start_time = cleaner._read_lock_info(lockdir)
+        assert hostname == "host1"
+        assert pid == 12345
+        assert start_time == 1700000000.5
 
     def test_read_lock_info_invalid_format_no_colon(self, tmpdir_with_locks, mock_args):
         """Test handling of malformed pid file without colon."""
@@ -82,10 +96,11 @@ class TestLockCleanerUnit:
         with open(pid_file, "w") as f:
             f.write("invalid-no-colon\n")
 
-        hostname, pid = cleaner._read_lock_info(lockdir)
+        hostname, pid, start_time = cleaner._read_lock_info(lockdir)
 
         assert hostname is None
         assert pid is None
+        assert start_time is None
 
     def test_read_lock_info_empty_file(self, tmpdir_with_locks, mock_args):
         """Test handling of empty pid file."""
@@ -96,10 +111,11 @@ class TestLockCleanerUnit:
         with open(pid_file, "w") as f:
             f.write("")
 
-        hostname, pid = cleaner._read_lock_info(lockdir)
+        hostname, pid, start_time = cleaner._read_lock_info(lockdir)
 
         assert hostname is None
         assert pid is None
+        assert start_time is None
 
     def test_read_lock_info_missing_file(self, tmpdir_with_locks, mock_args):
         """Test handling of missing pid file."""
@@ -107,10 +123,11 @@ class TestLockCleanerUnit:
         lockdir = os.path.join(tmpdir_with_locks, "test1.lockdir")
         os.makedirs(lockdir)
 
-        hostname, pid = cleaner._read_lock_info(lockdir)
+        hostname, pid, start_time = cleaner._read_lock_info(lockdir)
 
         assert hostname is None
         assert pid is None
+        assert start_time is None
 
     @patch("subprocess.run")
     def test_is_process_alive_remote_success(self, mock_run, mock_args):
@@ -426,7 +443,7 @@ class TestLockCleanupRaceConditions:
         # Patch to make our PID appear dead during removal
         call_count = [0]
 
-        def fake_is_alive(pid):
+        def fake_is_alive(pid, start_time=None):
             call_count[0] += 1
             if call_count[0] == 1:
                 return True  # First check: active

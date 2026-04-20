@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -77,6 +78,72 @@ class TestLockdirLock:
             lock = LockdirLock(target, args)
             # Should have auto-detected a sleep interval
             assert lock.sleep_interval > 0
+
+    def test_pid_file_includes_process_start_time(self):
+        """I-D1 regression: pid file format must be host:pid:starttime so we
+        can detect PID reuse on busy build hosts."""
+        import psutil
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = LockdirLock(target, args)
+            lock.acquire()
+            try:
+                with open(lock.pid_file) as f:
+                    content = f.read().strip()
+                parts = content.split(":")
+                assert len(parts) == 3, f"Expected host:pid:starttime, got {content!r}"
+                host, pid_str, start_str = parts
+                assert host == socket.gethostname()
+                assert int(pid_str) == os.getpid()
+                # start_time should match psutil's view of our process
+                expected = psutil.Process(os.getpid()).create_time()
+                # Allow tiny float tolerance
+                assert abs(float(start_str) - expected) < 1.0, (
+                    f"start_time {start_str} does not match psutil "
+                    f"create_time {expected}"
+                )
+            finally:
+                lock.release()
+
+    def test_stale_detection_rejects_pid_reuse(self):
+        """If the pid in the file matches a live process but with a
+        different start_time, the lock is stale (PID reuse)."""
+        import psutil
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = LockdirLock(target, args)
+
+            os.mkdir(lock.lockdir)
+            os.chmod(lock.lockdir, 0o775)
+            # Write pid file with current pid but a wildly different start_time
+            real_start = psutil.Process(os.getpid()).create_time()
+            fake_start = real_start - 10000.0  # 10000s earlier — clearly different
+            with open(lock.pid_file, "w") as f:
+                f.write(f"{lock.hostname}:{os.getpid()}:{fake_start}\n")
+
+            assert lock._is_lock_stale() is True, (
+                "PID reuse must be detected via start_time mismatch"
+            )
+
+    def test_stale_detection_legacy_format_falls_back_to_pid_only(self):
+        """Old-format pid files (host:pid, no start_time) keep working —
+        we fall back to pid-existence check, matching pre-fix behavior."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = LockdirLock(target, args)
+            os.mkdir(lock.lockdir)
+            os.chmod(lock.lockdir, 0o775)
+            # Old format
+            with open(lock.pid_file, "w") as f:
+                f.write(f"{lock.hostname}:{os.getpid()}\n")
+
+            # Our pid is alive — legacy file accepted as ACTIVE
+            assert lock._is_lock_stale() is False
 
     def test_pid_write_does_not_resurrect_torn_down_lockdir(self):
         """C3 regression: if a peer tears down our lockdir between our mkdir

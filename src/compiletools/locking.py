@@ -116,15 +116,26 @@ class LockdirLock:
         self.platform = platform.system().lower()
 
     def _write_pid_file(self):
-        """Write hostname:pid into self.pid_file using plain open+rename
-        INSIDE self.lockdir. Raises FileNotFoundError if the lockdir was
-        torn down between our mkdir and this call."""
+        """Write hostname:pid:start_time into self.pid_file using plain
+        open+rename INSIDE self.lockdir. The start_time is what
+        psutil.Process.create_time() reports for our pid; it lets cleanup
+        detect PID reuse on busy build hosts (a stale lock whose pid is
+        now owned by an unrelated process is correctly identified as
+        stale rather than ACTIVE forever).
+
+        Raises FileNotFoundError if the lockdir was torn down between our
+        mkdir and this call."""
+        start_time = compiletools.lock_utils.get_process_start_time(self.pid)
+        if start_time is None:
+            payload = f"{self.hostname}:{self.pid}\n"
+        else:
+            payload = f"{self.hostname}:{self.pid}:{start_time}\n"
         tmp = f"{self.pid_file}.{os.getpid()}.{os.urandom(2).hex()}.tmp"
-        # open() with O_CREAT|O_WRONLY|O_TRUNC — but written so a missing
-        # parent directory raises FileNotFoundError, the signal we want.
+        # open() with O_CREAT|O_WRONLY|O_TRUNC — a missing parent directory
+        # raises FileNotFoundError, the signal the outer retry loop wants.
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o664)
         try:
-            os.write(fd, f"{self.hostname}:{self.pid}\n".encode())
+            os.write(fd, payload.encode())
         finally:
             os.close(fd)
         try:
@@ -178,26 +189,21 @@ class LockdirLock:
         return compiletools.lock_utils.get_lock_age_seconds(self.lockdir, getattr(self.args, "verbose", 0))
 
     def _read_lock_info(self):
-        """Read hostname:pid from lock file (uses shared lock_utils).
+        """Read hostname:pid:start_time from lock file (shared lock_utils).
 
         Returns:
-            tuple: (hostname, pid) or (None, None) if unreadable
+            tuple: (hostname, pid, start_time) or (None, None, None) if
+                unreadable. start_time is None for legacy two-field files.
         """
         return compiletools.lock_utils.read_lock_info(self.lockdir)
 
-    def _is_process_alive_same_host(self, pid):
-        """Check if process is alive on same host (uses shared lock_utils).
+    def _is_process_alive_same_host(self, pid, start_time=None):
+        """Check whether the recorded local process is still alive.
 
-        Uses psutil (required dependency) for robust cross-platform checking.
-        Equivalent to shell's "kill -0 $pid" + "/proc check" but more reliable.
-
-        Args:
-            pid: Process ID to check
-
-        Returns:
-            bool: True if process exists, False otherwise
+        When start_time is provided, also verify the live process's
+        create_time matches — protecting against PID reuse on busy hosts.
         """
-        return compiletools.lock_utils.is_process_alive_local(pid)
+        return compiletools.lock_utils.is_process_alive_local(pid, start_time)
 
     def _is_lock_stale(self):
         """Check if lock is stale.
@@ -208,13 +214,15 @@ class LockdirLock:
         3. In-between (conservative: NOT stale, wait for it)
 
         For locks with PID files:
-        - Same-host: check if process is alive
-        - Cross-host: cannot verify, assume NOT stale
+        - Same-host: check if process is alive AND start_time matches
+          (PID-reuse safe when the file carries start_time; legacy
+          two-field files fall back to pid-existence only).
+        - Cross-host: cannot verify, assume NOT stale.
 
         Returns:
             bool: True if lock is stale and should be removed
         """
-        lock_host, lock_pid = self._read_lock_info()
+        lock_host, lock_pid, lock_start_time = self._read_lock_info()
 
         if lock_host is None:
             # No PID file - use age-based detection to handle creation race
@@ -236,9 +244,8 @@ class LockdirLock:
             # Cross-host lock, not stale (can't verify remote process)
             return False
 
-        # Same-host lock: check if process exists
-        # Use psutil (more robust than os.kill + /proc check)
-        return not self._is_process_alive_same_host(lock_pid)
+        # Same-host lock: check if process exists (and start_time matches)
+        return not self._is_process_alive_same_host(lock_pid, lock_start_time)
 
     def _remove_stale_lock(self):
         """Remove stale lock with verification (matches shell rm -rf + error check).
@@ -249,7 +256,7 @@ class LockdirLock:
         Raises:
             PermissionError: If lock still exists after removal attempt
         """
-        lock_host, lock_pid = self._read_lock_info()
+        lock_host, lock_pid, _ = self._read_lock_info()
         lock_info = f"{lock_host}:{lock_pid}" if lock_host else "unknown"
 
         try:
@@ -334,7 +341,7 @@ class LockdirLock:
 
                     # Periodic warnings (same as makefile.py)
                     if now - last_warn_time > self.warn_interval:
-                        lock_host, lock_pid = self._read_lock_info()
+                        lock_host, lock_pid, _ = self._read_lock_info()
                         print(
                             f"Waiting for lock: {self.lockdir} (held by {lock_host}:{lock_pid})",
                             file=sys.stderr,
@@ -343,7 +350,7 @@ class LockdirLock:
 
                     # Escalate warning at timeout threshold
                     if lock_age > self.cross_host_timeout and not escalated:
-                        lock_host, lock_pid = self._read_lock_info()
+                        lock_host, lock_pid, _ = self._read_lock_info()
                         print(
                             f"WARNING: Lock held for {lock_age:.0f}s (timeout: {self.cross_host_timeout}s)",
                             file=sys.stderr,

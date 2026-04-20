@@ -94,7 +94,7 @@ PreprocessingCache                    # Two-tier caching
 
 ### Locking System
 
-`locking.py` provides four locking strategies auto-selected by filesystem type: `FcntlLock` (GPFS: `fcntl.lockf()`, cross-node, kernel-managed blocking), `LockdirLock` (NFS/Lustre: atomic `mkdir`, stale detection via `{hostname}:{pid}`), `CIFSLock` (CIFS/SMB: exclusive file creation), and `FlockLock` (local: POSIX `flock`). Polling intervals auto-detected (Lustre: 0.01s, NFS: 0.1s). `cleanup_locks.py` removes stale lockdirs (process liveness via psutil/SSH) and unheld fcntl lock files (non-blocking `lockf()` probe).
+`locking.py` provides four locking strategies auto-selected by filesystem type: `FcntlLock` (GPFS: `fcntl.lockf()`, cross-node, kernel-managed blocking), `LockdirLock` (NFS/Lustre: atomic `mkdir`, stale detection via `{hostname}:{pid}:{start_time}` — start_time guards against PID-reuse on busy hosts), `CIFSLock` (CIFS/SMB: exclusive file creation), and `FlockLock` (local: POSIX `flock`). Polling intervals auto-detected (Lustre: 0.01s, NFS: 0.1s). `cleanup_locks.py` removes stale lockdirs only (kernel-managed `fcntl`/`flock` locks need no manual cleanup — they release automatically on process death). `atomic_compile()` and `atomic_link()` run children in a new session and forward SIGINT/SIGTERM to the child's process group, so the lock is never released while a build child is still writing the target.
 
 ### Precompiled Header (PCH) Caching
 

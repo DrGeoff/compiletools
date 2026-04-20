@@ -51,45 +51,89 @@ def get_lock_age_seconds(lockdir, verbose=0):
 
 
 def read_lock_info(lockdir):
-    """Read hostname:pid from lock pid file.
+    """Read hostname:pid (and optionally :start_time) from a lock pid file.
+
+    The pid-file format added in v8.0.3 includes the lock holder's process
+    start_time as a third colon-separated field. Older two-field files
+    (host:pid) are still recognised; start_time is then None.
 
     Args:
         lockdir: Path to lockdir
 
     Returns:
-        tuple: (hostname, pid) or (None, None) if unreadable
+        tuple: (hostname, pid, start_time) or (None, None, None) if
+            unreadable. start_time is a float (psutil.Process.create_time())
+            or None when the file uses the legacy two-field format.
     """
     pid_file = os.path.join(lockdir, "pid")
 
     try:
         if not os.path.exists(pid_file):
-            return None, None
+            return None, None, None
 
         with open(pid_file) as f:
             lock_info = f.read().strip()
 
         if ":" not in lock_info:
-            return None, None
+            return None, None, None
 
-        lock_host, lock_pid = lock_info.split(":", 1)
-        return lock_host, int(lock_pid)
+        parts = lock_info.split(":", 2)
+        if len(parts) == 2:
+            lock_host, lock_pid = parts
+            return lock_host, int(lock_pid), None
+        lock_host, lock_pid, start_time_str = parts
+        try:
+            start_time = float(start_time_str)
+        except ValueError:
+            start_time = None
+        return lock_host, int(lock_pid), start_time
 
     except (OSError, ValueError):
-        return None, None
+        return None, None, None
 
 
-def is_process_alive_local(pid):
-    """Check if process exists on local host.
+def is_process_alive_local(pid, start_time=None):
+    """Check if a local process exists, optionally verifying it is the
+    *same* process that recorded the lock (not a PID-reused successor).
 
     Args:
-        pid: Process ID to check
+        pid: Process ID to check.
+        start_time: Optional psutil-style create_time of the recorded
+            holder. When provided, returns False unless the live process
+            with this pid has a matching create_time (within 1.0s
+            tolerance — psutil rounds differently across platforms).
+            None means legacy file with no recorded start_time; fall
+            back to pid-existence only.
 
     Returns:
-        bool: True if process exists
+        bool: True if the live process is (probably) the original
+            lock holder. False if the pid does not exist, or if it
+            does but its start_time does not match the recorded one.
     """
     import psutil
 
-    return psutil.pid_exists(pid)
+    if start_time is None:
+        return psutil.pid_exists(pid)
+
+    try:
+        proc = psutil.Process(pid)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+    try:
+        actual_start = proc.create_time()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+    return abs(actual_start - start_time) < 1.0
+
+
+def get_process_start_time(pid):
+    """Return psutil create_time for pid, or None if unavailable."""
+    import psutil
+
+    try:
+        return psutil.Process(pid).create_time()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return None
 
 
 def is_process_alive_remote(hostname, pid, ssh_timeout=5):

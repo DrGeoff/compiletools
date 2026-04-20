@@ -39,26 +39,24 @@ class LockCleaner:
         return compiletools.lock_utils.get_lock_age_seconds(lockdir, self.verbose)
 
     def _read_lock_info(self, lockdir):
-        """Read hostname:pid from lock file (uses shared lock_utils).
+        """Read hostname:pid:start_time from lock file (uses shared lock_utils).
 
         Args:
             lockdir: Path to lockdir
 
         Returns:
-            tuple: (hostname, pid) or (None, None) if unreadable
+            tuple: (hostname, pid, start_time) or (None, None, None) if
+                unreadable. start_time is None for legacy two-field files.
         """
         return compiletools.lock_utils.read_lock_info(lockdir)
 
-    def _is_process_alive_local(self, pid):
+    def _is_process_alive_local(self, pid, start_time=None):
         """Check if process is alive on local host (uses shared lock_utils).
 
-        Args:
-            pid: Process ID to check
-
-        Returns:
-            bool: True if process exists, False otherwise
+        When start_time is provided, also verifies the live process's
+        create_time matches — protecting against PID reuse on busy hosts.
         """
-        return compiletools.lock_utils.is_process_alive_local(pid)
+        return compiletools.lock_utils.is_process_alive_local(pid, start_time)
 
     def _is_process_alive_remote(self, hostname, pid):
         """Check if process is alive on remote host via SSH (uses shared lock_utils).
@@ -83,14 +81,14 @@ class LockCleaner:
         Returns:
             tuple: (is_stale: bool, status_msg: str)
         """
-        lock_host, lock_pid = self._read_lock_info(lockdir)
+        lock_host, lock_pid, lock_start_time = self._read_lock_info(lockdir)
 
         if lock_host is None:
             return True, "STALE (no lock info)"
 
         if lock_host == self.hostname:
-            # Local lock - use psutil
-            if self._is_process_alive_local(lock_pid):
+            # Local lock - psutil + start_time match (PID-reuse safe)
+            if self._is_process_alive_local(lock_pid, lock_start_time):
                 return False, "ACTIVE (local process running)"
             else:
                 return True, "STALE (local process not running)"
@@ -157,7 +155,7 @@ class LockCleaner:
                 lockdir = os.path.join(root, dirname)
                 stats["total"] += 1
 
-                lock_host, lock_pid = self._read_lock_info(lockdir)
+                lock_host, lock_pid, _ = self._read_lock_info(lockdir)
                 lock_age = self._get_lock_age_seconds(lockdir)
 
                 print(f"Lock: {lockdir}")
