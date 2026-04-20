@@ -279,6 +279,13 @@ class MagicFlagsBase:
 
             # Extract first -l from expanded libs — must use the same
             # post-expansion list that feeds LDFLAGS so names match.
+            # Packages whose --libs contain no -l (header-only / linker-script-
+            # only / -L-only packages) are silently omitted from
+            # first_l_per_pkg: there is no library to express an ordering
+            # against. Multi-package PKG-CONFIG=a b c with b library-less
+            # therefore degenerates to a single hard edge (A_first, C_first)
+            # — i.e. ONE edge per ADJACENT-PAIR-OF-LIBRARIED-PACKAGES, not
+            # one per literal package position.
             for token in libs_list:
                 token_str = str(token)
                 if token_str.startswith("-l") and len(token_str) > 2:
@@ -295,7 +302,9 @@ class MagicFlagsBase:
                 print(f"\tadded {cflags_list} to CPPFLAGS, CFLAGS, and CXXFLAGS")
                 print(f"\tadded {libs_list} to LDFLAGS")
 
-        # For multi-package annotations, store pairwise hard orderings
+        # For multi-package annotations, store pairwise hard orderings between
+        # adjacent libraried packages. See the loop above for what happens
+        # when an interior package contributes no -l flag.
         if len(first_l_per_pkg) >= 2:
             for i in range(len(first_l_per_pkg) - 1):
                 flagsforfilename[_HARD_ORDERINGS_KEY].append(

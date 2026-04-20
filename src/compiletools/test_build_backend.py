@@ -1188,3 +1188,71 @@ class TestLinkOrderCorrectness:
         assert l_flags.count("-llibbase") == 1, (
             f"Expected -llibbase exactly once, got: {l_flags}"
         )
+
+    def test_hard_orderings_win_over_opposing_soft_constraints(self, tmp_path):
+        """I-C2 regression: a multi-package PKG-CONFIG hard ordering must
+        beat a single-file LDFLAGS soft ordering that disagrees with it.
+        End-to-end through magicflags -> _merge_ldflags_for_sources ->
+        final link line."""
+        import stringzilla as sz
+
+        sources = ["/src/one.cpp", "/src/two.cpp"]
+        # one.cpp has a single-package PKG-CONFIG worth of soft ordering:
+        # libbase before libssh2 (i.e. soft edge libbase -> libssh2)
+        # two.cpp has a multi-package PKG-CONFIG hard ordering that says
+        # libssh2 before libbase (hard edge libssh2 -> libbase). The hard
+        # edge wins; the soft edge is cancelled (or overridden); final
+        # link has -llibssh2 before -llibbase.
+        from compiletools.magicflags import _HARD_ORDERINGS_KEY
+
+        per_file = {
+            "/src/one.cpp": {
+                sz.Str("LDFLAGS"): [sz.Str("-llibbase"), sz.Str("-llibssh2")],
+            },
+            "/src/two.cpp": {
+                sz.Str("LDFLAGS"): [sz.Str("-llibssh2"), sz.Str("-llibbase")],
+                _HARD_ORDERINGS_KEY: [(sz.Str("libssh2"), sz.Str("libbase"))],
+            },
+        }
+        args = make_backend_args(tmp_path, filename=sources, CXXFLAGS="-O2")
+        hunter = make_mock_hunter(sources=sources, per_file_magicflags=per_file)
+        StubClass = make_stub_backend_class()
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+
+        graph = backend.build_graph()
+
+        link_rules = [r for r in graph.rules if r.rule_type == "link"]
+        link_cmd = link_rules[0].command
+        l_positions = {flag: i for i, flag in enumerate(link_cmd) if flag.startswith("-llib")}
+        assert "-llibssh2" in l_positions and "-llibbase" in l_positions
+        assert l_positions["-llibssh2"] < l_positions["-llibbase"], (
+            f"hard ordering libssh2 -> libbase ignored. Link command: {link_cmd}"
+        )
+
+    def test_two_hard_orderings_in_conflict_raise_cycle_error(self, tmp_path):
+        """Two hard orderings in opposite directions form a genuine cycle —
+        end-to-end this must raise (cycle-error formatter is invoked
+        elsewhere)."""
+        import stringzilla as sz
+        from compiletools.magicflags import _HARD_ORDERINGS_KEY
+
+        sources = ["/src/a.cpp", "/src/b.cpp"]
+        per_file = {
+            "/src/a.cpp": {
+                sz.Str("LDFLAGS"): [sz.Str("-lA"), sz.Str("-lB")],
+                _HARD_ORDERINGS_KEY: [(sz.Str("A"), sz.Str("B"))],
+            },
+            "/src/b.cpp": {
+                sz.Str("LDFLAGS"): [sz.Str("-lB"), sz.Str("-lA")],
+                _HARD_ORDERINGS_KEY: [(sz.Str("B"), sz.Str("A"))],
+            },
+        }
+        args = make_backend_args(tmp_path, filename=sources, CXXFLAGS="-O2")
+        hunter = make_mock_hunter(sources=sources, per_file_magicflags=per_file)
+        StubClass = make_stub_backend_class()
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+
+        with pytest.raises(ValueError, match="cycle"):
+            backend.build_graph()
