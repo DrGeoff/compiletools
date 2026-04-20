@@ -211,9 +211,14 @@ class TestFilterToChanged:
         g.add_rule(BuildRule(output="x.o", inputs=["x.cpp"], command=["g++"], rule_type="compile"))
         g.add_rule(BuildRule(output="left", inputs=["x.o"], command=["g++"], rule_type="link"))
         g.add_rule(BuildRule(output="right", inputs=["x.o"], command=["g++"], rule_type="link"))
-        g.add_rule(BuildRule(
-            output="diamond", inputs=["left", "right"], command=["g++"], rule_type="link",
-        ))
+        g.add_rule(
+            BuildRule(
+                output="diamond",
+                inputs=["left", "right"],
+                command=["g++"],
+                rule_type="link",
+            )
+        )
 
         filtered = g.filter_to_changed({"x.cpp"})
         outputs = [r.output for r in filtered.rules]

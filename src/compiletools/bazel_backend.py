@@ -70,8 +70,7 @@ class BazelBackend(BuildBackend):
         test_exe_paths = set()
         if self.args.tests:
             for source in self.args.tests:
-                test_exe_paths.add(
-                    self.namer.executable_pathname(compiletools.wrappedos.realpath(source)))
+                test_exe_paths.add(self.namer.executable_pathname(compiletools.wrappedos.realpath(source)))
 
         has_binaries = bool(graph.rules_by_type("link")) or bool(graph.rules_by_type("shared_library"))
         has_libraries = bool(graph.rules_by_type("static_library"))

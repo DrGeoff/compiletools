@@ -521,7 +521,6 @@ class TestBuildGraphPopulation:
         assert len(mkdir_rules) == 1
         assert mkdir_rules[0].output.startswith(pchdir + "/")
 
-
     def test_multiple_pch_headers_different_hashes(self, tmp_path):
         """Two PCH headers with different magic flags get distinct hash dirs."""
         import stringzilla as sz
@@ -605,6 +604,7 @@ class TestPchCommandHash:
 
     def test_deterministic(self):
         from types import SimpleNamespace
+
         args = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
         h1 = _pch_command_hash(args, "/src/foo.h", [], [])
         h2 = _pch_command_hash(args, "/src/foo.h", [], [])
@@ -612,6 +612,7 @@ class TestPchCommandHash:
 
     def test_differs_for_different_flags(self):
         from types import SimpleNamespace
+
         args1 = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
         args2 = SimpleNamespace(CXX="g++", CXXFLAGS="-O3")
         h1 = _pch_command_hash(args1, "/src/foo.h", [], [])
@@ -620,6 +621,7 @@ class TestPchCommandHash:
 
     def test_differs_for_different_compiler(self):
         from types import SimpleNamespace
+
         args1 = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
         args2 = SimpleNamespace(CXX="clang++", CXXFLAGS="-O2")
         h1 = _pch_command_hash(args1, "/src/foo.h", [], [])
@@ -627,8 +629,10 @@ class TestPchCommandHash:
         assert h1 != h2
 
     def test_includes_magic_flags(self):
-        import stringzilla as sz
         from types import SimpleNamespace
+
+        import stringzilla as sz
+
         args = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
         h1 = _pch_command_hash(args, "/src/foo.h", [sz.Str("-DFOO")], [])
         h2 = _pch_command_hash(args, "/src/foo.h", [], [])
@@ -654,17 +658,22 @@ class TestPchFileLocking:
 
     def _make_backend_with_locking(self, tmp_path, pchdir=None):
         import stringzilla as sz
+
         StubClass = make_stub_backend_class()
         pch_flags = {
             "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
             "/src/stdafx.h": {},
         }
         args = make_backend_args(
-            tmp_path, filename=["/src/main.cpp"], pchdir=pchdir,
+            tmp_path,
+            filename=["/src/main.cpp"],
+            pchdir=pchdir,
             file_locking=True,
-            sleep_interval_lockdir=0.1, sleep_interval_cifs=0.2,
+            sleep_interval_lockdir=0.1,
+            sleep_interval_cifs=0.2,
             sleep_interval_flock_fallback=0.1,
-            lock_warn_interval=60, lock_cross_host_timeout=600,
+            lock_warn_interval=60,
+            lock_cross_host_timeout=600,
         )
         hunter = make_mock_hunter(
             sources=["/src/main.cpp"],
@@ -703,12 +712,15 @@ class TestPchIncrementalHash:
 
     def _build_graph_with_flags(self, tmp_path, cxxflags, pchdir):
         import stringzilla as sz
+
         pch_flags = {
             "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
             "/src/stdafx.h": {},
         }
         args = make_backend_args(
-            tmp_path, filename=["/src/main.cpp"], pchdir=pchdir,
+            tmp_path,
+            filename=["/src/main.cpp"],
+            pchdir=pchdir,
             CXXFLAGS=cxxflags,
         )
         hunter = make_mock_hunter(
@@ -744,6 +756,7 @@ class TestPchIncrementalHash:
     def test_different_compiler_produces_different_gch_path(self, tmp_path):
         """Different compiler produces different .gch paths."""
         import stringzilla as sz
+
         pchdir = str(tmp_path / "pch")
         pch_flags = {
             "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
@@ -753,7 +766,8 @@ class TestPchIncrementalHash:
         args1 = make_backend_args(tmp_path, filename=["/src/main.cpp"], pchdir=pchdir, CXX="g++")
         args2 = make_backend_args(tmp_path, filename=["/src/main.cpp"], pchdir=pchdir, CXX="clang++")
         hunter = make_mock_hunter(
-            sources=["/src/main.cpp"], headers=["/src/util.h"],
+            sources=["/src/main.cpp"],
+            headers=["/src/util.h"],
             per_file_magicflags=pch_flags,
         )
         StubClass = make_stub_backend_class()
@@ -790,6 +804,7 @@ class TestPchIncrementalHash:
         assert id_a != id_b
 
         from types import SimpleNamespace
+
         args_a = SimpleNamespace(CXX=str(cxx_a), CXXFLAGS="-O2")
         args_b = SimpleNamespace(CXX=str(cxx_b), CXXFLAGS="-O2")
 
@@ -804,9 +819,11 @@ class TestPchIncrementalHash:
         """Cache key must distinguish ``-DFOO="a b"`` (one flag with embedded
         space) from ``-DFOO=a -Db`` (two flags). The pre-fix space-join
         collided these."""
-        import stringzilla as sz
-        from compiletools.build_backend import _pch_command_hash
         from types import SimpleNamespace
+
+        import stringzilla as sz
+
+        from compiletools.build_backend import _pch_command_hash
 
         args = SimpleNamespace(CXX="cc", CXXFLAGS="-O2")
         flags_one = [sz.Str('-DFOO="a b"')]
@@ -820,6 +837,7 @@ class TestPchIncrementalHash:
         the pchdir parent is not group-writable + SGID, so cross-user
         cache misses don't surprise operators."""
         import stringzilla as sz
+
         from compiletools.build_backend import _PCHDIR_WARNED
 
         pchdir = tmp_path / "pch"
@@ -831,10 +849,14 @@ class TestPchIncrementalHash:
             "/src/stdafx.h": {},
         }
         args = make_backend_args(
-            tmp_path, filename=["/src/main.cpp"], pchdir=str(pchdir), verbose=1,
+            tmp_path,
+            filename=["/src/main.cpp"],
+            pchdir=str(pchdir),
+            verbose=1,
         )
         hunter = make_mock_hunter(
-            sources=["/src/main.cpp"], per_file_magicflags=pch_flags,
+            sources=["/src/main.cpp"],
+            per_file_magicflags=pch_flags,
         )
         StubClass = make_stub_backend_class()
         backend = StubClass(args=args, hunter=hunter)
@@ -1029,12 +1051,14 @@ class TestDefaultRealclean:
         other_obj.write_text("other object")
 
         graph = BuildGraph()
-        graph.add_rule(BuildRule(
-            output=str(our_obj),
-            inputs=["main.cpp"],
-            command=["g++", "-c", "main.cpp"],
-            rule_type="compile",
-        ))
+        graph.add_rule(
+            BuildRule(
+                output=str(our_obj),
+                inputs=["main.cpp"],
+                command=["g++", "-c", "main.cpp"],
+                rule_type="compile",
+            )
+        )
 
         backend = self._make_backend(exe_dir, obj_dir)
         backend.realclean(graph)
@@ -1054,12 +1078,14 @@ class TestDefaultRealclean:
         linked.write_text("linked binary")
 
         graph = BuildGraph()
-        graph.add_rule(BuildRule(
-            output=str(linked),
-            inputs=["main.o"],
-            command=["g++", "-o", str(linked), "main.o"],
-            rule_type="link",
-        ))
+        graph.add_rule(
+            BuildRule(
+                output=str(linked),
+                inputs=["main.o"],
+                command=["g++", "-o", str(linked), "main.o"],
+                rule_type="link",
+            )
+        )
 
         backend = self._make_backend(exe_dir, obj_dir)
         backend.realclean(graph)
@@ -1073,12 +1099,14 @@ class TestDefaultRealclean:
         obj_dir.mkdir()
 
         graph = BuildGraph()
-        graph.add_rule(BuildRule(
-            output=str(obj_dir / "missing.o"),
-            inputs=["missing.cpp"],
-            command=["g++", "-c", "missing.cpp"],
-            rule_type="compile",
-        ))
+        graph.add_rule(
+            BuildRule(
+                output=str(obj_dir / "missing.o"),
+                inputs=["missing.cpp"],
+                command=["g++", "-c", "missing.cpp"],
+                rule_type="compile",
+            )
+        )
 
         backend = self._make_backend(exe_dir, obj_dir)
         # Should not raise
@@ -1103,12 +1131,14 @@ class TestDefaultRealclean:
         other_gch.write_text("other project's precompiled header")
 
         graph = BuildGraph()
-        graph.add_rule(BuildRule(
-            output=str(gch_file),
-            inputs=["stdafx.h"],
-            command=["g++", "-x", "c++-header", "stdafx.h", "-o", str(gch_file)],
-            rule_type="compile",
-        ))
+        graph.add_rule(
+            BuildRule(
+                output=str(gch_file),
+                inputs=["stdafx.h"],
+                command=["g++", "-x", "c++-header", "stdafx.h", "-o", str(gch_file)],
+                rule_type="compile",
+            )
+        )
 
         backend = self._make_backend(exe_dir, obj_dir)
         backend.realclean(graph)
@@ -1236,9 +1266,7 @@ class TestLinkOrderCorrectness:
         assert "-llibbase" in l_flags, f"Expected -llibbase in link command, got: {link_cmd}"
         idx_next = l_flags.index("-llibnext")
         idx_base = l_flags.index("-llibbase")
-        assert idx_next < idx_base, (
-            f"Expected -llibnext before -llibbase in link command, got: {l_flags}"
-        )
+        assert idx_next < idx_base, f"Expected -llibnext before -llibbase in link command, got: {l_flags}"
 
     def test_link_rule_deduplicates_l_flags(self, tmp_path):
         """Same -l flag from multiple files should appear only once."""
@@ -1260,9 +1288,7 @@ class TestLinkOrderCorrectness:
         link_rules = [r for r in graph.rules if r.rule_type == "link"]
         link_cmd = link_rules[0].command
         l_flags = [f for f in link_cmd if f.startswith("-llib")]
-        assert l_flags.count("-llibbase") == 1, (
-            f"Expected -llibbase exactly once, got: {l_flags}"
-        )
+        assert l_flags.count("-llibbase") == 1, f"Expected -llibbase exactly once, got: {l_flags}"
 
     def test_hard_orderings_win_over_opposing_soft_constraints(self, tmp_path):
         """I-C2 regression: a multi-package PKG-CONFIG hard ordering must
@@ -1310,6 +1336,7 @@ class TestLinkOrderCorrectness:
         end-to-end this must raise (cycle-error formatter is invoked
         elsewhere)."""
         import stringzilla as sz
+
         from compiletools.magicflags import _HARD_ORDERINGS_KEY
 
         sources = ["/src/a.cpp", "/src/b.cpp"]

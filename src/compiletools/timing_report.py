@@ -18,7 +18,6 @@ import sys
 import compiletools.apptools
 from compiletools.build_timer import BuildTimer
 
-
 # ------------------------------------------------------------------ CLI
 
 

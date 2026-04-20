@@ -231,8 +231,10 @@ class TestFcntlCleanupRemoved:
         with open(lockfile, "w") as f:
             f.write("")
 
-        with patch("compiletools.filesystem_utils.get_filesystem_type", return_value="gpfs"), \
-             patch("compiletools.filesystem_utils.get_lock_strategy", return_value="fcntl"):
+        with (
+            patch("compiletools.filesystem_utils.get_filesystem_type", return_value="gpfs"),
+            patch("compiletools.filesystem_utils.get_lock_strategy", return_value="fcntl"),
+        ):
             stats = cleaner.scan_and_cleanup(tmpdir_with_locks)
 
         # .lock file should NOT be counted (no fcntl scan)
@@ -542,11 +544,10 @@ class TestCleanupLocksMain:
         """main() re-raises exceptions when verbose >= 2."""
         # The OSError is raised before args is parsed, so verbose defaults to 0
         # We need to raise after args parsing to test the verbose path
-        with patch(
-            "compiletools.cleanup_locks.LockCleaner", side_effect=RuntimeError("boom")
-        ), patch(
-            "compiletools.apptools.create_parser"
-        ) as mock_parser:
+        with (
+            patch("compiletools.cleanup_locks.LockCleaner", side_effect=RuntimeError("boom")),
+            patch("compiletools.apptools.create_parser") as mock_parser,
+        ):
             # Set up mock to return args with verbose=2
             mock_cap = mock_parser.return_value
             mock_args = Mock()
@@ -623,9 +624,7 @@ class TestCleanupLocksMain:
 
     def test_main_returns_1_on_stale_failed(self):
         """main() returns 1 when stale locks fail to remove."""
-        rc, _, _ = self._run_main_with_mocks(
-            stats={"stale_failed": 2, "stale_removed": 1, "active": 0, "total": 3}
-        )
+        rc, _, _ = self._run_main_with_mocks(stats={"stale_failed": 2, "stale_removed": 1, "active": 0, "total": 3})
         assert rc == 1
 
     def test_main_verbose_prints_config(self):

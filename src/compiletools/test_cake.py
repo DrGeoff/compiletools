@@ -769,9 +769,7 @@ class TestCake(BaseCompileToolsTestCase):
             cake = compiletools.cake.Cake(args)
             cake._createctobjs()
 
-            with patch(
-                "compiletools.compilation_database.CompilationDatabaseCreator"
-            ) as mock_creator:
+            with patch("compiletools.compilation_database.CompilationDatabaseCreator") as mock_creator:
                 cake._call_compilation_database()
                 mock_creator.assert_not_called()
 

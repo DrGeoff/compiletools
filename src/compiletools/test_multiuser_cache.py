@@ -948,7 +948,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             lockdirs = list(objdir.glob("**/*.lockdir"))
             assert len(lockdirs) == 0, f"Found stale lock directories: {lockdirs}"
 
-
     @uth.requires_functional_compiler
     def test_concurrent_different_variants(self):
         """
@@ -966,12 +965,8 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             objdir.mkdir(mode=0o2775)
 
             # Two build dirs with identical source but different flags
-            source_dir_v1, config_v1 = self._create_test_source_dir(
-                tmpdir, "build_v1", str(objdir)
-            )
-            source_dir_v2, config_v2 = self._create_test_source_dir(
-                tmpdir, "build_v2", str(objdir)
-            )
+            source_dir_v1, config_v1 = self._create_test_source_dir(tmpdir, "build_v1", str(objdir))
+            source_dir_v2, config_v2 = self._create_test_source_dir(tmpdir, "build_v2", str(objdir))
 
             ctx = multiprocessing.get_context("spawn")
             with ctx.Pool(2) as pool:
@@ -985,15 +980,12 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
 
             # Both must succeed
             for r in results:
-                assert r["returncode"] == 0, (
-                    f"Worker {r['worker_id']} failed: {r['error']}"
-                )
+                assert r["returncode"] == 0, f"Worker {r['worker_id']} failed: {r['error']}"
 
             # Should have 2 distinct object files (different macro_state_hash)
             obj_files = list(objdir.glob("*.o"))
             assert len(obj_files) == 2, (
-                f"Expected 2 object files (one per variant), found {len(obj_files)}: "
-                f"{[f.name for f in obj_files]}"
+                f"Expected 2 object files (one per variant), found {len(obj_files)}: {[f.name for f in obj_files]}"
             )
 
             # Verify the two objects share basename and file_hash but differ
@@ -1006,8 +998,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             assert parts_a[1] == parts_b[1], "File hash should match (same content)"
             # macro_state_hash (last part) must differ
             assert parts_a[-1] != parts_b[-1], (
-                f"macro_state_hash should differ for different flags: "
-                f"{parts_a[-1]} vs {parts_b[-1]}"
+                f"macro_state_hash should differ for different flags: {parts_a[-1]} vs {parts_b[-1]}"
             )
 
             # No stale locks
@@ -1031,9 +1022,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             objdir.mkdir(mode=0o2775)
 
             # Build 1: Optimized flags FIRST (reverse of test_mixed_compiler_flags)
-            source_dir_opt, config_opt = self._create_test_source_dir(
-                tmpdir, "build_optimized", str(objdir)
-            )
+            source_dir_opt, config_opt = self._create_test_source_dir(tmpdir, "build_optimized", str(objdir))
 
             os.chdir(source_dir_opt)
             argv_opt = [
@@ -1046,15 +1035,11 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             compiletools.cake.main(argv_opt)
 
             opt_objs = set(objdir.glob("*.o"))
-            assert len(opt_objs) == 1, (
-                f"Expected 1 object after optimized build, found {len(opt_objs)}"
-            )
+            assert len(opt_objs) == 1, f"Expected 1 object after optimized build, found {len(opt_objs)}"
             opt_obj_name = next(iter(opt_objs)).name
 
             # Build 2: Default flags SECOND
-            source_dir_def, config_def = self._create_test_source_dir(
-                tmpdir, "build_default", str(objdir)
-            )
+            source_dir_def, config_def = self._create_test_source_dir(tmpdir, "build_default", str(objdir))
 
             os.chdir(source_dir_def)
             argv_def = [
@@ -1069,15 +1054,12 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
 
             # Should have 2 distinct objects
             assert len(all_objs) == 2, (
-                f"Expected 2 objects (one per variant), found {len(all_objs)}: "
-                f"{[f.name for f in all_objs]}"
+                f"Expected 2 objects (one per variant), found {len(all_objs)}: {[f.name for f in all_objs]}"
             )
 
             # The default build must NOT have reused the optimized object
             new_objs = {f.name for f in all_objs} - {opt_obj_name}
-            assert len(new_objs) == 1, (
-                f"Default build should create a new object, not reuse {opt_obj_name}"
-            )
+            assert len(new_objs) == 1, f"Default build should create a new object, not reuse {opt_obj_name}"
 
             # Verify hash components
             opt_parts = opt_obj_name.replace(".o", "").split("_")
@@ -1085,9 +1067,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
 
             assert opt_parts[0] == def_parts[0], "Basename should match"
             assert opt_parts[1] == def_parts[1], "File hash should match (same source)"
-            assert opt_parts[-1] != def_parts[-1], (
-                f"macro_state_hash should differ: {opt_parts[-1]} vs {def_parts[-1]}"
-            )
+            assert opt_parts[-1] != def_parts[-1], f"macro_state_hash should differ: {opt_parts[-1]} vs {def_parts[-1]}"
 
             # Verify both objects are valid (non-empty)
             for obj_file in all_objs:
@@ -1130,8 +1110,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             pchdir.mkdir(mode=0o2775)
 
             dirs_and_configs = [
-                self._create_pch_source_dir(tmpdir, f"pch_build_{i}", str(objdir), str(pchdir))
-                for i in range(2)
+                self._create_pch_source_dir(tmpdir, f"pch_build_{i}", str(objdir), str(pchdir)) for i in range(2)
             ]
 
             ctx = multiprocessing.get_context("spawn")
@@ -1150,8 +1129,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 st = gch.stat()
                 assert st.st_size > 0, f"{gch} is empty"
                 assert st.st_mode & 0o040, (
-                    f"{gch} not group-readable: {oct(st.st_mode)} — cross-user "
-                    "PCH consumers will silently rebuild."
+                    f"{gch} not group-readable: {oct(st.st_mode)} — cross-user PCH consumers will silently rebuild."
                 )
 
             # cmd_hash directories must be group-readable + executable too,

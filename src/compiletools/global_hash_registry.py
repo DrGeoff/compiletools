@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sys
 from typing import TYPE_CHECKING
 
 from compiletools import wrappedos
@@ -57,8 +58,6 @@ def _compute_external_file_hash(filepath: str, hash_ops: dict[str, int]) -> str 
 
 def _load_hashes(verbose: int = 0, *, context: BuildContext) -> tuple[dict[str, str], dict[str, list[str]]]:
     """Load file hashes from git and build forward/reverse lookup dicts."""
-    import gc
-
     try:
         from compiletools.git_sha_report import get_complete_working_directory_hashes
 
@@ -76,11 +75,17 @@ def _load_hashes(verbose: int = 0, *, context: BuildContext) -> tuple[dict[str, 
             print(f"GlobalHashRegistry: Loaded {len(hashes)} file hashes from git")
 
         del all_hashes
-        gc.collect()
 
     except Exception as e:
-        if verbose >= 3:
-            print(f"GlobalHashRegistry: Git not available, using fallback mode: {e}")
+        # M-D8: log non-fatal git failures so users running outside a
+        # repo (or with a broken git invocation) can see why hashes
+        # came back empty. Bare-Exception catch is preserved because
+        # we genuinely want to fall back regardless of failure mode.
+        if verbose >= 1:
+            print(
+                f"GlobalHashRegistry: git unavailable, using empty-registry fallback ({type(e).__name__}: {e})",
+                file=sys.stderr,
+            )
         hashes = {}
         reverse = {}
 

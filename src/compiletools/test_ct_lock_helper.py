@@ -41,7 +41,7 @@ def temp_target():
 class TestLockHelper:
     """Tests for ct-lock-helper."""
 
-    @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock"])
+    @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock", "fcntl"])
     def test_successful_compile(self, temp_target, strategy):
         """Test that ct-lock-helper successfully compiles a simple program."""
         # Create a simple C source file
@@ -80,7 +80,7 @@ class TestLockHelper:
             if os.path.exists(source):
                 os.unlink(source)
 
-    @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock"])
+    @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock", "fcntl"])
     def test_compile_error_propagates(self, temp_target, strategy):
         """Test that compiler errors cause non-zero exit."""
         # Create source with syntax error
@@ -137,7 +137,7 @@ class TestLockHelper:
 class TestLockHelperLink:
     """Tests for ct-lock-helper link subcommand."""
 
-    @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock"])
+    @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock", "fcntl"])
     def test_successful_link(self, temp_target, strategy):
         """Test that ct-lock-helper link runs a command under lock."""
         # Use 'touch' as a simple link stand-in
@@ -163,7 +163,7 @@ class TestLockHelperLink:
         if strategy == "lockdir":
             assert not os.path.exists(temp_target + ".lockdir"), "Lock not cleaned up"
 
-    @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock"])
+    @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock", "fcntl"])
     def test_link_error_propagates(self, temp_target, strategy):
         """Test that link command errors cause non-zero exit."""
         result = subprocess.run(

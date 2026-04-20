@@ -101,8 +101,7 @@ class TestLockdirLock:
                 expected = psutil.Process(os.getpid()).create_time()
                 # Allow tiny float tolerance
                 assert abs(float(start_str) - expected) < 1.0, (
-                    f"start_time {start_str} does not match psutil "
-                    f"create_time {expected}"
+                    f"start_time {start_str} does not match psutil create_time {expected}"
                 )
             finally:
                 lock.release()
@@ -125,9 +124,7 @@ class TestLockdirLock:
             with open(lock.pid_file, "w") as f:
                 f.write(f"{lock.hostname}:{os.getpid()}:{fake_start}\n")
 
-            assert lock._is_lock_stale() is True, (
-                "PID reuse must be detected via start_time mismatch"
-            )
+            assert lock._is_lock_stale() is True, "PID reuse must be detected via start_time mismatch"
 
     def test_stale_detection_legacy_format_falls_back_to_pid_only(self):
         """Old-format pid files (host:pid, no start_time) keep working —
@@ -1053,9 +1050,7 @@ class TestSubprocessSafety:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args()
             lock = CIFSLock(target, args)
-            self._assert_popen_used_with_new_session(
-                lambda: atomic_compile(lock, target, ["c++", "-c", "test.c"])
-            )
+            self._assert_popen_used_with_new_session(lambda: atomic_compile(lock, target, ["c++", "-c", "test.c"]))
 
     def test_atomic_compile_direct_starts_new_session(self):
         """Direct compile path must also use start_new_session=True."""
@@ -1063,9 +1058,7 @@ class TestSubprocessSafety:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args()
             lock = FlockLock(target, args)
-            self._assert_popen_used_with_new_session(
-                lambda: atomic_compile(lock, target, ["c++", "-c", "test.c"])
-            )
+            self._assert_popen_used_with_new_session(lambda: atomic_compile(lock, target, ["c++", "-c", "test.c"]))
 
     def test_atomic_link_starts_new_session(self):
         """atomic_link must use start_new_session=True for signal forwarding."""
@@ -1073,9 +1066,7 @@ class TestSubprocessSafety:
             target = os.path.join(tmpdir, "test.a")
             args = _make_lock_args()
             lock = FlockLock(target, args)
-            self._assert_popen_used_with_new_session(
-                lambda: atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
-            )
+            self._assert_popen_used_with_new_session(lambda: atomic_link(lock, target, ["ar", "rcs", target, "foo.o"]))
 
     @pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX-only signal forwarding")
     def test_sigterm_during_atomic_compile_is_forwarded_to_child_group(self, tmp_path):
@@ -1098,7 +1089,7 @@ class TestSubprocessSafety:
         worker_script.write_text(
             textwrap.dedent(f"""
             import os, sys, pathlib
-            sys.path.insert(0, {repr(repo_src)})
+            sys.path.insert(0, {repo_src!r})
             from types import SimpleNamespace
             from compiletools.locking import FlockLock, atomic_compile
 
@@ -1109,9 +1100,9 @@ class TestSubprocessSafety:
                 sleep_interval_lockdir=0.01, sleep_interval_cifs=0.01,
                 sleep_interval_flock_fallback=0.01,
             )
-            target = {repr(str(target))}
+            target = {str(target)!r}
             lock = FlockLock(target, args)
-            pathlib.Path({repr(str(ready_marker))}).touch()
+            pathlib.Path({str(ready_marker)!r}).touch()
             try:
                 atomic_compile(lock, target, [
                     'sh', '-c',
@@ -1163,12 +1154,10 @@ class TestSubprocessSafety:
         _time.sleep(6.0)
 
         assert trap_marker.exists(), (
-            "Child shell never received SIGTERM — signal was not forwarded "
-            "to the child process group"
+            "Child shell never received SIGTERM — signal was not forwarded to the child process group"
         )
         assert not done_marker.exists(), (
-            "Child shell ran to completion as an orphan — worker exited "
-            "without killing its child"
+            "Child shell ran to completion as an orphan — worker exited without killing its child"
         )
 
         # Lock should be released — verify by acquiring it ourselves.

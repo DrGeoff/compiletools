@@ -239,7 +239,7 @@ class MakefileBackend(BuildBackend):
             f"@_ct_s=$$(date +%s%N 2>/dev/null || echo 0); "
             f"{recipe.lstrip('@+')}; _ct_rc=$$?; "
             f"_ct_e=$$(date +%s%N 2>/dev/null || echo 0); "
-            f'echo \'{{"target":{tgt},"start_ns":\'$$_ct_s\',"end_ns":\'$$_ct_e\'}}\' >> {log}; '
+            f"echo '{{\"target\":{tgt},\"start_ns\":'$$_ct_s',\"end_ns\":'$$_ct_e'}}' >> {log}; "
             f"exit $$_ct_rc"
         )
 

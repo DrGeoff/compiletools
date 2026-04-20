@@ -223,10 +223,11 @@ class TestLockBehaviorContract:
         with open(lock.pid_file) as f:
             content = f.read().strip()
 
-        # Contract: Format must be hostname:pid
-        assert ":" in content, f"Expected hostname:pid format, got: {content}"
-        _hostname, pid = content.split(":", 1)
-        assert int(pid) == os.getpid(), f"Expected our PID, got {pid}"
+        # Contract: Format must be hostname:pid[:start_time]
+        assert ":" in content, f"Expected hostname:pid[:start_time] format, got: {content}"
+        parts = content.split(":")
+        assert len(parts) >= 2
+        assert int(parts[1]) == os.getpid(), f"Expected our PID, got {parts[1]}"
 
         lock.release()
 
@@ -260,7 +261,7 @@ class TestLockBehaviorContract:
         # Verify new lock has our PID
         with open(lock.pid_file) as f:
             content = f.read().strip()
-        _, pid = content.split(":", 1)
-        assert int(pid) == os.getpid(), "Expected new lock with our PID"
+        parts = content.split(":")
+        assert int(parts[1]) == os.getpid(), "Expected new lock with our PID"
 
         lock.release()

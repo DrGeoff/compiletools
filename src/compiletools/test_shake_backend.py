@@ -945,15 +945,17 @@ class TestAtomicCompile:
 
         observed_outputs = []
 
-        def spy_run(cmd, **kwargs):
+        def spy_run(cmd):
             if "-o" in cmd:
                 output_idx = cmd.index("-o") + 1
                 observed_outputs.append(cmd[output_idx])
                 with open(cmd[output_idx], "wb") as f:
                     f.write(b"\x7fELF object")
-            return fake_subprocess_result()
+            return subprocess.CompletedProcess(cmd, 0, None, None)
 
-        with mock.patch("compiletools.locking.subprocess.run", side_effect=spy_run):
+        # atomic_compile delegates to _run_with_signal_forwarding (the new
+        # boundary that wraps Popen + signal forwarding); patch that.
+        with mock.patch("compiletools.locking._run_with_signal_forwarding", side_effect=spy_run):
             atomic_compile(lock, target, ["g++", "-c", "bar.cpp"])
 
         assert len(observed_outputs) == 1

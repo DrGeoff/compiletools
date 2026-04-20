@@ -14,9 +14,12 @@ import sys
 import time
 
 # Object filename format: {basename}_{file_hash_12}_{dep_hash_14}_{macro_state_hash_16}.o
-# Greedy first group handles underscores in basenames.
+# Anchored from the END (the three hash fields have fixed widths) so the
+# basename can contain anything — including embedded substrings that look
+# like our hash fields. Per-trailing-component matching avoids the regex
+# backtracking quirks of a greedy ``(.+)`` first group (M-B1).
 _OBJ_FILENAME_RE = re.compile(
-    r"^(.+)_([0-9a-f]{12})_([0-9a-f]{14})_([0-9a-f]{16})\.o$"
+    r"^(?P<basename>.+)_(?P<file>[0-9a-f]{12})_(?P<dep>[0-9a-f]{14})_(?P<macro>[0-9a-f]{16})\.o$"
 )
 
 # PCH command hash directories are exactly 16 lowercase hex chars.
@@ -42,6 +45,12 @@ def parse_object_filename(filename):
 
 def build_current_hash_set(context):
     """Build the set of 12-char file hash prefixes for all git-tracked files.
+
+    The 12-char (48-bit) prefix is deliberately loose: the failure mode
+    of a collision is over-retention (treating a non-current entry as
+    current and keeping it), never under-deletion. With ~80k tracked
+    files the birthday probability of a collision is non-trivial but
+    benign (M-B3).
 
     Args:
         context: BuildContext with loaded file hashes.
@@ -119,9 +128,7 @@ class CacheTrimmer:
                     st = entry.stat()
                 except OSError:
                     continue
-                groups.setdefault(basename, []).append(
-                    (entry.path, file_hash, st.st_mtime, st.st_size)
-                )
+                groups.setdefault(basename, []).append((entry.path, file_hash, st.st_mtime, st.st_size))
 
         stats["basenames_found"] = len(groups)
         now = time.time()
@@ -350,8 +357,9 @@ def _safe_locked_unlink(path):
     build is currently writing. Returns True on success, False on failure.
     Best effort: lock acquisition errors fall through to a plain unlink.
     """
-    from compiletools.locking import FileLock
     from types import SimpleNamespace
+
+    from compiletools.locking import FileLock
 
     lock_args = SimpleNamespace(
         file_locking=True,

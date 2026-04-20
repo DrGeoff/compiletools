@@ -202,7 +202,9 @@ class TestUnsuppliedReplacement:
 class TestSubstituteCXXForMissing:
     def test_substitutes_cpp_and_cppflags(self):
         args = SimpleNamespace(
-            verbose=0, CXX="g++", CXXFLAGS="-Wall",
+            verbose=0,
+            CXX="g++",
+            CXXFLAGS="-Wall",
             CPP="unsupplied_implies_use_CXX",
             CPPFLAGS="unsupplied_implies_use_CXXFLAGS",
         )
@@ -212,8 +214,11 @@ class TestSubstituteCXXForMissing:
 
     def test_substitutes_ld_when_present(self):
         args = SimpleNamespace(
-            verbose=0, CXX="g++", CXXFLAGS="-Wall",
-            CPP="g++", CPPFLAGS="-Wall",
+            verbose=0,
+            CXX="g++",
+            CXXFLAGS="-Wall",
+            CPP="g++",
+            CPPFLAGS="-Wall",
             LD="unsupplied_implies_use_CXX",
             LDFLAGS="unsupplied_implies_use_CXXFLAGS",
         )
@@ -223,8 +228,11 @@ class TestSubstituteCXXForMissing:
 
     def test_no_ld_attribute_ok(self):
         args = SimpleNamespace(
-            verbose=0, CXX="g++", CXXFLAGS="-Wall",
-            CPP="g++", CPPFLAGS="-Wall",
+            verbose=0,
+            CXX="g++",
+            CXXFLAGS="-Wall",
+            CPP="g++",
+            CPPFLAGS="-Wall",
         )
         _substitute_CXX_for_missing(args)  # Should not raise
 
@@ -232,7 +240,11 @@ class TestSubstituteCXXForMissing:
 class TestAddIncludePathsToFlags:
     def test_adds_include_paths(self):
         args = SimpleNamespace(
-            INCLUDE="/tmp/inc", CPPFLAGS="-Wall", CFLAGS="-Wall", CXXFLAGS="-Wall", verbose=0,
+            INCLUDE="/tmp/inc",
+            CPPFLAGS="-Wall",
+            CFLAGS="-Wall",
+            CXXFLAGS="-Wall",
+            verbose=0,
         )
         _add_include_paths_to_flags(args)
         assert "-I /tmp/inc" in args.CPPFLAGS
@@ -241,7 +253,11 @@ class TestAddIncludePathsToFlags:
 
     def test_no_duplicate_include_paths(self):
         args = SimpleNamespace(
-            INCLUDE="/tmp/inc", CPPFLAGS="-Wall /tmp/inc", CFLAGS="-Wall", CXXFLAGS="-Wall", verbose=0,
+            INCLUDE="/tmp/inc",
+            CPPFLAGS="-Wall /tmp/inc",
+            CFLAGS="-Wall",
+            CXXFLAGS="-Wall",
+            verbose=0,
         )
         _add_include_paths_to_flags(args)
         # /tmp/inc already in CPPFLAGS, should not add again
@@ -249,7 +265,11 @@ class TestAddIncludePathsToFlags:
 
     def test_verbose_include_print(self):
         args = SimpleNamespace(
-            INCLUDE="/tmp/inc", CPPFLAGS="-Wall", CFLAGS="-Wall", CXXFLAGS="-Wall", verbose=6,
+            INCLUDE="/tmp/inc",
+            CPPFLAGS="-Wall",
+            CFLAGS="-Wall",
+            CXXFLAGS="-Wall",
+            verbose=6,
         )
         with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
             _add_include_paths_to_flags(args)
@@ -324,21 +344,30 @@ class TestExtractCommandLineMacros:
 class TestDoXxpend:
     def test_prepend(self):
         args = SimpleNamespace(
-            CPPFLAGS="-Wall", prepend_cppflags=["-O2"], append_cppflags=[], verbose=0,
+            CPPFLAGS="-Wall",
+            prepend_cppflags=["-O2"],
+            append_cppflags=[],
+            verbose=0,
         )
         _do_xxpend(args, "CPPFLAGS")
         assert args.CPPFLAGS.startswith("-O2")
 
     def test_append(self):
         args = SimpleNamespace(
-            CPPFLAGS="-Wall", prepend_cppflags=[], append_cppflags=["-O2"], verbose=0,
+            CPPFLAGS="-Wall",
+            prepend_cppflags=[],
+            append_cppflags=["-O2"],
+            verbose=0,
         )
         _do_xxpend(args, "CPPFLAGS")
         assert args.CPPFLAGS.endswith("-O2")
 
     def test_no_duplicate_xxpend(self):
         args = SimpleNamespace(
-            CPPFLAGS="-Wall -O2", prepend_cppflags=["-O2"], append_cppflags=[], verbose=0,
+            CPPFLAGS="-Wall -O2",
+            prepend_cppflags=["-O2"],
+            append_cppflags=[],
+            verbose=0,
         )
         _do_xxpend(args, "CPPFLAGS")
         # -O2 already in CPPFLAGS, should not be prepended again
@@ -353,7 +382,9 @@ class TestDoXxpend:
 class TestUnifyCppCxxFlags:
     def test_unifies_flags(self):
         args = SimpleNamespace(
-            CPPFLAGS="-DFOO", CXXFLAGS="-Wall", separate_flags_CPP_CXX=False,
+            CPPFLAGS="-DFOO",
+            CXXFLAGS="-Wall",
+            separate_flags_CPP_CXX=False,
         )
         _unify_cpp_cxx_flags(args)
         assert args.CPPFLAGS == args.CXXFLAGS
@@ -362,7 +393,9 @@ class TestUnifyCppCxxFlags:
 
     def test_separate_flags_skips(self):
         args = SimpleNamespace(
-            CPPFLAGS="-DFOO", CXXFLAGS="-Wall", separate_flags_CPP_CXX=True,
+            CPPFLAGS="-DFOO",
+            CXXFLAGS="-Wall",
+            separate_flags_CPP_CXX=True,
         )
         _unify_cpp_cxx_flags(args)
         assert args.CPPFLAGS == "-DFOO"
@@ -458,6 +491,7 @@ class TestCallbackSystem:
         resetcallbacks()
         # After reset, only _commonsubstitutions should remain
         from compiletools.apptools import _substitutioncallbacks
+
         assert len(_substitutioncallbacks) == 1
 
     def test_substitutions_calls_callbacks(self):
@@ -468,6 +502,7 @@ class TestCallbackSystem:
         # _commonsubstitutions will fail without full args, so just test
         # with our own callback only
         from compiletools import apptools
+
         saved = apptools._substitutioncallbacks[:]
         try:
             apptools._substitutioncallbacks = [lambda args: called.append("main")]
@@ -567,6 +602,7 @@ class TestCachedPkgConfig:
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1)
             import warnings
+
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 result = cached_pkg_config("nonexistent_pkg_12345", "--cflags")
@@ -576,10 +612,12 @@ class TestCachedPkgConfig:
     def test_existing_package(self):
         clear_cache()
         with patch("subprocess.run") as mock_run:
+
             def side_effect(cmd, **kwargs):
                 if "--exists" in cmd:
                     return MagicMock(returncode=0)
                 return MagicMock(returncode=0, stdout="-I/opt/pkg/include\n")
+
             mock_run.side_effect = side_effect
             result = cached_pkg_config("test_pkg_99999", "--cflags")
         assert "/opt/pkg/include" in result
@@ -600,17 +638,13 @@ class TestCachedPkgConfig:
             "Libs: -L/override/lib -loverride\n"
         )
         pc_content_base = (
-            "Name: TestPkg\nDescription: Base\nVersion: 1.0\n"
-            "Cflags: -I/base/include -DBASE\n"
-            "Libs: -L/base/lib -lbase\n"
+            "Name: TestPkg\nDescription: Base\nVersion: 1.0\nCflags: -I/base/include -DBASE\nLibs: -L/base/lib -lbase\n"
         )
 
         (override_dir / "testoverridepkg.pc").write_text(pc_content_override)
         (base_dir / "testoverridepkg.pc").write_text(pc_content_base)
 
-        monkeypatch.setenv(
-            "PKG_CONFIG_PATH", f"{override_dir}{os.pathsep}{base_dir}"
-        )
+        monkeypatch.setenv("PKG_CONFIG_PATH", f"{override_dir}{os.pathsep}{base_dir}")
 
         result = cached_pkg_config("testoverridepkg", "--cflags")
         assert "-DOVERRIDE" in result
@@ -657,9 +691,7 @@ class TestSetupPkgConfigOverrides:
         pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
         pkgconfig_dir.mkdir(parents=True)
 
-        monkeypatch.setattr(
-            "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
-        )
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path))
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("PKG_CONFIG_PATH", "/existing/path")
 
@@ -672,9 +704,7 @@ class TestSetupPkgConfigOverrides:
 
     def test_noop_when_no_override_dir(self, monkeypatch, tmp_path):
         """When ct.conf.d/pkgconfig/ does not exist, PKG_CONFIG_PATH is unchanged."""
-        monkeypatch.setattr(
-            "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
-        )
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path))
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("PKG_CONFIG_PATH", "/original/path")
 
@@ -688,9 +718,7 @@ class TestSetupPkgConfigOverrides:
         pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
         pkgconfig_dir.mkdir(parents=True)
 
-        monkeypatch.setattr(
-            "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
-        )
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path))
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
 
@@ -704,9 +732,7 @@ class TestSetupPkgConfigOverrides:
         pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
         pkgconfig_dir.mkdir(parents=True)
 
-        monkeypatch.setattr(
-            "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
-        )
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path))
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("PKG_CONFIG_PATH", "/existing/path")
 
@@ -724,9 +750,7 @@ class TestSetupPkgConfigOverrides:
         pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
         pkgconfig_dir.mkdir(parents=True)
 
-        monkeypatch.setattr(
-            "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
-        )
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path))
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
 
@@ -746,9 +770,7 @@ class TestSetupPkgConfigOverrides:
         repo_pkgconfig.mkdir(parents=True)
         cwd_pkgconfig.mkdir(parents=True)
 
-        monkeypatch.setattr(
-            "compiletools.git_utils.find_git_root", lambda filename=None: str(repo_root)
-        )
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(repo_root))
         monkeypatch.chdir(project_dir)
         monkeypatch.setenv("PKG_CONFIG_PATH", "/system/path")
 
@@ -765,9 +787,7 @@ class TestSetupPkgConfigOverrides:
         cwd_pkgconfig = tmp_path / "ct.conf.d" / "pkgconfig"
         cwd_pkgconfig.mkdir(parents=True)
 
-        monkeypatch.setattr(
-            "compiletools.git_utils.find_git_root", lambda filename=None: None
-        )
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: None)
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
 
@@ -781,9 +801,7 @@ class TestSetupPkgConfigOverrides:
         pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
         pkgconfig_dir.mkdir(parents=True)
 
-        monkeypatch.setattr(
-            "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
-        )
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path))
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
 
@@ -797,9 +815,7 @@ class TestSetupPkgConfigOverrides:
     def test_prepend_promotes_existing_entry_to_front(self, monkeypatch, tmp_path):
         """I-C1 regression: --prepend-PKG-CONFIG-PATH=/X with PKG_CONFIG_PATH=/Y:/X
         must produce /X:/Y (X promoted), not /Y:/X (unchanged)."""
-        monkeypatch.setattr(
-            "compiletools.git_utils.find_git_root", lambda filename=None: None
-        )
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: None)
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("PKG_CONFIG_PATH", "/system:/local")
 
@@ -812,9 +828,7 @@ class TestSetupPkgConfigOverrides:
     def test_append_demotes_existing_entry_to_end(self, monkeypatch, tmp_path):
         """Symmetric I-C1: --append-PKG-CONFIG-PATH should move an existing
         entry to the end."""
-        monkeypatch.setattr(
-            "compiletools.git_utils.find_git_root", lambda filename=None: None
-        )
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: None)
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("PKG_CONFIG_PATH", "/local:/system")
 
@@ -842,8 +856,7 @@ class TestSetupPkgConfigOverrides:
         except RuntimeError:
             pass
         assert ctx.pkg_config_overrides_applied is False, (
-            "Flag must remain False if the function failed; otherwise "
-            "the caller has no way to retry."
+            "Flag must remain False if the function failed; otherwise the caller has no way to retry."
         )
 
     def test_restore_pkg_config_path_undoes_mutation(self, monkeypatch, tmp_path):
@@ -852,9 +865,7 @@ class TestSetupPkgConfigOverrides:
         multiple sequential contexts don't leak PKG_CONFIG_PATH state."""
         pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
         pkgconfig_dir.mkdir(parents=True)
-        monkeypatch.setattr(
-            "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
-        )
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path))
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("PKG_CONFIG_PATH", "/original/path")
 
@@ -874,9 +885,7 @@ class TestSetupPkgConfigOverrides:
         """Restore must remove PKG_CONFIG_PATH if it was originally unset."""
         pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
         pkgconfig_dir.mkdir(parents=True)
-        monkeypatch.setattr(
-            "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
-        )
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path))
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
 

@@ -53,9 +53,16 @@ if _rich_rst_available and sys.version_info >= (3, 9):
                 sys.exit(0)
 
 
-def _parser_has_option(cap, option_string):
-    """Check whether *cap* already has an action for *option_string*."""
+def parser_has_option(cap, option_string):
+    """Check whether *cap* already has an action for *option_string*.
+
+    Used by every backend's ``add_arguments(cap)`` to remain idempotent.
+    """
     return any(option_string in a.option_strings for a in cap._actions)
+
+
+# Backwards-compat alias for callers that imported the underscored form.
+_parser_has_option = parser_has_option
 
 
 def add_base_arguments(cap, argv=None, variant=None):
@@ -981,9 +988,7 @@ def _setup_pkg_config_overrides(context, verbose=0, prepend_paths=None, append_p
     # can faithfully undo. Set the flag AFTER the mutation succeeds so a
     # caller hitting an exception above can retry (I-C4).
     if new_value is not None and new_value != existing:
-        context._original_pkg_config_path = (
-            existing if "PKG_CONFIG_PATH" in os.environ else True
-        )
+        context._original_pkg_config_path = existing if "PKG_CONFIG_PATH" in os.environ else True
         os.environ["PKG_CONFIG_PATH"] = new_value
 
     context.pkg_config_overrides_applied = True

@@ -18,11 +18,11 @@ import compiletools.wrappedos
 from compiletools.file_analyzer import FileAnalysisResult
 from compiletools.preprocessing_cache import MacroState, get_or_compute_preprocessing
 from compiletools.stringzilla_utils import strip_sz
+from compiletools.utils import instance_cache
 
 # Internal key for storing hard ordering constraints in the magic flags dict.
 # Shared between magicflags.py (producer) and build_backend.py (consumer).
 _HARD_ORDERINGS_KEY = sz.Str("_HARD_ORDERINGS")
-from compiletools.utils import instance_cache
 
 # Type aliases for clarity
 MacroDict = dict[sz.Str, sz.Str]
@@ -96,7 +96,10 @@ class MagicFlagsBase:
     """
 
     def __init__(
-        self, args: argparse.Namespace, headerdeps: compiletools.headerdeps.HeaderDepsBase, context,
+        self,
+        args: argparse.Namespace,
+        headerdeps: compiletools.headerdeps.HeaderDepsBase,
+        context,
     ) -> None:
         self._args = args
         self._headerdeps = headerdeps
@@ -307,9 +310,7 @@ class MagicFlagsBase:
         # when an interior package contributes no -l flag.
         if len(first_l_per_pkg) >= 2:
             for i in range(len(first_l_per_pkg) - 1):
-                flagsforfilename[_HARD_ORDERINGS_KEY].append(
-                    (first_l_per_pkg[i], first_l_per_pkg[i + 1])
-                )
+                flagsforfilename[_HARD_ORDERINGS_KEY].append((first_l_per_pkg[i], first_l_per_pkg[i + 1]))
 
         return flagsforfilename
 
@@ -423,17 +424,9 @@ class MagicFlagsBase:
             compiler_predefined = compiletools.compiler_macros.get_compiler_macros(
                 getattr(self._args, "CXX", ""), self._args.verbose
             )
-            legacy_names = {
-                sz.Str(k)
-                for k in compiler_predefined
-                if not k.startswith("_")
-            }
+            legacy_names = {sz.Str(k) for k in compiler_predefined if not k.startswith("_")}
             if legacy_names:
-                all_macros = {
-                    k: v
-                    for k, v in all_macros.items()
-                    if k not in legacy_names or k in macro_state.variable
-                }
+                all_macros = {k: v for k, v in all_macros.items() if k not in legacy_names or k in macro_state.variable}
 
             expander = SimplePreprocessor(
                 all_macros,
@@ -526,7 +519,8 @@ class MagicFlagsBase:
             else:
                 context_dir = compiletools.wrappedos.dirname(filename)
                 resolved = compiletools.wrappedos.realpath_sz(
-                    compiletools.wrappedos.join_sz(sz.Str(context_dir), strip_sz(flag)))
+                    compiletools.wrappedos.join_sz(sz.Str(context_dir), strip_sz(flag))
+                )
             flagsforfilename[magic].append(resolved)
             return
 
@@ -621,7 +615,10 @@ class DirectMagicFlags(MagicFlagsBase):
 
         # Process conditional compilation to get active lines using current macro state
         result = get_or_compute_preprocessing(
-            file_result, self.defined_macros, self._args.verbose, context=self.context,
+            file_result,
+            self.defined_macros,
+            self._args.verbose,
+            context=self.context,
         )
         active_line_set = set(result.active_lines)
 

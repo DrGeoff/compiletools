@@ -33,6 +33,19 @@ class TupBackend(BuildBackend):
         return "Tupfile"
 
     def generate(self, graph: BuildGraph, output=None) -> None:
+        # M-A12: tup has no phony-rule equivalent, so a `runtests` target
+        # cannot be expressed. Warn the user up front rather than letting
+        # them think the test suite ran.
+        if getattr(self.args, "tests", None):
+            import sys
+
+            print(
+                "WARNING: --backend=tup ignores --tests / runtests; tup has "
+                "no phony-rule equivalent. Run test executables manually "
+                "after the build, or use a different backend.",
+                file=sys.stderr,
+            )
+
         graph = self._apply_build_only_changed(graph)
 
         if output is not None:

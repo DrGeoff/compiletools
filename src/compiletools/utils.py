@@ -443,9 +443,7 @@ def deduplicate_compiler_flags(flags: list[str]) -> list[str]:
     return deduplicated
 
 
-def _find_cycle(
-    graph: dict[str, set[str]], remaining: set[str]
-) -> list[str]:
+def _find_cycle(graph: dict[str, set[str]], remaining: set[str]) -> list[str]:
     """Find one cycle in the subgraph induced by *remaining* using DFS.
 
     Returns a list like [a, b, c, a] showing the cycle path.
@@ -489,6 +487,15 @@ def _find_cycle(
     return sorted(remaining) + [sorted(remaining)[0]]  # pragma: no cover
 
 
+class LDFLAGSCycleError(ValueError):
+    """Raised when merge_ldflags_with_topo_sort cannot break a cycle.
+
+    A subclass of ValueError so cake.py's outer error handler can match
+    only this specific error (M-C7) rather than rendering every random
+    ValueError through the cycle-error formatter.
+    """
+
+
 def _format_cycle_error(
     cycle_path: list[str],
     edge_sources: dict[tuple[str, str], list[str]],
@@ -502,14 +509,18 @@ def _format_cycle_error(
         f"  Cycle: {cycle_str}",
     ]
     if source_files is not None:
-        cycle_files: list[str] = []
+        cycle_files_seen: list[str] = []
+        seen_set: set[str] = set()
         for i in range(len(cycle_path) - 1):
             edge = (cycle_path[i], cycle_path[i + 1])
-            cycle_files.extend(edge_sources.get(edge, []))
+            for f in edge_sources.get(edge, []):
+                if f not in seen_set:
+                    seen_set.add(f)
+                    cycle_files_seen.append(f)
         common_root = ""
-        if cycle_files:
+        if cycle_files_seen:
             try:
-                common_root = os.path.commonpath(cycle_files)
+                common_root = os.path.commonpath(cycle_files_seen)
             except ValueError:
                 pass  # different drives on Windows
             if common_root and not os.path.isdir(common_root):
@@ -527,19 +538,16 @@ def _format_cycle_error(
         lines.append("  Constraints contributing to the cycle:")
         for i in range(len(cycle_path) - 1):
             edge = (cycle_path[i], cycle_path[i + 1])
-            files = edge_sources.get(edge, [])
+            # M-C6: dedupe files per-edge so a single source contributing
+            # the same edge multiple times doesn't get listed N times.
+            files = list(dict.fromkeys(edge_sources.get(edge, [])))
             if files:
                 file_list = ", ".join(_shorten(f) for f in files)
-                lines.append(
-                    f"    {edge[0]} must precede {edge[1]}  (from {file_list})"
-                )
+                lines.append(f"    {edge[0]} must precede {edge[1]}  (from {file_list})")
             else:
                 lines.append(f"    {edge[0]} must precede {edge[1]}")
     lines.append("")
-    lines.append(
-        "Fix the LDFLAGS annotations in the source files above to "
-        "remove the contradictory ordering."
-    )
+    lines.append("Fix the LDFLAGS annotations in the source files above to remove the contradictory ordering.")
     return "\n".join(lines)
 
 
@@ -578,6 +586,15 @@ def merge_ldflags_with_topo_sort(
             for hard_orderings (used in cycle error messages).
     """
     if not per_file_ldflags:
+        # M-C11: hard_orderings without per_file_ldflags is impossible
+        # in practice — multi-package PKG-CONFIG always populates LDFLAGS
+        # alongside the hard ordering. If it ever changes, an empty
+        # return here would silently lose the hard constraints.
+        assert not hard_orderings, (
+            "merge_ldflags_with_topo_sort: cannot honor hard_orderings "
+            "without per_file_ldflags. The two are produced together by "
+            "magicflags._handle_pkg_config; one without the other is a bug."
+        )
         return []
 
     from collections import defaultdict
@@ -720,9 +737,7 @@ def merge_ldflags_with_topo_sort(
 
         if not soft_in_cycle:
             # Purely hard cycle — genuine conflict, error out.
-            raise ValueError(
-                _format_cycle_error(cycle_path, edge_sources, source_files)
-            )
+            raise LDFLAGSCycleError(_format_cycle_error(cycle_path, edge_sources, source_files))
 
         # Break cycle by removing soft edges, recompute in_degree, and drain.
         for pred, succ in soft_in_cycle:

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from compiletools.build_timer import BuildTimer
 from compiletools.timing_report import _find_timing_file, main
 

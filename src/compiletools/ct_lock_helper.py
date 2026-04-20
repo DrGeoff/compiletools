@@ -35,7 +35,7 @@ class GracefulExit:
             except Exception:
                 pass
 
-        if signum:
+        if signum is not None:
             sys.exit(128 + signum)
 
 

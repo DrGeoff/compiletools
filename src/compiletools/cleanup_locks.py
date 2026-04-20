@@ -5,6 +5,7 @@ Handles both local and remote lock verification via SSH.
 """
 
 import os
+import shutil
 import socket
 import sys
 
@@ -113,8 +114,6 @@ class LockCleaner:
             bool: True if removed successfully, False otherwise
         """
         try:
-            import shutil
-
             shutil.rmtree(lockdir, ignore_errors=True)
 
             if os.path.exists(lockdir):

@@ -580,7 +580,7 @@ def _run_with_signal_forwarding(cmd: list[str]) -> subprocess.CompletedProcess:
 
     saved_handlers = []  # list of (signum, previous_handler) pairs
 
-    def _forward(signum, frame):  # noqa: ARG001 (frame required by Python signal API)
+    def _forward(signum, frame):
         try:
             os.killpg(os.getpgid(proc.pid), signum)
         except (OSError, ProcessLookupError):

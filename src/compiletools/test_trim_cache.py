@@ -15,23 +15,17 @@ from compiletools.trim_cache import (
 
 class TestParseObjectFilename:
     def test_standard_filename(self):
-        result = parse_object_filename(
-            "foo_aabbccddeeff_11223344556677_0011223344556677.o"
-        )
+        result = parse_object_filename("foo_aabbccddeeff_11223344556677_0011223344556677.o")
         assert result == ("foo", "aabbccddeeff", "11223344556677", "0011223344556677")
 
     def test_basename_with_underscores(self):
-        result = parse_object_filename(
-            "my_cool_module_aabbccddeeff_11223344556677_0011223344556677.o"
-        )
+        result = parse_object_filename("my_cool_module_aabbccddeeff_11223344556677_0011223344556677.o")
         assert result is not None
         assert result[0] == "my_cool_module"
         assert result[1] == "aabbccddeeff"
 
     def test_single_char_basename(self):
-        result = parse_object_filename(
-            "x_aabbccddeeff_11223344556677_0011223344556677.o"
-        )
+        result = parse_object_filename("x_aabbccddeeff_11223344556677_0011223344556677.o")
         assert result is not None
         assert result[0] == "x"
 
@@ -42,27 +36,17 @@ class TestParseObjectFilename:
 
     def test_wrong_hash_lengths(self):
         # file_hash too short (11 instead of 12)
-        assert parse_object_filename(
-            "foo_aabbccddee_11223344556677_0011223344556677.o"
-        ) is None
+        assert parse_object_filename("foo_aabbccddee_11223344556677_0011223344556677.o") is None
         # dep_hash too short (13 instead of 14)
-        assert parse_object_filename(
-            "foo_aabbccddeeff_1122334455667_0011223344556677.o"
-        ) is None
+        assert parse_object_filename("foo_aabbccddeeff_1122334455667_0011223344556677.o") is None
         # macro_hash too short (15 instead of 16)
-        assert parse_object_filename(
-            "foo_aabbccddeeff_11223344556677_001122334455667.o"
-        ) is None
+        assert parse_object_filename("foo_aabbccddeeff_11223344556677_001122334455667.o") is None
 
     def test_uppercase_hex_rejected(self):
-        assert parse_object_filename(
-            "foo_AABBCCDDEEFF_11223344556677_0011223344556677.o"
-        ) is None
+        assert parse_object_filename("foo_AABBCCDDEEFF_11223344556677_0011223344556677.o") is None
 
     def test_non_hex_chars_rejected(self):
-        assert parse_object_filename(
-            "foo_gghhiijjkkll_11223344556677_0011223344556677.o"
-        ) is None
+        assert parse_object_filename("foo_gghhiijjkkll_11223344556677_0011223344556677.o") is None
 
 
 # ── build_current_hash_set ───────────────────────────────────────────
@@ -214,7 +198,7 @@ class TestTrimObjdir:
         trimmer = CacheTrimmer(_make_args(dry_run=True, keep_count=1))
         stats = trimmer.trim_objdir(objdir, set())
 
-        assert os.path.exists(old)   # not actually removed
+        assert os.path.exists(old)  # not actually removed
         assert os.path.exists(newer)
         assert stats["removed"] == 1  # but reported as would-remove
 
@@ -252,9 +236,9 @@ class TestTrimObjdir:
         stats = trimmer.trim_objdir(objdir, {"aabbccddeeff"})
 
         assert os.path.exists(foo_current)
-        assert not os.path.exists(foo_old)   # removed: foo has current file, so no safety net needed
-        assert os.path.exists(bar_newer)     # kept: safety keeps newest per basename
-        assert not os.path.exists(bar_old)   # removed: oldest non-current
+        assert not os.path.exists(foo_old)  # removed: foo has current file, so no safety net needed
+        assert os.path.exists(bar_newer)  # kept: safety keeps newest per basename
+        assert not os.path.exists(bar_old)  # removed: oldest non-current
         assert stats["basenames_found"] == 2
 
     def test_bytes_freed_tracked(self, tmp_path):

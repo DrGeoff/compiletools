@@ -646,10 +646,7 @@ class SlurmBackend(ShakeBackend):
         # Poll briefly so Phase 5 link steps don't fail with missing .o
         # files.  Only needed when link/library rules will consume the
         # compiled outputs.
-        has_link_rules = any(
-            r.rule_type not in ("phony", "mkdir", "compile", "clean")
-            for r in graph.rules
-        )
+        has_link_rules = any(r.rule_type not in ("phony", "mkdir", "compile", "clean") for r in graph.rules)
         if to_submit and has_link_rules:
             self._wait_for_output_files(to_submit)
 

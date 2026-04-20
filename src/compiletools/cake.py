@@ -415,9 +415,7 @@ def _print_rich_error(err: ValueError) -> None:
             text.append(line, style="bold")
         elif "must precede" in line:
             # "    X must precede Y  (from src/foo.cpp)"
-            m = re.match(
-                r"(\s+)(\S+)( must precede )(\S+)(.*)", line
-            )
+            m = re.match(r"(\s+)(\S+)( must precede )(\S+)(.*)", line)
             if m:
                 indent, lib_a, mid, lib_b, rest = m.groups()
                 text.append(indent)
@@ -479,7 +477,10 @@ def main(argv=None):
             return 1
         else:
             raise
-    except ValueError as ve:
+    except compiletools.utils.LDFLAGSCycleError as ve:
+        # M-C7: catch ONLY the cycle error so unrelated ValueErrors
+        # don't get rendered through the Rich cycle-error formatter
+        # (which would confuse the user with a panel that doesn't apply).
         if args.verbose < 2:
             _print_rich_error(ve)
             return 1

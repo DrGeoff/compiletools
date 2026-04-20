@@ -207,8 +207,7 @@ class BuildBackend(abc.ABC):
             # other component's caches — the exact bug the refactor existed
             # to prevent. Force the caller to be explicit.
             raise ValueError(
-                "BuildBackend requires either hunter or context. "
-                "Pass context=BuildContext() if you have no hunter."
+                "BuildBackend requires either hunter or context. Pass context=BuildContext() if you have no hunter."
             )
         self.namer = compiletools.namer.Namer(args, context=self.context)
         self._graph: BuildGraph | None = None
@@ -407,7 +406,7 @@ class BuildBackend(abc.ABC):
         import stringzilla as sz
 
         pchdir = getattr(self.args, "pchdir", None)
-        self._pch_gch_paths: dict[str, str] = {}   # header_abs -> gch_output
+        self._pch_gch_paths: dict[str, str] = {}  # header_abs -> gch_output
         self._pch_include_dirs: dict[str, str] = {}  # header_abs -> -I dir
 
         if pchdir:
@@ -432,8 +431,7 @@ class BuildBackend(abc.ABC):
                 self._pch_include_dirs[pch_header] = os.path.join(pchdir, cmd_hash)
                 pch_mkdir_dirs.add(os.path.join(pchdir, cmd_hash))
 
-            pch_deps = [pch_header] + sorted(
-                str(d) for d in self.hunter.header_dependencies(pch_header))
+            pch_deps = [pch_header] + sorted(str(d) for d in self.hunter.header_dependencies(pch_header))
             pch_cmd = (
                 [self.args.CXX, self.args.CXXFLAGS]
                 + [str(f) for f in magic_cpp_flags]
@@ -441,21 +439,25 @@ class BuildBackend(abc.ABC):
                 + ["-x", "c++-header", pch_header, "-o", gch_path]
             )
             order_deps = [os.path.join(pchdir, cmd_hash)] if pchdir and cmd_hash else [self.args.objdir]
-            graph.add_rule(BuildRule(
-                output=gch_path,
-                inputs=pch_deps,
-                command=pch_cmd,
-                rule_type="compile",
-                order_only_deps=order_deps,
-            ))
+            graph.add_rule(
+                BuildRule(
+                    output=gch_path,
+                    inputs=pch_deps,
+                    command=pch_cmd,
+                    rule_type="compile",
+                    order_only_deps=order_deps,
+                )
+            )
 
         for pch_dir in sorted(pch_mkdir_dirs):
-            graph.add_rule(BuildRule(
-                output=pch_dir,
-                inputs=[],
-                command=["mkdir", "-p", pch_dir],
-                rule_type="mkdir",
-            ))
+            graph.add_rule(
+                BuildRule(
+                    output=pch_dir,
+                    inputs=[],
+                    command=["mkdir", "-p", pch_dir],
+                    rule_type="mkdir",
+                )
+            )
 
         for filename in all_compile_sources:
             rule = self._create_compile_rule(filename)
@@ -506,17 +508,15 @@ class BuildBackend(abc.ABC):
             test_result_paths = []
             for exe_path in test_exe_paths:
                 result_path = exe_path + ".result"
-                test_cmd = (
-                    ["rm", "-f", result_path, "&&"]
-                    + testprefix_parts
-                    + [exe_path, "&&", "touch", result_path]
+                test_cmd = ["rm", "-f", result_path, "&&"] + testprefix_parts + [exe_path, "&&", "touch", result_path]
+                graph.add_rule(
+                    BuildRule(
+                        output=result_path,
+                        inputs=[exe_path],
+                        command=test_cmd,
+                        rule_type="test",
+                    )
                 )
-                graph.add_rule(BuildRule(
-                    output=result_path,
-                    inputs=[exe_path],
-                    command=test_cmd,
-                    rule_type="test",
-                ))
                 test_result_paths.append(result_path)
 
             graph.add_rule(BuildRule(output="runtests", inputs=test_result_paths, command=None, rule_type="phony"))
@@ -1032,7 +1032,10 @@ def _compiler_identity(cxx: str) -> str:
 
 
 def _pch_command_hash(
-    args, pch_header: str, magic_cpp_flags: list, magic_cxx_flags: list,
+    args,
+    pch_header: str,
+    magic_cpp_flags: list,
+    magic_cxx_flags: list,
 ) -> str:
     """Compute a content-addressable hash for a PCH compile command.
 
@@ -1044,6 +1047,17 @@ def _pch_command_hash(
     containing literal spaces (``-DFOO="a b"``) cannot collide with
     space-separated flag pairs.
     """
+    # M-A11: 64 bits (16 hex chars) of SHA-256 — birthday-collision risk at
+    # ~4 billion entries, fine in practice. PCH cache validity is also
+    # guarded by GCC's PCH stamp at consume time, so a hash collision
+    # would only cause a slow rebuild, not a miscompile.
+    # M-B6: Cache key includes the immediate header's realpath but NOT the
+    # transitive header content. Two users whose stdafx.h includes
+    # <config.h> with different content (e.g. different worktrees of the
+    # same project) collide on cmd_hash; GCC's PCH stamp then refuses the
+    # wrong .gch and the user pays a slow rebuild. Acceptable today;
+    # consider sidecar manifest with content hashes if cross-user-mixed-
+    # content workloads become common.
     canonical = {
         "compiler_identity": _compiler_identity(args.CXX),
         "cxx_command": args.CXX,

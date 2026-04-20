@@ -9,7 +9,6 @@ import pytest
 
 from compiletools.build_timer import BuildTimer, TimingEvent, _classify_output
 
-
 # ------------------------------------------------------------------ TimingEvent
 
 
