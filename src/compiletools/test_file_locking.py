@@ -223,26 +223,21 @@ class TestLockdirLock:
 
         lock = compiletools.locking.LockdirLock(temp_lock_file, mock_args)
 
-        # Track attempts
+        # Track attempts; patch the new internal pid-write helper so we can
+        # simulate the lockdir-was-torn-down race without going through any
+        # makedirs path.
         attempt_count = {"value": 0}
-        original_atomic = compiletools.filesystem_utils.atomic_output_file
+        original_write = lock._write_pid_file
 
-        def failing_atomic(target_path, *args, **kwargs):
-            """Simulate lockdir removal on first attempt."""
+        def failing_write_pid_file():
             attempt_count["value"] += 1
-
             if attempt_count["value"] == 1:
-                # Simulate concurrent process removing lockdir during pid write
                 if os.path.exists(lock.lockdir):
                     shutil.rmtree(lock.lockdir)
-                # Raise the error that would occur when lockdir is gone
                 raise FileNotFoundError(f"No such file or directory: '{lock.lockdir}'")
+            return original_write()
 
-            # Subsequent attempts succeed normally
-            return original_atomic(target_path, *args, **kwargs)
-
-        # Patch atomic_output_file to simulate race condition
-        with patch("compiletools.filesystem_utils.atomic_output_file", side_effect=failing_atomic):
+        with patch.object(lock, "_write_pid_file", side_effect=failing_write_pid_file):
             # Should retry and succeed on second attempt
             lock.acquire()
 
@@ -269,19 +264,15 @@ class TestLockdirLock:
 
         lock = compiletools.locking.LockdirLock(temp_lock_file, mock_args)
 
-        # Make atomic_output_file always fail
-        def always_failing_atomic(target_path, *args, **kwargs):
-            """Always remove lockdir to force continuous failures."""
+        def always_failing_write():
             if os.path.exists(lock.lockdir):
                 shutil.rmtree(lock.lockdir)
             raise FileNotFoundError(f"No such file or directory: '{lock.lockdir}'")
 
-        with patch("compiletools.filesystem_utils.atomic_output_file", side_effect=always_failing_atomic):
-            # Should fail after 3 attempts
+        with patch.object(lock, "_write_pid_file", side_effect=always_failing_write):
             with pytest.raises(RuntimeError, match="Failed to acquire lock after 3 attempts"):
                 lock.acquire()
 
-            # Lockdir should not exist (cleaned up after final failure)
             assert not os.path.exists(lock.lockdir), "Lockdir should be cleaned up after failed attempts"
 
 

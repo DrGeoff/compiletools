@@ -1,16 +1,18 @@
 """File locking for concurrent builds.
 
-Python implementation of the same locking algorithms used in ct-lock-helper shell script.
-Both this module and ct-lock-helper use identical algorithms for lock acquisition/release.
-All policies (timeouts, sleep intervals) are configured via args object from apptools.py.
+Python implementation of the same locking algorithms used by the Python
+ct-lock-helper. All policies (timeouts, sleep intervals) are configured via
+args object from apptools.py.
 """
 
 import os
 import platform
 import shutil
+import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 import compiletools.filesystem_utils
@@ -112,6 +114,32 @@ class LockdirLock:
                 self.sleep_interval = 0.05
 
         self.platform = platform.system().lower()
+
+    def _write_pid_file(self):
+        """Write hostname:pid into self.pid_file using plain open+rename
+        INSIDE self.lockdir. Raises FileNotFoundError if the lockdir was
+        torn down between our mkdir and this call."""
+        tmp = f"{self.pid_file}.{os.getpid()}.{os.urandom(2).hex()}.tmp"
+        # open() with O_CREAT|O_WRONLY|O_TRUNC — but written so a missing
+        # parent directory raises FileNotFoundError, the signal we want.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o664)
+        try:
+            os.write(fd, f"{self.hostname}:{self.pid}\n".encode())
+        finally:
+            os.close(fd)
+        try:
+            os.rename(tmp, self.pid_file)
+        except OSError:
+            # Best-effort: if rename failed, try to remove the temp file
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        try:
+            os.chmod(self.pid_file, 0o664)
+        except OSError:
+            pass
 
     def _set_lockdir_permissions(self):
         """Set lockdir permissions for multi-user file-locking mode.
@@ -281,11 +309,16 @@ class LockdirLock:
                     os.mkdir(self.lockdir)
                     # Lock acquired - set multi-user permissions (mirrors shell behavior)
                     self._set_lockdir_permissions()
-                    # Write pid file atomically to prevent races during stale lock detection
-                    with compiletools.filesystem_utils.atomic_output_file(self.pid_file, "w") as f:
-                        f.write(f"{self.hostname}:{self.pid}\n")
-                    # Set pid file permissions for multi-user access
-                    os.chmod(self.pid_file, 0o664)
+                    # Write pid file via plain open+rename INSIDE the lockdir.
+                    # We deliberately do NOT route through atomic_output_file:
+                    # that helper calls os.makedirs(target_dir, exist_ok=True),
+                    # which would silently re-create the lockdir if a peer's
+                    # stale-check tore it down between our mkdir and our pid
+                    # write — leaving us writing a pid file into a directory
+                    # nobody owns. Plain mkstemp+rename inside the lockdir
+                    # raises FileNotFoundError on that race, which the outer
+                    # except catches and triggers a clean retry.
+                    self._write_pid_file()
                     return  # SUCCESS
                 except FileExistsError:
                     # Lock exists, check if stale
@@ -515,6 +548,66 @@ class FileLock:
         return False  # Don't suppress exceptions
 
 
+def _run_with_signal_forwarding(cmd: list[str]) -> subprocess.CompletedProcess:
+    """Run cmd as a subprocess in a new session, forwarding SIGINT/SIGTERM
+    to the child's process group, and reaping the child before returning.
+
+    Stdout/stderr inherit the parent's fds so compiler diagnostics stream
+    to the user in real time (rather than being captured and only surfaced
+    on failure).
+
+    Why this exists: subprocess.run does not put the child in a new session
+    and does not reap the child if the parent receives a signal. If the
+    parent's signal handler releases a lock and exits, the child becomes an
+    orphan that continues writing to the (now unlocked) target — a peer can
+    grab the lock and clobber the target while the orphan runs. This wrapper
+    ensures the lock-holding caller never returns until its child has exited.
+
+    The child runs in its own process group (start_new_session=True) so we
+    can signal it via os.killpg without also signalling ourselves. SIGINT
+    and SIGTERM are caught and forwarded; on return (normal or abnormal) the
+    original handlers are restored and the child is hard-killed if still
+    running.
+    """
+    proc = subprocess.Popen(cmd, start_new_session=True)
+
+    saved_handlers = []  # list of (signum, previous_handler) pairs
+
+    def _forward(signum, frame):  # noqa: ARG001 (frame required by Python signal API)
+        try:
+            os.killpg(os.getpgid(proc.pid), signum)
+        except (OSError, ProcessLookupError):
+            pass
+
+    only_main_thread = threading.current_thread() is threading.main_thread()
+    if only_main_thread:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                saved_handlers.append((sig, signal.signal(sig, _forward)))
+            except (ValueError, OSError):
+                pass
+
+    try:
+        proc.wait()
+        return subprocess.CompletedProcess(cmd, proc.returncode, None, None)
+    finally:
+        if only_main_thread:
+            for sig, handler in saved_handlers:
+                try:
+                    signal.signal(sig, handler)
+                except (ValueError, OSError, TypeError):
+                    pass
+        if proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+
+
 def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.CompletedProcess:
     """Execute compilation atomically under a lock.
 
@@ -525,6 +618,14 @@ def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.Comp
     For other locks: compiles to a temp file, then renames to target,
     preventing TOCTOU races where another process sees a partially-written
     output file.
+
+    Stdout/stderr inherit the parent's fds — compile diagnostics stream to
+    the user as they happen rather than being captured and only surfaced on
+    failure.
+
+    The compiler subprocess is run in a new session and SIGINT/SIGTERM are
+    forwarded to its process group; the lock is held until the child has
+    been reaped, preventing orphan compiles from racing peers for the lock.
 
     Args:
         lock: Lock object with acquire()/release() methods.
@@ -541,9 +642,9 @@ def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.Comp
         lock.acquire()
         try:
             cmd = list(compile_cmd) + ["-o", target]
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = _run_with_signal_forwarding(cmd)
             if result.returncode != 0:
-                raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
+                raise subprocess.CalledProcessError(result.returncode, cmd)
             return result
         finally:
             lock.release()
@@ -556,9 +657,9 @@ def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.Comp
         lock.acquire()
 
         cmd = list(compile_cmd) + ["-o", tempfile_path]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = _run_with_signal_forwarding(cmd)
         if result.returncode != 0:
-            raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
+            raise subprocess.CalledProcessError(result.returncode, cmd)
 
         os.rename(tempfile_path, target)
         return result
@@ -578,15 +679,30 @@ def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.Comp
 
 
 def atomic_link(lock, target: str, link_cmd: list[str]) -> int:
-    """Execute a link/ar command under lock. No temp-file logic.
+    """Execute a link/ar command under lock with temp-then-rename.
 
-    Unlike atomic_compile, this does not use temp-file-then-rename.
-    The lock serializes access; the linker/ar replaces the target in place.
+    Links/archives to ``{target}.{pid}.{rand}.tmp`` and renames to the final
+    target under the lock. This means a killed link (SIGKILL of the helper or
+    a crashing linker) leaves no torn binary in the cache — peers either see
+    the previous good artifact or no artifact at all, never a partial one.
+
+    Some linkers (and ``ar``) update output in place and are not atomic
+    against process death; the lock alone does not protect against that.
+    Renaming a complete temp file does.
+
+    For ``ar`` invocations whose subcommand modifies an existing archive
+    (e.g. appending to ``libfoo.a``), the existing archive is copied to the
+    temp file first so the in-place semantics are preserved.
+
+    Stdout/stderr inherit the parent's fds (live streaming). The child runs
+    in a new session with SIGINT/SIGTERM forwarded; the lock is held until
+    the child has been reaped.
 
     Args:
         lock: Lock object with acquire()/release() methods.
-        target: Target file path (for documentation; not modified by this function).
-        link_cmd: Complete link command including output flag.
+        target: Final output file path.
+        link_cmd: Complete link command. The output path in the command is
+            rewritten to the temp file before execution.
 
     Returns:
         0 on success.
@@ -594,21 +710,78 @@ def atomic_link(lock, target: str, link_cmd: list[str]) -> int:
     Raises:
         subprocess.CalledProcessError: If the link command fails.
     """
-    lock.acquire()
+    pid = os.getpid()
+    random_suffix = os.urandom(2).hex()
+    tempfile_path = f"{target}.{pid}.{random_suffix}.tmp"
+
+    rewritten_cmd, ar_appends = _rewrite_link_cmd_for_temp(link_cmd, target, tempfile_path)
+
     try:
-        result = subprocess.run(link_cmd, capture_output=True, text=True)
-        # Surface linker/ar output (warnings, diagnostics) even on success
-        if result.stdout:
-            sys.stdout.write(result.stdout)
-        if result.stderr:
-            sys.stderr.write(result.stderr)
+        lock.acquire()
+
+        # If ar is appending to an existing archive, seed the temp file with
+        # the current archive content so the append operates as intended.
+        if ar_appends and os.path.exists(target):
+            try:
+                shutil.copyfile(target, tempfile_path)
+            except OSError:
+                pass
+
+        result = _run_with_signal_forwarding(rewritten_cmd)
         if result.returncode != 0:
-            raise subprocess.CalledProcessError(
-                result.returncode,
-                link_cmd,
-                output=result.stdout,
-                stderr=result.stderr,
-            )
+            raise subprocess.CalledProcessError(result.returncode, rewritten_cmd)
+
+        if os.path.exists(tempfile_path):
+            os.rename(tempfile_path, target)
         return result.returncode
     finally:
-        lock.release()
+        try:
+            if os.path.exists(tempfile_path):
+                try:
+                    os.unlink(tempfile_path)
+                except OSError:
+                    pass
+        finally:
+            lock.release()
+
+
+def _rewrite_link_cmd_for_temp(link_cmd: list[str], target: str, tempfile_path: str) -> tuple[list[str], bool]:
+    """Replace target with tempfile_path in a link/ar command.
+
+    Returns the rewritten command plus a boolean indicating whether the
+    command is an ``ar`` operation that mutates an existing archive (so the
+    caller can pre-seed the temp file).
+
+    Recognises common output forms:
+    - ``cc/ld``: ``-o target``
+    - ``ar rcs target objs...`` (positional)
+
+    If the target is not found in the command, the original command is
+    returned unchanged. Callers should treat that as "no temp-file rewrite
+    possible"; the rename step then becomes a no-op (the linker wrote
+    directly to target as before).
+    """
+    cmd = list(link_cmd)
+    target_real = os.path.realpath(target)
+
+    # -o style (cc/ld)
+    for i, tok in enumerate(cmd):
+        if tok == "-o" and i + 1 < len(cmd):
+            if cmd[i + 1] == target or os.path.realpath(cmd[i + 1]) == target_real:
+                cmd[i + 1] = tempfile_path
+                return cmd, False
+
+    # ar style: ar <flags> <archive> <objs...>
+    if cmd and os.path.basename(cmd[0]) == "ar" and len(cmd) >= 3:
+        flags = cmd[1]
+        archive_idx = 2
+        if cmd[archive_idx] == target or os.path.realpath(cmd[archive_idx]) == target_real:
+            cmd[archive_idx] = tempfile_path
+            # Modes that mutate (rather than create from scratch): r (replace),
+            # q (quick append), m (move). 'c' alone creates fresh; 'D' (deterministic)
+            # is orthogonal. If the archive is being created fresh the seed copy
+            # is harmless because we won't enter the if-exists branch.
+            mutates = any(c in flags for c in ("r", "q", "m"))
+            return cmd, mutates
+
+    return cmd, False

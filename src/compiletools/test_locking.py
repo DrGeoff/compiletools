@@ -3,6 +3,7 @@
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -76,6 +77,60 @@ class TestLockdirLock:
             lock = LockdirLock(target, args)
             # Should have auto-detected a sleep interval
             assert lock.sleep_interval > 0
+
+    def test_pid_write_does_not_resurrect_torn_down_lockdir(self):
+        """C3 regression: if a peer tears down our lockdir between our mkdir
+        and our pid-file write, the pid write must fail (so we retry the
+        whole acquire) rather than silently re-creating the lockdir via
+        os.makedirs and writing a pid file into a directory nobody owns."""
+        import unittest.mock as _mock
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = LockdirLock(target, args)
+
+            real_mkdir = os.mkdir
+            sabotaged = {"done": False}
+
+            def racy_mkdir(path, mode=0o777):
+                result = real_mkdir(path, mode)
+                # First call only: tear down the lockdir we just created
+                # to simulate a peer's concurrent rmtree.
+                if not sabotaged["done"] and path == lock.lockdir:
+                    sabotaged["done"] = True
+                    shutil.rmtree(path)
+                return result
+
+            real_makedirs = os.makedirs
+            makedirs_paths = []
+
+            def tracking_makedirs(path, *a, **kw):
+                makedirs_paths.append(path)
+                return real_makedirs(path, *a, **kw)
+
+            # Limit the retry loop so the test cannot run forever if the
+            # acquire happens to keep racing.
+            with (
+                _mock.patch("os.mkdir", side_effect=racy_mkdir),
+                _mock.patch("os.makedirs", side_effect=tracking_makedirs),
+            ):
+                try:
+                    lock.acquire()
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        lock.release()
+                    except Exception:
+                        pass
+
+            for path in makedirs_paths:
+                assert path != lock.lockdir, (
+                    f"os.makedirs({path!r}) called to resurrect the torn-down "
+                    "lockdir — pid write must use plain open+rename inside the "
+                    "lockdir, not a makedirs-bearing helper."
+                )
 
     def test_auto_detect_sleep_interval_fallback_on_error(self):
         """When filesystem detection fails, fall back to 0.05."""
@@ -477,6 +532,24 @@ class TestAtomicCompile:
         cxx = compiletools.apptools.get_functional_cxx_compiler() or "c++"
         return [cxx, "-c", source]
 
+    @staticmethod
+    def _patch_runner(returncode=0, on_run=None):
+        """Patch _run_with_signal_forwarding (the new boundary atomic_compile
+        and atomic_link delegate to) with a mock. on_run is called with the
+        cmd list before returning so tests can simulate side effects (like
+        creating the -o output file). Returns the patcher's mock object."""
+        from unittest.mock import MagicMock
+
+        mock = MagicMock()
+
+        def fake_run(cmd):
+            if on_run is not None:
+                on_run(cmd)
+            return subprocess.CompletedProcess(cmd, returncode, None, None)
+
+        mock.side_effect = fake_run
+        return patch("compiletools.locking._run_with_signal_forwarding", new=mock), mock
+
     @requires_functional_compiler
     def test_atomic_compile_direct_no_temp(self):
         """FcntlLock (direct_compile=True): compiler gets -o target, no rename."""
@@ -485,15 +558,12 @@ class TestAtomicCompile:
             args = _make_lock_args()
             lock = FcntlLock(target, args)
 
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            patcher, mock_run = self._patch_runner()
+            with patcher:
                 atomic_compile(lock, target, self._compile_cmd())
-
-                # Compiler should get -o target directly
                 call_args = mock_run.call_args[0][0]
                 assert call_args[-2:] == ["-o", target]
 
-            # No temp files should exist
             for f in os.listdir(tmpdir):
                 assert ".tmp" not in f
 
@@ -505,8 +575,8 @@ class TestAtomicCompile:
             args = _make_lock_args()
             lock = FcntlLock(target, args)
 
-            with patch("subprocess.run") as mock_run, patch("os.rename") as mock_rename:
-                mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            patcher, _ = self._patch_runner()
+            with patcher, patch("os.rename") as mock_rename:
                 atomic_compile(lock, target, self._compile_cmd())
                 mock_rename.assert_not_called()
 
@@ -518,17 +588,20 @@ class TestAtomicCompile:
             args = _make_lock_args()
             lock = CIFSLock(target, args)
 
-            with patch("subprocess.run") as mock_run, patch("os.rename") as mock_rename:
-                mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-                atomic_compile(lock, target, self._compile_cmd())
+            def create_temp(cmd):
+                out = cmd[cmd.index("-o") + 1]
+                open(out, "w").close()
 
-                # Compiler should get -o *.tmp
+            patcher, mock_run = self._patch_runner(on_run=create_temp)
+            with patcher:
+                atomic_compile(lock, target, self._compile_cmd())
                 call_args = mock_run.call_args[0][0]
                 assert call_args[-2] == "-o"
                 assert call_args[-1].endswith(".tmp")
 
-                # os.rename should be called
-                mock_rename.assert_called_once()
+            assert os.path.exists(target)
+            for f in os.listdir(tmpdir):
+                assert ".tmp" not in f
 
     @requires_functional_compiler
     def test_atomic_compile_direct_failure_releases_lock(self):
@@ -538,12 +611,10 @@ class TestAtomicCompile:
             args = _make_lock_args()
             lock = FcntlLock(target, args)
 
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error")
-                with pytest.raises(subprocess.CalledProcessError):
-                    atomic_compile(lock, target, self._compile_cmd())
+            patcher, _ = self._patch_runner(returncode=1)
+            with patcher, pytest.raises(subprocess.CalledProcessError):
+                atomic_compile(lock, target, self._compile_cmd())
 
-            # Lock must be released — verify by acquiring it again
             lock2 = FcntlLock(target, args)
             lock2.acquire()
             lock2.release()
@@ -556,12 +627,10 @@ class TestAtomicCompile:
             args = _make_lock_args()
             lock = CIFSLock(target, args)
 
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error")
-                with pytest.raises(subprocess.CalledProcessError):
-                    atomic_compile(lock, target, self._compile_cmd())
+            patcher, _ = self._patch_runner(returncode=1)
+            with patcher, pytest.raises(subprocess.CalledProcessError):
+                atomic_compile(lock, target, self._compile_cmd())
 
-            # No temp files should remain
             for f in os.listdir(tmpdir):
                 assert ".tmp" not in f, f"Stale temp file found: {f}"
 
@@ -573,28 +642,39 @@ class TestAtomicCompile:
             args = _make_lock_args()
             lock = CIFSLock(target, args)
 
-            with patch("subprocess.run") as mock_run, patch("os.rename", side_effect=OSError("cross-device")):
-                mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            def create_temp(cmd):
+                out = cmd[cmd.index("-o") + 1]
+                with open(out, "w") as f:
+                    f.write("fake")
 
-                # Create the temp file that subprocess.run would create
-                def create_temp(cmd, **kwargs):
-                    output_file = cmd[cmd.index("-o") + 1]
-                    with open(output_file, "w") as f:
-                        f.write("fake")
-                    return subprocess.CompletedProcess(args=cmd, returncode=0)
+            patcher, _ = self._patch_runner(on_run=create_temp)
+            with (
+                patcher,
+                patch("os.rename", side_effect=OSError("cross-device")),
+                pytest.raises(OSError, match="cross-device"),
+            ):
+                atomic_compile(lock, target, self._compile_cmd())
 
-                mock_run.side_effect = create_temp
-
-                with pytest.raises(OSError, match="cross-device"):
-                    atomic_compile(lock, target, self._compile_cmd())
-
-            # No temp files should remain
             for f in os.listdir(tmpdir):
                 assert ".tmp" not in f, f"Stale temp file found: {f}"
 
 
 class TestAtomicLink:
-    """Test atomic_link -- simpler than atomic_compile, no temp file logic."""
+    """Test atomic_link with temp-then-rename semantics (Critical bug C2)."""
+
+    @staticmethod
+    def _patch_runner(returncode=0, on_run=None):
+        from unittest.mock import MagicMock
+
+        mock = MagicMock()
+
+        def fake_run(cmd):
+            if on_run is not None:
+                on_run(cmd)
+            return subprocess.CompletedProcess(cmd, returncode, None, None)
+
+        mock.side_effect = fake_run
+        return patch("compiletools.locking._run_with_signal_forwarding", new=mock), mock
 
     def test_atomic_link_runs_command_under_lock(self):
         """Lock is acquired before command runs and released after."""
@@ -618,34 +698,42 @@ class TestAtomicLink:
             lock.acquire = tracking_acquire
             lock.release = tracking_release
 
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            def on_run(cmd):
+                call_order.append("run")
+                # Simulate ar producing the temp archive
+                tmp = cmd[cmd.index("rcs") + 1]
+                open(tmp, "w").close()
 
-                def record_run(cmd, **kwargs):
-                    call_order.append("run")
-                    return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-
-                mock_run.side_effect = record_run
+            patcher, _ = self._patch_runner(on_run=on_run)
+            with patcher:
                 atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
 
             assert call_order == ["acquire", "run", "release"]
 
-    def test_atomic_link_no_temp_file(self):
-        """atomic_link does NOT create temp files (unlike atomic_compile indirect)."""
+    def test_atomic_link_writes_to_temp_then_renames(self):
+        """atomic_link writes to a .tmp file and renames to target — never
+        leaves a partial archive on the path another process is reading."""
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.a")
             args = _make_lock_args()
             lock = CIFSLock(target, args)
 
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            def fake_ar(cmd):
+                # The temp path appears where the target used to be
+                tmp = cmd[2]
+                assert tmp.endswith(".tmp"), f"ar should be told to write the .tmp path, got {tmp!r}"
+                open(tmp, "w").close()
+
+            patcher, mock_run = self._patch_runner(on_run=fake_ar)
+            with patcher:
                 atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
+                rewritten = mock_run.call_args[0][0]
+                assert rewritten[0] == "ar"
+                assert rewritten[1] == "rcs"
+                assert rewritten[2].endswith(".tmp")
+                assert rewritten[3] == "foo.o"
 
-                # Command should be passed as-is, no -o manipulation
-                call_args = mock_run.call_args[0][0]
-                assert call_args == ["ar", "rcs", target, "foo.o"]
-
-            # No temp files should exist
+            assert os.path.exists(target)
             for f in os.listdir(tmpdir):
                 assert ".tmp" not in f
 
@@ -656,8 +744,12 @@ class TestAtomicLink:
             args = _make_lock_args()
             lock = FlockLock(target, args)
 
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            def on_run(cmd):
+                tmp = cmd[2]
+                open(tmp, "w").close()
+
+            patcher, _ = self._patch_runner(on_run=on_run)
+            with patcher:
                 result = atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
                 assert result == 0
 
@@ -668,18 +760,90 @@ class TestAtomicLink:
             args = _make_lock_args()
             lock = FlockLock(target, args)
 
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = subprocess.CompletedProcess(
-                    args=[], returncode=1, stdout="", stderr="ar: error"
-                )
-                with pytest.raises(subprocess.CalledProcessError) as exc_info:
-                    atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
-                assert exc_info.value.returncode == 1
+            patcher, _ = self._patch_runner(returncode=1)
+            with patcher, pytest.raises(subprocess.CalledProcessError) as exc_info:
+                atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
+            assert exc_info.value.returncode == 1
 
-            # Lock must be released — verify by acquiring again
             lock2 = FlockLock(target, args)
             lock2.acquire()
             lock2.release()
+
+    def test_atomic_link_no_torn_target_when_link_fails(self):
+        """If the linker dies, the target is NOT replaced — peers see the
+        last good artifact (or nothing), never a partial archive."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.a")
+            with open(target, "w") as f:
+                f.write("LAST_GOOD_CONTENT")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+
+            def fake_partial_then_fail(cmd):
+                # Linker writes a partial output to temp, then fails
+                tmp = cmd[2]
+                with open(tmp, "w") as f:
+                    f.write("PARTIAL_GARBAGE")
+
+            patcher, _ = self._patch_runner(returncode=1, on_run=fake_partial_then_fail)
+            with patcher, pytest.raises(subprocess.CalledProcessError):
+                atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
+
+            # Target retains the last good content; partial garbage is gone
+            with open(target) as f:
+                assert f.read() == "LAST_GOOD_CONTENT"
+            for f in os.listdir(tmpdir):
+                assert ".tmp" not in f
+
+    def test_atomic_link_ld_o_form_uses_temp(self):
+        """ld/cc -o form: the path after -o is rewritten to the .tmp path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "myexe")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+
+            captured = {}
+
+            def fake_ld(cmd):
+                captured["cmd"] = list(cmd)
+                tmp = cmd[cmd.index("-o") + 1]
+                open(tmp, "w").close()
+
+            patcher, _ = self._patch_runner(on_run=fake_ld)
+            with patcher:
+                atomic_link(lock, target, ["c++", "foo.o", "bar.o", "-o", target])
+
+            assert captured["cmd"][captured["cmd"].index("-o") + 1].endswith(".tmp")
+            assert os.path.exists(target)
+
+    def test_atomic_link_ar_append_seeds_temp_with_existing_archive(self):
+        """ar with mutating mode (r/q/m) seeds the temp file with the
+        existing archive content so the append operates as intended."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.a")
+            with open(target, "w") as f:
+                f.write("EXISTING_ARCHIVE")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+
+            seen_temp_content = {}
+
+            def fake_ar_append(cmd):
+                tmp = cmd[2]
+                # ar would read the existing content and append; we just
+                # observe whether it was seeded
+                if os.path.exists(tmp):
+                    with open(tmp) as f:
+                        seen_temp_content["content"] = f.read()
+                # Pretend ar updated it
+                with open(tmp, "w") as f:
+                    f.write("APPENDED")
+
+            patcher, _ = self._patch_runner(on_run=fake_ar_append)
+            with patcher:
+                atomic_link(lock, target, ["ar", "rcs", target, "extra.o"])
+
+            assert seen_temp_content.get("content") == "EXISTING_ARCHIVE"
 
 
 class TestFileLock:
@@ -761,3 +925,187 @@ class TestFileLock:
             args = _make_lock_args()
             lock = FileLock(target, args)
             assert lock.lock is not None
+
+
+class TestSubprocessSafety:
+    """Verify atomic_compile/atomic_link spawn children in a new session and
+    forward SIGINT/SIGTERM so the lock is never released while a child is
+    still writing to the target. (Critical bug C1.)"""
+
+    @staticmethod
+    def _make_popen_mock(mock_popen, write_output=False):
+        """Configure a mock subprocess.Popen so it behaves enough like a real
+        Popen for our wrappers. Optionally writes the -o output file when
+        wait() is called (mimics a successful compile)."""
+        proc = mock_popen.return_value
+        proc.returncode = 0
+        proc.poll.return_value = 0
+
+        def fake_wait(timeout=None):
+            if write_output and mock_popen.call_args is not None:
+                cmd = mock_popen.call_args.args[0] if mock_popen.call_args.args else []
+                if "-o" in cmd:
+                    out = cmd[cmd.index("-o") + 1]
+                    try:
+                        open(out, "w").close()
+                    except OSError:
+                        pass
+            return 0
+
+        proc.wait.side_effect = fake_wait
+        proc.communicate.return_value = (b"", b"")
+        proc.__enter__ = lambda self_: self_
+        proc.__exit__ = lambda self_, *a: False
+        return proc
+
+    def _assert_popen_used_with_new_session(self, callable_under_test):
+        """Run callable; assert subprocess.Popen was called with
+        start_new_session=True. Side effects after Popen are tolerated."""
+        with patch("subprocess.Popen") as mock_popen:
+            self._make_popen_mock(mock_popen, write_output=True)
+            try:
+                callable_under_test()
+            except Exception:
+                pass
+            assert mock_popen.called, "subprocess.Popen was never called"
+            # Find the call where the actual command (not stdout/stderr setup)
+            # was passed. We only care that AT LEAST ONE Popen call used
+            # start_new_session=True (in case of internal helpers).
+            for call in mock_popen.call_args_list:
+                if call.kwargs.get("start_new_session") is True:
+                    return
+            raise AssertionError(
+                f"subprocess.Popen never called with start_new_session=True. "
+                f"Calls: {[c.kwargs for c in mock_popen.call_args_list]}"
+            )
+
+    def test_atomic_compile_indirect_starts_new_session(self):
+        """Indirect compile must use start_new_session=True so signals can be
+        forwarded to the child's process group."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = CIFSLock(target, args)
+            self._assert_popen_used_with_new_session(
+                lambda: atomic_compile(lock, target, ["c++", "-c", "test.c"])
+            )
+
+    def test_atomic_compile_direct_starts_new_session(self):
+        """Direct compile path must also use start_new_session=True."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+            self._assert_popen_used_with_new_session(
+                lambda: atomic_compile(lock, target, ["c++", "-c", "test.c"])
+            )
+
+    def test_atomic_link_starts_new_session(self):
+        """atomic_link must use start_new_session=True for signal forwarding."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.a")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+            self._assert_popen_used_with_new_session(
+                lambda: atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
+            )
+
+    @pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX-only signal forwarding")
+    def test_sigterm_during_atomic_compile_is_forwarded_to_child_group(self, tmp_path):
+        """End-to-end: spawn a worker that holds a lock and runs a child shell
+        that traps SIGTERM. After SIGTERM-ing the worker, the trap-marker file
+        must appear (proving the child received TERM via process-group
+        forwarding), and the done-marker must NOT appear (proving the child
+        did not run to completion as an orphan)."""
+        import signal as _signal
+        import textwrap
+        import time as _time
+
+        target = tmp_path / "test.o"
+        worker_script = tmp_path / "worker.py"
+        ready_marker = tmp_path / "READY"
+        trap_marker = tmp_path / "TRAPPED"
+        done_marker = tmp_path / "DONE"
+
+        repo_src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        worker_script.write_text(
+            textwrap.dedent(f"""
+            import os, sys, pathlib
+            sys.path.insert(0, {repr(repo_src)})
+            from types import SimpleNamespace
+            from compiletools.locking import FlockLock, atomic_compile
+
+            args = SimpleNamespace(
+                verbose=0, file_locking=True,
+                lock_cross_host_timeout=300, lock_warn_interval=30,
+                lock_creation_grace_period=2,
+                sleep_interval_lockdir=0.01, sleep_interval_cifs=0.01,
+                sleep_interval_flock_fallback=0.01,
+            )
+            target = {repr(str(target))}
+            lock = FlockLock(target, args)
+            pathlib.Path({repr(str(ready_marker))}).touch()
+            try:
+                atomic_compile(lock, target, [
+                    'sh', '-c',
+                    'trap "touch {trap_marker}; exit 143" TERM; '
+                    'sleep 5; touch {done_marker}',
+                ])
+            except SystemExit:
+                raise
+            except Exception:
+                pass
+        """)
+        )
+
+        proc = subprocess.Popen(
+            [sys.executable, str(worker_script)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            deadline = _time.time() + 15
+            while not ready_marker.exists() and _time.time() < deadline:
+                _time.sleep(0.05)
+            assert ready_marker.exists(), "Worker never reached ready state"
+            _time.sleep(0.5)
+
+            proc.send_signal(_signal.SIGTERM)
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                # Hard cleanup of worker AND any orphan children
+                try:
+                    os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
+                except (OSError, ProcessLookupError):
+                    pass
+                proc.wait()
+                pytest.fail("Worker did not exit promptly after SIGTERM")
+        finally:
+            if proc.poll() is None:
+                try:
+                    os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
+                except (OSError, ProcessLookupError):
+                    pass
+                proc.wait()
+
+        # Wait briefly for orphan child (if any) to either write the marker or
+        # not — long enough that DONE_MARKER would be created if the bug exists
+        # (sleep 5 in the child) but bounded so the test is fast.
+        _time.sleep(6.0)
+
+        assert trap_marker.exists(), (
+            "Child shell never received SIGTERM — signal was not forwarded "
+            "to the child process group"
+        )
+        assert not done_marker.exists(), (
+            "Child shell ran to completion as an orphan — worker exited "
+            "without killing its child"
+        )
+
+        # Lock should be released — verify by acquiring it ourselves.
+        verify_args = _make_lock_args()
+        lock2 = FlockLock(str(target), verify_args)
+        lock2.acquire()
+        lock2.release()
