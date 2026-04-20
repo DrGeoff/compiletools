@@ -967,11 +967,13 @@ class SlurmBackend(ShakeBackend):
 
         if missing:
             names = ", ".join(os.path.basename(r.output) for r in missing[:5])
-            logger.warning(
-                "Output files not visible after %.0fs (network filesystem metadata lag?): %s",
-                timeout,
-                names,
+            msg = (
+                f"Slurm reported jobs COMPLETED but {len(missing)} output file(s) "
+                f"are still missing after {timeout:.0f}s "
+                f"(network filesystem metadata lag, or sacct false-positive): {names}"
             )
+            print(f"ct-slurm: {msg}", file=sys.stderr)
+            raise RuntimeError(msg)
 
     # ------------------------------------------------------------------
     # Local execution for link/library rules

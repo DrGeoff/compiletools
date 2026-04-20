@@ -474,6 +474,36 @@ class TestJobFailures:
             with pytest.raises(RuntimeError, match="Timed out"):
                 b._wait_for_arrays(index_map)
 
+    def test_wait_for_output_files_raises_when_outputs_missing(self, tmp_path):
+        """If sacct says COMPLETED but the output never appears (e.g. NFS
+        metadata lag past the timeout, or sacct false-positive), raise
+        RuntimeError so the linker doesn't fail later with a confusing
+        'no such file' diagnostic far from the cause."""
+        rule = make_compile_rule(output=str(tmp_path / "ghost.o"))
+        # File is intentionally NOT created
+
+        b = SlurmBackend.__new__(SlurmBackend)
+        b.args = SimpleNamespace(slurm_poll_interval=0.0)
+
+        # Force the polling loop to terminate immediately
+        with (
+            patch("time.monotonic", side_effect=[0.0, 100.0, 100.0, 100.0]),
+            patch("time.sleep"),
+        ):
+            with pytest.raises(RuntimeError, match="output file.*still missing"):
+                b._wait_for_output_files([rule], timeout=30.0)
+
+    def test_wait_for_output_files_returns_when_files_appear(self, tmp_path):
+        """Outputs that exist immediately must not raise or sleep."""
+        out = str(tmp_path / "real.o")
+        open(out, "w").close()
+        rule = make_compile_rule(output=out)
+
+        b = SlurmBackend.__new__(SlurmBackend)
+        b.args = SimpleNamespace(slurm_poll_interval=0.0)
+        # Should return without sleeping or raising
+        b._wait_for_output_files([rule], timeout=30.0)
+
 
 # ---------------------------------------------------------------------------
 # _query_array_task_states parsing
