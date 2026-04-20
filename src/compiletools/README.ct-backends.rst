@@ -29,20 +29,60 @@ Use ``ct-list-backends`` to discover which backends are installed and available.
 BACKEND SUMMARY
 ===============
 
-======  ======================  ===========  ==========  ============  ===========
-Name    Build file              Tool         File-lock   CA outputs    Early cutoff
-======  ======================  ===========  ==========  ============  ===========
-make    Makefile                make         Yes         No            No
-ninja   build.ninja             ninja        Yes         No            No
-cmake   CMakeLists.txt          cmake        No          No            No
-bazel   BUILD.bazel             bazel        No          No            No
-tup     Tupfile                 tup          No          No            No
-shake   .ct-traces.json         (builtin)    Yes         Yes           Yes
-slurm   .ct-slurm-traces.json   sbatch       Yes         Yes           Yes
-======  ======================  ===========  ==========  ============  ===========
+======  ======================  ===========
+Name    Build file              Tool
+======  ======================  ===========
+make    Makefile                make
+ninja   build.ninja             ninja
+cmake   CMakeLists.txt          cmake
+bazel   BUILD.bazel             bazel
+tup     Tupfile                 tup
+shake   .ct-traces.json         (builtin)
+slurm   .ct-slurm-traces.json   sbatch
+======  ======================  ===========
 
-All backends support static and dynamic libraries, parallel jobs, test
-execution, and clean operations.
+FEATURE MATRIX
+==============
+
+Y = supported, N = not supported, D = supported and on by default.
+
+======  ===========  =====================  ============  =========  =========  ============  ==========  ============
+Name    File-lock    --build-only-changed   --realclean   PCH cache  Libraries  Test runner   CA outputs  Early cutoff
+======  ===========  =====================  ============  =========  =========  ============  ==========  ============
+make    D            Y                      Y             Y          Y          Y             N           N
+ninja   Y            Y                      Y             Y          Y          Y             N           Y (restat)
+cmake   N            Y                      Y             Y          Y          Y             N           N
+bazel   N            Y                      Y             Y          Y          Y             N           N
+tup     N            Y                      Y             Y          Y          N (no phony)  N           N
+shake   Y            Y                      Y             Y          Y          Y             Y           Y
+slurm   Y            Y                      Y             Y          Y (local)  Y             Y           Y
+======  ===========  =====================  ============  =========  =========  ============  ==========  ============
+
+Notes:
+
+* **File-lock** — ``--file-locking`` enables multi-user shared object/PCH
+  caches.  CMake/Bazel/Tup manage their own coordination and skip this
+  layer (see *FILE LOCKING* below).
+* **--build-only-changed** — restrict the graph to a whitespace-separated
+  set of source files supplied on the command line.  Implemented in the
+  shared base class, so all backends honor it.
+* **--realclean** — selectively remove only this build's products from a
+  shared objdir (and ``.gch`` files from a shared pchdir), instead of
+  ``rm -rf`` of the whole tree.  Inherited from the base backend; the
+  Make backend additionally generates a ``realclean`` rule in the Makefile.
+* **PCH cache** — content-addressable precompiled header cache via
+  ``--pchdir``; the compile rules carry the per-cmd_hash ``.gch`` paths,
+  so all backends produce and consume the cache transparently.
+* **Libraries** — static and dynamic library targets via ``--static`` /
+  ``--dynamic``.  All backends support both; the Slurm backend
+  distributes compile rules but always links locally.
+* **Test runner** — ``execute("runtests")`` runs test executables.
+  Tup cannot express phony rules, so it has no top-level ``runtests``
+  target — run test binaries by hand or pick a different backend.
+* **CA outputs / Early cutoff** — content-addressable filenames and
+  build skipping when an output's bytes are unchanged.  Native to the
+  Shake/Slurm builtin engine; Ninja approximates early cutoff via
+  ``restat = 1``.
 
 BACKENDS
 ========
