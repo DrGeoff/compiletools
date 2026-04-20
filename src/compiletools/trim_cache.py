@@ -146,7 +146,11 @@ class CacheTrimmer:
             to_keep = noncurrent[: self.keep_count]
             candidates = noncurrent[self.keep_count :]
 
-            # Safety: always keep at least 1 file per basename total
+            # Safety: always keep at least 1 file per basename total.
+            # Only fires when keep_count=0 AND no current entry exists; if
+            # the basename has zero non-current entries it stays absent (no
+            # file to retain — nothing is silently lost, there is nothing
+            # to keep).
             if not current and not to_keep and candidates:
                 to_keep.append(candidates.pop(0))
 

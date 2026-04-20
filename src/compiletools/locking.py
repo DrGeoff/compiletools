@@ -64,6 +64,10 @@ class FcntlLock:
         try:
             fcntl.lockf(self.fd, fcntl.LOCK_EX)
         except BaseException:
+            # Close the fd but do NOT unlink — self.lockfile IS the build
+            # target (gcc will overwrite it via O_TRUNC, preserving the
+            # inode). Unlinking here would race with a peer that already
+            # holds the lock and is about to write the output.
             os.close(self.fd)
             self.fd = None
             raise
