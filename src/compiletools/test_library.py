@@ -354,7 +354,7 @@ class TestLibrary:
     @uth.requires_functional_compiler
     @uth.requires_backend_tool()
     @pytest.mark.parametrize("backend_name", available_backends())
-    def test_build_and_link_static_library(self, backend_name):
+    def test_build_and_link_static_library(self, backend_name, capfd):
         # Slurm submits compile jobs to remote nodes, so the temp dir must
         # be on a shared filesystem (not node-local scratch) and outside the
         # git tree to avoid hash registry interference from untracked files.
@@ -389,6 +389,9 @@ class TestLibrary:
 
             with uth.DirectoryContext(mylibdir), uth.ParserContext():
                 ret = compiletools.cake.main(argv)
+            if ret != 0 and backend_name == "bazel":
+                captured = capfd.readouterr()
+                uth.skip_if_bazel_env_error(captured.err)
             assert ret == 0, f"{backend_name}: library build failed (rc={ret})"
 
             # Copy the main that will link to the library into the test build location
@@ -411,6 +414,9 @@ class TestLibrary:
             ] + realpaths
             with uth.ParserContext():
                 ret = compiletools.cake.main(argv)
+            if ret != 0 and backend_name == "bazel":
+                captured = capfd.readouterr()
+                uth.skip_if_bazel_env_error(captured.err)
             assert ret == 0, f"{backend_name}: executable build failed (rc={ret})"
 
             # Check that an executable got built for each cpp

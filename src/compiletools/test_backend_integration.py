@@ -87,7 +87,7 @@ class TestBackendBuildApplication(BaseCompileToolsTestCase):
     @uth.requires_functional_compiler
     @uth.requires_backend_tool()
     @pytest.mark.parametrize("backend_name", available_backends())
-    def test_build_helloworld(self, backend_name, tmp_path, monkeypatch):
+    def test_build_helloworld(self, backend_name, tmp_path, monkeypatch, capfd):
         """Build helloworld_cpp.cpp with each registered backend."""
         with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp, uth.ParserContext():
             effective_tmp = pathlib.Path(effective_tmp)
@@ -185,11 +185,9 @@ class TestBackendBuildApplication(BaseCompileToolsTestCase):
                 monkeypatch.chdir(str(tmp_path))
                 try:
                     backend.execute("build")
-                except subprocess.CalledProcessError as e:
-                    # Skip on TLS cert errors (environment issue, not a code bug)
-                    stderr = getattr(e, "stderr", "") or ""
-                    if "certificate" in stderr.lower():
-                        pytest.skip(f"bazel TLS error (environment issue): {stderr[:200]}")
+                except subprocess.CalledProcessError:
+                    captured = capfd.readouterr()
+                    uth.skip_if_bazel_env_error(captured.err)
                     raise
             else:
                 build_file = os.path.join(str(tmp_path), type(backend).build_filename())
@@ -246,7 +244,7 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
     @uth.requires_functional_compiler
     @uth.requires_backend_tool()
     @pytest.mark.parametrize("backend_name", available_backends())
-    def test_build_pch(self, backend_name, tmp_path, monkeypatch):
+    def test_build_pch(self, backend_name, tmp_path, monkeypatch, capfd):
         """Build pch sample with each registered backend."""
         with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp, uth.ParserContext():
             effective_tmp = pathlib.Path(effective_tmp)
@@ -367,10 +365,9 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
                 monkeypatch.chdir(str(effective_tmp))
                 try:
                     backend.execute("build")
-                except subprocess.CalledProcessError as e:
-                    stderr = getattr(e, "stderr", "") or ""
-                    if "certificate" in stderr.lower():
-                        pytest.skip(f"bazel TLS error: {stderr[:200]}")
+                except subprocess.CalledProcessError:
+                    captured = capfd.readouterr()
+                    uth.skip_if_bazel_env_error(captured.err)
                     raise
             else:
                 build_file = os.path.join(str(effective_tmp), type(backend).build_filename())

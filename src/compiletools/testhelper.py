@@ -142,6 +142,16 @@ def requires_flock_filesystem(func):
     return wrapper
 
 
+def skip_if_bazel_env_error(captured_stderr: str) -> None:
+    """Skip the current test if *captured_stderr* indicates a Bazel environment
+    problem (TLS certificate rejection, unsupported filesystem operation, etc.)
+    rather than a genuine code bug.
+    """
+    lower = captured_stderr.lower()
+    if "certificate" in lower or "operation not supported" in lower:
+        pytest.skip(f"bazel environment issue: {captured_stderr[:200]}")
+
+
 def with_group_writable_umask(cls_or_func):
     """Decorator to temporarily set group-writable umask for file-locking tests.
 
