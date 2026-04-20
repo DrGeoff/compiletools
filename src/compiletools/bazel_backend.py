@@ -38,6 +38,11 @@ class BazelBackend(BuildBackend):
         return "bazel"
 
     @staticmethod
+    def tool_command() -> tuple[str, ...]:
+        # Either bazel or bazelisk satisfies this backend.
+        return ("bazel", "bazelisk")
+
+    @staticmethod
     def build_filename() -> str:
         return "BUILD.bazel"
 

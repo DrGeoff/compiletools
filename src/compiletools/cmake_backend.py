@@ -56,6 +56,10 @@ class CMakeBackend(BuildBackend):
         return "cmake"
 
     @staticmethod
+    def tool_command() -> str:
+        return "cmake"
+
+    @staticmethod
     def build_filename() -> str:
         return "CMakeLists.txt"
 

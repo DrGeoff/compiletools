@@ -94,12 +94,14 @@ class Cake:
         compiletools.namer.Namer.add_arguments(cap)
         compiletools.hunter.add_arguments(cap)
 
-        # Make backend-specific arguments
-        from compiletools.makefile_backend import MakefileBackend
-        from compiletools.trace_backend import SlurmBackend
+        # Backend-specific arguments — every registered backend that
+        # declares add_arguments(cap) gets its CLI flags wired up. This
+        # replaces the v8.0.2 pattern of hardcoding two backends here,
+        # which silently dropped any add_arguments() declared on
+        # ninja/cmake/bazel/tup/shake.
+        from compiletools.build_backend import register_backend_cli_arguments
 
-        MakefileBackend.add_arguments(cap)
-        SlurmBackend.add_arguments(cap)
+        register_backend_cli_arguments(cap)
 
         compiletools.jobs.add_arguments(cap)
 
@@ -202,8 +204,11 @@ class Cake:
         """Generate compilation database if requested"""
         if not getattr(self.args, "compilation_database", True):
             return
-        if self.args.clean:
-            return  # Don't generate compilation database during clean
+        if self.args.clean or getattr(self.args, "realclean", False):
+            # I-A6: Both clean and realclean tear down build artifacts —
+            # generating compile_commands.json immediately before doing
+            # so is wasted work and confuses tooling that picks it up.
+            return
 
         # Reuse existing objects to avoid duplicating work
         creator = compiletools.compilation_database.CompilationDatabaseCreator(

@@ -22,6 +22,10 @@ class NinjaBackend(BuildBackend):
         return "ninja"
 
     @staticmethod
+    def tool_command() -> str:
+        return "ninja"
+
+    @staticmethod
     def build_filename() -> str:
         return "build.ninja"
 

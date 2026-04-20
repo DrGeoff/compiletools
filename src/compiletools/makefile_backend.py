@@ -41,6 +41,10 @@ class MakefileBackend(BuildBackend):
         return "make"
 
     @staticmethod
+    def tool_command() -> str:
+        return "make"
+
+    @staticmethod
     def build_filename() -> str:
         return "Makefile"
 

@@ -25,6 +25,10 @@ class TupBackend(BuildBackend):
         return "tup"
 
     @staticmethod
+    def tool_command() -> str:
+        return "tup"
+
+    @staticmethod
     def build_filename() -> str:
         return "Tupfile"
 

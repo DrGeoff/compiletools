@@ -209,6 +209,11 @@ class ShakeBackend(BuildBackend):
         return "shake"
 
     @staticmethod
+    def tool_command() -> None:
+        # Self-executing — runs each rule directly via subprocess.
+        return None
+
+    @staticmethod
     def build_filename() -> str:
         return ".ct-traces.json"
 
@@ -450,6 +455,11 @@ class SlurmBackend(ShakeBackend):
     @staticmethod
     def name() -> str:
         return "slurm"
+
+    @staticmethod
+    def tool_command() -> str:
+        # Slurm jobs are submitted via sbatch.
+        return "sbatch"
 
     @staticmethod
     def build_filename() -> str:

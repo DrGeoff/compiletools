@@ -748,6 +748,33 @@ class TestCake(BaseCompileToolsTestCase):
             # Should return early without error
             cake._call_compilation_database()
 
+    def test_call_compilation_database_skipped_on_realclean(self):
+        """I-A6 regression: _call_compilation_database must also bail
+        when realclean is set, not just clean. Generating
+        compile_commands.json immediately before nuking the bin/obj
+        dirs is wasted work and confuses tooling."""
+        from unittest.mock import patch
+
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            args = self._make_cake_args()
+            args.realclean = True
+            args.clean = False
+
+            cake = compiletools.cake.Cake(args)
+            cake._createctobjs()
+
+            with patch(
+                "compiletools.compilation_database.CompilationDatabaseCreator"
+            ) as mock_creator:
+                cake._call_compilation_database()
+                mock_creator.assert_not_called()
+
     def test_process_filelist_branch(self):
         """Test that process() calls _callfilelist when args.filelist is set."""
         from unittest.mock import patch

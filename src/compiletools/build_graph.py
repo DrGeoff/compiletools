@@ -21,7 +21,15 @@ class BuildRule:
     Attributes:
         output: The file this rule produces (or a phony target name).
         inputs: Files this rule depends on (source files, headers, objects).
-        command: Shell command list to execute, or None for phony rules.
+        command: List of **shell tokens** (NOT argv) to execute, or None
+            for phony rules. Tokens are space-joined and executed under
+            ``/bin/sh -c`` by every backend, so shell metacharacters
+            (``&&``, ``||``, ``>``, ``$VAR``, ...) are interpreted as
+            shell syntax — *not* passed literally to the program. A
+            future backend that hands the list straight to
+            ``subprocess.run(..., shell=False)`` would need to either
+            re-shellify the tokens or refuse rules that contain
+            metacharacter elements.
         rule_type: One of "compile", "link", "test", "phony", "mkdir", "clean",
             "copy", "static_library", "shared_library".
         order_only_deps: Dependencies that must exist but whose timestamps are

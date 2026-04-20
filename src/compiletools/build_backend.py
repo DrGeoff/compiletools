@@ -1190,19 +1190,16 @@ def report_lock_helper_missing() -> None:
 
 _REGISTRY: dict[str, type[BuildBackend]] = {}
 
-# Backend tools required for execution.  Backends not listed here (e.g. shake,
-# which is self-executing) are assumed to need no external tool.
-_BACKEND_TOOLS: dict[str, str] = {
-    "make": "make",
-    "ninja": "ninja",
-    "cmake": "cmake",
-    "bazel": "bazel",
-    "tup": "tup",
-}
-
 
 def register_backend(cls: type[BuildBackend]) -> type[BuildBackend]:
-    """Register a backend class. Can be used as a decorator."""
+    """Register a backend class. Can be used as a decorator.
+
+    Adding a new backend should be a single drop-in: implement
+    BuildBackend, declare ``@staticmethod tool_command()`` if the backend
+    needs an external tool (return None / ``("a", "b")`` for fallbacks),
+    and register. The registry is the single source of truth for
+    discovery, availability, and CLI argument registration (I-A3).
+    """
     _REGISTRY[cls.name()] = cls
     return cls
 
@@ -1221,24 +1218,40 @@ def available_backends() -> list[str]:
 
 
 def backend_tool_command(name: str) -> str | None:
-    """Return the external tool command for a backend, or None if self-executing."""
-    return _BACKEND_TOOLS.get(name)
+    """Return the external tool command for a backend, or None if
+    self-executing. Reads ``cls.tool_command()`` from the registered
+    backend; first element of any tuple is canonical."""
+    cls = _REGISTRY.get(name)
+    if cls is None:
+        return None
+    tool = getattr(cls, "tool_command", lambda: None)()
+    if tool is None:
+        return None
+    if isinstance(tool, tuple):
+        return tool[0]
+    return tool
 
 
 def is_backend_available(name: str) -> bool:
-    """Check whether the external tool for a backend is installed."""
+    """Check whether the external tool for a backend is installed.
+
+    Backends declare their tool requirement via the optional
+    ``tool_command()`` classmethod, which may return:
+
+    * ``None``        — self-executing, always available
+    * ``"name"``      — single binary; available iff on PATH
+    * ``("a", "b")``  — alternates; available iff at least one on PATH
+    """
     import shutil
 
-    tool = _BACKEND_TOOLS.get(name)
+    cls = _REGISTRY.get(name)
+    if cls is None:
+        return False
+    tool = getattr(cls, "tool_command", lambda: None)()
     if tool is None:
-        if name == "slurm":
-            return shutil.which("sbatch") is not None
-        return True  # Self-executing backends (e.g. shake) need no external tool.
-    if shutil.which(tool):
-        return True
-    if name == "bazel" and shutil.which("bazelisk"):
-        return True
-    return False
+        return True  # self-executing backends
+    candidates = (tool,) if isinstance(tool, str) else tuple(tool)
+    return any(shutil.which(t) for t in candidates)
 
 
 def detect_available_backends(requested: list[str]) -> list[str]:
@@ -1248,6 +1261,18 @@ def detect_available_backends(requested: list[str]) -> list[str]:
         if is_backend_available(backend):
             available.append(backend)
         else:
-            tool = _BACKEND_TOOLS.get(backend, backend)
+            tool = backend_tool_command(backend) or backend
             print(f"  Skipping backend '{backend}': '{tool}' not found on PATH")
     return available
+
+
+def register_backend_cli_arguments(cap) -> None:
+    """Call ``cls.add_arguments(cap)`` on every registered backend that
+    declares one (I-A4). Replaces the v8.0.2 pattern of cake.py
+    hardcoding which backends contributed CLI args, which silently
+    dropped any add_arguments() declared on ninja/cmake/bazel/tup/shake.
+    """
+    for cls in _REGISTRY.values():
+        adder = getattr(cls, "add_arguments", None)
+        if callable(adder):
+            adder(cap)
