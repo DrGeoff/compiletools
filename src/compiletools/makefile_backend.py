@@ -271,10 +271,15 @@ class MakefileBackend(BuildBackend):
         f.write("clean:\n")
         f.write(f"\t-{recipe}\n\n")
 
-        # realclean rule: heavy-handed rm -rf
-        realclean_recipe = f"rm -rf {exe_dir}"
-        if exe_dir != obj_dir:
-            realclean_recipe += f"; rm -rf {obj_dir}"
+        # realclean rule: rm -rf the per-project exe_dir, but only this build's
+        # products from obj_dir (which may be shared with peer sub-projects).
+        # Mirrors BuildBackend.realclean() so `make realclean` and
+        # `ct-cake --realclean` are equivalent.
+        realclean_parts = [f"rm -rf {exe_dir}"]
+        if exe_dir != obj_dir and (all_outputs or all_objects):
+            realclean_parts.append("rm -f " + " ".join(all_outputs + all_objects))
+            realclean_parts.append(f"find {obj_dir} -type d -empty -delete")
+        realclean_recipe = ";".join(realclean_parts)
 
         f.write(".PHONY: realclean\n")
         f.write("realclean:\n")

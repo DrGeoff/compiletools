@@ -162,6 +162,97 @@ class TestMakefileGenerate:
         assert "SHELL" not in content
 
 
+class TestMakefileRealclean:
+    """The realclean recipe must be selective in obj_dir, since obj_dir
+    can be a shared location used by peer sub-projects."""
+
+    def _make_args(self, **overrides):
+        defaults = dict(
+            verbose=0,
+            objdir="/tmp/shared-obj",
+            bindir="/tmp/proj/bin",
+            git_root="",
+            file_locking=False,
+            makefilename="Makefile",
+            filename=[],
+            tests=[],
+            static=[],
+            dynamic=[],
+            CC="gcc",
+            CXX="g++",
+            CFLAGS="-O2",
+            CXXFLAGS="-O2",
+            LD="g++",
+            LDFLAGS="",
+            serialisetests=False,
+            build_only_changed=None,
+        )
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    def _build_graph(self):
+        graph = BuildGraph()
+        graph.add_rule(BuildRule(
+            output="/tmp/shared-obj/proj/foo.o",
+            inputs=["foo.cpp"],
+            command=["g++", "-c", "foo.cpp", "-o", "/tmp/shared-obj/proj/foo.o"],
+            rule_type="compile",
+        ))
+        graph.add_rule(BuildRule(
+            output="/tmp/proj/bin/foo",
+            inputs=["/tmp/shared-obj/proj/foo.o"],
+            command=["g++", "-o", "/tmp/proj/bin/foo", "/tmp/shared-obj/proj/foo.o"],
+            rule_type="link",
+        ))
+        return graph
+
+    def _generate(self, args, graph):
+        hunter = MagicMock()
+        hunter.huntsource = MagicMock()
+        hunter.getsources = MagicMock(return_value=[])
+        backend = MakefileBackend(args=args, hunter=hunter)
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        return buf.getvalue()
+
+    def test_realclean_recipe_is_selective(self):
+        args = self._make_args()
+        content = self._generate(args, self._build_graph())
+
+        # Find the realclean recipe block
+        lines = content.splitlines()
+        idx = next(i for i, line in enumerate(lines) if line.startswith("realclean:"))
+        recipe = lines[idx + 1]
+
+        # Must NOT do rm -rf on the shared obj_dir
+        assert "rm -rf /tmp/shared-obj" not in recipe
+        # Must list this build's outputs explicitly
+        assert "/tmp/shared-obj/proj/foo.o" in recipe
+        assert "/tmp/proj/bin/foo" in recipe
+        # exe_dir is per-project so rm -rf on it is OK
+        assert "rm -rf /tmp/proj/bin" in recipe
+        # Should prune empty dirs in obj_dir afterwards
+        assert "find /tmp/shared-obj -type d -empty -delete" in recipe
+
+    def test_realclean_with_no_outputs_only_rm_rf_exe_dir(self):
+        """When the graph has no compile/link rules, realclean still removes
+        exe_dir (per-project) but emits no rm -f / find for obj_dir."""
+        args = self._make_args()
+        graph = BuildGraph()
+        graph.add_rule(BuildRule(
+            output="all", inputs=[], command=None, rule_type="phony",
+        ))
+        content = self._generate(args, graph)
+
+        lines = content.splitlines()
+        idx = next(i for i, line in enumerate(lines) if line.startswith("realclean:"))
+        recipe = lines[idx + 1]
+
+        assert "rm -rf /tmp/proj/bin" in recipe
+        assert "rm -rf /tmp/shared-obj" not in recipe
+        assert "rm -f" not in recipe
+
+
 class TestGetMakeVersion:
     def setup_method(self):
         _get_make_version.cache_clear()
