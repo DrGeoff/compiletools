@@ -16,7 +16,7 @@ import compiletools.trace_backend  # noqa: F401 — ensure registered
 from compiletools.build_backend import available_backends, get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.global_hash_registry import get_file_hash
-from compiletools.testhelper import ShakeBackendTestContext, fake_subprocess_result
+from compiletools.testhelper import ShakeBackendTestContext
 from compiletools.trace_backend import (
     ShakeBackend,
     TraceEntry,
@@ -24,6 +24,35 @@ from compiletools.trace_backend import (
     _is_build_artifact,
     hash_command,
 )
+
+
+def _swf_writer(content: bytes = b"\x7fELF fake", returncode: int = 0):
+    """Build a fake `compiletools.locking._run_with_signal_forwarding` that
+    writes `content` to the rewritten output path in the cmd.
+
+    Both `atomic_compile` (for non-direct_compile locks like _NullLock used
+    when file_locking=False) and `atomic_link` rewrite the `-o` flag (or the
+    archive arg for `ar`) to point at a `{target}.{pid}.{rand}.tmp` file
+    before invoking `_run_with_signal_forwarding`. The fake writes there so
+    the subsequent rename produces a real target file.
+    """
+    written: list[str] = []
+
+    def fake(cmd):
+        output = None
+        if "-o" in cmd:
+            i = cmd.index("-o")
+            if i + 1 < len(cmd):
+                output = cmd[i + 1]
+        elif cmd and os.path.basename(cmd[0]) == "ar" and len(cmd) >= 3:
+            output = cmd[2]
+        if output is not None and returncode == 0:
+            with open(output, "wb") as f:
+                f.write(content)
+            written.append(output)
+        return subprocess.CompletedProcess(cmd, returncode, None, None)
+
+    return fake
 
 # ---------------------------------------------------------------------------
 # Registration
@@ -208,17 +237,13 @@ class TestTraceVerification:
             )
             store.save()
 
-            rule = graph.rules[0]
-            ca = backend._ca_target(rule)
-
-            def fake_run(cmd, **kwargs):
-                with open(ca, "wb") as f:
-                    f.write(b"\x7fELF rebuilt")
-                return fake_subprocess_result()
-
-            with mock.patch("compiletools.trace_backend.subprocess.run", side_effect=fake_run) as mock_run:
+            # Link rule routes through atomic_link → _run_with_signal_forwarding
+            with mock.patch(
+                "compiletools.locking._run_with_signal_forwarding",
+                side_effect=_swf_writer(b"\x7fELF rebuilt"),
+            ) as mock_swf:
                 backend.execute("build")
-                mock_run.assert_called_once()
+                assert mock_swf.call_count == 1
 
     def test_verify_fails_on_command_hash_change(self, monkeypatch):
         """If the command changed, rebuild (uses copy rule to test trace verification,
@@ -258,11 +283,13 @@ class TestTraceVerification:
             )
             store.save()
 
-            mock_result = fake_subprocess_result()
-
-            with mock.patch("compiletools.trace_backend.subprocess.run", return_value=mock_result) as mock_run:
+            # Copy rule routes through atomic_link → _run_with_signal_forwarding
+            with mock.patch(
+                "compiletools.locking._run_with_signal_forwarding",
+                side_effect=_swf_writer(),
+            ) as mock_swf:
                 backend.execute("build")
-                mock_run.assert_called_once()
+                assert mock_swf.call_count == 1
 
     def test_verify_fails_on_added_input(self, monkeypatch):
         """If the input set changed (new input added), rebuild (uses copy rule to test
@@ -304,14 +331,15 @@ class TestTraceVerification:
             )
             store.save()
 
-            mock_result = fake_subprocess_result()
-
-            with mock.patch("compiletools.trace_backend.subprocess.run", return_value=mock_result) as mock_run:
+            # Copy rule routes through atomic_link → _run_with_signal_forwarding;
+            # _run_with_signal_forwarding is the boundary that's specific to the
+            # build subprocess (git_utils uses check_output, not this helper).
+            with mock.patch(
+                "compiletools.locking._run_with_signal_forwarding",
+                side_effect=_swf_writer(),
+            ) as mock_swf:
                 backend.execute("build")
-                # subprocess.run may also be called by git_utils (e.g. git rev-parse
-                # via check_output which delegates to run in Python 3.14+), so check
-                # for the specific build command rather than assert_called_once.
-                build_calls = [c for c in mock_run.call_args_list if c.args[0] == cmd]
+                build_calls = [c for c in mock_swf.call_args_list if c.args[0] == cmd]
                 assert len(build_calls) == 1
 
 
@@ -389,27 +417,15 @@ class TestEarlyCutoff:
             # foo.o intentionally NOT created — forces compile to run
             os.makedirs(td / "obj", exist_ok=True)
 
-            ca = backend._ca_target(link_rule)
-            compile_calls = []
-
-            def fake_atomic(target, cmd):
-                compile_calls.append(target)
-                (td / "foo.o").write_bytes(b"\x7fELF NEW object")
-                return fake_subprocess_result()
-
-            def fake_run(cmd, **kwargs):
-                # Link builds to the CA target path
-                with open(ca, "wb") as f:
-                    f.write(b"\x7fELF NEW executable")
-                return fake_subprocess_result()
-
-            with (
-                mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic),
-                mock.patch("compiletools.trace_backend.subprocess.run", side_effect=fake_run) as mock_run,
-            ):
+            # Both compile and link route through _run_with_signal_forwarding
+            # (via atomic_compile and atomic_link respectively).
+            with mock.patch(
+                "compiletools.locking._run_with_signal_forwarding",
+                side_effect=_swf_writer(b"\x7fELF NEW"),
+            ) as mock_swf:
                 backend.execute("build")
-                assert len(compile_calls) == 1  # compile via atomic
-                assert mock_run.call_count == 1  # link via subprocess
+                # 1 compile + 1 link = 2 build subprocess calls
+                assert mock_swf.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -478,10 +494,10 @@ class TestErrorHandling:
             (td / "foo.cpp").write_text("bad code")
             os.makedirs(td / "obj", exist_ok=True)
 
-            def fake_atomic_fail(target, cmd):
-                raise subprocess.CalledProcessError(1, cmd, "", "error: bad code")
-
-            with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic_fail):
+            with mock.patch(
+                "compiletools.locking._run_with_signal_forwarding",
+                side_effect=_swf_writer(returncode=1),
+            ):
                 with pytest.raises(subprocess.CalledProcessError):
                     backend.execute("build")
 
@@ -526,15 +542,19 @@ class TestParallelExecution:
             thread_ids = []
             barrier = threading.Barrier(2, timeout=5)
 
-            def fake_atomic(target, cmd):
+            def fake_swf(cmd):
                 thread_ids.append(threading.current_thread().ident)
                 # Both compiles must reach the barrier before either proceeds,
                 # proving they run concurrently
                 barrier.wait()
-                (td / os.path.basename(target)).write_bytes(b"\x7fELF fake")
-                return fake_subprocess_result()
+                # atomic_compile rewrote -o to a temp path; honour it
+                if "-o" in cmd:
+                    out = cmd[cmd.index("-o") + 1]
+                    with open(out, "wb") as f:
+                        f.write(b"\x7fELF fake")
+                return subprocess.CompletedProcess(cmd, 0, None, None)
 
-            with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic):
+            with mock.patch("compiletools.locking._run_with_signal_forwarding", side_effect=fake_swf):
                 backend.execute("build")
 
             # Verify they ran on different threads
@@ -571,16 +591,12 @@ class TestParallelExecution:
             (td / "b.cpp").write_text("int b() {}")
             os.makedirs(td / "obj", exist_ok=True)
 
-            compile_calls = []
-
-            def fake_atomic(target, cmd):
-                compile_calls.append(target)
-                (td / os.path.basename(target)).write_bytes(b"\x7fELF fake")
-                return fake_subprocess_result()
-
-            with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic):
+            with mock.patch(
+                "compiletools.locking._run_with_signal_forwarding",
+                side_effect=_swf_writer(),
+            ) as mock_swf:
                 backend.execute("build")
-                assert len(compile_calls) == 2
+                assert mock_swf.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -626,17 +642,13 @@ class TestOutputDeletion:
             )
             store.save()
 
-            compile_calls = []
-
-            def fake_atomic(target, cmd):
-                compile_calls.append(target)
-                (td / "foo.o").write_bytes(b"\x7fELF rebuilt")
-                return fake_subprocess_result()
-
-            with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic):
+            with mock.patch(
+                "compiletools.locking._run_with_signal_forwarding",
+                side_effect=_swf_writer(b"\x7fELF rebuilt"),
+            ) as mock_swf:
                 backend.execute("build")
                 # Must rebuild because output file was deleted
-                assert len(compile_calls) == 1
+                assert mock_swf.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -708,21 +720,17 @@ class TestContentAddressableShortCircuit:
 
             traces = TraceStore(str(td / ".ct-traces.json"))
 
-            compile_calls = []
-
-            def fake_atomic(target, cmd):
-                compile_calls.append(target)
-                (td / "foo.o").write_bytes(b"\x7fELF new object")
-                return fake_subprocess_result()
-
             import asyncio
 
             memo: dict[str, asyncio.Task[bool]] = {}
             sem = asyncio.Semaphore(1)
-            with mock.patch.object(ShakeBackend, "_atomic_compile_no_lock", side_effect=fake_atomic):
+            with mock.patch(
+                "compiletools.locking._run_with_signal_forwarding",
+                side_effect=_swf_writer(b"\x7fELF new object"),
+            ) as mock_swf:
                 changed = asyncio.run(backend._build_async("foo.o", graph, traces, memo, sem))
                 assert changed is True
-                assert len(compile_calls) == 1
+                assert mock_swf.call_count == 1
 
     def test_link_skipped_when_ca_target_exists(self, monkeypatch):
         """Link uses CA short-circuit: if the CA-named file exists, the link
@@ -773,18 +781,25 @@ class TestContentAddressableShortCircuit:
 
             ca = backend._ca_target(link_rule)
 
-            mock_result = fake_subprocess_result()
-
-            def fake_run(cmd, **kwargs):
-                # The command should target the CA path, not the human-readable path
-                assert ca in cmd
-                with open(ca, "wb") as f:
+            def fake_swf(cmd):
+                # atomic_link rewrites -o from `ca` to a temp path; the
+                # original `ca` should NOT appear in the command (the
+                # tempfile takes its place).  Verify the temp path is in
+                # the same directory and ends with .tmp.
+                assert "-o" in cmd
+                out = cmd[cmd.index("-o") + 1]
+                assert out != ca
+                assert out.startswith(ca + ".") and out.endswith(".tmp")
+                with open(out, "wb") as f:
                     f.write(b"\x7fELF new executable")
-                return mock_result
+                return subprocess.CompletedProcess(cmd, 0, None, None)
 
-            with mock.patch("compiletools.trace_backend.subprocess.run", side_effect=fake_run) as mock_run:
+            with mock.patch(
+                "compiletools.locking._run_with_signal_forwarding",
+                side_effect=fake_swf,
+            ) as mock_swf:
                 backend.execute("build")
-                mock_run.assert_called_once()
+                assert mock_swf.call_count == 1
 
             # Both CA and human-readable targets should exist
             assert os.path.exists(ca)
@@ -855,15 +870,10 @@ class TestCALinkShortCircuit:
             monkeypatch.chdir(tmpdir)
             (td / "foo.o").write_bytes(b"\x7fELF fake object")
 
-            ca = backend._ca_target(link_rule)
-            mock_result = fake_subprocess_result()
-
-            def fake_run(cmd, **kwargs):
-                with open(ca, "wb") as f:
-                    f.write(b"\x7fELF new exe")
-                return mock_result
-
-            with mock.patch("compiletools.trace_backend.subprocess.run", side_effect=fake_run):
+            with mock.patch(
+                "compiletools.locking._run_with_signal_forwarding",
+                side_effect=_swf_writer(b"\x7fELF new exe"),
+            ):
                 backend.execute("build")
 
             assert not os.path.exists("foo.ct-sig")
@@ -875,64 +885,6 @@ class TestCALinkShortCircuit:
 
 
 class TestAtomicCompile:
-    def test_compile_uses_temp_file_and_rename(self, tmp_path, monkeypatch):
-        """Verify _atomic_compile_no_lock writes to a temp file then renames,
-        so the target file never exists in a partially-written state."""
-        monkeypatch.chdir(tmp_path)
-        target = str(tmp_path / "foo.o")
-        observed_files = []
-
-        def spy_run(cmd, **kwargs):
-            # During compilation, the -o flag should point to a .tmp file
-            if "-o" in cmd:
-                output_idx = cmd.index("-o") + 1
-                output_file = cmd[output_idx]
-                observed_files.append(output_file)
-                # Verify it's a temp file, not the final target
-                assert output_file.endswith(".tmp"), f"Expected temp file, got {output_file}"
-                assert output_file != target, "Should not compile directly to target"
-                # Create the temp file to simulate successful compilation
-                with open(output_file, "wb") as f:
-                    f.write(b"\x7fELF fake object")
-            return fake_subprocess_result()
-
-        with mock.patch("compiletools.trace_backend.subprocess.run", side_effect=spy_run):
-            ShakeBackend._atomic_compile_no_lock(target, ["g++", "-c", "foo.cpp"])
-
-        # Verify temp file was used
-        assert len(observed_files) == 1
-        assert observed_files[0].startswith(target)
-        assert observed_files[0].endswith(".tmp")
-        # Verify final target exists (renamed from temp)
-        assert os.path.exists(target)
-        # Verify temp file was cleaned up
-        assert not os.path.exists(observed_files[0])
-
-    def test_compile_failure_cleans_up_temp_file(self, tmp_path, monkeypatch):
-        """If compilation fails, temp file should be cleaned up and target not created."""
-        monkeypatch.chdir(tmp_path)
-        target = str(tmp_path / "foo.o")
-        temp_files = []
-
-        def failing_run(cmd, **kwargs):
-            if "-o" in cmd:
-                output_idx = cmd.index("-o") + 1
-                temp_files.append(cmd[output_idx])
-                # Create temp file then fail
-                with open(cmd[output_idx], "wb") as f:
-                    f.write(b"partial")
-            return fake_subprocess_result(returncode=1, stderr="error: compilation failed")
-
-        with mock.patch("compiletools.trace_backend.subprocess.run", side_effect=failing_run):
-            with pytest.raises(subprocess.CalledProcessError):
-                ShakeBackend._atomic_compile_no_lock(target, ["g++", "-c", "foo.cpp"])
-
-        # Target should not exist
-        assert not os.path.exists(target)
-        # Temp file should be cleaned up
-        assert len(temp_files) == 1
-        assert not os.path.exists(temp_files[0])
-
     def test_atomic_compile_in_locking_module(self, tmp_path):
         """Verify the shared atomic_compile function in locking.py works correctly."""
         from compiletools.locking import FlockLock, atomic_compile
@@ -961,3 +913,106 @@ class TestAtomicCompile:
         assert len(observed_outputs) == 1
         # FlockLock has direct_compile=True, so compiler gets -o target directly
         assert observed_outputs[0] == target
+
+
+class TestAtomicLinkRouting:
+    """Verify Shake routes link/library/copy rules through locking.atomic_link.
+
+    Regression for review issue C2: ShakeBackend used to wrap link rules in
+    `with FileLock(...)` + raw subprocess.run, leaving an orphaned linker
+    writing to the now-unlocked target if the parent caught a signal.
+    """
+
+    def test_link_rule_routes_through_atomic_link(self, monkeypatch):
+        link_rule = BuildRule(
+            output="foo",
+            inputs=["foo.o"],
+            command=["g++", "-o", "foo", "foo.o"],
+            rule_type="link",
+        )
+        graph = BuildGraph()
+        graph.add_rule(link_rule)
+        graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
+
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            (td / "foo.o").write_bytes(b"\x7fELF fake object")
+
+            with mock.patch("compiletools.trace_backend.atomic_link") as mock_link:
+                mock_link.side_effect = lambda lock, target, cmd: open(target, "wb").close() or 0
+                backend.execute("build")
+                assert mock_link.call_count == 1
+                call_args = mock_link.call_args
+                # atomic_link(lock, target=ca, cmd=ca_cmd)
+                assert call_args.args[1] == backend._ca_target(link_rule)
+
+    def test_copy_rule_routes_through_atomic_link(self, monkeypatch):
+        """Non-build-artifact rule types (e.g. 'copy') must also go through
+        atomic_link to inherit signal forwarding and temp+rename."""
+        copy_rule = BuildRule(
+            output="foo.txt",
+            inputs=["src.txt"],
+            command=["cp", "src.txt", "foo.txt"],
+            rule_type="copy",
+        )
+        graph = BuildGraph()
+        graph.add_rule(copy_rule)
+        graph.add_rule(BuildRule(output="build", inputs=["foo.txt"], command=None, rule_type="phony"))
+
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            (td / "src.txt").write_text("data")
+
+            with mock.patch("compiletools.trace_backend.atomic_link") as mock_link:
+                mock_link.side_effect = lambda lock, target, cmd: open(target, "wb").close() or 0
+                backend.execute("build")
+                assert mock_link.call_count == 1
+                # The catch-all branch passes target=rule.output, not a CA path
+                assert mock_link.call_args.args[1] == "foo.txt"
+
+    def test_link_starts_new_session_for_signal_forwarding(self, monkeypatch):
+        """End-to-end signal-forwarding regression: link must use Popen with
+        start_new_session=True so SIGINT/SIGTERM can be forwarded to the
+        linker's process group rather than orphaning it."""
+        link_rule = BuildRule(
+            output="foo",
+            inputs=["foo.o"],
+            command=["g++", "-o", "foo", "foo.o"],
+            rule_type="link",
+        )
+        graph = BuildGraph()
+        graph.add_rule(link_rule)
+        graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
+
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            (td / "foo.o").write_bytes(b"\x7fELF fake object")
+
+            popen_calls = []
+            real_popen = subprocess.Popen
+
+            class FakePopen:
+                def __init__(self, *args, **kwargs):
+                    popen_calls.append((args, kwargs))
+                    # Write the rewritten temp output then "exit 0"
+                    cmd = args[0]
+                    if "-o" in cmd:
+                        with open(cmd[cmd.index("-o") + 1], "wb") as f:
+                            f.write(b"\x7fELF link")
+                    self.pid = os.getpid()
+                    self.returncode = 0
+                def wait(self, timeout=None):
+                    return 0
+                def poll(self):
+                    return 0
+
+            with mock.patch("compiletools.locking.subprocess.Popen", FakePopen):
+                backend.execute("build")
+
+            assert len(popen_calls) == 1
+            kwargs = popen_calls[0][1]
+            assert kwargs.get("start_new_session") is True
+            del real_popen  # silence unused warning

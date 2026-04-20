@@ -563,24 +563,60 @@ class TestLocalLink:
             )
             store.save()
 
-            with patch("subprocess.run") as mock_run:
-                result = subprocess.CompletedProcess([], 0, "", "")
-
-                def fake_run(cmd, **kw):
+            # Link rules now go through atomic_link → _run_with_signal_forwarding;
+            # sbatch/sacct (none expected here, since the trace skips compile)
+            # would go through subprocess.run.
+            with patch("compiletools.locking._run_with_signal_forwarding") as mock_swf:
+                def fake_swf(cmd):
                     try:
                         idx = cmd.index("-o")
                         open(cmd[idx + 1], "w").close()
                     except (ValueError, IndexError):
                         pass
-                    return result
+                    return subprocess.CompletedProcess(cmd, 0, None, None)
 
-                mock_run.side_effect = fake_run
+                mock_swf.side_effect = fake_swf
                 backend.execute("build")
 
-        # sbatch not called (compile output had a valid trace)
-        mock_run.assert_called()
-        # link ran locally via subprocess.run
-        mock_run.assert_called()
+        # link ran locally via _run_with_signal_forwarding
+        mock_swf.assert_called()
+
+    def test_link_rule_routes_through_atomic_link(self, tmp_path):
+        """Regression for review issue C2: SlurmBackend._run_local used to wrap
+        link rules in `with FileLock(...)` + raw subprocess.run, leaving an
+        orphaned linker writing to the now-unlocked target on signal."""
+        src = str(tmp_path / "foo.cpp")
+        obj = str(tmp_path / "foo.o")
+        exe = str(tmp_path / "foo")
+        (tmp_path / "foo.cpp").write_text("int main(){}")
+        (tmp_path / "foo.o").write_text("compiled")
+
+        compile_rule = make_compile_rule(output=obj, src=src)
+        link_rule = make_link_rule(output=exe, inputs=[obj])
+        graph = BuildGraph()
+        graph.add_rule(compile_rule)
+        graph.add_rule(link_rule)
+        graph.add_rule(make_phony_rule("build", [exe]))
+
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            from compiletools.global_hash_registry import get_file_hash
+            ctx = backend.context
+            store = TraceStore(os.path.join(backend.args.objdir, ".ct-slurm-traces.json"))
+            store.put(
+                obj,
+                TraceEntry(
+                    output_hash=get_file_hash(obj, ctx),
+                    input_hashes={src: get_file_hash(src, ctx)},
+                    command_hash=hash_command(compile_rule.command or []),
+                ),
+            )
+            store.save()
+
+            with patch("compiletools.trace_backend.atomic_link") as mock_link:
+                mock_link.side_effect = lambda lock, target, cmd: open(target, "wb").close() or 0
+                backend.execute("build")
+                # Link routed through atomic_link (not raw subprocess.run)
+                assert mock_link.call_count == 1
 
     def test_runtests_delegates_to_run_tests(self):
         graph = BuildGraph()

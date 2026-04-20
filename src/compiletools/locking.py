@@ -619,6 +619,25 @@ def _run_with_signal_forwarding(cmd: list[str]) -> subprocess.CompletedProcess:
                 pass
 
 
+class _NullLock:
+    """No-op lock used when file_locking is disabled.
+
+    Provides the acquire/release surface expected by atomic_compile and
+    atomic_link so callers don't need a separate no-lock code path.
+    direct_compile=False means atomic_compile uses the temp+rename branch,
+    which is correct without a lock (no peer to coordinate with) and gives
+    us signal-forwarding via _run_with_signal_forwarding.
+    """
+
+    direct_compile = False
+
+    def acquire(self) -> None:
+        pass
+
+    def release(self) -> None:
+        pass
+
+
 def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.CompletedProcess:
     """Execute compilation atomically under a lock.
 
@@ -639,7 +658,9 @@ def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.Comp
     been reaped, preventing orphan compiles from racing peers for the lock.
 
     Args:
-        lock: Lock object with acquire()/release() methods.
+        lock: Lock object with acquire()/release() methods, or None to use
+            a no-op lock (for the file_locking=disabled path — still gets
+            temp+rename + signal forwarding).
         target: Final output file path.
         compile_cmd: Compile command WITHOUT -o flag.
 
@@ -649,6 +670,8 @@ def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.Comp
     Raises:
         subprocess.CalledProcessError: If compilation fails.
     """
+    if lock is None:
+        lock = _NullLock()
     if getattr(lock, "direct_compile", False):
         lock.acquire()
         try:
@@ -710,7 +733,8 @@ def atomic_link(lock, target: str, link_cmd: list[str]) -> int:
     the child has been reaped.
 
     Args:
-        lock: Lock object with acquire()/release() methods.
+        lock: Lock object with acquire()/release() methods, or None to use
+            a no-op lock (for the file_locking=disabled path).
         target: Final output file path.
         link_cmd: Complete link command. The output path in the command is
             rewritten to the temp file before execution.
@@ -721,6 +745,8 @@ def atomic_link(lock, target: str, link_cmd: list[str]) -> int:
     Raises:
         subprocess.CalledProcessError: If the link command fails.
     """
+    if lock is None:
+        lock = _NullLock()
     pid = os.getpid()
     random_suffix = os.urandom(2).hex()
     tempfile_path = f"{target}.{pid}.{random_suffix}.tmp"
@@ -732,7 +758,11 @@ def atomic_link(lock, target: str, link_cmd: list[str]) -> int:
 
         # If ar is appending to an existing archive, seed the temp file with
         # the current archive content so the append operates as intended.
-        if ar_appends and os.path.exists(target):
+        # Skip 0-byte targets: FlockLock/FcntlLock create the lock file via
+        # O_CREAT, so an empty target file is the lock artifact rather than
+        # a real archive — seeding from it would make ar fail with
+        # "File format not recognized".
+        if ar_appends and os.path.exists(target) and os.path.getsize(target) > 0:
             try:
                 shutil.copyfile(target, tempfile_path)
             except OSError:

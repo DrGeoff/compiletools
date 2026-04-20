@@ -68,7 +68,7 @@ from compiletools.build_backend import (
 )
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.global_hash_registry import get_file_hash
-from compiletools.locking import FileLock, atomic_compile
+from compiletools.locking import FileLock, atomic_compile, atomic_link
 
 logger = logging.getLogger(__name__)
 
@@ -151,16 +151,6 @@ def _is_build_artifact(rule) -> bool:
 def _flatten_command(command: list[str]) -> list[str]:
     """Flatten multi-word command elements (e.g. CXXFLAGS as one string) into tokens."""
     return [tok for arg in command for tok in shlex.split(arg)]
-
-
-def _run_subprocess(cmd: list[str], original_cmd: list[str]) -> subprocess.CompletedProcess:
-    """Run *cmd*; on failure stream stdout/stderr and raise CalledProcessError."""
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(result.stdout, end="", file=sys.stdout)
-        print(result.stderr, end="", file=sys.stderr)
-        raise subprocess.CalledProcessError(result.returncode, original_cmd, result.stdout, result.stderr)
-    return result
 
 
 def _parse_slurm_elapsed(elapsed_str: str) -> float:
@@ -367,28 +357,27 @@ class ShakeBackend(BuildBackend):
         start = time.monotonic()
         if rule.rule_type == "compile":
             cmd_without_output = flat_cmd[:-2]  # remove [-o, target]
-            file_lock = FileLock(target, self.args)
-            lock_impl = file_lock.lock
-            if lock_impl is not None:
-                try:
-                    atomic_compile(lock_impl, target, cmd_without_output)
-                except subprocess.CalledProcessError as e:
-                    print(e.stdout or "", end="", file=sys.stdout)
-                    print(e.stderr or "", end="", file=sys.stderr)
-                    raise
-            else:
-                self._atomic_compile_no_lock(target, cmd_without_output)
+            lock_impl = FileLock(target, self.args).lock
+            try:
+                atomic_compile(lock_impl, target, cmd_without_output)
+            except subprocess.CalledProcessError as e:
+                print(e.stdout or "", end="", file=sys.stdout)
+                print(e.stderr or "", end="", file=sys.stderr)
+                raise
         elif _is_build_artifact(rule):
             ca = self._ca_target(rule)
             ca_cmd = [ca if a == target else a for a in flat_cmd]
-            with FileLock(ca, self.args):
-                if os.path.exists(ca) and os.path.getsize(ca) == 0:
-                    os.unlink(ca)
-                _run_subprocess(ca_cmd, cmd)
+            lock_impl = FileLock(ca, self.args).lock
+            try:
+                atomic_link(lock_impl, ca, ca_cmd)
+            except subprocess.CalledProcessError as e:
+                print(e.stdout or "", end="", file=sys.stdout)
+                print(e.stderr or "", end="", file=sys.stderr)
+                raise
             _atomic_copy(ca, target)
         else:
-            with FileLock(target, self.args):
-                _run_subprocess(flat_cmd, cmd)
+            lock_impl = FileLock(target, self.args).lock
+            atomic_link(lock_impl, target, flat_cmd)
 
         # Record per-rule timing
         elapsed = time.monotonic() - start
@@ -403,24 +392,6 @@ class ShakeBackend(BuildBackend):
                 start_s=start,
                 end_s=start + elapsed,
             )
-
-    @staticmethod
-    def _atomic_compile_no_lock(target: str, compile_cmd: list[str]) -> subprocess.CompletedProcess:
-        """Atomic compile without cross-process locking (temp file + rename only)."""
-        pid = os.getpid()
-        random_suffix = os.urandom(2).hex()
-        tempfile_path = f"{target}.{pid}.{random_suffix}.tmp"
-
-        try:
-            cmd = list(compile_cmd) + ["-o", tempfile_path]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
-            os.rename(tempfile_path, target)
-            return result
-        finally:
-            with contextlib.suppress(OSError):
-                os.unlink(tempfile_path)
 
     def _verify(self, rule, trace: TraceEntry) -> bool:
         """Check if a trace is still valid (output exists, inputs unchanged, same command)."""
@@ -1031,18 +1002,12 @@ class SlurmBackend(ShakeBackend):
             ca_dir = os.path.dirname(ca)
             if ca_dir:
                 os.makedirs(ca_dir, exist_ok=True)
-            with FileLock(ca, self.args):
-                # FlockLock creates an empty file at the CA path via O_CREAT.
-                # ar -r treats an empty file as a corrupt archive and fails
-                # with "File format not recognized".  Remove the empty file
-                # so ar can create a fresh archive.
-                if os.path.exists(ca) and os.path.getsize(ca) == 0:
-                    os.unlink(ca)
-                _run_subprocess(ca_cmd, rule.command)
+            lock_impl = FileLock(ca, self.args).lock
+            atomic_link(lock_impl, ca, ca_cmd)
             _atomic_copy(ca, rule.output)
         else:
-            with FileLock(rule.output, self.args):
-                _run_subprocess(flat_cmd, rule.command)
+            lock_impl = FileLock(rule.output, self.args).lock
+            atomic_link(lock_impl, rule.output, flat_cmd)
 
         traces.put(rule.output, _make_trace_entry(rule, self.context))
 

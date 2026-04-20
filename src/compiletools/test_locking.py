@@ -909,6 +909,37 @@ class TestAtomicLink:
 
             assert seen_temp_content.get("content") == "EXISTING_ARCHIVE"
 
+    def test_atomic_link_skips_seed_for_empty_target(self):
+        """An empty (0-byte) target is the lock-file artifact left by
+        FlockLock/FcntlLock O_CREAT, not a real archive. atomic_link must
+        NOT seed the temp file from it (ar would fail with
+        'File format not recognized')."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.a")
+            # Pre-create empty target (the FlockLock O_CREAT artifact)
+            open(target, "w").close()
+            assert os.path.getsize(target) == 0
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+
+            seen_temp_state = {}
+
+            def fake_ar_append(cmd):
+                tmp = cmd[2]
+                seen_temp_state["existed_before_ar"] = os.path.exists(tmp)
+                # Pretend ar created a fresh archive
+                with open(tmp, "w") as f:
+                    f.write("FRESH_ARCHIVE")
+
+            patcher, _ = self._patch_runner(on_run=fake_ar_append)
+            with patcher:
+                atomic_link(lock, target, ["ar", "rcs", target, "extra.o"])
+
+            # The temp file should NOT have been pre-seeded from the empty target
+            assert seen_temp_state.get("existed_before_ar") is False
+            with open(target) as f:
+                assert f.read() == "FRESH_ARCHIVE"
+
 
 class TestFileLock:
     """Test FileLock context manager."""
