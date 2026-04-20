@@ -793,3 +793,97 @@ class TestSetupPkgConfigOverrides:
         pkg_config_path = os.environ["PKG_CONFIG_PATH"]
         assert pkg_config_path == str(pkgconfig_dir)
         assert pkg_config_path.count(str(pkgconfig_dir)) == 1
+
+    def test_prepend_promotes_existing_entry_to_front(self, monkeypatch, tmp_path):
+        """I-C1 regression: --prepend-PKG-CONFIG-PATH=/X with PKG_CONFIG_PATH=/Y:/X
+        must produce /X:/Y (X promoted), not /Y:/X (unchanged)."""
+        monkeypatch.setattr(
+            "compiletools.git_utils.find_git_root", lambda filename=None: None
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PKG_CONFIG_PATH", "/system:/local")
+
+        ctx = BuildContext()
+        _setup_pkg_config_overrides(ctx, prepend_paths=["/local"])
+
+        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
+        assert dirs == ["/local", "/system"]
+
+    def test_append_demotes_existing_entry_to_end(self, monkeypatch, tmp_path):
+        """Symmetric I-C1: --append-PKG-CONFIG-PATH should move an existing
+        entry to the end."""
+        monkeypatch.setattr(
+            "compiletools.git_utils.find_git_root", lambda filename=None: None
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PKG_CONFIG_PATH", "/local:/system")
+
+        ctx = BuildContext()
+        _setup_pkg_config_overrides(ctx, append_paths=["/local"])
+
+        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
+        assert dirs == ["/system", "/local"]
+
+    def test_flag_set_only_after_env_mutation_succeeds(self, monkeypatch, tmp_path):
+        """I-C4 regression: pkg_config_overrides_applied must NOT be set
+        if the function raises before mutating PKG_CONFIG_PATH — otherwise
+        a retry within the same context is silently suppressed."""
+
+        def boom(filename=None):
+            raise RuntimeError("simulated find_git_root failure")
+
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", boom)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PKG_CONFIG_PATH", "/system")
+
+        ctx = BuildContext()
+        try:
+            _setup_pkg_config_overrides(ctx)
+        except RuntimeError:
+            pass
+        assert ctx.pkg_config_overrides_applied is False, (
+            "Flag must remain False if the function failed; otherwise "
+            "the caller has no way to retry."
+        )
+
+    def test_restore_pkg_config_path_undoes_mutation(self, monkeypatch, tmp_path):
+        """I-C5 regression: BuildContext must expose a way to undo the
+        global env mutation, so long-lived processes / tests using
+        multiple sequential contexts don't leak PKG_CONFIG_PATH state."""
+        pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
+        pkgconfig_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PKG_CONFIG_PATH", "/original/path")
+
+        ctx = BuildContext()
+        _setup_pkg_config_overrides(ctx)
+        # Mutated
+        assert os.environ["PKG_CONFIG_PATH"] != "/original/path"
+
+        ctx.restore_pkg_config_path()
+
+        assert os.environ.get("PKG_CONFIG_PATH") == "/original/path"
+        assert ctx.pkg_config_overrides_applied is False, (
+            "After restore, the flag should be reset so a future apply works."
+        )
+
+    def test_restore_when_pkg_config_path_was_unset(self, monkeypatch, tmp_path):
+        """Restore must remove PKG_CONFIG_PATH if it was originally unset."""
+        pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
+        pkgconfig_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            "compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path)
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+
+        ctx = BuildContext()
+        _setup_pkg_config_overrides(ctx)
+        assert "PKG_CONFIG_PATH" in os.environ
+
+        ctx.restore_pkg_config_path()
+
+        assert "PKG_CONFIG_PATH" not in os.environ

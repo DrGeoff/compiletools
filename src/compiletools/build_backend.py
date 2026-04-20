@@ -201,9 +201,15 @@ class BuildBackend(abc.ABC):
         elif hunter is not None:
             self.context = hunter.context
         else:
-            from compiletools.build_context import BuildContext
-
-            self.context = BuildContext()
+            # The BuildContext-mandatory refactor (commit e352d20c) requires
+            # callers to thread a BuildContext through. Silently constructing
+            # a fresh one here would let the backend's caches diverge from any
+            # other component's caches — the exact bug the refactor existed
+            # to prevent. Force the caller to be explicit.
+            raise ValueError(
+                "BuildBackend requires either hunter or context. "
+                "Pass context=BuildContext() if you have no hunter."
+            )
         self.namer = compiletools.namer.Namer(args, context=self.context)
         self._graph: BuildGraph | None = None
         self._dynamic_sources: set[str] = set()

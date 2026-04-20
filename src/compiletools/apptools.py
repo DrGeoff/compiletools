@@ -926,8 +926,6 @@ def _setup_pkg_config_overrides(context, verbose=0, prepend_paths=None, append_p
     if context.pkg_config_overrides_applied:
         return
 
-    context.pkg_config_overrides_applied = True
-
     gitroot = compiletools.git_utils.find_git_root()
 
     # Collect candidate pkgconfig directories in priority order
@@ -948,33 +946,47 @@ def _setup_pkg_config_overrides(context, verbose=0, prepend_paths=None, append_p
     existing = os.environ.get("PKG_CONFIG_PATH", "")
     existing_dirs = [os.path.normpath(d) for d in existing.split(os.pathsep)] if existing else []
 
-    # Build final path: prepend_paths + candidates + existing + append_paths
-    # Deduplicate while preserving order.
+    # Build the final path with explicit precedence:
+    #   prepend_paths (highest) > candidates > middle (existing) > append_paths
+    # Each entry appears at most once. An entry that is already in
+    # PKG_CONFIG_PATH gets *moved* to the requested position rather than
+    # being silently dropped — so --prepend-PKG-CONFIG-PATH=/X actually
+    # promotes /X to the front when /X was already present (I-C1).
+    prepend_normd = [os.path.normpath(d) for d in (prepend_paths or [])]
+    candidates_normd = [os.path.normpath(d) for d in candidates]
+    append_normd = [os.path.normpath(d) for d in (append_paths or [])]
+    forced_at_end = set(append_normd)
+
+    middle = [d for d in existing_dirs if d not in forced_at_end]
+
     seen: set[str] = set()
     final: list[str] = []
+    for source, label in (
+        (prepend_normd, "Prepended"),
+        (candidates_normd, "Prepended"),
+        (middle, None),
+        (append_normd, "Appended"),
+    ):
+        for d in source:
+            if not d or d in seen:
+                continue
+            seen.add(d)
+            final.append(d)
+            if label is not None and verbose >= 4:
+                print(f"{label} pkg-config path: {d}")
 
-    for d in (prepend_paths or []) + candidates:
-        normd = os.path.normpath(d)
-        if normd not in seen and normd not in existing_dirs:
-            seen.add(normd)
-            final.append(normd)
-            if verbose >= 4:
-                print(f"Prepended pkg-config path: {normd}")
+    new_value = os.pathsep.join(final) if final else None
 
-    # Existing entries in the middle.
-    if existing:
-        final.append(existing)
+    # Save original ONLY if we are about to mutate, so restore_pkg_config_path
+    # can faithfully undo. Set the flag AFTER the mutation succeeds so a
+    # caller hitting an exception above can retry (I-C4).
+    if new_value is not None and new_value != existing:
+        context._original_pkg_config_path = (
+            existing if "PKG_CONFIG_PATH" in os.environ else True
+        )
+        os.environ["PKG_CONFIG_PATH"] = new_value
 
-    for d in (append_paths or []):
-        normd = os.path.normpath(d)
-        if normd not in seen and normd not in existing_dirs:
-            seen.add(normd)
-            final.append(normd)
-            if verbose >= 4:
-                print(f"Appended pkg-config path: {normd}")
-
-    if final:
-        os.environ["PKG_CONFIG_PATH"] = os.pathsep.join(final)
+    context.pkg_config_overrides_applied = True
 
 
 def _add_flags_from_pkg_config(args):

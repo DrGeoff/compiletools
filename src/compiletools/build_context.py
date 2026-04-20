@@ -72,3 +72,25 @@ class BuildContext:
 
         # -- apptools pkg-config state --
         self.pkg_config_overrides_applied: bool = False
+        # Sentinel: True means PKG_CONFIG_PATH was unset before override.
+        # str means we saved that prior value. None means no override active.
+        self._original_pkg_config_path: str | bool | None = None
+
+    def restore_pkg_config_path(self) -> None:
+        """Undo any PKG_CONFIG_PATH mutation made by
+        ``apptools._setup_pkg_config_overrides`` against this context.
+
+        Long-lived processes (test sessions, library embedders) that
+        create more than one BuildContext should call this between
+        contexts to avoid bleeding pkg-config state across builds. After
+        restore, the override flag is reset so a future apply works.
+        """
+        import os
+
+        if self._original_pkg_config_path is True:
+            os.environ.pop("PKG_CONFIG_PATH", None)
+        elif isinstance(self._original_pkg_config_path, str):
+            os.environ["PKG_CONFIG_PATH"] = self._original_pkg_config_path
+        # else: nothing was applied; nothing to undo.
+        self._original_pkg_config_path = None
+        self.pkg_config_overrides_applied = False

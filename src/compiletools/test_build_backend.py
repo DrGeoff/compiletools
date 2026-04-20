@@ -57,6 +57,60 @@ class TestBuildBackendContract:
 
         backend = Minimal(args=MagicMock(), hunter=MagicMock())
         assert backend.name() == "minimal"
+
+    def test_must_supply_hunter_or_context(self):
+        """I-A2: silent fallback to a fresh BuildContext defeated the
+        BuildContext-mandatory refactor (commit e352d20c). Constructing a
+        backend with no hunter and no context must raise so the caller
+        is forced to thread the right one through."""
+
+        class Minimal(BuildBackend):
+            def generate(self, graph, output=None):
+                pass
+
+            def execute(self, target="build"):
+                pass
+
+            def _execute_build(self, target):
+                pass
+
+            @staticmethod
+            def name():
+                return "minimal-orphan"
+
+            @staticmethod
+            def build_filename():
+                return "Minimalfile"
+
+        with pytest.raises(ValueError, match="BuildContext"):
+            Minimal(args=MagicMock(), hunter=None)
+
+    def test_explicit_context_without_hunter_works(self):
+        """A caller may legitimately pass a context with no hunter
+        (e.g. compilation_database stand-alone uses)."""
+        from compiletools.build_context import BuildContext
+
+        class Minimal(BuildBackend):
+            def generate(self, graph, output=None):
+                pass
+
+            def execute(self, target="build"):
+                pass
+
+            def _execute_build(self, target):
+                pass
+
+            @staticmethod
+            def name():
+                return "minimal-ctx"
+
+            @staticmethod
+            def build_filename():
+                return "Minimalfile"
+
+        ctx = BuildContext()
+        backend = Minimal(args=MagicMock(), hunter=None, context=ctx)
+        assert backend.context is ctx
         assert backend.build_filename() == "Minimalfile"
 
     def test_generate_accepts_output_none(self):
