@@ -410,6 +410,9 @@ class BuildBackend(abc.ABC):
         self._pch_gch_paths: dict[str, str] = {}   # header_abs -> gch_output
         self._pch_include_dirs: dict[str, str] = {}  # header_abs -> -I dir
 
+        if pchdir:
+            _warn_if_pchdir_not_cross_user_safe(pchdir, getattr(self.args, "verbose", 0))
+
         pch_headers: set[str] = set()
         for filename in all_compile_sources:
             magicflags = self.hunter.magicflags(filename)
@@ -958,20 +961,99 @@ def _gch_path(header: str, pchdir: str | None = None, command_hash: str | None =
     return header + ".gch"
 
 
+_PCHDIR_WARNED: set[str] = set()
+
+
+def _warn_if_pchdir_not_cross_user_safe(pchdir: str, verbose: int) -> None:
+    """Emit a one-time warning if pchdir's parent isn't group-writable + SGID.
+
+    The shared PCH cache is intended to be readable across users (I-B2):
+    user A creates ``<pchdir>/<cmd_hash>/stdafx.h.gch``, user B should be
+    able to consume it. With a default ``umask 0077`` and no SGID on the
+    parent, A's directory is mode ``0700`` and B silently re-builds the
+    PCH every time. Warn early so the operator can fix the parent dir
+    permissions (typically ``chmod 2775`` + ``chgrp <build-group>``).
+
+    The warning is one-time per (pchdir) per process to avoid spam in
+    multi-target builds.
+    """
+    if pchdir in _PCHDIR_WARNED:
+        return
+    _PCHDIR_WARNED.add(pchdir)
+
+    parent = os.path.dirname(os.path.abspath(pchdir)) or "."
+    target = pchdir if os.path.isdir(pchdir) else parent
+    try:
+        st = os.stat(target)
+    except OSError:
+        return  # No parent yet, mkdir will create it; nothing useful to warn about
+
+    mode = st.st_mode
+    issues = []
+    # Group-write needed so user B can create new <cmd_hash>/ subdirs.
+    if not (mode & 0o020):
+        issues.append("not group-writable (need at least mode 2775)")
+    # SGID needed so children inherit the parent's group, not the creator's
+    # primary group.
+    if not (mode & 0o2000):
+        issues.append("missing SGID bit (chmod g+s)")
+
+    if issues and verbose >= 1:
+        joined = "; ".join(issues)
+        print(
+            f"WARNING: shared PCH directory {target!r} is {joined}. "
+            "Cross-user PCH cache hits will silently miss. Fix with: "
+            f"chmod 2775 {target!r} && chgrp <build-group> {target!r}",
+            file=sys.stderr,
+        )
+
+
+@functools.lru_cache(maxsize=64)
+def _compiler_identity(cxx: str) -> str:
+    """Return a stable identity string for a compiler binary.
+
+    Used as part of the PCH cache key (I-B1): two users on the same shared
+    filesystem with different ``$PATH``s could otherwise collide on the
+    same key while resolving ``args.CXX`` (e.g. bare ``g++``) to different
+    binaries (different versions, different stdlibs). GCC's PCH stamp
+    catches this at *consume* time — but the slow fallback compile
+    defeats the cache. By including binary realpath + (st_size, st_mtime),
+    we make distinct compilers produce distinct cache entries.
+
+    Falls back to the original string when the binary cannot be stat'd
+    (e.g. user passed a non-path command like ``ccache g++``).
+    """
+    resolved = shutil.which(cxx) or cxx
+    try:
+        st = os.stat(resolved)
+        return f"{os.path.realpath(resolved)}|{st.st_size}|{int(st.st_mtime)}"
+    except OSError:
+        return resolved
+
+
 def _pch_command_hash(
     args, pch_header: str, magic_cpp_flags: list, magic_cxx_flags: list,
 ) -> str:
     """Compute a content-addressable hash for a PCH compile command.
 
-    The hash captures compiler identity, all flags, and the realpath of the
-    header so that different compilers/flags/headers produce distinct cache
-    entries while identical configurations share a single .gch file.
+    The hash captures compiler identity (binary realpath + size + mtime,
+    not just the user-supplied command name), all flags, and the realpath
+    of the header so that different compilers / flags / headers produce
+    distinct cache entries while identical configurations share a single
+    .gch file. Uses ``json.dumps`` rather than space-join so flag values
+    containing literal spaces (``-DFOO="a b"``) cannot collide with
+    space-separated flag pairs.
     """
-    canonical_parts = [args.CXX, args.CXXFLAGS]
-    canonical_parts += [str(f) for f in magic_cpp_flags]
-    canonical_parts += [str(f) for f in magic_cxx_flags]
-    canonical_parts += ["-x", "c++-header", os.path.realpath(pch_header)]
-    return hashlib.sha256(" ".join(canonical_parts).encode()).hexdigest()[:16]
+    canonical = {
+        "compiler_identity": _compiler_identity(args.CXX),
+        "cxx_command": args.CXX,
+        "CXXFLAGS": args.CXXFLAGS,
+        "magic_cpp_flags": [str(f) for f in magic_cpp_flags],
+        "magic_cxx_flags": [str(f) for f in magic_cxx_flags],
+        "header": os.path.realpath(pch_header),
+        "stage": "c++-header",
+    }
+    return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()[:16]
 
 
 @functools.lru_cache(maxsize=1)

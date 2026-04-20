@@ -157,14 +157,13 @@ class CacheTrimmer:
                     action = "Would remove" if self.dry_run else "Removing"
                     print(f"  {action}: {path} ({_format_size(size)})")
                 if not self.dry_run:
-                    try:
-                        os.remove(path)
+                    if _safe_locked_unlink(path):
                         stats["removed"] += 1
                         stats["bytes_freed"] += size
-                    except OSError as exc:
+                    else:
                         stats["failed"] += 1
                         if self.verbose >= 1:
-                            print(f"  Failed to remove {path}: {exc}", file=sys.stderr)
+                            print(f"  Failed to remove {path}", file=sys.stderr)
                 else:
                     stats["removed"] += 1
                     stats["bytes_freed"] += size
@@ -177,6 +176,21 @@ class CacheTrimmer:
 
     def trim_pchdir(self, pchdir):
         """Trim stale precompiled header directories from a shared PCH cache.
+
+        Each ``<pchdir>/<cmd_hash>/`` directory is one unique compile
+        configuration (compiler + flags + header realpath). The trim
+        policy treats each cmd_hash dir as an independent unit:
+
+        * Sort all cmd_hash dirs by mtime, newest first.
+        * Keep the newest ``keep_count`` overall.
+        * If ``max_age_seconds`` is set, also keep anything younger
+          than that even beyond ``keep_count``.
+
+        Bucketing-by-header-basename was tried in v8.0.2 but caused
+        cache thrash (I-B5): two unrelated projects both using
+        ``stdafx.h`` evicted each other at the default ``keep_count=1``.
+        cmd_hash dirs are content-addressable, so per-dir bucketing is
+        the correct partitioning.
 
         Args:
             pchdir: Path to the shared PCH directory.
@@ -202,8 +216,7 @@ class CacheTrimmer:
         # Phase 1: scan command_hash directories
         # dir_info: {command_hash: (path, mtime, total_size, [header_basenames])}
         dir_info = {}
-        # header_dirs: {header_basename: [command_hash, ...]}
-        header_dirs = {}
+        unique_headers: set[str] = set()
 
         try:
             entries = list(os.scandir(pchdir))
@@ -241,31 +254,22 @@ class CacheTrimmer:
                 continue
 
             dir_info[entry.name] = (entry.path, dir_mtime, total_size, headers)
-            for h in headers:
-                header_dirs.setdefault(h, []).append(entry.name)
+            unique_headers.update(headers)
 
-        stats["headers_found"] = len(header_dirs)
+        stats["headers_found"] = len(unique_headers)
         now = time.time()
 
-        # Phase 2: decide which directories to keep
-        needed_dirs = set()
-        for _header, cmd_hashes in header_dirs.items():
-            # Sort by mtime descending (newest first)
-            cmd_hashes_sorted = sorted(
-                cmd_hashes, key=lambda ch: dir_info[ch][1], reverse=True
-            )
-            # Keep newest keep_count
-            for ch in cmd_hashes_sorted[: self.keep_count]:
-                needed_dirs.add(ch)
+        # Phase 2: rank all cmd_hash dirs globally by mtime; keep the newest
+        # ``keep_count`` plus anything within ``max_age_seconds``.
+        all_dirs_sorted = sorted(dir_info.keys(), key=lambda ch: dir_info[ch][1], reverse=True)
+        needed_dirs = set(all_dirs_sorted[: self.keep_count])
+        if self.max_age_seconds is not None:
+            cutoff = now - self.max_age_seconds
+            for ch in all_dirs_sorted[self.keep_count :]:
+                if dir_info[ch][1] >= cutoff:
+                    needed_dirs.add(ch)
 
-            # If max_age set, also keep dirs within age limit (beyond keep_count)
-            if self.max_age_seconds is not None:
-                cutoff = now - self.max_age_seconds
-                for ch in cmd_hashes_sorted[self.keep_count :]:
-                    if dir_info[ch][1] >= cutoff:
-                        needed_dirs.add(ch)
-
-        # Phase 3: remove directories not needed by any header
+        # Phase 3: remove directories not needed
         for cmd_hash, (path, _mtime, total_size, _headers) in dir_info.items():
             if cmd_hash in needed_dirs:
                 stats["dirs_kept"] += 1
@@ -276,14 +280,20 @@ class CacheTrimmer:
                 print(f"  {action}: {path} ({_format_size(total_size)})")
 
             if not self.dry_run:
-                try:
-                    shutil.rmtree(path)
+                # I-B4: lock each .gch file before removing the cmd_hash
+                # dir. If a build is currently generating one of the .gch
+                # files, we block until it releases — never deleting a
+                # file a peer is mid-write to. Best-effort: filesystems
+                # that don't support our lock strategies fall through to
+                # plain rmtree (the lock acquisition is wrapped to ignore
+                # errors so we don't fail trims on unlocked filesystems).
+                if _safe_locked_rmtree(path):
                     stats["dirs_removed"] += 1
                     stats["bytes_freed"] += total_size
-                except OSError as exc:
+                else:
                     stats["failed"] += 1
                     if self.verbose >= 1:
-                        print(f"  Failed to remove {path}: {exc}", file=sys.stderr)
+                        print(f"  Failed to remove {path}", file=sys.stderr)
             else:
                 stats["dirs_removed"] += 1
                 stats["bytes_freed"] += total_size
@@ -331,6 +341,101 @@ class CacheTrimmer:
         if objdir_stats is not None and pchdir_stats is not None:
             print(f"  Total space freed: {_format_size(total_freed)}")
         print("=" * 60)
+
+
+def _safe_locked_unlink(path):
+    """Unlink path after acquiring the build lock for it.
+
+    Used by ct-trim-cache to avoid deleting an .o file that a concurrent
+    build is currently writing. Returns True on success, False on failure.
+    Best effort: lock acquisition errors fall through to a plain unlink.
+    """
+    from compiletools.locking import FileLock
+    from types import SimpleNamespace
+
+    lock_args = SimpleNamespace(
+        file_locking=True,
+        verbose=0,
+        lock_cross_host_timeout=300,
+        lock_warn_interval=30,
+        lock_creation_grace_period=2,
+        sleep_interval_lockdir=None,
+        sleep_interval_cifs=0.1,
+        sleep_interval_flock_fallback=0.1,
+    )
+    try:
+        with FileLock(path, lock_args):
+            try:
+                os.remove(path)
+                return True
+            except FileNotFoundError:
+                return True  # peer already removed
+            except OSError:
+                return False
+    except OSError:
+        # Locking failed entirely — fall through to plain unlink
+        try:
+            os.remove(path)
+            return True
+        except OSError:
+            return False
+
+
+def _safe_locked_rmtree(dir_path):
+    """Remove dir_path after acquiring a build lock on each contained file.
+
+    Used by ct-trim-cache to avoid deleting files that a concurrent build
+    is currently writing. Returns True on success, False on failure. Best
+    effort: if the lock subsystem can't lock these files (unsupported
+    filesystem, missing permissions), falls through to a plain rmtree.
+    """
+    from types import SimpleNamespace
+
+    lock_args = SimpleNamespace(
+        file_locking=True,
+        verbose=0,
+        lock_cross_host_timeout=300,
+        lock_warn_interval=30,
+        lock_creation_grace_period=2,
+        sleep_interval_lockdir=None,
+        sleep_interval_cifs=0.1,
+        sleep_interval_flock_fallback=0.1,
+    )
+
+    files_to_lock = []
+    try:
+        for entry in os.scandir(dir_path):
+            if entry.is_file():
+                files_to_lock.append(entry.path)
+    except OSError:
+        # Dir vanished — nothing to do
+        return True
+
+    locks = []
+    try:
+        from compiletools.locking import FileLock
+
+        for path in files_to_lock:
+            try:
+                fl = FileLock(path, lock_args)
+                fl.__enter__()
+                locks.append(fl)
+            except OSError:
+                # Couldn't lock this file — skip locking the rest and
+                # fall through to rmtree (best effort).
+                break
+
+        try:
+            shutil.rmtree(dir_path)
+            return True
+        except OSError:
+            return False
+    finally:
+        for fl in locks:
+            try:
+                fl.__exit__(None, None, None)
+            except OSError:
+                pass
 
 
 def _format_size(size_bytes):

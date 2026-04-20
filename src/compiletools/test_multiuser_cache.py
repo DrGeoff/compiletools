@@ -1093,6 +1093,77 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             for obj_file in all_objs:
                 assert obj_file.stat().st_size > 0, f"{obj_file.name} is empty"
 
+    def _create_pch_source_dir(self, tmpdir, source_name, objdir, pchdir):
+        """I-B3 helper: create a build dir using the samples/pch source.
+
+        Returns (source_dir, config_name)."""
+        import shutil
+
+        source_dir = Path(tmpdir) / source_name
+        source_dir.mkdir(exist_ok=True)
+        sample_dir = os.path.join(uth.samplesdir(), "pch")
+        for fn in ("pch_user.cpp", "stdafx.h"):
+            shutil.copy2(os.path.join(sample_dir, fn), str(source_dir / fn))
+
+        config_name = uth.create_temp_config(str(source_dir))
+        uth.create_temp_ct_conf(
+            tempdir=str(source_dir),
+            defaultvariant=os.path.basename(config_name)[:-5],
+            extralines=[
+                "file-locking = true",
+                f"objdir = {objdir}",
+                f"pchdir = {pchdir}",
+            ],
+        )
+        return str(source_dir), config_name
+
+    @uth.requires_functional_compiler
+    def test_concurrent_pch_compilation_shares_cache(self):
+        """I-B3 regression: two workers concurrently compiling the same
+        PCH must produce a single .gch in the shared pchdir, both succeed,
+        and the .gch must be group-readable so cross-user consumers don't
+        silently rebuild."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            objdir = Path(tmpdir) / "shared_obj"
+            pchdir = Path(tmpdir) / "shared_pch"
+            objdir.mkdir(mode=0o2775)
+            pchdir.mkdir(mode=0o2775)
+
+            dirs_and_configs = [
+                self._create_pch_source_dir(tmpdir, f"pch_build_{i}", str(objdir), str(pchdir))
+                for i in range(2)
+            ]
+
+            ctx = multiprocessing.get_context("spawn")
+            with ctx.Pool(2) as pool:
+                results = pool.starmap(
+                    compile_worker,
+                    [(i, src_dir, cfg) for i, (src_dir, cfg) in enumerate(dirs_and_configs)],
+                )
+
+            for r in results:
+                assert r["returncode"] == 0, f"Worker {r['worker_id']} failed: {r['error']}"
+
+            gch_files = list(pchdir.glob("**/*.gch"))
+            assert len(gch_files) >= 1, f"No .gch files found under {pchdir}"
+            for gch in gch_files:
+                st = gch.stat()
+                assert st.st_size > 0, f"{gch} is empty"
+                assert st.st_mode & 0o040, (
+                    f"{gch} not group-readable: {oct(st.st_mode)} — cross-user "
+                    "PCH consumers will silently rebuild."
+                )
+
+            # cmd_hash directories must be group-readable + executable too,
+            # otherwise user B can't enter them.
+            for cmd_hash_dir in pchdir.iterdir():
+                if cmd_hash_dir.is_dir():
+                    mode = cmd_hash_dir.stat().st_mode
+                    assert mode & 0o050, (
+                        f"{cmd_hash_dir} not group-rx: {oct(mode)} — cross-user "
+                        "consumers cannot read cached .gch files."
+                    )
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

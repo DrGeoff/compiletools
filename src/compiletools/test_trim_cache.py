@@ -318,22 +318,48 @@ class TestTrimPchdir:
         assert os.path.isdir(middle)
         assert os.path.isdir(newest)
 
-    def test_shared_directory_protection(self, tmp_path):
+    def test_per_cmd_hash_bucketing_unrelated_basenames_coexist(self, tmp_path):
+        """I-B5 regression: two unrelated cmd_hash dirs that happen to
+        share a header basename (e.g. ``stdafx.h`` from two different
+        projects) must NOT evict each other. Each cmd_hash dir is an
+        independent cache unit; the keep_count and max_age policies
+        treat them globally by mtime, not bucketed by basename."""
         pchdir = str(tmp_path / "pch")
         os.makedirs(pchdir)
 
-        # This directory serves two headers
-        shared = _make_pchdir_entry(pchdir, "a" * 16, ["foo.h", "bar.h"], age_seconds=3600)
-        # This one is newer but only for foo.h
-        newer_foo = _make_pchdir_entry(pchdir, "b" * 16, ["foo.h"], age_seconds=60)
+        # Three projects all using stdafx.h, each with its own cmd_hash
+        # (different compiler/flags/realpath). Without keep_count limit,
+        # all three should coexist.
+        a = _make_pchdir_entry(pchdir, "a" * 16, ["stdafx.h"], age_seconds=3600)
+        b = _make_pchdir_entry(pchdir, "b" * 16, ["stdafx.h"], age_seconds=1800)
+        c = _make_pchdir_entry(pchdir, "c" * 16, ["stdafx.h"], age_seconds=60)
 
-        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        # keep_count=3 → all kept
+        trimmer = CacheTrimmer(_make_args(keep_count=3))
         stats = trimmer.trim_pchdir(pchdir)
-
-        # 'a'*16 is needed by bar.h (it's the only/newest dir for bar.h)
-        assert os.path.isdir(shared)
-        assert os.path.isdir(newer_foo)
+        assert os.path.isdir(a)
+        assert os.path.isdir(b)
+        assert os.path.isdir(c)
         assert stats["dirs_removed"] == 0
+        assert stats["dirs_kept"] == 3
+
+    def test_max_age_keeps_recent_dirs_beyond_keep_count(self, tmp_path):
+        """max_age extends retention beyond keep_count for dirs younger
+        than the cutoff."""
+        pchdir = str(tmp_path / "pch")
+        os.makedirs(pchdir)
+
+        old_outside = _make_pchdir_entry(pchdir, "a" * 16, ["x.h"], age_seconds=86400)
+        recent1 = _make_pchdir_entry(pchdir, "b" * 16, ["x.h"], age_seconds=3600)
+        recent2 = _make_pchdir_entry(pchdir, "c" * 16, ["x.h"], age_seconds=60)
+
+        # keep_count=1 keeps c only; max_age=2h keeps recent1 too
+        trimmer = CacheTrimmer(_make_args(keep_count=1, max_age=2.0 / 24))
+        trimmer.trim_pchdir(pchdir)
+
+        assert not os.path.isdir(old_outside)
+        assert os.path.isdir(recent1)
+        assert os.path.isdir(recent2)
 
     def test_dry_run_does_not_remove(self, tmp_path):
         pchdir = str(tmp_path / "pch")

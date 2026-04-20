@@ -28,10 +28,20 @@ Object files use the naming scheme
 ``file_hash`` is compared against current git blob SHA1s to decide whether an
 entry is still current.
 
-PCH directories use the scheme ``{command_hash}/{header}.gch``.  Because
-recomputing current command hashes requires the full build analysis pipeline,
-PCH trimming is purely mtime-based: the newest directories per header are
-kept and the oldest are removed.
+PCH directories use the scheme ``{command_hash}/{header}.gch``.  Each
+``{command_hash}/`` represents one unique compile configuration (compiler
++ flags + header realpath); they are treated as independent cache units.
+The newest ``--keep-count`` cmd_hash directories overall are kept; if
+``--max-age`` is set, anything within the cutoff is also kept.
+
+Concurrent builds
+-----------------
+``ct-trim-cache`` takes the same per-target lock that ``atomic_compile``
+takes before unlinking, so it will block (and not delete) a file an
+in-flight build is currently writing. On filesystems where locking is
+unavailable, the trim falls through to a plain unlink. Even so, prefer
+running ``ct-trim-cache`` in a maintenance window; concurrent runs work
+but slow active builds while the trim holds locks.
 
 WHEN TO USE
 ===========

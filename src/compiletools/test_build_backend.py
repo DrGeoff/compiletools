@@ -770,6 +770,81 @@ class TestPchIncrementalHash:
         gch2 = [r.output for r in g2.rules if r.output.endswith(".gch")]
         assert gch1 != gch2
 
+    def test_different_compiler_binary_at_same_path_produces_different_gch_path(self, tmp_path):
+        """I-B1 regression: two compilers identifying as ``g++`` but
+        resolving to *different* binaries (e.g. different versions on
+        different users' $PATH) must NOT collide on the same cache key."""
+        from compiletools.build_backend import _compiler_identity, _pch_command_hash
+
+        # Build two distinct fake compiler binaries
+        cxx_a = tmp_path / "cxx_a"
+        cxx_b = tmp_path / "cxx_b"
+        cxx_a.write_text("#!/bin/sh\necho A\n")
+        cxx_b.write_text("#!/bin/sh\necho B - much longer body to ensure size differs\n")
+        cxx_a.chmod(0o755)
+        cxx_b.chmod(0o755)
+
+        # Different identity — same logical command name resolves differently.
+        id_a = _compiler_identity(str(cxx_a))
+        id_b = _compiler_identity(str(cxx_b))
+        assert id_a != id_b
+
+        from types import SimpleNamespace
+        args_a = SimpleNamespace(CXX=str(cxx_a), CXXFLAGS="-O2")
+        args_b = SimpleNamespace(CXX=str(cxx_b), CXXFLAGS="-O2")
+
+        hash_a = _pch_command_hash(args_a, "/src/stdafx.h", [], [])
+        hash_b = _pch_command_hash(args_b, "/src/stdafx.h", [], [])
+        assert hash_a != hash_b, (
+            "Compilers with different binary identity must produce distinct "
+            "PCH cache keys to prevent silent cross-user PCH-stamp rejection."
+        )
+
+    def test_pch_cache_key_distinguishes_quoted_flag_values(self, tmp_path):
+        """Cache key must distinguish ``-DFOO="a b"`` (one flag with embedded
+        space) from ``-DFOO=a -Db`` (two flags). The pre-fix space-join
+        collided these."""
+        import stringzilla as sz
+        from compiletools.build_backend import _pch_command_hash
+        from types import SimpleNamespace
+
+        args = SimpleNamespace(CXX="cc", CXXFLAGS="-O2")
+        flags_one = [sz.Str('-DFOO="a b"')]
+        flags_two = [sz.Str("-DFOO=a"), sz.Str("-Db")]
+        h1 = _pch_command_hash(args, "/src/stdafx.h", [], flags_one)
+        h2 = _pch_command_hash(args, "/src/stdafx.h", [], flags_two)
+        assert h1 != h2
+
+    def test_warns_when_pchdir_not_group_writable(self, tmp_path, capsys):
+        """I-B2 regression: a one-time stderr warning is emitted when
+        the pchdir parent is not group-writable + SGID, so cross-user
+        cache misses don't surprise operators."""
+        import stringzilla as sz
+        from compiletools.build_backend import _PCHDIR_WARNED
+
+        pchdir = tmp_path / "pch"
+        pchdir.mkdir(mode=0o700)  # missing group-write AND SGID
+        _PCHDIR_WARNED.discard(str(pchdir))  # reset one-time guard
+
+        pch_flags = {
+            "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
+            "/src/stdafx.h": {},
+        }
+        args = make_backend_args(
+            tmp_path, filename=["/src/main.cpp"], pchdir=str(pchdir), verbose=1,
+        )
+        hunter = make_mock_hunter(
+            sources=["/src/main.cpp"], per_file_magicflags=pch_flags,
+        )
+        StubClass = make_stub_backend_class()
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        backend.build_graph()
+
+        err = capsys.readouterr().err
+        assert "PCH directory" in err
+        assert "group-writable" in err or "SGID" in err
+
 
 class TestRunTests:
     """Test the _run_tests() method."""
