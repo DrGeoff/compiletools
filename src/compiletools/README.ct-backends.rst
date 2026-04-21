@@ -270,6 +270,14 @@ compilation across many nodes dramatically reduces wall-clock time.
 
       --slurm-export=PATH,HOME,USER,LANG,LC_ALL,CC,CXX,CPATH,LD_LIBRARY_PATH,MODULEPATH,LMOD_CMD,LMOD_DIR,SPACK_ROOT
 
+**File-locking semantics:** For the slurm backend, "file locking" means
+(a) local link/library steps go through ``FileLock`` + ``atomic_link`` on
+the submitter, and (b) compute-node compiles use atomic temp+rename
+(compile to ``$OUT.$SLURM_JOB_ID.$SLURM_ARRAY_TASK_ID.tmp``, then
+``mv -f`` onto the final ``.o``) -- the same correctness guarantee that
+``atomic_compile`` provides locally, without requiring a cross-node lock
+on the compute path.
+
 **Limitations:** Link rules cannot be distributed and always run locally.
 
 FILE LOCKING
