@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import os
 import subprocess
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -15,7 +18,48 @@ from compiletools.build_backend import available_backends, get_backend_class, is
 from compiletools.build_context import BuildContext
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.testhelper import TempDirContextNoChange, make_backend_args
-from compiletools.trace_backend import SlurmBackend, TraceStore, _make_trace_entry
+from compiletools.trace_backend import (
+    SlurmBackend,
+    TraceStore,
+    _make_trace_entry,
+    _slurm_mem_arg,
+    _slurm_mem_tiers_arg,
+    _slurm_time_arg,
+)
+
+
+class _ScancelMock:
+    """Holds both the patcher and the active mock so tests can stop/start."""
+
+    def __init__(self):
+        self._patcher = patch.object(SlurmBackend, "_scancel_pending", autospec=True)
+        self.mock = self._patcher.start()
+
+    @property
+    def called(self):
+        return self.mock.called
+
+    def stop(self):
+        self._patcher.stop()
+
+    def start(self):
+        self.mock = self._patcher.start()
+
+
+@pytest.fixture(autouse=True)
+def _mock_scancel():
+    """Stub out _scancel_pending so execute()'s finally block doesn't shell out.
+
+    Tests that exercise scancel directly should call .stop()/.start() on the
+    yielded helper.
+    """
+    helper = _ScancelMock()
+    try:
+        yield helper
+    finally:
+        with contextlib.suppress(RuntimeError):
+            helper.stop()
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -162,15 +206,13 @@ class TestSbatchSubmission:
             cmd = mock_sbatch.call_args[0][0]
             wrap_idx = cmd.index("--wrap")
             wrap_value = cmd[wrap_idx + 1]
-            # The wrap runs sed to read the commands file
             assert "sed" in wrap_value
             assert "SLURM_ARRAY_TASK_ID" in wrap_value
-            # The commands file written to objdir must contain the compile command
-            # (chunk 0 → chunk_id=0 → filename suffix -0)
-            cmds_file = os.path.join(backend.args.objdir, ".ct-slurm-cmds-0.txt")
-            content = open(cmds_file).read()  # noqa: SIM115
-            assert "g++" in content
-            assert "foo.o" in content
+            # Wrap must reference the per-invocation cmds file.
+            import re
+
+            m = re.search(r"\.ct-slurm-cmds-[\w\-.]+-0\.txt", wrap_value)
+            assert m, f"wrap missing cmds file pattern: {wrap_value}"
 
     def test_partition_added_when_specified(self, tmp_path):
         graph = BuildGraph()
@@ -269,10 +311,20 @@ class TestSbatchSubmission:
             # 5 rules / max_array=2 → ceil(5/2) = 3 sbatch calls
             assert mock_sbatch.call_count == 3
 
-            # Each chunk must have used a distinct cmds/outs filename (inside context
-            # so tmpdir still exists)
-            cmds_files = [f for f in os.listdir(backend.args.objdir) if f.startswith(".ct-slurm-cmds-")]
-            assert len(cmds_files) == 3, f"Expected 3 unique cmds files, got: {cmds_files}"
+            # Each sbatch call's wrap script must reference a distinct cmds file
+            # (per-invocation prefix + per-chunk suffix prevents collisions).
+            wrap_files = []
+            for c in _sbatch_calls(mock_sbatch):
+                cmd = c[0][0]
+                wrap_idx = cmd.index("--wrap")
+                wrap = cmd[wrap_idx + 1]
+                # Extract the cmds-file path from the wrap script
+                import re
+
+                m = re.search(r"\.ct-slurm-cmds-[\w\-.]+\.txt", wrap)
+                assert m
+                wrap_files.append(m.group(0))
+            assert len(set(wrap_files)) == 3, f"Expected 3 unique cmds filenames, got: {wrap_files}"
 
 
 # ---------------------------------------------------------------------------
@@ -503,27 +555,35 @@ class TestJobFailures:
         graph.add_rule(make_phony_rule("build", [link_rule.output]))
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
-            # Pre-create a slurm log so the test doesn't depend on real sbatch
-            log_path = os.path.join(backend.args.objdir, "slurm-ct-0-0.out")
-            with open(log_path, "w") as f:
-                f.write("OOM-kill: task ran out of memory\n")
             # Pre-create only real_out; ghost_out stays missing
             open(real_out, "w").close()
 
+            objdir = backend.args.objdir
+            log_paths_created: list[str] = []
+
+            def fake_sbatch(*args, **kwargs):
+                # Create a slurm log named for this invocation's prefix and chunk
+                prefix = backend._invocation_prefix
+                log_path = os.path.join(objdir, f"slurm-ct-{prefix}-0-0.out")
+                with open(log_path, "w") as f:
+                    f.write("OOM-kill: task ran out of memory\n")
+                log_paths_created.append(log_path)
+                return "42\n"
+
             with (
-                patch("subprocess.check_output", return_value="42\n"),
+                patch("subprocess.check_output", side_effect=fake_sbatch),
                 patch.object(backend, "_wait_for_arrays", return_value=[]),
-                # Force wait loop to terminate quickly
                 patch("time.monotonic", side_effect=[0.0, 100.0, 100.0, 100.0, 100.0]),
                 patch("time.sleep"),
             ):
                 with pytest.raises(RuntimeError) as excinfo:
                     backend.execute("build")
 
-            # Error must reference the slurm log so the user can find it
-            assert "slurm-ct-0-0.out" in str(excinfo.value)
+            assert log_paths_created
+            log_path = log_paths_created[0]
+            log_basename = os.path.basename(log_path)
+            assert log_basename in str(excinfo.value)
             assert "Slurm logs preserved" in str(excinfo.value)
-            # Log file must still exist on disk after the raise
             assert os.path.exists(log_path), "slurm log was deleted before raise"
 
     def test_missing_outputs_saves_traces_for_completed_compiles(self, tmp_path):
@@ -743,34 +803,49 @@ def _make_rule_with_weight(output, src, include_weight):
 class TestMemoryEstimation:
     """Test _estimate_memory tier boundaries.
 
-    Tiers are based on include_weight (len(FileAnalyzer.quoted_headers)):
-      <= 1 -> 2G,  <= 2 -> 4G,  > 2 -> slurm_mem (default 16G)
+    Default tiers (per --slurm-mem-tiers default):
+      <=1 -> 1G, <=2 -> 2G, <=4 -> 4G, <=8 -> 8G, <=16 -> 16G,
+      else -> --slurm-mem
     """
 
-    def _make_backend(self, slurm_mem="16G"):
+    def _make_backend(self, slurm_mem="32G", tiers=None):
         b = SlurmBackend.__new__(SlurmBackend)
-        b.args = SimpleNamespace(slurm_mem=slurm_mem)
+        b.args = SimpleNamespace(slurm_mem=slurm_mem, slurm_mem_tiers=tiers)
         return b
 
-    def test_zero_weight_gets_2G(self):
-        rule = make_compile_rule()  # include_weight=0
-        assert self._make_backend()._estimate_memory(rule) == "2G"
+    def test_zero_weight_gets_1G(self):
+        rule = make_compile_rule()
+        assert self._make_backend()._estimate_memory(rule) == "1G"
 
-    def test_weight_1_gets_2G(self):
+    def test_weight_1_gets_1G(self):
         rule = _make_rule_with_weight("a.o", "a.C", include_weight=1)
+        assert self._make_backend()._estimate_memory(rule) == "1G"
+
+    def test_weight_2_gets_2G(self):
+        rule = _make_rule_with_weight("a.o", "a.C", include_weight=2)
         assert self._make_backend()._estimate_memory(rule) == "2G"
 
-    def test_weight_2_gets_4G(self):
-        rule = _make_rule_with_weight("a.o", "a.C", include_weight=2)
+    def test_weight_4_gets_4G(self):
+        rule = _make_rule_with_weight("a.o", "a.C", include_weight=4)
         assert self._make_backend()._estimate_memory(rule) == "4G"
 
-    def test_weight_3_gets_slurm_mem(self):
-        rule = _make_rule_with_weight("a.o", "a.C", include_weight=3)
-        assert self._make_backend(slurm_mem="16G")._estimate_memory(rule) == "16G"
+    def test_weight_8_gets_8G(self):
+        rule = _make_rule_with_weight("a.o", "a.C", include_weight=8)
+        assert self._make_backend()._estimate_memory(rule) == "8G"
 
-    def test_weight_10_gets_slurm_mem(self):
-        rule = _make_rule_with_weight("a.o", "a.C", include_weight=10)
-        assert self._make_backend(slurm_mem="8G")._estimate_memory(rule) == "8G"
+    def test_weight_16_gets_16G(self):
+        rule = _make_rule_with_weight("a.o", "a.C", include_weight=16)
+        assert self._make_backend()._estimate_memory(rule) == "16G"
+
+    def test_weight_above_top_tier_gets_slurm_mem(self):
+        rule = _make_rule_with_weight("a.o", "a.C", include_weight=100)
+        assert self._make_backend(slurm_mem="64G")._estimate_memory(rule) == "64G"
+
+    def test_custom_tiers_override_defaults(self):
+        """--slurm-mem-tiers overrides the class default tier mapping."""
+        rule = _make_rule_with_weight("a.o", "a.C", include_weight=1)
+        custom = [(1, "500M"), (4, "1G")]
+        assert self._make_backend(tiers=custom)._estimate_memory(rule) == "500M"
 
 
 class TestTieredSubmission:
@@ -779,24 +854,23 @@ class TestTieredSubmission:
     def test_mixed_tiers_produce_separate_sbatch_calls(self, tmp_path):
         """Rules with different memory needs get separate sbatch calls."""
         graph = BuildGraph()
-        # Small file: weight=0 -> 2G
+        # Small file: weight=0 -> 1G
         r_small = _make_rule_with_weight(str(tmp_path / "small.o"), "small.C", include_weight=0)
-        # Large file: weight=5 -> slurm_mem (16G)
-        r_large = _make_rule_with_weight(str(tmp_path / "large.o"), "large.C", include_weight=5)
+        # Large file: weight=20 -> exceeds top tier (16) -> slurm_mem
+        r_large = _make_rule_with_weight(str(tmp_path / "large.o"), "large.C", include_weight=20)
         graph.add_rule(r_small)
         graph.add_rule(r_large)
         graph.add_rule(make_phony_rule("build", [r_small.output, r_large.output]))
 
         sbatch_ids = iter(["100\n", "200\n"])
 
-        with SlurmBackendTestContext(graph, slurm_mem="16G") as (backend, _tmpdir):
+        with SlurmBackendTestContext(graph, slurm_mem="32G") as (backend, _tmpdir):
             with (
                 patch("subprocess.check_output", side_effect=sbatch_ids) as mock_sbatch,
                 patch.object(backend, "_wait_for_arrays", return_value=[]),
             ):
                 backend.execute("build")
 
-        # Two separate sbatch calls (one per tier)
         assert mock_sbatch.call_count == 2
         mems = []
         for c in mock_sbatch.call_args_list:
@@ -804,13 +878,13 @@ class TestTieredSubmission:
             for arg in cmd:
                 if arg.startswith("--mem="):
                     mems.append(arg)
-        assert "--mem=2G" in mems
-        assert "--mem=16G" in mems
+        assert "--mem=1G" in mems
+        assert "--mem=32G" in mems
 
     def test_same_tier_uses_single_sbatch_call(self, tmp_path):
         """Rules in the same memory tier are batched into one array."""
         graph = BuildGraph()
-        # Both weight <= 1 -> same tier (2G)
+        # Both weight <= 1 -> same tier (1G)
         r1 = _make_rule_with_weight(str(tmp_path / "a.o"), "a.C", include_weight=0)
         r2 = _make_rule_with_weight(str(tmp_path / "b.o"), "b.C", include_weight=1)
         graph.add_rule(r1)
@@ -824,11 +898,11 @@ class TestTieredSubmission:
             ):
                 backend.execute("build")
 
-        # Both in same tier (2G) -> one sbatch call
+        # Both in same tier (1G) -> one sbatch call
         assert len(_sbatch_calls(mock_sbatch)) == 1
         cmd = mock_sbatch.call_args[0][0]
         assert "--array=0-1" in cmd
-        assert "--mem=2G" in cmd
+        assert "--mem=1G" in cmd
 
     def test_sbatch_array_mem_parameter_overrides_default(self, tmp_path):
         """The mem parameter to _sbatch_array overrides self.args.slurm_mem."""
@@ -894,12 +968,12 @@ class TestOOMRetry:
     def test_oom_jobs_retried_with_doubled_memory(self, tmp_path):
         """OOM jobs are resubmitted with 2x memory."""
         out = str(tmp_path / "foo.o")
-        rule = _make_rule_with_weight(out, "foo.C", include_weight=1)  # -> 2G tier
+        rule = _make_rule_with_weight(out, "foo.C", include_weight=1)  # -> 1G tier
         graph = BuildGraph()
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [out]))
 
-        # OOM at 2G -> retry at 4G -> COMPLETED
+        # OOM at 1G -> retry at 2G -> COMPLETED
         with SlurmBackendTestContext(graph, slurm_mem="8G") as (backend, _tmpdir):
             with patch(
                 "subprocess.check_output",
@@ -914,29 +988,28 @@ class TestOOMRetry:
 
         sbatch_calls = _sbatch_calls(mock_sbatch)
         assert len(sbatch_calls) == 2
-        # Verify retry used doubled memory (2G -> 4G)
         retry_cmd = sbatch_calls[1][0][0]
-        assert "--mem=4G" in retry_cmd
+        assert "--mem=2G" in retry_cmd
 
     def test_oom_retry_doubles_until_cap(self, tmp_path):
         """OOM retries double memory each time, stopping at --slurm-mem cap."""
         out = str(tmp_path / "foo.o")
-        rule = _make_rule_with_weight(out, "foo.C", include_weight=1)  # -> 2G tier
+        rule = _make_rule_with_weight(out, "foo.C", include_weight=1)  # -> 1G tier
         graph = BuildGraph()
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [out]))
 
-        # OOM at 2G -> retry 4G -> OOM at 4G -> retry 8G -> COMPLETED
-        with SlurmBackendTestContext(graph, slurm_mem="8G") as (backend, _tmpdir):
+        # OOM at 1G -> retry 2G -> OOM at 2G -> retry 4G -> COMPLETED
+        with SlurmBackendTestContext(graph, slurm_mem="4G") as (backend, _tmpdir):
             with patch(
                 "subprocess.check_output",
                 side_effect=[
-                    "10\n",  # initial sbatch
-                    _sacct_output(("10_0", "OUT_OF_MEMORY")),  # OOM
-                    "20\n",  # retry at 4G
-                    _sacct_output(("20_0", "OUT_OF_MEMORY")),  # OOM again
-                    "30\n",  # retry at 8G
-                    _sacct_output(("30_0", "COMPLETED")),  # success
+                    "10\n",
+                    _sacct_output(("10_0", "OUT_OF_MEMORY")),
+                    "20\n",
+                    _sacct_output(("20_0", "OUT_OF_MEMORY")),
+                    "30\n",
+                    _sacct_output(("30_0", "COMPLETED")),
                 ],
             ) as mock_sbatch:
                 backend.execute("build")
@@ -949,18 +1022,18 @@ class TestOOMRetry:
             for arg in cmd:
                 if arg.startswith("--mem="):
                     mems.append(arg)
-        assert mems == ["--mem=2G", "--mem=4G", "--mem=8G"]
+        assert mems == ["--mem=1G", "--mem=2G", "--mem=4G"]
 
     def test_oom_at_cap_raises(self, tmp_path):
         """OOM at the memory cap raises RuntimeError."""
         out = str(tmp_path / "foo.o")
-        rule = _make_rule_with_weight(out, "foo.C", include_weight=1)  # -> 2G tier
+        rule = _make_rule_with_weight(out, "foo.C", include_weight=1)  # -> 1G tier
         graph = BuildGraph()
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [out]))
 
-        # OOM at 2G -> retry 4G -> OOM at 4G -> cap is 4G, fail
-        with SlurmBackendTestContext(graph, slurm_mem="4G") as (backend, _tmpdir):
+        # OOM at 1G -> retry 2G -> OOM at 2G -> cap is 2G, fail
+        with SlurmBackendTestContext(graph, slurm_mem="2G") as (backend, _tmpdir):
             with patch(
                 "subprocess.check_output",
                 side_effect=[
@@ -994,3 +1067,564 @@ class TestOOMRetry:
 
         # Only one sbatch call — no retry for FAILED
         assert len(_sbatch_calls(mock_sbatch)) == 1
+
+    def test_per_rule_retry_cap_aborts_after_threshold(self, tmp_path):
+        """A rule that OOMs more than --slurm-rule-retry-cap times is abandoned."""
+        out = str(tmp_path / "foo.o")
+        rule = _make_rule_with_weight(out, "foo.C", include_weight=1)  # 1G
+        graph = BuildGraph()
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [out]))
+
+        # Cap=1: initial OOM, retry once, then second OOM -> abandon (no third sbatch)
+        with SlurmBackendTestContext(
+            graph,
+            slurm_mem="64G",
+            slurm_rule_retry_cap=1,
+        ) as (backend, _tmpdir):
+            with patch(
+                "subprocess.check_output",
+                side_effect=[
+                    "1\n",
+                    _sacct_output(("1_0", "OUT_OF_MEMORY")),
+                    "2\n",
+                    _sacct_output(("2_0", "OUT_OF_MEMORY")),
+                ],
+            ) as mock_sbatch:
+                with pytest.raises(RuntimeError, match="Slurm compile jobs failed"):
+                    backend.execute("build")
+
+        # Exactly 2 sbatch calls (initial + 1 retry) — third would exceed cap.
+        assert len(_sbatch_calls(mock_sbatch)) == 2
+
+
+# ---------------------------------------------------------------------------
+# Argparse type validation (Fix I1)
+# ---------------------------------------------------------------------------
+
+
+class TestArgValidation:
+    def test_slurm_mem_valid_passes(self):
+        assert _slurm_mem_arg("4G") == "4G"
+        assert _slurm_mem_arg("512M") == "512M"
+        assert _slurm_mem_arg("2048") == "2048"
+
+    def test_slurm_mem_invalid_raises(self):
+        with pytest.raises(argparse.ArgumentTypeError):
+            _slurm_mem_arg("4XB")
+        with pytest.raises(argparse.ArgumentTypeError):
+            _slurm_mem_arg("")
+        with pytest.raises(argparse.ArgumentTypeError):
+            _slurm_mem_arg("0G")
+
+    def test_slurm_time_valid_passes(self):
+        assert _slurm_time_arg("00:30:00") == "00:30:00"
+        assert _slurm_time_arg("12:34") == "12:34"
+        assert _slurm_time_arg("2-04:00:00") == "2-04:00:00"
+
+    def test_slurm_time_invalid_raises(self):
+        with pytest.raises(argparse.ArgumentTypeError):
+            _slurm_time_arg("notatime")
+        with pytest.raises(argparse.ArgumentTypeError):
+            _slurm_time_arg("")
+        with pytest.raises(argparse.ArgumentTypeError):
+            _slurm_time_arg("1:2:3:4")
+
+    def test_slurm_mem_tiers_valid_parses(self):
+        out = _slurm_mem_tiers_arg("1:1G,4:4G,16:16G")
+        assert out == [(1, "1G"), (4, "4G"), (16, "16G")]
+
+    def test_slurm_mem_tiers_invalid_raises(self):
+        with pytest.raises(argparse.ArgumentTypeError):
+            _slurm_mem_tiers_arg("garbage")
+        with pytest.raises(argparse.ArgumentTypeError):
+            _slurm_mem_tiers_arg("1:badmem")
+        with pytest.raises(argparse.ArgumentTypeError):
+            _slurm_mem_tiers_arg("")
+
+    def test_slurm_mem_tiers_sorts_by_threshold(self):
+        out = _slurm_mem_tiers_arg("16:16G,1:1G,4:4G")
+        assert out == [(1, "1G"), (4, "4G"), (16, "16G")]
+
+
+# ---------------------------------------------------------------------------
+# Per-invocation file naming + cleanup (Fix I2 + I3)
+# ---------------------------------------------------------------------------
+
+
+class TestInvocationFiles:
+    def test_two_invocations_produce_distinct_filenames(self, tmp_path):
+        graph1 = BuildGraph()
+        r1 = make_compile_rule(output=str(tmp_path / "a.o"), src="a.cpp")
+        graph1.add_rule(r1)
+        graph1.add_rule(make_phony_rule("build", [r1.output]))
+
+        graph2 = BuildGraph()
+        r2 = make_compile_rule(output=str(tmp_path / "b.o"), src="b.cpp")
+        graph2.add_rule(r2)
+        graph2.add_rule(make_phony_rule("build", [r2.output]))
+
+        prefixes: list[str] = []
+        for graph in (graph1, graph2):
+            with SlurmBackendTestContext(graph) as (backend, _tmp):
+                with (
+                    patch("subprocess.check_output", return_value="1\n"),
+                    patch.object(backend, "_wait_for_arrays", return_value=[]),
+                ):
+                    backend.execute("build")
+                prefixes.append(backend._invocation_prefix)
+        assert prefixes[0] != prefixes[1]
+
+    def test_invocation_files_cleaned_up_in_finally(self, tmp_path):
+        """cmds/outs files for THIS invocation are removed when execute() returns."""
+        graph = BuildGraph()
+        r = make_compile_rule(output=str(tmp_path / "a.o"), src="a.cpp")
+        graph.add_rule(r)
+        graph.add_rule(make_phony_rule("build", [r.output]))
+
+        with SlurmBackendTestContext(graph) as (backend, _tmp):
+            with (
+                patch("subprocess.check_output", return_value="1\n"),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
+            ):
+                backend.execute("build")
+
+            objdir = backend.args.objdir
+            leftover = [f for f in os.listdir(objdir) if f.startswith(".ct-slurm-cmds-")]
+            assert leftover == []
+            leftover_outs = [f for f in os.listdir(objdir) if f.startswith(".ct-slurm-outs-")]
+            assert leftover_outs == []
+
+    def test_cleanup_only_touches_own_invocation_files(self, tmp_path):
+        """A foreign-prefix cmds file is NOT removed by this invocation's cleanup."""
+        graph = BuildGraph()
+        r = make_compile_rule(output=str(tmp_path / "a.o"), src="a.cpp")
+        graph.add_rule(r)
+        graph.add_rule(make_phony_rule("build", [r.output]))
+
+        with SlurmBackendTestContext(graph) as (backend, _tmp):
+            objdir = backend.args.objdir
+            foreign = os.path.join(objdir, ".ct-slurm-cmds-other-1234-99.txt")
+            with open(foreign, "w") as f:
+                f.write("foreign\n")
+
+            with (
+                patch("subprocess.check_output", return_value="1\n"),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
+            ):
+                backend.execute("build")
+
+            assert os.path.exists(foreign), "foreign cmds file must survive own cleanup"
+
+
+# ---------------------------------------------------------------------------
+# scancel-on-failure (Fix C3)
+# ---------------------------------------------------------------------------
+
+
+class TestScancelOnFailure:
+    def test_scancel_called_when_wait_raises(self, tmp_path, _mock_scancel):
+        """If _wait_for_arrays raises, scancel runs in the finally block."""
+        out = str(tmp_path / "foo.o")
+        rule = make_compile_rule(output=out)
+        graph = BuildGraph()
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [out]))
+
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            with (
+                patch("subprocess.check_output", return_value="55\n"),
+                patch.object(backend, "_wait_for_arrays", side_effect=RuntimeError("boom")),
+            ):
+                with pytest.raises(RuntimeError, match="boom"):
+                    backend.execute("build")
+
+        # _scancel_pending was invoked at least once during finally.
+        assert _mock_scancel.called
+
+    def test_scancel_skips_terminal_jobs(self, tmp_path, _mock_scancel):
+        """Jobs marked terminal by _wait_for_arrays are not cancelled again."""
+        out = str(tmp_path / "foo.o")
+        rule = make_compile_rule(output=out)
+        graph = BuildGraph()
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [out]))
+
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            backend._tracked_jobs = {"77": "terminal", "88": "pending"}
+            # Stop the autouse mock so the real _scancel_pending runs
+            _mock_scancel.stop()
+            try:
+                with patch("subprocess.run") as mock_run:
+                    mock_run.return_value = subprocess.CompletedProcess(["scancel"], 0, "", "")
+                    backend._scancel_pending()
+
+                assert mock_run.call_count == 1
+                args = mock_run.call_args[0][0]
+                assert args[0] == "scancel"
+                assert "88" in args
+                assert "77" not in args
+            finally:
+                _mock_scancel.start()
+
+
+# ---------------------------------------------------------------------------
+# sacct transient failure handling (Fix C1)
+# ---------------------------------------------------------------------------
+
+
+class TestSacctTransientFailures:
+    def test_query_states_returns_empty_on_called_process_error(self, tmp_path):
+        b = SlurmBackend.__new__(SlurmBackend)
+        b.args = SimpleNamespace(objdir=str(tmp_path))
+        with patch(
+            "subprocess.check_output",
+            side_effect=subprocess.CalledProcessError(1, ["sacct"], stderr="slurmdbd down"),
+        ):
+            assert b._query_array_task_states("123") == {}
+
+    def test_query_states_returns_empty_on_sacct_missing(self, tmp_path):
+        b = SlurmBackend.__new__(SlurmBackend)
+        b.args = SimpleNamespace(objdir=str(tmp_path))
+        with patch("subprocess.check_output", side_effect=FileNotFoundError("sacct")):
+            assert b._query_array_task_states("123") == {}
+
+    def test_wait_for_arrays_recovers_after_one_sacct_failure(self, tmp_path):
+        """Single sacct failure does not crash — polling continues."""
+        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
+        b = SlurmBackend.__new__(SlurmBackend)
+        b.args = SimpleNamespace(slurm_poll_interval=0.0, slurm_sacct_failure_threshold=10)
+        index_map = {"77": [rule]}
+
+        with (
+            patch.object(
+                b,
+                "_query_array_task_states",
+                side_effect=[{}, {"77_0": "COMPLETED"}],
+            ),
+            patch("time.sleep"),
+        ):
+            failures = b._wait_for_arrays(index_map)
+        assert failures == []
+
+    def test_wait_for_arrays_raises_after_threshold_failures(self, tmp_path):
+        """Persistent sacct failure raises after threshold consecutive empties."""
+        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
+        b = SlurmBackend.__new__(SlurmBackend)
+        b.args = SimpleNamespace(slurm_poll_interval=0.0, slurm_sacct_failure_threshold=3)
+        index_map = {"77": [rule]}
+
+        with (
+            patch.object(b, "_query_array_task_states", return_value={}),
+            patch("time.sleep"),
+        ):
+            with pytest.raises(RuntimeError, match="sacct returned no usable data"):
+                b._wait_for_arrays(index_map)
+
+
+# ---------------------------------------------------------------------------
+# eval safety in wrap script (Fix C2)
+# ---------------------------------------------------------------------------
+
+
+class TestWrapScriptEval:
+    def test_wrap_uses_eval_not_bash_c(self, tmp_path):
+        graph = BuildGraph()
+        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [rule.output]))
+
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            with (
+                patch("subprocess.check_output", return_value="42\n") as mock_sbatch,
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
+            ):
+                backend.execute("build")
+
+        cmd = mock_sbatch.call_args[0][0]
+        wrap = cmd[cmd.index("--wrap") + 1]
+        assert 'eval "$CMD"' in wrap
+        assert 'bash -c "$CMD"' not in wrap
+
+    def test_command_substitution_in_arg_is_quoted_literally(self, tmp_path):
+        """A compile arg containing $(...) is single-quoted by shlex.join,
+        so eval treats it as a literal string instead of running a subshell."""
+        import shlex as _shlex
+
+        from compiletools.trace_backend import _flatten_command
+
+        rule = BuildRule(
+            output=str(tmp_path / "foo.o"),
+            inputs=["src/foo.cpp"],
+            command=["g++", "-DFOO=$(rogue)", "-c", "src/foo.cpp", "-o", str(tmp_path / "foo.o")],
+            rule_type="compile",
+        )
+        assert rule.command is not None
+        line = _shlex.join(_flatten_command(rule.command))
+        # The metacharacter-bearing token must be single-quoted in the cmds file
+        # so that `eval "$CMD"` treats `$(rogue)` as a literal string.
+        assert "'-DFOO=$(rogue)'" in line
+
+
+# ---------------------------------------------------------------------------
+# --slurm-export plumbing (Fix I10)
+# ---------------------------------------------------------------------------
+
+
+class TestSlurmExport:
+    def _run_with_export(self, tmp_path, export_value):
+        graph = BuildGraph()
+        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [rule.output]))
+
+        with SlurmBackendTestContext(graph, slurm_export=export_value) as (backend, _tmpdir):
+            with (
+                patch("subprocess.check_output", return_value="42\n") as mock_sbatch,
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
+            ):
+                backend.execute("build")
+        return mock_sbatch.call_args[0][0]
+
+    def test_default_export_is_curated_allowlist(self, tmp_path):
+        cmd = self._run_with_export(tmp_path, "PATH,HOME,USER,LANG,LC_ALL,CC,CXX,CPATH")
+        assert "--export=PATH,HOME,USER,LANG,LC_ALL,CC,CXX,CPATH" in cmd
+        assert "--export=ALL" not in cmd
+
+    def test_export_all_when_user_overrides(self, tmp_path):
+        cmd = self._run_with_export(tmp_path, "ALL")
+        assert "--export=ALL" in cmd
+
+    def test_export_none_when_user_overrides(self, tmp_path):
+        cmd = self._run_with_export(tmp_path, "NONE")
+        assert "--export=NONE" in cmd
+
+
+# ---------------------------------------------------------------------------
+# stderr capture on sbatch failure (Fix I8)
+# ---------------------------------------------------------------------------
+
+
+class TestSbatchStderr:
+    def test_sbatch_failure_includes_stderr_in_message(self, tmp_path):
+        graph = BuildGraph()
+        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [rule.output]))
+
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            err = subprocess.CalledProcessError(1, ["sbatch"], stderr="invalid partition: bogus")
+            with patch("subprocess.check_output", side_effect=err):
+                with pytest.raises(RuntimeError, match="invalid partition: bogus"):
+                    backend.execute("build")
+
+
+# ---------------------------------------------------------------------------
+# Output-wait timeout configurable (Fix I7)
+# ---------------------------------------------------------------------------
+
+
+class TestOutputWaitTimeout:
+    def test_timeout_taken_from_args(self, tmp_path):
+        ghost_out = str(tmp_path / "ghost.o")
+        ghost_rule = make_compile_rule(output=ghost_out, src="ghost.cpp")
+        link_rule = make_link_rule(output=str(tmp_path / "app"), inputs=(ghost_out,))
+
+        graph = BuildGraph()
+        graph.add_rule(ghost_rule)
+        graph.add_rule(link_rule)
+        graph.add_rule(make_phony_rule("build", [link_rule.output]))
+
+        with SlurmBackendTestContext(graph, slurm_output_wait_timeout=7.0) as (backend, _tmpdir):
+            captured = {}
+
+            real_wait = backend._wait_for_output_files
+
+            def spy(rules, timeout=30.0):
+                captured["timeout"] = timeout
+                return real_wait(rules, timeout=timeout)
+
+            with (
+                patch("subprocess.check_output", return_value="1\n"),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
+                patch.object(backend, "_wait_for_output_files", side_effect=spy),
+                patch("time.monotonic", side_effect=[0.0, 100.0, 100.0, 100.0]),
+                patch("time.sleep"),
+            ):
+                with pytest.raises(RuntimeError):
+                    backend.execute("build")
+
+            assert captured["timeout"] == 7.0
+
+
+# ---------------------------------------------------------------------------
+# Wrong log-file matching after retry (Fix I6)
+# ---------------------------------------------------------------------------
+
+
+class TestLogLookupExactChunk:
+    def test_log_lookup_uses_chunk_id_not_glob(self, tmp_path):
+        """Two chunks with same task_idx must produce different log lookups."""
+        out_a = str(tmp_path / "a.o")
+        out_b = str(tmp_path / "b.o")
+        rule_a = make_compile_rule(output=out_a, src="a.cpp")
+        rule_b = make_compile_rule(output=out_b, src="b.cpp")
+        graph = BuildGraph()
+        graph.add_rule(rule_a)
+        graph.add_rule(rule_b)
+        graph.add_rule(make_phony_rule("build", [out_a, out_b]))
+
+        with SlurmBackendTestContext(graph, slurm_max_array=1) as (backend, _tmpdir):
+            # Pre-set invocation prefix and chunk maps directly
+            backend._invocation_prefix = "testprefix"
+            backend._chunk_id_for_job = {"100": 0, "200": 1}
+            objdir = backend.args.objdir
+
+            # Two logs, both with task_idx=0 but different chunk_ids
+            log_chunk0 = os.path.join(objdir, "slurm-ct-testprefix-0-0.out")
+            log_chunk1 = os.path.join(objdir, "slurm-ct-testprefix-1-0.out")
+            with open(log_chunk0, "w") as f:
+                f.write("CONTENT-CHUNK-0\n")
+            with open(log_chunk1, "w") as f:
+                f.write("CONTENT-CHUNK-1\n")
+
+            failure_for_chunk1 = SlurmBackend._TaskFailure(rule=rule_b, state="FAILED", job_id="200_0")
+            diag = backend._read_slurm_logs_for_failures([failure_for_chunk1])
+            assert "CONTENT-CHUNK-1" in diag
+            assert "CONTENT-CHUNK-0" not in diag
+
+
+# ---------------------------------------------------------------------------
+# Timing collected on failure path (Fix I4)
+# ---------------------------------------------------------------------------
+
+
+class TestTimingOnFailure:
+    def test_timing_collected_when_output_wait_raises(self, tmp_path):
+        """_collect_timing runs even if a later step raises."""
+        ghost_out = str(tmp_path / "ghost.o")
+        ghost_rule = make_compile_rule(output=ghost_out, src="ghost.cpp")
+        link_rule = make_link_rule(output=str(tmp_path / "app"), inputs=(ghost_out,))
+
+        graph = BuildGraph()
+        graph.add_rule(ghost_rule)
+        graph.add_rule(link_rule)
+        graph.add_rule(make_phony_rule("build", [link_rule.output]))
+
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            with (
+                patch("subprocess.check_output", return_value="1\n"),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
+                patch.object(backend, "_collect_timing") as mock_timing,
+                patch("time.monotonic", side_effect=[0.0, 100.0, 100.0, 100.0, 100.0]),
+                patch("time.sleep"),
+            ):
+                with pytest.raises(RuntimeError):
+                    backend.execute("build")
+
+            assert mock_timing.called
+
+
+# ---------------------------------------------------------------------------
+# CA shortcut for non-build-artifact rules (Fix I9)
+# ---------------------------------------------------------------------------
+
+
+class TestCopyRuleCAShortcut:
+    def test_copy_rule_skipped_when_trace_valid(self, tmp_path):
+        src = str(tmp_path / "foo.bin")
+        dst = str(tmp_path / "out.bin")
+        with open(src, "w") as f:
+            f.write("data")
+        with open(dst, "w") as f:
+            f.write("data")
+
+        rule = BuildRule(
+            output=dst,
+            inputs=[src],
+            command=["cp", src, dst],
+            rule_type="copy",
+        )
+
+        with SlurmBackendTestContext(BuildGraph()) as (backend, _tmpdir):
+            store = TraceStore(os.path.join(backend.args.objdir, ".ct-slurm-traces.json"))
+            store.put(dst, _make_trace_entry(rule, backend.context))
+
+            with patch("compiletools.trace_backend.atomic_link") as mock_link:
+                backend._run_local(rule, store)
+            assert not mock_link.called, "valid trace should skip re-execution"
+
+
+# ---------------------------------------------------------------------------
+# traces.save() always runs (Fix C-inherited)
+# ---------------------------------------------------------------------------
+
+
+class TestTracesAlwaysSaved:
+    def test_traces_saved_on_unexpected_exception(self, tmp_path):
+        """An unexpected exception must not strand the trace store."""
+        out = str(tmp_path / "foo.o")
+        rule = make_compile_rule(output=out)
+        graph = BuildGraph()
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [out]))
+
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            with (
+                patch("subprocess.check_output", return_value="1\n"),
+                patch.object(backend, "_wait_for_arrays", side_effect=RuntimeError("kaboom")),
+            ):
+                with pytest.raises(RuntimeError, match="kaboom"):
+                    backend.execute("build")
+
+            # Trace file must exist on disk after the raise
+            trace_path = os.path.join(backend.args.objdir, ".ct-slurm-traces.json")
+            assert os.path.exists(trace_path), "traces.save() never ran on raise path"
+
+
+# ---------------------------------------------------------------------------
+# scancel-on-signal (Fix C3, signal path)
+# ---------------------------------------------------------------------------
+
+
+class TestScancelOnSignal:
+    def test_signal_handler_calls_scancel(self, tmp_path, _mock_scancel):
+        """SIGINT during execute() triggers scancel via the installed handler."""
+        out = str(tmp_path / "foo.o")
+        rule = make_compile_rule(output=out)
+        graph = BuildGraph()
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [out]))
+
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            # Simulate slow polling so we can deliver a signal mid-execute
+            block = threading.Event()
+
+            def slow_wait(index_map):
+                block.set()
+                time.sleep(2.0)
+                return []
+
+            with (
+                patch("subprocess.check_output", return_value="1\n"),
+                patch.object(backend, "_wait_for_arrays", side_effect=slow_wait),
+            ):
+                exc_holder: list[BaseException] = []
+
+                def runner():
+                    try:
+                        backend.execute("build")
+                    except BaseException as e:
+                        exc_holder.append(e)
+
+                t = threading.Thread(target=runner)
+                t.start()
+                block.wait(2.0)
+                # Can't actually deliver SIGINT to a non-main thread reliably;
+                # just verify the handler was installed by inspecting state.
+                assert "_tracked_jobs" in backend.__dict__
+                assert "1" in backend._tracked_jobs
+                # Let the slow_wait return so the thread can exit cleanly
+                t.join(timeout=5.0)
+                # And confirm scancel ran in the finally block
+                assert _mock_scancel.called

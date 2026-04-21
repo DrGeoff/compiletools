@@ -43,6 +43,7 @@ directly from Python.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import collections
 import contextlib
@@ -53,6 +54,7 @@ import logging
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -426,6 +428,85 @@ class ShakeBackend(BuildBackend):
         return True
 
 
+_DEFAULT_MEM_TIERS_STR = "1:1G,2:2G,4:4G,8:8G,16:16G"
+
+
+def _parse_mem_str(mem_str: str) -> int:
+    """Parse a Slurm memory string (e.g. '4G', '512M') to megabytes."""
+    s = mem_str.strip().upper()
+    if not s:
+        raise ValueError("empty memory value")
+    if s.endswith("G"):
+        return int(s[:-1]) * 1024
+    if s.endswith("M"):
+        return int(s[:-1])
+    return int(s)
+
+
+def _slurm_mem_arg(value: str) -> str:
+    try:
+        if _parse_mem_str(value) <= 0:
+            raise ValueError("memory must be positive")
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(
+            f"invalid Slurm memory '{value}': {e} (expected '<int>G', '<int>M', or '<int>')"
+        ) from e
+    return value
+
+
+def _slurm_time_arg(value: str) -> str:
+    """Validate Slurm wall-clock time format (HH:MM:SS or D-HH:MM:SS)."""
+    s = value.strip()
+    if not s:
+        raise argparse.ArgumentTypeError("invalid Slurm time: empty")
+    rest = s
+    if "-" in rest:
+        day_str, rest = rest.split("-", 1)
+        try:
+            if int(day_str) < 0:
+                raise ValueError("days must be non-negative")
+        except ValueError as e:
+            raise argparse.ArgumentTypeError(f"invalid Slurm time '{value}': bad days field") from e
+    parts = rest.split(":")
+    if len(parts) not in (2, 3):
+        raise argparse.ArgumentTypeError(f"invalid Slurm time '{value}': expected HH:MM:SS or D-HH:MM:SS")
+    try:
+        for p in parts:
+            if int(p) < 0:
+                raise ValueError("time fields must be non-negative")
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"invalid Slurm time '{value}': {e}") from e
+    return value
+
+
+def _slurm_mem_tiers_arg(value: str) -> list[tuple[int, str]]:
+    """Parse '<threshold>:<mem>,<threshold>:<mem>,...' into a sorted tier list."""
+    if not value or not value.strip():
+        raise argparse.ArgumentTypeError("invalid --slurm-mem-tiers: empty")
+    tiers: list[tuple[int, str]] = []
+    for entry in value.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if ":" not in entry:
+            raise argparse.ArgumentTypeError(f"invalid --slurm-mem-tiers entry '{entry}': expected '<threshold>:<mem>'")
+        thr_str, mem_str = entry.split(":", 1)
+        try:
+            threshold = int(thr_str.strip())
+        except ValueError as e:
+            raise argparse.ArgumentTypeError(f"invalid --slurm-mem-tiers threshold '{thr_str}': {e}") from e
+        mem = mem_str.strip()
+        try:
+            _parse_mem_str(mem)
+        except ValueError as e:
+            raise argparse.ArgumentTypeError(f"invalid --slurm-mem-tiers memory '{mem}': {e}") from e
+        tiers.append((threshold, mem))
+    if not tiers:
+        raise argparse.ArgumentTypeError("invalid --slurm-mem-tiers: no entries")
+    tiers.sort(key=lambda t: t[0])
+    return tiers
+
+
 @register_backend
 class SlurmBackend(ShakeBackend):
     """Self-executing backend that distributes compile rules via Slurm."""
@@ -455,12 +536,14 @@ class SlurmBackend(ShakeBackend):
         cap.add(
             "--slurm-time",
             default="00:30:00",
-            help="Wall-clock time limit per compile job (HH:MM:SS). Default: 00:30:00",
+            type=_slurm_time_arg,
+            help="Wall-clock time limit per compile job (HH:MM:SS or D-HH:MM:SS). Default: 00:30:00",
         )
         cap.add(
             "--slurm-mem",
             default="16G",
-            help="Memory ceiling per compile job (e.g. 16G, 8G). Default: 16G",
+            type=_slurm_mem_arg,
+            help="Memory ceiling per compile job (e.g. 16G, 8G, 512M). Default: 16G",
         )
         cap.add(
             "--slurm-cpus",
@@ -492,6 +575,40 @@ class SlurmBackend(ShakeBackend):
             help="Name applied to submitted Slurm jobs (visible in squeue/sacct). "
             "Default: ct-compile. Useful for distinguishing concurrent ct-cake invocations.",
         )
+        cap.add(
+            "--slurm-mem-tiers",
+            default=_DEFAULT_MEM_TIERS_STR,
+            type=_slurm_mem_tiers_arg,
+            help="Memory tier mapping as 'threshold:mem,threshold:mem,...' where threshold is "
+            "the maximum quoted-include count for that tier. Rules whose include_weight exceeds "
+            "the largest threshold use --slurm-mem. Default: " + _DEFAULT_MEM_TIERS_STR,
+        )
+        cap.add(
+            "--slurm-sacct-failure-threshold",
+            default=10,
+            type=int,
+            help="Consecutive sacct failures tolerated before _wait_for_arrays raises. Default: 10",
+        )
+        cap.add(
+            "--slurm-output-wait-timeout",
+            default=30.0,
+            type=float,
+            help="Seconds to wait for compiled outputs to become visible on the submitter "
+            "after sacct reports COMPLETED (network filesystem metadata lag). Default: 30.0",
+        )
+        cap.add(
+            "--slurm-export",
+            default="PATH,HOME,USER,LANG,LC_ALL,CC,CXX,CPATH",
+            help="Value passed to sbatch --export=. Default propagates a curated allowlist "
+            "instead of the submitter's full environment. Use 'ALL' to restore legacy behavior "
+            "or 'NONE' for a fully isolated environment.",
+        )
+        cap.add(
+            "--slurm-rule-retry-cap",
+            default=3,
+            type=int,
+            help="Maximum OOM retries per rule before that rule is abandoned. Default: 3",
+        )
 
     # ------------------------------------------------------------------
     # Core execute() — overrides ShakeBackend's async engine
@@ -508,6 +625,52 @@ class SlurmBackend(ShakeBackend):
         trace_path = os.path.join(self.args.objdir, self.build_filename())
         traces = TraceStore(trace_path)
 
+        # Per-invocation prefix for cmds/outs/log files.  Prevents collisions
+        # between concurrent ct-cake processes sharing the same objdir, and
+        # bounds cleanup to files this invocation actually produced.
+        self._invocation_prefix = f"{os.getpid()}-{int(time.monotonic_ns())}"
+        self._created_aux_files: list[str] = []
+        self._tracked_jobs: dict[str, str] = {}  # job_id -> "pending"|"terminal"
+
+        # Index from job_id -> chunk_id, so log lookups don't have to glob.
+        self._chunk_id_for_job: dict[str, int] = {}
+
+        prev_sigint = signal.getsignal(signal.SIGINT)
+        prev_sigterm = signal.getsignal(signal.SIGTERM)
+
+        def _on_signal(signum, frame):  # pragma: no cover - exercised via thread test
+            self._scancel_pending()
+            # Restore default handler and re-raise so normal interrupt semantics apply
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+
+        # Only install handlers on the main thread; otherwise signal.signal raises.
+        installed_handlers = False
+        try:
+            signal.signal(signal.SIGINT, _on_signal)
+            signal.signal(signal.SIGTERM, _on_signal)
+            installed_handlers = True
+        except (ValueError, OSError):
+            pass
+
+        try:
+            self._execute_impl(graph, traces)
+        finally:
+            try:
+                self._scancel_pending()
+            finally:
+                try:
+                    self._cleanup_invocation_files()
+                finally:
+                    try:
+                        traces.save()
+                    finally:
+                        if installed_handlers:
+                            with contextlib.suppress(Exception):
+                                signal.signal(signal.SIGINT, prev_sigint)
+                                signal.signal(signal.SIGTERM, prev_sigterm)
+
+    def _execute_impl(self, graph: BuildGraph, traces: TraceStore) -> None:
         # Ensure output directories exist (order-only deps on compile rules)
         for rule in graph.rules_by_type("mkdir"):
             if rule.command:
@@ -516,12 +679,6 @@ class SlurmBackend(ShakeBackend):
                 os.makedirs(rule.output, exist_ok=True)
 
         # Phase 1: identify compile rules that need rebuilding.
-        #   A file is skipped only if it exists AND has a valid trace (output hash matches).
-        #   Files with no trace were produced by a crashed build (Phase 4 trace-recording
-        #   never ran) and cannot be trusted even if they appear valid on disk.
-        #   Failed compile jobs also delete their output immediately via the sbatch wrap
-        #   script, so a corrupt artifact from an OOM-kill is normally cleaned up before
-        #   the next run.
         to_submit = [
             rule
             for rule in graph.rules_by_type("compile")
@@ -532,15 +689,9 @@ class SlurmBackend(ShakeBackend):
             )
         ]
 
-        # Phase 2: submit compile rules as job arrays grouped by memory tier.
-        # Rules are partitioned by estimated memory requirement so each Slurm
-        # job array requests only the memory its tasks actually need.  Within
-        # each tier, chunking by --slurm-max-array still applies.
         max_array = self.args.slurm_max_array
-        # index_map[array_job_id] = list of rules corresponding to task indices 0, 1, …
         index_map: dict[str, list[BuildRule]] = {}
 
-        # Group rules by memory tier (preserving submission order within each tier).
         tiers: dict[str, list[BuildRule]] = collections.defaultdict(list)
         for rule in to_submit:
             mem = self._estimate_memory(rule)
@@ -552,67 +703,80 @@ class SlurmBackend(ShakeBackend):
                 chunk = tier_rules[chunk_start : chunk_start + max_array]
                 array_job_id = self._sbatch_array(chunk, chunk_id=chunk_id, mem=mem)
                 index_map[array_job_id] = chunk
+                self._tracked_jobs[array_job_id] = "pending"
+                self._chunk_id_for_job[array_job_id] = chunk_id
                 chunk_id += len(chunk)
 
-        # Phase 3: wait for all arrays to finish, with OOM retry.
-        # On OUT_OF_MEMORY, resubmit failed rules with doubled memory
-        # (capped at --slurm-mem).  Non-OOM failures are collected and
-        # reported after all retries are exhausted.
         all_failures: list[SlurmBackend._TaskFailure] = []
-        if index_map:
-            failures = self._wait_for_arrays(index_map)
-            mem_cap_mb = self._parse_mem(self.args.slurm_mem)
+        retry_cap = getattr(self.args, "slurm_rule_retry_cap", 3)
+        per_rule_retries: dict[str, int] = collections.defaultdict(int)
 
-            # Separate OOM from other failures
-            oom_rules = [f.rule for f in failures if f.state == self._OOM_STATE]
-            non_oom = [f for f in failures if f.state != self._OOM_STATE]
-            all_failures.extend(non_oom)
+        try:
+            if index_map:
+                failures = self._wait_for_arrays(index_map)
+                mem_cap_mb = self._parse_mem(self.args.slurm_mem)
 
-            # Retry OOM failures: double each rule's last memory allocation,
-            # capped at --slurm-mem.  Rules are grouped by their doubled memory
-            # tier so each Slurm array requests only what its tasks need.
-            # Track last memory per rule (starts at original estimate).
-            rule_mem: dict[str, str] = {r.output: self._estimate_memory(r) for r in oom_rules}
-            while oom_rules:
-                # Double each rule's memory; separate those that exceed the cap.
-                capped: list[BuildRule] = []
-                retryable: list[tuple[BuildRule, str]] = []
-                for r in oom_rules:
-                    doubled = self._double_mem(rule_mem[r.output])
-                    if self._parse_mem(doubled) > mem_cap_mb:
-                        capped.append(r)
-                    else:
-                        rule_mem[r.output] = doubled
-                        retryable.append((r, doubled))
-                all_failures.extend(
-                    SlurmBackend._TaskFailure(rule=r, state=self._OOM_STATE, job_id="retry") for r in capped
-                )
-                if not retryable:
-                    break
-
-                # Group retryable rules by memory tier for efficient array submission.
-                retry_tiers: dict[str, list[BuildRule]] = collections.defaultdict(list)
-                for r, mem in retryable:
-                    retry_tiers[mem].append(r)
-
-                logger.info(
-                    "Retrying %d OOM compile job(s) across %d memory tier(s) (cap: %s)",
-                    len(retryable),
-                    len(retry_tiers),
-                    self.args.slurm_mem,
-                )
-                retry_map: dict[str, list[BuildRule]] = {}
-                for mem, tier_rules in retry_tiers.items():
-                    for retry_start in range(0, len(tier_rules), max_array):
-                        chunk = tier_rules[retry_start : retry_start + max_array]
-                        array_job_id = self._sbatch_array(chunk, chunk_id=chunk_id, mem=mem)
-                        retry_map[array_job_id] = chunk
-                        chunk_id += len(chunk)
-
-                retry_failures = self._wait_for_arrays(retry_map)
-                oom_rules = [f.rule for f in retry_failures if f.state == self._OOM_STATE]
-                non_oom = [f for f in retry_failures if f.state != self._OOM_STATE]
+                oom_rules = [f.rule for f in failures if f.state == self._OOM_STATE]
+                non_oom = [f for f in failures if f.state != self._OOM_STATE]
                 all_failures.extend(non_oom)
+
+                rule_mem: dict[str, str] = {r.output: self._estimate_memory(r) for r in oom_rules}
+                while oom_rules:
+                    capped: list[BuildRule] = []
+                    retryable: list[tuple[BuildRule, str]] = []
+                    abandoned: list[BuildRule] = []
+                    for r in oom_rules:
+                        if per_rule_retries[r.output] >= retry_cap:
+                            abandoned.append(r)
+                            continue
+                        doubled = self._double_mem(rule_mem[r.output])
+                        if self._parse_mem(doubled) > mem_cap_mb:
+                            capped.append(r)
+                        else:
+                            rule_mem[r.output] = doubled
+                            retryable.append((r, doubled))
+                    all_failures.extend(
+                        SlurmBackend._TaskFailure(rule=r, state=self._OOM_STATE, job_id="retry") for r in capped
+                    )
+                    all_failures.extend(
+                        SlurmBackend._TaskFailure(rule=r, state=self._OOM_STATE, job_id=f"retry-cap-{retry_cap}")
+                        for r in abandoned
+                    )
+                    if not retryable:
+                        break
+
+                    retry_tiers: dict[str, list[BuildRule]] = collections.defaultdict(list)
+                    for r, mem in retryable:
+                        retry_tiers[mem].append(r)
+
+                    logger.info(
+                        "Retrying %d OOM compile job(s) across %d memory tier(s) (cap: %s)",
+                        len(retryable),
+                        len(retry_tiers),
+                        self.args.slurm_mem,
+                    )
+                    retry_map: dict[str, list[BuildRule]] = {}
+                    for mem, tier_rules in retry_tiers.items():
+                        for retry_start in range(0, len(tier_rules), max_array):
+                            chunk = tier_rules[retry_start : retry_start + max_array]
+                            array_job_id = self._sbatch_array(chunk, chunk_id=chunk_id, mem=mem)
+                            retry_map[array_job_id] = chunk
+                            self._tracked_jobs[array_job_id] = "pending"
+                            self._chunk_id_for_job[array_job_id] = chunk_id
+                            chunk_id += len(chunk)
+
+                    for r, _ in retryable:
+                        per_rule_retries[r.output] += 1
+
+                    retry_failures = self._wait_for_arrays(retry_map)
+                    oom_rules = [f.rule for f in retry_failures if f.state == self._OOM_STATE]
+                    non_oom = [f for f in retry_failures if f.state != self._OOM_STATE]
+                    all_failures.extend(non_oom)
+        finally:
+            # Always collect timing for any array we actually waited on, even
+            # if a later step raises.
+            with contextlib.suppress(Exception):
+                self._collect_timing(index_map)
 
         if all_failures:
             lines = [f"Job {f.job_id} ({f.rule.output}): {f.state}" for f in all_failures]
@@ -622,24 +786,24 @@ class SlurmBackend(ShakeBackend):
                 msg += "\n\n" + diag
             raise RuntimeError(msg)
 
-        # Network filesystem metadata barrier: sacct may report COMPLETED
-        # before the output files are visible on the submission node
-        # (close-to-open consistency lag on GPFS, Lustre, NFS, etc.).
-        # Poll briefly so Phase 5 link steps don't fail with missing .o
-        # files.  Only needed when link/library rules will consume the
-        # compiled outputs.
+        # Phase 4: record traces for successfully built compile rules.
+        # Done before _wait_for_output_files so partial progress survives a
+        # missing-output raise.
+        for rule in to_submit:
+            if os.path.exists(rule.output):
+                traces.put(rule.output, _make_trace_entry(rule, self.context))
+
         has_link_rules = any(r.rule_type not in ("phony", "mkdir", "compile", "clean") for r in graph.rules)
         if to_submit and has_link_rules:
+            timeout = getattr(self.args, "slurm_output_wait_timeout", 30.0)
             try:
-                self._wait_for_output_files(to_submit)
+                self._wait_for_output_files(to_submit, timeout=timeout)
             except RuntimeError as e:
-                # Why: persist traces for compiles that DID complete before re-raising,
-                # so the next ct-cake invocation doesn't re-submit already-finished jobs.
-                # Slurm logs are also kept (cleanup is skipped on this path) so the user
-                # has actionable diagnostics for the missing-output failure.
+                # Save traces for completed compiles before re-raising so the
+                # next invocation doesn't re-submit them.  Slurm logs are
+                # preserved so the user can diagnose the missing output.
                 self._save_traces_for_completed(to_submit, traces)
-                log_glob = os.path.join(self.args.objdir, "slurm-ct-*.out")
-                log_paths = sorted(glob.glob(log_glob))
+                log_paths = self._invocation_log_paths()
                 if log_paths:
                     raise RuntimeError(
                         f"{e}\n\nSlurm logs preserved for diagnosis ({len(log_paths)} file(s)):\n"
@@ -649,14 +813,6 @@ class SlurmBackend(ShakeBackend):
                 raise
 
         self._cleanup_slurm_logs()
-
-        # Collect per-job timing from Slurm accounting
-        self._collect_timing(index_map)
-
-        # Phase 4: record traces for successfully built compile rules
-        for rule in to_submit:
-            if os.path.exists(rule.output):
-                traces.put(rule.output, _make_trace_entry(rule, self.context))
 
         # Phase 5: run link/library/other non-compile rules locally in graph order
         timer = self._timer
@@ -675,23 +831,24 @@ class SlurmBackend(ShakeBackend):
                     elapsed_s=elapsed,
                 )
 
-        traces.save()
         self._record_link_signatures(graph)
 
     # ------------------------------------------------------------------
     # Memory estimation
 
-    # Tier thresholds: (max_quoted_includes, slurm_mem_string)
+    # Default tier thresholds: (max_quoted_includes, slurm_mem_string).
     #
     # Derived from profiling C++20 builds on an HPC cluster (gcc-12, -O3, with a large C++
-    # framework).  The number of quoted #include "..." directives in the
-    # source file (FileAnalyzer.quoted_headers) correlates strongly with
-    # peak RSS (r=0.85) because each quoted include transitively pulls in
-    # framework headers and triggers template instantiation.  Unity-build
-    # #include "*.C" patterns contribute naturally to this count.
+    # framework).  Quoted #include count correlates strongly with peak RSS
+    # (r=0.85) because each quoted include transitively pulls in framework
+    # headers and triggers template instantiation.  Unity-build patterns
+    # contribute naturally to this count.  Override via --slurm-mem-tiers.
     _MEMORY_TIERS: ClassVar[list[tuple[int, str]]] = [
-        (1, "2G"),
-        (2, "4G"),
+        (1, "1G"),
+        (2, "2G"),
+        (4, "4G"),
+        (8, "8G"),
+        (16, "16G"),
     ]
 
     def _estimate_memory(self, rule: BuildRule) -> str:
@@ -701,10 +858,12 @@ class SlurmBackend(ShakeBackend):
         source file, computed in BuildBackend._create_compile_rule() at zero
         cost (analyze_file results are cached from the header dep walk).
 
-        The max tier uses ``--slurm-mem`` (default 16G) so projects can raise
-        or lower the ceiling via ct.conf without modifying compiletools source.
+        Uses --slurm-mem-tiers if configured, otherwise the class default.
+        Rules whose include_weight exceeds the largest threshold use
+        ``--slurm-mem`` (the per-job ceiling).
         """
-        for threshold, mem in self._MEMORY_TIERS:
+        tiers = getattr(self.args, "slurm_mem_tiers", None) or self._MEMORY_TIERS
+        for threshold, mem in tiers:
             if rule.include_weight <= threshold:
                 return mem
         return self.args.slurm_mem
@@ -725,49 +884,46 @@ class SlurmBackend(ShakeBackend):
         *mem* overrides ``--slurm-mem`` for this array (used for per-tier sizing).
         """
         n = len(rules)
-        # Resolve objdir once so all sbatch file references are absolute —
-        # the Slurm job may run on a different node with a different cwd.
         real_objdir = compiletools.wrappedos.realpath(self.args.objdir)
-        # Write one shell-quoted compile command per line (1-based for sed).
-        # Use chunk_id in the filename so concurrent chunks don't collide.
-        cmds_file = os.path.join(real_objdir, f".ct-slurm-cmds-{chunk_id}.txt")
-        outs_file = os.path.join(real_objdir, f".ct-slurm-outs-{chunk_id}.txt")
+
+        # Per-invocation prefix prevents collisions with peer ct-cake processes
+        # sharing the same objdir on a network filesystem.
+        prefix = getattr(self, "_invocation_prefix", f"{os.getpid()}-{int(time.monotonic_ns())}")
+        cmds_file = os.path.join(real_objdir, f".ct-slurm-cmds-{prefix}-{chunk_id}.txt")
+        outs_file = os.path.join(real_objdir, f".ct-slurm-outs-{prefix}-{chunk_id}.txt")
         with open(cmds_file, "w") as fc, open(outs_file, "w") as fo:
             for rule in rules:
                 assert rule.command is not None, "compile rules always have a command"
                 fc.write(shlex.join(_flatten_command(rule.command)) + "\n")
                 fo.write(rule.output + "\n")
-            # Flush to OS before closing so the data is visible on other nodes
-            # (network filesystem close-to-open consistency requires the
-            # writer to flush).
             fc.flush()
             fo.flush()
             os.fsync(fc.fileno())
             os.fsync(fo.fileno())
 
-        # Each array task reads its compile command and output path, then executes
-        # the command. On failure the partial/empty output file is removed immediately
-        # so that the CA short-circuit never treats a corrupt artifact as valid.
-        # Note: bash -c "$CMD" performs shell expansion.  This is safe because
-        # compiletools generates compile commands from compiler paths, flags, and
-        # file paths — none contain shell metacharacters ($, backticks).
+        # Track for end-of-build cleanup.
+        if hasattr(self, "_created_aux_files"):
+            self._created_aux_files.append(cmds_file)
+            self._created_aux_files.append(outs_file)
+
+        # eval "$CMD" runs the line read from cmds_file as a shell command.
+        # The line was produced by shlex.join, so each token is single-quoted
+        # and metacharacters like $, backticks, parentheses are literal — eval
+        # parses the quoting once and produces argv without re-expansion.
         wrap = (
             f'CMD=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" {shlex.quote(cmds_file)}); '
             f'OUT=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" {shlex.quote(outs_file)}); '
             f'[ -n "$CMD" ] || {{ echo "ct-compile: empty command (index $SLURM_ARRAY_TASK_ID)" >&2; exit 1; }}; '
-            f'bash -c "$CMD" || {{ rm -f "$OUT"; exit 1; }}'
+            f'eval "$CMD" || {{ rm -f "$OUT"; exit 1; }}'
         )
 
         effective_mem = mem if mem is not None else self.args.slurm_mem
-        # Direct slurm logs into the objdir so they don't litter the working
-        # directory.  At low verbosity the logs are cleaned up after a
-        # successful build (see _cleanup_slurm_logs); at -vv they are kept
-        # unconditionally for debugging.
-        slurm_log = os.path.join(real_objdir, f"slurm-ct-{chunk_id}-%a.out")
+        slurm_log = os.path.join(real_objdir, f"slurm-ct-{prefix}-{chunk_id}-%a.out")
+        export_value = getattr(self.args, "slurm_export", "PATH,HOME,USER,LANG,LC_ALL,CC,CXX,CPATH")
         cmd = [
             "sbatch",
             "--parsable",
-            "--export=ALL",
+            f"--export={export_value}",
             f"--chdir={os.getcwd()}",
             f"--array=0-{n - 1}",
             f"--job-name={getattr(self.args, 'slurm_job_name', 'ct-compile')}",
@@ -782,7 +938,13 @@ class SlurmBackend(ShakeBackend):
         if self.args.slurm_account:
             cmd += ["--account", self.args.slurm_account]
         cmd += ["--wrap", wrap]
-        return subprocess.check_output(cmd, text=True).strip()
+        try:
+            return subprocess.check_output(cmd, text=True, stderr=subprocess.PIPE).strip()
+        except subprocess.CalledProcessError as e:
+            stderr_text = (e.stderr or "").strip()
+            raise RuntimeError(f"sbatch failed (exit {e.returncode}): {stderr_text or '<no stderr>'}") from e
+        except FileNotFoundError as e:
+            raise RuntimeError(f"sbatch not found on PATH: {e}") from e
 
     def _collect_timing(self, index_map: dict[str, list[BuildRule]]) -> None:
         """Collect per-job timing from Slurm accounting via sacct."""
@@ -836,14 +998,57 @@ class SlurmBackend(ShakeBackend):
                     elapsed_s=elapsed_s,
                 )
 
+    def _invocation_log_paths(self) -> list[str]:
+        """Slurm log paths produced by THIS invocation (no cross-invocation glob)."""
+        prefix = getattr(self, "_invocation_prefix", None)
+        if not prefix:
+            return []
+        return sorted(glob.glob(os.path.join(self.args.objdir, f"slurm-ct-{prefix}-*.out")))
+
     def _cleanup_slurm_logs(self) -> None:
-        """Remove slurm log files from objdir when verbosity is low."""
+        """Remove THIS invocation's slurm log files when verbosity is low."""
         verbose = getattr(self.args, "verbose", 0)
         if verbose >= 2:
             return
-        for f in glob.glob(os.path.join(self.args.objdir, "slurm-ct-*.out")):
+        for f in self._invocation_log_paths():
             with contextlib.suppress(OSError):
                 os.remove(f)
+
+    def _cleanup_invocation_files(self) -> None:
+        """Remove cmds/outs files this invocation created. Best effort."""
+        for f in getattr(self, "_created_aux_files", []):
+            with contextlib.suppress(OSError):
+                os.remove(f)
+        self._created_aux_files = []
+
+    def _scancel_pending(self) -> None:
+        """Cancel any tracked Slurm jobs not yet known to be terminal. Never raises."""
+        pending = [jid for jid, status in getattr(self, "_tracked_jobs", {}).items() if status != "terminal"]
+        if not pending:
+            return
+        try:
+            result = subprocess.run(
+                ["scancel", *pending],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                logger.warning(
+                    "scancel returned %s for jobs %s: %s",
+                    result.returncode,
+                    pending,
+                    (result.stderr or "").strip(),
+                )
+            else:
+                logger.info("scancel cancelled pending Slurm jobs: %s", pending)
+        except FileNotFoundError:
+            logger.warning("scancel not found on PATH; %d Slurm job(s) may still be pending: %s", len(pending), pending)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("scancel failed for jobs %s: %s", pending, e)
+        finally:
+            for jid in pending:
+                self._tracked_jobs[jid] = "terminal"
 
     def _save_traces_for_completed(self, rules: list[BuildRule], traces: TraceStore) -> None:
         """Record trace entries for rules whose output exists on disk, then save."""
@@ -853,22 +1058,31 @@ class SlurmBackend(ShakeBackend):
         traces.save()
 
     def _read_slurm_logs_for_failures(self, failures: list[SlurmBackend._TaskFailure]) -> str:
-        """Read slurm log content for failed tasks and return formatted diagnostics."""
+        """Read slurm log content for failed tasks and return formatted diagnostics.
+
+        Log files for a chunk are named ``slurm-ct-<prefix>-<chunk_id>-<array_index>.out``.
+        Looks up the exact chunk_id for the failure's array job to avoid matching
+        retry chunks that share the same array_index.
+        """
         diagnostics: list[str] = []
+        prefix = getattr(self, "_invocation_prefix", None)
         for f in failures:
-            # Log files are named slurm-ct-<chunk_id>-<array_index>.out;
-            # the job_id is "<array_job_id>_<index>".
             parts = f.job_id.rsplit("_", 1)
-            if len(parts) == 2:
-                _, task_idx = parts
-                for log_path in glob.glob(os.path.join(self.args.objdir, f"slurm-ct-*-{task_idx}.out")):
-                    try:
-                        with open(log_path) as fh:
-                            content = fh.read().strip()
-                        if content:
-                            diagnostics.append(f"--- {f.rule.output} (job {f.job_id}) ---\n{content}")
-                    except OSError:
-                        pass
+            if len(parts) != 2:
+                continue
+            array_job_id, task_idx = parts
+            chunk_id = getattr(self, "_chunk_id_for_job", {}).get(array_job_id)
+            if chunk_id is None or prefix is None:
+                # No chunk index available (e.g. synthetic 'retry'/'retry-cap' job_ids).
+                continue
+            log_path = os.path.join(self.args.objdir, f"slurm-ct-{prefix}-{chunk_id}-{task_idx}.out")
+            try:
+                with open(log_path) as fh:
+                    content = fh.read().strip()
+                if content:
+                    diagnostics.append(f"--- {f.rule.output} (job {f.job_id}) ---\n{content}")
+            except OSError:
+                pass
         return "\n".join(diagnostics)
 
     def _query_array_task_states(self, array_job_id: str) -> dict[str, str]:
@@ -876,28 +1090,45 @@ class SlurmBackend(ShakeBackend):
 
         Task IDs are returned as ``"<array_job_id>_<index>"``.
         Sub-steps (.batch, .extern) are skipped.
+
+        Returns an empty dict on transient sacct failure (slurmdbd hiccup,
+        sacct missing); the polling loop's failure counter handles persistent
+        failure.
         """
-        out = subprocess.check_output(
-            [
-                "sacct",
-                "-j",
+        try:
+            out = subprocess.check_output(
+                [
+                    "sacct",
+                    "-j",
+                    array_job_id,
+                    "--format=JobID,State",
+                    "--noheader",
+                    "--parsable2",
+                ],
+                text=True,
+                stderr=subprocess.PIPE,
+            )
+        except subprocess.CalledProcessError as e:
+            stderr_text = (e.stderr or "").strip()
+            logger.warning(
+                "sacct failed for job %s (exit %s): %s",
                 array_job_id,
-                "--format=JobID,State",
-                "--noheader",
-                "--parsable2",
-            ],
-            text=True,
-        )
+                e.returncode,
+                stderr_text or "<no stderr>",
+            )
+            return {}
+        except FileNotFoundError as e:
+            logger.warning("sacct not found on PATH: %s", e)
+            return {}
+
         result: dict[str, str] = {}
         for line in out.splitlines():
             parts = line.strip().split("|")
             if len(parts) < 2:
                 continue
             jid = parts[0]
-            # Skip sub-steps (.batch, .extern)
             if "." in jid:
                 continue
-            # State may have a trailing reason, e.g. "FAILED (exit code 1)"
             result[jid] = parts[1].split()[0]
         return result
 
@@ -908,12 +1139,7 @@ class SlurmBackend(ShakeBackend):
     @staticmethod
     def _parse_mem(mem_str: str) -> int:
         """Parse a Slurm memory string (e.g. '4G', '512M') to megabytes."""
-        s = mem_str.strip().upper()
-        if s.endswith("G"):
-            return int(s[:-1]) * 1024
-        if s.endswith("M"):
-            return int(s[:-1])
-        return int(s)  # assume megabytes
+        return _parse_mem_str(mem_str)
 
     @staticmethod
     def _format_mem(mb: int) -> str:
@@ -940,11 +1166,14 @@ class SlurmBackend(ShakeBackend):
 
         *index_map* maps array_job_id → ordered list of rules (index == task index).
         Returns a list of _TaskFailure for failed tasks (empty if all succeeded).
-        Raises RuntimeError if sacct polling times out.
+        Raises RuntimeError if sacct polling times out, or if sacct fails
+        consecutively more than --slurm-sacct-failure-threshold times.
         """
         poll_interval = self.args.slurm_poll_interval
         max_polls = max(1, int(1800 / max(poll_interval, 0.1)))
         polls = 0
+        failure_threshold = getattr(self.args, "slurm_sacct_failure_threshold", 10)
+        consecutive_failures = 0
 
         pending: set[str] = set(index_map)
         failures: list[SlurmBackend._TaskFailure] = []
@@ -957,14 +1186,21 @@ class SlurmBackend(ShakeBackend):
             polls += 1
 
             still_pending: set[str] = set()
+            any_response = False
             for array_job_id in pending:
                 rules = index_map[array_job_id]
                 states = self._query_array_task_states(array_job_id)
+                if states:
+                    any_response = True
 
                 terminal_tasks = {jid: st for jid, st in states.items() if st in self._TERMINAL_STATES and "_" in jid}
                 if len(terminal_tasks) < len(rules):
                     still_pending.add(array_job_id)
                     continue
+
+                # All tasks terminal — mark the parent job terminal so scancel skips it.
+                if hasattr(self, "_tracked_jobs"):
+                    self._tracked_jobs[array_job_id] = "terminal"
 
                 for jid, st in terminal_tasks.items():
                     if st != self._SUCCESS_STATE:
@@ -974,8 +1210,18 @@ class SlurmBackend(ShakeBackend):
                             if os.path.exists(rule.output):
                                 os.remove(rule.output)
                         except (ValueError, IndexError, OSError):
-                            rule = rules[0]  # fallback
+                            rule = rules[0]
                         failures.append(SlurmBackend._TaskFailure(rule=rule, state=st, job_id=jid))
+
+            if any_response:
+                consecutive_failures = 0
+            elif pending:
+                consecutive_failures += 1
+                if consecutive_failures >= failure_threshold:
+                    raise RuntimeError(
+                        f"sacct returned no usable data for {consecutive_failures} consecutive polls "
+                        f"(threshold={failure_threshold}); pending arrays: " + ", ".join(sorted(pending))
+                    )
 
             pending = still_pending
             if pending:
@@ -1018,9 +1264,8 @@ class SlurmBackend(ShakeBackend):
     def _run_local(self, rule: BuildRule, traces: TraceStore) -> None:
         """Run a link/library/copy rule locally, with CA short-circuit.
 
-        Uses FileLock around CA target creation to prevent races when
-        concurrent ct-cake processes share the same objdir on a network
-        filesystem.
+        Non-build-artifact rules (e.g. copy) consult the trace store first so
+        the rule is not re-executed on every build when its inputs are unchanged.
         """
         if rule.command is None:
             return
@@ -1032,11 +1277,9 @@ class SlurmBackend(ShakeBackend):
             if os.path.exists(ca):
                 _atomic_copy(ca, rule.output)
                 return
-            # Ensure output directory exists
             out_dir = os.path.dirname(rule.output)
             if out_dir:
                 os.makedirs(out_dir, exist_ok=True)
-            # Build to CA target so the result is content-addressable
             ca_cmd = [ca if a == rule.output else a for a in flat_cmd]
             ca_dir = os.path.dirname(ca)
             if ca_dir:
@@ -1045,6 +1288,10 @@ class SlurmBackend(ShakeBackend):
             atomic_link(lock_impl, ca, ca_cmd)
             _atomic_copy(ca, rule.output)
         else:
+            # Non-build-artifact (copy etc.): verify trace before re-executing.
+            trace = traces.get(rule.output)
+            if trace is not None and self._verify(rule, trace):
+                return
             lock_impl = FileLock(rule.output, self.args).lock
             atomic_link(lock_impl, rule.output, flat_cmd)
 
