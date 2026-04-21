@@ -39,16 +39,35 @@ class GracefulExit:
             sys.exit(128 + signum)
 
 
+def _env_value(name, default, parse):
+    """Read env var ``name`` and parse it with ``parse``. On parse failure,
+    print a clear warning naming the variable and the offending value, then
+    fall back to ``default``. (Issue #8: prevents a generic ValueError from
+    int()/float() killing the helper with no indication of which env var was
+    bad.)"""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return parse(raw)
+    except (ValueError, TypeError) as e:
+        print(
+            f"Warning: invalid value for {name}={raw!r} ({e}); using default {default!r}",
+            file=sys.stderr,
+        )
+        return default
+
+
 def create_args_from_env():
     """Create args object from environment variables matching bash version."""
     return SimpleNamespace(
         file_locking=True,
-        lock_warn_interval=int(os.getenv("CT_LOCK_WARN_INTERVAL", "30")),
-        lock_cross_host_timeout=int(os.getenv("CT_LOCK_TIMEOUT", "600")),
-        sleep_interval_lockdir=float(os.getenv("CT_LOCK_SLEEP_INTERVAL", "0.05")),
-        sleep_interval_cifs=float(os.getenv("CT_LOCK_SLEEP_INTERVAL_CIFS", "0.1")),
-        sleep_interval_flock_fallback=float(os.getenv("CT_LOCK_SLEEP_INTERVAL_FLOCK", "0.1")),
-        verbose=int(os.getenv("CT_LOCK_VERBOSE", "0")),
+        lock_warn_interval=_env_value("CT_LOCK_WARN_INTERVAL", 30, int),
+        lock_cross_host_timeout=_env_value("CT_LOCK_TIMEOUT", 600, int),
+        sleep_interval_lockdir=_env_value("CT_LOCK_SLEEP_INTERVAL", 0.05, float),
+        sleep_interval_cifs=_env_value("CT_LOCK_SLEEP_INTERVAL_CIFS", 0.1, float),
+        sleep_interval_flock_fallback=_env_value("CT_LOCK_SLEEP_INTERVAL_FLOCK", 0.1, float),
+        verbose=_env_value("CT_LOCK_VERBOSE", 0, int),
     )
 
 

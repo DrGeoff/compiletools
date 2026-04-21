@@ -95,7 +95,8 @@ class TestLockdirLock:
                 parts = content.split(":")
                 assert len(parts) == 3, f"Expected host:pid:starttime, got {content!r}"
                 host, pid_str, start_str = parts
-                assert host == socket.gethostname()
+                # Issue #6: hostname is FQDN (with gethostname fallback)
+                assert host == (socket.getfqdn() or socket.gethostname())
                 assert int(pid_str) == os.getpid()
                 # start_time should match psutil's view of our process
                 expected = psutil.Process(os.getpid()).create_time()
@@ -400,6 +401,27 @@ class TestLockdirLock:
             assert age >= 0
             os.rmdir(lock.lockdir)
 
+    def test_hostname_uses_fqdn(self, monkeypatch):
+        """Issue #6: multi-interface hosts get consistent identity via FQDN
+        rather than gethostname() (which can return per-interface aliases)."""
+        monkeypatch.setattr(socket, "getfqdn", lambda *a, **kw: "node01.cluster.example.com")
+        monkeypatch.setattr(socket, "gethostname", lambda: "node01.eth0")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = LockdirLock(target, args)
+            assert lock.hostname == "node01.cluster.example.com"
+
+    def test_hostname_falls_back_to_gethostname_when_fqdn_empty(self, monkeypatch):
+        """If getfqdn returns empty string we fall back to gethostname."""
+        monkeypatch.setattr(socket, "getfqdn", lambda *a, **kw: "")
+        monkeypatch.setattr(socket, "gethostname", lambda: "node01.eth0")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = LockdirLock(target, args)
+            assert lock.hostname == "node01.eth0"
+
 
 class TestFcntlLock:
     """Test FcntlLock (fcntl.lockf-based locking for GPFS)."""
@@ -463,6 +485,27 @@ class TestFcntlLock:
             finally:
                 lock.release()
 
+    def test_acquire_sets_0o666_regardless_of_umask(self):
+        """Issue #2 regression: lock file must be group/other writable so a
+        second user can reopen+lock the same inode. With umask 0o022 the
+        os.open(..., 0o666) yields a 0o644 file unless we explicitly fchmod."""
+        import stat as _stat
+
+        old_umask = os.umask(0o022)
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                target = os.path.join(tmpdir, "test.o")
+                args = _make_lock_args()
+                lock = FcntlLock(target, args)
+                lock.acquire()
+                try:
+                    mode = _stat.S_IMODE(os.stat(lock.lockfile).st_mode)
+                    assert mode == 0o666, f"Expected 0o666, got {oct(mode)}"
+                finally:
+                    lock.release()
+        finally:
+            os.umask(old_umask)
+
 
 class TestFlockLock:
     """Test FlockLock edge cases."""
@@ -505,6 +548,26 @@ class TestFlockLock:
             finally:
                 lock.release()
 
+    def test_acquire_sets_0o666_regardless_of_umask(self):
+        """Issue #2 regression: same as FcntlLock — defeat umask so a
+        second user can reopen+lock the same inode."""
+        import stat as _stat
+
+        old_umask = os.umask(0o022)
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                target = os.path.join(tmpdir, "test.o")
+                args = _make_lock_args()
+                lock = FlockLock(target, args)
+                lock.acquire()
+                try:
+                    mode = _stat.S_IMODE(os.stat(lock.lockfile).st_mode)
+                    assert mode == 0o666, f"Expected 0o666, got {oct(mode)}"
+                finally:
+                    lock.release()
+        finally:
+            os.umask(old_umask)
+
 
 class TestCIFSLock:
     """Test CIFSLock."""
@@ -518,7 +581,10 @@ class TestCIFSLock:
             assert os.path.exists(lock.lockfile_excl)
             lock.release()
             assert not os.path.exists(lock.lockfile_excl)
-            assert not os.path.exists(lock.lockfile)
+            # Issue #3: base lockfile is intentionally left behind so a peer
+            # who legitimately recreates lockfile_excl during our release
+            # window does not have its base file deleted underneath it.
+            assert os.path.exists(lock.lockfile)
 
     def test_acquire_creates_parent_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -538,6 +604,91 @@ class TestCIFSLock:
             with patch("os.path.exists", return_value=True), patch("os.unlink", side_effect=OSError("fail")):
                 lock.release()
             assert "Failed to release CIFS lock" in capsys.readouterr().err
+
+    def test_excl_holder_format_is_host_pid_starttime(self):
+        """Issue #4 prerequisite: excl file carries host:pid:start_time so
+        peers can detect dead local holders."""
+        import psutil
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = CIFSLock(target, args)
+            lock.acquire()
+            try:
+                with open(lock.lockfile_excl) as f:
+                    content = f.read().strip()
+                parts = content.split(":")
+                assert len(parts) == 3, f"Expected host:pid:starttime, got {content!r}"
+                host, pid_str, st_str = parts
+                # host is FQDN (or gethostname fallback) — match the same
+                assert host == (socket.getfqdn() or socket.gethostname())
+                assert int(pid_str) == os.getpid()
+                expected = psutil.Process(os.getpid()).create_time()
+                assert abs(float(st_str) - expected) < 1.0
+            finally:
+                lock.release()
+
+    def test_acquire_removes_dead_local_holder(self):
+        """Issue #4: a killed peer's lockfile_excl is removed and acquisition
+        proceeds rather than deadlocking forever."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = CIFSLock(target, args)
+            # Plant a stale lockfile_excl owned by a dead local PID.
+            os.makedirs(os.path.dirname(lock.lockfile_excl) or ".", exist_ok=True)
+            with open(lock.lockfile_excl, "w") as f:
+                f.write(f"{lock.hostname}:99999999\n")
+            # Should not block — stale removal kicks in.
+            lock.acquire()
+            try:
+                assert os.path.exists(lock.lockfile_excl)
+            finally:
+                lock.release()
+
+    def test_acquire_does_not_remove_live_local_holder(self):
+        """Live local holder must NOT be cleared — that would clobber a
+        legitimate concurrent compile. Verified directly via _is_excl_stale."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            holder = CIFSLock(target, args)
+            holder.acquire()
+            try:
+                # The holder's own pid/start_time is recorded in lockfile_excl.
+                # A peer probing _is_excl_stale must see the holder as ACTIVE.
+                peer = CIFSLock(target, args)
+                assert peer._is_excl_stale() is False
+            finally:
+                holder.release()
+
+    def test_acquire_does_not_remove_cross_host_holder(self):
+        """Cross-host holders cannot be verified; we must not evict them."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args(sleep_interval_cifs=0.01, lock_cross_host_timeout=600)
+            lock = CIFSLock(target, args)
+            with open(lock.lockfile_excl, "w") as f:
+                f.write("some.other.host.example.com:12345:1.0\n")
+            # is_excl_stale should be False (cross-host)
+            assert lock._is_excl_stale() is False
+
+    def test_release_does_not_unlink_base_lockfile(self):
+        """Issue #3: release must leave self.lockfile in place so a peer who
+        recreates lockfile_excl during our release window doesn't have its
+        base file deleted underneath it."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = CIFSLock(target, args)
+            lock.acquire()
+            assert os.path.exists(lock.lockfile)
+            lock.release()
+            assert os.path.exists(lock.lockfile), (
+                "Base lockfile must persist; deleting it races with a peer "
+                "that has just (legitimately) recreated lockfile_excl."
+            )
 
 
 class TestFlockLockRelease:
@@ -633,9 +784,7 @@ class TestAtomicCompile:
                 atomic_compile(lock, target, self._compile_cmd())
                 call_args = mock_run.call_args[0][0]
                 assert call_args[-2] == "-o"
-                assert call_args[-1].endswith(".tmp"), (
-                    f"compiler -o should be temp path, got {call_args[-1]}"
-                )
+                assert call_args[-1].endswith(".tmp"), f"compiler -o should be temp path, got {call_args[-1]}"
                 assert call_args[-1] != target
 
             assert os.path.exists(target)
@@ -644,7 +793,7 @@ class TestAtomicCompile:
 
     @requires_functional_compiler
     def test_atomic_compile_direct_calls_rename(self):
-        """FcntlLock (direct_compile=True) calls os.rename(temp, target)
+        """FcntlLock (direct_compile=True) calls os.replace(temp, target)
         after a successful compile."""
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
@@ -656,17 +805,17 @@ class TestAtomicCompile:
                 open(out, "w").close()
 
             patcher, _ = self._patch_runner(on_run=create_temp)
-            with patcher, patch("os.rename") as mock_rename:
+            with patcher, patch("os.replace") as mock_replace:
                 atomic_compile(lock, target, self._compile_cmd())
-                mock_rename.assert_called_once()
-                args_passed = mock_rename.call_args[0]
+                mock_replace.assert_called_once()
+                args_passed = mock_replace.call_args[0]
                 assert args_passed[0].endswith(".tmp")
                 assert args_passed[1] == target
 
     @requires_functional_compiler
     def test_atomic_compile_direct_failure_cleans_temp_no_rename(self):
         """FcntlLock (direct_compile=True): on compiler failure, the temp
-        file is removed and os.rename is NOT called."""
+        file is removed and os.replace is NOT called."""
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args()
@@ -678,9 +827,9 @@ class TestAtomicCompile:
                     f.write("partial")
 
             patcher, _ = self._patch_runner(returncode=1, on_run=create_temp)
-            with patcher, patch("os.rename") as mock_rename, pytest.raises(subprocess.CalledProcessError):
+            with patcher, patch("os.replace") as mock_replace, pytest.raises(subprocess.CalledProcessError):
                 atomic_compile(lock, target, self._compile_cmd())
-            mock_rename.assert_not_called()
+            mock_replace.assert_not_called()
             for f in os.listdir(tmpdir):
                 assert ".tmp" not in f, f"Stale temp file found: {f}"
 
@@ -740,7 +889,7 @@ class TestAtomicCompile:
 
     @requires_functional_compiler
     def test_atomic_compile_indirect_rename_failure_cleans_temp(self):
-        """If os.rename fails, temp file is cleaned up and lock is released."""
+        """If os.replace fails, temp file is cleaned up and lock is released."""
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args()
@@ -754,13 +903,41 @@ class TestAtomicCompile:
             patcher, _ = self._patch_runner(on_run=create_temp)
             with (
                 patcher,
-                patch("os.rename", side_effect=OSError("cross-device")),
+                patch("os.replace", side_effect=OSError("cross-device")),
                 pytest.raises(OSError, match="cross-device"),
             ):
                 atomic_compile(lock, target, self._compile_cmd())
 
             for f in os.listdir(tmpdir):
                 assert ".tmp" not in f, f"Stale temp file found: {f}"
+
+    @requires_functional_compiler
+    def test_atomic_compile_replaces_existing_target_in_subdir(self):
+        """Issue #1 regression: target inside a subdirectory with an existing
+        file is replaced atomically via os.replace. Exercises the typical
+        case (target lives in an obj subdir, previous .o already exists)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subdir = os.path.join(tmpdir, "objs", "deep")
+            os.makedirs(subdir)
+            target = os.path.join(subdir, "test.o")
+            with open(target, "w") as f:
+                f.write("OLD")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+
+            def create_temp(cmd):
+                out = cmd[cmd.index("-o") + 1]
+                with open(out, "w") as f:
+                    f.write("NEW")
+
+            patcher, _ = self._patch_runner(on_run=create_temp)
+            with patcher:
+                atomic_compile(lock, target, self._compile_cmd())
+
+            with open(target) as f:
+                assert f.read() == "NEW"
+            for f in os.listdir(subdir):
+                assert ".tmp" not in f
 
 
 class TestAtomicLink:
@@ -949,6 +1126,43 @@ class TestAtomicLink:
 
             assert seen_temp_content.get("content") == "EXISTING_ARCHIVE"
 
+    def test_atomic_link_warns_when_target_not_found_in_cmd(self, capsys):
+        """Issue #7: when the link command does not contain the target in a
+        recognised form, atomic_link can't do temp+rename. The user must be
+        told (verbose >= 2) so they can diagnose torn-binary races."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.bin")
+            args = _make_lock_args(verbose=2)
+            lock = FlockLock(target, args)
+
+            # Custom linker invocation that does not match -o or ar shapes
+            # (target nowhere in the command).
+            patcher, _ = self._patch_runner()
+            with patcher:
+                atomic_link(lock, target, ["custom-linker", "--out-magic-flag", "/somewhere/else"])
+
+            err = capsys.readouterr().err
+            assert "atomic_link could not find target" in err
+            assert "no temp+rename atomicity" in err
+
+    def test_atomic_link_no_warning_when_rewrite_succeeds(self, capsys):
+        """Sanity: when -o target is present, no warning is emitted."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.bin")
+            args = _make_lock_args(verbose=2)
+            lock = FlockLock(target, args)
+
+            def on_run(cmd):
+                tmp = cmd[cmd.index("-o") + 1]
+                open(tmp, "w").close()
+
+            patcher, _ = self._patch_runner(on_run=on_run)
+            with patcher:
+                atomic_link(lock, target, ["c++", "-o", target, "foo.o"])
+
+            err = capsys.readouterr().err
+            assert "atomic_link could not find target" not in err
+
     def test_atomic_link_skips_seed_for_empty_target(self):
         """An empty (0-byte) target is the lock-file artifact left by
         FlockLock/FcntlLock O_CREAT, not a real archive. atomic_link must
@@ -1060,6 +1274,51 @@ class TestFileLock:
             args = _make_lock_args()
             lock = FileLock(target, args)
             assert lock.lock is not None
+
+
+class TestPidReuseTolerance:
+    """Issue #5: tolerance for psutil create_time mismatch must be tight on
+    Linux (0.1s) where /proc/[pid]/stat is fine-grained, looser elsewhere."""
+
+    def test_tolerance_constant_linux_is_0_1s(self):
+        import sys as _sys
+
+        from compiletools.lock_utils import _PID_REUSE_TOLERANCE_SECONDS
+
+        if _sys.platform.startswith("linux"):
+            assert _PID_REUSE_TOLERANCE_SECONDS == 0.1
+        else:
+            assert _PID_REUSE_TOLERANCE_SECONDS == 1.0
+
+    def test_pid_reuse_within_loose_window_is_detected_on_linux(self):
+        """A simulated PID reuse where the impostor's start_time is 0.5s
+        from the recorded holder must be flagged as STALE on Linux. The
+        old 1.0s tolerance would have wrongly marked it ACTIVE."""
+        import sys as _sys
+
+        if not _sys.platform.startswith("linux"):
+            pytest.skip("Tighter tolerance is Linux-only")
+
+        import psutil
+
+        from compiletools.lock_utils import is_process_alive_local
+
+        recorded_start = psutil.Process(os.getpid()).create_time()
+        # Pretend the recorded holder started 0.5s before the live process
+        # (i.e. live process is a PID-reuse impostor at 0.5s offset).
+        impostor_start = recorded_start - 0.5
+        assert is_process_alive_local(os.getpid(), impostor_start) is False, (
+            "0.5s mismatch must be flagged as stale on Linux (tolerance 0.1s)"
+        )
+
+    def test_exact_match_still_alive(self):
+        """Sanity: matching start_time still resolves to ACTIVE."""
+        import psutil
+
+        from compiletools.lock_utils import is_process_alive_local
+
+        st = psutil.Process(os.getpid()).create_time()
+        assert is_process_alive_local(os.getpid(), st) is True
 
 
 class TestSubprocessSafety:

@@ -65,6 +65,17 @@ class FcntlLock:
         compiletools.lock_utils.ensure_parent_dir(self.lockfile)
 
         self.fd = os.open(self.lockfile, os.O_CREAT | os.O_RDWR, 0o666)
+        # umask filters the 0o666 mode passed to os.open down to 0o644 by
+        # default — a second user on the same host then cannot reopen+lock
+        # this inode (EACCES on O_RDWR). Force 0o666 explicitly so multi-
+        # user file_locking works regardless of process umask. Mirror this
+        # in FlockLock and the LockdirLock._set_lockdir_permissions path.
+        try:
+            os.fchmod(self.fd, 0o666)
+        except OSError:
+            # Best-effort: if we don't own the inode (rare — we just
+            # created it), continue rather than fail the build.
+            pass
         try:
             fcntl.lockf(self.fd, fcntl.LOCK_EX)
         except BaseException:
@@ -102,15 +113,29 @@ class LockdirLock:
         # Use os.path.join for paths we'll check existence of (not wrappedos.join)
         self.pid_file = os.path.join(self.lockdir, "pid")
         self.args = args
-        self.hostname = socket.gethostname()
+        # Issue #6: prefer socket.getfqdn() so multi-interface hosts
+        # (node01.eth0 vs node01.ib0) consistently identify the same
+        # machine. Fall back to gethostname() if FQDN resolution returns
+        # an empty string (some misconfigured hosts). We also stash the
+        # short hostname so _is_lock_stale recognises lockdirs written by
+        # older code (or by a peer whose getfqdn() resolved differently)
+        # as belonging to this host.
+        self.hostname = socket.getfqdn() or socket.gethostname()
+        self._short_hostname = socket.gethostname()
         self.pid = os.getpid()
-        self.cross_host_timeout = args.lock_cross_host_timeout
-        self.warn_interval = args.lock_warn_interval
+        # Issue #11: use getattr with sensible defaults consistently across
+        # all optional config knobs. Mixing direct attribute reads with
+        # getattr-with-default produces surprising AttributeErrors when
+        # callers (e.g. ad-hoc SimpleNamespace args) omit fields that the
+        # CLI normally provides.
+        self.cross_host_timeout = getattr(args, "lock_cross_host_timeout", 600)
+        self.warn_interval = getattr(args, "lock_warn_interval", 30)
         self.creation_grace_period = getattr(args, "lock_creation_grace_period", 2)
 
         # Auto-detect optimal sleep interval based on filesystem, allow user override
-        if args.sleep_interval_lockdir is not None:
-            self.sleep_interval = args.sleep_interval_lockdir
+        sleep_override = getattr(args, "sleep_interval_lockdir", None)
+        if sleep_override is not None:
+            self.sleep_interval = sleep_override
         else:
             # Detect filesystem type for auto-tuning
             target_dir = compiletools.wrappedos.dirname(self.target_file) or "."
@@ -248,7 +273,7 @@ class LockdirLock:
             # Conservative: don't remove (wait for timeout or grace period)
             return False
 
-        if lock_host != self.hostname:
+        if lock_host != self.hostname and lock_host != self._short_hostname:
             # Cross-host lock, not stale (can't verify remote process)
             return False
 
@@ -414,11 +439,55 @@ class CIFSLock:
         self.fd = None
         self.sleep_interval = args.sleep_interval_cifs
         self.args = args
+        self.hostname = socket.getfqdn() or socket.gethostname()
+        self._short_hostname = socket.gethostname()
+        self.pid = os.getpid()
+        self.cross_host_timeout = getattr(args, "lock_cross_host_timeout", 600)
+
+    def _read_excl_holder(self):
+        """Return (hostname, pid, start_time) from lockfile_excl, or
+        (None, None, None) if unreadable. Uses host:pid:start_time format,
+        matching LockdirLock."""
+        try:
+            with open(self.lockfile_excl) as f:
+                content = f.read().strip()
+            if ":" not in content:
+                return None, None, None
+            parts = content.split(":", 2)
+            if len(parts) == 2:
+                return parts[0], int(parts[1]), None
+            host, pid_str, st_str = parts
+            try:
+                start_time = float(st_str)
+            except ValueError:
+                start_time = None
+            return host, int(pid_str), start_time
+        except (OSError, ValueError):
+            return None, None, None
+
+    def _is_excl_stale(self):
+        """Return True if lockfile_excl appears to be left by a dead local
+        process. Cross-host locks: cannot verify, treat as ACTIVE (False).
+        Unreadable / no info: only stale once age exceeds cross_host_timeout."""
+        host, pid, start_time = self._read_excl_holder()
+        if host is None:
+            # No info — only stale if old enough
+            try:
+                age = time.time() - os.path.getmtime(self.lockfile_excl)
+            except OSError:
+                return False
+            return age > self.cross_host_timeout
+        if host != self.hostname and host != self._short_hostname:
+            return False
+        return not compiletools.lock_utils.is_process_alive_local(pid, start_time)
 
     def acquire(self):
         """Acquire lock using exclusive file creation (CIFS-safe).
 
-        Algorithm mirrors ct-lock-helper cifs strategy.
+        Algorithm mirrors ct-lock-helper cifs strategy. Adds a stale-holder
+        check (Issue #4): a killed peer can leave lockfile_excl behind
+        forever; we identify same-host stale holders via psutil and remove
+        the lockfile_excl so live peers can proceed.
         """
         # Ensure parent directory exists
         compiletools.lock_utils.ensure_parent_dir(self.lockfile)
@@ -427,27 +496,59 @@ class CIFSLock:
         self.fd = os.open(self.lockfile, os.O_CREAT | os.O_WRONLY, 0o666)
 
         # Acquire exclusive lock using O_EXCL
+        start_time = compiletools.lock_utils.get_process_start_time(self.pid)
+        if start_time is None:
+            payload = f"{self.hostname}:{self.pid}\n"
+        else:
+            payload = f"{self.hostname}:{self.pid}:{start_time}\n"
+
         while True:
             try:
                 excl_fd = os.open(self.lockfile_excl, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
-                # Write PID
-                os.write(excl_fd, f"{os.getpid()}\n".encode())
+                # Write hostname:pid:start_time so peers can detect stale
+                # holders left by killed processes (Issue #4).
+                os.write(excl_fd, payload.encode())
                 os.close(excl_fd)
                 return
             except FileExistsError:
+                if self._is_excl_stale():
+                    # Best-effort: remove and retry. If two peers race, the
+                    # losing unlink raises FileNotFoundError which we ignore;
+                    # the next O_EXCL attempt will tell us who won.
+                    try:
+                        os.unlink(self.lockfile_excl)
+                        if self.args.verbose >= 1:
+                            print(
+                                f"Removed stale CIFS lock: {self.lockfile_excl}",
+                                file=sys.stderr,
+                            )
+                    except FileNotFoundError:
+                        pass
+                    except OSError as e:
+                        if self.args.verbose >= 2:
+                            print(
+                                f"Warning: Failed to remove stale CIFS lock {self.lockfile_excl}: {e}",
+                                file=sys.stderr,
+                            )
+                    continue
                 time.sleep(self.sleep_interval)
 
     def release(self):
-        """Release CIFS lock."""
+        """Release CIFS lock.
+
+        Issue #3: do NOT unlink the base self.lockfile. Once we unlink
+        lockfile_excl a peer can immediately recreate it and (legitimately)
+        have an open fd to self.lockfile. If we unlinked self.lockfile too
+        we'd be deleting a file the peer is now relying on. The base
+        lockfile is harmless to leave behind (idempotent marker), and a
+        future cleanup pass can sweep it if desired.
+        """
         try:
             if os.path.exists(self.lockfile_excl):
                 os.unlink(self.lockfile_excl)
             if self.fd is not None:
                 os.close(self.fd)
                 self.fd = None
-            # Clean up base lockfile to match Makefile suffix behavior
-            if os.path.exists(self.lockfile):
-                os.unlink(self.lockfile)
         except OSError as e:
             if self.args.verbose >= 2:
                 print(f"Warning: Failed to release CIFS lock: {e}", file=sys.stderr)
@@ -488,6 +589,12 @@ class FlockLock:
         compiletools.lock_utils.ensure_parent_dir(self.lockfile)
 
         self.fd = os.open(self.lockfile, os.O_CREAT | os.O_RDWR, 0o666)
+        # See FcntlLock.acquire — explicit 0o666 chmod to defeat umask so
+        # multi-user file_locking works.
+        try:
+            os.fchmod(self.fd, 0o666)
+        except OSError:
+            pass
         try:
             fcntl.flock(self.fd, fcntl.LOCK_EX)
         except BaseException:
@@ -717,7 +824,10 @@ def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.Comp
         if result.returncode != 0:
             raise subprocess.CalledProcessError(result.returncode, cmd)
 
-        os.rename(tempfile_path, target)
+        # os.replace: same as os.rename on POSIX but more robust against
+        # unusual mount layouts (Windows: replaces existing target atomically;
+        # POSIX: identical guarantees to os.rename within a filesystem).
+        os.replace(tempfile_path, target)
         return result
 
     finally:
@@ -732,6 +842,20 @@ def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.Comp
                     pass
         finally:
             lock.release()
+
+
+def _emit_no_temp_warning(verbose: int, link_cmd: list[str], target: str) -> None:
+    """Emit a verbose-2 diagnostic when _rewrite_link_cmd_for_temp could not
+    locate target in link_cmd. The link still runs, but atomicity is lost
+    (the linker writes directly to target). Surfacing this lets users
+    diagnose torn-binary races caused by unrecognised link_cmd shapes."""
+    if verbose >= 2:
+        print(
+            f"Warning: atomic_link could not find target {target!r} in link_cmd; "
+            f"falling back to direct write (no temp+rename atomicity). "
+            f"Command: {link_cmd!r}",
+            file=sys.stderr,
+        )
 
 
 def atomic_link(lock, target: str, link_cmd: list[str]) -> int:
@@ -774,6 +898,10 @@ def atomic_link(lock, target: str, link_cmd: list[str]) -> int:
     tempfile_path = f"{target}.{pid}.{random_suffix}.tmp"
 
     rewritten_cmd, ar_appends = _rewrite_link_cmd_for_temp(link_cmd, target, tempfile_path)
+    if rewritten_cmd == list(link_cmd):
+        # No rewrite happened — atomic guarantees lost. Warn loudly.
+        verbose = getattr(getattr(lock, "args", None), "verbose", 0)
+        _emit_no_temp_warning(verbose, link_cmd, target)
 
     try:
         lock.acquire()
@@ -795,7 +923,9 @@ def atomic_link(lock, target: str, link_cmd: list[str]) -> int:
             raise subprocess.CalledProcessError(result.returncode, rewritten_cmd)
 
         if os.path.exists(tempfile_path):
-            os.rename(tempfile_path, target)
+            # os.replace: atomic same-fs swap; more robust than os.rename
+            # on platforms where the target may already exist.
+            os.replace(tempfile_path, target)
         return result.returncode
     finally:
         try:

@@ -92,6 +92,18 @@ def read_lock_info(lockdir):
         return None, None, None
 
 
+# PID-reuse start_time tolerance.
+#
+# Linux: psutil reads /proc/[pid]/stat starttime (clock-tick resolution,
+# typically 10ms). 0.1s is comfortably above that and tight enough to
+# catch a PID reused within a second.
+#
+# macOS / *BSD: psutil falls back to coarser kernel APIs that may round
+# create_time at second resolution, so we keep 1.0s there to avoid false
+# negatives that would mark an alive holder as stale.
+_PID_REUSE_TOLERANCE_SECONDS = 0.1 if sys.platform.startswith("linux") else 1.0
+
+
 def is_process_alive_local(pid, start_time=None):
     """Check if a local process exists, optionally verifying it is the
     *same* process that recorded the lock (not a PID-reused successor).
@@ -100,8 +112,8 @@ def is_process_alive_local(pid, start_time=None):
         pid: Process ID to check.
         start_time: Optional psutil-style create_time of the recorded
             holder. When provided, returns False unless the live process
-            with this pid has a matching create_time (within 1.0s
-            tolerance — psutil rounds differently across platforms).
+            with this pid has a matching create_time. Tolerance is
+            platform-dependent — see ``_PID_REUSE_TOLERANCE_SECONDS``.
             None means legacy file with no recorded start_time; fall
             back to pid-existence only.
 
@@ -123,7 +135,7 @@ def is_process_alive_local(pid, start_time=None):
         actual_start = proc.create_time()
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return False
-    return abs(actual_start - start_time) < 1.0
+    return abs(actual_start - start_time) < _PID_REUSE_TOLERANCE_SECONDS
 
 
 def get_process_start_time(pid):

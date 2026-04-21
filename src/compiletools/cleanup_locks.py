@@ -22,11 +22,26 @@ class LockCleaner:
             args: ConfigArgParse args object with lock configuration
         """
         self.args = args
-        self.hostname = socket.gethostname()
+        # Issue #6: use FQDN so multi-interface hosts identify their own
+        # locks consistently with what LockdirLock now writes. We also
+        # accept the short hostname as our own — older lockdirs (and tests)
+        # may have recorded the unqualified name.
+        self._fqdn = socket.getfqdn() or socket.gethostname()
+        self._short_hostname = socket.gethostname()
+        self.hostname = self._fqdn
         self.dry_run = getattr(args, "dry_run", False)
         self.ssh_timeout = getattr(args, "ssh_timeout", 5)
         self.min_lock_age = getattr(args, "min_lock_age", args.lock_cross_host_timeout)
         self.verbose = getattr(args, "verbose", 1)
+
+    def _is_local_host(self, lock_host):
+        """True if ``lock_host`` refers to this machine. Accepts both the
+        FQDN and the short hostname so locks written by older code (or by
+        a process whose getfqdn() resolved differently) are still
+        considered local."""
+        if not lock_host:
+            return False
+        return lock_host == self._fqdn or lock_host == self._short_hostname
 
     def _get_lock_age_seconds(self, lockdir):
         """Get lock age in seconds (uses shared lock_utils).
@@ -87,7 +102,7 @@ class LockCleaner:
         if lock_host is None:
             return True, "STALE (no lock info)"
 
-        if lock_host == self.hostname:
+        if self._is_local_host(lock_host):
             # Local lock - psutil + start_time match (PID-reuse safe)
             if self._is_process_alive_local(lock_pid, lock_start_time):
                 return False, "ACTIVE (local process running)"
@@ -145,7 +160,13 @@ class LockCleaner:
             print("DRY RUN MODE: No locks will be removed")
         print()
 
-        for root, dirs, _files in os.walk(objdir):
+        # Issue #10: explicitly disable symlink-following. os.walk's default
+        # is followlinks=False, but stating it here makes intent clear:
+        # following symlinks would let a malicious or accidental link inside
+        # the objdir pull cleanup into arbitrary directories elsewhere on
+        # the filesystem. Lockdirs are produced by our own code inside the
+        # objdir; we never need to chase symlinks to find them.
+        for root, dirs, _files in os.walk(objdir, followlinks=False):
             # Find all .lockdir directories
             for dirname in dirs:
                 if not dirname.endswith(".lockdir"):
