@@ -15,7 +15,7 @@ from compiletools.build_backend import available_backends, get_backend_class, is
 from compiletools.build_context import BuildContext
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.testhelper import TempDirContextNoChange, make_backend_args
-from compiletools.trace_backend import SlurmBackend, TraceEntry, TraceStore, hash_command
+from compiletools.trace_backend import SlurmBackend, TraceStore, _make_trace_entry
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -293,8 +293,6 @@ class TestCAShortCircuit:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [out]))
 
-        from compiletools.global_hash_registry import get_file_hash
-
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             backend.args.objdir = str(tmp_path)
             ctx = backend.context
@@ -302,14 +300,7 @@ class TestCAShortCircuit:
             # Write a valid trace so the file is trusted
             trace_path = str(tmp_path / ".ct-slurm-traces.json")
             store = TraceStore(trace_path)
-            store.put(
-                out,
-                TraceEntry(
-                    output_hash=get_file_hash(out, ctx),
-                    input_hashes={src: get_file_hash(src, ctx)},
-                    command_hash=hash_command(rule.command or []),
-                ),
-            )
+            store.put(out, _make_trace_entry(rule, ctx))
             store.save()
 
             with patch("subprocess.check_output") as mock_sbatch:
@@ -363,8 +354,6 @@ class TestTraceVerification:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [out]))
 
-        from compiletools.global_hash_registry import get_file_hash
-
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             # Point objdir to tmp_path so the trace file is found
             backend.args.objdir = str(tmp_path)
@@ -372,14 +361,7 @@ class TestTraceVerification:
 
             trace_path = str(tmp_path / ".ct-slurm-traces.json")
             store = TraceStore(trace_path)
-            store.put(
-                out,
-                TraceEntry(
-                    output_hash=get_file_hash(out, ctx),
-                    input_hashes={src: get_file_hash(src, ctx)},
-                    command_hash=hash_command(rule.command or []),
-                ),
-            )
+            store.put(out, _make_trace_entry(rule, ctx))
             store.save()
 
             with patch("subprocess.check_output") as mock_sbatch:
@@ -659,24 +641,17 @@ class TestLocalLink:
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             # Record a valid trace for the compile output so it is trusted and skipped.
-            from compiletools.global_hash_registry import get_file_hash
 
             ctx = backend.context
             store = TraceStore(os.path.join(backend.args.objdir, ".ct-slurm-traces.json"))
-            store.put(
-                obj,
-                TraceEntry(
-                    output_hash=get_file_hash(obj, ctx),
-                    input_hashes={src: get_file_hash(src, ctx)},
-                    command_hash=hash_command(compile_rule.command or []),
-                ),
-            )
+            store.put(obj, _make_trace_entry(compile_rule, ctx))
             store.save()
 
             # Link rules now go through atomic_link → _run_with_signal_forwarding;
             # sbatch/sacct (none expected here, since the trace skips compile)
             # would go through subprocess.run.
             with patch("compiletools.locking._run_with_signal_forwarding") as mock_swf:
+
                 def fake_swf(cmd):
                     try:
                         idx = cmd.index("-o")
@@ -709,17 +684,9 @@ class TestLocalLink:
         graph.add_rule(make_phony_rule("build", [exe]))
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
-            from compiletools.global_hash_registry import get_file_hash
             ctx = backend.context
             store = TraceStore(os.path.join(backend.args.objdir, ".ct-slurm-traces.json"))
-            store.put(
-                obj,
-                TraceEntry(
-                    output_hash=get_file_hash(obj, ctx),
-                    input_hashes={src: get_file_hash(src, ctx)},
-                    command_hash=hash_command(compile_rule.command or []),
-                ),
-            )
+            store.put(obj, _make_trace_entry(compile_rule, ctx))
             store.save()
 
             with patch("compiletools.trace_backend.atomic_link") as mock_link:

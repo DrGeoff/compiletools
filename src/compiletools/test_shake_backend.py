@@ -54,6 +54,7 @@ def _swf_writer(content: bytes = b"\x7fELF fake", returncode: int = 0):
 
     return fake
 
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
@@ -116,6 +117,25 @@ class TestTraceStore:
         assert got.output_hash == "aaa"
         assert got.input_hashes == {"a.cpp": "bbb", "a.h": "ccc"}
         assert got.command_hash == "ddd"
+
+    def test_per_entry_corruption_keeps_valid_entries(self, tmp_path, caplog):
+        path = str(tmp_path / ".ct-traces.json")
+        good_entry = {
+            "output_hash": "ok",
+            "input_hashes": {"a.cpp": "h"},
+            "command_hash": "cmd",
+        }
+        bad_entry = {"output_hash": "missing_other_fields"}
+        with open(path, "w") as f:
+            json.dump(
+                {"version": 1, "traces": {"good.o": good_entry, "bad.o": bad_entry}},
+                f,
+            )
+        with caplog.at_level("WARNING", logger="compiletools.trace_backend"):
+            store = TraceStore(path)
+        assert store.get("good.o") is not None
+        assert store.get("bad.o") is None
+        assert any("bad.o" in rec.message or "trace entry" in rec.message.lower() for rec in caplog.records)
 
     def test_corrupt_file_handled(self, tmp_path):
         path = str(tmp_path / ".ct-traces.json")
@@ -505,6 +525,62 @@ class TestErrorHandling:
 # ---------------------------------------------------------------------------
 # Parallel execution
 # ---------------------------------------------------------------------------
+
+
+class TestTracePersistenceOnFailure:
+    """Traces for rules that completed must be saved even when a later rule
+    raises an exception."""
+
+    def test_traces_saved_on_failure(self, monkeypatch):
+        # Chain ok.txt -> bad.txt so ok.txt must complete and have its trace
+        # recorded before bad.txt runs and raises.
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="ok.txt",
+                inputs=["trace_save_src.txt"],
+                command=["cp", "trace_save_src.txt", "ok.txt"],
+                rule_type="copy",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="bad.txt",
+                inputs=["ok.txt"],
+                command=["cp", "ok.txt", "bad.txt"],
+                rule_type="copy",
+            )
+        )
+        graph.add_rule(BuildRule(output="build", inputs=["bad.txt"], command=None, rule_type="phony"))
+
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            (td / "trace_save_src.txt").write_text("data")
+
+            def fake(cmd):
+                if any("bad.txt" in tok for tok in cmd):
+                    return subprocess.CompletedProcess(cmd, 1, None, None)
+                if "-o" in cmd:
+                    out = cmd[cmd.index("-o") + 1]
+                elif len(cmd) >= 3:
+                    out = cmd[-1]
+                else:
+                    out = None
+                if out is not None:
+                    with open(out, "wb") as f:
+                        f.write(b"data")
+                return subprocess.CompletedProcess(cmd, 0, None, None)
+
+            with mock.patch("compiletools.locking._run_with_signal_forwarding", side_effect=fake):
+                with pytest.raises(subprocess.CalledProcessError):
+                    backend.execute("build")
+
+            trace_path = Path(backend.args.objdir) / ".ct-traces.json"
+            assert trace_path.exists()
+            data = json.loads(trace_path.read_text())
+            traces = data.get("traces", {})
+            assert "ok.txt" in traces
 
 
 class TestParallelExecution:
@@ -915,6 +991,138 @@ class TestAtomicCompile:
         assert observed_outputs[0] == target
 
 
+class TestCompilerIdentityInTrace:
+    """_verify must invalidate when the compiler binary itself changes
+    (e.g. in-place upgrade) even though the argv is byte-identical."""
+
+    def test_verify_fails_when_compiler_identity_changes(self, tmp_path, monkeypatch):
+        from compiletools.trace_backend import _make_trace_entry
+
+        monkeypatch.chdir(tmp_path)
+        src = tmp_path / "compiler_identity_src.cpp"
+        obj = tmp_path / "compiler_identity_src.o"
+        src.write_text("int main() {}")
+        obj.write_bytes(b"\x7fELF")
+
+        backend = ShakeBackend.__new__(ShakeBackend)
+        backend.args = mock.MagicMock()
+        backend.args.objdir = str(tmp_path)
+        from compiletools.build_context import BuildContext
+
+        backend.context = BuildContext()
+
+        rule = BuildRule(
+            output=str(obj),
+            inputs=[str(src)],
+            command=["my-fake-compiler", "-c", str(src), "-o", str(obj)],
+            rule_type="copy",
+        )
+
+        with mock.patch("compiletools.trace_backend._compiler_identity", return_value="compiler-v1"):
+            entry_v1 = _make_trace_entry(rule, backend.context)
+
+        with mock.patch("compiletools.trace_backend._compiler_identity", return_value="compiler-v2"):
+            entry_v2 = _make_trace_entry(rule, backend.context)
+            assert backend._verify(rule, entry_v1) is False
+
+        # Identity is folded into the trace's command_hash, not just the verify path.
+        assert entry_v1.command_hash != entry_v2.command_hash
+
+
+class TestVerifyCanonicalization:
+    """_verify and _make_trace_entry must canonicalize input paths so that
+    cosmetic differences (./prefix, redundant slashes) do not spuriously
+    invalidate traces."""
+
+    def test_verify_ignores_prefix_differences(self, tmp_path, monkeypatch):
+        from compiletools.trace_backend import _make_trace_entry
+
+        monkeypatch.chdir(tmp_path)
+        src = tmp_path / "foo.cpp"
+        obj = tmp_path / "foo.o"
+        src.write_text("int main() {}")
+        obj.write_bytes(b"\x7fELF")
+
+        backend = ShakeBackend.__new__(ShakeBackend)
+        backend.args = mock.MagicMock()
+        backend.args.objdir = str(tmp_path)
+        from compiletools.build_context import BuildContext
+
+        backend.context = BuildContext()
+
+        # Same file referenced via canonical and ./-prefixed paths.
+        rule_plain = BuildRule(
+            output=str(obj),
+            inputs=[str(src)],
+            command=["cp", str(src), str(obj)],
+            rule_type="copy",
+        )
+        rule_dotslash = BuildRule(
+            output=str(obj),
+            inputs=["./" + os.path.relpath(str(src))],
+            command=["cp", str(src), str(obj)],
+            rule_type="copy",
+        )
+        entry = _make_trace_entry(rule_plain, backend.context)
+        assert backend._verify(rule_dotslash, entry) is True
+
+
+class TestCompileOutputStripping:
+    """The compile branch must remove '-o target' wherever it appears,
+    not assume it's the last two tokens."""
+
+    def test_compile_handles_o_flag_not_at_end(self, monkeypatch):
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="foo.o",
+                inputs=["foo.cpp"],
+                command=["g++", "-c", "foo.cpp", "-o", "foo.o", "-DEXTRA=1"],
+                rule_type="compile",
+                order_only_deps=["obj"],
+            )
+        )
+        graph.add_rule(BuildRule(output="build", inputs=["foo.o"], command=None, rule_type="phony"))
+
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            (td / "foo.cpp").write_text("int main() {}")
+            os.makedirs(td / "obj", exist_ok=True)
+
+            seen = []
+
+            def fake(cmd):
+                seen.append(list(cmd))
+                if "-o" in cmd:
+                    out = cmd[cmd.index("-o") + 1]
+                    with open(out, "wb") as f:
+                        f.write(b"\x7fELF")
+                return subprocess.CompletedProcess(cmd, 0, None, None)
+
+            with mock.patch("compiletools.locking._run_with_signal_forwarding", side_effect=fake):
+                backend.execute("build")
+
+            assert len(seen) == 1
+            assert "-DEXTRA=1" in seen[0]
+            o_idx = seen[0].index("-o")
+            assert seen[0][o_idx + 1].endswith(".tmp")
+
+
+class TestVerifyAssertions:
+    """Direct unit tests for ShakeBackend._verify."""
+
+    def test_verify_asserts_when_command_is_none(self, tmp_path):
+        backend = ShakeBackend.__new__(ShakeBackend)
+        backend.args = mock.MagicMock()
+        backend.args.objdir = str(tmp_path)
+        backend.context = mock.MagicMock()
+        rule = BuildRule(output="x", inputs=[], command=None, rule_type="phony")
+        trace = TraceEntry(output_hash="h", input_hashes={}, command_hash="c")
+        with pytest.raises(AssertionError):
+            backend._verify(rule, trace)
+
+
 class TestAtomicLinkRouting:
     """Verify Shake routes link/library/copy rules through locking.atomic_link.
 
@@ -1004,8 +1212,10 @@ class TestAtomicLinkRouting:
                             f.write(b"\x7fELF link")
                     self.pid = os.getpid()
                     self.returncode = 0
+
                 def wait(self, timeout=None):
                     return 0
+
                 def poll(self):
                     return 0
 

@@ -64,6 +64,7 @@ import compiletools.filesystem_utils
 import compiletools.wrappedos
 from compiletools.build_backend import (
     BuildBackend,
+    _compiler_identity,
     register_backend,
 )
 from compiletools.build_graph import BuildGraph, BuildRule
@@ -98,16 +99,17 @@ class TraceStore:
         try:
             with open(self._path) as f:
                 data = json.load(f)
-            if not isinstance(data, dict) or data.get("version") != TRACE_VERSION:
-                return
-            for output, entry_dict in data.get("traces", {}).items():
-                self._traces[output] = TraceEntry(
-                    output_hash=entry_dict["output_hash"],
-                    input_hashes=entry_dict["input_hashes"],
-                    command_hash=entry_dict["command_hash"],
-                )
-        except (json.JSONDecodeError, KeyError, TypeError):
+        except json.JSONDecodeError as e:
+            logger.warning("trace store %s is corrupt (%s); discarding", self._path, e)
             self._traces = {}
+            return
+        if not isinstance(data, dict) or data.get("version") != TRACE_VERSION:
+            return
+        for output, entry_dict in data.get("traces", {}).items():
+            try:
+                self._traces[output] = TraceEntry(**entry_dict)
+            except (KeyError, TypeError) as e:
+                logger.warning("dropping corrupt trace entry for %s: %s", output, e)
 
     def get(self, output: str) -> TraceEntry | None:
         return self._traces.get(output)
@@ -124,9 +126,15 @@ class TraceStore:
             json.dump(data, f, indent=2, sort_keys=True)
 
 
-def hash_command(cmd: list[str]) -> str:
-    """Compute a stable hash of a shell command list."""
-    return hashlib.sha1(json.dumps(cmd, sort_keys=False).encode()).hexdigest()
+def hash_command(cmd: list[str], compiler_identity: str | None = None) -> str:
+    """Compute a stable hash of a shell command list.
+
+    *compiler_identity* folds in the resolved binary's realpath + size + mtime
+    for the tool that runs the command, so an in-place compiler upgrade
+    invalidates traces even when the argv is byte-identical.
+    """
+    payload = [compiler_identity, cmd] if compiler_identity is not None else cmd
+    return hashlib.sha1(json.dumps(payload, sort_keys=False).encode()).hexdigest()
 
 
 def _atomic_copy(src: str, dst: str) -> None:
@@ -176,13 +184,14 @@ def _make_trace_entry(rule: BuildRule, context, output_hash: str | None = None) 
     input_hashes = {}
     for p in rule.inputs:
         if os.path.isfile(p):
-            input_hashes[p] = get_file_hash(p, context)
+            input_hashes[compiletools.wrappedos.realpath(p)] = get_file_hash(p, context)
         else:
             logger.debug("_make_trace_entry: skipping non-file input %s for %s", p, rule.output)
+    identity = _compiler_identity(rule.command[0]) if rule.command else None
     return TraceEntry(
         output_hash=output_hash if output_hash is not None else get_file_hash(rule.output, context),
         input_hashes=input_hashes,
-        command_hash=hash_command(rule.command),
+        command_hash=hash_command(rule.command, compiler_identity=identity),
     )
 
 
@@ -258,9 +267,10 @@ class ShakeBackend(BuildBackend):
         sem = asyncio.Semaphore(max_workers)
         memo: dict[str, asyncio.Task[bool]] = {}
 
-        asyncio.run(self._build_async(target, self._graph, traces, memo, sem))
-
-        traces.save()
+        try:
+            asyncio.run(self._build_async(target, self._graph, traces, memo, sem))
+        finally:
+            traces.save()
 
     async def _build_async(
         self,
@@ -356,24 +366,18 @@ class ShakeBackend(BuildBackend):
         """Run the subprocess for a single build rule (called from a thread)."""
         start = time.monotonic()
         if rule.rule_type == "compile":
-            cmd_without_output = flat_cmd[:-2]  # remove [-o, target]
-            lock_impl = FileLock(target, self.args).lock
             try:
-                atomic_compile(lock_impl, target, cmd_without_output)
-            except subprocess.CalledProcessError as e:
-                print(e.stdout or "", end="", file=sys.stdout)
-                print(e.stderr or "", end="", file=sys.stderr)
-                raise
+                o_idx = flat_cmd.index("-o")
+            except ValueError as e:
+                raise AssertionError(f"compile rule missing -o flag: {flat_cmd}") from e
+            cmd_without_output = flat_cmd[:o_idx] + flat_cmd[o_idx + 2 :]
+            lock_impl = FileLock(target, self.args).lock
+            atomic_compile(lock_impl, target, cmd_without_output)
         elif _is_build_artifact(rule):
             ca = self._ca_target(rule)
             ca_cmd = [ca if a == target else a for a in flat_cmd]
             lock_impl = FileLock(ca, self.args).lock
-            try:
-                atomic_link(lock_impl, ca, ca_cmd)
-            except subprocess.CalledProcessError as e:
-                print(e.stdout or "", end="", file=sys.stdout)
-                print(e.stderr or "", end="", file=sys.stderr)
-                raise
+            atomic_link(lock_impl, ca, ca_cmd)
             _atomic_copy(ca, target)
         else:
             lock_impl = FileLock(target, self.args).lock
@@ -395,17 +399,19 @@ class ShakeBackend(BuildBackend):
 
     def _verify(self, rule, trace: TraceEntry) -> bool:
         """Check if a trace is still valid (output exists, inputs unchanged, same command)."""
-        # Verify output file still exists and matches the recorded hash
+        assert rule.command is not None, "_verify only applies to rules with commands"
         try:
             if get_file_hash(rule.output, self.context) != trace.output_hash:
                 return False
         except (FileNotFoundError, OSError):
             return False
 
-        if hash_command(rule.command) != trace.command_hash:
+        identity = _compiler_identity(rule.command[0]) if rule.command else None
+        if hash_command(rule.command, compiler_identity=identity) != trace.command_hash:
             return False
 
-        if set(rule.inputs) != set(trace.input_hashes.keys()):
+        canonical_inputs = {compiletools.wrappedos.realpath(p) for p in rule.inputs}
+        if canonical_inputs != set(trace.input_hashes.keys()):
             return False
 
         for inp, stored_hash in trace.input_hashes.items():
