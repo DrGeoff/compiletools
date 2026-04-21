@@ -525,7 +525,7 @@ class BuildBackend(abc.ABC):
             test_result_paths = []
             for exe_path in test_exe_paths:
                 result_path = exe_path + ".result"
-                test_cmd = ["rm", "-f", result_path, "&&"] + testprefix_parts + [exe_path, "&&", "touch", result_path]
+                test_cmd = testprefix_parts + [exe_path, "&&", "touch", result_path]
                 graph.add_rule(
                     BuildRule(
                         output=result_path,
@@ -704,19 +704,21 @@ class BuildBackend(abc.ABC):
     def _wrap_compile_cmd(self, command: list[str]) -> str:
         """Return the command string for a compile rule, lock-wrapped if needed.
 
-        The command list is expected to end with [..., "-o", target].
-        When file_locking is enabled, the -o and target are stripped and
-        ct-lock-helper wraps the remainder.
+        Locates ``-o target`` in the command by index (not position) so a
+        trailing token after the output path doesn't desync the wrap. When
+        file_locking is enabled, the -o and target are stripped and
+        ct-lock-helper wraps the remainder. Mirrors ShakeBackend's compile
+        path (commit a3c67675).
         """
+        try:
+            o_idx = command.index("-o")
+        except ValueError as e:
+            raise AssertionError(f"compile rule missing -o flag: {command}") from e
+
         if not getattr(self.args, "file_locking", False) or self._filesystem_type is None:
             return " ".join(command)
 
-        try:
-            o_idx = command.index("-o")
-        except ValueError:
-            return " ".join(command)
-
-        compile_part = command[:o_idx]
+        compile_part = command[:o_idx] + command[o_idx + 2 :]
         target = command[o_idx + 1]
 
         return wrap_compile_with_lock(" ".join(compile_part), target, self.args, self._filesystem_type)
@@ -782,7 +784,12 @@ class BuildBackend(abc.ABC):
             content_hash = get_file_hash(filename, self.context)
             analysis = analyze_file(content_hash, self.context)
             include_weight = len(analysis.quoted_headers)
-        except (FileNotFoundError, OSError, RuntimeError):
+        except (FileNotFoundError, OSError, RuntimeError) as e:
+            print(
+                f"WARNING: could not analyze {filename!r} for include_weight ({type(e).__name__}: {e}); "
+                "SLURM memory estimate will be 0 for this rule.",
+                file=sys.stderr,
+            )
             include_weight = 0
 
         import stringzilla as sz

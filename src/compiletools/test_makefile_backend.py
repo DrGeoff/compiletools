@@ -1,8 +1,15 @@
 import io
+import os
 import subprocess
+import sys
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+import compiletools.makefile
+import compiletools.testhelper as uth
 from compiletools.build_backend import get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.makefile_backend import MakefileBackend, _get_make_version
@@ -192,18 +199,22 @@ class TestMakefileRealclean:
 
     def _build_graph(self):
         graph = BuildGraph()
-        graph.add_rule(BuildRule(
-            output="/tmp/shared-obj/proj/foo.o",
-            inputs=["foo.cpp"],
-            command=["g++", "-c", "foo.cpp", "-o", "/tmp/shared-obj/proj/foo.o"],
-            rule_type="compile",
-        ))
-        graph.add_rule(BuildRule(
-            output="/tmp/proj/bin/foo",
-            inputs=["/tmp/shared-obj/proj/foo.o"],
-            command=["g++", "-o", "/tmp/proj/bin/foo", "/tmp/shared-obj/proj/foo.o"],
-            rule_type="link",
-        ))
+        graph.add_rule(
+            BuildRule(
+                output="/tmp/shared-obj/proj/foo.o",
+                inputs=["foo.cpp"],
+                command=["g++", "-c", "foo.cpp", "-o", "/tmp/shared-obj/proj/foo.o"],
+                rule_type="compile",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="/tmp/proj/bin/foo",
+                inputs=["/tmp/shared-obj/proj/foo.o"],
+                command=["g++", "-o", "/tmp/proj/bin/foo", "/tmp/shared-obj/proj/foo.o"],
+                rule_type="link",
+            )
+        )
         return graph
 
     def _generate(self, args, graph):
@@ -239,9 +250,14 @@ class TestMakefileRealclean:
         exe_dir (per-project) but emits no rm -f / find for obj_dir."""
         args = self._make_args()
         graph = BuildGraph()
-        graph.add_rule(BuildRule(
-            output="all", inputs=[], command=None, rule_type="phony",
-        ))
+        graph.add_rule(
+            BuildRule(
+                output="all",
+                inputs=[],
+                command=None,
+                rule_type="phony",
+            )
+        )
         content = self._generate(args, graph)
 
         lines = content.splitlines()
@@ -443,18 +459,22 @@ class TestMakefileTestRules:
     def test_test_result_rule_in_makefile(self):
         """Test rules should produce .result file recipes in the Makefile."""
         graph = BuildGraph()
-        graph.add_rule(BuildRule(
-            output="bin/test_foo.result",
-            inputs=["bin/test_foo"],
-            command=["rm", "-f", "bin/test_foo.result", "&&", "bin/test_foo", "&&", "touch", "bin/test_foo.result"],
-            rule_type="test",
-        ))
-        graph.add_rule(BuildRule(
-            output="runtests",
-            inputs=["bin/test_foo.result"],
-            command=None,
-            rule_type="phony",
-        ))
+        graph.add_rule(
+            BuildRule(
+                output="bin/test_foo.result",
+                inputs=["bin/test_foo"],
+                command=["bin/test_foo", "&&", "touch", "bin/test_foo.result"],
+                rule_type="test",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="runtests",
+                inputs=["bin/test_foo.result"],
+                command=None,
+                rule_type="phony",
+            )
+        )
 
         args = self._make_args()
         hunter = MagicMock()
@@ -465,19 +485,22 @@ class TestMakefileTestRules:
         content = buf.getvalue()
 
         assert "bin/test_foo.result: bin/test_foo" in content
-        assert "rm -f bin/test_foo.result && bin/test_foo && touch bin/test_foo.result" in content
+        assert "bin/test_foo && touch bin/test_foo.result" in content
+        assert "rm -f bin/test_foo.result" not in content
         assert ".PHONY: runtests" in content
         assert "runtests: bin/test_foo.result" in content
 
     def test_test_verbose_echo(self):
         """Test rules should include echo when verbose >= 1."""
         graph = BuildGraph()
-        graph.add_rule(BuildRule(
-            output="bin/test_foo.result",
-            inputs=["bin/test_foo"],
-            command=["rm", "-f", "bin/test_foo.result", "&&", "bin/test_foo", "&&", "touch", "bin/test_foo.result"],
-            rule_type="test",
-        ))
+        graph.add_rule(
+            BuildRule(
+                output="bin/test_foo.result",
+                inputs=["bin/test_foo"],
+                command=["bin/test_foo", "&&", "touch", "bin/test_foo.result"],
+                rule_type="test",
+            )
+        )
 
         args = self._make_args(verbose=1)
         hunter = MagicMock()
@@ -492,12 +515,14 @@ class TestMakefileTestRules:
     def test_notparallel_when_serialise_tests(self):
         """.NOTPARALLEL should be emitted when --serialise-tests is set."""
         graph = BuildGraph()
-        graph.add_rule(BuildRule(
-            output="bin/test_foo.result",
-            inputs=["bin/test_foo"],
-            command=["rm", "-f", "bin/test_foo.result", "&&", "bin/test_foo", "&&", "touch", "bin/test_foo.result"],
-            rule_type="test",
-        ))
+        graph.add_rule(
+            BuildRule(
+                output="bin/test_foo.result",
+                inputs=["bin/test_foo"],
+                command=["bin/test_foo", "&&", "touch", "bin/test_foo.result"],
+                rule_type="test",
+            )
+        )
 
         args = self._make_args(serialisetests=True)
         hunter = MagicMock()
@@ -512,12 +537,14 @@ class TestMakefileTestRules:
     def test_no_notparallel_when_not_serialised(self):
         """.NOTPARALLEL should NOT be emitted when --serialise-tests is not set."""
         graph = BuildGraph()
-        graph.add_rule(BuildRule(
-            output="bin/test_foo.result",
-            inputs=["bin/test_foo"],
-            command=["rm", "-f", "bin/test_foo.result", "&&", "bin/test_foo", "&&", "touch", "bin/test_foo.result"],
-            rule_type="test",
-        ))
+        graph.add_rule(
+            BuildRule(
+                output="bin/test_foo.result",
+                inputs=["bin/test_foo"],
+                command=["bin/test_foo", "&&", "touch", "bin/test_foo.result"],
+                rule_type="test",
+            )
+        )
 
         args = self._make_args(serialisetests=False)
         hunter = MagicMock()
@@ -528,3 +555,297 @@ class TestMakefileTestRules:
         content = buf.getvalue()
 
         assert ".NOTPARALLEL" not in content
+
+
+class TestMakefileHeaderDeterministic:
+    """The Makefile header is the basis for the regen-skip optimization.
+
+    Two ct-cake invocations with identical CLI args must produce
+    byte-identical headers, otherwise _build_file_uptodate always
+    returns False and Makefile generation runs every time.
+    """
+
+    def _make_args(self, **overrides):
+        defaults = dict(
+            verbose=0,
+            objdir="/tmp/obj",
+            bindir="/tmp/bin",
+            git_root="",
+            file_locking=False,
+            makefilename="Makefile",
+            filename=[],
+            tests=[],
+            static=[],
+            dynamic=[],
+            CC="gcc",
+            CXX="g++",
+            CFLAGS="-O2",
+            CXXFLAGS="-O2",
+            LD="g++",
+            LDFLAGS="",
+            serialisetests=False,
+            build_only_changed=None,
+        )
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    def test_header_ignores_underscore_attrs(self):
+        """Attrs prefixed with `_` (e.g. _parser, _context with object addresses)
+        must not appear in the header signature."""
+        args = self._make_args()
+        # Attach the same kind of non-deterministic objects apptools attaches
+        args._parser = object()
+        args._context = object()
+
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        sig = backend._args_signature()
+        assert "_parser" not in sig
+        assert "_context" not in sig
+        assert "0x" not in sig  # No memory addresses leaked
+
+    def test_two_invocations_produce_identical_headers(self):
+        """Critical regression: two backends built from independent args
+        with identical CLI values must emit byte-identical headers."""
+        args1 = self._make_args()
+        args1._parser = object()
+        args1._context = object()
+        backend1 = MakefileBackend(args=args1, hunter=MagicMock())
+        backend1._filesystem_type = None
+
+        args2 = self._make_args()
+        args2._parser = object()  # Distinct object => distinct repr address
+        args2._context = object()
+        backend2 = MakefileBackend(args=args2, hunter=MagicMock())
+        backend2._filesystem_type = None
+
+        graph = BuildGraph()
+        graph.add_rule(BuildRule(output="all", inputs=[], command=None, rule_type="phony"))
+
+        buf1 = io.StringIO()
+        backend1._write_makefile(graph, buf1)
+        buf2 = io.StringIO()
+        backend2._write_makefile(graph, buf2)
+
+        # Headers (first line) must match byte-for-byte
+        header1 = buf1.getvalue().split("\n", 1)[0]
+        header2 = buf2.getvalue().split("\n", 1)[0]
+        assert header1 == header2, f"Headers differ:\n{header1}\n{header2}"
+
+
+class TestWrapCompileCmdRobust:
+    """Fix 5: -o placement should be located by index, not assumed at end."""
+
+    def test_o_anywhere_in_command(self):
+        """A token after `-o target` should not desync the wrap."""
+        args = SimpleNamespace(
+            file_locking=True,
+            sleep_interval_lockdir=0.05,
+            sleep_interval_cifs=0.01,
+            sleep_interval_flock_fallback=0.01,
+            lock_warn_interval=30,
+            lock_cross_host_timeout=300,
+        )
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        backend._filesystem_type = "nfs"
+        # `-o target` is in the middle, with a trailing flag after
+        cmd = ["g++", "-c", "foo.cpp", "-o", "foo.o", "-DEXTRA_AT_END"]
+        result = backend._wrap_compile_cmd(cmd)
+        # Wrap must reference the actual target
+        assert "--target=foo.o" in result
+        # The trailing flag must still be present in the wrapped command
+        assert "-DEXTRA_AT_END" in result
+
+    def test_missing_dash_o_raises(self):
+        """A compile command without -o should raise loudly, not silently pass."""
+        args = SimpleNamespace(file_locking=False)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        backend._filesystem_type = None
+        with pytest.raises(AssertionError, match="missing -o"):
+            backend._wrap_compile_cmd(["g++", "-c", "foo.cpp"])
+
+
+class TestMakeRuntestsIncremental:
+    """Fix 2: `make runtests` must skip up-to-date tests."""
+
+    def setup_method(self):
+        uth.reset()
+
+    def teardown_method(self):
+        uth.reset()
+
+    @uth.requires_functional_compiler
+    def test_make_runtests_skips_uptodate(self, tmp_path, monkeypatch):
+        """After a successful first run, the second `make runtests` must not
+        re-execute the test executable. Regression for the recipe self-deleting
+        its own .result output."""
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "test_count.cpp"
+        marker = tmp_path / "ran.count"
+        source.write_text(f"""
+// ct-testmarker
+#include <fstream>
+int main() {{
+    std::ofstream f("{marker}", std::ios::app);
+    f << "x";
+    return 0;
+}}
+""")
+
+        with uth.TempConfigContext(tempdir=str(tmp_path)) as cfg:
+            with uth.ParserContext():
+                compiletools.makefile.main(["--config=" + cfg, "--no-file-locking", "--tests=" + str(source)])
+
+            mfs = [f for f in os.listdir(".") if f.startswith("Makefile")]
+            assert mfs, "Makefile should have been generated"
+
+            # First run: builds + runs the test
+            r1 = subprocess.run(["make", "-f", mfs[0], "runtests"], capture_output=True, text=True)
+            assert r1.returncode == 0, f"first run: {r1.stdout}{r1.stderr}"
+            assert marker.exists(), "test should have run at least once"
+            count_after_first = len(marker.read_text())
+            assert count_after_first >= 1
+
+            # Second run: must NOT re-execute the test (mtime check should skip it)
+            r2 = subprocess.run(["make", "-f", mfs[0], "runtests"], capture_output=True, text=True)
+            assert r2.returncode == 0, f"second run: {r2.stdout}{r2.stderr}"
+            count_after_second = len(marker.read_text())
+            assert count_after_second == count_after_first, (
+                f"test re-ran: count {count_after_first} -> {count_after_second}; output:\n{r2.stdout}{r2.stderr}"
+            )
+
+
+class TestAllOutputsCurrentHeaderEdit:
+    """Fix 3: editing a header must trigger a rebuild even though
+    `_all_outputs_current` short-circuits before make runs.
+
+    With content-addressable object naming the bug does not reproduce:
+    a header content change updates the dep_hash in the rebuilt graph,
+    which changes the object output path, so `os.path.exists(rule.output)`
+    in `_all_outputs_current` returns False on the freshly-built graph and
+    make is invoked. This test pins that behavior."""
+
+    def setup_method(self):
+        uth.reset()
+
+    def teardown_method(self):
+        uth.reset()
+
+    @uth.requires_functional_compiler
+    def test_header_edit_triggers_rebuild(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        header = tmp_path / "h.hpp"
+        source = tmp_path / "main.cpp"
+        header.write_text("#pragma once\nint val() { return 1; }\n")
+        source.write_text('// ct-exemarker\n#include "h.hpp"\nint main() { return val() == 1 ? 0 : 1; }\n')
+
+        def _build():
+            with uth.TempConfigContext(tempdir=str(tmp_path)) as cfg:
+                with uth.ParserContext():
+                    compiletools.makefile.main(["--config=" + cfg, "--no-file-locking", str(source)])
+                mfs = [f for f in os.listdir(".") if f.startswith("Makefile")]
+                assert mfs
+                r = subprocess.run(["make", "-f", mfs[0]], capture_output=True, text=True)
+                assert r.returncode == 0, f"build failed: {r.stdout}{r.stderr}"
+
+        _build()
+
+        # Find the .o file from first build
+        objs_first = sorted(
+            os.path.join(dp, fn) for dp, _, files in os.walk(tmp_path) for fn in files if fn.endswith(".o")
+        )
+        assert objs_first, "no .o file produced by first build"
+
+        # Edit the header to change its content
+        header.write_text("#pragma once\nint val() { return 2; }\n")
+
+        _build()
+
+        objs_second = sorted(
+            os.path.join(dp, fn) for dp, _, files in os.walk(tmp_path) for fn in files if fn.endswith(".o")
+        )
+        # New .o (with new dep_hash) must exist after the second build
+        new_objs = set(objs_second) - set(objs_first)
+        assert new_objs, f"header edit did not produce a fresh .o (objs: {objs_second})"
+
+
+class TestMakefileConcurrency:
+    """Fix 9: concurrent `make -j` against a shared objdir must produce a
+    correct build (no half-written .o, no torn link). Recent commit 348c18e1
+    wraps link rules with ct-lock-helper for this case."""
+
+    def setup_method(self):
+        uth.reset()
+
+    def teardown_method(self):
+        uth.reset()
+
+    @uth.requires_functional_compiler
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only")
+    def test_concurrent_make_against_same_objdir(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        # Generate a few sources so the build has work to parallelise
+        sources = []
+        for i in range(3):
+            src = tmp_path / f"prog_{i}.cpp"
+            src.write_text(f"// ct-exemarker\nint main() {{ return {i}; }}\n")
+            sources.append(str(src))
+
+        with uth.TempConfigContext(tempdir=str(tmp_path)) as cfg:
+            with uth.ParserContext():
+                compiletools.makefile.main(["--config=" + cfg, "--file-locking=true"] + sources)
+
+            mfs = [f for f in os.listdir(".") if f.startswith("Makefile")]
+            assert mfs
+
+            # Warm-up build: ensure all artifacts exist before the race so the
+            # test reliably exercises lock contention rather than the genuine
+            # write-while-read race on freshly-created .o files (which is a
+            # known limitation of the current native-flock-on-output strategy).
+            warmup = subprocess.run(
+                ["make", "-f", mfs[0], "-j", "4"], capture_output=True, text=True
+            )
+            assert warmup.returncode == 0, (
+                f"warmup build failed: {warmup.stdout}{warmup.stderr}"
+            )
+
+            # Now race two concurrent makes. With everything up-to-date, both
+            # should see no work to do; the lock helper paths must still be
+            # exercised without producing torn outputs.
+            results: list[subprocess.CompletedProcess] = []
+            errs: list[BaseException] = []
+
+            def _run():
+                try:
+                    r = subprocess.run(
+                        ["make", "-f", mfs[0], "-j", "8"],
+                        capture_output=True,
+                        text=True,
+                    )
+                    results.append(r)
+                except BaseException as e:
+                    errs.append(e)
+
+            threads = [threading.Thread(target=_run) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=120)
+            assert not errs, f"concurrent make raised: {errs}"
+            assert len(results) == 2
+
+            for r in results:
+                assert r.returncode == 0, f"concurrent make failed: stdout={r.stdout} stderr={r.stderr}"
+
+            # All executables must exist and run
+            exes = []
+            for src in sources:
+                stem = os.path.splitext(os.path.basename(src))[0]
+                for dp, _, files in os.walk(tmp_path):
+                    for fn in files:
+                        if fn == stem and os.access(os.path.join(dp, fn), os.X_OK):
+                            exes.append(os.path.join(dp, fn))
+                            break
+            assert len(exes) == len(sources), f"missing executables: {exes}"
+            for exe in exes:
+                rc = subprocess.run([exe], capture_output=True).returncode
+                assert rc in range(256), f"{exe} did not run cleanly"

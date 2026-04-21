@@ -345,7 +345,10 @@ class TestBuildGraphPopulation:
         rule = test_rules[0]
         assert rule.output == f"{bindir}/test_foo.result"
         assert rule.inputs == [f"{bindir}/test_foo"]
-        assert "rm" in rule.command
+        # The recipe must NOT self-delete its own output (Fix 2): make's
+        # mtime check skips re-running the test only when .result is fresher
+        # than the executable.
+        assert "rm" not in rule.command
         assert "touch" in rule.command
         assert f"{bindir}/test_foo" in rule.command
 
