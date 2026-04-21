@@ -27,15 +27,16 @@ class CompilationDatabaseCreator:
         # Use provided objects or create new ones
         self.namer = namer if namer is not None else compiletools.namer.Namer(args, context=context)
         self.headerdeps = (
-            headerdeps if headerdeps is not None
-            else compiletools.headerdeps.create(args, context=context)
+            headerdeps if headerdeps is not None else compiletools.headerdeps.create(args, context=context)
         )
         self.magicparser = (
-            magicparser if magicparser is not None
+            magicparser
+            if magicparser is not None
             else compiletools.magicflags.create(args, self.headerdeps, context=context)
         )
         self.hunter = (
-            hunter if hunter is not None
+            hunter
+            if hunter is not None
             else compiletools.hunter.Hunter(args, self.headerdeps, self.magicparser, context=context)
         )
 

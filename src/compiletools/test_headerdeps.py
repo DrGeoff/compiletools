@@ -74,7 +74,11 @@ def _generatecache(tempdir, name, realpaths, extraargs=None):
             temp_config_name,
         ] + extraargs
         cachename = os.path.join(tempdir, name)
-        cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
         compiletools.headerdeps.add_arguments(cap)
         ctx = BuildContext()
         args = compiletools.apptools.parseargs(cap, argv, context=ctx)
@@ -374,7 +378,11 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         ]
 
         for cppflags, expected_includes in test_cases:
-            cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
+            cap = configargparse.ArgumentParser(
+                conflict_handler="resolve",
+                args_for_setting_config_path=["-c", "--config"],
+                ignore_unknown_config_file_keys=True,
+            )
             compiletools.headerdeps.add_arguments(cap)
             compiletools.apptools.add_common_arguments(cap)
 
@@ -399,7 +407,11 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         # This is the critical test case that exposes the bug
         expected_includes = ["/path with spaces/include"]
 
-        cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
         compiletools.headerdeps.add_arguments(cap)
         compiletools.apptools.add_common_arguments(cap)
 
@@ -432,7 +444,11 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         ]
 
         for cppflags in test_cases:
-            cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
+            cap = configargparse.ArgumentParser(
+                conflict_handler="resolve",
+                args_for_setting_config_path=["-c", "--config"],
+                ignore_unknown_config_file_keys=True,
+            )
             compiletools.headerdeps.add_arguments(cap)
             compiletools.apptools.add_common_arguments(cap)
 

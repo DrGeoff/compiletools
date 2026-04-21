@@ -475,7 +475,7 @@ class TestInstanceBulkMethods:
         """Test instance _find_magic_positions_simd_bulk method."""
         import stringzilla as sz
 
-        text = sz.Str('//#LIBS=pthread\n//#CFLAGS=-O2\nint x;\n')
+        text = sz.Str("//#LIBS=pthread\n//#CFLAGS=-O2\nint x;\n")
         offsets = [0, 15, 29, 36]
         positions = self.analyzer._find_magic_positions_simd_bulk(text, offsets)
         assert len(positions) == 2
@@ -484,7 +484,7 @@ class TestInstanceBulkMethods:
         """Test magic positions are rejected when non-whitespace precedes //#."""
         import stringzilla as sz
 
-        text = sz.Str('int x; //#LIBS=pthread\n//#CFLAGS=-O2\n')
+        text = sz.Str("int x; //#LIBS=pthread\n//#CFLAGS=-O2\n")
         offsets = [0, 22, 36]
         positions = self.analyzer._find_magic_positions_simd_bulk(text, offsets)
         assert len(positions) == 1  # first one rejected due to prefix
@@ -493,7 +493,7 @@ class TestInstanceBulkMethods:
         """Test magic positions inside block comments are rejected."""
         import stringzilla as sz
 
-        text = sz.Str('/* //#LIBS=pthread */\n//#CFLAGS=-O2\n')
+        text = sz.Str("/* //#LIBS=pthread */\n//#CFLAGS=-O2\n")
         offsets = [0, 21, 35]
         positions = self.analyzer._find_magic_positions_simd_bulk(text, offsets)
         assert len(positions) == 1
@@ -502,7 +502,7 @@ class TestInstanceBulkMethods:
         """Test magic positions with empty key are rejected."""
         import stringzilla as sz
 
-        text = sz.Str('//# =value\n//#VALID=yes\n')
+        text = sz.Str("//# =value\n//#VALID=yes\n")
         offsets = [0, 11, 23]
         positions = self.analyzer._find_magic_positions_simd_bulk(text, offsets)
         assert len(positions) == 1
@@ -511,7 +511,7 @@ class TestInstanceBulkMethods:
         """Test magic positions with invalid key characters are rejected."""
         import stringzilla as sz
 
-        text = sz.Str('//#KEY$=value\n//#VALID=yes\n')
+        text = sz.Str("//#KEY$=value\n//#VALID=yes\n")
         offsets = [0, 14, 26]
         positions = self.analyzer._find_magic_positions_simd_bulk(text, offsets)
         assert len(positions) == 1
@@ -520,7 +520,7 @@ class TestInstanceBulkMethods:
         """Test magic positions where key starts with digit are rejected."""
         import stringzilla as sz
 
-        text = sz.Str('//#1KEY=value\n//#VALID=yes\n')
+        text = sz.Str("//#1KEY=value\n//#VALID=yes\n")
         offsets = [0, 14, 26]
         positions = self.analyzer._find_magic_positions_simd_bulk(text, offsets)
         assert len(positions) == 1
@@ -529,7 +529,7 @@ class TestInstanceBulkMethods:
         """Test magic positions without = sign are rejected."""
         import stringzilla as sz
 
-        text = sz.Str('//# just a comment\n//#VALID=yes\n')
+        text = sz.Str("//# just a comment\n//#VALID=yes\n")
         offsets = [0, 19, 31]
         positions = self.analyzer._find_magic_positions_simd_bulk(text, offsets)
         assert len(positions) == 1
@@ -538,7 +538,7 @@ class TestInstanceBulkMethods:
         """Test magic positions on the last line (no trailing newline)."""
         import stringzilla as sz
 
-        text = sz.Str('//#LIBS=pthread')
+        text = sz.Str("//#LIBS=pthread")
         offsets = [0]
         positions = self.analyzer._find_magic_positions_simd_bulk(text, offsets)
         assert len(positions) == 1
@@ -547,7 +547,7 @@ class TestInstanceBulkMethods:
         """Test instance _find_directive_positions_simd_bulk method."""
         import stringzilla as sz
 
-        text = sz.Str('#include <stdio.h>\n#define FOO 1\n#ifdef BAR\n#endif\n')
+        text = sz.Str("#include <stdio.h>\n#define FOO 1\n#ifdef BAR\n#endif\n")
         offsets = [0, 19, 33, 44, 51]
         positions = self.analyzer._find_directive_positions_simd_bulk(text, offsets)
         assert "include" in positions
@@ -559,7 +559,7 @@ class TestInstanceBulkMethods:
         """Test directives with leading whitespace are detected."""
         import stringzilla as sz
 
-        text = sz.Str('  #define FOO\n\t#ifdef BAR\n')
+        text = sz.Str("  #define FOO\n\t#ifdef BAR\n")
         offsets = [0, 14, 26]
         positions = self.analyzer._find_directive_positions_simd_bulk(text, offsets)
         assert "define" in positions
@@ -569,7 +569,7 @@ class TestInstanceBulkMethods:
         """Test that # in non-directive context is ignored."""
         import stringzilla as sz
 
-        text = sz.Str('x = a # b;\n#define FOO\n')
+        text = sz.Str("x = a # b;\n#define FOO\n")
         offsets = [0, 11, 23]
         positions = self.analyzer._find_directive_positions_simd_bulk(text, offsets)
         # The # in "a # b" has non-whitespace before it, so rejected
@@ -581,20 +581,33 @@ class TestInstanceBulkMethods:
         import stringzilla as sz
 
         source = (
-            '#if 1\n#ifdef A\n#ifndef B\n#elif 0\n#else\n'
-            '#endif\n#define C\n#undef D\n#include <x>\n'
-            '#pragma once\n#error msg\n#warning msg\n#line 1\n'
+            "#if 1\n#ifdef A\n#ifndef B\n#elif 0\n#else\n"
+            "#endif\n#define C\n#undef D\n#include <x>\n"
+            "#pragma once\n#error msg\n#warning msg\n#line 1\n"
         )
         text = sz.Str(source)
         offsets = [0]
         pos = 0
         for ch in source:
-            if ch == '\n':
+            if ch == "\n":
                 offsets.append(pos + 1)
             pos += 1
         positions = self.analyzer._find_directive_positions_simd_bulk(text, offsets)
-        expected = {"if", "ifdef", "ifndef", "elif", "else", "endif",
-                    "define", "undef", "include", "pragma", "error", "warning", "line"}
+        expected = {
+            "if",
+            "ifdef",
+            "ifndef",
+            "elif",
+            "else",
+            "endif",
+            "define",
+            "undef",
+            "include",
+            "pragma",
+            "error",
+            "warning",
+            "line",
+        }
         assert set(positions.keys()) == expected
 
 
@@ -625,10 +638,12 @@ class TestDetectIncludeGuard:
         from compiletools.file_analyzer import PreprocessorDirective, detect_include_guard
 
         directives = [
-            PreprocessorDirective(line_num=0, byte_pos=0, directive_type="pragma",
-                                  continuation_lines=0, macro_name="once"),
-            PreprocessorDirective(line_num=2, byte_pos=20, directive_type="define",
-                                  continuation_lines=0, macro_name="FOO"),
+            PreprocessorDirective(
+                line_num=0, byte_pos=0, directive_type="pragma", continuation_lines=0, macro_name="once"
+            ),
+            PreprocessorDirective(
+                line_num=2, byte_pos=20, directive_type="define", continuation_lines=0, macro_name="FOO"
+            ),
         ]
         guard = detect_include_guard(directives)
         assert guard is not None
@@ -638,10 +653,12 @@ class TestDetectIncludeGuard:
         from compiletools.file_analyzer import PreprocessorDirective, detect_include_guard
 
         directives = [
-            PreprocessorDirective(line_num=0, byte_pos=0, directive_type="pragma",
-                                  continuation_lines=0, condition="once"),
-            PreprocessorDirective(line_num=2, byte_pos=20, directive_type="define",
-                                  continuation_lines=0, macro_name="FOO"),
+            PreprocessorDirective(
+                line_num=0, byte_pos=0, directive_type="pragma", continuation_lines=0, condition="once"
+            ),
+            PreprocessorDirective(
+                line_num=2, byte_pos=20, directive_type="define", continuation_lines=0, macro_name="FOO"
+            ),
         ]
         guard = detect_include_guard(directives)
         assert guard is not None
@@ -653,12 +670,13 @@ class TestDetectIncludeGuard:
         from compiletools.file_analyzer import PreprocessorDirective, detect_include_guard
 
         directives = [
-            PreprocessorDirective(line_num=0, byte_pos=0, directive_type="ifndef",
-                                  continuation_lines=0, macro_name=sz.Str("MY_HEADER_H")),
-            PreprocessorDirective(line_num=1, byte_pos=20, directive_type="define",
-                                  continuation_lines=0, macro_name=sz.Str("MY_HEADER_H")),
-            PreprocessorDirective(line_num=10, byte_pos=100, directive_type="endif",
-                                  continuation_lines=0),
+            PreprocessorDirective(
+                line_num=0, byte_pos=0, directive_type="ifndef", continuation_lines=0, macro_name=sz.Str("MY_HEADER_H")
+            ),
+            PreprocessorDirective(
+                line_num=1, byte_pos=20, directive_type="define", continuation_lines=0, macro_name=sz.Str("MY_HEADER_H")
+            ),
+            PreprocessorDirective(line_num=10, byte_pos=100, directive_type="endif", continuation_lines=0),
         ]
         guard = detect_include_guard(directives)
         assert guard is not None
@@ -675,10 +693,12 @@ class TestDetectIncludeGuard:
         from compiletools.file_analyzer import PreprocessorDirective, detect_include_guard
 
         directives = [
-            PreprocessorDirective(line_num=0, byte_pos=0, directive_type="ifndef",
-                                  continuation_lines=0, macro_name=sz.Str("X")),
-            PreprocessorDirective(line_num=1, byte_pos=10, directive_type="define",
-                                  continuation_lines=0, macro_name=sz.Str("X")),
+            PreprocessorDirective(
+                line_num=0, byte_pos=0, directive_type="ifndef", continuation_lines=0, macro_name=sz.Str("X")
+            ),
+            PreprocessorDirective(
+                line_num=1, byte_pos=10, directive_type="define", continuation_lines=0, macro_name=sz.Str("X")
+            ),
         ]
         assert detect_include_guard(directives) is None
 
@@ -688,12 +708,15 @@ class TestDetectIncludeGuard:
         from compiletools.file_analyzer import PreprocessorDirective, detect_include_guard
 
         directives = [
-            PreprocessorDirective(line_num=0, byte_pos=0, directive_type="ifndef",
-                                  continuation_lines=0, macro_name=sz.Str("X")),
-            PreprocessorDirective(line_num=1, byte_pos=10, directive_type="define",
-                                  continuation_lines=0, macro_name=sz.Str("X")),
-            PreprocessorDirective(line_num=2, byte_pos=20, directive_type="define",
-                                  continuation_lines=0, macro_name=sz.Str("Y")),
+            PreprocessorDirective(
+                line_num=0, byte_pos=0, directive_type="ifndef", continuation_lines=0, macro_name=sz.Str("X")
+            ),
+            PreprocessorDirective(
+                line_num=1, byte_pos=10, directive_type="define", continuation_lines=0, macro_name=sz.Str("X")
+            ),
+            PreprocessorDirective(
+                line_num=2, byte_pos=20, directive_type="define", continuation_lines=0, macro_name=sz.Str("Y")
+            ),
         ]
         assert detect_include_guard(directives) is None
 
@@ -703,12 +726,13 @@ class TestDetectIncludeGuard:
         from compiletools.file_analyzer import PreprocessorDirective, detect_include_guard
 
         directives = [
-            PreprocessorDirective(line_num=0, byte_pos=0, directive_type="ifndef",
-                                  continuation_lines=0, macro_name=sz.Str("X")),
-            PreprocessorDirective(line_num=1, byte_pos=10, directive_type="define",
-                                  continuation_lines=0, macro_name=sz.Str("Y")),
-            PreprocessorDirective(line_num=2, byte_pos=20, directive_type="endif",
-                                  continuation_lines=0),
+            PreprocessorDirective(
+                line_num=0, byte_pos=0, directive_type="ifndef", continuation_lines=0, macro_name=sz.Str("X")
+            ),
+            PreprocessorDirective(
+                line_num=1, byte_pos=10, directive_type="define", continuation_lines=0, macro_name=sz.Str("Y")
+            ),
+            PreprocessorDirective(line_num=2, byte_pos=20, directive_type="endif", continuation_lines=0),
         ]
         assert detect_include_guard(directives) is None
 
@@ -746,7 +770,7 @@ class TestAnalyzeFileFeatures:
 
     def test_defines_extraction(self):
         """Test that #define directives are extracted with names and values."""
-        content = '#define FOO 42\n#define BAR\n#define MAX(a,b) ((a)>(b)?(a):(b))\n'
+        content = "#define FOO 42\n#define BAR\n#define MAX(a,b) ((a)>(b)?(a):(b))\n"
         result = self._create_and_analyze(content)
         names = [str(d["name"]) for d in result.defines]
         assert "FOO" in names
@@ -765,7 +789,7 @@ class TestAnalyzeFileFeatures:
 
     def test_include_guard_excluded_from_defines(self):
         """Test that include guard defines are excluded from the defines list."""
-        content = '#ifndef MY_GUARD_H\n#define MY_GUARD_H\nint x;\n#endif\n'
+        content = "#ifndef MY_GUARD_H\n#define MY_GUARD_H\nint x;\n#endif\n"
         result = self._create_and_analyze(content)
         names = [str(d["name"]) for d in result.defines]
         assert "MY_GUARD_H" not in names
@@ -774,30 +798,40 @@ class TestAnalyzeFileFeatures:
 
     def test_marker_type_exe(self):
         """Test exe marker detection."""
-        content = 'int main() { return 0; }\n'
+        content = "int main() { return 0; }\n"
         result = self._create_and_analyze(content, exemarkers=["int main("], testmarkers=[], librarymarkers=[])
         from compiletools.file_analyzer import MarkerType
+
         assert result.marker_type == MarkerType.EXE
 
     def test_marker_type_test(self):
         """Test test marker detection."""
         content = '#include "unit_test.hpp"\nTEST(foo) {}\n'
-        result = self._create_and_analyze(content, exemarkers=["int main("], testmarkers=["unit_test.hpp"], librarymarkers=[])
+        result = self._create_and_analyze(
+            content, exemarkers=["int main("], testmarkers=["unit_test.hpp"], librarymarkers=[]
+        )
         from compiletools.file_analyzer import MarkerType
+
         assert result.marker_type == MarkerType.TEST
 
     def test_marker_type_library(self):
         """Test library marker detection."""
-        content = '//#LIBRARY=mylib\nvoid helper() {}\n'
-        result = self._create_and_analyze(content, exemarkers=["int main("], testmarkers=["unit_test.hpp"], librarymarkers=["//#LIBRARY="])
+        content = "//#LIBRARY=mylib\nvoid helper() {}\n"
+        result = self._create_and_analyze(
+            content, exemarkers=["int main("], testmarkers=["unit_test.hpp"], librarymarkers=["//#LIBRARY="]
+        )
         from compiletools.file_analyzer import MarkerType
+
         assert result.marker_type == MarkerType.LIBRARY
 
     def test_marker_type_none(self):
         """Test no marker detected."""
-        content = 'void helper() {}\n'
-        result = self._create_and_analyze(content, exemarkers=["int main("], testmarkers=["unit_test.hpp"], librarymarkers=[])
+        content = "void helper() {}\n"
+        result = self._create_and_analyze(
+            content, exemarkers=["int main("], testmarkers=["unit_test.hpp"], librarymarkers=[]
+        )
         from compiletools.file_analyzer import MarkerType
+
         assert result.marker_type == MarkerType.NONE
 
     def test_no_directives_file(self):
@@ -809,7 +843,7 @@ class TestAnalyzeFileFeatures:
 
     def test_truncated_file(self):
         """Test analysis with max_read_size limiting the read."""
-        content = '#include <stdio.h>\n' * 100  # Large content
+        content = "#include <stdio.h>\n" * 100  # Large content
         with tempfile.NamedTemporaryFile(mode="w", suffix=".c", delete=False) as f:
             f.write(content)
             filepath = f.name
@@ -827,7 +861,7 @@ class TestAnalyzeFileFeatures:
 
     def test_conditional_macros_extraction(self):
         """Test that macros in #ifdef/#if conditions are extracted."""
-        content = '#ifdef DEBUG\nint x;\n#endif\n#if defined(FEATURE_A) && FEATURE_B\nint y;\n#endif\n'
+        content = "#ifdef DEBUG\nint x;\n#endif\n#if defined(FEATURE_A) && FEATURE_B\nint y;\n#endif\n"
         result = self._create_and_analyze(content)
         macro_names = {str(m) for m in result.conditional_macros}
         assert "DEBUG" in macro_names
@@ -836,7 +870,7 @@ class TestAnalyzeFileFeatures:
 
     def test_undef_targets(self):
         """Test that #undef targets are tracked."""
-        content = '#define FOO 1\n#undef FOO\n#undef BAR\n'
+        content = "#define FOO 1\n#undef FOO\n#undef BAR\n"
         result = self._create_and_analyze(content)
         undef_names = {str(u) for u in result.undef_targets}
         assert "FOO" in undef_names
@@ -853,14 +887,14 @@ class TestAnalyzeFileFeatures:
 
     def test_multiline_define(self):
         """Test multi-line #define with backslash continuations."""
-        content = '#define MACRO(x) \\\n  do { \\\n    x; \\\n  } while(0)\nint y;\n'
+        content = "#define MACRO(x) \\\n  do { \\\n    x; \\\n  } while(0)\nint y;\n"
         result = self._create_and_analyze(content)
         names = [str(d["name"]) for d in result.defines]
         assert "MACRO" in names
 
     def test_pragma_once_guard(self):
         """Test #pragma once detection."""
-        content = '#pragma once\nint x;\n'
+        content = "#pragma once\nint x;\n"
         result = self._create_and_analyze(content)
         assert result.include_guard is not None
         assert str(result.include_guard) == "pragma_once"
@@ -942,10 +976,12 @@ class TestExtractConditionalMacros:
         from compiletools.file_analyzer import PreprocessorDirective, _extract_conditional_macros
 
         directives = [
-            PreprocessorDirective(line_num=0, byte_pos=0, directive_type="ifdef",
-                                  continuation_lines=0, macro_name=sz.Str("DEBUG")),
-            PreprocessorDirective(line_num=1, byte_pos=10, directive_type="ifndef",
-                                  continuation_lines=0, macro_name=sz.Str("NDEBUG")),
+            PreprocessorDirective(
+                line_num=0, byte_pos=0, directive_type="ifdef", continuation_lines=0, macro_name=sz.Str("DEBUG")
+            ),
+            PreprocessorDirective(
+                line_num=1, byte_pos=10, directive_type="ifndef", continuation_lines=0, macro_name=sz.Str("NDEBUG")
+            ),
         ]
         macros = _extract_conditional_macros(directives)
         names = {str(m) for m in macros}
@@ -958,10 +994,16 @@ class TestExtractConditionalMacros:
         from compiletools.file_analyzer import PreprocessorDirective, _extract_conditional_macros
 
         directives = [
-            PreprocessorDirective(line_num=0, byte_pos=0, directive_type="if",
-                                  continuation_lines=0, condition=sz.Str("defined(FOO) && BAR > 1")),
-            PreprocessorDirective(line_num=5, byte_pos=50, directive_type="elif",
-                                  continuation_lines=0, condition=sz.Str("BAZ")),
+            PreprocessorDirective(
+                line_num=0,
+                byte_pos=0,
+                directive_type="if",
+                continuation_lines=0,
+                condition=sz.Str("defined(FOO) && BAR > 1"),
+            ),
+            PreprocessorDirective(
+                line_num=5, byte_pos=50, directive_type="elif", continuation_lines=0, condition=sz.Str("BAZ")
+            ),
         ]
         macros = _extract_conditional_macros(directives)
         names = {str(m) for m in macros}
@@ -975,8 +1017,9 @@ class TestExtractConditionalMacros:
         from compiletools.file_analyzer import PreprocessorDirective, _extract_conditional_macros
 
         directives = [
-            PreprocessorDirective(line_num=0, byte_pos=0, directive_type="define",
-                                  continuation_lines=0, macro_name="X"),
+            PreprocessorDirective(
+                line_num=0, byte_pos=0, directive_type="define", continuation_lines=0, macro_name="X"
+            ),
         ]
         macros = _extract_conditional_macros(directives)
         assert len(macros) == 0

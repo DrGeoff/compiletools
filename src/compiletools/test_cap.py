@@ -5,7 +5,11 @@ import compiletools.testhelper as uth
 
 def add_to_parser_in_func(recursion_depth=0):
     if recursion_depth < 6:
-        cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
         cap.add(
             "-v",
             "--verbose",

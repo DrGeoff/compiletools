@@ -59,7 +59,11 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
         All 3 headers should appear in task_scheduler.cpp's dependencies.
         """
         # Setup
-        cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
         compiletools.headerdeps.add_arguments(cap)
         compiletools.apptools.add_common_arguments(cap)
 
@@ -114,7 +118,11 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
         All files include event_handler.hpp which has the #ifndef guard.
         """
         # Setup
-        cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
         compiletools.headerdeps.add_arguments(cap)
         compiletools.apptools.add_common_arguments(cap)
 
@@ -169,7 +177,11 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
         first, then uses the computed macro_state_key with headerdeps.process().
         """
         # Setup with magicflags arguments
-        cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
         compiletools.headerdeps.add_arguments(cap)
         compiletools.magicflags.add_arguments(cap)
         compiletools.apptools.add_common_arguments(cap)
@@ -221,7 +233,11 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
         Process the same files in two different orders and verify identical results.
         """
         # Setup
-        cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
         compiletools.headerdeps.add_arguments(cap)
         compiletools.apptools.add_common_arguments(cap)
 

@@ -891,9 +891,7 @@ def make_mock_hunter(sources=None, headers=None, magicflags_map=None, per_file_m
     headers = headers or []
     hunter.header_dependencies = MagicMock(return_value=headers)
     if per_file_magicflags is not None:
-        hunter.magicflags = MagicMock(
-            side_effect=lambda s: per_file_magicflags.get(s, {})
-        )
+        hunter.magicflags = MagicMock(side_effect=lambda s: per_file_magicflags.get(s, {}))
     else:
         hunter.magicflags = MagicMock(return_value=magicflags_map or {})
     hunter.macro_state_hash = MagicMock(return_value="abcdef1234567890")

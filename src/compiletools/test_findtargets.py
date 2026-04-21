@@ -280,7 +280,7 @@ class TestFindTargetsOsWalkFallback:
             # Create a source file with main(
             src = os.path.join(tmpdir, "hello.cpp")
             with open(src, "w") as f:
-                f.write('#include <iostream>\nint main() { return 0; }\n')
+                f.write("#include <iostream>\nint main() { return 0; }\n")
 
             config_files = compiletools.configutils.config_files_from_variant(exedir=uth.cakedir(), argv=[])
             cap = configargparse.ArgumentParser(

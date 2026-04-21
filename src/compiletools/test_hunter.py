@@ -33,7 +33,11 @@ class TestHunterModule:
     def test_hunter_follows_source_files_from_header(self):
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
             argv = ["-c", temp_config, "--include", uth.ctdir()]
-            cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
+            cap = configargparse.ArgumentParser(
+                conflict_handler="resolve",
+                args_for_setting_config_path=["-c", "--config"],
+                ignore_unknown_config_file_keys=True,
+            )
             compiletools.hunter.add_arguments(cap)
             ctx = BuildContext()
             args = compiletools.apptools.parseargs(cap, argv, context=ctx)
@@ -60,7 +64,11 @@ class TestHunterModule:
         bulkpaths = [os.path.join(samplesdir, filename) for filename in relativepaths]
         with uth.TempConfigContext() as temp_config:
             argv = ["--config", temp_config, "--include", uth.ctdir()]
-            cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
+            cap = configargparse.ArgumentParser(
+                conflict_handler="resolve",
+                args_for_setting_config_path=["-c", "--config"],
+                ignore_unknown_config_file_keys=True,
+            )
             compiletools.hunter.add_arguments(cap)
             ctx = BuildContext()
             args = compiletools.apptools.parseargs(cap, argv, context=ctx)
@@ -98,7 +106,11 @@ def _make_hunter(argv_extra=None, temp_config=None):
     if argv_extra is None:
         argv_extra = []
     argv = ["-c", temp_config, "--include", uth.ctdir()] + argv_extra
-    cap = configargparse.ArgumentParser(conflict_handler="resolve", args_for_setting_config_path=["-c", "--config"], ignore_unknown_config_file_keys=True)
+    cap = configargparse.ArgumentParser(
+        conflict_handler="resolve",
+        args_for_setting_config_path=["-c", "--config"],
+        ignore_unknown_config_file_keys=True,
+    )
     compiletools.hunter.add_arguments(cap)
     ctx = BuildContext()
     args = compiletools.apptools.parseargs(cap, argv, context=ctx)
@@ -173,8 +185,10 @@ class TestHunterRequiredFiles:
             realpath = os.path.join(uth.samplesdir(), "factory/test_factory.cpp")
             result = hntr.required_files(realpath)
             # Should contain the file itself plus dependencies
-            assert realpath in [compiletools.wrappedos.realpath(f) for f in result] or \
-                   compiletools.wrappedos.realpath(realpath) in result
+            assert (
+                realpath in [compiletools.wrappedos.realpath(f) for f in result]
+                or compiletools.wrappedos.realpath(realpath) in result
+            )
 
     def test_required_source_files_filters_to_sources(self):
         """Test required_source_files only returns source files (lines 122-126)."""
@@ -372,9 +386,9 @@ class TestHunterVerbose:
     def test_required_files_verbose(self, capsys):
         """Test verbose output in required_files and _required_files_impl (lines 106, 112, 123, 135, 150)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr, _args = _make_hunter(argv_extra=["-v", "-v", "-v", "-v", "-v",
-                                                   "-v", "-v", "-v", "-v", "-v"],
-                                       temp_config=temp_config)
+            hntr, _args = _make_hunter(
+                argv_extra=["-v", "-v", "-v", "-v", "-v", "-v", "-v", "-v", "-v", "-v"], temp_config=temp_config
+            )
             realpath = os.path.join(uth.samplesdir(), "simple/helloworld_cpp.cpp")
             hntr.required_files(realpath)
             captured = capsys.readouterr()

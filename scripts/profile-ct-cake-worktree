@@ -253,9 +253,7 @@ def get_test_samples() -> list[str]:
     ]
 
 
-def get_test_configurations(
-    magic_modes: list[str], backends: list[str]
-) -> list[dict[str, str]]:
+def get_test_configurations(magic_modes: list[str], backends: list[str]) -> list[dict[str, str]]:
     """Get list of test configurations for magic mode x backend combinations."""
     configurations = []
 
@@ -267,11 +265,13 @@ def get_test_configurations(
                 name = backend
             else:
                 name = f"{magic_mode}+{backend}"
-            configurations.append({
-                "magic_mode": magic_mode,
-                "backend": backend,
-                "name": name,
-            })
+            configurations.append(
+                {
+                    "magic_mode": magic_mode,
+                    "backend": backend,
+                    "name": name,
+                }
+            )
 
     return configurations
 

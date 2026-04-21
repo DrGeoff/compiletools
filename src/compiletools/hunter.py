@@ -166,8 +166,7 @@ class Hunter:
 
     def clear_instance_cache(self):
         """Clear this instance's caches."""
-        for method in (self._parse_magic, self._get_immediate_deps,
-                       self._required_files_impl, self._extractSOURCE):
+        for method in (self._parse_magic, self._get_immediate_deps, self._required_files_impl, self._extractSOURCE):
             self.__dict__.pop(method.cache_attr, None)
         # Clear project-level source discovery caches (these are set dynamically)
         if hasattr(self, "_hunted_sources"):

@@ -26,8 +26,7 @@ def ensure_lock_helper_in_path():
 
     if not shutil.which("ct-lock-helper"):
         print(
-            "\nWARNING: ct-lock-helper not found in PATH. "
-            "Run 'uv pip install -e .' to install.",
+            "\nWARNING: ct-lock-helper not found in PATH. Run 'uv pip install -e .' to install.",
             file=sys.stderr,
         )
 

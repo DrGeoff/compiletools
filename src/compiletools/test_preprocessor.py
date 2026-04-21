@@ -90,9 +90,7 @@ class TestPreProcessorProcess:
         """OSError is printed to stderr and re-raised."""
         args = _make_args()
         pp = PreProcessor(args)
-        with mock.patch(
-            "subprocess.check_output", side_effect=OSError("no such file")
-        ):
+        with mock.patch("subprocess.check_output", side_effect=OSError("no such file")):
             with pytest.raises(OSError):
                 pp.process("/tmp/foo.cpp", "")
         captured = capsys.readouterr()

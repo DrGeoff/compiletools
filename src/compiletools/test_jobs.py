@@ -53,9 +53,7 @@ def test_cpus_termux(monkeypatch):
 
     mock_result = MagicMock()
     mock_result.stdout = "8\n"
-    monkeypatch.setattr(
-        subprocess, "run", lambda *a, **kw: mock_result
-    )
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: mock_result)
     assert jobs._cpus_termux() == "8"
 
 
@@ -66,9 +64,7 @@ def test_cpus_darwin(monkeypatch):
 
     mock_result = MagicMock()
     mock_result.stdout = "10\n"
-    monkeypatch.setattr(
-        subprocess, "run", lambda *a, **kw: mock_result
-    )
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: mock_result)
     assert jobs._cpus_darwin() == "10"
 
 

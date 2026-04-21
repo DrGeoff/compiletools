@@ -201,7 +201,7 @@ class TestQueryHasFunction:
         """Mock compiler preprocessor output containing '1'."""
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = "# 1 \"<stdin>\"\n1\n"
+        mock_result.stdout = '# 1 "<stdin>"\n1\n'
 
         with patch("subprocess.run", return_value=mock_result):
             assert cm.query_has_function("gcc", "__has_include(<iostream>)") == 1
@@ -210,7 +210,7 @@ class TestQueryHasFunction:
         """Mock compiler preprocessor output containing '0'."""
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = "# 1 \"<stdin>\"\n0\n"
+        mock_result.stdout = '# 1 "<stdin>"\n0\n'
 
         with patch("subprocess.run", return_value=mock_result):
             assert cm.query_has_function("gcc", "__has_include(<nonexistent_header_xyz.h>)") == 0
@@ -246,7 +246,7 @@ class TestQueryHasFunction:
             call_count += 1
             result = MagicMock()
             result.returncode = 0
-            result.stdout = "# 1 \"<stdin>\"\n1\n"
+            result.stdout = '# 1 "<stdin>"\n1\n'
             return result
 
         with patch("subprocess.run", side_effect=mock_run):
@@ -266,7 +266,7 @@ class TestQueryHasFunction:
             call_count += 1
             result = MagicMock()
             result.returncode = 0
-            result.stdout = "# 1 \"<stdin>\"\n1\n"
+            result.stdout = '# 1 "<stdin>"\n1\n'
             return result
 
         with patch("subprocess.run", side_effect=mock_run):

@@ -51,9 +51,7 @@ class TestHandleSource:
             tmppath = f.name
         try:
             magic_flag_data = {"source_file_context": None}
-            result = obj._handle_source(
-                sz.Str(tmppath), magic_flag_data, "/some/main.cpp", sz.Str("SOURCE")
-            )
+            result = obj._handle_source(sz.Str(tmppath), magic_flag_data, "/some/main.cpp", sz.Str("SOURCE"))
             assert str(result).endswith(".cpp")
         finally:
             os.unlink(tmppath)
@@ -66,9 +64,7 @@ class TestHandleSource:
                 f.write("int x;")
             main_file = os.path.join(tmpdir, "main.cpp")
             magic_flag_data = {"source_file_context": None}
-            result = obj._handle_source(
-                sz.Str("helper.cpp"), magic_flag_data, main_file, sz.Str("SOURCE")
-            )
+            result = obj._handle_source(sz.Str("helper.cpp"), magic_flag_data, main_file, sz.Str("SOURCE"))
             assert str(result).endswith("helper.cpp")
 
     def test_handle_source_nonexistent(self):
@@ -77,9 +73,7 @@ class TestHandleSource:
         import pytest
 
         with pytest.raises(OSError):
-            obj._handle_source(
-                sz.Str("/nonexistent/file.cpp"), magic_flag_data, "/some/main.cpp", sz.Str("SOURCE")
-            )
+            obj._handle_source(sz.Str("/nonexistent/file.cpp"), magic_flag_data, "/some/main.cpp", sz.Str("SOURCE"))
 
 
 class TestExtractMacrosFromMagicFlags:
@@ -283,10 +277,7 @@ class TestExtractMacrosFromPreprocessor:
 
     def test_skips_function_like_macros(self):
         obj = self._make_cpp_magicflags()
-        obj.preprocessor.process.return_value = (
-            "#define FUNC(x) (x+1)\n"
-            "#define SIMPLE 1\n"
-        )
+        obj.preprocessor.process.return_value = "#define FUNC(x) (x+1)\n#define SIMPLE 1\n"
         result = obj._extract_macros_from_preprocessor("/some/file.cpp")
         assert sz.Str("SIMPLE") in result.variable
         # FUNC should be skipped (function-like)
@@ -338,26 +329,20 @@ class TestProcessMagicFlag:
     def test_readmacros_skipped(self):
         obj = self._make_base()
         flagsforfilename = defaultdict(list)
-        obj._process_magic_flag(
-            sz.Str("READMACROS"), sz.Str("somefile.hpp"), flagsforfilename, {}, "/some/file.cpp"
-        )
+        obj._process_magic_flag(sz.Str("READMACROS"), sz.Str("somefile.hpp"), flagsforfilename, {}, "/some/file.cpp")
         assert sz.Str("READMACROS") not in flagsforfilename
 
     def test_ldflags_added(self):
         obj = self._make_base()
         flagsforfilename = defaultdict(list)
-        obj._process_magic_flag(
-            sz.Str("LDFLAGS"), sz.Str("-lm"), flagsforfilename, {}, "/some/file.cpp"
-        )
+        obj._process_magic_flag(sz.Str("LDFLAGS"), sz.Str("-lm"), flagsforfilename, {}, "/some/file.cpp")
         assert sz.Str("-lm") in flagsforfilename[sz.Str("LDFLAGS")]
 
     def test_verbose_logging(self, capsys):
         obj = self._make_base()
         obj._args.verbose = 5
         flagsforfilename = defaultdict(list)
-        obj._process_magic_flag(
-            sz.Str("LDFLAGS"), sz.Str("-lm"), flagsforfilename, {}, "/some/file.cpp"
-        )
+        obj._process_magic_flag(sz.Str("LDFLAGS"), sz.Str("-lm"), flagsforfilename, {}, "/some/file.cpp")
         captured = capsys.readouterr()
         assert "Using magic flag" in captured.out
 

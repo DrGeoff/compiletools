@@ -41,9 +41,7 @@ class TestSerialiseTests:
                         if compiletools.utils.is_executable(os.path.join(root, f)):
                             built_exes.add(f)
 
-                assert len(built_exes) >= 2, (
-                    f"Expected at least 2 test executables, got {built_exes}"
-                )
+                assert len(built_exes) >= 2, f"Expected at least 2 test executables, got {built_exes}"
 
     def teardown_method(self):
         uth.reset()

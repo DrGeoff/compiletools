@@ -269,9 +269,12 @@ class DirectHeaderDeps(HeaderDepsBase):
 
         # Set includes and reset macro state (reuse cached core, use provided variable dict)
         self.includes = self._includes
-        self.defined_macros = MacroState(self._core_macros, variable_macros,
-                                        compiler_path=getattr(self.args, "CXX", ""),
-                                        cppflags=getattr(self.args, "CPPFLAGS", ""))
+        self.defined_macros = MacroState(
+            self._core_macros,
+            variable_macros,
+            compiler_path=getattr(self.args, "CXX", ""),
+            cppflags=getattr(self.args, "CPPFLAGS", ""),
+        )
 
     @instance_cache
     def _search_project_includes(self, include: sz.Str):
@@ -376,9 +379,7 @@ class DirectHeaderDeps(HeaderDepsBase):
                 return cached_includes
 
             # Cache miss for invariant file - compute and store
-            result = get_or_compute_preprocessing(
-                analysis_result, self.defined_macros, self.args.verbose, context=ctx
-            )
+            result = get_or_compute_preprocessing(analysis_result, self.defined_macros, self.args.verbose, context=ctx)
 
             include_list = [
                 sz.Str(inc["filename"]) for inc in result.active_includes if not inc.get("is_commented", False)
@@ -407,9 +408,7 @@ class DirectHeaderDeps(HeaderDepsBase):
                 f"{len(analysis_result.include_positions)} includes in {realpath}"
             )
 
-        result = get_or_compute_preprocessing(
-            analysis_result, self.defined_macros, self.args.verbose, context=ctx
-        )
+        result = get_or_compute_preprocessing(analysis_result, self.defined_macros, self.args.verbose, context=ctx)
 
         include_list = [sz.Str(inc["filename"]) for inc in result.active_includes if not inc.get("is_commented", False)]
 
@@ -490,8 +489,7 @@ class DirectHeaderDeps(HeaderDepsBase):
 
     def clear_instance_cache(self):
         """Clear this instance's per-instance caches."""
-        for method in (self._search_project_includes, self._find_include,
-                       self._process_impl):
+        for method in (self._search_project_includes, self._find_include, self._process_impl):
             self.__dict__.pop(method.cache_attr, None)
         if self.args.verbose >= 5:
             print("DirectHeaderDeps::clear_instance_cache completed")

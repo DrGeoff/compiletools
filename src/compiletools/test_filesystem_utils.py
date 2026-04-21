@@ -222,9 +222,11 @@ def test_get_filesystem_type_proc_mounts_unavailable(monkeypatch):
 
     def fake_run(cmd, *args, **kwargs):
         if cmd[0] == "stat":
+
             class FakeResult:
                 returncode = 0
                 stdout = "ext4\n"
+
             return FakeResult()
         return orig_run(cmd, *args, **kwargs)
 
@@ -279,9 +281,11 @@ def test_get_filesystem_type_stat_nonzero_returncode(monkeypatch):
 
     def fake_run(cmd, *args, **kwargs):
         if cmd[0] == "stat":
+
             class FakeResult:
                 returncode = 1
                 stdout = ""
+
             return FakeResult()
         return orig_run(cmd, *args, **kwargs)
 
@@ -344,6 +348,7 @@ def test_atomic_write_error_cleanup(tmp_path, monkeypatch):
     assert not os.path.exists(target)
     # Check no temp files left
     import glob
+
     temps = glob.glob(str(tmp_path / ".tmp.*"))
     assert len(temps) == 0
 
@@ -392,7 +397,6 @@ def test_atomic_output_file_exception_cleans_up_binary(tmp_path):
     except RuntimeError:
         pass
     assert not os.path.exists(target)
-
 
 
 def test_real_filesystem_detection():

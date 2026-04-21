@@ -233,9 +233,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                 )
 
             # Point find_git_root at our temp dir so the override is discovered
-            with patch(
-                "compiletools.git_utils.find_git_root", return_value=tmpdir
-            ):
+            with patch("compiletools.git_utils.find_git_root", return_value=tmpdir):
                 compiletools.apptools.clear_cache()
 
                 # Apply the override (prepends ct.conf.d/pkgconfig/ to PKG_CONFIG_PATH)
@@ -248,31 +246,21 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                 source_file = str(files["test_override.cpp"])
 
                 # Create parser and parse (reuse same ctx for consistency)
-                mf = tb.create_magic_parser(
-                    ["--magic=direct"], tempdir=self._tmpdir, context=ctx
-                )
+                mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir, context=ctx)
                 result = mf.parse(source_file)
 
                 # Verify the OVERRIDE flags are used, not the base conditional.pc flags
                 assert sz.Str("CPPFLAGS") in result
                 cppflags = " ".join(str(f) for f in result[sz.Str("CPPFLAGS")])
-                assert "-DPROJECT_OVERRIDE" in cppflags, (
-                    f"Expected project override flags, got: {cppflags}"
-                )
+                assert "-DPROJECT_OVERRIDE" in cppflags, f"Expected project override flags, got: {cppflags}"
                 # The base conditional.pc has -DTEST_PKG_ENABLED — should NOT appear
-                assert "-DTEST_PKG_ENABLED" not in cppflags, (
-                    f"Base flags should be overridden, got: {cppflags}"
-                )
+                assert "-DTEST_PKG_ENABLED" not in cppflags, f"Base flags should be overridden, got: {cppflags}"
 
                 # Check LDFLAGS
                 assert sz.Str("LDFLAGS") in result
                 ldflags = " ".join(str(f) for f in result[sz.Str("LDFLAGS")])
-                assert "-lprojectoverride" in ldflags, (
-                    f"Expected override libs, got: {ldflags}"
-                )
-                assert "-ltestpkg" not in ldflags, (
-                    f"Base libs should be overridden, got: {ldflags}"
-                )
+                assert "-lprojectoverride" in ldflags, f"Expected override libs, got: {ldflags}"
+                assert "-ltestpkg" not in ldflags, f"Base libs should be overridden, got: {ldflags}"
 
             # clear_cache resets the override guard for other tests
             compiletools.apptools.clear_cache()
@@ -337,9 +325,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
 
         All three -l flags must survive magic flag parsing and deduplication.
         """
-        files = uth.write_sources({
-            "test.cpp": "//#PKG-CONFIG=transitive-deps\nint main() { return 0; }"
-        })
+        files = uth.write_sources({"test.cpp": "//#PKG-CONFIG=transitive-deps\nint main() { return 0; }"})
         source_file = str(files["test.cpp"])
 
         mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir, context=BuildContext())
@@ -360,10 +346,12 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
 
         This is an end-to-end test: magic flag parsing -> per-file LDFLAGS -> merge.
         """
-        files = uth.write_sources({
-            "a.cpp": "//#PKG-CONFIG=transitive-deps\nint fn_a() { return 0; }",
-            "b.cpp": "//#PKG-CONFIG=nested\nint fn_b() { return 0; }",
-        })
+        files = uth.write_sources(
+            {
+                "a.cpp": "//#PKG-CONFIG=transitive-deps\nint fn_a() { return 0; }",
+                "b.cpp": "//#PKG-CONFIG=nested\nint fn_b() { return 0; }",
+            }
+        )
 
         mf = tb.create_magic_parser(["--magic=direct"], tempdir=self._tmpdir, context=BuildContext())
 
@@ -419,18 +407,12 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
 
             # CLI-prepended .pc should win over base conditional.pc
             cppflags = " ".join(str(f) for f in result[sz.Str("CPPFLAGS")])
-            assert "-DCLI_PREPENDED_FLAG" in cppflags, (
-                f"Expected CLI-prepended flags, got: {cppflags}"
-            )
+            assert "-DCLI_PREPENDED_FLAG" in cppflags, f"Expected CLI-prepended flags, got: {cppflags}"
             # Base conditional.pc defines -DTEST_PKG_ENABLED — should not appear
-            assert "-DTEST_PKG_ENABLED" not in cppflags, (
-                f"Base flags should be overridden, got: {cppflags}"
-            )
+            assert "-DTEST_PKG_ENABLED" not in cppflags, f"Base flags should be overridden, got: {cppflags}"
 
             ldflags = " ".join(str(f) for f in result[sz.Str("LDFLAGS")])
-            assert "-lcliprepended" in ldflags, (
-                f"Expected CLI-prepended libs, got: {ldflags}"
-            )
+            assert "-lcliprepended" in ldflags, f"Expected CLI-prepended libs, got: {ldflags}"
 
     @uth.requires_functional_compiler
     def test_prepend_pkg_config_path_overrides_project(self, pkgconfig_env):
@@ -464,9 +446,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                     "Libs: -lclioverride\n"
                 )
 
-            with patch(
-                "compiletools.git_utils.find_git_root", return_value=tmpdir
-            ):
+            with patch("compiletools.git_utils.find_git_root", return_value=tmpdir):
                 compiletools.apptools.clear_cache()
 
                 source_content = "//#PKG-CONFIG=conditional\nint main() { return 0; }\n"
@@ -487,16 +467,10 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
 
                 # CLI override should win over project-level override
                 cppflags = " ".join(str(f) for f in result[sz.Str("CPPFLAGS")])
-                assert "-DCLI_OVERRIDE" in cppflags, (
-                    f"Expected CLI override flags, got: {cppflags}"
-                )
-                assert "-DPROJECT_LEVEL" not in cppflags, (
-                    f"Project flags should be overridden by CLI, got: {cppflags}"
-                )
+                assert "-DCLI_OVERRIDE" in cppflags, f"Expected CLI override flags, got: {cppflags}"
+                assert "-DPROJECT_LEVEL" not in cppflags, f"Project flags should be overridden by CLI, got: {cppflags}"
 
                 ldflags = " ".join(str(f) for f in result[sz.Str("LDFLAGS")])
-                assert "-lclioverride" in ldflags, (
-                    f"Expected CLI override libs, got: {ldflags}"
-                )
+                assert "-lclioverride" in ldflags, f"Expected CLI override libs, got: {ldflags}"
 
             compiletools.apptools.clear_cache()
