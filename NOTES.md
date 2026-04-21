@@ -69,13 +69,6 @@ case.
 
 ## From backend architecture review
 
-### Issue 8: `makefile.py` 59-line shim removal
-
-**Owner file:** `src/compiletools/makefile.py`
-
-The shim is intentionally deferred to a separate follow-up PR — cross-cutting
-and risky.
-
 ### Out-of-scope observation: `_all_outputs_current` contract
 
 The "by accident" pattern fixed for cmake/bazel exists for *any* future backend

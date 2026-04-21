@@ -114,12 +114,11 @@ PreprocessingCache                    # Two-tier caching
 | `hunter.py` | Recursive dependency graph walking |
 | `findtargets.py` | Executable/test target detection |
 | `namer.py` | File naming, object paths (includes macro state hash) |
-| `makefile.py` | Makefile generation (`MakefileCreator`) |
 | `build_graph.py` | Backend-agnostic IR (`BuildRule`, `BuildGraph`) |
 | `build_backend.py` | `BuildBackend` ABC, registry, `build_graph()`, `_run_tests()`; PCH handling and hard orderings consolidation |
 | `build_context.py` | Per-build state and caches; tracks pkg-config overrides and build variants |
 | `build_timer.py` | Build timing instrumentation and reporting |
-| `makefile_backend.py` | Make backend (wraps `MakefileCreator`) |
+| `makefile_backend.py` | Make backend; `MakefileBackend` class plus the `ct-create-makefile` CLI entry point |
 | `ninja_backend.py` | Ninja backend (with file-locking support) |
 | `bazel_backend.py` | Bazel backend |
 | `cmake_backend.py` | CMake backend |
