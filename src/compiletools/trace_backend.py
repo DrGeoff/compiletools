@@ -615,8 +615,6 @@ class SlurmBackend(ShakeBackend):
                 msg += "\n\n" + diag
             raise RuntimeError(msg)
 
-        self._cleanup_slurm_logs()
-
         # Network filesystem metadata barrier: sacct may report COMPLETED
         # before the output files are visible on the submission node
         # (close-to-open consistency lag on GPFS, Lustre, NFS, etc.).
@@ -625,7 +623,25 @@ class SlurmBackend(ShakeBackend):
         # compiled outputs.
         has_link_rules = any(r.rule_type not in ("phony", "mkdir", "compile", "clean") for r in graph.rules)
         if to_submit and has_link_rules:
-            self._wait_for_output_files(to_submit)
+            try:
+                self._wait_for_output_files(to_submit)
+            except RuntimeError as e:
+                # Why: persist traces for compiles that DID complete before re-raising,
+                # so the next ct-cake invocation doesn't re-submit already-finished jobs.
+                # Slurm logs are also kept (cleanup is skipped on this path) so the user
+                # has actionable diagnostics for the missing-output failure.
+                self._save_traces_for_completed(to_submit, traces)
+                log_glob = os.path.join(self.args.objdir, "slurm-ct-*.out")
+                log_paths = sorted(glob.glob(log_glob))
+                if log_paths:
+                    raise RuntimeError(
+                        f"{e}\n\nSlurm logs preserved for diagnosis ({len(log_paths)} file(s)):\n"
+                        + "\n".join(f"  {p}" for p in log_paths[:10])
+                        + ("" if len(log_paths) <= 10 else f"\n  ... and {len(log_paths) - 10} more")
+                    ) from e
+                raise
+
+        self._cleanup_slurm_logs()
 
         # Collect per-job timing from Slurm accounting
         self._collect_timing(index_map)
@@ -821,6 +837,13 @@ class SlurmBackend(ShakeBackend):
         for f in glob.glob(os.path.join(self.args.objdir, "slurm-ct-*.out")):
             with contextlib.suppress(OSError):
                 os.remove(f)
+
+    def _save_traces_for_completed(self, rules: list[BuildRule], traces: TraceStore) -> None:
+        """Record trace entries for rules whose output exists on disk, then save."""
+        for rule in rules:
+            if os.path.exists(rule.output):
+                traces.put(rule.output, _make_trace_entry(rule, self.context))
+        traces.save()
 
     def _read_slurm_logs_for_failures(self, failures: list[SlurmBackend._TaskFailure]) -> str:
         """Read slurm log content for failed tasks and return formatted diagnostics."""

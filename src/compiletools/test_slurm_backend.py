@@ -504,6 +504,86 @@ class TestJobFailures:
         # Should return without sleeping or raising
         b._wait_for_output_files([rule], timeout=30.0)
 
+    def test_missing_outputs_preserves_slurm_logs_and_mentions_them(self, tmp_path):
+        """When _wait_for_output_files raises, slurm-ct-*.out logs survive on disk
+        AND their paths are quoted in the RuntimeError so the user can investigate."""
+        # Two compile rules; only the link rule presence triggers the wait.
+        ghost_out = str(tmp_path / "ghost.o")
+        real_out = str(tmp_path / "real.o")
+        ghost_rule = make_compile_rule(output=ghost_out, src="ghost.cpp")
+        real_rule = make_compile_rule(output=real_out, src="real.cpp")
+        link_rule = make_link_rule(output=str(tmp_path / "app"), inputs=(ghost_out, real_out))
+
+        graph = BuildGraph()
+        graph.add_rule(ghost_rule)
+        graph.add_rule(real_rule)
+        graph.add_rule(link_rule)
+        graph.add_rule(make_phony_rule("build", [link_rule.output]))
+
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            # Pre-create a slurm log so the test doesn't depend on real sbatch
+            log_path = os.path.join(backend.args.objdir, "slurm-ct-0-0.out")
+            with open(log_path, "w") as f:
+                f.write("OOM-kill: task ran out of memory\n")
+            # Pre-create only real_out; ghost_out stays missing
+            open(real_out, "w").close()
+
+            with (
+                patch("subprocess.check_output", return_value="42\n"),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
+                # Force wait loop to terminate quickly
+                patch("time.monotonic", side_effect=[0.0, 100.0, 100.0, 100.0, 100.0]),
+                patch("time.sleep"),
+            ):
+                with pytest.raises(RuntimeError) as excinfo:
+                    backend.execute("build")
+
+            # Error must reference the slurm log so the user can find it
+            assert "slurm-ct-0-0.out" in str(excinfo.value)
+            assert "Slurm logs preserved" in str(excinfo.value)
+            # Log file must still exist on disk after the raise
+            assert os.path.exists(log_path), "slurm log was deleted before raise"
+
+    def test_missing_outputs_saves_traces_for_completed_compiles(self, tmp_path):
+        """When _wait_for_output_files raises, traces for compiles that DID complete
+        must be persisted, so the next ct-cake invocation does not re-submit them."""
+        ghost_out = str(tmp_path / "ghost.o")
+        real_src = str(tmp_path / "real.cpp")
+        real_out = str(tmp_path / "real.o")
+        # real_src must exist so _make_trace_entry can hash it as an input
+        with open(real_src, "w") as f:
+            f.write("int x;\n")
+        ghost_rule = make_compile_rule(output=ghost_out, src="ghost.cpp")
+        real_rule = make_compile_rule(output=real_out, src=real_src)
+        link_rule = make_link_rule(output=str(tmp_path / "app"), inputs=(ghost_out, real_out))
+
+        graph = BuildGraph()
+        graph.add_rule(ghost_rule)
+        graph.add_rule(real_rule)
+        graph.add_rule(link_rule)
+        graph.add_rule(make_phony_rule("build", [link_rule.output]))
+
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            # Only the real output exists post-"submission"
+            with open(real_out, "w") as f:
+                f.write("compiled\n")
+
+            with (
+                patch("subprocess.check_output", return_value="55\n"),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
+                patch("time.monotonic", side_effect=[0.0, 100.0, 100.0, 100.0, 100.0]),
+                patch("time.sleep"),
+            ):
+                with pytest.raises(RuntimeError):
+                    backend.execute("build")
+
+            # Trace store on disk must contain real_out but not ghost_out
+            trace_path = os.path.join(backend.args.objdir, ".ct-slurm-traces.json")
+            assert os.path.exists(trace_path), "traces.save() was never called on raise path"
+            persisted = TraceStore(trace_path)
+            assert persisted.get(real_out) is not None, "completed compile not recorded"
+            assert persisted.get(ghost_out) is None, "missing output incorrectly recorded"
+
 
 # ---------------------------------------------------------------------------
 # _query_array_task_states parsing
