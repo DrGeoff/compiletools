@@ -222,11 +222,12 @@ class CacheTrimmer:
         Bucketing-by-header-basename was tried in v8.0.2 but caused
         cache thrash (I-B5): two unrelated projects both using
         ``stdafx.h`` evicted each other at the default ``keep_count=1``.
-        cmd_hash dirs are content-addressable, so per-dir bucketing is
-        the correct partitioning. Per-realpath bucketing would be
-        ideal (group cross-variant builds of the same header together)
-        but the realpath is not stored on disk; see NOTES.md for the
-        deferred sidecar-manifest follow-up.
+        Per-realpath bucketing (I-4) is now used instead — each
+        ``<pchdir>/<cmd_hash>/`` writes a sidecar ``manifest.json``
+        recording the immediate header's realpath, and ``keep_count``
+        is enforced per realpath bucket so cross-variant builds of the
+        same header coexist. Legacy entries without a manifest fall
+        back to the previous global ranking.
 
         Note on ``max_age``: "aged" means "old since written" (the
         cmd_hash dir's mtime), NOT "old since last accessed". A
@@ -235,12 +236,11 @@ class CacheTrimmer:
         unreliable on noatime-mounted filesystems.
 
         Note on cache-key composition: the cmd_hash captures the
-        immediate header's realpath but NOT the content of headers it
-        transitively includes. GCC's PCH stamp is the backstop — if a
-        transitive header changes, the .gch is silently rejected at
-        consume time and the user pays a slow rebuild. TODO(M-B6):
-        write a sidecar manifest with transitive-header content hashes
-        so the trim path can pre-evict known-stale entries.
+        immediate header's realpath. Transitive-header content hashes
+        are stored in the sidecar manifest (I-5) and consulted during
+        trim — entries whose transitive content has changed are
+        pre-evicted so the user does not pay the slow ``cc1``
+        PCH-stamp rejection at consume time.
 
         Args:
             pchdir: Path to the shared PCH directory.

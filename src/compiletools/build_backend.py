@@ -1129,13 +1129,12 @@ def _pch_command_hash(
     # ~4 billion entries, fine in practice. PCH cache validity is also
     # guarded by GCC's PCH stamp at consume time, so a hash collision
     # would only cause a slow rebuild, not a miscompile.
-    # M-B6: Cache key includes the immediate header's realpath but NOT the
-    # transitive header content. Two users whose stdafx.h includes
-    # <config.h> with different content (e.g. different worktrees of the
-    # same project) collide on cmd_hash; GCC's PCH stamp then refuses the
-    # wrong .gch and the user pays a slow rebuild. Acceptable today;
-    # consider sidecar manifest with content hashes if cross-user-mixed-
-    # content workloads become common.
+    # M-B6 (resolved): the cache key still hashes only the immediate
+    # header's realpath, but transitive-header content hashes are now
+    # recorded in the sidecar manifest written by ``_write_pch_manifest``.
+    # ``trim_cache.trim_pchdir`` reads those hashes and pre-evicts entries
+    # whose transitive headers have changed, so the slow ``cc1`` PCH-stamp
+    # rebuild is avoided in the cross-user-mixed-content case.
     canonical = {
         "compiler_identity": _compiler_identity(args.CXX),
         "cxx_command": args.CXX,
