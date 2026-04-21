@@ -230,13 +230,9 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         be macro-expanded even when LIB_SUFFIX is defined, because
         _handle_pkg_config did not have access to the expander.
         """
-        files = uth.write_sources({
-            "test_pkg_macro.cpp": (
-                "#define LIB_SUFFIX O2\n"
-                "//#PKG-CONFIG=macro-in-output\n"
-                "int main() { return 0; }\n"
-            )
-        })
+        files = uth.write_sources(
+            {"test_pkg_macro.cpp": ("#define LIB_SUFFIX O2\n//#PKG-CONFIG=macro-in-output\nint main() { return 0; }\n")}
+        )
         source = str(files["test_pkg_macro.cpp"])
 
         result = self._parse_with_magic("direct", source)
@@ -253,22 +249,20 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         mylib-LIB_SUFFIX, while soft LDFLAGS constraints used expanded
         names like mylib-O2, preventing cancellation in the topo sort.
         """
-        files = uth.write_sources({
-            "test_hard_ordering_macro.cpp": (
-                "#define LIB_SUFFIX O2\n"
-                "//#PKG-CONFIG=macro-in-output conditional\n"
-                "int main() { return 0; }\n"
-            )
-        })
+        files = uth.write_sources(
+            {
+                "test_hard_ordering_macro.cpp": (
+                    "#define LIB_SUFFIX O2\n//#PKG-CONFIG=macro-in-output conditional\nint main() { return 0; }\n"
+                )
+            }
+        )
         source = str(files["test_hard_ordering_macro.cpp"])
 
         result = self._parse_with_magic("direct", source)
         orderings = result.get(_HARD_ORDERINGS_KEY, [])
         assert len(orderings) == 1, f"Expected 1 hard ordering, got {len(orderings)}"
         pred, succ = orderings[0]
-        assert pred == "mylib-O2", (
-            f"Hard ordering should use expanded name 'mylib-O2', got '{pred}'"
-        )
+        assert pred == "mylib-O2", f"Hard ordering should use expanded name 'mylib-O2', got '{pred}'"
         assert succ == "testpkg", f"Expected 'testpkg', got '{succ}'"
 
     def test_macro_expansion_debug_suffix_in_ldflags_and_hard_orderings(self, pkgconfig_env):
@@ -278,13 +272,13 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         both the LDFLAGS (soft constraints) and the _HARD_ORDERINGS
         (hard constraints).
         """
-        files = uth.write_sources({
-            "test_debug_suffix.cpp": (
-                "#define LIB_SUFFIX g\n"
-                "//#PKG-CONFIG=macro-in-output conditional\n"
-                "int main() { return 0; }\n"
-            )
-        })
+        files = uth.write_sources(
+            {
+                "test_debug_suffix.cpp": (
+                    "#define LIB_SUFFIX g\n//#PKG-CONFIG=macro-in-output conditional\nint main() { return 0; }\n"
+                )
+            }
+        )
         source = str(files["test_debug_suffix.cpp"])
 
         result = self._parse_with_magic("direct", source)
@@ -298,9 +292,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         orderings = result.get(_HARD_ORDERINGS_KEY, [])
         assert len(orderings) == 1, f"Expected 1 hard ordering, got {len(orderings)}"
         pred, succ = orderings[0]
-        assert pred == "mylib-g", (
-            f"Hard ordering should use expanded name 'mylib-g', got '{pred}'"
-        )
+        assert pred == "mylib-g", f"Hard ordering should use expanded name 'mylib-g', got '{pred}'"
         assert succ == "testpkg", f"Expected 'testpkg', got '{succ}'"
 
     def test_gcc_linux_macro_not_expanded_in_pkg_config_paths(self, pkgconfig_env):
@@ -311,28 +303,52 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         -I/opt/clickhouse-linux-x64/include becomes
         -I/opt/clickhouse-1-x64/include.
         """
-        files = uth.write_sources({
-            "test_linux_path.cpp": (
-                "//#PKG-CONFIG=linux-path-pkg\n"
-                "int main() { return 0; }\n"
-            )
-        })
+        files = uth.write_sources({"test_linux_path.cpp": ("//#PKG-CONFIG=linux-path-pkg\nint main() { return 0; }\n")})
         source = str(files["test_linux_path.cpp"])
 
         result = self._parse_with_magic("direct", source)
 
         # The word 'linux' in paths must survive expansion
         assert self._check_flags(
-            result, "CPPFLAGS",
+            result,
+            "CPPFLAGS",
             ["clickhouse-linux-x64"],
             ["clickhouse-1-x64"],
         ), "GCC's legacy #define linux 1 must not corrupt pkg-config paths"
 
         assert self._check_flags(
-            result, "LDFLAGS",
+            result,
+            "LDFLAGS",
             ["clickhouse-linux-x64"],
             ["clickhouse-1-x64"],
         ), "GCC's legacy #define linux 1 must not corrupt pkg-config -L paths"
+
+    def test_user_redefined_legacy_macro_is_honored(self):
+        """I-2 regression: the legacy-name filter in _parse() drops compiler
+        predefined names without leading underscore (e.g. ``linux``, ``unix``)
+        UNLESS the user has redefined them via ``#define``.
+
+        This is the positive path: if a source file does ``#define linux foo``,
+        the user's value MUST take effect during magic-flag expansion.
+        Previously only the negative path (compiler predefine ignored)
+        was covered."""
+        files = uth.write_sources(
+            {
+                "test_user_legacy_redef.cpp": (
+                    "#define linux mycustomvalue\n//#CPPFLAGS=-DPLATFORM=linux\nint main() { return 0; }\n"
+                )
+            }
+        )
+        source = str(files["test_user_legacy_redef.cpp"])
+
+        result = self._parse_with_magic("direct", source)
+
+        # The user's #define linux mycustomvalue should expand the bare
+        # ``linux`` identifier in the magic flag's value to mycustomvalue.
+        cppflags_str = " ".join(str(f) for f in result[sz.Str("CPPFLAGS")])
+        assert "PLATFORM=mycustomvalue" in cppflags_str, (
+            f"User #define linux mycustomvalue must override legacy filter; got CPPFLAGS={cppflags_str}"
+        )
 
     def test_undefined_macro_in_magic_flag_values_unchanged(self):
         """Undefined macros in magic flag values should remain as-is"""
@@ -1118,9 +1134,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         pch_values = result.get(sz.Str("PCH"), [])
         assert len(pch_values) == 1, f"Expected one PCH value, got {pch_values}"
         resolved = str(pch_values[0])
-        assert resolved == header, (
-            f"PCH should resolve to header path {header}, got {resolved}"
-        )
+        assert resolved == header, f"PCH should resolve to header path {header}, got {resolved}"
 
     def test_pch_header_from_sample(self):
         """PCH is correctly parsed from the pch sample."""

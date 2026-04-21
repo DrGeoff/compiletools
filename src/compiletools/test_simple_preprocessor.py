@@ -241,6 +241,48 @@ class TestSimplePreprocessor:
         # Should stop after max_iterations and return last value
         assert result in ["X", "Y"]  # Could be either depending on iteration count
 
+    def test_recursive_expansion_warns_on_truncation(self, capsys):
+        """I-3 regression: hitting max_iterations on a still-mutating
+        expression must emit a warning at verbose>=1, not silently return
+        a truncated result. Pathological recursive macros otherwise hide
+        broken user definitions."""
+        import stringzilla as sz
+
+        # A <-> B forms a 2-cycle that never converges
+        processor = SimplePreprocessor(
+            {sz.Str("A"): sz.Str("B"), sz.Str("B"): sz.Str("A")},
+            verbose=1,
+        )
+        processor._recursive_expand_macros_sz(sz.Str("A"), max_iterations=4)
+        captured = capsys.readouterr()
+        assert "max_iterations" in captured.out, f"Expected truncation warning in output, got: {captured.out!r}"
+        assert "recursive macro" in captured.out
+
+    def test_recursive_expansion_no_warn_when_converged(self, capsys):
+        """Convergence within the iteration cap must NOT emit a warning."""
+        import stringzilla as sz
+
+        processor = SimplePreprocessor(
+            {sz.Str("A"): sz.Str("B"), sz.Str("B"): sz.Str("C"), sz.Str("C"): sz.Str("42")},
+            verbose=9,
+        )
+        result = processor._recursive_expand_macros_sz(sz.Str("A"))
+        captured = capsys.readouterr()
+        assert result == "42"
+        assert "max_iterations" not in captured.out
+
+    def test_recursive_expansion_truncation_silent_when_quiet(self, capsys):
+        """At verbose=0 the truncation warning is suppressed."""
+        import stringzilla as sz
+
+        processor = SimplePreprocessor(
+            {sz.Str("A"): sz.Str("B"), sz.Str("B"): sz.Str("A")},
+            verbose=0,
+        )
+        processor._recursive_expand_macros_sz(sz.Str("A"), max_iterations=4)
+        captured = capsys.readouterr()
+        assert "max_iterations" not in captured.out
+
     def test_comment_stripping_sz(self):
         """Test C/C++ style comment stripping from StringZilla expressions"""
         import stringzilla as sz

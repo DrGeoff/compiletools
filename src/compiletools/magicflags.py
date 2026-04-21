@@ -20,8 +20,28 @@ from compiletools.preprocessing_cache import MacroState, get_or_compute_preproce
 from compiletools.stringzilla_utils import strip_sz
 from compiletools.utils import instance_cache
 
-# Internal key for storing hard ordering constraints in the magic flags dict.
-# Shared between magicflags.py (producer) and build_backend.py (consumer).
+# Internal sentinel key for storing hard library ordering constraints inside
+# the per-file magic flags dict.
+#
+# Contract (M-6):
+#   Producer: ``magicflags._handle_pkg_config()`` — when a single
+#       ``//#PKG-CONFIG=a b c`` annotation lists 2+ libraried packages,
+#       it stores pairwise ``(pred_lib, succ_lib)`` tuples (lib names,
+#       no ``-l`` prefix) under this key.
+#   Consumer: ``build_backend._merge_ldflags_for_sources()`` — pops these
+#       entries out of the per-file flags dict, aggregates them across
+#       all source files, and forwards the result to
+#       ``utils.merge_ldflags_with_topo_sort(..., hard_orderings=...)``.
+#   Value type: ``list[tuple[str, str]]``.
+#   The key is a sentinel: it MUST be filtered out of normal flag-key
+#       iteration (see the ``_HARD_ORDERINGS_KEY`` skip in ``_parse``'s
+#       deduplication loop). Using ``sz.Str`` ensures it sorts/hashes
+#       like the other dict keys without colliding with any real flag
+#       key (no compiler flag starts with an underscore).
+#
+# NOTE: The consumer side lives in build_backend.py which is OUT of scope
+# for the current refactor — see NOTES.md for the corresponding consumer-side
+# documentation request.
 _HARD_ORDERINGS_KEY = sz.Str("_HARD_ORDERINGS")
 
 # Type aliases for clarity
@@ -117,7 +137,6 @@ class MagicFlagsBase:
         # After _parse() runs, the MacroState carries effective compile flags
         # (global + per-file magic) so get_hash(include_core=True) captures everything.
         self._final_macro_states = {}
-        self._expander = None
 
     def _initialize_macro_state(self) -> MacroState:
         """Initialize MacroState with command-line and compiler macros as core.
@@ -254,7 +273,16 @@ class MagicFlagsBase:
             print(f"Added -I {flag} to CPPFLAGS, CFLAGS, and CXXFLAGS")
         return flagsforfilename
 
-    def _handle_pkg_config(self, flag):
+    def _handle_pkg_config(self, flag, expander=None):
+        """Expand a ``//#PKG-CONFIG=pkg1 pkg2 ...`` annotation.
+
+        Args:
+            flag: The (already-expanded) value of the magic flag.
+            expander: Optional ``SimplePreprocessor`` used to expand macros
+                inside the pkg-config output (e.g. ``$LIB_SUFFIX``). Passed
+                explicitly rather than read from ``self._expander`` so this
+                method has no hidden mutable per-call state on ``self``.
+        """
         flagsforfilename = defaultdict(list)
 
         # Convert to string for splitting, as we need to iterate over packages
@@ -270,14 +298,14 @@ class MagicFlagsBase:
             # Use the shared filtering logic from apptools
             cflags_str = compiletools.apptools.filter_pkg_config_cflags(cflags_raw, self._args.verbose)
             cflags_sz = sz.Str(cflags_str)
-            if cflags_str and self._expander:
-                cflags_sz = self._expander._recursive_expand_macros_sz(cflags_sz)
+            if cflags_str and expander:
+                cflags_sz = expander._recursive_expand_macros_sz(cflags_sz)
             cflags_list = compiletools.utils.split_command_cached_sz(cflags_sz)
 
             libs_raw = compiletools.apptools.cached_pkg_config(pkg, "--libs")
             libs_sz = sz.Str(libs_raw)
-            if libs_raw and self._expander:
-                libs_sz = self._expander._recursive_expand_macros_sz(libs_sz)
+            if libs_raw and expander:
+                libs_sz = expander._recursive_expand_macros_sz(libs_sz)
             libs_list = compiletools.utils.split_command_cached_sz(libs_sz)
 
             # Extract first -l from expanded libs — must use the same
@@ -434,7 +462,6 @@ class MagicFlagsBase:
                 compiler_path=getattr(self._args, "CXX", ""),
                 cppflags=getattr(self._args, "CPPFLAGS", ""),
             )
-        self._expander = expander
 
         for file_data in file_analysis_data:
             content_hash = file_data["content_hash"]
@@ -446,8 +473,9 @@ class MagicFlagsBase:
                 flag = magic_flag["value"]
                 if expander:
                     flag = expander._recursive_expand_macros_sz(flag)
-                # Pass magic_flag data and filepath for structured processing
-                self._process_magic_flag(magic, flag, flagsforfilename, magic_flag, filepath)
+                # Pass magic_flag data, filepath, and expander explicitly so
+                # the per-call state has no hidden dependency on `self`.
+                self._process_magic_flag(magic, flag, flagsforfilename, magic_flag, filepath, expander=expander)
 
         # Merge deprecated LINKFLAGS into LDFLAGS before deduplication
         if sz.Str("LINKFLAGS") in flagsforfilename:
@@ -504,8 +532,21 @@ class MagicFlagsBase:
         for key, values in extra_flags_dict.items():
             flagsforfilename[key].extend(values)
 
-    def _process_magic_flag(self, magic, flag, flagsforfilename, magic_flag_data, filename):
-        """Process a single magic flag entry"""
+    def _process_magic_flag(self, magic, flag, flagsforfilename, magic_flag_data, filename, expander=None):
+        """Process a single magic flag entry.
+
+        Args:
+            magic: Magic flag key (e.g. ``LDFLAGS``, ``PKG-CONFIG``).
+            flag: Magic flag value (already macro-expanded by the caller).
+            flagsforfilename: Output dict to append flags into.
+            magic_flag_data: Raw structured magic-flag dict (for SOURCE
+                context resolution etc.).
+            filename: Path of the file the magic flag came from.
+            expander: Optional ``SimplePreprocessor`` forwarded to
+                downstream handlers (notably ``_handle_pkg_config``) that
+                need to expand macros inside subprocess output. Passed
+                explicitly to avoid hidden ``self`` mutation between calls.
+        """
         # READMACROS is handled during DirectMagicFlags first pass, don't add to output
         if magic == sz.Str("READMACROS"):
             return
@@ -535,7 +576,7 @@ class MagicFlagsBase:
 
         # If the magic was PKG-CONFIG then call pkg-config
         if magic == sz.Str("PKG-CONFIG"):
-            self._extend_flags_from_dict(flagsforfilename, self._handle_pkg_config(flag))
+            self._extend_flags_from_dict(flagsforfilename, self._handle_pkg_config(flag, expander=expander))
             # PKG-CONFIG generates flags for other keys AND adds itself to PKG-CONFIG key
 
         # Split flag string into individual flags - all magic flags can contain multiple values

@@ -263,7 +263,8 @@ class TestMergeLdflagsTopoSort:
         hard_orderings = [("a", "b"), ("b", "c"), ("c", "a")]
         with pytest.raises(ValueError, match=r"a -> b -> c -> a"):
             utils.merge_ldflags_with_topo_sort(
-                per_file, hard_orderings=hard_orderings,
+                per_file,
+                hard_orderings=hard_orderings,
             )
 
     def test_hard_cycle_error_shows_source_files(self, tmp_path):
@@ -302,13 +303,14 @@ class TestMergeLdflagsTopoSort:
         """A cycle with both hard and soft edges should be resolved by
         dropping the soft edges, preserving all hard orderings."""
         per_file = [
-            ["-la", "-lb"],     # soft: a→b
-            ["-lb", "-lc"],     # soft: b→c
-            ["-lc", "-la"],     # soft: c→a (closes the cycle)
+            ["-la", "-lb"],  # soft: a→b
+            ["-lb", "-lc"],  # soft: b→c
+            ["-lc", "-la"],  # soft: c→a (closes the cycle)
         ]
-        hard_orderings = [("a", "b")]   # hard: a must precede b
+        hard_orderings = [("a", "b")]  # hard: a must precede b
         result = utils.merge_ldflags_with_topo_sort(
-            per_file, hard_orderings=hard_orderings,
+            per_file,
+            hard_orderings=hard_orderings,
         )
         # Hard ordering a→b preserved
         assert result.index("-la") < result.index("-lb")
@@ -320,8 +322,12 @@ class TestMergeLdflagsTopoSort:
     def test_multiple_disjoint_soft_cycles(self):
         """Two independent non-mutual soft cycles should both be resolved."""
         per_file = [
-            ["-la", "-lb"], ["-lb", "-lc"], ["-lc", "-la"],  # cycle 1
-            ["-lx", "-ly"], ["-ly", "-lz"], ["-lz", "-lx"],  # cycle 2
+            ["-la", "-lb"],
+            ["-lb", "-lc"],
+            ["-lc", "-la"],  # cycle 1
+            ["-lx", "-ly"],
+            ["-ly", "-lz"],
+            ["-lz", "-lx"],  # cycle 2
         ]
         result = utils.merge_ldflags_with_topo_sort(per_file)
         assert len(result) == 6
@@ -341,7 +347,9 @@ class TestMergeLdflagsTopoSort:
     def test_deterministic_output_with_soft_cycle_breaking(self):
         """Cycle-breaking path must also produce deterministic output."""
         per_file = [
-            ["-la", "-lb"], ["-lb", "-lc"], ["-lc", "-la"],
+            ["-la", "-lb"],
+            ["-lb", "-lc"],
+            ["-lc", "-la"],
         ]
         result1 = utils.merge_ldflags_with_topo_sort(per_file)
         result2 = utils.merge_ldflags_with_topo_sort(per_file)
@@ -388,7 +396,8 @@ class TestMergeLdflagsTopoSort:
         hard_orderings = [("ssh2", "numa"), ("numa", "ssh2")]
         with pytest.raises(ValueError, match="Cyclic library dependency"):
             utils.merge_ldflags_with_topo_sort(
-                per_file, hard_orderings=hard_orderings,
+                per_file,
+                hard_orderings=hard_orderings,
             )
 
     def test_overlapping_transitive_deps_not_cycle(self):
@@ -396,8 +405,8 @@ class TestMergeLdflagsTopoSort:
         transitive deps in different orders should NOT be treated as a
         cycle — these are soft constraints from discovery, not intent."""
         per_file = [
-            ["-lssh2", "-lssl", "-lcrypto"],   # pkg-config --libs libssh2
-            ["-lnuma", "-lcrypto", "-lssl"],    # pkg-config --libs numa
+            ["-lssh2", "-lssl", "-lcrypto"],  # pkg-config --libs libssh2
+            ["-lnuma", "-lcrypto", "-lssl"],  # pkg-config --libs numa
         ]
         # No hard_orderings: both files are single-package
         result = utils.merge_ldflags_with_topo_sort(per_file)
@@ -410,12 +419,13 @@ class TestMergeLdflagsTopoSort:
         """A single-package file (libssh2) does not constrain ordering
         relative to a multi-package file (numa libssh2)."""
         per_file = [
-            ["-lssh2"],                # single: PKG-CONFIG=libssh2
-            ["-lnuma", "-lssh2"],      # multi: PKG-CONFIG=numa libssh2
+            ["-lssh2"],  # single: PKG-CONFIG=libssh2
+            ["-lnuma", "-lssh2"],  # multi: PKG-CONFIG=numa libssh2
         ]
         hard_orderings = [("numa", "ssh2")]
         result = utils.merge_ldflags_with_topo_sort(
-            per_file, hard_orderings=hard_orderings,
+            per_file,
+            hard_orderings=hard_orderings,
         )
         assert result.index("-lnuma") < result.index("-lssh2")
 
@@ -424,13 +434,14 @@ class TestMergeLdflagsTopoSort:
         (hard ordering) and other files have just one of the two,
         the explicit ordering must be respected."""
         per_file = [
-            ["-lnuma", "-lssh2"],   # PKG-CONFIG=numa libssh2
-            ["-lnuma"],             # PKG-CONFIG=numa
-            ["-lssh2"],             # PKG-CONFIG=libssh2
+            ["-lnuma", "-lssh2"],  # PKG-CONFIG=numa libssh2
+            ["-lnuma"],  # PKG-CONFIG=numa
+            ["-lssh2"],  # PKG-CONFIG=libssh2
         ]
         hard_orderings = [("numa", "ssh2")]
         result = utils.merge_ldflags_with_topo_sort(
-            per_file, hard_orderings=hard_orderings,
+            per_file,
+            hard_orderings=hard_orderings,
         )
         assert result.index("-lnuma") < result.index("-lssh2")
 
@@ -444,20 +455,22 @@ class TestMergeLdflagsTopoSort:
         hard_orderings = [("ssh2", "numa"), ("numa", "z"), ("z", "ssh2")]
         with pytest.raises(ValueError, match="Cyclic library dependency"):
             utils.merge_ldflags_with_topo_sort(
-                per_file, hard_orderings=hard_orderings,
+                per_file,
+                hard_orderings=hard_orderings,
             )
 
     def test_soft_contradiction_resolved_even_with_hard_elsewhere(self):
         """A soft mutual pair is cancelled even when unrelated hard
         orderings exist."""
         per_file = [
-            ["-la", "-lb"],     # soft: a→b
-            ["-lb", "-la"],     # soft: b→a (contradicts above)
-            ["-lx", "-ly"],     # soft: x→y
+            ["-la", "-lb"],  # soft: a→b
+            ["-lb", "-la"],  # soft: b→a (contradicts above)
+            ["-lx", "-ly"],  # soft: x→y
         ]
-        hard_orderings = [("x", "y")]   # hard: x must precede y
+        hard_orderings = [("x", "y")]  # hard: x must precede y
         result = utils.merge_ldflags_with_topo_sort(
-            per_file, hard_orderings=hard_orderings,
+            per_file,
+            hard_orderings=hard_orderings,
         )
         # a<->b is soft-soft mutual, cancelled — no error
         assert "-la" in result
@@ -492,7 +505,8 @@ class TestMergeLdflagsTopoSort:
         # Hard ordering with the same expanded name (foo-O2, not foo-LIB_SUFFIX)
         hard_orderings = [("foo-O2", "bar")]
         result = utils.merge_ldflags_with_topo_sort(
-            per_file, hard_orderings=hard_orderings,
+            per_file,
+            hard_orderings=hard_orderings,
         )
         # Hard wins: foo-O2 must precede bar, soft reverse is cancelled
         assert result.index("-lfoo-O2") < result.index("-lbar")
@@ -528,6 +542,57 @@ class TestMergeLdflagsTopoSort:
         ]
         result = utils.merge_ldflags_with_topo_sort(per_file)
         # All unique libs must be present (each once)
-        for lib in ("-lcommslib", "-lrdma", "-lverbs", "-lpacketio",
-                    "-lstoragelib", "-lcompression", "-lchecksumlib"):
+        for lib in ("-lcommslib", "-lrdma", "-lverbs", "-lpacketio", "-lstoragelib", "-lcompression", "-lchecksumlib"):
             assert lib in result, f"{lib} missing from merged result: {result}"
+
+    def test_hard_orderings_without_per_file_ldflags_raises(self):
+        """C-1 regression: hard_orderings supplied without per_file_ldflags
+        must raise ValueError, not silently return [] (which would happen
+        under ``python -O`` where the previous ``assert`` was stripped)."""
+        with pytest.raises(ValueError, match="cannot honor hard_orderings"):
+            utils.merge_ldflags_with_topo_sort(
+                [],
+                hard_orderings=[("a", "b")],
+                hard_ordering_sources=["src/foo.cpp"],
+            )
+
+    def test_hard_orderings_check_survives_optimized_mode(self, monkeypatch):
+        """Simulate ``python -O`` semantics by patching __debug__ to False
+        via the assert-stripping path: the new ``raise`` must still fire.
+
+        Note: real ``-O`` strips asserts at compile time, so this test
+        verifies the ``raise`` fires even when ``__debug__`` is observed
+        as False (i.e. nothing should depend on assertions for safety)."""
+        # Force ``__debug__`` to False inside utils — the raise is unconditional.
+        monkeypatch.setattr(utils, "__debug__", False, raising=False)
+        with pytest.raises(ValueError, match="cannot honor hard_orderings"):
+            utils.merge_ldflags_with_topo_sort(
+                [],
+                hard_orderings=[("a", "b")],
+            )
+
+    def test_kahn_heap_ordering_matches_sorted_baseline(self):
+        """C-5 regression: switching Kahn's queue from sort-each-iter to
+        heapq must preserve the previous deterministic alphabetical order."""
+        per_file = [
+            ["-lzeta", "-lalpha", "-lgamma"],  # zeta -> alpha -> gamma
+            ["-lalpha", "-lbeta"],  # alpha -> beta
+        ]
+        result = utils.merge_ldflags_with_topo_sort(per_file)
+        # zeta has no predecessors, alpha has no others, then beta and gamma
+        # tie-break alphabetically.
+        assert result.index("-lzeta") < result.index("-lalpha")
+        assert result.index("-lalpha") < result.index("-lbeta")
+        assert result.index("-lalpha") < result.index("-lgamma")
+        # beta and gamma both have alpha as their only pred and become
+        # ready at the same time — tie-break alphabetical.
+        assert result.index("-lbeta") < result.index("-lgamma")
+
+    def test_find_cycle_inconsistent_state_raises(self):
+        """C-7: previously-unreachable fallback in ``_find_cycle`` now raises
+        rather than fabricating a malformed cycle path."""
+        # An acyclic remaining set passed to _find_cycle is a caller bug.
+        graph = {"a": {"b"}, "b": set()}
+        remaining = {"a", "b"}
+        with pytest.raises(RuntimeError, match="no cycle detected"):
+            utils._find_cycle(graph, remaining)

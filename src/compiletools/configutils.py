@@ -227,6 +227,11 @@ def default_config_directories(
     if compiletools.wrappedos.isdir(repo_config_dir):
         results.append(repo_config_dir)
 
+    # Priority order (lowest -> highest): bundled < system < venv < user
+    # < project < cwd < env < CLI. The list returned here is in *reverse*
+    # priority — later entries WIN. ``get_existing_config_files`` (line ~250)
+    # consumes this list via ``reversed(...)`` so the highest-priority
+    # directory is read LAST, letting its values override earlier ones.
     cwd_config_dir = os.path.join(current_dir, "ct.conf.d")
     if compiletools.wrappedos.isdir(cwd_config_dir):
         results.append(cwd_config_dir)

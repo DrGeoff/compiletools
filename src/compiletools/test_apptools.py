@@ -896,3 +896,39 @@ class TestSetupPkgConfigOverrides:
         ctx.restore_pkg_config_path()
 
         assert "PKG_CONFIG_PATH" not in os.environ
+
+    def test_restore_runs_after_subprocess_exception(self, monkeypatch, tmp_path):
+        """I-10 regression: restore_pkg_config_path() must cleanly undo the
+        env mutation even when a downstream pkg-config subprocess raises
+        between apply and restore. Long-lived processes / tests rely on
+        this for cleanup-by-context-manager / try/finally patterns."""
+        pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
+        pkgconfig_dir.mkdir(parents=True)
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path))
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PKG_CONFIG_PATH", "/original/path")
+
+        ctx = BuildContext()
+        _setup_pkg_config_overrides(ctx)
+        mutated_value = os.environ["PKG_CONFIG_PATH"]
+        assert mutated_value != "/original/path"
+
+        # Mock subprocess to raise — simulate batch pkg-config failure
+        def boom(*args, **kwargs):
+            raise subprocess.CalledProcessError(1, "pkg-config", "boom")
+
+        monkeypatch.setattr(subprocess, "run", boom)
+
+        # Caller's try/finally pattern: regardless of pkg-config exception,
+        # restore must succeed and leave the environment clean.
+        try:
+            subprocess.run(["pkg-config", "--exists", "fake"], check=True)
+        except subprocess.CalledProcessError:
+            pass
+        finally:
+            ctx.restore_pkg_config_path()
+
+        assert os.environ.get("PKG_CONFIG_PATH") == "/original/path", (
+            "Restore must succeed even when a pkg-config subprocess raised"
+        )
+        assert ctx.pkg_config_overrides_applied is False

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import warnings
 
 # Only used for the verbose print.
@@ -929,7 +930,38 @@ def _setup_pkg_config_overrides(context, verbose=0, prepend_paths=None, append_p
     Must be called before any pkg-config subprocess invocation
     (i.e., before _add_flags_from_pkg_config and before magicflags
     processing).
+
+    Concurrency contract
+    --------------------
+    This function mutates the **process-wide** ``os.environ['PKG_CONFIG_PATH']``,
+    which is global state. Callers MUST observe the following:
+
+    * Per-process serialization is enforced via a module-level
+      ``threading.Lock`` (``_PKG_CONFIG_OVERRIDE_LOCK``). Two threads
+      racing into this function will not interleave their reads/writes
+      of ``PKG_CONFIG_PATH``.
+    * The lock does NOT protect against other code paths in the process
+      mutating ``os.environ['PKG_CONFIG_PATH']`` independently.
+    * The lock does NOT serialize across processes. Multiple processes
+      sharing a single ``BuildContext`` is unsupported.
+    * The ``context.pkg_config_overrides_applied`` flag is checked and
+      set within the lock to make the apply-once invariant safe under
+      concurrent calls on the same context.
+    * After mutation, ``context._original_pkg_config_path`` records the
+      prior value so ``BuildContext.restore_pkg_config_path()`` can
+      undo the mutation. Restore is also single-process / serial.
     """
+    with _PKG_CONFIG_OVERRIDE_LOCK:
+        _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_paths)
+
+
+# Process-local serialization for the env-mutation in _setup_pkg_config_overrides.
+# See the docstring of that function for the full contract.
+_PKG_CONFIG_OVERRIDE_LOCK = threading.Lock()
+
+
+def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_paths):
+    """Body of _setup_pkg_config_overrides; assumes the module lock is held."""
     if context.pkg_config_overrides_applied:
         return
 

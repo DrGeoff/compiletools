@@ -483,8 +483,13 @@ def _find_cycle(graph: dict[str, set[str]], remaining: set[str]) -> list[str]:
                 on_stack.discard(node)
                 stack.pop()
 
-    # Should not reach here if remaining is truly cyclic
-    return sorted(remaining) + [sorted(remaining)[0]]  # pragma: no cover
+    # Should not reach here if remaining is truly cyclic — bail loudly
+    # rather than returning a fake cycle that downstream formatters would
+    # render as if it were real diagnostic data.
+    raise RuntimeError(
+        f"_find_cycle: no cycle detected in supposedly cyclic remaining set {sorted(remaining)}. "
+        "This indicates a bug in the caller (graph and remaining are inconsistent)."
+    )
 
 
 class LDFLAGSCycleError(ValueError):
@@ -590,11 +595,18 @@ def merge_ldflags_with_topo_sort(
         # in practice — multi-package PKG-CONFIG always populates LDFLAGS
         # alongside the hard ordering. If it ever changes, an empty
         # return here would silently lose the hard constraints.
-        assert not hard_orderings, (
-            "merge_ldflags_with_topo_sort: cannot honor hard_orderings "
-            "without per_file_ldflags. The two are produced together by "
-            "magicflags._handle_pkg_config; one without the other is a bug."
-        )
+        # Use a real exception (not assert) so this still fires under
+        # ``python -O`` where assertions are stripped.
+        if hard_orderings:
+            sources_info = ""
+            if hard_ordering_sources:
+                sources_info = f" Source files: {sorted(set(hard_ordering_sources))}."
+            raise ValueError(
+                "merge_ldflags_with_topo_sort: cannot honor hard_orderings "
+                "without per_file_ldflags. The two are produced together by "
+                f"magicflags._handle_pkg_config; one without the other is a bug. "
+                f"hard_orderings={hard_orderings}.{sources_info}"
+            )
         return []
 
     from collections import defaultdict
@@ -706,19 +718,26 @@ def merge_ldflags_with_topo_sort(
     remaining = set(all_libs)
 
     def _drain_kahn() -> None:
-        """Drain all zero-in-degree nodes from *remaining* into *sorted_libs*."""
-        queue = sorted(lib for lib in remaining if in_degree.get(lib, 0) == 0)
+        """Drain all zero-in-degree nodes from *remaining* into *sorted_libs*.
+
+        Uses heapq for the ready queue so each pop is O(log n) and each push
+        is O(log n), avoiding the O(n log n) full re-sort per iteration that
+        the previous list-based implementation paid. Heap entries are 1-tuples
+        ``(name,)`` for explicit deterministic tie-breaking.
+        """
+        import heapq
+
+        queue: list[tuple[str]] = [(lib,) for lib in remaining if in_degree.get(lib, 0) == 0]
+        heapq.heapify(queue)
         while queue:
-            node = queue.pop(0)
+            (node,) = heapq.heappop(queue)
             sorted_libs.append(node)
             remaining.discard(node)
-            next_ready = []
-            for succ in sorted(graph.get(node, [])):
+            for succ in graph.get(node, []):
                 if succ in remaining:
                     in_degree[succ] -= 1
                     if in_degree[succ] == 0:
-                        next_ready.append(succ)
-            queue = sorted(queue + next_ready)
+                        heapq.heappush(queue, (succ,))
 
     _drain_kahn()
 

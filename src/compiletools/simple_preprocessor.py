@@ -366,7 +366,17 @@ class SimplePreprocessor:
         return result
 
     def _recursive_expand_macros_sz(self, expr_sz: sz.Str, max_iterations: int = 10) -> sz.Str:
-        """Recursively expand macros using StringZilla operations until no more changes occur"""
+        """Recursively expand macros using StringZilla operations until no more changes occur.
+
+        ``max_iterations`` (default 10) caps the expansion depth to defeat
+        pathological macro definitions that would otherwise loop forever
+        (e.g. ``#define A B`` and ``#define B A``). When the cap is hit
+        AND the expression is still changing on each pass — indicating a
+        genuine cycle rather than benign convergence — a warning is emitted
+        at ``verbose >= 1`` so the user knows their macro definitions are
+        cyclic and the result was truncated. The last seen expression is
+        returned regardless.
+        """
         previous_expr = sz.Str("")  # Initialize with empty StringZilla.Str instead of None
         iteration = 0
 
@@ -374,6 +384,17 @@ class SimplePreprocessor:
             previous_expr = expr_sz
             expr_sz = self._expand_macros_sz(expr_sz)
             iteration += 1
+
+        # If we hit the iteration cap AND the expression was still mutating
+        # on the last pass, the expansion was truncated — warn the user.
+        if iteration == max_iterations and expr_sz != previous_expr:
+            if self.verbose >= 1:
+                print(
+                    f"WARNING: SimplePreprocessor._recursive_expand_macros_sz hit "
+                    f"max_iterations={max_iterations} while expression was still "
+                    f"changing — likely a recursive macro definition cycle. "
+                    f"Truncated result: {expr_sz!r} (previous: {previous_expr!r})"
+                )
 
         return expr_sz
 
