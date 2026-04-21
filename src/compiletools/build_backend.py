@@ -35,7 +35,12 @@ from compiletools.magicflags import _HARD_ORDERINGS_KEY
 
 
 def _touch(path: str) -> None:
-    """Create or update the modification time of a file."""
+    """Create file (if missing) or bump its mtime (if present).
+
+    The os.utime call is load-bearing: open(path, "a") only sets mtime
+    when creating a new file; existing files need explicit utime to
+    register a fresh mtime (used as build/test success markers).
+    """
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a"):
         os.utime(path, None)
