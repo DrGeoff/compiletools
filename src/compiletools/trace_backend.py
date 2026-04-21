@@ -264,6 +264,7 @@ class ShakeBackend(BuildBackend):
 
     def _execute_build(self, target: str) -> None:
         # Not used: ShakeBackend overrides execute() with its own build engine.
+        del target
         raise NotImplementedError  # pragma: no cover
 
     def execute(self, target: str = "build") -> None:
@@ -365,7 +366,7 @@ class ShakeBackend(BuildBackend):
 
         loop = asyncio.get_running_loop()
         async with sem:
-            await loop.run_in_executor(None, self._execute_rule, rule, target, flat_cmd, cmd)
+            await loop.run_in_executor(None, self._execute_rule, rule, target, flat_cmd)
 
         # CA outputs don't need trace recording or early cutoff
         if _is_build_artifact(rule):
@@ -377,7 +378,7 @@ class ShakeBackend(BuildBackend):
         # EARLY CUTOFF
         return old_hash != new_hash
 
-    def _execute_rule(self, rule: BuildRule, target: str, flat_cmd: list[str], cmd: list[str]) -> None:
+    def _execute_rule(self, rule: BuildRule, target: str, flat_cmd: list[str]) -> None:
         """Run the subprocess for a single build rule (called from a thread)."""
         start = time.monotonic()
         if rule.rule_type == "compile":
@@ -680,7 +681,7 @@ class SlurmBackend(ShakeBackend):
         prev_sigint = signal.getsignal(signal.SIGINT)
         prev_sigterm = signal.getsignal(signal.SIGTERM)
 
-        def _on_signal(signum, frame):  # pragma: no cover - exercised via thread test
+        def _on_signal(signum, _frame):  # pragma: no cover - exercised via thread test
             self._scancel_pending()
             # Restore default handler and re-raise so normal interrupt semantics apply
             signal.signal(signum, signal.SIG_DFL)
@@ -1368,4 +1369,5 @@ class SlurmBackend(ShakeBackend):
 
     def _execute_build(self, target: str) -> None:
         # SlurmBackend is self-executing via execute(); this path is never used.
+        del target
         raise NotImplementedError  # pragma: no cover

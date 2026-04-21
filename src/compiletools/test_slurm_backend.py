@@ -23,6 +23,7 @@ from compiletools.trace_backend import (
     SlurmBackend,
     TraceStore,
     _make_trace_entry,
+    _slurm_max_wait_arg,
     _slurm_mem_arg,
     _slurm_mem_tiers_arg,
     _slurm_time_arg,
@@ -562,7 +563,7 @@ class TestJobFailures:
             objdir = backend.args.objdir
             log_paths_created: list[str] = []
 
-            def fake_sbatch(*args, **kwargs):
+            def fake_sbatch(*_args, **_kwargs):
                 # Create a slurm log named for this invocation's prefix and chunk
                 prefix = backend._invocation_prefix
                 log_path = os.path.join(objdir, f"slurm-ct-{prefix}-0-0.out")
@@ -1148,15 +1149,11 @@ class TestArgValidation:
         assert out == [(1, "1G"), (4, "4G"), (16, "16G")]
 
     def test_slurm_max_wait_valid_passes(self):
-        from compiletools.trace_backend import _slurm_max_wait_arg
-
         assert _slurm_max_wait_arg("60") == 60.0
         assert _slurm_max_wait_arg("0.5") == 0.5
         assert _slurm_max_wait_arg("7200") == 7200.0
 
     def test_slurm_max_wait_invalid_raises(self):
-        from compiletools.trace_backend import _slurm_max_wait_arg
-
         with pytest.raises(argparse.ArgumentTypeError):
             _slurm_max_wait_arg("")
         with pytest.raises(argparse.ArgumentTypeError):
