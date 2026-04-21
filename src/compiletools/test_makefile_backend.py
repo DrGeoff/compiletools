@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import compiletools.makefile
+import compiletools.makefile_backend
 import compiletools.testhelper as uth
 from compiletools.build_backend import get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
@@ -693,7 +693,7 @@ int main() {{
 
         with uth.TempConfigContext(tempdir=str(tmp_path)) as cfg:
             with uth.ParserContext():
-                compiletools.makefile.main(["--config=" + cfg, "--no-file-locking", "--tests=" + str(source)])
+                compiletools.makefile_backend.main(["--config=" + cfg, "--no-file-locking", "--tests=" + str(source)])
 
             mfs = [f for f in os.listdir(".") if f.startswith("Makefile")]
             assert mfs, "Makefile should have been generated"
@@ -741,7 +741,7 @@ class TestAllOutputsCurrentHeaderEdit:
         def _build():
             with uth.TempConfigContext(tempdir=str(tmp_path)) as cfg:
                 with uth.ParserContext():
-                    compiletools.makefile.main(["--config=" + cfg, "--no-file-locking", str(source)])
+                    compiletools.makefile_backend.main(["--config=" + cfg, "--no-file-locking", str(source)])
                 mfs = [f for f in os.listdir(".") if f.startswith("Makefile")]
                 assert mfs
                 r = subprocess.run(["make", "-f", mfs[0]], capture_output=True, text=True)
@@ -930,7 +930,7 @@ class TestMakefileConcurrency:
 
         with uth.TempConfigContext(tempdir=str(tmp_path)) as cfg:
             with uth.ParserContext():
-                compiletools.makefile.main(["--config=" + cfg, "--file-locking=true"] + sources)
+                compiletools.makefile_backend.main(["--config=" + cfg, "--file-locking=true"] + sources)
 
             mfs = [f for f in os.listdir(".") if f.startswith("Makefile")]
             assert mfs

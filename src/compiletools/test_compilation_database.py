@@ -3,7 +3,7 @@ import os
 
 import compiletools.compilation_database
 import compiletools.findtargets
-import compiletools.makefile
+import compiletools.makefile_backend
 import compiletools.testhelper as uth
 from compiletools.build_context import BuildContext
 
@@ -191,7 +191,7 @@ class TestCompilationDatabase:
 
                 # Generate Makefile (disable file-locking so commands are directly comparable)
                 with uth.ParserContext():
-                    compiletools.makefile.main(["--config=" + temp_config_name, "--no-file-locking"] + realpaths)
+                    compiletools.makefile_backend.main(["--config=" + temp_config_name, "--no-file-locking"] + realpaths)
 
                 # Read compilation database
                 with open(comp_db_output) as f:
@@ -234,7 +234,7 @@ class TestCompilationDatabase:
 
                 # Generate Makefile (disable file-locking so commands are directly comparable)
                 with uth.ParserContext():
-                    compiletools.makefile.main(["--config=" + temp_config_name, "--no-file-locking"] + realpaths)
+                    compiletools.makefile_backend.main(["--config=" + temp_config_name, "--no-file-locking"] + realpaths)
 
                 # Read compilation database
                 with open(comp_db_output) as f:

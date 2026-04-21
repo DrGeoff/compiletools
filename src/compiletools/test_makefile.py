@@ -1,4 +1,4 @@
-"""Tests for the Make backend (MakefileBackend) and makefile.py main()."""
+"""Tests for the Make backend (MakefileBackend) and makefile_backend.main()."""
 
 import io
 import os
@@ -7,7 +7,7 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import compiletools.makefile
+import compiletools.makefile_backend
 import compiletools.testhelper as uth
 import compiletools.utils
 from compiletools.build_graph import BuildGraph, BuildRule
@@ -685,7 +685,7 @@ class TestMakefile:
             ]
             realpaths = [os.path.join(samplesdir, filename) for filename in relativepaths]
             with uth.ParserContext():
-                compiletools.makefile.main(["--config=" + temp_config_name, "--no-file-locking"] + realpaths)
+                compiletools.makefile_backend.main(["--config=" + temp_config_name, "--no-file-locking"] + realpaths)
 
             filelist = os.listdir(".")
             makefilename = [ff for ff in filelist if ff.startswith("Makefile")]
@@ -736,7 +736,7 @@ int main() {
 
             with uth.TempConfigContext(tempdir=tempdir) as temp_config_name:
                 with uth.ParserContext():
-                    compiletools.makefile.main(["--config=" + temp_config_name, bad_source, "--file-locking"])
+                    compiletools.makefile_backend.main(["--config=" + temp_config_name, bad_source, "--file-locking"])
 
                 filelist = os.listdir(".")
                 makefilename = [ff for ff in filelist if ff.startswith("Makefile")]
@@ -772,7 +772,7 @@ int main() {
 
             with uth.TempConfigContext(tempdir=tempdir) as temp_config_name:
                 with uth.ParserContext():
-                    compiletools.makefile.main(["--config=" + temp_config_name, "--no-file-locking", source])
+                    compiletools.makefile_backend.main(["--config=" + temp_config_name, "--no-file-locking", source])
 
                 filelist = os.listdir(".")
                 makefilename = [ff for ff in filelist if ff.startswith("Makefile")]
@@ -833,7 +833,7 @@ def _test_library(static_dynamic):
         exerealpath = os.path.join(samplesdir, exerelativepath)
         librealpaths = [os.path.join(samplesdir, filename) for filename in librelativepaths]
         argv = ["--config=" + temp_config_name, "--no-file-locking", exerealpath, static_dynamic] + librealpaths
-        compiletools.makefile.main(argv)
+        compiletools.makefile_backend.main(argv)
 
         filelist = os.listdir(".")
         makefilename = [ff for ff in filelist if ff.startswith("Makefile")]
