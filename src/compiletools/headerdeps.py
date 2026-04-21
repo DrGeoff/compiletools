@@ -103,17 +103,7 @@ class HeaderDepsBase:
                 - System include paths are excluded by default unless configured otherwise.
         """
         realpath = compiletools.wrappedos.realpath(filename)
-        try:
-            result = self._process_impl(realpath, macro_cache_key)
-        except OSError:
-            # If there was any error the first time around, an error correcting removal would have occured
-            # So strangely, the best thing to do is simply try again
-            result = None
-
-        if not result:
-            result = self._process_impl(realpath, macro_cache_key)
-
-        return result
+        return self._process_impl(realpath, macro_cache_key)
 
     @staticmethod
     def _extract_prefixed_paths(flag_value, prefix):
@@ -301,15 +291,7 @@ class DirectHeaderDeps(HeaderDepsBase):
         self._initialize_includes_and_macros(variable_macros)
         initial_macro_key = self.defined_macros.get_cache_key()
 
-        try:
-            result = self._process_impl(realpath, initial_macro_key)
-        except OSError:
-            result = None
-
-        if not result:
-            result = self._process_impl(realpath, initial_macro_key)
-
-        return result
+        return self._process_impl(realpath, initial_macro_key)
 
     def _create_include_list(self, realpath):
         """Internal use. Create the list of includes for the given file

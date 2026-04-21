@@ -538,23 +538,6 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
         except NotImplementedError:
             pass
 
-    def test_base_process_oserror_retry(self):
-        """Test HeaderDepsBase.process retries on OSError."""
-        args = self._make_args()
-        base = compiletools.headerdeps.HeaderDepsBase(args, context=BuildContext())
-        call_count = [0]
-
-        def fake_process_impl(realpath, macro_cache_key):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                raise OSError("transient error")
-            return ["/some/header.h"]
-
-        base._process_impl = fake_process_impl
-        result = base.process("/tmp/test.cpp", frozenset())
-        assert result == ["/some/header.h"]
-        assert call_count[0] == 2
-
     def test_extract_isystem_empty(self):
         """Test _extract_isystem_paths_from_flags with empty input."""
         args = self._make_args()
