@@ -650,48 +650,80 @@ class TestPchManifest:
         assert manifest["compiler"] == "clang++"
 
     def test_pch_rule_emission_writes_manifest(self, tmp_path):
-        """Building a graph with a PCH header writes the manifest eagerly."""
-        import stringzilla as sz
+        """Building a graph with a PCH header writes the manifest eagerly.
 
+        Uses the real ``samples/pch/`` project with the full
+        Hunter/headerdeps/magicflags chain — same pattern as
+        ``test_backend_integration.TestBackendBuildPCH`` — so the test
+        exercises the actual rule-emission path end to end.
+        """
+        import pathlib
+        import shutil
+
+        import compiletools.apptools
+        import compiletools.headerdeps
+        import compiletools.hunter
+        import compiletools.magicflags
+        import compiletools.namer
+        import compiletools.testhelper as uth
         from compiletools.build_context import BuildContext
+        from compiletools.makefile_backend import MakefileBackend
 
-        pchdir = str(tmp_path / "pch_cache")
-        StubClass = make_stub_backend_class()
+        effective_tmp = pathlib.Path(tmp_path)
+        pch_sample = os.path.join(uth.samplesdir(), "pch")
+        for f in os.listdir(pch_sample):
+            shutil.copy2(os.path.join(pch_sample, f), effective_tmp)
 
-        # Need a real header file on disk so realpath works.
-        header_path = tmp_path / "stdafx.h"
-        header_path.write_text("#pragma once\n")
-        source_path = tmp_path / "main.cpp"
-        source_path.write_text("int main(){}\n")
+        source_path = os.path.realpath(str(effective_tmp / "pch_user.cpp"))
+        objdir = str(effective_tmp / "obj")
+        bindir = str(effective_tmp / "bin")
+        pchdir = str(effective_tmp / "pch")
+        argv = [
+            "--include", str(effective_tmp),
+            "--objdir", objdir,
+            "--bindir", bindir,
+            "--pchdir", pchdir,
+            source_path,
+        ]
 
-        pch_flags = {
-            str(source_path): {sz.Str("PCH"): [sz.Str(str(header_path))]},
-            str(header_path): {},
-        }
-        args = make_backend_args(
-            tmp_path,
-            filename=[str(source_path)],
-            pchdir=pchdir,
-        )
-        hunter = make_mock_hunter(
-            sources=[str(source_path)],
-            headers=[],
-            per_file_magicflags=pch_flags,
-        )
-        # Provide a real BuildContext on the hunter so the backend picks it up.
-        hunter.context = BuildContext()
-        backend = StubClass(args=args, hunter=hunter)
-        backend.namer = make_mock_namer(args)
-        backend.build_graph()
+        with uth.ParserContext():
+            cap = compiletools.apptools.create_parser("PCH manifest test", argv=argv)
+            compiletools.apptools.add_target_arguments_ex(cap)
+            compiletools.apptools.add_link_arguments(cap)
+            compiletools.namer.Namer.add_arguments(cap)
+            compiletools.hunter.add_arguments(cap)
+            MakefileBackend.add_arguments(cap)
+            ctx = BuildContext()
+            args = compiletools.apptools.parseargs(cap, argv, context=ctx)
+            headerdeps = compiletools.headerdeps.create(args, context=ctx)
+            magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
+            hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
 
-        # Expect one cmd_hash dir with a manifest.
+            backend = MakefileBackend(args=args, hunter=hunter, context=ctx)
+            backend.build_graph()
+
+        # Exactly one cmd_hash dir with a manifest.
         cmd_hash_dirs = [d for d in os.listdir(pchdir) if len(d) == 16]
-        assert len(cmd_hash_dirs) == 1
+        assert len(cmd_hash_dirs) == 1, f"expected one cmd_hash dir, got: {os.listdir(pchdir)}"
         manifest_path = os.path.join(pchdir, cmd_hash_dirs[0], "manifest.json")
         assert os.path.isfile(manifest_path)
         with open(manifest_path) as f:
             manifest = json.loads(f.read())
-        assert manifest["header_realpath"] == os.path.realpath(str(header_path))
+
+        # Manifest records the immediate header's realpath (which one of
+        # the resolved stdafx.h copies the hunter picked depends on the
+        # configured include order — assert the shape rather than the
+        # exact tmp vs. sample path).
+        assert manifest["header_realpath"].endswith("/stdafx.h")
+        assert os.path.isfile(manifest["header_realpath"])
+
+        # Compiler identity is captured (non-empty string).
+        assert isinstance(manifest["compiler_identity"], str)
+        assert manifest["compiler_identity"]
+
+        # Transitive hashes is a dict (may be empty if no transitive
+        # headers were resolvable in the test environment).
+        assert isinstance(manifest["transitive_hashes"], dict)
 
 
 class TestWarnIfPchdirNotCrossUserSafe:

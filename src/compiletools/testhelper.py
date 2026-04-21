@@ -895,6 +895,12 @@ def make_mock_hunter(sources=None, headers=None, magicflags_map=None, per_file_m
     else:
         hunter.magicflags = MagicMock(return_value=magicflags_map or {})
     hunter.macro_state_hash = MagicMock(return_value="abcdef1234567890")
+    # Real BuildContext so backend code that reaches into hunter.context
+    # (e.g. for global_hash_registry lookups) gets a usable object rather
+    # than an auto-attribute MagicMock that silently returns mocks for
+    # every attribute and breaks JSON-serializing consumers.
+    from compiletools.build_context import BuildContext
+    hunter.context = BuildContext()
     return hunter
 
 

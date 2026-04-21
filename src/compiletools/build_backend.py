@@ -1181,19 +1181,14 @@ def _write_pch_manifest(
     for h in transitive_headers:
         h_real = os.path.realpath(h)
         try:
-            h_hash = compiletools.global_hash_registry.get_file_hash(
+            transitive_hashes[h_real] = compiletools.global_hash_registry.get_file_hash(
                 h_real, context=context
             )
         except (OSError, KeyError, FileNotFoundError):
             # Missing hash is non-fatal; trim_cache treats absent
             # entries as "unknown" and skips staleness pre-eviction
             # for that header.
-            continue
-        # Defensive: only record real string hashes — a misconfigured
-        # context (e.g. test MagicMock) can return non-strings; skip
-        # rather than crash JSON serialization.
-        if isinstance(h_hash, str):
-            transitive_hashes[h_real] = h_hash
+            pass
 
     manifest = {
         "header_realpath": os.path.realpath(pch_header),
