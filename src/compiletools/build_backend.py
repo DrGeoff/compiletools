@@ -853,7 +853,32 @@ class BuildBackend(abc.ABC):
         )
 
     def _merge_ldflags_for_sources(self, sources: list[str]) -> list[str]:
-        """Collect per-file LDFLAGS and hard orderings, then merge via topo sort."""
+        """Collect per-file LDFLAGS and hard orderings, then merge via topo sort.
+
+        Consumer side of the ``_HARD_ORDERINGS_KEY`` contract. The producer
+        is ``magicflags._handle_pkg_config`` (see the comment block above
+        ``magicflags._HARD_ORDERINGS_KEY`` for the full producer-side
+        contract).
+
+        Per-file invariants:
+
+        * The ``_HARD_ORDERINGS_KEY`` sentinel MUST be popped (or filtered)
+          out of the per-file ``magic_flags`` dict before that dict is
+          consumed elsewhere as a flat flag list — otherwise the sentinel
+          leaks out as a fake compiler flag. This method reads the key
+          via ``magic_flags.get(_HARD_ORDERINGS_KEY, [])``; any other
+          consumer of the per-file flags dict must do the same.
+        * The aggregated value forwarded to
+          ``utils.merge_ldflags_with_topo_sort(hard_orderings=...)`` is a
+          ``list[tuple[str, str]]`` of pairwise ``(pred_lib, succ_lib)``
+          constraints. Library names appear without the ``-l`` prefix,
+          matching what ``_handle_pkg_config`` produces.
+        * Source-file provenance is preserved in a parallel
+          ``hard_ordering_sources`` list whose indices align 1:1 with the
+          flattened ``hard_orderings`` list. ``merge_ldflags_with_topo_sort``
+          uses these source paths in cycle-error messages so the user
+          can find the contradictory ``//#PKG-CONFIG=`` annotations.
+        """
         import stringzilla as sz
 
         per_file_ldflags = []
