@@ -19,7 +19,6 @@ import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
 import compiletools.makefile_backend
-import compiletools.namer
 import compiletools.ninja_backend
 import compiletools.testhelper as uth
 import compiletools.trace_backend
@@ -27,19 +26,7 @@ import compiletools.tup_backend
 import compiletools.utils
 from compiletools.build_backend import available_backends, get_backend_class
 from compiletools.build_context import BuildContext
-from compiletools.makefile_backend import MakefileBackend
 from compiletools.test_base import BaseCompileToolsTestCase
-from compiletools.trace_backend import SlurmBackend
-
-
-def _add_backend_arguments(cap):
-    """Add all arguments needed by backends (general + backend-specific)."""
-    compiletools.apptools.add_target_arguments_ex(cap)
-    compiletools.apptools.add_link_arguments(cap)
-    compiletools.namer.Namer.add_arguments(cap)
-    compiletools.hunter.add_arguments(cap)
-    MakefileBackend.add_arguments(cap)
-    SlurmBackend.add_arguments(cap)
 
 
 def _setup_backend_for_source(backend_name, tmp_path, src_file="helloworld_cpp.cpp"):
@@ -63,7 +50,7 @@ def _setup_backend_for_source(backend_name, tmp_path, src_file="helloworld_cpp.c
     ]
 
     cap = compiletools.apptools.create_parser("Backend integration test", argv=argv)
-    _add_backend_arguments(cap)
+    uth.add_backend_arguments(cap)
     ctx = BuildContext()
     args = compiletools.apptools.parseargs(cap, argv, context=ctx)
     headerdeps = compiletools.headerdeps.create(args, context=ctx)
@@ -270,7 +257,7 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
             ]
 
             cap = compiletools.apptools.create_parser("PCH integration test", argv=argv)
-            _add_backend_arguments(cap)
+            uth.add_backend_arguments(cap)
             ctx = BuildContext()
             args = compiletools.apptools.parseargs(cap, argv, context=ctx)
             headerdeps = compiletools.headerdeps.create(args, context=ctx)
@@ -472,7 +459,7 @@ class TestBackendBuildGraphWithTests(BaseCompileToolsTestCase):
             ]
 
             cap = compiletools.apptools.create_parser("Backend integration test", argv=argv)
-            _add_backend_arguments(cap)
+            uth.add_backend_arguments(cap)
             ctx = BuildContext()
             args = compiletools.apptools.parseargs(cap, argv, context=ctx)
             headerdeps = compiletools.headerdeps.create(args, context=ctx)

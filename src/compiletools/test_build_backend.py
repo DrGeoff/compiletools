@@ -663,7 +663,6 @@ class TestPchManifest:
         import compiletools.headerdeps
         import compiletools.hunter
         import compiletools.magicflags
-        import compiletools.namer
         import compiletools.testhelper as uth
         from compiletools.build_context import BuildContext
         from compiletools.makefile_backend import MakefileBackend
@@ -684,11 +683,7 @@ class TestPchManifest:
 
         with uth.ParserContext():
             cap = compiletools.apptools.create_parser("PCH manifest test", argv=argv)
-            compiletools.apptools.add_target_arguments_ex(cap)
-            compiletools.apptools.add_link_arguments(cap)
-            compiletools.namer.Namer.add_arguments(cap)
-            compiletools.hunter.add_arguments(cap)
-            MakefileBackend.add_arguments(cap)
+            uth.add_backend_arguments(cap)
             ctx = BuildContext()
             args = compiletools.apptools.parseargs(cap, argv, context=ctx)
             headerdeps = compiletools.headerdeps.create(args, context=ctx)

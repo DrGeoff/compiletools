@@ -873,6 +873,29 @@ def make_backend_args(tmpdir, **overrides):
     return SimpleNamespace(**defaults)
 
 
+def add_backend_arguments(cap):
+    """Add the full argparse surface needed to wire up any backend.
+
+    Equivalent to what cake.py's argument plumbing produces for a real
+    invocation: target/link args, Namer, Hunter, plus per-backend
+    arguments for every concrete backend that has them. Use this when
+    a test needs to drive ``Hunter`` + ``backend.build_graph()`` from
+    real ``argv``. Backend classes are imported lazily so the helper
+    does not pull them into the testhelper import graph.
+    """
+    import compiletools.hunter
+    import compiletools.namer
+    from compiletools.makefile_backend import MakefileBackend
+    from compiletools.trace_backend import SlurmBackend
+
+    compiletools.apptools.add_target_arguments_ex(cap)
+    compiletools.apptools.add_link_arguments(cap)
+    compiletools.namer.Namer.add_arguments(cap)
+    compiletools.hunter.add_arguments(cap)
+    MakefileBackend.add_arguments(cap)
+    SlurmBackend.add_arguments(cap)
+
+
 def make_mock_hunter(sources=None, headers=None, magicflags_map=None, per_file_magicflags=None):
     """Create a MagicMock hunter with standard behavior.
 

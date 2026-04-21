@@ -52,12 +52,10 @@ _BUILD_SCRIPT = textwrap.dedent("""\
     import compiletools.headerdeps
     import compiletools.hunter
     import compiletools.magicflags
-    import compiletools.namer
     import compiletools.testhelper as uth
     import compiletools.trace_backend  # ensure registered
     from compiletools.build_backend import get_backend_class
     from compiletools.build_context import BuildContext
-    from compiletools.test_backend_integration import _add_backend_arguments
 
     tmp_path = sys.argv[1]
     report_path = sys.argv[2]
@@ -74,7 +72,7 @@ _BUILD_SCRIPT = textwrap.dedent("""\
 
     uth.reset()
     cap = compiletools.apptools.create_parser("noop rebuild test", argv=argv)
-    _add_backend_arguments(cap)
+    uth.add_backend_arguments(cap)
 
     ctx = BuildContext()
     args = compiletools.apptools.parseargs(cap, argv, context=ctx)
@@ -112,9 +110,17 @@ _BUILD_SCRIPT = textwrap.dedent("""\
 
 def _run_build(tmp_path, report_name, seed):
     """Run the build script in a subprocess with the given PYTHONHASHSEED."""
+    import compiletools
+
     report_path = os.path.join(str(tmp_path), report_name)
     env = os.environ.copy()
     env["PYTHONHASHSEED"] = str(seed)
+    # Pin the subprocess to *this* worktree's source — otherwise the
+    # editable install's .pth file points at whichever worktree last
+    # ran ``pip install -e .``, and the subprocess silently runs a
+    # different version of the code than the parent pytest process.
+    worktree_src = os.path.dirname(os.path.dirname(compiletools.__file__))
+    env["PYTHONPATH"] = os.pathsep.join([worktree_src, env.get("PYTHONPATH", "")])
     result = subprocess.run(
         [sys.executable, "-c", _BUILD_SCRIPT, str(tmp_path), report_path],
         env=env,
