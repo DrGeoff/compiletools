@@ -140,11 +140,17 @@ class MakefileBackend(BuildBackend):
         # Check mtimes of every build-rule input against the Makefile's mtime.
         # Includes link/library inputs (e.g. linker scripts, additional .o
         # files) so a change to a non-compile dependency triggers regen.
+        # Inputs that are themselves outputs of other in-graph rules are
+        # skipped: their mtimes track the build, not source freshness, so
+        # checking them would force regen on every post-build invocation.
+        graph_outputs = graph.outputs
         skip_types = {"phony", "mkdir"}
         for rule in graph.rules:
             if rule.rule_type in skip_types:
                 continue
             for dep in rule.inputs:
+                if dep in graph_outputs:
+                    continue
                 try:
                     dep_mtime = compiletools.wrappedos.getmtime(dep)
                 except OSError:
