@@ -12,7 +12,7 @@ pre-commit install
 #
 # Code Style
 #
-The code must run under Python 3.9+
+The code must run under Python 3.10+
 
 Follow the PEP 8 style guide. Formatting and linting are enforced by ruff
 via pre-commit hooks. You can also run them manually:

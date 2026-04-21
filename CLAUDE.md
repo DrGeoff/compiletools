@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-compiletools is a Python package providing C/C++ build tools that require minimal configuration. The core philosophy is "magic" -- automatic dependency detection and build configuration through intelligent source code analysis. The code must run under Python 3.9+.
+compiletools is a Python package providing C/C++ build tools that require minimal configuration. The core philosophy is "magic" -- automatic dependency detection and build configuration through intelligent source code analysis. The code must run under Python 3.10+.
 
 ## Worktree-Based Development
 
@@ -13,7 +13,7 @@ This repository uses git worktrees for development. The `master` worktree lives 
 ## Build and Test Commands
 
 ```bash
-# Ensure a Python 3.9+ venv is active, or create one with:
+# Ensure a Python 3.10+ venv is active, or create one with:
 # uv venv && source .venv/bin/activate
 
 # Install in development mode with dev dependencies

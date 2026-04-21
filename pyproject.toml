@@ -3,7 +3,7 @@ name = "compiletools"
 version = "8.0.3"
 description = "Tools to make compiling C/C++ projects easy"
 readme = "src/compiletools/README.ct-doc.rst"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
 keywords = ["c++", "make", "development"]
 authors = [
@@ -15,7 +15,6 @@ classifiers = [
     "Topic :: Software Development :: Build Tools",
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -191,7 +190,7 @@ filename = "src/compiletools/README.ct-watch-build.rst"
 filename = "src/compiletools/README.profile-ct-cake-worktree.rst"
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py310"
 line-length = 120
 
 [tool.ruff.lint]
@@ -206,7 +205,9 @@ select = [
     "RUF",  # ruff-specific rules
 ]
 ignore = [
-    "UP007",  # Union[X, Y] -> X | Y requires Python 3.10+ at runtime
+    "UP007",  # Union[X, Y] -> X | Y -- deferred to avoid a churn commit
+    "UP045",  # Optional[X] -> X | None -- deferred with UP007 (single modernization pass)
+    "B905",   # zip(strict=) -- deferred; adding strict= is a semantic decision per call-site
     "B019",   # cached-instance-method -- deliberate design choice in this codebase
     "SIM102", # collapsible-if -- nested ifs are often clearer
     "SIM103", # needless-bool -- explicit if/return can be clearer with comments
