@@ -1,9 +1,15 @@
 import json
 import os
+import shutil
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import compiletools.apptools
+import compiletools.headerdeps
+import compiletools.hunter
+import compiletools.magicflags
+import compiletools.testhelper as uth
 from compiletools.build_backend import (
     BuildBackend,
     _gch_path,
@@ -13,7 +19,9 @@ from compiletools.build_backend import (
     get_backend_class,
     register_backend,
 )
+from compiletools.build_context import BuildContext
 from compiletools.build_graph import BuildGraph, BuildRule
+from compiletools.makefile_backend import MakefileBackend
 from compiletools.testhelper import (
     BackendTestContext,
     make_backend_args,
@@ -657,16 +665,6 @@ class TestPchManifest:
         ``test_backend_integration.TestBackendBuildPCH`` — so the test
         exercises the actual rule-emission path end to end.
         """
-        import shutil
-
-        import compiletools.apptools
-        import compiletools.headerdeps
-        import compiletools.hunter
-        import compiletools.magicflags
-        import compiletools.testhelper as uth
-        from compiletools.build_context import BuildContext
-        from compiletools.makefile_backend import MakefileBackend
-
         pch_sample = os.path.join(uth.samplesdir(), "pch")
         for f in os.listdir(pch_sample):
             shutil.copy2(os.path.join(pch_sample, f), tmp_path)

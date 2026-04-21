@@ -874,13 +874,8 @@ def make_backend_args(tmpdir, **overrides):
 
 
 def add_backend_arguments(cap):
-    """Add the full argparse surface needed to wire up any backend.
-
-    Equivalent to what cake.py's argument plumbing produces for a real
-    invocation: target/link args, Namer, Hunter, plus per-backend
-    arguments for every concrete backend that has them. Use this when
-    a test needs to drive ``Hunter`` + ``backend.build_graph()`` from
-    real ``argv``. Backend classes are imported lazily so the helper
+    """Add the argparse surface needed to drive Hunter + backend.build_graph()
+    from real ``argv``. Backend classes are imported lazily so this helper
     does not pull them into the testhelper import graph.
     """
     import compiletools.hunter

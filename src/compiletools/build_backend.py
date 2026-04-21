@@ -1189,7 +1189,7 @@ def _write_pch_manifest(
 
     transitive_hashes: dict[str, str] = {}
     for h in transitive_headers:
-        h_real = os.path.realpath(h)
+        h_real = compiletools.wrappedos.realpath(h)
         try:
             transitive_hashes[h_real] = compiletools.global_hash_registry.get_file_hash(
                 h_real, context=context
@@ -1198,7 +1198,7 @@ def _write_pch_manifest(
             pass
 
     manifest = {
-        "header_realpath": os.path.realpath(pch_header),
+        "header_realpath": compiletools.wrappedos.realpath(pch_header),
         "compiler": cxx_command,
         "compiler_identity": _compiler_identity(cxx_command),
         "transitive_hashes": transitive_hashes,

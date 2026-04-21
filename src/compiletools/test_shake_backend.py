@@ -16,17 +16,14 @@ import compiletools.apptools
 import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
-import compiletools.namer
 import compiletools.testhelper as uth
 from compiletools.build_backend import available_backends, get_backend_class
 from compiletools.build_context import BuildContext
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.global_hash_registry import get_file_hash
-from compiletools.makefile_backend import MakefileBackend
 from compiletools.testhelper import ShakeBackendTestContext
 from compiletools.trace_backend import (
     ShakeBackend,
-    SlurmBackend,
     TraceEntry,
     TraceStore,
     _is_build_artifact,
@@ -1269,12 +1266,7 @@ def test_quoted_define_with_space_compiles_end_to_end(tmp_path, monkeypatch):
 
     with uth.ParserContext():
         cap = compiletools.apptools.create_parser("Shake greeting test", argv=argv)
-        compiletools.apptools.add_target_arguments_ex(cap)
-        compiletools.apptools.add_link_arguments(cap)
-        compiletools.namer.Namer.add_arguments(cap)
-        compiletools.hunter.add_arguments(cap)
-        MakefileBackend.add_arguments(cap)
-        SlurmBackend.add_arguments(cap)
+        uth.add_backend_arguments(cap)
 
         ctx = BuildContext()
         args = compiletools.apptools.parseargs(cap, argv, context=ctx)
