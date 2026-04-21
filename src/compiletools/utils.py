@@ -711,7 +711,7 @@ def merge_ldflags_with_topo_sort(
     in_degree = {lib: 0 for lib in all_libs}
     for node in graph:
         for succ in graph[node]:
-            in_degree[succ] = in_degree.get(succ, 0) + 1
+            in_degree[succ] += 1
 
     # Kahn's algorithm with alphabetical tie-breaking for determinism
     sorted_libs: list[str] = []
@@ -765,7 +765,7 @@ def merge_ldflags_with_topo_sort(
         for node in remaining:
             for succ in graph.get(node, ()):
                 if succ in remaining:
-                    in_degree[succ] = in_degree.get(succ, 0) + 1
+                    in_degree[succ] += 1
         _drain_kahn()
 
     deduped_non_l = list(dict.fromkeys(non_l_flags))
