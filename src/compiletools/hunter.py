@@ -129,7 +129,7 @@ class Hunter:
         if self.args.verbose >= 9:
             print("Hunter::required_source_files for " + filename)
         return compiletools.utils.ordered_unique(
-            [filename for filename in self.required_files(filename) if compiletools.utils.is_source(filename)]
+            [f for f in self.required_files(filename) if compiletools.utils.is_source(f)]
         )
 
     def required_files(self, filename):
