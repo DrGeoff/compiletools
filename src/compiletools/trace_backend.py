@@ -47,6 +47,7 @@ import argparse
 import asyncio
 import collections
 import contextlib
+import datetime
 import glob
 import hashlib
 import json
@@ -144,7 +145,7 @@ def hash_command(cmd: list[str], compiler_identity: str | None = None) -> str:
     invalidates traces even when the argv is byte-identical.
     """
     payload = [compiler_identity, cmd] if compiler_identity is not None else cmd
-    return hashlib.sha1(json.dumps(payload, sort_keys=False).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(payload, sort_keys=False).encode()).hexdigest()
 
 
 def _atomic_copy(src: str, dst: str) -> None:
@@ -257,7 +258,7 @@ class ShakeBackend(BuildBackend):
         assert rule.command is not None, "_ca_target only applies to link/library rules"
         cmd_filtered = [a for a in rule.command if a != rule.output]
         key = json.dumps({"inputs": sorted(rule.inputs), "cmd": cmd_filtered}, sort_keys=True)
-        h = hashlib.sha1(key.encode()).hexdigest()[:20]
+        h = hashlib.sha256(key.encode()).hexdigest()[:20]
         base = os.path.basename(rule.output)
         name, ext = os.path.splitext(base)
         return os.path.join(os.path.dirname(rule.output), f"{name}_{h}{ext}")
@@ -475,13 +476,9 @@ def _slurm_max_wait_arg(value: str) -> float:
     try:
         seconds = float(s)
     except ValueError as e:
-        raise argparse.ArgumentTypeError(
-            f"invalid --slurm-max-wait '{value}': not a number"
-        ) from e
+        raise argparse.ArgumentTypeError(f"invalid --slurm-max-wait '{value}': not a number") from e
     if seconds <= 0:
-        raise argparse.ArgumentTypeError(
-            f"invalid --slurm-max-wait '{value}': must be positive"
-        )
+        raise argparse.ArgumentTypeError(f"invalid --slurm-max-wait '{value}': must be positive")
     return seconds
 
 
@@ -740,6 +737,11 @@ class SlurmBackend(ShakeBackend):
             mem = self._estimate_memory(rule)
             tiers[mem].append(rule)
 
+        # chunk_id is a per-invocation *uniqueness token* used to namespace
+        # commands/outputs/log files, NOT a task-index offset.  Incrementing
+        # by len(chunk) (rather than +1) leaves a gap large enough that no two
+        # chunks ever share a filename even if a future change reused chunk_id
+        # as a task base.  Cheap defence against accidental collisions.
         chunk_id = 0
         for mem, tier_rules in tiers.items():
             for chunk_start in range(0, len(tier_rules), max_array):
@@ -799,6 +801,8 @@ class SlurmBackend(ShakeBackend):
                         self.args.slurm_mem,
                     )
                     retry_map: dict[str, list[BuildRule]] = {}
+                    # See chunk_id comment above: increment by len(chunk) is a
+                    # uniqueness token, not a task-index offset.
                     for mem, tier_rules in retry_tiers.items():
                         for retry_start in range(0, len(tier_rules), max_array):
                             chunk = tier_rules[retry_start : retry_start + max_array]
@@ -828,6 +832,14 @@ class SlurmBackend(ShakeBackend):
             with contextlib.suppress(Exception):
                 self._collect_timing(index_map)
 
+        # Phase 4: record traces for successfully built compile rules.
+        # Done BEFORE the failure raise so successes (including ones that
+        # only succeeded after OOM retry) survive a mixed-failure invocation
+        # and are not re-submitted on the next ct-cake call.
+        for rule in to_submit:
+            if os.path.exists(rule.output):
+                traces.put(rule.output, _make_trace_entry(rule, self.context))
+
         if all_failures:
             lines = [f"Job {f.job_id} ({f.rule.output}): {f.state}" for f in all_failures]
             diag = self._read_slurm_logs_for_failures(all_failures)
@@ -836,16 +848,16 @@ class SlurmBackend(ShakeBackend):
                 msg += "\n\n" + diag
             raise RuntimeError(msg)
 
-        # Phase 4: record traces for successfully built compile rules.
-        # Done before _wait_for_output_files so partial progress survives a
-        # missing-output raise.
-        for rule in to_submit:
-            if os.path.exists(rule.output):
-                traces.put(rule.output, _make_trace_entry(rule, self.context))
-
         has_link_rules = any(r.rule_type not in ("phony", "mkdir", "compile", "clean") for r in graph.rules)
         if to_submit and has_link_rules:
-            timeout = getattr(self.args, "slurm_output_wait_timeout", 30.0)
+            # I5: scale the output-wait timeout with the number of outputs we
+            # are waiting on.  Lustre/GPFS metadata propagation is roughly
+            # proportional to the working set; a fixed 30s cap is too tight
+            # for 1000+ outputs.  Heuristic: max(configured, 0.05 * outputs)
+            # capped at 300s.
+            configured = getattr(self.args, "slurm_output_wait_timeout", 30.0)
+            scaled = min(max(configured, 0.05 * len(to_submit)), 300.0)
+            timeout = scaled
             try:
                 self._wait_for_output_files(to_submit, timeout=timeout)
             except RuntimeError as e:
@@ -864,24 +876,60 @@ class SlurmBackend(ShakeBackend):
 
         self._cleanup_slurm_logs()
 
-        # Phase 5: run link/library/other non-compile rules locally in graph order
+        # Phase 5: run link/library/other non-compile rules locally, in
+        # parallel where dependency order permits.  Mirrors the Shake backend's
+        # asyncio approach so independent links don't serialize on the
+        # submitter (I5).
+        local_rules = [r for r in graph.rules if r.rule_type not in ("phony", "mkdir", "compile", "clean")]
+        if local_rules:
+            asyncio.run(self._run_local_async(local_rules, traces))
+
+        self._record_link_signatures(graph)
+
+    async def _run_local_async(self, local_rules: list[BuildRule], traces: TraceStore) -> None:
+        """Run *local_rules* concurrently, respecting input-output dependencies.
+
+        Each rule becomes a coroutine that awaits its input rules' tasks
+        before executing.  Independent rules run in parallel; dependents
+        wait only for their own inputs.  Concurrency is capped by --parallel.
+        """
         timer = self._timer
-        for rule in graph.rules:
-            if rule.rule_type in ("phony", "mkdir", "compile", "clean"):
-                continue
-            start = time.monotonic()
-            self._run_local(rule, traces)
+        parallel = getattr(self.args, "parallel", 1)
+        max_workers = parallel if parallel and parallel > 0 else 1
+        sem = asyncio.Semaphore(max_workers)
+
+        # Compile inputs were already produced by the Slurm phase and
+        # confirmed visible by _wait_for_output_files; the only edges we
+        # need to respect here are output->input within local_rules.
+        loop = asyncio.get_running_loop()
+        tasks: dict[str, asyncio.Task[None]] = {}
+
+        async def run(rule: BuildRule) -> None:
+            # Wait for dependencies that are themselves local rules.
+            deps = [tasks[inp] for inp in rule.inputs if inp in tasks]
+            if deps:
+                await asyncio.gather(*deps)
+            async with sem:
+                start = time.monotonic()
+                await loop.run_in_executor(None, self._run_local, rule, traces)
+                end = time.monotonic()
             if timer:
-                elapsed = time.monotonic() - start
                 source = rule.inputs[0] if rule.inputs else ""
                 timer.record_rule(
                     rule_type=rule.rule_type,
                     target=rule.output,
                     source=source,
-                    elapsed_s=elapsed,
+                    elapsed_s=end - start,
+                    start_s=start,
+                    end_s=end,
                 )
 
-        self._record_link_signatures(graph)
+        # Schedule all rules first so each can find its dependencies in
+        # *tasks* before any start awaiting.
+        for rule in local_rules:
+            tasks[rule.output] = asyncio.ensure_future(run(rule))
+
+        await asyncio.gather(*tasks.values())
 
     # ------------------------------------------------------------------
     # Memory estimation
@@ -934,6 +982,7 @@ class SlurmBackend(ShakeBackend):
         *mem* overrides ``--slurm-mem`` for this array (used for per-tier sizing).
         """
         n = len(rules)
+        assert n > 0, "_sbatch_array called with empty rules list (would produce --array=0--1)"
         real_objdir = compiletools.wrappedos.realpath(self.args.objdir)
 
         # Per-invocation prefix prevents collisions with peer ct-cake processes
@@ -1014,10 +1063,27 @@ class SlurmBackend(ShakeBackend):
             raise RuntimeError(f"sbatch not found on PATH: {e}") from e
 
     def _collect_timing(self, index_map: dict[str, list[BuildRule]]) -> None:
-        """Collect per-job timing from Slurm accounting via sacct."""
+        """Collect per-job timing from Slurm accounting via sacct.
+
+        Also collects Start/End wall-clock so the Chrome trace renders the
+        rules across the timeline rather than stacking them at t=0.
+        """
         timer = self._timer
         if not timer or not index_map:
             return
+
+        # sacct formats Start/End as ISO 8601 ("2026-04-21T11:22:33"); convert
+        # to wall-clock seconds.  We use Unix-epoch seconds — the timer just
+        # needs a consistent ordering and duration for Chrome trace rendering.
+        def _parse_iso(ts: str) -> float | None:
+            ts = ts.strip()
+            if not ts or ts in ("Unknown", "None"):
+                return None
+            try:
+                return datetime.datetime.fromisoformat(ts).timestamp()
+            except ValueError:
+                return None
+
         for array_job_id, rules in index_map.items():
             try:
                 out = subprocess.check_output(
@@ -1025,7 +1091,7 @@ class SlurmBackend(ShakeBackend):
                         "sacct",
                         "-j",
                         array_job_id,
-                        "--format=JobID,Elapsed,State",
+                        "--format=JobID,Elapsed,State,Start,End",
                         "--noheader",
                         "--parsable2",
                     ],
@@ -1045,6 +1111,8 @@ class SlurmBackend(ShakeBackend):
                 state = parts[2].split()[0]
                 if state != "COMPLETED":
                     continue
+                start_s = _parse_iso(parts[3]) if len(parts) > 3 else None
+                end_s = _parse_iso(parts[4]) if len(parts) > 4 else None
                 # Parse task index from job ID (format: "array_job_id_index")
                 jid_parts = jid.rsplit("_", 1)
                 if len(jid_parts) != 2:
@@ -1058,12 +1126,16 @@ class SlurmBackend(ShakeBackend):
                 rule = rules[task_idx]
                 elapsed_s = _parse_slurm_elapsed(elapsed_str)
                 source = rule.inputs[0] if rule.inputs else ""
-                timer.record_rule(
-                    rule_type=rule.rule_type,
-                    target=rule.output,
-                    source=source,
-                    elapsed_s=elapsed_s,
-                )
+                kwargs = {
+                    "rule_type": rule.rule_type,
+                    "target": rule.output,
+                    "source": source,
+                    "elapsed_s": elapsed_s,
+                }
+                if start_s is not None and end_s is not None:
+                    kwargs["start_s"] = start_s
+                    kwargs["end_s"] = end_s
+                timer.record_rule(**kwargs)
 
     def _invocation_log_paths(self) -> list[str]:
         """Slurm log paths produced by THIS invocation (no cross-invocation glob)."""
@@ -1082,11 +1154,35 @@ class SlurmBackend(ShakeBackend):
                 os.remove(f)
 
     def _cleanup_invocation_files(self) -> None:
-        """Remove cmds/outs files this invocation created. Best effort."""
+        """Remove cmds/outs files this invocation created. Best effort.
+
+        Also sweeps stale per-task temp files (``${OUT}.${SLURM_JOB_ID}.${SLURM_ARRAY_TASK_ID}.tmp``)
+        left by NODE_FAIL or hard-killed wrap scripts.  The wrap script
+        ``rm -f``s on normal-failure paths, but NODE_FAIL skips the trap
+        entirely.  Sweep only files keyed off jobs *this invocation* tracked
+        so we don't disturb peer ct-cake processes' in-flight compiles.
+        """
         for f in getattr(self, "_created_aux_files", []):
             with contextlib.suppress(OSError):
                 os.remove(f)
         self._created_aux_files = []
+
+        # Sweep stale temp files keyed off our tracked job IDs.  Filename
+        # pattern is ``${OUT}.${jobid}.${task_idx}.tmp``; we only know the
+        # objdir and our jobids, so glob across the objdir for that suffix
+        # pattern.  Bounded by len(_tracked_jobs) — typically O(few).
+        tracked = getattr(self, "_tracked_jobs", {})
+        if not tracked:
+            return
+        objdir = getattr(self.args, "objdir", None)
+        if not objdir:
+            return
+        for jid in tracked:
+            # ${OUT}.${jid}.*.tmp — OUT lives under objdir but may be in a
+            # subdir; glob recursively to catch nested namer layouts.
+            for stale in glob.glob(os.path.join(objdir, "**", f"*.{jid}.*.tmp"), recursive=True):
+                with contextlib.suppress(OSError):
+                    os.remove(stale)
 
     def _scancel_pending(self) -> None:
         """Cancel any tracked Slurm jobs not yet known to be terminal. Never raises."""
@@ -1152,15 +1248,15 @@ class SlurmBackend(ShakeBackend):
                 pass
         return "\n".join(diagnostics)
 
-    def _query_array_task_states(self, array_job_id: str) -> dict[str, str]:
-        """Return ``{task_id: state}`` for every task in *array_job_id* via sacct.
+    def _query_array_task_states_status(self, array_job_id: str) -> tuple[dict[str, str], bool]:
+        """Return ``({task_id: state}, exec_failed)`` for *array_job_id*.
 
-        Task IDs are returned as ``"<array_job_id>_<index>"``.
-        Sub-steps (.batch, .extern) are skipped.
-
-        Returns an empty dict on transient sacct failure (slurmdbd hiccup,
-        sacct missing); the polling loop's failure counter handles persistent
-        failure.
+        *exec_failed* is True if the sacct *invocation itself* failed
+        (CalledProcessError / FileNotFoundError) — a real fault that should
+        count toward the failure threshold.  False when sacct ran cleanly,
+        regardless of whether it returned any rows.  An empty dict with
+        exec_failed=False means "sacct OK, no rows yet" (benign — common for
+        freshly-submitted arrays).
         """
         try:
             out = subprocess.check_output(
@@ -1183,10 +1279,10 @@ class SlurmBackend(ShakeBackend):
                 e.returncode,
                 stderr_text or "<no stderr>",
             )
-            return {}
+            return {}, True
         except FileNotFoundError as e:
             logger.warning("sacct not found on PATH: %s", e)
-            return {}
+            return {}, True
 
         result: dict[str, str] = {}
         for line in out.splitlines():
@@ -1197,7 +1293,17 @@ class SlurmBackend(ShakeBackend):
             if "." in jid:
                 continue
             result[jid] = parts[1].split()[0]
-        return result
+        return result, False
+
+    def _query_array_task_states(self, array_job_id: str) -> dict[str, str]:
+        """Back-compat shim: return only the states dict.
+
+        Used by _collect_timing and existing tests that mock it.  The wait
+        loop calls _query_array_task_states_status directly so it can
+        distinguish "sacct exec failed" from "sacct OK but empty".
+        """
+        states, _exec_failed = self._query_array_task_states_status(array_job_id)
+        return states
 
     _TERMINAL_STATES = frozenset({"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL"})
     _SUCCESS_STATE = "COMPLETED"
@@ -1238,10 +1344,16 @@ class SlurmBackend(ShakeBackend):
         """
         poll_interval = self.args.slurm_poll_interval
         max_wait_s = getattr(self.args, "slurm_max_wait", 7200.0)
+        # Wall-clock cap derived from poll_interval is just a poll-count safety
+        # net; the actual cap is enforced via time.monotonic() below so backoff
+        # sleeps don't bypass it.
         max_polls = max(1, int(max_wait_s / max(poll_interval, 0.1)))
         polls = 0
         failure_threshold = getattr(self.args, "slurm_sacct_failure_threshold", 10)
         consecutive_failures = 0
+        # Cap exponential backoff at 30s so a slurmdbd outage doesn't make the
+        # build wait minutes between polls.
+        BACKOFF_CAP_S = 30.0
 
         pending: set[str] = set(index_map)
         failures: list[SlurmBackend._TaskFailure] = []
@@ -1250,18 +1362,20 @@ class SlurmBackend(ShakeBackend):
             if polls >= max_polls:
                 raise RuntimeError(
                     f"Timed out after {polls} sacct polls "
-                    f"(--slurm-max-wait={max_wait_s}s) waiting for Slurm arrays: "
-                    + ", ".join(sorted(pending))
+                    f"(--slurm-max-wait={max_wait_s}s) waiting for Slurm arrays: " + ", ".join(sorted(pending))
                 )
             polls += 1
 
             still_pending: set[str] = set()
-            any_response = False
+            any_exec_failure = False
+            all_exec_failed = True
             for array_job_id in pending:
                 rules = index_map[array_job_id]
-                states = self._query_array_task_states(array_job_id)
-                if states:
-                    any_response = True
+                states, exec_failed = self._query_array_task_states_status(array_job_id)
+                if exec_failed:
+                    any_exec_failure = True
+                else:
+                    all_exec_failed = False
 
                 terminal_tasks = {jid: st for jid, st in states.items() if st in self._TERMINAL_STATES and "_" in jid}
                 if len(terminal_tasks) < len(rules):
@@ -1280,22 +1394,40 @@ class SlurmBackend(ShakeBackend):
                             if os.path.exists(rule.output):
                                 os.remove(rule.output)
                         except (ValueError, IndexError, OSError):
-                            rule = rules[0]
+                            # M1: do not misattribute by falling back to rules[0];
+                            # log and skip the malformed entry.
+                            logger.warning(
+                                "could not parse failed task index from sacct jid %r "
+                                "(array_job_id=%s); skipping failure record",
+                                jid,
+                                array_job_id,
+                            )
+                            continue
                         failures.append(SlurmBackend._TaskFailure(rule=rule, state=st, job_id=jid))
 
-            if any_response:
-                consecutive_failures = 0
-            elif pending:
+            # Only count *exec* failures toward the threshold.  An empty
+            # response from sacct that ran cleanly is benign (just-submitted
+            # array, slurmctld lag) and must not abort the build.
+            if pending and all_exec_failed and any_exec_failure:
                 consecutive_failures += 1
                 if consecutive_failures >= failure_threshold:
                     raise RuntimeError(
                         f"sacct returned no usable data for {consecutive_failures} consecutive polls "
                         f"(threshold={failure_threshold}); pending arrays: " + ", ".join(sorted(pending))
                     )
+            else:
+                consecutive_failures = 0
 
             pending = still_pending
             if pending:
-                time.sleep(poll_interval)
+                # Back off on consecutive sacct exec failures so a slurmdbd
+                # outage doesn't hammer the controller.  Doubles each failure,
+                # capped at BACKOFF_CAP_S; reverts to base interval on success.
+                if consecutive_failures > 0:
+                    sleep_s = min(poll_interval * (2**consecutive_failures), BACKOFF_CAP_S)
+                else:
+                    sleep_s = poll_interval
+                time.sleep(sleep_s)
 
         return failures
 
@@ -1311,12 +1443,28 @@ class SlurmBackend(ShakeBackend):
         if not missing:
             return
 
-        deadline = time.monotonic() + timeout
+        start = time.monotonic()
+        deadline = start + timeout
+        warn_threshold = start + (timeout / 2.0)
+        warned = False
         interval = 0.1
         while missing and time.monotonic() < deadline:
-            time.sleep(interval)
+            # M4: don't sleep past the deadline.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(interval, remaining))
             interval = min(interval * 2, 2.0)
             missing = [r for r in missing if not os.path.exists(r.output)]
+            if not warned and missing and time.monotonic() >= warn_threshold:
+                logger.warning(
+                    "ct-slurm: still waiting on %d output file(s) after %.0fs of %.0fs timeout "
+                    "(network filesystem metadata lag); raise --slurm-output-wait-timeout if this recurs",
+                    len(missing),
+                    time.monotonic() - start,
+                    timeout,
+                )
+                warned = True
 
         if missing:
             names = ", ".join(os.path.basename(r.output) for r in missing[:5])

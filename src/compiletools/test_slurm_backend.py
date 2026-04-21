@@ -686,6 +686,106 @@ class TestQueryStates:
 # ---------------------------------------------------------------------------
 
 
+class TestParallelLocalLink:
+    """I5 regression: independent link/library rules must run concurrently
+    on the submitter (mirrors Shake backend), not strictly serial."""
+
+    def test_independent_link_rules_run_in_parallel(self, tmp_path):
+        """Two independent link rules execute concurrently via asyncio.gather."""
+        src_a = str(tmp_path / "a.cpp")
+        src_b = str(tmp_path / "b.cpp")
+        obj_a = str(tmp_path / "a.o")
+        obj_b = str(tmp_path / "b.o")
+        exe_a = str(tmp_path / "app_a")
+        exe_b = str(tmp_path / "app_b")
+        for p in (src_a, src_b):
+            with open(p, "w") as f:
+                f.write("int x;\n")
+        for p in (obj_a, obj_b):
+            with open(p, "w") as f:
+                f.write("compiled")
+
+        ra = make_compile_rule(output=obj_a, src=src_a)
+        rb = make_compile_rule(output=obj_b, src=src_b)
+        link_a = make_link_rule(output=exe_a, inputs=[obj_a])
+        link_b = make_link_rule(output=exe_b, inputs=[obj_b])
+
+        graph = BuildGraph()
+        graph.add_rule(ra)
+        graph.add_rule(rb)
+        graph.add_rule(link_a)
+        graph.add_rule(link_b)
+        graph.add_rule(make_phony_rule("build", [exe_a, exe_b]))
+
+        with SlurmBackendTestContext(graph, parallel=4) as (backend, _tmpdir):
+            # Pre-populate compile traces so they're skipped.
+            store = TraceStore(os.path.join(backend.args.objdir, ".ct-slurm-traces.json"))
+            store.put(obj_a, _make_trace_entry(ra, backend.context))
+            store.put(obj_b, _make_trace_entry(rb, backend.context))
+            store.save()
+
+            # Both links must hit the barrier concurrently to pass.
+            barrier = threading.Barrier(2, timeout=5)
+
+            def fake_link(lock, target, cmd):
+                barrier.wait()
+                with open(target, "wb") as f:
+                    f.write(b"\x7fELF link")
+                return 0
+
+            with patch("compiletools.trace_backend.atomic_link", side_effect=fake_link) as mock_link:
+                backend.execute("build")
+                assert mock_link.call_count == 2
+
+    def test_dependent_link_runs_after_input_link(self, tmp_path):
+        """A link rule whose input is another link's output must wait for it."""
+        # lib_a -> link_b (link_b depends on lib_a's output)
+        lib_a = str(tmp_path / "liba.so")
+        out_b = str(tmp_path / "appb")
+        # Inputs from "compile phase"; pre-existing on disk.  No compile
+        # rule for x.o means the Slurm submit phase is skipped (to_submit empty).
+        obj = str(tmp_path / "x.o")
+        with open(obj, "w") as f:
+            f.write("compiled")
+
+        rule_lib = BuildRule(
+            output=lib_a,
+            inputs=[obj],
+            command=["g++", "-shared", "-o", lib_a, obj],
+            rule_type="shared_library",
+        )
+        rule_link = BuildRule(
+            output=out_b,
+            inputs=[obj, lib_a],
+            command=["g++", "-o", out_b, obj, lib_a],
+            rule_type="link",
+        )
+
+        graph = BuildGraph()
+        graph.add_rule(rule_lib)
+        graph.add_rule(rule_link)
+        graph.add_rule(make_phony_rule("build", [out_b]))
+
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            order: list[str] = []
+
+            def fake_link(lock, target, cmd):
+                order.append(target)
+                with open(target, "wb") as f:
+                    f.write(b"\x7fELF")
+                return 0
+
+            with patch("compiletools.trace_backend.atomic_link", side_effect=fake_link):
+                backend.execute("build")
+
+            # Library must complete before the dependent link.  Order list
+            # contains the CA path for each link rule; the lib's path must
+            # appear before the executable's.
+            lib_idx = next(i for i, t in enumerate(order) if "liba" in t)
+            link_idx = next(i for i, t in enumerate(order) if "appb" in t)
+            assert lib_idx < link_idx, f"link ran before its dependency: {order}"
+
+
 class TestLocalLink:
     def test_link_rule_runs_locally_not_via_sbatch(self, tmp_path):
         src = str(tmp_path / "foo.cpp")
@@ -1070,6 +1170,54 @@ class TestOOMRetry:
         # Only one sbatch call — no retry for FAILED
         assert len(_sbatch_calls(mock_sbatch)) == 1
 
+    def test_mixed_failure_retry_persists_successful_traces(self, tmp_path):
+        """C2 regression: when one rule fails and another succeeds on retry,
+        the successful retry's trace must be persisted BEFORE raise — otherwise
+        the next invocation re-submits a known-good output.
+        """
+        # Two rules: rule_ok succeeds initially; rule_bad FAILS (non-OOM).
+        ok_src = str(tmp_path / "ok.cpp")
+        ok_out = str(tmp_path / "ok.o")
+        bad_out = str(tmp_path / "bad.o")
+        with open(ok_src, "w") as f:
+            f.write("int x;\n")
+        # ok_out exists post-"compile" so trace can hash it.
+        with open(ok_out, "w") as f:
+            f.write("compiled-ok\n")
+
+        rule_ok = make_compile_rule(output=ok_out, src=ok_src)
+        rule_bad = make_compile_rule(output=bad_out, src="bad.cpp")
+        graph = BuildGraph()
+        graph.add_rule(rule_ok)
+        graph.add_rule(rule_bad)
+        graph.add_rule(make_phony_rule("build", [ok_out, bad_out]))
+
+        from compiletools.trace_backend import SlurmBackend as _SB
+
+        # First wait: rule_ok COMPLETED, rule_bad FAILED.
+        wait_results = iter(
+            [
+                [_SB._TaskFailure(rule=rule_bad, state="FAILED", job_id="100_0")],
+            ]
+        )
+
+        with SlurmBackendTestContext(graph, slurm_mem="8G") as (backend, _tmpdir):
+            with (
+                patch.object(backend, "_wait_for_arrays", side_effect=lambda im: next(wait_results)),
+                patch("subprocess.check_output", return_value="100\n"),
+            ):
+                with pytest.raises(RuntimeError, match="Slurm compile jobs failed"):
+                    backend.execute("build")
+
+            # Trace store on disk MUST contain ok_out (it succeeded), so the
+            # next invocation does not re-submit it.
+            trace_path = os.path.join(backend.args.objdir, ".ct-slurm-traces.json")
+            assert os.path.exists(trace_path)
+            persisted = TraceStore(trace_path)
+            assert persisted.get(ok_out) is not None, (
+                "successful compile's trace was dropped because raise happened before the put loop"
+            )
+
     def test_per_rule_retry_cap_aborts_after_threshold(self, tmp_path):
         """A rule that OOMs more than --slurm-rule-retry-cap times is abandoned."""
         out = str(tmp_path / "foo.o")
@@ -1179,7 +1327,7 @@ class TestSlurmMaxWait:
         index_map = {"77": [rule]}
 
         with (
-            patch.object(b, "_query_array_task_states", return_value={"77_0": "RUNNING"}),
+            patch.object(b, "_query_array_task_states_status", return_value=({"77_0": "RUNNING"}, False)),
             patch("time.sleep"),
         ):
             with pytest.raises(RuntimeError, match="Timed out"):
@@ -1195,7 +1343,7 @@ class TestSlurmMaxWait:
 
         # Make COMPLETED on first poll so we don't actually loop.
         with (
-            patch.object(b, "_query_array_task_states", return_value={"77_0": "COMPLETED"}),
+            patch.object(b, "_query_array_task_states_status", return_value=({"77_0": "COMPLETED"}, False)),
             patch("time.sleep"),
         ):
             failures = b._wait_for_arrays(index_map)
@@ -1249,6 +1397,36 @@ class TestInvocationFiles:
             assert leftover == []
             leftover_outs = [f for f in os.listdir(objdir) if f.startswith(".ct-slurm-outs-")]
             assert leftover_outs == []
+
+    def test_cleanup_sweeps_stale_temp_files_for_tracked_jobs(self, tmp_path):
+        """I6: NODE_FAIL/hard-kill leaves ${OUT}.${jobid}.${task}.tmp behind.
+        _cleanup_invocation_files must sweep them for jobs THIS invocation tracked.
+        """
+        graph = BuildGraph()
+        r = make_compile_rule(output=str(tmp_path / "a.o"), src="a.cpp")
+        graph.add_rule(r)
+        graph.add_rule(make_phony_rule("build", [r.output]))
+
+        with SlurmBackendTestContext(graph) as (backend, _tmp):
+            objdir = backend.args.objdir
+            # Pre-create stale temps as if NODE_FAIL killed the wrap script.
+            stale_a = os.path.join(objdir, "foo.o.42.0.tmp")
+            stale_b = os.path.join(objdir, "bar.o.42.5.tmp")
+            foreign = os.path.join(objdir, "other.o.999.0.tmp")
+            for p in (stale_a, stale_b, foreign):
+                with open(p, "w") as f:
+                    f.write("partial")
+
+            with (
+                patch("subprocess.check_output", return_value="42\n"),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
+            ):
+                backend.execute("build")
+
+            # Sweeper removed temps keyed off our jobid (42), not foreign 999.
+            assert not os.path.exists(stale_a), "stale temp for tracked job 42 not swept"
+            assert not os.path.exists(stale_b), "stale temp for tracked job 42 not swept"
+            assert os.path.exists(foreign), "foreign job's temp must NOT be swept"
 
     def test_cleanup_only_touches_own_invocation_files(self, tmp_path):
         """A foreign-prefix cmds file is NOT removed by this invocation's cleanup."""
@@ -1345,7 +1523,7 @@ class TestSacctTransientFailures:
             assert b._query_array_task_states("123") == {}
 
     def test_wait_for_arrays_recovers_after_one_sacct_failure(self, tmp_path):
-        """Single sacct failure does not crash — polling continues."""
+        """Single sacct exec failure does not crash — polling continues."""
         rule = make_compile_rule(output=str(tmp_path / "foo.o"))
         b = SlurmBackend.__new__(SlurmBackend)
         b.args = SimpleNamespace(slurm_poll_interval=0.0, slurm_sacct_failure_threshold=10)
@@ -1354,8 +1532,8 @@ class TestSacctTransientFailures:
         with (
             patch.object(
                 b,
-                "_query_array_task_states",
-                side_effect=[{}, {"77_0": "COMPLETED"}],
+                "_query_array_task_states_status",
+                side_effect=[({}, True), ({"77_0": "COMPLETED"}, False)],
             ),
             patch("time.sleep"),
         ):
@@ -1363,18 +1541,89 @@ class TestSacctTransientFailures:
         assert failures == []
 
     def test_wait_for_arrays_raises_after_threshold_failures(self, tmp_path):
-        """Persistent sacct failure raises after threshold consecutive empties."""
+        """Persistent sacct EXEC failure raises after threshold consecutive failures.
+
+        Counts only sacct *execution* failures (CalledProcessError / FileNotFoundError),
+        not benign "executed OK but returned no rows" cases — a freshly-submitted
+        array can legitimately have no rows yet.
+        """
         rule = make_compile_rule(output=str(tmp_path / "foo.o"))
         b = SlurmBackend.__new__(SlurmBackend)
         b.args = SimpleNamespace(slurm_poll_interval=0.0, slurm_sacct_failure_threshold=3)
         index_map = {"77": [rule]}
 
         with (
-            patch.object(b, "_query_array_task_states", return_value={}),
+            patch.object(b, "_query_array_task_states_status", return_value=({}, True)),
             patch("time.sleep"),
         ):
             with pytest.raises(RuntimeError, match="sacct returned no usable data"):
                 b._wait_for_arrays(index_map)
+
+    def test_wait_for_arrays_does_not_count_benign_empty_responses(self, tmp_path):
+        """C1 regression: 'sacct OK but empty' must NOT trip the failure threshold.
+
+        Newly-submitted job arrays have no sacct rows yet — that's benign and
+        must not count as a failure or the build aborts during slurmdbd outages.
+        """
+        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
+        b = SlurmBackend.__new__(SlurmBackend)
+        b.args = SimpleNamespace(
+            slurm_poll_interval=0.0,
+            slurm_sacct_failure_threshold=2,
+            slurm_max_wait=7200.0,
+        )
+        index_map = {"77": [rule]}
+
+        # 5 benign empties (sacct OK, no rows), then COMPLETED — must not raise.
+        responses = [
+            ({}, False),
+            ({}, False),
+            ({}, False),
+            ({}, False),
+            ({}, False),
+            ({"77_0": "COMPLETED"}, False),
+        ]
+        with (
+            patch.object(b, "_query_array_task_states_status", side_effect=responses),
+            patch("time.sleep"),
+        ):
+            failures = b._wait_for_arrays(index_map)
+        assert failures == []
+
+    def test_wait_for_arrays_backs_off_on_consecutive_failures(self, tmp_path):
+        """Consecutive sacct exec failures back off the sleep interval (capped)."""
+        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
+        b = SlurmBackend.__new__(SlurmBackend)
+        b.args = SimpleNamespace(
+            slurm_poll_interval=2.0,
+            slurm_sacct_failure_threshold=100,
+            slurm_max_wait=7200.0,
+        )
+        index_map = {"77": [rule]}
+
+        sleeps: list[float] = []
+
+        # 6 exec failures, then success — verify sleep grows then caps.
+        responses = [
+            ({}, True),
+            ({}, True),
+            ({}, True),
+            ({}, True),
+            ({}, True),
+            ({}, True),
+            ({"77_0": "COMPLETED"}, False),
+        ]
+        with (
+            patch.object(b, "_query_array_task_states_status", side_effect=responses),
+            patch("time.sleep", side_effect=sleeps.append),
+        ):
+            b._wait_for_arrays(index_map)
+
+        # Sleeps must be monotonically non-decreasing on consecutive failures
+        # and capped at 30s.
+        assert sleeps, "expected at least one sleep call during backoff"
+        assert all(s <= 30.0 for s in sleeps), f"sleep exceeded 30s cap: {sleeps}"
+        assert max(sleeps) > 2.0, f"backoff never grew beyond base interval: {sleeps}"
 
 
 # ---------------------------------------------------------------------------
@@ -1532,7 +1781,7 @@ class TestAtomicComputeNodeCompile:
         # Compiler invoked via eval with -o pointing at the temp file.
         # The wrap-script literal contains \" so eval sees -o "$TMP" after one
         # round of unquoting.
-        assert r'-o \"$TMP\"' in wrap, f"wrap missing eval with -o $TMP: {wrap}"
+        assert r"-o \"$TMP\"" in wrap, f"wrap missing eval with -o $TMP: {wrap}"
         # Atomic rename on success.
         assert 'mv -f "$TMP" "$OUT"' in wrap, f"wrap missing atomic mv: {wrap}"
         # Cleanup on failure.
@@ -1749,9 +1998,65 @@ class TestTimingIncludesRetries:
         elapsed_seconds = sorted(call.kwargs["elapsed_s"] for call in mock_timer.record_rule.call_args_list)
         assert 5.0 in elapsed_seconds, f"initial chunk elapsed missing: {elapsed_seconds}"
         assert 9.0 in elapsed_seconds, (
-            f"retry-chunk elapsed missing — _collect_timing was given only the initial index_map: "
-            f"{elapsed_seconds}"
+            f"retry-chunk elapsed missing — _collect_timing was given only the initial index_map: {elapsed_seconds}"
         )
+
+
+class TestTimingPopulatesStartEnd:
+    """#11 regression: _collect_timing must include Start/End in sacct format
+    so Chrome trace renders rules across the timeline, not at t=0."""
+
+    def test_collect_timing_includes_start_end(self, tmp_path):
+        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
+        b = SlurmBackend.__new__(SlurmBackend)
+        b.args = SimpleNamespace()
+        mock_timer = MagicMock()
+        # sacct row with ISO 8601 Start/End.
+        sacct_row = "100_0|00:00:05|COMPLETED|2026-04-21T10:00:00|2026-04-21T10:00:05\n"
+
+        with (
+            patch.object(type(b), "_timer", new_callable=lambda: property(lambda self: mock_timer)),
+            patch("subprocess.check_output", return_value=sacct_row),
+        ):
+            b._collect_timing({"100": [rule]})
+
+        assert mock_timer.record_rule.called
+        kwargs = mock_timer.record_rule.call_args.kwargs
+        assert "start_s" in kwargs, "start_s missing → Chrome trace stacks at t=0"
+        assert "end_s" in kwargs, "end_s missing → Chrome trace stacks at t=0"
+        assert kwargs["end_s"] - kwargs["start_s"] == pytest.approx(5.0, abs=1.0)
+
+    def test_local_link_records_start_end(self, tmp_path):
+        """Local link rules also pass start_s/end_s through to record_rule."""
+        obj = str(tmp_path / "foo.o")
+        exe = str(tmp_path / "foo")
+        with open(obj, "w") as f:
+            f.write("compiled")
+
+        compile_rule = make_compile_rule(output=obj, src=obj)
+        link_rule = make_link_rule(output=exe, inputs=[obj])
+        graph = BuildGraph()
+        graph.add_rule(compile_rule)
+        graph.add_rule(link_rule)
+        graph.add_rule(make_phony_rule("build", [exe]))
+
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            store = TraceStore(os.path.join(backend.args.objdir, ".ct-slurm-traces.json"))
+            store.put(obj, _make_trace_entry(compile_rule, backend.context))
+            store.save()
+
+            mock_timer = MagicMock()
+            with (
+                patch.object(type(backend), "_timer", new_callable=lambda: property(lambda self: mock_timer)),
+                patch("compiletools.trace_backend.atomic_link") as mock_link,
+            ):
+                mock_link.side_effect = lambda lock, target, cmd: open(target, "wb").close() or 0
+                backend.execute("build")
+
+            link_calls = [c for c in mock_timer.record_rule.call_args_list if c.kwargs.get("rule_type") == "link"]
+            assert link_calls, "link rule timing not recorded"
+            kwargs = link_calls[0].kwargs
+            assert "start_s" in kwargs and "end_s" in kwargs
 
 
 class TestTimingOnFailure:
