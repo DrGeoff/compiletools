@@ -84,31 +84,3 @@ explicit only for `cmake` and `bazel`. A future contributor adding a new
 "external build dir" backend should remember to override `_all_outputs_current`
 themselves; the base-class docstring is already explicit that a `True` result
 short-circuits the build.
-
----
-
-## From magic flags review
-
-### Issue 6 (Minor): `_HARD_ORDERINGS_KEY` consumer-side documentation
-
-**Owner file:** `src/compiletools/build_backend.py`
-**Function:** `BuildBackend._merge_ldflags_for_sources`
-
-The producer side (`magicflags._handle_pkg_config` / `_HARD_ORDERINGS_KEY`) is
-now documented in `src/compiletools/magicflags.py` (the comment block immediately
-above the sentinel). The consumer side that reads this sentinel out of the
-per-file flags dict, aggregates it across files, and forwards it to
-`utils.merge_ldflags_with_topo_sort(..., hard_orderings=...)` is in
-build_backend.py and was NOT documented in the current pass.
-
-Please add a docstring section to `BuildBackend._merge_ldflags_for_sources`
-cross-referencing the contract documented at `magicflags._HARD_ORDERINGS_KEY`.
-Specifically note:
-
-* The key MUST be popped/filtered out of the per-file flags dict before the
-  dict is otherwise consumed, so it never leaks into a real flag list.
-* The aggregated value type fed to `merge_ldflags_with_topo_sort` is
-  `list[tuple[str, str]]` of pairwise (pred_lib, succ_lib) constraints.
-* Source-file provenance for cycle diagnostics should be carried in a parallel
-  `hard_ordering_sources` list whose indices align with the flattened
-  hard-orderings list.
