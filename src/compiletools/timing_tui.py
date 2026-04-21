@@ -6,7 +6,7 @@ Requires textual (``pip install 'compiletools[tui]'``).
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -70,7 +70,7 @@ class TimingReportApp(App):
     }
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "quit", "Quit"),
         Binding("s", "cycle_sort", "Sort"),
         Binding("?", "help", "Help"),
