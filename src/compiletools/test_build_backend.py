@@ -657,7 +657,6 @@ class TestPchManifest:
         ``test_backend_integration.TestBackendBuildPCH`` — so the test
         exercises the actual rule-emission path end to end.
         """
-        import pathlib
         import shutil
 
         import compiletools.apptools
@@ -669,19 +668,16 @@ class TestPchManifest:
         from compiletools.build_context import BuildContext
         from compiletools.makefile_backend import MakefileBackend
 
-        effective_tmp = pathlib.Path(tmp_path)
         pch_sample = os.path.join(uth.samplesdir(), "pch")
         for f in os.listdir(pch_sample):
-            shutil.copy2(os.path.join(pch_sample, f), effective_tmp)
+            shutil.copy2(os.path.join(pch_sample, f), tmp_path)
 
-        source_path = os.path.realpath(str(effective_tmp / "pch_user.cpp"))
-        objdir = str(effective_tmp / "obj")
-        bindir = str(effective_tmp / "bin")
-        pchdir = str(effective_tmp / "pch")
+        source_path = os.path.realpath(str(tmp_path / "pch_user.cpp"))
+        pchdir = str(tmp_path / "pch")
         argv = [
-            "--include", str(effective_tmp),
-            "--objdir", objdir,
-            "--bindir", bindir,
+            "--include", str(tmp_path),
+            "--objdir", str(tmp_path / "obj"),
+            "--bindir", str(tmp_path / "bin"),
             "--pchdir", pchdir,
             source_path,
         ]
@@ -702,27 +698,17 @@ class TestPchManifest:
             backend = MakefileBackend(args=args, hunter=hunter, context=ctx)
             backend.build_graph()
 
-        # Exactly one cmd_hash dir with a manifest.
         cmd_hash_dirs = [d for d in os.listdir(pchdir) if len(d) == 16]
         assert len(cmd_hash_dirs) == 1, f"expected one cmd_hash dir, got: {os.listdir(pchdir)}"
-        manifest_path = os.path.join(pchdir, cmd_hash_dirs[0], "manifest.json")
-        assert os.path.isfile(manifest_path)
-        with open(manifest_path) as f:
+        with open(os.path.join(pchdir, cmd_hash_dirs[0], "manifest.json")) as f:
             manifest = json.loads(f.read())
 
-        # Manifest records the immediate header's realpath (which one of
-        # the resolved stdafx.h copies the hunter picked depends on the
-        # configured include order — assert the shape rather than the
-        # exact tmp vs. sample path).
+        # The hunter may pick either the tmp copy or the sample copy of
+        # stdafx.h depending on configured include order — either is a
+        # legitimate manifest entry.
         assert manifest["header_realpath"].endswith("/stdafx.h")
         assert os.path.isfile(manifest["header_realpath"])
-
-        # Compiler identity is captured (non-empty string).
-        assert isinstance(manifest["compiler_identity"], str)
         assert manifest["compiler_identity"]
-
-        # Transitive hashes is a dict (may be empty if no transitive
-        # headers were resolvable in the test environment).
         assert isinstance(manifest["transitive_hashes"], dict)
 
 
