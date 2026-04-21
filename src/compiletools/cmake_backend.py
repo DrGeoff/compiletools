@@ -112,13 +112,7 @@ class CMakeBackend(BuildBackend):
                     f.write(f'    "{s}"\n')
                 f.write(")\n")
 
-                if remaining_copts:
-                    quoted = " ".join(f'"{c}"' for c in remaining_copts)
-                    f.write(f"target_compile_options({target_name} PRIVATE {quoted})\n")
-
-                if include_dirs:
-                    quoted = " ".join(f'"{d}"' for d in include_dirs)
-                    f.write(f"target_include_directories({target_name} PRIVATE {quoted})\n")
+                self._emit_compile_attrs(f, target_name, remaining_copts, include_dirs)
 
         for rule in graph.rules_by_type("link"):
             srcs, all_copts = aggregate_rule_sources(rule, obj_info)
@@ -133,13 +127,7 @@ class CMakeBackend(BuildBackend):
                 f.write(f'    "{s}"\n')
             f.write(")\n")
 
-            if remaining_copts:
-                quoted = " ".join(f'"{c}"' for c in remaining_copts)
-                f.write(f"target_compile_options({target_name} PRIVATE {quoted})\n")
-
-            if include_dirs:
-                quoted = " ".join(f'"{d}"' for d in include_dirs)
-                f.write(f"target_include_directories({target_name} PRIVATE {quoted})\n")
+            self._emit_compile_attrs(f, target_name, remaining_copts, include_dirs)
 
             if linkopts:
                 # Split linkopts into CMake-native directives:
@@ -178,6 +166,21 @@ class CMakeBackend(BuildBackend):
                     test_name = mangle_target_name(os.path.splitext(os.path.basename(exe_path))[0])
                     f.write(f'add_test(NAME {test_name} COMMAND "{exe_path}")\n')
             f.write("\n")
+
+    @staticmethod
+    def _emit_compile_attrs(
+        f,
+        target_name: str,
+        remaining_copts: list[str],
+        include_dirs: list[str],
+    ) -> None:
+        """Write ``target_compile_options`` and ``target_include_directories`` for a target."""
+        if remaining_copts:
+            quoted = " ".join(f'"{c}"' for c in remaining_copts)
+            f.write(f"target_compile_options({target_name} PRIVATE {quoted})\n")
+        if include_dirs:
+            quoted = " ".join(f'"{d}"' for d in include_dirs)
+            f.write(f"target_include_directories({target_name} PRIVATE {quoted})\n")
 
     def _all_outputs_current(self, graph: BuildGraph) -> bool:
         """Always re-execute the build.
