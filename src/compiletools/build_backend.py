@@ -23,7 +23,7 @@ import shlex
 import shutil
 import subprocess
 import sys
-from typing import TypeVar
+from typing import NamedTuple, TypeVar
 
 import compiletools.filesystem_utils
 import compiletools.global_hash_registry
@@ -32,6 +32,13 @@ import compiletools.utils
 import compiletools.wrappedos
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.magicflags import _HARD_ORDERINGS_KEY
+
+
+class ObjInfo(NamedTuple):
+    """Per-object compile metadata extracted from a BuildGraph compile rule."""
+    source: str
+    headers: list[str]
+    copts: list[str]
 
 
 def _touch(path: str) -> None:
@@ -154,22 +161,22 @@ def extract_linkopts(command: list[str], object_files: set[str]) -> list[str]:
     return linkopts
 
 
-def build_obj_info(graph: BuildGraph, *, strip_includes: bool = False) -> dict[str, tuple[str, list[str], list[str]]]:
-    """Build mapping from object file path to (source, headers, copts).
+def build_obj_info(graph: BuildGraph, *, strip_includes: bool = False) -> dict[str, ObjInfo]:
+    """Build mapping from object file path to ObjInfo(source, headers, copts).
 
     Args:
         graph: The BuildGraph to extract compile rules from.
         strip_includes: When True, drop -I/-isystem/-iquote flags from copts
             (needed by Bazel which manages include paths itself).
     """
-    obj_info: dict[str, tuple[str, list[str], list[str]]] = {}
+    obj_info: dict[str, ObjInfo] = {}
     for rule in graph.rules_by_type("compile"):
         source = rule.inputs[0] if rule.inputs else ""
         # Filter out .gch files — they are build artifacts (precompiled headers),
         # not source files that backends like CMake/Bazel should list.
         headers = [h for h in rule.inputs[1:] if not h.endswith(".gch")] if len(rule.inputs) > 1 else []
         copts = extract_copts(rule.command, strip_includes=strip_includes) if rule.command else []
-        obj_info[rule.output] = (source, headers, copts)
+        obj_info[rule.output] = ObjInfo(source, headers, copts)
     return obj_info
 
 
@@ -180,7 +187,7 @@ def mangle_target_name(basename: str) -> str:
 
 def aggregate_rule_sources(
     rule: BuildRule,
-    obj_info: dict[str, tuple[str, list[str], list[str]]],
+    obj_info: dict[str, ObjInfo],
 ) -> tuple[list[str], list[str]]:
     """Collect source files and deduplicated copts from a rule's object inputs.
 
@@ -190,15 +197,16 @@ def aggregate_rule_sources(
     all_copts: list[str] = []
     seen_copts: set[str] = set()
     for obj in rule.inputs:
-        if obj in obj_info:
-            source, headers, copts = obj_info[obj]
-            if source:
-                srcs.append(source)
-            srcs.extend(headers)
-            for c in copts:
-                if c not in seen_copts:
-                    all_copts.append(c)
-                    seen_copts.add(c)
+        info = obj_info.get(obj)
+        if info is None:
+            continue
+        if info.source:
+            srcs.append(info.source)
+        srcs.extend(info.headers)
+        for c in info.copts:
+            if c not in seen_copts:
+                all_copts.append(c)
+                seen_copts.add(c)
     return srcs, all_copts
 
 
