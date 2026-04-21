@@ -135,6 +135,47 @@ class TestTupGenerate:
         lines = [line for line in content.strip().split("\n") if line.strip()]
         assert len(lines) == 1
 
+    def test_warning_when_tests_specified_clarifies_test_runner(self, capsys):
+        """When --tests is set, the tup backend warns that tests run via
+        the Python test runner, not via tup itself. The previous wording
+        ("ignores --tests") was misleading because BuildBackend.execute
+        ("runtests") still calls _run_tests() and runs them."""
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="obj/test_foo.o",
+                inputs=["test_foo.cpp"],
+                command=["g++", "-c", "test_foo.cpp", "-o", "obj/test_foo.o"],
+                rule_type="compile",
+            )
+        )
+
+        args = self._make_args(tests=["/src/test_foo.cpp"])
+        hunter = MagicMock()
+        backend = TupBackend(args=args, hunter=hunter)
+
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        err = capsys.readouterr().err
+
+        assert "Python test runner" in err
+        assert "doesn't generate test rules" in err
+        # Must NOT use the misleading "ignores --tests" wording.
+        assert "ignores --tests" not in err
+
+    def test_tests_execute_through_run_tests(self, tmp_path):
+        """Tup backend: backend.execute('runtests') still calls _run_tests
+        from the base class — tests are NOT silently skipped."""
+        from unittest.mock import patch
+
+        args = self._make_args(tests=["/src/test_foo.cpp"])
+        hunter = MagicMock()
+        backend = TupBackend(args=args, hunter=hunter)
+
+        with patch.object(backend, "_run_tests") as mock_run_tests:
+            backend.execute("runtests")
+            mock_run_tests.assert_called_once()
+
     def test_command_flags_preserved(self):
         graph = BuildGraph()
         graph.add_rule(

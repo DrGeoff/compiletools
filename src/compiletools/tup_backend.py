@@ -34,15 +34,19 @@ class TupBackend(BuildBackend):
 
     def generate(self, graph: BuildGraph, output=None) -> None:
         # M-A12: tup has no phony-rule equivalent, so a `runtests` target
-        # cannot be expressed. Warn the user up front rather than letting
-        # them think the test suite ran.
+        # cannot be expressed in the Tupfile. Tests will still run via
+        # the backend-agnostic Python test runner (BuildBackend._run_tests
+        # invoked from BuildBackend.execute("runtests")) — warn the user
+        # so they understand the runtests phony in the graph is provided
+        # by Python rather than tup itself.
         if getattr(self.args, "tests", None):
             import sys
 
             print(
-                "WARNING: --backend=tup ignores --tests / runtests; tup has "
-                "no phony-rule equivalent. Run test executables manually "
-                "after the build, or use a different backend.",
+                "WARNING: Tup backend doesn't generate test rules; tests "
+                "will run directly via the Python test runner "
+                "(ct-cake's built-in BuildBackend._run_tests). The "
+                "Tupfile contains only build rules.",
                 file=sys.stderr,
             )
 

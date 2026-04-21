@@ -18,6 +18,14 @@ VALID_RULE_TYPES = frozenset(
 class BuildRule:
     """A single build action: produce `output` from `inputs` by running `command`.
 
+    Invariant: **one output -> one command.** ``BuildGraph.add_rule`` is
+    keyed by ``output`` and last-write-wins, so two rules producing the
+    same path collapse into one. Callers that build up a graph
+    incrementally are expected to honour that invariant — emit a
+    consistent command for any given output. Equality and hash below
+    enforce the same shape: rules with the same output collide in
+    dict/set containers.
+
     Attributes:
         output: The file this rule produces (or a phony target name).
         inputs: Files this rule depends on (source files, headers, objects).
@@ -53,6 +61,16 @@ class BuildRule:
             raise ValueError(f"Invalid rule_type {self.rule_type!r}; must be one of {sorted(VALID_RULE_TYPES)}")
 
     def __eq__(self, other):
+        """Rules compare equal when their ``output`` paths match.
+
+        This is **deliberately surprising**: two rules with the same
+        output but different inputs or commands are considered equal so
+        that BuildGraph (a dict keyed by output) can dedupe them with
+        last-write-wins semantics. The "one output -> one command"
+        invariant in the class docstring is what makes this safe in
+        practice. If you need structural equality (all fields match),
+        compare the dataclass fields explicitly.
+        """
         if not isinstance(other, BuildRule):
             return NotImplemented
         return self.output == other.output

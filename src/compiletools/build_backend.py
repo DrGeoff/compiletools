@@ -124,9 +124,14 @@ def extract_linkopts(command: list[str], object_files: set[str]) -> list[str]:
     """Extract linker flags from a link command.
 
     Strips the linker binary, -o, output executable, and object file paths.
+    Object-file matching is normalised via ``os.path.normpath`` on both
+    sides so that ``./obj/foo.o`` and ``obj/foo.o`` are treated as the
+    same file — without this, the divergent form would leak into
+    linkopts and break Bazel/CMake link rules.
     """
     if not command:
         return []
+    normalised_objects = {os.path.normpath(o) for o in object_files}
     args = split_compound_args(command[1:])
     linkopts = []
     skip_next = False
@@ -137,7 +142,7 @@ def extract_linkopts(command: list[str], object_files: set[str]) -> list[str]:
         if arg == "-o":
             skip_next = True
             continue
-        if arg in object_files:
+        if os.path.normpath(arg) in normalised_objects:
             continue
         linkopts.append(arg)
     return linkopts
@@ -1053,7 +1058,10 @@ def _compiler_identity(cxx: str) -> str:
     resolved = shutil.which(cxx) or cxx
     try:
         st = os.stat(resolved)
-        return f"{os.path.realpath(resolved)}|{st.st_size}|{int(st.st_mtime)}"
+        # Use nanosecond mtime so a sub-second compiler swap (e.g.
+        # ``cp new-g++ /usr/local/bin/g++`` followed immediately by a
+        # build) does not collide on the cache key.
+        return f"{os.path.realpath(resolved)}|{st.st_size}|{st.st_mtime_ns}"
     except OSError:
         return resolved
 

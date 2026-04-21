@@ -818,6 +818,37 @@ class TestPchIncrementalHash:
             "PCH cache keys to prevent silent cross-user PCH-stamp rejection."
         )
 
+    def test_compiler_identity_uses_nanosecond_mtime(self, tmp_path):
+        """Sub-second compiler swap must not collide on the cache key.
+
+        With int(st_mtime) (one-second resolution), two compiler binaries
+        written within the same second to the same path of the same size
+        produce identical identities — silently using a stale PCH. With
+        st_mtime_ns the two writes are distinguishable.
+        """
+        from compiletools.build_backend import _compiler_identity
+
+        cxx = tmp_path / "fastswap_cxx"
+        cxx.write_text("#!/bin/sh\necho A\n")  # same content size A
+        cxx.chmod(0o755)
+        # Pin mtime to a known nanosecond value. lru_cache means we must
+        # reset between calls.
+        os.utime(cxx, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+        _compiler_identity.cache_clear()
+        id_a = _compiler_identity(str(cxx))
+
+        # Same content (same size), same path, but mtime advanced by
+        # 500ms — int(st_mtime) would collide here.
+        os.utime(cxx, ns=(1_700_000_000_500_000_000, 1_700_000_000_500_000_000))
+        _compiler_identity.cache_clear()
+        id_b = _compiler_identity(str(cxx))
+
+        assert id_a != id_b, (
+            "compiler identity must include nanosecond mtime so a "
+            "sub-second swap is detected; "
+            f"got id_a={id_a!r}, id_b={id_b!r}"
+        )
+
     def test_pch_cache_key_distinguishes_quoted_flag_values(self, tmp_path):
         """Cache key must distinguish ``-DFOO="a b"`` (one flag with embedded
         space) from ``-DFOO=a -Db`` (two flags). The pre-fix space-join
@@ -912,6 +943,38 @@ class TestRunTests:
         backend._run_tests()
 
         mock_run.assert_not_called()
+
+
+class TestExtractLinkopts:
+    """extract_linkopts must normalise paths before stripping object files."""
+
+    def test_normalises_dot_slash_prefix(self):
+        from compiletools.build_backend import extract_linkopts
+
+        cmd = ["g++", "-o", "bin/foo", "./obj/foo.o", "obj/bar.o", "-lm"]
+        # Object set uses bare form; cmd uses ./obj/foo.o
+        objs = {"obj/foo.o", "obj/bar.o"}
+        result = extract_linkopts(cmd, objs)
+        assert result == ["-lm"], (
+            f"extract_linkopts must normalise so ./obj/foo.o and obj/foo.o compare equal; got {result}"
+        )
+
+    def test_normalises_with_redundant_slashes(self):
+        from compiletools.build_backend import extract_linkopts
+
+        cmd = ["g++", "-o", "bin/foo", "obj//foo.o", "-lm"]
+        objs = {"obj/foo.o"}
+        result = extract_linkopts(cmd, objs)
+        assert result == ["-lm"]
+
+    def test_normalises_when_object_set_uses_dot_slash(self):
+        from compiletools.build_backend import extract_linkopts
+
+        cmd = ["g++", "-o", "bin/foo", "obj/foo.o", "-lm"]
+        # Object set has ./ prefix
+        objs = {"./obj/foo.o"}
+        result = extract_linkopts(cmd, objs)
+        assert result == ["-lm"]
 
 
 class TestComputeLinkSignature:

@@ -371,3 +371,134 @@ class TestBazelExecute:
         cmd = mock_check_call.call_args[0][0]
         assert "--spawn_strategy=local" in cmd
         assert "--action_env=PATH" in cmd
+
+
+class TestBazelGenerateNoFilesystemMutation:
+    """generate() to a StringIO must NOT create files in ext/.
+
+    Filesystem mutation (copying out-of-workspace sources into ext/)
+    happens in _execute_build → _prepare_external_sources, not in
+    generate(). Tests writing to a buffer should leave the cwd clean.
+    """
+
+    def test_generate_to_stringio_does_not_create_ext(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        # Source lives outside the (cwd) workspace, simulating an
+        # out-of-tree dependency that would normally trigger the ext/
+        # copy code path.
+        outside = tmp_path.parent / "outside_src"
+        outside.mkdir(exist_ok=True)
+        src = outside / "external.cpp"
+        src.write_text("int main() { return 0; }\n")
+
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="obj/external.o",
+                inputs=[str(src)],
+                command=["g++", "-c", str(src), "-o", "obj/external.o"],
+                rule_type="compile",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="bin/external",
+                inputs=["obj/external.o"],
+                command=["g++", "-o", "bin/external", "obj/external.o"],
+                rule_type="link",
+            )
+        )
+
+        args = MagicMock()
+        hunter = MagicMock()
+        backend = BazelBackend(args=args, hunter=hunter)
+
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+
+        # No ext/ directory must have been created in cwd.
+        assert not (tmp_path / "ext").exists(), "generate() to StringIO must not create ext/ on disk"
+        # And the buffer should contain the bazel rules.
+        assert "cc_binary" in buf.getvalue()
+
+
+class TestBazelPrepareExternalSources:
+    """_prepare_external_sources copies out-of-workspace sources into ext/."""
+
+    def test_copies_external_sources(self, tmp_path):
+        outside = tmp_path.parent / "external_dir_for_bazel_test"
+        outside.mkdir(exist_ok=True)
+        src = outside / "ext_source.cpp"
+        src.write_text("int main() { return 0; }\n")
+
+        try:
+            base_dir = tmp_path / "workspace"
+            base_dir.mkdir()
+
+            graph = BuildGraph()
+            graph.add_rule(
+                BuildRule(
+                    output="obj/ext_source.o",
+                    inputs=[str(src)],
+                    command=["g++", "-c", str(src), "-o", "obj/ext_source.o"],
+                    rule_type="compile",
+                )
+            )
+            graph.add_rule(
+                BuildRule(
+                    output="bin/ext_source",
+                    inputs=["obj/ext_source.o"],
+                    command=["g++", "-o", "bin/ext_source", "obj/ext_source.o"],
+                    rule_type="link",
+                )
+            )
+
+            args = MagicMock()
+            hunter = MagicMock()
+            backend = BazelBackend(args=args, hunter=hunter)
+            backend._prepare_external_sources(graph, str(base_dir))
+
+            assert (base_dir / "ext" / "ext_source.cpp").exists()
+        finally:
+            import shutil as _sh
+
+            if outside.exists():
+                _sh.rmtree(outside)
+
+
+class TestBazelAllOutputsCurrent:
+    """Bazel backends place outputs in bazel-bin/, not at namer paths,
+    so the base-class _all_outputs_current pre-check would mis-fire.
+    The override must return False unconditionally so the build (and
+    post-build copy from bazel-bin/) always runs."""
+
+    def test_always_returns_false_even_when_outputs_exist(self, tmp_path):
+        from compiletools.build_backend import compute_link_signature
+
+        args = MagicMock()
+        hunter = MagicMock()
+        backend = BazelBackend(args=args, hunter=hunter)
+
+        obj_path = str(tmp_path / "foo.o")
+        exe_path = str(tmp_path / "main")
+        with open(obj_path, "w") as f:
+            f.write("object")
+        with open(exe_path, "w") as f:
+            f.write("executable")
+
+        graph = BuildGraph()
+        graph.add_rule(BuildRule(output=obj_path, inputs=["foo.cpp"], command=["g++"], rule_type="compile"))
+        link_rule = BuildRule(
+            output=exe_path, inputs=[obj_path], command=["g++", "-o", exe_path, obj_path], rule_type="link"
+        )
+        graph.add_rule(link_rule)
+        with open(exe_path + ".ct-sig", "w") as f:
+            f.write(compute_link_signature(link_rule))
+
+        assert backend._all_outputs_current(graph) is False
+
+    def test_always_returns_false_with_empty_graph(self):
+        args = MagicMock()
+        hunter = MagicMock()
+        backend = BazelBackend(args=args, hunter=hunter)
+        assert backend._all_outputs_current(BuildGraph()) is False

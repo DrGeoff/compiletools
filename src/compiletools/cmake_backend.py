@@ -179,6 +179,21 @@ class CMakeBackend(BuildBackend):
                     f.write(f'add_test(NAME {test_name} COMMAND "{exe_path}")\n')
             f.write("\n")
 
+    def _all_outputs_current(self, graph: BuildGraph) -> bool:
+        """Always re-execute the build.
+
+        The base-class pre-check looks for compile/link outputs at the
+        ``namer``-derived objdir/exedir paths.  CMake builds in an
+        out-of-source ``cmake-build/`` directory, so those paths are
+        almost never populated by CMake itself — the pre-check would
+        return False "by accident" and skip the post-build copy of the
+        produced binaries to ``topbindir``.  Make the contract explicit:
+        always defer to CMake, which has its own incremental-build
+        logic.  This also guarantees ``_copy_built_executables`` runs
+        every time so the user-visible ``bin/`` stays in sync.
+        """
+        return False
+
     def _execute_build(self, target: str) -> None:
         cmake = shutil.which("cmake")
         if cmake is None:

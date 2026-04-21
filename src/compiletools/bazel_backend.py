@@ -52,8 +52,12 @@ class BazelBackend(BuildBackend):
         if output is not None:
             # When writing to a file handle, try to determine the base directory
             # from the file's name attribute (set when opened with open()).
+            # When writing to an in-memory buffer (e.g. StringIO in tests),
+            # name is not a real path so leave base_dir=None: _bazel_src
+            # then returns relative path strings only and never copies
+            # source files into ext/.
             base_dir = None
-            if hasattr(output, "name") and isinstance(output.name, str):
+            if hasattr(output, "name") and isinstance(output.name, str) and os.path.isabs(output.name):
                 base_dir = os.path.dirname(compiletools.wrappedos.realpath(output.name))
             self._write_build(graph, output, base_dir=base_dir)
         else:
@@ -180,31 +184,64 @@ class BazelBackend(BuildBackend):
         return resolved
 
     @staticmethod
-    def _bazel_src(source: str, base_dir: str) -> str:
-        """Return a Bazel-safe relative source path.
+    def _bazel_src(source: str, base_dir: str | None) -> str:
+        """Return a Bazel-safe relative source path (PURE, no I/O).
 
         Bazel rejects target paths containing '..'.  When a source file
-        lives outside the workspace, copy it into a local 'ext/' directory
-        and return the local relative path instead.
+        lives outside the workspace this only computes the path that
+        ``_prepare_external_sources`` would later copy to under
+        ``<base_dir>/ext/<basename>``; nothing is created on disk here so
+        ``generate()`` to a StringIO is side-effect-free.
+
+        When *base_dir* is None (e.g. writing to an unnamed in-memory
+        buffer) we cannot compute a meaningful relative path, so fall
+        back to the source's realpath.
         """
+        if base_dir is None:
+            return compiletools.wrappedos.realpath(source)
+
         rel = os.path.relpath(source, base_dir)
         if not rel.startswith(".."):
             return rel
 
-        # Source is outside the workspace — copy it in.
-        # Note: these copies in ext/ may be orphaned if the build fails;
-        # clean() removes the entire output directory including ext/.
+        # Source is outside the workspace — the corresponding copy will
+        # live under <base_dir>/ext/<basename>; compute the would-be path
+        # without touching the filesystem. The actual copy happens in
+        # _prepare_external_sources(), invoked from generate() after the
+        # Bazel build file has been written.
         if os.path.exists(source):
-            ext_dir = os.path.join(base_dir, "ext")
-            os.makedirs(ext_dir, exist_ok=True)
-            basename = os.path.basename(source)
-            dest = os.path.join(ext_dir, basename)
-            if not os.path.exists(dest):
-                shutil.copy2(source, dest)
+            dest = os.path.join(base_dir, "ext", os.path.basename(source))
             return os.path.relpath(dest, base_dir)
 
-        # Source doesn't exist (e.g. mock/test paths) — use absolute path
+        # Source doesn't exist (e.g. mock/test paths) — use absolute path.
         return compiletools.wrappedos.realpath(source)
+
+    def _prepare_external_sources(self, graph: BuildGraph, base_dir: str) -> None:
+        """Copy out-of-workspace source files into ``<base_dir>/ext/``.
+
+        Mirrors the path computation in ``_bazel_src`` but performs the
+        actual filesystem mutation. Split out of ``_bazel_src`` so that
+        ``generate()`` can compute path strings without I/O (e.g. for
+        tests that write to a StringIO) and only invoke this step when
+        actually preparing for a real Bazel build.
+        """
+        ext_dir = os.path.join(base_dir, "ext")
+        ext_made = False
+        obj_info = build_obj_info(graph, strip_includes=True)
+        for rule in graph.rules:
+            srcs, _ = aggregate_rule_sources(rule, obj_info)
+            for source in srcs:
+                rel = os.path.relpath(source, base_dir)
+                if not rel.startswith(".."):
+                    continue
+                if not os.path.exists(source):
+                    continue
+                if not ext_made:
+                    os.makedirs(ext_dir, exist_ok=True)
+                    ext_made = True
+                dest = os.path.join(ext_dir, os.path.basename(source))
+                if not os.path.exists(dest):
+                    shutil.copy2(source, dest)
 
     def _ensure_workspace(self, output_dir: str) -> None:
         """Create minimal WORKSPACE and MODULE.bazel files if none exist."""
@@ -218,10 +255,33 @@ class BazelBackend(BuildBackend):
                 f.write('module(name = "compiletools_project")\n')
                 f.write('bazel_dep(name = "rules_cc", version = "0.1.1")\n')
 
+    def _all_outputs_current(self, graph: BuildGraph) -> bool:
+        """Always re-execute the build.
+
+        The base-class pre-check looks for compile/link outputs at the
+        ``namer``-derived objdir/exedir paths.  Bazel builds in
+        ``bazel-bin/`` (and uses its own action cache), so those paths
+        are almost never populated by Bazel itself — the pre-check would
+        return False "by accident" and skip the post-build copy of
+        binaries from ``bazel-bin`` to ``topbindir``.  Make the contract
+        explicit: always defer to Bazel, which has its own incremental
+        build logic, and guarantee the post-build copy runs every time
+        so the user-visible ``bin/`` stays in sync.
+        """
+        return False
+
     def _execute_build(self, target: str) -> None:
         tool = shutil.which("bazelisk") or shutil.which("bazel")
         if tool is None:
             raise RuntimeError("Neither 'bazelisk' nor 'bazel' found on PATH")
+
+        # Materialise out-of-workspace sources into <base_dir>/ext/ now,
+        # immediately before the actual Bazel build. Done here (not in
+        # generate()) so that generate() to a StringIO stays a pure file
+        # emission — no orphan ext/ dirs from test runs.
+        if self._graph is not None:
+            base_dir = os.path.dirname(compiletools.wrappedos.realpath(self.build_filename())) or "."
+            self._prepare_external_sources(self._graph, base_dir)
 
         if target in ("build", "all"):
             bazel_target = "//:all"

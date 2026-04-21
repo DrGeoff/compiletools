@@ -96,6 +96,83 @@ class TestNinjaGenerate:
         # Order-only deps use || in Ninja
         assert "|| /tmp/obj" in content
 
+    def test_restat_suppressed_for_mkdir_rule(self):
+        """restat=1 must NOT be emitted for mkdir rules — directory
+        mtimes change every time a child is added/removed, so restat
+        would let Ninja silently skip downstream rebuilds."""
+        graph = BuildGraph()
+        # mkdir rule with a command — this is the path that emits a
+        # ninja rule definition.
+        graph.add_rule(
+            BuildRule(
+                output="/tmp/objdir",
+                inputs=[],
+                command=["mkdir", "-p", "/tmp/objdir"],
+                rule_type="mkdir",
+            )
+        )
+        args = self._make_args()
+        hunter = MagicMock()
+        hunter.huntsource = MagicMock()
+        backend = NinjaBackend(args=args, hunter=hunter)
+
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        # Find the mkdir_cmd rule definition block and ensure no restat=1
+        # appears inside it (between "rule mkdir_cmd" and the next blank
+        # line / next "rule "/"build " stanza).
+        lines = content.splitlines()
+        in_mkdir_rule = False
+        for line in lines:
+            if line.startswith("rule mkdir_cmd"):
+                in_mkdir_rule = True
+                continue
+            if in_mkdir_rule:
+                if line.startswith("rule ") or line.startswith("build "):
+                    break
+                if not line.strip():
+                    break
+                assert "restat" not in line, f"restat appeared inside mkdir rule definition: {line!r}"
+
+    def test_restat_present_for_compile_rule(self):
+        """Sanity: compile rules SHOULD still emit restat=1."""
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="obj/foo.o",
+                inputs=["foo.cpp"],
+                command=["g++", "-c", "foo.cpp", "-o", "obj/foo.o"],
+                rule_type="compile",
+            )
+        )
+        args = self._make_args()
+        hunter = MagicMock()
+        hunter.huntsource = MagicMock()
+        backend = NinjaBackend(args=args, hunter=hunter)
+
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        # Within the compile_cmd rule block, restat=1 must appear.
+        lines = content.splitlines()
+        in_compile_rule = False
+        saw_restat = False
+        for line in lines:
+            if line.startswith("rule compile_cmd"):
+                in_compile_rule = True
+                continue
+            if in_compile_rule:
+                if line.startswith("rule ") or line.startswith("build "):
+                    break
+                if not line.strip():
+                    break
+                if "restat = 1" in line:
+                    saw_restat = True
+        assert saw_restat, "compile rule should still set restat=1"
+
     def test_ninja_rule_definitions(self):
         """Ninja requires rule definitions (rule compile_cmd / rule link_cmd)."""
         graph = BuildGraph()

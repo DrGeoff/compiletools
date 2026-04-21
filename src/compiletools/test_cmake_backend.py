@@ -311,3 +311,44 @@ class TestCMakeExecute:
         with patch("shutil.which", return_value=None):
             with pytest.raises(RuntimeError, match=r"cmake.*not found"):
                 backend.execute()
+
+
+class TestCMakeAllOutputsCurrent:
+    """CMake backends place outputs in cmake-build/, not at namer paths,
+    so the base-class _all_outputs_current pre-check would mis-fire.
+    The override must return False unconditionally so the build (and
+    post-build copy) always runs."""
+
+    def test_always_returns_false_even_when_outputs_exist(self, tmp_path):
+        args = MagicMock()
+        hunter = MagicMock()
+        backend = CMakeBackend(args=args, hunter=hunter)
+
+        # Build a graph whose compile/link outputs exist on disk and have
+        # matching link signatures — base class would return True.
+        from compiletools.build_backend import compute_link_signature
+
+        obj_path = str(tmp_path / "foo.o")
+        exe_path = str(tmp_path / "main")
+        with open(obj_path, "w") as f:
+            f.write("object")
+        with open(exe_path, "w") as f:
+            f.write("executable")
+
+        graph = BuildGraph()
+        graph.add_rule(BuildRule(output=obj_path, inputs=["foo.cpp"], command=["g++"], rule_type="compile"))
+        link_rule = BuildRule(
+            output=exe_path, inputs=[obj_path], command=["g++", "-o", exe_path, obj_path], rule_type="link"
+        )
+        graph.add_rule(link_rule)
+        with open(exe_path + ".ct-sig", "w") as f:
+            f.write(compute_link_signature(link_rule))
+
+        # CMake override must still return False — defer to CMake.
+        assert backend._all_outputs_current(graph) is False
+
+    def test_always_returns_false_with_empty_graph(self):
+        args = MagicMock()
+        hunter = MagicMock()
+        backend = CMakeBackend(args=args, hunter=hunter)
+        assert backend._all_outputs_current(BuildGraph()) is False

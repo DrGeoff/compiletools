@@ -61,7 +61,16 @@ class NinjaBackend(BuildBackend):
                     f.write("  description = Linking shared library $out\n")
                 else:
                     f.write(f"  description = {rule.rule_type} $out\n")
-                f.write("  restat = 1\n")
+                # restat=1 lets Ninja skip downstream rebuilds when the
+                # output's mtime doesn't actually change. Suppress for
+                # mkdir/phony — a directory's mtime updates every time a
+                # child file is added/removed inside it, and a phony rule
+                # has no real output. If those rule_types ever flow
+                # through this command-emission path and someone takes a
+                # genuine dependency on them, restat=1 would silently
+                # skip downstream rebuilds.
+                if rule.rule_type not in ("mkdir", "phony"):
+                    f.write("  restat = 1\n")
                 f.write("\n")
                 rule_types_seen.add(rule.rule_type)
 
