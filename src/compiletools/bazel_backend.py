@@ -99,20 +99,7 @@ class BazelBackend(BuildBackend):
             srcs, all_copts = aggregate_rule_sources(rule, obj_info)
             target_name = mangle_target_name(os.path.basename(rule.output))
             rel_srcs = sorted(set(self._bazel_src(s, base_dir) for s in srcs))
-
-            f.write("\ncc_library(\n")
-            f.write(f'    name = "{target_name}",\n')
-            if rel_srcs:
-                f.write("    srcs = [\n")
-                for s in rel_srcs:
-                    f.write(f'        "{s}",\n')
-                f.write("    ],\n")
-            if all_copts:
-                f.write("    copts = [\n")
-                for c in all_copts:
-                    f.write(f'        "{c}",\n')
-                f.write("    ],\n")
-            f.write(")\n")
+            self._emit_target(f, "cc_library", target_name, rel_srcs, all_copts)
 
         for rule in graph.rules_by_type("shared_library"):
             srcs, all_copts = aggregate_rule_sources(rule, obj_info)
@@ -120,26 +107,7 @@ class BazelBackend(BuildBackend):
             linkopts = self._resolve_linkopts(extract_linkopts(rule.command, object_files) if rule.command else [])
             target_name = mangle_target_name(os.path.basename(rule.output))
             rel_srcs = sorted(set(self._bazel_src(s, base_dir) for s in srcs))
-
-            f.write("\ncc_binary(\n")
-            f.write(f'    name = "{target_name}",\n')
-            if rel_srcs:
-                f.write("    srcs = [\n")
-                for s in rel_srcs:
-                    f.write(f'        "{s}",\n')
-                f.write("    ],\n")
-            if all_copts:
-                f.write("    copts = [\n")
-                for c in all_copts:
-                    f.write(f'        "{c}",\n')
-                f.write("    ],\n")
-            if linkopts:
-                f.write("    linkopts = [\n")
-                for opt in linkopts:
-                    f.write(f'        "{opt}",\n')
-                f.write("    ],\n")
-            f.write("    linkshared = True,\n")
-            f.write(")\n")
+            self._emit_target(f, "cc_binary", target_name, rel_srcs, all_copts, linkopts, linkshared=True)
 
         for rule in graph.rules_by_type("link"):
             srcs, all_copts = aggregate_rule_sources(rule, obj_info)
@@ -147,26 +115,41 @@ class BazelBackend(BuildBackend):
             linkopts = self._resolve_linkopts(extract_linkopts(rule.command, object_files) if rule.command else [])
             target_name = mangle_target_name(os.path.basename(rule.output))
             rel_srcs = sorted(set(self._bazel_src(s, base_dir) for s in srcs))
+            kind = "cc_test" if rule.output in test_exe_paths else "cc_binary"
+            self._emit_target(f, kind, target_name, rel_srcs, all_copts, linkopts)
 
-            bazel_rule = "cc_test" if rule.output in test_exe_paths else "cc_binary"
-            f.write(f"\n{bazel_rule}(\n")
-            f.write(f'    name = "{target_name}",\n')
-            if rel_srcs:
-                f.write("    srcs = [\n")
-                for s in rel_srcs:
-                    f.write(f'        "{s}",\n')
-                f.write("    ],\n")
-            if all_copts:
-                f.write("    copts = [\n")
-                for c in all_copts:
-                    f.write(f'        "{c}",\n')
-                f.write("    ],\n")
-            if linkopts:
-                f.write("    linkopts = [\n")
-                for opt in linkopts:
-                    f.write(f'        "{opt}",\n')
-                f.write("    ],\n")
-            f.write(")\n")
+    @staticmethod
+    def _emit_target(
+        f,
+        kind: str,
+        target_name: str,
+        rel_srcs: list[str],
+        all_copts: list[str],
+        linkopts: list[str] | None = None,
+        *,
+        linkshared: bool = False,
+    ) -> None:
+        """Write a single ``cc_library`` / ``cc_binary`` / ``cc_test`` stanza."""
+        f.write(f"\n{kind}(\n")
+        f.write(f'    name = "{target_name}",\n')
+        if rel_srcs:
+            f.write("    srcs = [\n")
+            for s in rel_srcs:
+                f.write(f'        "{s}",\n')
+            f.write("    ],\n")
+        if all_copts:
+            f.write("    copts = [\n")
+            for c in all_copts:
+                f.write(f'        "{c}",\n')
+            f.write("    ],\n")
+        if linkopts:
+            f.write("    linkopts = [\n")
+            for opt in linkopts:
+                f.write(f'        "{opt}",\n')
+            f.write("    ],\n")
+        if linkshared:
+            f.write("    linkshared = True,\n")
+        f.write(")\n")
 
     @staticmethod
     def _resolve_linkopts(linkopts: list[str]) -> list[str]:
