@@ -466,6 +466,24 @@ def _slurm_mem_arg(value: str) -> str:
     return value
 
 
+def _slurm_max_wait_arg(value: str) -> float:
+    """Validate the --slurm-max-wait wall-clock cap (positive float seconds)."""
+    s = (value or "").strip()
+    if not s:
+        raise argparse.ArgumentTypeError("invalid --slurm-max-wait: empty")
+    try:
+        seconds = float(s)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(
+            f"invalid --slurm-max-wait '{value}': not a number"
+        ) from e
+    if seconds <= 0:
+        raise argparse.ArgumentTypeError(
+            f"invalid --slurm-max-wait '{value}': must be positive"
+        )
+    return seconds
+
+
 def _slurm_time_arg(value: str) -> str:
     """Validate Slurm wall-clock time format (HH:MM:SS or D-HH:MM:SS)."""
     s = value.strip()
@@ -623,6 +641,15 @@ class SlurmBackend(ShakeBackend):
             default=3,
             type=int,
             help="Maximum OOM retries per rule before that rule is abandoned. Default: 3",
+        )
+        cap.add(
+            "--slurm-max-wait",
+            default=7200.0,
+            type=_slurm_max_wait_arg,
+            help="Total wall-clock seconds to wait for all submitted Slurm arrays "
+            "to reach a terminal state.  Raised as RuntimeError if exceeded. "
+            "Tune upward on busy clusters where queue waits exceed the default. "
+            "Default: 7200.0 (2 hours)",
         )
 
     # ------------------------------------------------------------------
@@ -1209,7 +1236,8 @@ class SlurmBackend(ShakeBackend):
         consecutively more than --slurm-sacct-failure-threshold times.
         """
         poll_interval = self.args.slurm_poll_interval
-        max_polls = max(1, int(1800 / max(poll_interval, 0.1)))
+        max_wait_s = getattr(self.args, "slurm_max_wait", 7200.0)
+        max_polls = max(1, int(max_wait_s / max(poll_interval, 0.1)))
         polls = 0
         failure_threshold = getattr(self.args, "slurm_sacct_failure_threshold", 10)
         consecutive_failures = 0
@@ -1220,7 +1248,9 @@ class SlurmBackend(ShakeBackend):
         while pending:
             if polls >= max_polls:
                 raise RuntimeError(
-                    f"Timed out after {polls} sacct polls waiting for Slurm arrays: " + ", ".join(sorted(pending))
+                    f"Timed out after {polls} sacct polls "
+                    f"(--slurm-max-wait={max_wait_s}s) waiting for Slurm arrays: "
+                    + ", ".join(sorted(pending))
                 )
             polls += 1
 

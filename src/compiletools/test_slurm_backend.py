@@ -1147,6 +1147,63 @@ class TestArgValidation:
         out = _slurm_mem_tiers_arg("16:16G,1:1G,4:4G")
         assert out == [(1, "1G"), (4, "4G"), (16, "16G")]
 
+    def test_slurm_max_wait_valid_passes(self):
+        from compiletools.trace_backend import _slurm_max_wait_arg
+
+        assert _slurm_max_wait_arg("60") == 60.0
+        assert _slurm_max_wait_arg("0.5") == 0.5
+        assert _slurm_max_wait_arg("7200") == 7200.0
+
+    def test_slurm_max_wait_invalid_raises(self):
+        from compiletools.trace_backend import _slurm_max_wait_arg
+
+        with pytest.raises(argparse.ArgumentTypeError):
+            _slurm_max_wait_arg("")
+        with pytest.raises(argparse.ArgumentTypeError):
+            _slurm_max_wait_arg("0")
+        with pytest.raises(argparse.ArgumentTypeError):
+            _slurm_max_wait_arg("-1")
+        with pytest.raises(argparse.ArgumentTypeError):
+            _slurm_max_wait_arg("abc")
+
+
+class TestSlurmMaxWait:
+    """Verify --slurm-max-wait drives the wall-clock cap in _wait_for_arrays."""
+
+    def test_wait_for_arrays_respects_configured_cap(self, tmp_path):
+        """A short cap with a never-terminating sacct mock raises Timed out."""
+        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
+        b = SlurmBackend.__new__(SlurmBackend)
+        b.args = SimpleNamespace(
+            slurm_poll_interval=0.0,
+            slurm_sacct_failure_threshold=10,
+            slurm_max_wait=0.05,
+        )
+        index_map = {"77": [rule]}
+
+        with (
+            patch.object(b, "_query_array_task_states", return_value={"77_0": "RUNNING"}),
+            patch("time.sleep"),
+        ):
+            with pytest.raises(RuntimeError, match="Timed out"):
+                b._wait_for_arrays(index_map)
+
+    def test_wait_for_arrays_default_cap_is_two_hours(self, tmp_path):
+        """When --slurm-max-wait is not in args, default of 7200s applies."""
+        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
+        b = SlurmBackend.__new__(SlurmBackend)
+        # Intentionally omit slurm_max_wait so getattr() default fires.
+        b.args = SimpleNamespace(slurm_poll_interval=2.0, slurm_sacct_failure_threshold=10)
+        index_map = {"77": [rule]}
+
+        # Make COMPLETED on first poll so we don't actually loop.
+        with (
+            patch.object(b, "_query_array_task_states", return_value={"77_0": "COMPLETED"}),
+            patch("time.sleep"),
+        ):
+            failures = b._wait_for_arrays(index_map)
+        assert failures == []
+
 
 # ---------------------------------------------------------------------------
 # Per-invocation file naming + cleanup (Fix I2 + I3)
