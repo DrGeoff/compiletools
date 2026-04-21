@@ -111,80 +111,11 @@ filename = "src/compiletools/version.py"
 [[tool.bumpversion.files]]
 filename = "pyproject.toml"
 
+# Match every man-page README so newly-added docs are picked up automatically.
+# Every matched file MUST contain a ``:Version: {current_version}`` line; a
+# missing one is a release-blocker so stale or unstamped docs cannot ship.
 [[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-doc.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-cake.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-commandline.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-compilation-database.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-config.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-cppdeps.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-findtargets.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-filelist.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-gitroot.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-headertree.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-jobs.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-list-backends.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-list-variants.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-magicflags.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-cleanup-locks.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.cleanup-remote-locks.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.create-documentation.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-build.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-build-dynamic-library.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-build-static-library.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-create-makefile.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-git-sha-report.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-lock-helper.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-release.rst"
-
-[[tool.bumpversion.files]]
-filename = "src/compiletools/README.ct-watch-build.rst"
+glob = "src/compiletools/README.*.rst"
 
 [[tool.bumpversion.files]]
 filename = "src/compiletools/README.profile-ct-cake-worktree.rst"
