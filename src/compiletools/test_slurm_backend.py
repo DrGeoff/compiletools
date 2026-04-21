@@ -1344,7 +1344,9 @@ class TestWrapScriptEval:
 
         cmd = mock_sbatch.call_args[0][0]
         wrap = cmd[cmd.index("--wrap") + 1]
-        assert 'eval "$CMD"' in wrap
+        # Post-Fix-1: eval reattaches -o "$TMP" so the compile writes to a
+        # temp file before atomic rename onto OUT.
+        assert 'eval "$CMD' in wrap
         assert 'bash -c "$CMD"' not in wrap
 
     def test_command_substitution_in_arg_is_quoted_literally(self, tmp_path):
@@ -1372,6 +1374,9 @@ def test_quoted_define_with_space_survives_flatten(tmp_path):
     magicflags emits after its single shlex split) must reach the cmds file as
     a single shell-quoted argv element so the compiler receives one -D, not two
     args.
+
+    Note: post-Fix-1 the trailing ``-o <path>`` pair is stripped from the line
+    (the compute-node wrap script reattaches ``-o "$TMP"`` for atomic temp+rename).
     """
     import shlex as _shlex
 
@@ -1407,6 +1412,92 @@ def test_quoted_define_with_space_survives_flatten(tmp_path):
 
     tokens = _shlex.split(line)
     assert "-DGREETING=Hello World" in tokens, f"GREETING split across argv elements: tokens={tokens!r} line={line!r}"
+    # Post-Fix-1: -o is stripped; the wrap script reattaches it pointing at $TMP.
+    assert "-o" not in tokens, f"compile cmds-file line must not include -o: tokens={tokens!r}"
+
+
+# ---------------------------------------------------------------------------
+# Atomic compute-node compile (Fix: temp+rename in wrap script)
+# ---------------------------------------------------------------------------
+
+
+class TestAtomicComputeNodeCompile:
+    """The compute-node wrap script must use temp+rename so peer readers
+    never observe a half-written .o.  The compile command's trailing
+    ``-o <path>`` pair is stripped from the cmds file; the wrap script
+    reattaches ``-o "$TMP"`` and renames to ``$OUT`` on success.
+    """
+
+    def test_cmds_file_omits_o_flag(self, tmp_path):
+        """The cmds file line must NOT contain '-o <path>'."""
+        import shlex as _shlex
+
+        rule = make_compile_rule(output=str(tmp_path / "foo.o"), src="src/foo.cpp")
+        graph = BuildGraph()
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [rule.output]))
+
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            backend._invocation_prefix = "atomic"
+            backend._created_aux_files = []
+            with patch("subprocess.check_output", return_value="1\n"):
+                backend._sbatch_array([rule], chunk_id=0)
+            cmds_file = os.path.join(
+                os.path.realpath(backend.args.objdir),
+                ".ct-slurm-cmds-atomic-0.txt",
+            )
+            with open(cmds_file) as f:
+                line = f.read().strip()
+
+        tokens = _shlex.split(line)
+        assert "-o" not in tokens, f"-o must be stripped from compile line; got tokens={tokens!r}"
+        assert str(tmp_path / "foo.o") not in tokens, f"output path must not appear; got tokens={tokens!r}"
+
+    def test_wrap_script_uses_temp_then_rename(self, tmp_path):
+        """The wrap script must compile to a temp file and ``mv -f`` to OUT."""
+        rule = make_compile_rule(output=str(tmp_path / "foo.o"), src="src/foo.cpp")
+        graph = BuildGraph()
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [rule.output]))
+
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            with (
+                patch("subprocess.check_output", return_value="1\n") as mock_sbatch,
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
+            ):
+                backend.execute("build")
+
+            cmd = mock_sbatch.call_args[0][0]
+            wrap = cmd[cmd.index("--wrap") + 1]
+
+        # Must define a per-task temp path that includes job_id and array_task_id
+        # so concurrent retries cannot collide.
+        assert "SLURM_JOB_ID" in wrap, f"wrap missing SLURM_JOB_ID in temp path: {wrap}"
+        assert "SLURM_ARRAY_TASK_ID" in wrap
+        assert ".tmp" in wrap, f"wrap missing temp suffix: {wrap}"
+        # Compiler invoked via eval with -o pointing at the temp file.
+        # The wrap-script literal contains \" so eval sees -o "$TMP" after one
+        # round of unquoting.
+        assert r'-o \"$TMP\"' in wrap, f"wrap missing eval with -o $TMP: {wrap}"
+        # Atomic rename on success.
+        assert 'mv -f "$TMP" "$OUT"' in wrap, f"wrap missing atomic mv: {wrap}"
+        # Cleanup on failure.
+        assert 'rm -f "$TMP"' in wrap, f"wrap missing temp cleanup on failure: {wrap}"
+
+    def test_assertion_raised_when_compile_rule_missing_o_flag(self, tmp_path):
+        """Defensive: a malformed compile rule (no -o) must raise AssertionError."""
+        rule = BuildRule(
+            output=str(tmp_path / "bad.o"),
+            inputs=["bad.cpp"],
+            command=["g++", "-c", "bad.cpp"],  # no -o pair
+            rule_type="compile",
+        )
+        with SlurmBackendTestContext(BuildGraph()) as (backend, _tmpdir):
+            backend._invocation_prefix = "bad"
+            backend._created_aux_files = []
+            with patch("subprocess.check_output", return_value="1\n"):
+                with pytest.raises(AssertionError, match="-o"):
+                    backend._sbatch_array([rule], chunk_id=0)
 
 
 # ---------------------------------------------------------------------------

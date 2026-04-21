@@ -909,7 +909,17 @@ class SlurmBackend(ShakeBackend):
         with open(cmds_file, "w") as fc, open(outs_file, "w") as fo:
             for rule in rules:
                 assert rule.command is not None, "compile rules always have a command"
-                fc.write(shlex.join(_flatten_command(rule.command)) + "\n")
+                flat = _flatten_command(rule.command)
+                # Strip the trailing "-o <path>" pair: the wrap script reattaches
+                # ``-o "$TMP"`` so the compile writes to a per-task temp file and
+                # is atomically renamed to OUT, matching the local atomic_compile
+                # guarantee (see locking.py:atomic_compile docstring).
+                try:
+                    o_idx = flat.index("-o")
+                except ValueError as e:
+                    raise AssertionError(f"compile rule missing -o flag: {flat}") from e
+                cmd_without_output = flat[:o_idx] + flat[o_idx + 2 :]
+                fc.write(shlex.join(cmd_without_output) + "\n")
                 fo.write(rule.output + "\n")
             fc.flush()
             fo.flush()
@@ -921,15 +931,22 @@ class SlurmBackend(ShakeBackend):
             self._created_aux_files.append(cmds_file)
             self._created_aux_files.append(outs_file)
 
-        # eval "$CMD" runs the line read from cmds_file as a shell command.
-        # The line was produced by shlex.join, so each token is single-quoted
-        # and metacharacters like $, backticks, parentheses are literal — eval
-        # parses the quoting once and produces argv without re-expansion.
+        # eval "$CMD -o \"$TMP\"" runs the compile against a per-task temp file,
+        # then ``mv -f`` renames it onto OUT.  Peer readers (linker, second
+        # ct-cake) see either the previous good .o (old inode) or the new one
+        # (new inode), never a torn file — same guarantee atomic_compile
+        # provides on the local path.
+        # The cmds-file line was produced by shlex.join (with -o stripped), so
+        # each token is single-quoted and metacharacters like $, backticks,
+        # parentheses are literal — eval parses the quoting once and produces
+        # argv without re-expansion.
         wrap = (
             f'CMD=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" {shlex.quote(cmds_file)}); '
             f'OUT=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" {shlex.quote(outs_file)}); '
             f'[ -n "$CMD" ] || {{ echo "ct-compile: empty command (index $SLURM_ARRAY_TASK_ID)" >&2; exit 1; }}; '
-            f'eval "$CMD" || {{ rm -f "$OUT"; exit 1; }}'
+            f'TMP="${{OUT}}.${{SLURM_JOB_ID}}.${{SLURM_ARRAY_TASK_ID}}.tmp"; '
+            f'eval "$CMD -o \\"$TMP\\"" || {{ rm -f "$TMP"; exit 1; }}; '
+            f'mv -f "$TMP" "$OUT" || {{ rm -f "$TMP"; exit 1; }}'
         )
 
         effective_mem = mem if mem is not None else self.args.slurm_mem
