@@ -762,6 +762,16 @@ class BuildBackend(abc.ABC):
     def _all_outputs_current(self, graph: BuildGraph) -> bool:
         """Pre-check: all compile outputs exist and all link sigs match?
 
+        A ``True`` result short-circuits the build entirely — the backend
+        skips invoking the native build tool and reports success. This
+        contract assumes ``rule.output`` paths are the actual on-disk
+        artifacts; backends that emit outputs into an external build
+        directory (cmake's ``cmake-build/``, bazel's ``bazel-bin/``,
+        etc.) must override this method, since the namer-derived paths
+        in ``graph.rules`` will not exist even when a successful build
+        has just completed. ``cmake_backend`` and ``bazel_backend``
+        already override accordingly.
+
         Returns False when the graph has no compile/link rules, since the
         graph may not capture all build steps (e.g. library builds).
         """
