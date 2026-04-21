@@ -7,6 +7,7 @@ number of recent non-current entries per source file.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -24,6 +25,21 @@ _OBJ_FILENAME_RE = re.compile(
 
 # PCH command hash directories are exactly 16 lowercase hex chars.
 _PCH_COMMAND_HASH_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+def _load_pch_manifest(cmd_hash_dir: str) -> dict | None:
+    """Read a PCH cmd_hash dir's sidecar manifest.
+
+    Returns ``None`` for legacy entries (no manifest) or unreadable / corrupt
+    files. Callers must treat ``None`` as "fall back to legacy behavior" so
+    the trim path keeps working during the manifest-rollout window.
+    """
+    path = os.path.join(cmd_hash_dir, "manifest.json")
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def parse_object_filename(filename):

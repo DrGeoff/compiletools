@@ -1,5 +1,6 @@
 """Tests for trim_cache module."""
 
+import json  # noqa: F401  # used by tests added in Task 4
 import os
 import time
 import types
@@ -502,6 +503,35 @@ class TestSafeLockedRmtree:
         assert result is False, "must refuse to rmtree when new files appeared"
         assert d.exists(), "dir must still exist"
         assert new_file_path.exists(), "the racing peer file must NOT be deleted"
+
+
+# ── _load_pch_manifest helper ────────────────────────────────────────
+
+
+class TestLoadPchManifest:
+    def test_returns_dict_when_manifest_present(self, tmp_path):
+        from compiletools.trim_cache import _load_pch_manifest
+        cmd_hash_dir = tmp_path / "abc1234567890123"
+        cmd_hash_dir.mkdir()
+        (cmd_hash_dir / "manifest.json").write_text(
+            '{"header_realpath": "/abs/foo.h", "transitive_hashes": {"/abs/bar.h": "deadbeef"}}'
+        )
+        manifest = _load_pch_manifest(str(cmd_hash_dir))
+        assert manifest["header_realpath"] == "/abs/foo.h"
+        assert manifest["transitive_hashes"] == {"/abs/bar.h": "deadbeef"}
+
+    def test_returns_none_when_missing(self, tmp_path):
+        from compiletools.trim_cache import _load_pch_manifest
+        cmd_hash_dir = tmp_path / "abc1234567890123"
+        cmd_hash_dir.mkdir()
+        assert _load_pch_manifest(str(cmd_hash_dir)) is None
+
+    def test_returns_none_on_corrupt_json(self, tmp_path):
+        from compiletools.trim_cache import _load_pch_manifest
+        cmd_hash_dir = tmp_path / "abc1234567890123"
+        cmd_hash_dir.mkdir()
+        (cmd_hash_dir / "manifest.json").write_text("{not json")
+        assert _load_pch_manifest(str(cmd_hash_dir)) is None
 
 
 # ── Issue #4 placeholder (per-realpath bucketing) ────────────────────
