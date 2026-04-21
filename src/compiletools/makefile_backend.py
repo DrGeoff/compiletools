@@ -264,13 +264,18 @@ class MakefileBackend(BuildBackend):
         exe_dir = self.namer.executable_dir()
         obj_dir = self.namer.object_dir()
 
-        # Gather all outputs and object files from the graph
+        # Gather all outputs and object files from the graph.
+        # PCH .gch outputs are emitted as compile rules (see build_backend.py
+        # _build_pch_rules) so they are picked up here. .gch files in a shared
+        # pchdir cache outside obj_dir are intentionally NOT cleaned: that
+        # cache is cross-variant/cross-build and may be in use by peers; use
+        # ct-trim-cache to age them out.
         all_outputs = []
         all_objects = []
         for rule in graph.rules:
             if rule.rule_type == "compile":
                 all_objects.append(rule.output)
-            elif rule.rule_type in ("link", "static_library", "shared_library"):
+            elif rule.rule_type in ("link", "static_library", "shared_library", "copy"):
                 all_outputs.append(rule.output)
 
         # clean rule: remove executables, objects, and empty dirs

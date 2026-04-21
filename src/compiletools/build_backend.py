@@ -285,14 +285,30 @@ class BuildBackend(abc.ABC):
         if os.path.isdir(exe_dir):
             shutil.rmtree(exe_dir)
 
-        # Selectively remove only this build's products from the objdir
+        # Selectively remove only this build's products from the objdir.
+        # `compile` covers both .o and PCH .gch outputs (PCH rules are emitted
+        # as compile rules in build_graph()). `copy` covers backend-emitted
+        # copy artifacts. .gch files in a shared pchdir cache outside obj_dir
+        # are intentionally NOT cleaned: that cache is cross-variant and may
+        # be in use by peer builds; use ct-trim-cache to age them out.
+        # Mirrors makefile_backend._write_clean_rules realclean recipe.
         obj_dir = self.namer.object_dir()
         if obj_dir != exe_dir and os.path.isdir(obj_dir):
             for rule in graph.rules:
-                if rule.rule_type in ("compile", "link", "static_library", "shared_library"):
+                if rule.rule_type in ("compile", "link", "static_library", "shared_library", "copy"):
                     target = rule.output
                     if os.path.isfile(target):
                         os.remove(target)
+            # Prune empty subdirectories (bottom-up) to mirror the Makefile
+            # `find -type d -empty -delete` step.
+            for dirpath, dirnames, filenames in os.walk(obj_dir, topdown=False):
+                if dirpath == obj_dir:
+                    continue
+                if not dirnames and not filenames:
+                    try:
+                        os.rmdir(dirpath)
+                    except OSError:
+                        pass
 
     def _copy_built_executables(self, build_output_dir: str, dest_dir: str | None = None) -> None:
         """Copy built executables from a build output dir to dest_dir.
