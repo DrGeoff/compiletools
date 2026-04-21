@@ -955,12 +955,12 @@ def _rewrite_link_cmd_for_temp(link_cmd: list[str], target: str, tempfile_path: 
     directly to target as before).
     """
     cmd = list(link_cmd)
-    target_real = os.path.realpath(target)
+    target_real = compiletools.wrappedos.realpath(target)
 
     # -o style (cc/ld)
     for i, tok in enumerate(cmd):
         if tok == "-o" and i + 1 < len(cmd):
-            if cmd[i + 1] == target or os.path.realpath(cmd[i + 1]) == target_real:
+            if cmd[i + 1] == target or compiletools.wrappedos.realpath(cmd[i + 1]) == target_real:
                 cmd[i + 1] = tempfile_path
                 return cmd, False
 
@@ -968,7 +968,7 @@ def _rewrite_link_cmd_for_temp(link_cmd: list[str], target: str, tempfile_path: 
     if cmd and os.path.basename(cmd[0]) == "ar" and len(cmd) >= 3:
         flags = cmd[1]
         archive_idx = 2
-        if cmd[archive_idx] == target or os.path.realpath(cmd[archive_idx]) == target_real:
+        if cmd[archive_idx] == target or compiletools.wrappedos.realpath(cmd[archive_idx]) == target_real:
             cmd[archive_idx] = tempfile_path
             # Modes that mutate (rather than create from scratch): r (replace),
             # q (quick append), m (move). 'c' alone creates fresh; 'D' (deterministic)

@@ -1114,7 +1114,7 @@ def _compiler_identity(cxx: str) -> str:
         # Use nanosecond mtime so a sub-second compiler swap (e.g.
         # ``cp new-g++ /usr/local/bin/g++`` followed immediately by a
         # build) does not collide on the cache key.
-        return f"{os.path.realpath(resolved)}|{st.st_size}|{st.st_mtime_ns}"
+        return f"{compiletools.wrappedos.realpath(resolved)}|{st.st_size}|{st.st_mtime_ns}"
     except OSError:
         return resolved
 
@@ -1151,7 +1151,7 @@ def _pch_command_hash(
         "CXXFLAGS": args.CXXFLAGS,
         "magic_cpp_flags": [str(f) for f in magic_cpp_flags],
         "magic_cxx_flags": [str(f) for f in magic_cxx_flags],
-        "header": os.path.realpath(pch_header),
+        "header": compiletools.wrappedos.realpath(pch_header),
         "stage": "c++-header",
     }
     return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()[:16]
