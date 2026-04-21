@@ -115,94 +115,54 @@ class HeaderDepsBase:
 
         return result
 
-    def _extract_isystem_paths_from_flags(self, flag_value):
-        """Extract -isystem paths from command-line flags using proper shell parsing.
+    def _extract_prefixed_paths(self, flag_value, prefix):
+        """Extract paths following ``prefix`` (e.g. ``-I`` or ``-isystem``).
 
-        This replaces the regex-based approach to properly handle quoted paths with spaces.
-        Shared utility method for both DirectHeaderDeps and CppHeaderDeps.
+        Handles three forms:
+          * ``-I /path``         (separate tokens)
+          * ``-I/path``          (attached)
+          * ``["-I", "/path"]``  (list from configargparse multi-value)
+
+        Uses shell parsing so quoted paths with spaces are preserved.
         """
         if not flag_value:
             return []
 
-        isystem_paths = []
+        if isinstance(flag_value, list):
+            flag_value = " ".join(flag_value)
 
-        # Split the flag string into individual tokens using shell parsing
         try:
             tokens = split_command_cached(flag_value)
         except ValueError:
-            # Fall back to simple split if shlex fails
             tokens = flag_value.split()
 
-        # Process tokens to find -isystem flags
+        prefix_len = len(prefix)
+        paths = []
         i = 0
         while i < len(tokens):
             token = tokens[i]
-
-            if token == "-isystem":
-                # Next token should be the path
+            if token == prefix:
                 if i + 1 < len(tokens):
-                    isystem_paths.append(tokens[i + 1])
+                    paths.append(tokens[i + 1])
                     i += 2
                 else:
                     i += 1
-            elif token.startswith("-isystem"):
-                # -isystempath format (though this is unusual)
-                path = token[8:]
-                if path:  # Make sure it's not just "-isystem"
-                    isystem_paths.append(path)
+            elif token.startswith(prefix):
+                path = token[prefix_len:]
+                if path:
+                    paths.append(path)
                 i += 1
             else:
                 i += 1
+        return paths
 
-        return isystem_paths
+    def _extract_isystem_paths_from_flags(self, flag_value):
+        """Extract -isystem paths from command-line flags."""
+        return self._extract_prefixed_paths(flag_value, "-isystem")
 
     def _extract_include_paths_from_flags(self, flag_value):
-        """Extract -I include paths from command-line flags using proper shell parsing.
-
-        This replaces the regex-based approach to properly handle quoted paths with spaces.
-        Shared utility method for both DirectHeaderDeps and CppHeaderDeps.
-        """
-        if not flag_value:
-            return []
-
-        include_paths = []
-
-        # Handle both string and list inputs from configargparse
-        if isinstance(flag_value, list):
-            # Join list elements into a single string
-            flag_string = " ".join(flag_value)
-        else:
-            flag_string = flag_value
-
-        # Split the flag string into individual tokens using shell parsing
-        try:
-            tokens = split_command_cached(flag_string)
-        except ValueError:
-            # Fall back to simple split if shlex fails
-            tokens = flag_string.split()
-
-        # Process tokens to find -I flags
-        i = 0
-        while i < len(tokens):
-            token = tokens[i]
-
-            if token == "-I":
-                # Next token should be the path
-                if i + 1 < len(tokens):
-                    include_paths.append(tokens[i + 1])
-                    i += 2
-                else:
-                    i += 1
-            elif token.startswith("-I"):
-                # -Ipath format
-                path = token[2:]
-                if path:  # Make sure it's not just "-I"
-                    include_paths.append(path)
-                i += 1
-            else:
-                i += 1
-
-        return include_paths
+        """Extract -I include paths from command-line flags."""
+        return self._extract_prefixed_paths(flag_value, "-I")
 
     @staticmethod
     def clear_cache():
