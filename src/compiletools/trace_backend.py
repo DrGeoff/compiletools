@@ -60,6 +60,7 @@ import time
 from dataclasses import asdict, dataclass
 from typing import ClassVar
 
+import compiletools.apptools
 import compiletools.filesystem_utils
 import compiletools.wrappedos
 from compiletools.build_backend import (
@@ -208,7 +209,7 @@ class ShakeBackend(BuildBackend):
         return "shake"
 
     @staticmethod
-    def tool_command() -> None:
+    def tool_command() -> str | None:
         # Self-executing — runs each rule directly via subprocess.
         return None
 
@@ -1027,7 +1028,7 @@ class SlurmBackend(ShakeBackend):
         flat_cmd = _flatten_command(rule.command)
 
         if rule.rule_type in ("link", "static_library", "shared_library"):
-            ca = self._ca_target(rule)  # type: ignore[attr-defined]
+            ca = self._ca_target(rule)
             if os.path.exists(ca):
                 _atomic_copy(ca, rule.output)
                 return

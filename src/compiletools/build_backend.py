@@ -23,6 +23,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from typing import TypeVar
 
 import compiletools.filesystem_utils
 import compiletools.namer
@@ -1220,8 +1221,10 @@ def report_lock_helper_missing() -> None:
 
 _REGISTRY: dict[str, type[BuildBackend]] = {}
 
+_BackendT = TypeVar("_BackendT", bound="BuildBackend")
 
-def register_backend(cls: type[BuildBackend]) -> type[BuildBackend]:
+
+def register_backend(cls: type[_BackendT]) -> type[_BackendT]:
     """Register a backend class. Can be used as a decorator.
 
     Adding a new backend should be a single drop-in: implement
