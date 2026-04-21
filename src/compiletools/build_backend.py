@@ -1048,6 +1048,14 @@ def _warn_if_pchdir_not_cross_user_safe(pchdir: str, verbose: int) -> None:
         return
     _PCHDIR_WARNED.add(pchdir)
 
+    # I-6: skip the warning when pchdir is a per-user path (cwd-relative
+    # or under the build's bin tree). The cross-user-safety guidance only
+    # applies to genuinely shared cache locations.
+    abs_pchdir = os.path.abspath(pchdir)
+    cwd = os.path.abspath(os.getcwd())
+    if abs_pchdir == cwd or abs_pchdir.startswith(cwd + os.sep):
+        return
+
     parent = os.path.dirname(os.path.abspath(pchdir)) or "."
     target = pchdir if os.path.isdir(pchdir) else parent
     try:

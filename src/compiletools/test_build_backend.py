@@ -694,6 +694,40 @@ class TestPchManifest:
         assert manifest["header_realpath"] == os.path.realpath(str(header_path))
 
 
+class TestWarnIfPchdirNotCrossUserSafe:
+    """I-6: the cross-user-safety warning is noise when pchdir is per-user
+    (cwd-relative or under the build's bin tree)."""
+
+    def setup_method(self):
+        from compiletools.build_backend import _PCHDIR_WARNED
+        _PCHDIR_WARNED.clear()
+
+    def test_warns_for_shared_path(self, tmp_path, capsys):
+        from compiletools.build_backend import _warn_if_pchdir_not_cross_user_safe
+        shared = tmp_path / "shared_pch"
+        shared.mkdir(mode=0o755)  # not group-writable, no SGID
+        _warn_if_pchdir_not_cross_user_safe(str(shared), verbose=1)
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+
+    def test_skips_warning_for_cwd_relative_path(self, tmp_path, capsys, monkeypatch):
+        from compiletools.build_backend import _warn_if_pchdir_not_cross_user_safe
+        monkeypatch.chdir(tmp_path)
+        cwd_pch = tmp_path / "bin" / "gcc.debug" / "pch"
+        cwd_pch.mkdir(parents=True, mode=0o755)
+        _warn_if_pchdir_not_cross_user_safe(str(cwd_pch), verbose=1)
+        captured = capsys.readouterr()
+        assert "WARNING" not in captured.err
+
+    def test_skips_warning_for_relative_path(self, tmp_path, capsys, monkeypatch):
+        from compiletools.build_backend import _warn_if_pchdir_not_cross_user_safe
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "bin" / "gcc.debug" / "pch").mkdir(parents=True, mode=0o755)
+        _warn_if_pchdir_not_cross_user_safe("bin/gcc.debug/pch", verbose=1)
+        captured = capsys.readouterr()
+        assert "WARNING" not in captured.err
+
+
 class TestPchCommandHash:
     """Test _pch_command_hash() determinism and sensitivity."""
 
