@@ -783,13 +783,20 @@ class SlurmBackend(ShakeBackend):
                     for r, _ in retryable:
                         per_rule_retries[r.output] += 1
 
+                    # Merge retry submissions into the timing-collection map so
+                    # tasks that succeeded only on retry have their elapsed time
+                    # recorded.  Each iteration's retry_map carries fresh job
+                    # IDs, so dict.update is collision-free.
+                    index_map.update(retry_map)
+
                     retry_failures = self._wait_for_arrays(retry_map)
                     oom_rules = [f.rule for f in retry_failures if f.state == self._OOM_STATE]
                     non_oom = [f for f in retry_failures if f.state != self._OOM_STATE]
                     all_failures.extend(non_oom)
         finally:
             # Always collect timing for any array we actually waited on, even
-            # if a later step raises.
+            # if a later step raises.  index_map includes initial submissions
+            # and every retry round merged in above.
             with contextlib.suppress(Exception):
                 self._collect_timing(index_map)
 

@@ -1642,6 +1642,64 @@ class TestLogLookupExactChunk:
 # ---------------------------------------------------------------------------
 
 
+class TestTimingIncludesRetries:
+    """Tasks that succeed only after an OOM retry must still appear in
+    the timing report.  Pre-fix _collect_timing was passed only the
+    initial index_map and silently dropped retry-round timings."""
+
+    def test_oom_retry_timing_recorded(self, tmp_path):
+        """A rule that OOMs then succeeds on retry has its retry-job elapsed
+        time recorded by the timer."""
+        out = str(tmp_path / "foo.o")
+        rule = _make_rule_with_weight(out, "foo.C", include_weight=1)  # 1G tier
+        graph = BuildGraph()
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [out]))
+
+        # Sequence of subprocess.check_output calls during execute:
+        #   sbatch (initial 1G)         -> "100\n"
+        #   sbatch (retry 2G)           -> "200\n"
+        #   sacct for jobid 100         -> COMPLETED row (initial chunk timing)
+        #   sacct for jobid 200         -> COMPLETED row (retry chunk timing)
+        sacct_initial = "100_0|00:00:05|COMPLETED\n"
+        sacct_retry = "200_0|00:00:09|COMPLETED\n"
+
+        # _wait_for_arrays calls are intercepted; simulate OOM then success.
+        from compiletools.trace_backend import SlurmBackend as _SB
+
+        wait_results = iter(
+            [
+                [_SB._TaskFailure(rule=rule, state=_SB._OOM_STATE, job_id="100_0")],
+                [],  # retry succeeded
+            ]
+        )
+
+        with SlurmBackendTestContext(graph, slurm_mem="8G") as (backend, _tmpdir):
+            mock_timer = MagicMock()
+            with (
+                patch.object(type(backend), "_timer", new_callable=lambda: property(lambda self: mock_timer)),
+                patch.object(backend, "_wait_for_arrays", side_effect=lambda im: next(wait_results)),
+                patch(
+                    "subprocess.check_output",
+                    side_effect=[
+                        "100\n",  # initial sbatch
+                        "200\n",  # retry sbatch
+                        sacct_initial,  # _collect_timing for job 100
+                        sacct_retry,  # _collect_timing for job 200 (would be lost pre-fix)
+                    ],
+                ),
+            ):
+                backend.execute("build")
+
+        # Both initial-chunk and retry-chunk timings must reach the timer.
+        elapsed_seconds = sorted(call.kwargs["elapsed_s"] for call in mock_timer.record_rule.call_args_list)
+        assert 5.0 in elapsed_seconds, f"initial chunk elapsed missing: {elapsed_seconds}"
+        assert 9.0 in elapsed_seconds, (
+            f"retry-chunk elapsed missing — _collect_timing was given only the initial index_map: "
+            f"{elapsed_seconds}"
+        )
+
+
 class TestTimingOnFailure:
     def test_timing_collected_when_output_wait_raises(self, tmp_path):
         """_collect_timing runs even if a later step raises."""
