@@ -78,6 +78,13 @@ logger = logging.getLogger(__name__)
 
 TRACE_VERSION = 1
 
+# LD_LIBRARY_PATH is included because non-system-installed compilers (Spack, Lmod,
+# environment modules, custom installs) almost always need it to find their shared
+# libs on the compute node. Other HPC vars (MODULEPATH, LMOD_*, SPACK_ROOT, etc.)
+# are deliberately excluded — sites using those toolchains can extend this via
+# --slurm-export.
+_DEFAULT_SLURM_EXPORT = "PATH,HOME,USER,LANG,LC_ALL,CC,CXX,CPATH,LD_LIBRARY_PATH"
+
 
 @dataclass
 class TraceEntry:
@@ -160,8 +167,13 @@ def _is_build_artifact(rule) -> bool:
 
 
 def _flatten_command(command: list[str]) -> list[str]:
-    """Flatten multi-word command elements (e.g. CXXFLAGS as one string) into tokens."""
-    return [tok for arg in command for tok in shlex.split(arg)]
+    """Return command as-is. Producers in build_backend.py pre-split flag
+    strings (CXXFLAGS/CFLAGS/LDFLAGS) before constructing rule.command, so
+    no re-splitting is needed here. A second shlex.split would corrupt args
+    like ``-DGREETING=Hello World`` whose value contains a literal space.
+    Kept as a no-op for back-compat with existing call sites and tests.
+    """
+    return list(command)
 
 
 def _parse_slurm_elapsed(elapsed_str: str) -> float:
@@ -598,10 +610,13 @@ class SlurmBackend(ShakeBackend):
         )
         cap.add(
             "--slurm-export",
-            default="PATH,HOME,USER,LANG,LC_ALL,CC,CXX,CPATH",
+            default=_DEFAULT_SLURM_EXPORT,
             help="Value passed to sbatch --export=. Default propagates a curated allowlist "
-            "instead of the submitter's full environment. Use 'ALL' to restore legacy behavior "
-            "or 'NONE' for a fully isolated environment.",
+            f"({_DEFAULT_SLURM_EXPORT}) instead of the submitter's full environment. "
+            "Use 'ALL' to restore legacy behavior, 'NONE' for a fully isolated environment, "
+            "or extend the default for Lmod/Spack sites (e.g. "
+            "'PATH,HOME,USER,LANG,LC_ALL,CC,CXX,CPATH,LD_LIBRARY_PATH,MODULEPATH,LMOD_CMD'). "
+            "See README.ct-backends for guidance.",
         )
         cap.add(
             "--slurm-rule-retry-cap",
@@ -919,7 +934,7 @@ class SlurmBackend(ShakeBackend):
 
         effective_mem = mem if mem is not None else self.args.slurm_mem
         slurm_log = os.path.join(real_objdir, f"slurm-ct-{prefix}-{chunk_id}-%a.out")
-        export_value = getattr(self.args, "slurm_export", "PATH,HOME,USER,LANG,LC_ALL,CC,CXX,CPATH")
+        export_value = getattr(self.args, "slurm_export", _DEFAULT_SLURM_EXPORT)
         cmd = [
             "sbatch",
             "--parsable",

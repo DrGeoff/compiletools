@@ -254,6 +254,21 @@ compilation across many nodes dramatically reduces wall-clock time.
 - ``--slurm-mem`` — maximum memory per job (also the OOM retry ceiling)
 - ``--slurm-cpus`` — CPUs per task
 - ``--slurm-poll-interval`` — seconds between ``sacct`` polls
+- ``--slurm-export`` — comma-separated env vars passed via ``sbatch --export=``.
+  Default propagates a curated allowlist
+  (``PATH,HOME,USER,LANG,LC_ALL,CC,CXX,CPATH,LD_LIBRARY_PATH``) instead of the
+  submitter's full environment, so unrelated state does not leak into compute
+  nodes.  ``LD_LIBRARY_PATH`` is included because non-system compilers
+  (Spack, Lmod, custom installs) typically need it to locate their shared libs.
+
+**Overriding the default export list:**
+
+- ``--slurm-export=ALL`` — propagate the full submitter environment (legacy
+  behavior; use sparingly, leaks unrelated state).
+- ``--slurm-export=NONE`` — fully isolated environment.
+- For Lmod/Spack sites, extend the default explicitly, e.g.::
+
+      --slurm-export=PATH,HOME,USER,LANG,LC_ALL,CC,CXX,CPATH,LD_LIBRARY_PATH,MODULEPATH,LMOD_CMD,LMOD_DIR,SPACK_ROOT
 
 **Limitations:** Link rules cannot be distributed and always run locally.
 

@@ -450,7 +450,8 @@ class BuildBackend(abc.ABC):
 
             pch_deps = [pch_header] + sorted(str(d) for d in self.hunter.header_dependencies(pch_header))
             pch_cmd = (
-                [self.args.CXX, self.args.CXXFLAGS]
+                [self.args.CXX]
+                + compiletools.utils.split_command_cached(self.args.CXXFLAGS)
                 + [str(f) for f in magic_cpp_flags]
                 + [str(f) for f in magic_cxx_flags]
                 + ["-x", "c++-header", pch_header, "-o", gch_path]
@@ -816,7 +817,8 @@ class BuildBackend(abc.ABC):
         if compiletools.utils.is_c_source(filename):
             magic_c_flags = magicflags.get(sz.Str("CFLAGS"), [])
             compile_cmd = (
-                [self.args.CC, self.args.CFLAGS]
+                [self.args.CC]
+                + compiletools.utils.split_command_cached(self.args.CFLAGS)
                 + pch_include_flags
                 + [str(flag) for flag in magic_cpp_flags]
                 + [str(flag) for flag in magic_c_flags]
@@ -824,7 +826,8 @@ class BuildBackend(abc.ABC):
         else:
             magic_cxx_flags = magicflags.get(sz.Str("CXXFLAGS"), [])
             compile_cmd = (
-                [self.args.CXX, self.args.CXXFLAGS]
+                [self.args.CXX]
+                + compiletools.utils.split_command_cached(self.args.CXXFLAGS)
                 + pch_include_flags
                 + [str(flag) for flag in magic_cpp_flags]
                 + [str(flag) for flag in magic_cxx_flags]
@@ -901,7 +904,7 @@ class BuildBackend(abc.ABC):
                 inputs.append(lib_output)
 
         if self.args.LDFLAGS:
-            link_cmd.append(self.args.LDFLAGS)
+            link_cmd.extend(compiletools.utils.split_command_cached(self.args.LDFLAGS))
 
         exe_dir = self.namer.executable_dir()
 
@@ -961,7 +964,7 @@ class BuildBackend(abc.ABC):
         lib_cmd = [self.args.LD, "-shared", "-o", lib_path] + list(object_names)
         lib_cmd.extend(merged_ldflags)
         if self.args.LDFLAGS:
-            lib_cmd.append(self.args.LDFLAGS)
+            lib_cmd.extend(compiletools.utils.split_command_cached(self.args.LDFLAGS))
 
         return BuildRule(
             output=lib_path,
@@ -1163,9 +1166,25 @@ def wrap_compile_with_lock(compile_cmd: str, target: str, args, filesystem_type:
 
     strategy = compiletools.filesystem_utils.get_lock_strategy(filesystem_type)
 
-    # Fast path: use native flock binary for flock strategy (avoids Python startup)
+    # Fast path: use native flock binary for flock strategy (avoids Python startup).
+    # Compile to a temp file then atomically rename — same pattern and same
+    # rationale as locking.atomic_compile (which the helper-mode path below
+    # routes through). DO NOT 'optimize' back to a bare `flock <target>
+    # gcc -o <target>` form: the flock serialises concurrent compiles of
+    # the same target, but link rules read .o files WITHOUT any lock, so a
+    # peer linker would mmap-read a half-written .o under `make -j N` or
+    # two concurrent ct-cake invocations on the same objdir, producing
+    # sporadic 'undefined reference to main' / 'undefined symbol' errors.
+    # Temp+rename eliminates the race for all readers without needing
+    # read-side locks. The flock keeps a deterministic ".compiletools.tmp"
+    # suffix collision-free across peer writers.
+    # See locking.atomic_compile() for the full DO-NOT-REVERT story.
     if strategy == "flock" and _native_flock_available():
-        return f"flock {target} {compile_cmd} -o {target}"
+        target_q = shlex.quote(target)
+        temp_q = shlex.quote(f"{target}.compiletools.tmp")
+        # $$ escapes to $ at Make-recipe expansion so the shell sees $? / $ec.
+        inner = f"{compile_cmd} -o {temp_q} && mv -f {temp_q} {target_q}; ec=$$?; rm -f {temp_q}; exit $$ec"
+        return f"flock {target_q} sh -c {shlex.quote(inner)}"
 
     env_prefix = _build_lock_env_prefix(strategy, args, filesystem_type)
     return f"{env_prefix}ct-lock-helper compile --target={target} --strategy={strategy} -- {compile_cmd}"

@@ -12,13 +12,21 @@ from unittest import mock
 
 import pytest
 
-import compiletools.trace_backend  # noqa: F401 — ensure registered
+import compiletools.apptools
+import compiletools.headerdeps
+import compiletools.hunter
+import compiletools.magicflags
+import compiletools.namer
+import compiletools.testhelper as uth
 from compiletools.build_backend import available_backends, get_backend_class
+from compiletools.build_context import BuildContext
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.global_hash_registry import get_file_hash
+from compiletools.makefile_backend import MakefileBackend
 from compiletools.testhelper import ShakeBackendTestContext
 from compiletools.trace_backend import (
     ShakeBackend,
+    SlurmBackend,
     TraceEntry,
     TraceStore,
     _is_build_artifact,
@@ -986,9 +994,13 @@ class TestAtomicCompile:
         with mock.patch("compiletools.locking._run_with_signal_forwarding", side_effect=spy_run):
             atomic_compile(lock, target, ["g++", "-c", "bar.cpp"])
 
+        # atomic_compile always routes through a temp file then renames, so
+        # peer linkers reading the .o never see partial bytes (the lock
+        # protects writers from each other but not readers).
         assert len(observed_outputs) == 1
-        # FlockLock has direct_compile=True, so compiler gets -o target directly
-        assert observed_outputs[0] == target
+        assert observed_outputs[0] != target
+        assert observed_outputs[0].startswith(target + ".") and ".tmp" in observed_outputs[0]
+        assert os.path.exists(target)
 
 
 class TestCompilerIdentityInTrace:
@@ -1226,3 +1238,68 @@ class TestAtomicLinkRouting:
             kwargs = popen_calls[0][1]
             assert kwargs.get("start_new_session") is True
             del real_popen  # silence unused warning
+
+
+@uth.requires_functional_compiler
+def test_quoted_define_with_space_compiles_end_to_end(tmp_path, monkeypatch):
+    """A //#CXXFLAGS=-DGREETING="Hello World" magic flag must reach the
+    compiler as one argv element. End-to-end: build with the shake backend
+    and run the resulting executable to verify std::strlen(GREETING) == 11.
+    """
+    src_path = tmp_path / "greeting.cpp"
+    src_path.write_text(
+        "//#CXXFLAGS=-DGREETING='\"Hello World\"'\n"
+        "#include <cstring>\n"
+        "int main() { return std::strlen(GREETING) == 11 ? 0 : 1; }\n"
+    )
+
+    objdir = tmp_path / "obj"
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+
+    argv = [
+        "--include",
+        str(tmp_path),
+        "--objdir",
+        str(objdir),
+        "--bindir",
+        str(bindir),
+        str(src_path),
+    ]
+
+    with uth.ParserContext():
+        cap = compiletools.apptools.create_parser("Shake greeting test", argv=argv)
+        compiletools.apptools.add_target_arguments_ex(cap)
+        compiletools.apptools.add_link_arguments(cap)
+        compiletools.namer.Namer.add_arguments(cap)
+        compiletools.hunter.add_arguments(cap)
+        MakefileBackend.add_arguments(cap)
+        SlurmBackend.add_arguments(cap)
+
+        ctx = BuildContext()
+        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
+        headerdeps = compiletools.headerdeps.create(args, context=ctx)
+        magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
+        hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
+
+        BackendClass = get_backend_class("shake")
+        backend = BackendClass(args=args, hunter=hunter, context=ctx)
+        graph = backend.build_graph()
+        backend.generate(graph)
+        backend.execute("build")
+
+    exe_path = bindir / "greeting"
+    if not exe_path.exists():
+        candidates = []
+        for dirpath, _dirs, files in os.walk(str(tmp_path)):
+            for f in files:
+                full = os.path.join(dirpath, f)
+                if os.access(full, os.X_OK) and f == "greeting":
+                    candidates.append(full)
+        assert candidates, f"greeting executable not found under {tmp_path}"
+        exe_path = Path(candidates[0])
+
+    result = subprocess.run([str(exe_path)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, (
+        f"greeting exe failed (rc={result.returncode}): stdout={result.stdout!r} stderr={result.stderr!r}"
+    )

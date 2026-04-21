@@ -36,9 +36,13 @@ class FcntlLock:
     and automatic release on process death — no polling, no stale detection,
     no holder info needed.
 
-    Locks the target file directly (no sidecar .lock file). This works because
-    gcc opens the output with O_WRONLY|O_CREAT|O_TRUNC, which preserves the
-    inode — so the advisory fcntl lock stays valid.
+    Locks the target file directly (no sidecar .lock file). The lock fd
+    refers to the inode that exists at acquire() time; atomic_compile()
+    renames a temp file over the target, so the next peer's acquire() will
+    re-os.open() and lock the NEW inode. This is fine — only one peer can
+    hold the lock at a time, and readers (link rules) get a complete .o
+    via temp+rename rather than partial bytes via shared inode. See
+    atomic_compile() in this module for the full rationale.
     """
 
     direct_compile = True
@@ -65,9 +69,9 @@ class FcntlLock:
             fcntl.lockf(self.fd, fcntl.LOCK_EX)
         except BaseException:
             # Close the fd but do NOT unlink — self.lockfile IS the build
-            # target (gcc will overwrite it via O_TRUNC, preserving the
-            # inode). Unlinking here would race with a peer that already
-            # holds the lock and is about to write the output.
+            # target. atomic_compile() will rename a temp file over it;
+            # unlinking here would race with a peer that already holds the
+            # lock and is about to rename its temp file into place.
             os.close(self.fd)
             self.fd = None
             raise
@@ -456,9 +460,12 @@ class FlockLock:
     for GPFS or LockdirLock for NFS/Lustre. This class should only be
     used when filesystem detection confirms a local filesystem.
 
-    Locks the target file directly (no sidecar .lock file). This works because
-    gcc opens the output with O_WRONLY|O_CREAT|O_TRUNC, which preserves the
-    inode — so the advisory flock stays valid. Same reasoning as FcntlLock.
+    Locks the target file directly (no sidecar .lock file). The lock fd
+    refers to the inode that exists at acquire() time; atomic_compile()
+    routes the compiler's output through a temp file and renames over the
+    target, so the next peer's acquire() locks the NEW inode. See
+    atomic_compile() in this module for why the temp+rename is required
+    even though this lock is held during the compile.
     """
 
     direct_compile = True
@@ -623,10 +630,10 @@ class _NullLock:
     """No-op lock used when file_locking is disabled.
 
     Provides the acquire/release surface expected by atomic_compile and
-    atomic_link so callers don't need a separate no-lock code path.
-    direct_compile=False means atomic_compile uses the temp+rename branch,
-    which is correct without a lock (no peer to coordinate with) and gives
-    us signal-forwarding via _run_with_signal_forwarding.
+    atomic_link so callers don't need a separate no-lock code path. The
+    temp+rename + signal-forwarding behavior of atomic_compile/atomic_link
+    still applies — file_locking=disabled only skips inter-process
+    coordination, not intra-process correctness.
     """
 
     direct_compile = False
@@ -641,13 +648,38 @@ class _NullLock:
 def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.CompletedProcess:
     """Execute compilation atomically under a lock.
 
-    For locks with direct_compile=True (FcntlLock, FlockLock): compiles
-    directly to the target file. The advisory lock protects the target while
-    gcc writes to it (O_WRONLY|O_CREAT|O_TRUNC preserves the inode).
+    DO NOT 'OPTIMIZE' THIS BACK TO IN-PLACE WRITES FOR direct_compile=True
+    LOCKS. An earlier version of this function had two branches:
+    direct_compile=True wrote in place under the lock, direct_compile=False
+    used temp+rename. The 'optimization' looked harmless because the lock
+    serialised concurrent COMPILES of the same target. But link rules read
+    .o files WITHOUT any lock — they cannot acquire the compile lock
+    without (a) enumerating every .o input under flock(1) (process-explosion)
+    or (b) inverting the acquisition order (deadlock with peers holding the
+    link lock). So a peer linker would mmap-read a .o while a peer compile
+    was mid-write, and observe whichever section header / symbol table
+    bytes had landed so far. The user-visible symptom was sporadic
+    'undefined reference to main' / 'undefined symbol' under `make -j N`
+    or two concurrent `ct-cake` invocations sharing an objdir — common on
+    HPC nodes and CI runners.
 
-    For other locks: compiles to a temp file, then renames to target,
-    preventing TOCTOU races where another process sees a partially-written
-    output file.
+    Temp+rename on the producer side fixes this for all readers, in all
+    backends (Make, Shake, Slurm), without any read-side locking. Readers
+    always see either the previous good .o (old inode) or the new one
+    (new inode) — never the inode-being-written-to. This is the standard
+    pattern POSIX storage systems use for the same reason.
+
+    Why the lock is still held: it serialises concurrent COMPILES of the
+    same target. Two peers writing distinct temp files and racing to
+    rename would still produce a correct .o (whichever wins), but they
+    would both pay the compile cost. The lock makes the slower peer
+    short-circuit (the test in atomic_compile's caller checks for an
+    existing complete output) and saves the duplicated work.
+
+    Implementation note: the lock fd for direct_compile=True locks refers
+    to the OLD inode after rename; that's fine — both FcntlLock and
+    FlockLock re-os.open() the target on every acquire(), so the next
+    peer locks the NEW inode.
 
     Stdout/stderr inherit the parent's fds — compile diagnostics stream to
     the user as they happen rather than being captured and only surfaced on
@@ -672,16 +704,6 @@ def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.Comp
     """
     if lock is None:
         lock = _NullLock()
-    if getattr(lock, "direct_compile", False):
-        lock.acquire()
-        try:
-            cmd = list(compile_cmd) + ["-o", target]
-            result = _run_with_signal_forwarding(cmd)
-            if result.returncode != 0:
-                raise subprocess.CalledProcessError(result.returncode, cmd)
-            return result
-        finally:
-            lock.release()
 
     pid = os.getpid()
     random_suffix = os.urandom(2).hex()

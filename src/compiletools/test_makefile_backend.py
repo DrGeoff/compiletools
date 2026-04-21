@@ -783,9 +783,10 @@ class TestMakefileConcurrency:
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only")
     def test_concurrent_make_against_same_objdir(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        # Generate a few sources so the build has work to parallelise
+        # Many small sources maximise compile/link interleaving so the
+        # write-while-read race surfaces reliably on a cold objdir.
         sources = []
-        for i in range(3):
+        for i in range(8):
             src = tmp_path / f"prog_{i}.cpp"
             src.write_text(f"// ct-exemarker\nint main() {{ return {i}; }}\n")
             sources.append(str(src))
@@ -797,55 +798,65 @@ class TestMakefileConcurrency:
             mfs = [f for f in os.listdir(".") if f.startswith("Makefile")]
             assert mfs
 
-            # Warm-up build: ensure all artifacts exist before the race so the
-            # test reliably exercises lock contention rather than the genuine
-            # write-while-read race on freshly-created .o files (which is a
-            # known limitation of the current native-flock-on-output strategy).
-            warmup = subprocess.run(
-                ["make", "-f", mfs[0], "-j", "4"], capture_output=True, text=True
-            )
-            assert warmup.returncode == 0, (
-                f"warmup build failed: {warmup.stdout}{warmup.stderr}"
-            )
+            # No warm-up: race two concurrent makes against a COLD objdir
+            # so the test exercises the genuine compile/link race that the
+            # atomic-compile-temp-rename fix is designed to prevent.
+            # Repeat several iterations to keep the test deterministic.
+            objdirs = [d for d in os.listdir(".") if d.startswith("bld")]
+            for iteration in range(3):
+                # Wipe build outputs between iterations
+                for d in objdirs:
+                    if os.path.isdir(d):
+                        import shutil as _sh
+                        _sh.rmtree(d, ignore_errors=True)
 
-            # Now race two concurrent makes. With everything up-to-date, both
-            # should see no work to do; the lock helper paths must still be
-            # exercised without producing torn outputs.
-            results: list[subprocess.CompletedProcess] = []
-            errs: list[BaseException] = []
+                results: list[subprocess.CompletedProcess] = []
+                errs: list[BaseException] = []
 
-            def _run():
-                try:
-                    r = subprocess.run(
-                        ["make", "-f", mfs[0], "-j", "8"],
-                        capture_output=True,
-                        text=True,
+                def _run(_results=results, _errs=errs):
+                    try:
+                        r = subprocess.run(
+                            ["make", "-f", mfs[0], "-j", "16"],
+                            capture_output=True,
+                            text=True,
+                        )
+                        _results.append(r)
+                    except BaseException as e:
+                        _errs.append(e)
+
+                threads = [threading.Thread(target=_run) for _ in range(2)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(timeout=120)
+                assert not errs, f"iter {iteration}: concurrent make raised: {errs}"
+                assert len(results) == 2
+
+                for r in results:
+                    assert r.returncode == 0, (
+                        f"iter {iteration}: concurrent make failed: "
+                        f"stdout={r.stdout} stderr={r.stderr}"
                     )
-                    results.append(r)
-                except BaseException as e:
-                    errs.append(e)
+                    combined = r.stdout + r.stderr
+                    assert "undefined reference" not in combined, (
+                        f"iter {iteration}: linker saw partial .o (undefined reference): {combined}"
+                    )
+                    assert "undefined symbol" not in combined, (
+                        f"iter {iteration}: linker saw partial .o (undefined symbol): {combined}"
+                    )
 
-            threads = [threading.Thread(target=_run) for _ in range(2)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join(timeout=120)
-            assert not errs, f"concurrent make raised: {errs}"
-            assert len(results) == 2
-
-            for r in results:
-                assert r.returncode == 0, f"concurrent make failed: stdout={r.stdout} stderr={r.stderr}"
-
-            # All executables must exist and run
-            exes = []
-            for src in sources:
-                stem = os.path.splitext(os.path.basename(src))[0]
-                for dp, _, files in os.walk(tmp_path):
-                    for fn in files:
-                        if fn == stem and os.access(os.path.join(dp, fn), os.X_OK):
-                            exes.append(os.path.join(dp, fn))
-                            break
-            assert len(exes) == len(sources), f"missing executables: {exes}"
-            for exe in exes:
-                rc = subprocess.run([exe], capture_output=True).returncode
-                assert rc in range(256), f"{exe} did not run cleanly"
+                # All executables must exist and run cleanly after this iteration.
+                exes = []
+                for src in sources:
+                    stem = os.path.splitext(os.path.basename(src))[0]
+                    for dp, _, files in os.walk(tmp_path):
+                        for fn in files:
+                            if fn == stem and os.access(os.path.join(dp, fn), os.X_OK):
+                                exes.append(os.path.join(dp, fn))
+                                break
+                assert len(exes) == len(sources), (
+                    f"iter {iteration}: missing executables: {exes}"
+                )
+                for exe in exes:
+                    rc = subprocess.run([exe], capture_output=True).returncode
+                    assert rc in range(256), f"iter {iteration}: {exe} did not run cleanly"

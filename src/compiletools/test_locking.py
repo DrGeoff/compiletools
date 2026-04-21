@@ -615,34 +615,74 @@ class TestAtomicCompile:
         return patch("compiletools.locking._run_with_signal_forwarding", new=mock), mock
 
     @requires_functional_compiler
-    def test_atomic_compile_direct_no_temp(self):
-        """FcntlLock (direct_compile=True): compiler gets -o target, no rename."""
+    def test_atomic_compile_direct_uses_temp(self):
+        """FcntlLock (direct_compile=True) STILL routes through a temp file
+        and renames: prevents a peer linker from reading a half-written .o
+        while a compile is in progress (no read-side lock)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args()
             lock = FcntlLock(target, args)
 
-            patcher, mock_run = self._patch_runner()
+            def create_temp(cmd):
+                out = cmd[cmd.index("-o") + 1]
+                open(out, "w").close()
+
+            patcher, mock_run = self._patch_runner(on_run=create_temp)
             with patcher:
                 atomic_compile(lock, target, self._compile_cmd())
                 call_args = mock_run.call_args[0][0]
-                assert call_args[-2:] == ["-o", target]
+                assert call_args[-2] == "-o"
+                assert call_args[-1].endswith(".tmp"), (
+                    f"compiler -o should be temp path, got {call_args[-1]}"
+                )
+                assert call_args[-1] != target
 
+            assert os.path.exists(target)
             for f in os.listdir(tmpdir):
                 assert ".tmp" not in f
 
     @requires_functional_compiler
-    def test_atomic_compile_direct_no_rename(self):
-        """FcntlLock (direct_compile=True): os.rename is NOT called."""
+    def test_atomic_compile_direct_calls_rename(self):
+        """FcntlLock (direct_compile=True) calls os.rename(temp, target)
+        after a successful compile."""
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args()
             lock = FcntlLock(target, args)
 
-            patcher, _ = self._patch_runner()
+            def create_temp(cmd):
+                out = cmd[cmd.index("-o") + 1]
+                open(out, "w").close()
+
+            patcher, _ = self._patch_runner(on_run=create_temp)
             with patcher, patch("os.rename") as mock_rename:
                 atomic_compile(lock, target, self._compile_cmd())
-                mock_rename.assert_not_called()
+                mock_rename.assert_called_once()
+                args_passed = mock_rename.call_args[0]
+                assert args_passed[0].endswith(".tmp")
+                assert args_passed[1] == target
+
+    @requires_functional_compiler
+    def test_atomic_compile_direct_failure_cleans_temp_no_rename(self):
+        """FcntlLock (direct_compile=True): on compiler failure, the temp
+        file is removed and os.rename is NOT called."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FcntlLock(target, args)
+
+            def create_temp(cmd):
+                out = cmd[cmd.index("-o") + 1]
+                with open(out, "w") as f:
+                    f.write("partial")
+
+            patcher, _ = self._patch_runner(returncode=1, on_run=create_temp)
+            with patcher, patch("os.rename") as mock_rename, pytest.raises(subprocess.CalledProcessError):
+                atomic_compile(lock, target, self._compile_cmd())
+            mock_rename.assert_not_called()
+            for f in os.listdir(tmpdir):
+                assert ".tmp" not in f, f"Stale temp file found: {f}"
 
     @requires_functional_compiler
     def test_atomic_compile_indirect_uses_temp(self):

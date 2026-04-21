@@ -19,6 +19,7 @@ from compiletools.build_context import BuildContext
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.testhelper import TempDirContextNoChange, make_backend_args
 from compiletools.trace_backend import (
+    _DEFAULT_SLURM_EXPORT,
     SlurmBackend,
     TraceStore,
     _make_trace_entry,
@@ -1366,6 +1367,48 @@ class TestWrapScriptEval:
         assert "'-DFOO=$(rogue)'" in line
 
 
+def test_quoted_define_with_space_survives_flatten(tmp_path):
+    """A token like -DGREETING=Hello World (literal space, no quotes — what
+    magicflags emits after its single shlex split) must reach the cmds file as
+    a single shell-quoted argv element so the compiler receives one -D, not two
+    args.
+    """
+    import shlex as _shlex
+
+    graph = BuildGraph()
+    rule = BuildRule(
+        output=str(tmp_path / "foo.o"),
+        inputs=["src/foo.cpp"],
+        command=[
+            "g++",
+            "-O2",
+            "-DGREETING=Hello World",
+            "-c",
+            "src/foo.cpp",
+            "-o",
+            str(tmp_path / "foo.o"),
+        ],
+        rule_type="compile",
+    )
+    graph.add_rule(rule)
+    graph.add_rule(make_phony_rule("build", [rule.output]))
+
+    with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+        backend._invocation_prefix = "test"
+        backend._created_aux_files = []
+        with patch("subprocess.check_output", return_value="42\n"):
+            backend._sbatch_array([rule], chunk_id=0)
+        cmds_file = os.path.join(
+            os.path.realpath(backend.args.objdir),
+            ".ct-slurm-cmds-test-0.txt",
+        )
+        with open(cmds_file) as f:
+            line = f.read().strip()
+
+    tokens = _shlex.split(line)
+    assert "-DGREETING=Hello World" in tokens, f"GREETING split across argv elements: tokens={tokens!r} line={line!r}"
+
+
 # ---------------------------------------------------------------------------
 # --slurm-export plumbing (Fix I10)
 # ---------------------------------------------------------------------------
@@ -1387,9 +1430,18 @@ class TestSlurmExport:
         return mock_sbatch.call_args[0][0]
 
     def test_default_export_is_curated_allowlist(self, tmp_path):
-        cmd = self._run_with_export(tmp_path, "PATH,HOME,USER,LANG,LC_ALL,CC,CXX,CPATH")
-        assert "--export=PATH,HOME,USER,LANG,LC_ALL,CC,CXX,CPATH" in cmd
+        cmd = self._run_with_export(tmp_path, _DEFAULT_SLURM_EXPORT)
+        assert f"--export={_DEFAULT_SLURM_EXPORT}" in cmd
         assert "--export=ALL" not in cmd
+        assert "LD_LIBRARY_PATH" in _DEFAULT_SLURM_EXPORT
+
+    def test_argparse_default_matches_runtime_fallback_constant(self):
+        import configargparse
+
+        parser = configargparse.ArgumentParser()
+        SlurmBackend.add_arguments(parser)
+        args = parser.parse_args([])
+        assert args.slurm_export == _DEFAULT_SLURM_EXPORT
 
     def test_export_all_when_user_overrides(self, tmp_path):
         cmd = self._run_with_export(tmp_path, "ALL")

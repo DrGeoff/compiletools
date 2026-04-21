@@ -258,10 +258,14 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
             bindir = os.path.join(str(effective_tmp), "bin")
             pchdir = os.path.join(str(effective_tmp), "pch")
             argv = [
-                "--include", str(effective_tmp),
-                "--objdir", objdir,
-                "--bindir", bindir,
-                "--pchdir", pchdir,
+                "--include",
+                str(effective_tmp),
+                "--objdir",
+                objdir,
+                "--bindir",
+                bindir,
+                "--pchdir",
+                pchdir,
                 source_path,
             ]
 
@@ -281,8 +285,7 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
             compile_rules = graph.rules_by_type("compile")
             gch_rules = [r for r in compile_rules if r.output.endswith(".gch")]
             assert len(gch_rules) >= 1, (
-                f"{backend_name}: expected a .gch compile rule, got outputs: "
-                f"{[r.output for r in compile_rules]}"
+                f"{backend_name}: expected a .gch compile rule, got outputs: {[r.output for r in compile_rules]}"
             )
             gch_rule = gch_rules[0]
             assert "-x" in gch_rule.command
@@ -293,7 +296,7 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
                 f"{backend_name}: .gch should be under pchdir, got: {gch_rule.output}"
             )
             # Layout: <pchdir>/<16-char-hash>/stdafx.h.gch
-            rel = gch_rule.output[len(pchdir) + 1:]
+            rel = gch_rule.output[len(pchdir) + 1 :]
             parts = rel.split("/")
             assert len(parts) == 2, f"Expected <hash>/header.gch, got: {rel}"
             assert len(parts[0]) == 16, f"Hash dir should be 16 chars, got: {parts[0]}"
@@ -303,13 +306,14 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
             source_rules = [r for r in compile_rules if not r.output.endswith(".gch")]
             assert source_rules, f"{backend_name}: expected source compile rules"
             source_cmd = source_rules[0].command
-            assert "-I" in source_cmd, (
-                f"{backend_name}: source compile should include -I for pchdir"
-            )
-            i_idx = source_cmd.index("-I")
-            assert source_cmd[i_idx + 1].startswith(pchdir + "/"), (
-                f"{backend_name}: -I should point to pchdir hash dir"
-            )
+            assert source_cmd is not None
+            assert "-I" in source_cmd, f"{backend_name}: source compile should include -I for pchdir"
+            pch_i_indices = [
+                i
+                for i, tok in enumerate(source_cmd)
+                if tok == "-I" and i + 1 < len(source_cmd) and source_cmd[i + 1].startswith(pchdir + "/")
+            ]
+            assert pch_i_indices, f"{backend_name}: no -I points to pchdir hash dir; cmd={source_cmd}"
 
             # Generate and execute the build
             os.makedirs(bindir, exist_ok=True)
@@ -325,18 +329,22 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
                 os.makedirs(cmake_build_dir, exist_ok=True)
                 result = subprocess.run(
                     ["cmake", "-S", str(effective_tmp), "-B", cmake_build_dir],
-                    cwd=str(effective_tmp), capture_output=True, text=True, timeout=30,
+                    cwd=str(effective_tmp),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
                 assert result.returncode == 0, (
                     f"cmake configure failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
                 )
                 result = subprocess.run(
                     ["cmake", "--build", cmake_build_dir],
-                    cwd=str(effective_tmp), capture_output=True, text=True, timeout=30,
+                    cwd=str(effective_tmp),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
-                assert result.returncode == 0, (
-                    f"cmake build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
-                )
+                assert result.returncode == 0, f"cmake build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
                 for dirpath, _dirs, files in os.walk(cmake_build_dir):
                     for fname in files:
                         full = os.path.join(dirpath, fname)
@@ -348,11 +356,13 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
                     backend.generate(graph, output=f)
                 subprocess.check_call(["tup", "init"], cwd=str(effective_tmp), timeout=10)
                 result = subprocess.run(
-                    ["tup"], cwd=str(effective_tmp), capture_output=True, text=True, timeout=30,
+                    ["tup"],
+                    cwd=str(effective_tmp),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
-                assert result.returncode == 0, (
-                    f"tup build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
-                )
+                assert result.returncode == 0, f"tup build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
             elif backend_name == "bazel":
                 build_file = os.path.join(str(effective_tmp), "BUILD.bazel")
                 with open(build_file, "w") as f:
@@ -380,7 +390,11 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
                 else:
                     pytest.skip(f"Don't know how to invoke {backend_name}")
                 result = subprocess.run(
-                    cmd, cwd=str(effective_tmp), capture_output=True, text=True, timeout=30,
+                    cmd,
+                    cwd=str(effective_tmp),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
                 assert result.returncode == 0, (
                     f"{backend_name} build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
@@ -401,7 +415,10 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
             )
 
             run_result = subprocess.run(
-                [candidates[0]], capture_output=True, text=True, timeout=10,
+                [candidates[0]],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             assert run_result.returncode == 0, (
                 f"{backend_name}: executable failed:\nstdout: {run_result.stdout}\nstderr: {run_result.stderr}"
