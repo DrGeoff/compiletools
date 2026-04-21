@@ -1,3 +1,4 @@
+import json
 import os
 from unittest.mock import MagicMock, patch
 
@@ -600,6 +601,53 @@ class TestBuildGraphPopulation:
         source_rules = [r for r in graph.rules if r.output.endswith("main.o")]
         assert len(source_rules) == 1
         assert "-I" not in source_rules[0].command
+
+
+class TestPchManifest:
+    def test_manifest_records_header_realpath_and_compiler_identity(self, tmp_path, monkeypatch):
+        from compiletools.build_backend import _write_pch_manifest
+        from compiletools.build_context import BuildContext
+        pchdir = tmp_path / "pch"
+        cmd_hash = "a" * 16
+        header = tmp_path / "stdafx.h"
+        header.write_text("#pragma once\n")
+
+        _write_pch_manifest(
+            pchdir=str(pchdir),
+            cmd_hash=cmd_hash,
+            pch_header=str(header),
+            transitive_headers=[],
+            cxx_command="g++",
+            context=BuildContext(),
+        )
+
+        manifest_path = pchdir / cmd_hash / "manifest.json"
+        assert manifest_path.is_file()
+        manifest = json.loads(manifest_path.read_text())
+        assert manifest["header_realpath"] == os.path.realpath(str(header))
+        assert manifest["compiler"] == "g++"
+        assert "compiler_identity" in manifest
+        assert manifest["transitive_hashes"] == {}
+
+    def test_manifest_write_is_atomic(self, tmp_path):
+        from compiletools.build_backend import _write_pch_manifest
+        from compiletools.build_context import BuildContext
+        pchdir = tmp_path / "pch"
+        cmd_hash = "b" * 16
+        header = tmp_path / "stdafx.h"
+        header.write_text("#pragma once\n")
+
+        ctx = BuildContext()
+        _write_pch_manifest(str(pchdir), cmd_hash, str(header), [], "g++", context=ctx)
+        # Second write replaces, never leaves .tmp behind.
+        _write_pch_manifest(str(pchdir), cmd_hash, str(header), [], "clang++", context=ctx)
+
+        manifest_dir = pchdir / cmd_hash
+        assert (manifest_dir / "manifest.json").is_file()
+        leftovers = [p for p in manifest_dir.iterdir() if ".tmp" in p.name]
+        assert leftovers == []
+        manifest = json.loads((manifest_dir / "manifest.json").read_text())
+        assert manifest["compiler"] == "clang++"
 
 
 class TestPchCommandHash:

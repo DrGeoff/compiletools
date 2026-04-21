@@ -26,6 +26,7 @@ import sys
 from typing import TypeVar
 
 import compiletools.filesystem_utils
+import compiletools.global_hash_registry
 import compiletools.namer
 import compiletools.utils
 import compiletools.wrappedos
@@ -1128,6 +1129,63 @@ def _pch_command_hash(
         "stage": "c++-header",
     }
     return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def _write_pch_manifest(
+    pchdir: str,
+    cmd_hash: str,
+    pch_header: str,
+    transitive_headers: list[str],
+    cxx_command: str,
+    context,
+) -> None:
+    """Write a sidecar manifest next to a cached .gch file.
+
+    The manifest enables ``trim_cache.trim_pchdir`` to:
+
+    * Bucket ``<pchdir>/<cmd_hash>/`` directories by ``header_realpath``
+      so ``keep_count`` is enforced per real header rather than globally
+      (I-4: cross-variant builds of the same header no longer evict
+      each other at ``keep_count=1``).
+    * Pre-evict entries whose transitive header content has changed
+      since the .gch was built (I-5: avoid the slow ``cc1`` PCH-stamp
+      rejection at consume time).
+
+    Hashes are git-blob SHA1 (the algorithm used by
+    ``global_hash_registry``) so that ``trim_cache``'s standalone
+    re-computation produces identical values.
+
+    Written atomically via ``os.replace`` so a concurrent reader either
+    sees the prior manifest or the new one, never a partial file.
+    """
+    manifest_dir = os.path.join(pchdir, cmd_hash)
+    os.makedirs(manifest_dir, exist_ok=True)
+
+    transitive_hashes: dict[str, str] = {}
+    for h in transitive_headers:
+        h_real = os.path.realpath(h)
+        try:
+            transitive_hashes[h_real] = compiletools.global_hash_registry.get_file_hash(
+                h_real, context=context
+            )
+        except (OSError, KeyError, FileNotFoundError):
+            # Missing hash is non-fatal; trim_cache treats absent
+            # entries as "unknown" and skips staleness pre-eviction
+            # for that header.
+            pass
+
+    manifest = {
+        "header_realpath": os.path.realpath(pch_header),
+        "compiler": cxx_command,
+        "compiler_identity": _compiler_identity(cxx_command),
+        "transitive_hashes": transitive_hashes,
+    }
+
+    manifest_path = os.path.join(manifest_dir, "manifest.json")
+    tmp_path = f"{manifest_path}.tmp.{os.getpid()}"
+    with open(tmp_path, "w") as f:
+        json.dump(manifest, f, sort_keys=True)
+    os.replace(tmp_path, manifest_path)
 
 
 @functools.lru_cache(maxsize=1)
