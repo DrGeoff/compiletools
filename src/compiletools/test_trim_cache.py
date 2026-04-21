@@ -596,6 +596,89 @@ class TestPchPerRealpathBucketing:
         assert not os.path.isdir(a)
 
 
+class TestPchTransitiveStaleness:
+    """When a transitive header recorded in the manifest no longer matches
+    the on-disk content, the cmd_hash dir is pre-evicted so the user never
+    pays the slow ``cc1`` PCH-stamp rebuild (I-5)."""
+
+    @staticmethod
+    def _git_blob_sha1(content: bytes) -> str:
+        """Helper matching global_hash_registry._compute_external_file_hash."""
+        import hashlib
+        return hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
+
+    def test_stale_transitive_hash_evicts_entry(self, tmp_path):
+        pchdir = str(tmp_path / "pch")
+        os.makedirs(pchdir)
+        cmd_hash = "a" * 16
+        a = _make_pchdir_entry(pchdir, cmd_hash, ["stdafx.h"], age_seconds=60)
+
+        # Real transitive header on disk with current hash X; manifest
+        # claims old hash Y — staleness should pre-evict.
+        config_h = tmp_path / "config.h"
+        config_h.write_text("// new content\n")
+        manifest = {
+            "header_realpath": "/proj/include/stdafx.h",
+            "compiler": "g++",
+            "compiler_identity": "g++|0|0",
+            "transitive_hashes": {str(config_h): "0" * 40},  # bogus old sha
+        }
+        with open(os.path.join(pchdir, cmd_hash, "manifest.json"), "w") as f:
+            json.dump(manifest, f)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=10))  # would otherwise keep
+        trimmer.trim_pchdir(pchdir)
+
+        assert not os.path.isdir(a), "stale-transitive cmd_hash should be evicted"
+
+    def test_matching_transitive_hash_keeps_entry(self, tmp_path):
+        pchdir = str(tmp_path / "pch")
+        os.makedirs(pchdir)
+        cmd_hash = "b" * 16
+        a = _make_pchdir_entry(pchdir, cmd_hash, ["stdafx.h"], age_seconds=60)
+
+        config_h = tmp_path / "config.h"
+        config_h.write_bytes(b"// stable content\n")
+        expected_sha = self._git_blob_sha1(config_h.read_bytes())
+
+        manifest = {
+            "header_realpath": "/proj/include/stdafx.h",
+            "compiler": "g++",
+            "compiler_identity": "g++|0|0",
+            "transitive_hashes": {str(config_h): expected_sha},
+        }
+        with open(os.path.join(pchdir, cmd_hash, "manifest.json"), "w") as f:
+            json.dump(manifest, f)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=10))
+        trimmer.trim_pchdir(pchdir)
+
+        assert os.path.isdir(a)
+
+    def test_missing_transitive_header_does_not_evict(self, tmp_path):
+        """If the transitive header file is gone (deleted, moved), do NOT
+        evict — staleness pre-eviction is best-effort."""
+        pchdir = str(tmp_path / "pch")
+        os.makedirs(pchdir)
+        cmd_hash = "c" * 16
+        a = _make_pchdir_entry(pchdir, cmd_hash, ["stdafx.h"], age_seconds=60)
+
+        manifest = {
+            "header_realpath": "/proj/stdafx.h",
+            "compiler": "g++",
+            "compiler_identity": "g++|0|0",
+            # Path that does not exist on disk.
+            "transitive_hashes": {str(tmp_path / "missing.h"): "0" * 40},
+        }
+        with open(os.path.join(pchdir, cmd_hash, "manifest.json"), "w") as f:
+            json.dump(manifest, f)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=10))
+        trimmer.trim_pchdir(pchdir)
+
+        assert os.path.isdir(a)
+
+
 # ── Issue #7: noncurrent_kept accounting ─────────────────────────────
 
 

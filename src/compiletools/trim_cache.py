@@ -7,6 +7,7 @@ number of recent non-current entries per source file.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -330,6 +331,36 @@ class CacheTrimmer:
             for cmd_hash, (_path, mtime, _size, _headers) in dir_info.items():
                 if mtime >= cutoff:
                     needed_dirs.add(cmd_hash)
+
+        # Phase 2b: pre-evict entries whose transitive headers have
+        # changed since the .gch was built. Best-effort — manifest
+        # absence or unreadable headers leave the entry alone (I-5).
+        # Hashes use the same git-blob-SHA1 algorithm as
+        # ``global_hash_registry._compute_external_file_hash`` so
+        # comparisons are meaningful without taking on a BuildContext
+        # dependency in the trim CLI.
+        for cmd_hash in list(needed_dirs):
+            path = dir_info[cmd_hash][0]
+            manifest = _load_pch_manifest(path)
+            if not manifest:
+                continue
+            for h_realpath, expected_hash in manifest.get("transitive_hashes", {}).items():
+                try:
+                    with open(h_realpath, "rb") as fh:
+                        content = fh.read()
+                except OSError:
+                    continue  # best-effort: missing or unreadable
+                current = hashlib.sha1(
+                    f"blob {len(content)}\0".encode() + content
+                ).hexdigest()
+                if current != expected_hash:
+                    if self.verbose >= 1:
+                        print(
+                            f"  Pre-evicting {path} "
+                            f"(transitive {h_realpath} changed)"
+                        )
+                    needed_dirs.discard(cmd_hash)
+                    break
 
         # Phase 3: remove directories not needed
         for cmd_hash, (path, _mtime, total_size, _headers) in dir_info.items():
