@@ -98,7 +98,7 @@ PreprocessingCache                    # Two-tier caching
 
 ### Precompiled Header (PCH) Caching
 
-`compiletools` supports content-addressable PCH caching via `--pchdir`. Headers marked with the `//#PCH=` magic flag are compiled into `.gch` files and cached in `{git_root}/shared-pchdir/{variant}` (or custom path via `--pchdir`). The cache key includes compiler, flags, and header path, preventing collisions across builds. PCH files are atomically created and cross-user safe. Enable `--pchdir` in `ct.conf.d/ct.conf` for automatic per-variant caching, or pass `--pchdir=<path>` at the CLI. Use `ct-trim-cache --pchdir-only` to selectively clean aged PCH entries while preserving active builds. Falls back to legacy `.gch` placement in the object directory if `--pchdir` is unset.
+`compiletools` supports content-addressable PCH caching via `--pchdir`. Headers marked with the `//#PCH=` magic flag are compiled into `.gch` files and cached in `{git_root}/shared-pchdir/{variant}` (or custom path via `--pchdir`). The cache key includes compiler, flags, and header path, preventing collisions across builds. PCH files are atomically created and cross-user safe. Enable `--pchdir` in `ct.conf.d/ct.conf` for automatic per-variant caching, or pass `--pchdir=<path>` at the CLI. Each cache entry writes a sidecar `manifest.json` (header realpath + transitive-header content hashes); `ct-trim-cache --pchdir-only` reads those manifests to bucket entries by real header (so cross-variant builds don't evict each other) and to pre-evict entries whose transitive headers have changed (avoiding the slow `cc1` PCH-stamp rejection at consume time). Falls back to legacy `.gch` placement in the object directory if `--pchdir` is unset.
 
 ### Key Modules
 

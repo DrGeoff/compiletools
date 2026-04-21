@@ -7,8 +7,8 @@ Trim stale entries from shared object and PCH caches
 -------------------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
-:Date:   2026-04-08
-:Version: 7.1.0
+:Date:   2026-04-21
+:Version: 8.0.3
 :Manual section: 1
 :Manual group: developers
 
@@ -30,9 +30,22 @@ entry is still current.
 
 PCH directories use the scheme ``{command_hash}/{header}.gch``.  Each
 ``{command_hash}/`` represents one unique compile configuration (compiler
-+ flags + header realpath); they are treated as independent cache units.
-The newest ``--keep-count`` cmd_hash directories overall are kept; if
-``--max-age`` is set, anything within the cutoff is also kept.
++ flags + header realpath) and writes a sidecar ``manifest.json`` recording
+the immediate header's realpath plus content hashes for every transitive
+header.  The trim policy uses the manifest to:
+
+- **Bucket entries by header realpath**, so ``--keep-count`` is enforced
+  per real header rather than globally.  Cross-variant builds of the same
+  header (e.g. ``gcc.debug`` and ``gcc.release``) coexist instead of
+  evicting each other at the default ``keep_count=1``.
+- **Pre-evict entries whose transitive headers have changed** since the
+  ``.gch`` was built, so users do not pay the slow ``cc1`` PCH-stamp
+  rejection at consume time.
+
+Legacy entries without a manifest fall back to the previous global
+ranking by mtime, keeping the rollout backwards-compatible.  If
+``--max-age`` is set, anything within the cutoff is kept regardless of
+bucket.
 
 Concurrent builds
 -----------------
@@ -100,13 +113,19 @@ PCH directory trimming
 ----------------------
 1. Scans the PCH directory for subdirectories matching the 16-character
    hex command-hash pattern.
-2. Lists ``.gch`` files inside each directory and groups directories by
-   header basename.
-3. For each header, sorts directories by modification time and keeps the
-   newest ``--keep-count``.
-4. A directory is only removed if **no** header still needs it (a single
-   directory can serve multiple headers).
-5. Removes (or reports) the selected directories.
+2. Reads each directory's sidecar ``manifest.json`` and groups
+   directories into buckets keyed by ``header_realpath``.  Entries
+   without a manifest (legacy cache contents) fall into a single
+   shared bucket and use the previous global-ranking semantics.
+3. Within each bucket, sorts directories by modification time and keeps
+   the newest ``--keep-count``.  ``--max-age`` keeps anything younger
+   than the cutoff regardless of bucket.
+4. **Pre-evicts** any otherwise-kept directory whose manifest records a
+   transitive header whose current git-blob SHA1 no longer matches the
+   value stored when the ``.gch`` was built.  Best-effort: missing or
+   unreadable headers leave the entry alone.
+5. Removes (or reports in ``--dry-run`` mode) every cmd_hash directory
+   not in the kept set.
 
 OPTIONS
 =======
