@@ -649,6 +649,50 @@ class TestPchManifest:
         manifest = json.loads((manifest_dir / "manifest.json").read_text())
         assert manifest["compiler"] == "clang++"
 
+    def test_pch_rule_emission_writes_manifest(self, tmp_path):
+        """Building a graph with a PCH header writes the manifest eagerly."""
+        import stringzilla as sz
+
+        from compiletools.build_context import BuildContext
+
+        pchdir = str(tmp_path / "pch_cache")
+        StubClass = make_stub_backend_class()
+
+        # Need a real header file on disk so realpath works.
+        header_path = tmp_path / "stdafx.h"
+        header_path.write_text("#pragma once\n")
+        source_path = tmp_path / "main.cpp"
+        source_path.write_text("int main(){}\n")
+
+        pch_flags = {
+            str(source_path): {sz.Str("PCH"): [sz.Str(str(header_path))]},
+            str(header_path): {},
+        }
+        args = make_backend_args(
+            tmp_path,
+            filename=[str(source_path)],
+            pchdir=pchdir,
+        )
+        hunter = make_mock_hunter(
+            sources=[str(source_path)],
+            headers=[],
+            per_file_magicflags=pch_flags,
+        )
+        # Provide a real BuildContext on the hunter so the backend picks it up.
+        hunter.context = BuildContext()
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        backend.build_graph()
+
+        # Expect one cmd_hash dir with a manifest.
+        cmd_hash_dirs = [d for d in os.listdir(pchdir) if len(d) == 16]
+        assert len(cmd_hash_dirs) == 1
+        manifest_path = os.path.join(pchdir, cmd_hash_dirs[0], "manifest.json")
+        assert os.path.isfile(manifest_path)
+        with open(manifest_path) as f:
+            manifest = json.loads(f.read())
+        assert manifest["header_realpath"] == os.path.realpath(str(header_path))
+
 
 class TestPchCommandHash:
     """Test _pch_command_hash() determinism and sensitivity."""

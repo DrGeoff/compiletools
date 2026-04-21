@@ -453,6 +453,15 @@ class BuildBackend(abc.ABC):
             if pchdir and cmd_hash:
                 self._pch_include_dirs[pch_header] = os.path.join(pchdir, cmd_hash)
                 pch_mkdir_dirs.add(os.path.join(pchdir, cmd_hash))
+                transitive = sorted(str(d) for d in self.hunter.header_dependencies(pch_header))
+                _write_pch_manifest(
+                    pchdir=pchdir,
+                    cmd_hash=cmd_hash,
+                    pch_header=pch_header,
+                    transitive_headers=transitive,
+                    cxx_command=self.args.CXX,
+                    context=self.context,
+                )
 
             pch_deps = [pch_header] + sorted(str(d) for d in self.hunter.header_dependencies(pch_header))
             pch_cmd = (
@@ -1165,14 +1174,19 @@ def _write_pch_manifest(
     for h in transitive_headers:
         h_real = os.path.realpath(h)
         try:
-            transitive_hashes[h_real] = compiletools.global_hash_registry.get_file_hash(
+            h_hash = compiletools.global_hash_registry.get_file_hash(
                 h_real, context=context
             )
         except (OSError, KeyError, FileNotFoundError):
             # Missing hash is non-fatal; trim_cache treats absent
             # entries as "unknown" and skips staleness pre-eviction
             # for that header.
-            pass
+            continue
+        # Defensive: only record real string hashes — a misconfigured
+        # context (e.g. test MagicMock) can return non-strings; skip
+        # rather than crash JSON serialization.
+        if isinstance(h_hash, str):
+            transitive_hashes[h_real] = h_hash
 
     manifest = {
         "header_realpath": os.path.realpath(pch_header),
