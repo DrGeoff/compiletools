@@ -12,6 +12,10 @@ import time
 
 import compiletools.apptools
 import compiletools.filesystem_utils
+import compiletools.headerdeps
+import compiletools.hunter
+import compiletools.magicflags
+import compiletools.namer
 import compiletools.utils
 import compiletools.wrappedos
 from compiletools.build_backend import (
@@ -408,3 +412,46 @@ class MakefileBackend(BuildBackend):
                 os.remove(timing_log)
             except FileNotFoundError:
                 pass
+
+
+def main(argv=None):
+    """Generate a Makefile for the given source files.
+
+    CLI entry point bound to ``ct-create-makefile`` in ``pyproject.toml``.
+    """
+    cap = compiletools.apptools.create_parser(
+        "Create a Makefile that will compile the given source file into an executable (or library)",
+        argv=argv,
+    )
+    compiletools.apptools.add_target_arguments_ex(cap)
+    compiletools.apptools.add_link_arguments(cap)
+    compiletools.namer.Namer.add_arguments(cap)
+    compiletools.hunter.add_arguments(cap)
+    MakefileBackend.add_arguments(cap)
+
+    try:
+        from compiletools.build_context import BuildContext
+
+        context = BuildContext()
+        args = compiletools.apptools.parseargs(cap, argv, context=context)
+        headerdeps = compiletools.headerdeps.create(args, context=context)
+        magicparser = compiletools.magicflags.create(args, headerdeps, context=context)
+        hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=context)
+
+        backend = MakefileBackend(args=args, hunter=hunter)
+        graph = backend.build_graph()
+        backend.generate(graph)
+
+    except OSError as ioe:
+        if args.verbose < 2:
+            print(f"Error processing {ioe.filename}: {ioe.strerror}")
+            return 1
+        else:
+            raise
+    except Exception as err:
+        if args.verbose < 2:
+            print(err)
+            return 1
+        else:
+            raise
+    return 0

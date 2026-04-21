@@ -860,3 +860,10 @@ def test_file_locking_registered_in_apptools():
     # Default should be True
     args = cap.parse_args([])
     assert args.file_locking is True
+
+
+def test_makefile_backend_main_entry_point_exists():
+    """ct-create-makefile should be importable from makefile_backend
+    once the shim is removed."""
+    from compiletools.makefile_backend import main
+    assert callable(main)
