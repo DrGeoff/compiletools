@@ -232,10 +232,13 @@ class TestNinjaLogParsing:
         return str(log)
 
     def test_parse_valid_log(self, tmp_path):
-        log = self._write_log(tmp_path, [
-            "0\t1500\t12345\tobj/foo.o\tabc123",
-            "100\t2000\t12346\tobj/bar.o\tdef456",
-        ])
+        log = self._write_log(
+            tmp_path,
+            [
+                "0\t1500\t12345\tobj/foo.o\tabc123",
+                "100\t2000\t12346\tobj/bar.o\tdef456",
+            ],
+        )
         timer = BuildTimer(enabled=True)
         with timer.phase("build_execution"):
             timer.record_rules_from_ninja_log(log)
@@ -250,10 +253,13 @@ class TestNinjaLogParsing:
         assert bar.elapsed_s == pytest.approx(1.9)
 
     def test_parse_log_with_comments(self, tmp_path):
-        log = self._write_log(tmp_path, [
-            "# some comment",
-            "0\t1000\t0\ta.o\thash",
-        ])
+        log = self._write_log(
+            tmp_path,
+            [
+                "# some comment",
+                "0\t1000\t0\ta.o\thash",
+            ],
+        )
         timer = BuildTimer(enabled=True)
         with timer.phase("build_execution"):
             timer.record_rules_from_ninja_log(log)
@@ -281,10 +287,13 @@ class TestNinjaLogParsing:
         assert len(timer._root.children[0].children) == 0
 
     def test_parse_duplicate_outputs_keeps_last(self, tmp_path):
-        log = self._write_log(tmp_path, [
-            "0\t1000\t0\tobj/foo.o\thash1",
-            "1000\t3000\t0\tobj/foo.o\thash2",
-        ])
+        log = self._write_log(
+            tmp_path,
+            [
+                "0\t1000\t0\tobj/foo.o\thash1",
+                "1000\t3000\t0\tobj/foo.o\thash2",
+            ],
+        )
         timer = BuildTimer(enabled=True)
         with timer.phase("build_execution"):
             timer.record_rules_from_ninja_log(log)
@@ -302,23 +311,30 @@ class TestNinjaLogParsing:
         from compiletools.build_graph import BuildGraph, BuildRule
 
         graph = BuildGraph()
-        graph.add_rule(BuildRule(
-            output="obj/foo.o",
-            inputs=["src/foo.cpp", "src/foo.h"],
-            command=["g++", "-c", "src/foo.cpp", "-o", "obj/foo.o"],
-            rule_type="compile",
-        ))
-        graph.add_rule(BuildRule(
-            output="bin/app",
-            inputs=["obj/foo.o"],
-            command=["g++", "obj/foo.o", "-o", "bin/app"],
-            rule_type="link",
-        ))
+        graph.add_rule(
+            BuildRule(
+                output="obj/foo.o",
+                inputs=["src/foo.cpp", "src/foo.h"],
+                command=["g++", "-c", "src/foo.cpp", "-o", "obj/foo.o"],
+                rule_type="compile",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="bin/app",
+                inputs=["obj/foo.o"],
+                command=["g++", "obj/foo.o", "-o", "bin/app"],
+                rule_type="link",
+            )
+        )
 
-        log = self._write_log(tmp_path, [
-            "0\t5000\t0\tobj/foo.o\thash1",
-            "5000\t6000\t0\tbin/app\thash2",
-        ])
+        log = self._write_log(
+            tmp_path,
+            [
+                "0\t5000\t0\tobj/foo.o\thash1",
+                "5000\t6000\t0\tbin/app\thash2",
+            ],
+        )
         timer = BuildTimer(enabled=True)
         with timer.phase("build_execution"):
             timer.record_rules_from_ninja_log(log, graph=graph)
@@ -352,12 +368,14 @@ class TestMakeTimingParsing:
         from compiletools.build_graph import BuildGraph, BuildRule
 
         graph = BuildGraph()
-        graph.add_rule(BuildRule(
-            output="obj/foo.o",
-            inputs=["src/foo.cpp"],
-            command=["g++", "-c", "src/foo.cpp"],
-            rule_type="compile",
-        ))
+        graph.add_rule(
+            BuildRule(
+                output="obj/foo.o",
+                inputs=["src/foo.cpp"],
+                command=["g++", "-c", "src/foo.cpp"],
+                rule_type="compile",
+            )
+        )
 
         log = tmp_path / ".ct-make-timing.jsonl"
         log.write_text('{"target":"obj/foo.o","start_ns":0,"end_ns":2000000000}\n')
@@ -370,10 +388,7 @@ class TestMakeTimingParsing:
 
     def test_parse_invalid_json_skipped(self, tmp_path):
         log = tmp_path / ".ct-make-timing.jsonl"
-        log.write_text(
-            'not json\n'
-            '{"target":"a.o","start_ns":0,"end_ns":1000000000}\n'
-        )
+        log.write_text('not json\n{"target":"a.o","start_ns":0,"end_ns":1000000000}\n')
         timer = BuildTimer(enabled=True)
         with timer.phase("build_execution"):
             timer.record_rules_from_make_timing(str(log))
@@ -450,6 +465,10 @@ class TestClassifyOutput:
     def test_static_library(self):
         assert _classify_output("lib/libfoo.a") == "static_library"
 
+    def test_static_library_windows_lib(self):
+        # Fix 10: .lib (Windows static lib) should bucket as static_library
+        assert _classify_output("lib/foo.lib") == "static_library"
+
     def test_shared_library(self):
         assert _classify_output("lib/libfoo.so") == "shared_library"
         assert _classify_output("lib/libfoo.dylib") == "shared_library"
@@ -457,3 +476,141 @@ class TestClassifyOutput:
 
     def test_executable(self):
         assert _classify_output("bin/myapp") == "link"
+
+    def test_windows_executable(self):
+        # Fix 10: .exe should bucket as link, not "other"
+        assert _classify_output("bin/myapp.exe") == "link"
+        assert _classify_output("bin/myapp.EXE") == "link"
+
+    def test_unknown_suffix_other(self):
+        # Fix 10: previously buckets fell through to "link", masking
+        # genuine artefacts (PCH, generated headers).  Now: "other".
+        assert _classify_output("pch/foo.h.gch") == "other"
+        assert _classify_output("gen/api.h") == "other"
+
+
+# ------------------------------------------------- chrome trace tid uniqueness
+
+
+class TestChromeTraceTidUniqueness:
+    """Fix 3: sibling phases used to reuse tids 1..N — siblings of unrelated
+    phases collided on the same Perfetto lane.  Now: monotonic across walk."""
+
+    def test_no_two_rules_share_tid(self):
+        timer = BuildTimer(enabled=True)
+        with timer.phase("phase_a"):
+            timer.record_rule("compile", "a1.o", "a1.cpp", 1.0, start_s=0.0, end_s=1.0)
+            timer.record_rule("compile", "a2.o", "a2.cpp", 1.0, start_s=0.0, end_s=1.0)
+        with timer.phase("phase_b"):
+            timer.record_rule("compile", "b1.o", "b1.cpp", 1.0, start_s=0.0, end_s=1.0)
+            timer.record_rule("compile", "b2.o", "b2.cpp", 1.0, start_s=0.0, end_s=1.0)
+        events = timer.to_chrome_trace()
+        rule_tids = [e["tid"] for e in events if e.get("cat") == "compile"]
+        assert len(rule_tids) == 4
+        assert len(set(rule_tids)) == 4, f"tids collided: {rule_tids}"
+
+
+# ----------------------------------------- summary table CPU-time semantics
+
+
+class TestSummaryTableCPUTimeColumn:
+    """Fix 2: rule sub-rows aggregate per-rule wall-clock spans, which can
+    exceed the parent phase's wall-clock when rules ran in parallel.  The
+    column header must reflect that (was previously misleading)."""
+
+    def test_column_header_is_cpu_time(self):
+        timer = BuildTimer(enabled=True)
+        with timer.phase("build_execution"):
+            timer.record_rule("compile", "a.o", "a.cpp", 1.0, start_s=0.0, end_s=1.0)
+        table = timer.summary_table()
+        assert table is not None
+        headers = [c.header for c in table.columns]
+        assert any("CPU-time" in h or "sum" in h for h in headers), (
+            f"Expected CPU-time-aware column header, got: {headers}"
+        )
+
+    def test_summed_children_may_exceed_phase_wall_clock(self):
+        # Build a phase whose two child rules ran in parallel for 2s each
+        # but the phase wall-clock is only 2s.  Sum (4s) > phase wall (2s).
+        timer = BuildTimer(enabled=True)
+        # Manually craft the tree so phase end_s reflects parallel exec
+        from compiletools.build_timer import TimingEvent
+
+        phase = TimingEvent(name="build_execution", category="phase", start_s=0.0, end_s=2.0)
+        phase.children.append(
+            TimingEvent(name="a", category="compile", start_s=0.0, end_s=2.0, target="a.o", source="a.cpp")
+        )
+        phase.children.append(
+            TimingEvent(name="b", category="compile", start_s=0.0, end_s=2.0, target="b.o", source="b.cpp")
+        )
+        timer._root.children.append(phase)
+        timer._root.end_s = 2.0
+        # Sum of children exceeds phase wall — that is expected, not a bug
+        sum_children = sum(c.elapsed_s for c in phase.children)
+        assert sum_children > phase.elapsed_s
+        # summary_table must still render without error
+        assert timer.summary_table() is not None
+
+
+# ----------------------------------------- ANSI in non-TTY stderr
+
+
+class TestPrintSummaryNoAnsiOnPipe:
+    """Fix 5: ANSI codes leaking into CI logs is ugly.  When stderr is not
+    a TTY, Console must be created with ``force_terminal=False``."""
+
+    def test_no_ansi_when_stderr_not_tty(self, capsys):
+        timer = BuildTimer(enabled=True, variant="gcc.debug", backend="make")
+        with timer.phase("build_execution"):
+            timer.record_rule("compile", "a.o", "a.cpp", 1.0, start_s=0.0, end_s=1.0)
+        timer.print_summary()
+        captured = capsys.readouterr()
+        # ANSI escape sequences start with ESC ([\x1b)
+        assert "\x1b[" not in captured.err, f"ANSI escapes leaked into non-TTY stderr: {captured.err!r}"
+
+
+class TestPrintSummarySkipsEmpty:
+    """Fix 7: failure-path callers (cake.py finally) used to print '0.0s'
+    tables that obscure the real exception.  Skip when nothing recorded."""
+
+    def test_skips_when_no_phases(self, capsys):
+        timer = BuildTimer(enabled=True)
+        timer.print_summary()
+        captured = capsys.readouterr()
+        assert captured.err == "" and captured.out == ""
+
+    def test_skips_when_phases_empty(self, capsys):
+        # phases recorded but no rules — still nothing to report
+        timer = BuildTimer(enabled=True)
+        with timer.phase("build_graph"):
+            pass
+        timer.print_summary()
+        captured = capsys.readouterr()
+        # build_graph phase with zero children — print_summary skips
+        assert captured.err == "" and captured.out == ""
+
+
+# ----------------------------------------- loaded timer is read-only
+
+
+class TestLoadedTimerReadOnly:
+    """Fix 9: ``from_dict`` used to leave the loaded timer mutable; callers
+    could append phases/rules to a historical snapshot and silently corrupt
+    saved JSON if they re-saved."""
+
+    def test_phase_on_loaded_raises(self):
+        timer = BuildTimer(enabled=True)
+        with timer.phase("p"):
+            timer.record_rule("compile", "a.o", "a.cpp", 1.0)
+        loaded = BuildTimer.from_dict(timer.to_dict())
+        with pytest.raises(RuntimeError, match="read-only"):
+            with loaded.phase("late"):
+                pass
+
+    def test_record_rule_on_loaded_raises(self):
+        timer = BuildTimer(enabled=True)
+        with timer.phase("p"):
+            timer.record_rule("compile", "a.o", "a.cpp", 1.0)
+        loaded = BuildTimer.from_dict(timer.to_dict())
+        with pytest.raises(RuntimeError, match="read-only"):
+            loaded.record_rule("compile", "x.o", "x.cpp", 1.0)

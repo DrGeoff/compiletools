@@ -101,6 +101,9 @@ class BuildTimer:
         self.variant = variant
         self.backend = backend
         self._lock = threading.Lock()
+        # Set True by from_dict/from_json to forbid further phase/record
+        # mutations on a loaded snapshot.
+        self._loaded = False
 
         # Root event spans the entire build
         self._root = TimingEvent(name="total", category="phase", start_s=time.monotonic())
@@ -126,6 +129,10 @@ class BuildTimer:
         if not self.enabled:
             yield
             return
+        if self._loaded:
+            raise RuntimeError(
+                "BuildTimer was loaded from a serialized snapshot and is read-only; cannot record new phases on it."
+            )
         event = TimingEvent(name=name, category="phase", start_s=time.monotonic())
         self._phase_stack[-1].children.append(event)
         self._phase_stack.append(event)
@@ -152,6 +159,10 @@ class BuildTimer:
         """
         if not self.enabled:
             return
+        if self._loaded:
+            raise RuntimeError(
+                "BuildTimer was loaded from a serialized snapshot and is read-only; cannot record new rules on it."
+            )
         if start_s is None:
             start_s = 0.0
         if end_s is None:
@@ -314,7 +325,13 @@ class BuildTimer:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BuildTimer:
-        """Deserialize from a dict (e.g. loaded from JSON)."""
+        """Deserialize from a dict (e.g. loaded from JSON).
+
+        The returned timer is marked read-only: ``phase()`` and
+        ``record_rule()`` will raise ``RuntimeError`` to prevent callers
+        from mutating a historical snapshot (which would silently corrupt
+        the on-disk JSON if it were re-saved).
+        """
         timer = cls(enabled=True, variant=data.get("variant", ""), backend=data.get("backend", ""))
         timer._root = TimingEvent(
             name="total",
@@ -324,6 +341,7 @@ class BuildTimer:
             children=[TimingEvent.from_dict(p) for p in data.get("phases", [])],
         )
         timer._phase_stack = [timer._root]
+        timer._loaded = True
         return timer
 
     @classmethod
@@ -344,7 +362,11 @@ class BuildTimer:
         """
         self.finish()
         events: list[dict[str, Any]] = []
-        self._chrome_trace_walk(self._root, events, tid=0, pid=1)
+        # Allocate a fresh, monotonically increasing tid for each rule
+        # event across the whole walk so siblings under different phases
+        # never collide on the same lane.
+        tid_counter = [1]
+        self._chrome_trace_walk(self._root, events, tid=0, pid=1, tid_counter=tid_counter)
         return events
 
     def _chrome_trace_walk(
@@ -353,6 +375,7 @@ class BuildTimer:
         events: list[dict[str, Any]],
         tid: int,
         pid: int,
+        tid_counter: list[int],
     ) -> None:
         ts_us = event.start_s * 1_000_000
         dur_us = event.elapsed_s * 1_000_000
@@ -371,15 +394,31 @@ class BuildTimer:
             trace_event.setdefault("args", {})["source"] = event.source
         events.append(trace_event)
 
-        # Give each child rule its own "thread" for parallel visualization
-        for i, child in enumerate(event.children):
-            child_tid = tid if child.category == "phase" else i + 1
-            self._chrome_trace_walk(child, events, tid=child_tid, pid=pid)
+        # Phase children stay on the parent's lane; rule children each
+        # get a unique tid from the global counter so unrelated parallel
+        # compiles never overlap visually in Perfetto.
+        for child in event.children:
+            if child.category == "phase":
+                child_tid = tid
+            else:
+                child_tid = tid_counter[0]
+                tid_counter[0] += 1
+            self._chrome_trace_walk(child, events, tid=child_tid, pid=pid, tid_counter=tid_counter)
 
     # --------------------------------------------------------- summary table
 
     def summary_table(self):
         """Return a Rich Table summarizing the build timing.
+
+        Phase rows show wall-clock elapsed time and the phase's share of
+        total wall-clock build time.
+
+        Sub-rows (per-rule-type) are summed wall-clock spans across
+        rules that ran inside the phase.  Because rules execute in
+        parallel, that sum may exceed the phase wall-clock by up to N
+        (with ``-j N``); the column is therefore labeled
+        ``CPU-time (sum)`` and the ``%`` column for sub-rows is the
+        share of the *phase* wall-clock (so >100% indicates parallelism).
 
         Returns None if rich is not available.
         """
@@ -389,9 +428,15 @@ class BuildTimer:
         except ImportError:
             return None
 
-        table = Table(title=f"Build Timing Report ({self._root.elapsed_s:.1f}s total)")
+        table = Table(
+            title=f"Build Timing Report ({self._root.elapsed_s:.1f}s total)",
+            caption=(
+                "Phase rows are wall-clock; indented rows are CPU-time (sum) "
+                "across parallel rules — may exceed phase wall-clock with -j N."
+            ),
+        )
         table.add_column("Phase", style="cyan", no_wrap=True)
-        table.add_column("Time (s)", justify="right", style="magenta")
+        table.add_column("Time / CPU-time (sum) (s)", justify="right", style="magenta")
         table.add_column("%", justify="right")
 
         total = self._root.elapsed_s or 1.0
@@ -409,8 +454,9 @@ class BuildTimer:
                 for child in phase.children:
                     cat = child.category
                     type_totals[cat] = type_totals.get(cat, 0.0) + child.elapsed_s
+                phase_wall = phase.elapsed_s or 1.0
                 for cat, cat_time in sorted(type_totals.items(), key=lambda x: -x[1]):
-                    cat_pct = (cat_time / total) * 100
+                    cat_pct = (cat_time / phase_wall) * 100
                     table.add_row(
                         f"  {cat.replace('_', ' ').title()}",
                         f"{cat_time:.2f}",
@@ -420,14 +466,30 @@ class BuildTimer:
         return table
 
     def print_summary(self) -> None:
-        """Print the summary table and top slowest compilations."""
+        """Print the summary table and top slowest compilations.
+
+        Skips rendering if no phases or rules were recorded so failure-path
+        callers (e.g. `cake.py`'s ``finally`` block) don't print empty
+        zero-time tables that obscure the real exception.
+        """
+        # Skip noisy zero-time output when nothing was recorded
+        phases = self._root.children
+        if not phases:
+            return
+        if not any(p.children for p in phases):
+            return
+
         table = self.summary_table()
         if table is None:
             return
         try:
+            import sys
+
             from rich.console import Console
 
-            console = Console(stderr=True)
+            # Don't leak ANSI codes into non-TTY stderr (CI logs).
+            force_terminal = False if not sys.stderr.isatty() else None
+            console = Console(stderr=True, force_terminal=force_terminal)
             console.print(table)
 
             # Print slowest compilations
@@ -471,12 +533,28 @@ def get_timer(context) -> BuildTimer | None:
 
 
 def _classify_output(output: str) -> str:
-    """Guess rule type from output file extension."""
-    if output.endswith((".o", ".obj")):
+    """Guess rule type from output file extension.
+
+    Buckets:
+      - ``compile``        : ``.o``, ``.obj``
+      - ``static_library`` : ``.a``, ``.lib`` (Windows static lib)
+      - ``shared_library`` : ``.so``, ``.dylib``, ``.dll``
+      - ``link``           : ``.exe`` (Windows executable) and bare names
+                             (no extension; the Unix executable convention)
+      - ``other``          : anything not matching the above (e.g. ``.gch``,
+                             ``.pch``, generated headers).  Returned instead
+                             of mis-bucketing as ``link`` so dashboards
+                             can flag unknown artefacts explicitly.
+    """
+    # Use os.path.splitext so paths with dots in directory names work.
+    # Lowercase the suffix so .EXE, .Lib, etc. classify correctly.
+    suffix = os.path.splitext(output)[1].lower()
+    if suffix in (".o", ".obj"):
         return "compile"
-    elif output.endswith(".a"):
+    if suffix in (".a", ".lib"):
         return "static_library"
-    elif output.endswith((".so", ".dylib", ".dll")):
+    if suffix in (".so", ".dylib", ".dll"):
         return "shared_library"
-    else:
+    if suffix == ".exe" or suffix == "":
         return "link"
+    return "other"

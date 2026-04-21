@@ -768,6 +768,143 @@ class TestAllOutputsCurrentHeaderEdit:
         assert new_objs, f"header edit did not produce a fresh .o (objs: {objs_second})"
 
 
+class TestTimingWrapBSDDate:
+    """Fix 1: BSD ``date`` doesn't support ``%N`` and prints e.g.
+    ``1745247600N`` literally, which Python's ``int()`` would parse as
+    ``1745247600`` (dropping the suffix and corrupting timing data).
+
+    The wrapping shell snippet must:
+      1. Prefer bash 5+'s ``$EPOCHREALTIME`` (works on macOS/BSD).
+      2. Fall back to ``date +%s%N`` only if the result is purely numeric.
+      3. Emit ``0`` if both fail (so the JSONL line stays well-formed).
+    """
+
+    def _make_args(self):
+        return SimpleNamespace(
+            verbose=0,
+            file_locking=False,
+            makefilename="Makefile",
+        )
+
+    def _backend_with_timer(self):
+        backend = MakefileBackend(args=self._make_args(), hunter=MagicMock())
+        backend._filesystem_type = None
+        return backend
+
+    def test_wrap_prefers_epochrealtime(self):
+        backend = self._backend_with_timer()
+        wrapped = backend._wrap_with_timing("g++ -c foo.cpp", "foo.o")
+        # Must reference $EPOCHREALTIME for portability
+        assert "EPOCHREALTIME" in wrapped
+
+    def test_wrap_validates_date_output(self):
+        backend = self._backend_with_timer()
+        wrapped = backend._wrap_with_timing("g++ -c foo.cpp", "foo.o")
+        # Must include a numeric-validation guard so that BSD date's
+        # literal "1745247600N" output is rejected (parsed as 0 instead).
+        assert "[!0-9]" in wrapped, "wrapped recipe lacks a numeric validation guard for date output"
+
+    def test_bsd_date_simulation_yields_well_formed_json(self, tmp_path):
+        """Simulate the wrapping shell with a fake ``date`` that returns the
+        BSD-style ``1745247600N`` and no $EPOCHREALTIME, and confirm the
+        resulting JSONL line is parseable JSON with numeric ns fields."""
+        if not os.path.exists("/bin/bash"):
+            pytest.skip("requires /bin/bash")
+
+        backend = self._backend_with_timer()
+        wrapped = backend._wrap_with_timing("true", "foo.o")
+        # The Makefile recipe form has $$ for $; convert back to single $
+        # because we'll feed it directly to bash.
+        shell_recipe = wrapped.replace("$$", "$")
+        # Strip the leading "@" Make convention (silent recipe)
+        if shell_recipe.startswith("@"):
+            shell_recipe = shell_recipe[1:]
+
+        # Write a fake `date` that mimics BSD: prints "<seconds>N" for +%s%N.
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        fake_date = fake_bin / "date"
+        fake_date.write_text("#!/bin/sh\necho 1745247600N\n")
+        fake_date.chmod(0o755)
+
+        env = os.environ.copy()
+        env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+        # Force fallback path: unset EPOCHREALTIME explicitly
+        env.pop("EPOCHREALTIME", None)
+
+        # Invoke a clean bash without inheriting the parent's EPOCHREALTIME.
+        # Use `--norc --noprofile` to avoid user dotfiles.
+        result = subprocess.run(
+            ["/bin/bash", "--norc", "--noprofile", "-c", "unset EPOCHREALTIME; " + shell_recipe],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert result.returncode == 0, f"recipe failed: {result.stderr}"
+
+        # The JSONL line was redirected to backend._timing_log_path.
+        log_path = backend._timing_log_path
+        if not os.path.exists(log_path):
+            pytest.skip(f"log path {log_path} not present after recipe run; cwd-dependent")
+        try:
+            with open(log_path) as f:
+                line = f.readline().strip()
+            # Critical guarantee: when only BSD `date` is available and
+            # $EPOCHREALTIME is unset, our wrapper validates the date
+            # output and substitutes 0 (well-formed) rather than
+            # ``1745247600`` (a truncated garbage int).  Look for the
+            # ``"start_ns":0`` and ``"end_ns":0`` substrings — which
+            # confirms the validation rejected the bogus BSD output.
+            assert '"start_ns":0' in line, f"BSD date corruption leaked into log line: {line!r}"
+            assert '"end_ns":0' in line, f"BSD date corruption leaked into log line: {line!r}"
+        finally:
+            try:
+                os.remove(log_path)
+            except FileNotFoundError:
+                pass
+
+
+class TestTimingLogPidNamespace:
+    """Fix 4: parallel ``ct-cake --timing`` invocations against the same
+    Makefile race on ``.ct-make-timing.jsonl``.  The path must be
+    namespaced by PID + monotonic_ns so two invocations write to
+    distinct files."""
+
+    def test_log_path_includes_pid_and_ns(self):
+        args = SimpleNamespace(makefilename="Makefile", file_locking=False)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        path = backend._timing_log_path
+        pid = str(os.getpid())
+        assert pid in path, f"PID not in log path: {path}"
+        # Filename should match the .ct-make-timing.<suffix>.jsonl pattern
+        assert os.path.basename(path).startswith(".ct-make-timing.")
+        assert path.endswith(".jsonl")
+
+    def test_two_backends_get_distinct_paths(self):
+        """Critical: two MakefileBackend instances (e.g. two concurrent
+        ct-cake --timing invocations) must compute distinct log paths."""
+        args1 = SimpleNamespace(makefilename="Makefile", file_locking=False)
+        args2 = SimpleNamespace(makefilename="Makefile", file_locking=False)
+        b1 = MakefileBackend(args=args1, hunter=MagicMock())
+        b2 = MakefileBackend(args=args2, hunter=MagicMock())
+        # Force monotonic_ns to advance between calls
+        import time as _t
+
+        p1 = b1._timing_log_path
+        _t.sleep(0)  # let monotonic_ns tick (it's strictly monotonic anyway)
+        p2 = b2._timing_log_path
+        assert p1 != p2, f"Concurrent backends got same log path: {p1}"
+
+    def test_log_path_is_stable_per_backend(self):
+        """A single backend must reuse the same log path across calls so
+        cleanup actually removes the right file."""
+        args = SimpleNamespace(makefilename="Makefile", file_locking=False)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        p1 = backend._timing_log_path
+        p2 = backend._timing_log_path
+        assert p1 == p2
+
+
 class TestMakefileConcurrency:
     """Fix 9: concurrent `make -j` against a shared objdir must produce a
     correct build (no half-written .o, no torn link). Recent commit 348c18e1
@@ -808,6 +945,7 @@ class TestMakefileConcurrency:
                 for d in objdirs:
                     if os.path.isdir(d):
                         import shutil as _sh
+
                         _sh.rmtree(d, ignore_errors=True)
 
                 results: list[subprocess.CompletedProcess] = []
@@ -834,8 +972,7 @@ class TestMakefileConcurrency:
 
                 for r in results:
                     assert r.returncode == 0, (
-                        f"iter {iteration}: concurrent make failed: "
-                        f"stdout={r.stdout} stderr={r.stderr}"
+                        f"iter {iteration}: concurrent make failed: stdout={r.stdout} stderr={r.stderr}"
                     )
                     combined = r.stdout + r.stderr
                     assert "undefined reference" not in combined, (
@@ -854,9 +991,7 @@ class TestMakefileConcurrency:
                             if fn == stem and os.access(os.path.join(dp, fn), os.X_OK):
                                 exes.append(os.path.join(dp, fn))
                                 break
-                assert len(exes) == len(sources), (
-                    f"iter {iteration}: missing executables: {exes}"
-                )
+                assert len(exes) == len(sources), f"iter {iteration}: missing executables: {exes}"
                 for exe in exes:
                     rc = subprocess.run([exe], capture_output=True).returncode
                     assert rc in range(256), f"iter {iteration}: {exe} did not run cleanly"

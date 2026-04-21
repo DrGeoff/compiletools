@@ -22,6 +22,25 @@ class TestFindTimingFile:
         monkeypatch.chdir(tmp_path)
         assert _find_timing_file(None) is None
 
+    def test_auto_detect_objdir(self, tmp_path, monkeypatch):
+        """Fix 6: users with ``--objdir=shared-objdir/...`` previously got
+        false 'no timing file found'.  ``_find_timing_file`` must accept
+        an ``objdir`` argument and search there too."""
+        monkeypatch.chdir(tmp_path)
+        objdir = tmp_path / "shared-objdir" / "myproject"
+        objdir.mkdir(parents=True)
+        timing = objdir / ".ct-timing.json"
+        timing.write_text("{}")
+        # cwd has no .ct-timing.json, but objdir does
+        result = _find_timing_file(None, objdir=str(objdir))
+        assert result == str(timing)
+
+    def test_auto_detect_objdir_none_when_missing(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        objdir = tmp_path / "shared-objdir"
+        objdir.mkdir()
+        assert _find_timing_file(None, objdir=str(objdir)) is None
+
 
 class TestMainSummary:
     def test_summary_with_valid_file(self, tmp_path):
@@ -81,18 +100,26 @@ class TestComparison:
         return path
 
     def test_comparison_shows_deltas(self, tmp_path):
-        before = self._write_timer(tmp_path, "before.json", {
-            "build_execution": [
-                ("compile", "a.o", "a.cpp", 5.0),
-                ("link", "app", "", 2.0),
-            ],
-        })
-        after = self._write_timer(tmp_path, "after.json", {
-            "build_execution": [
-                ("compile", "a.o", "a.cpp", 3.0),
-                ("link", "app", "", 2.5),
-            ],
-        })
+        before = self._write_timer(
+            tmp_path,
+            "before.json",
+            {
+                "build_execution": [
+                    ("compile", "a.o", "a.cpp", 5.0),
+                    ("link", "app", "", 2.0),
+                ],
+            },
+        )
+        after = self._write_timer(
+            tmp_path,
+            "after.json",
+            {
+                "build_execution": [
+                    ("compile", "a.o", "a.cpp", 3.0),
+                    ("link", "app", "", 2.5),
+                ],
+            },
+        )
         rc = main(["--compare", before, after])
         assert rc == 0
 
@@ -113,6 +140,7 @@ class TestTUIFallback:
 
         # Mock the import to fail
         import builtins
+
         real_import = builtins.__import__
 
         def mock_import(name, *args, **kwargs):

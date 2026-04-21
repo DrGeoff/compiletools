@@ -128,8 +128,7 @@ class TimingReportApp(App):
 
     def action_help(self) -> None:
         self.notify(
-            "Navigation: arrows/j/k  Expand: Enter/Right  Collapse: Left\n"
-            "Sort: [s]  Quit: [q]",
+            "Navigation: arrows/j/k  Expand: Enter/Right  Collapse: Left\nSort: [s]  Quit: [q]",
             title="Help",
             timeout=8,
         )

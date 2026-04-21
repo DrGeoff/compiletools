@@ -8,6 +8,7 @@ import os
 import re
 import shlex
 import subprocess
+import time
 
 import compiletools.apptools
 import compiletools.filesystem_utils
@@ -188,8 +189,30 @@ class MakefileBackend(BuildBackend):
 
     @property
     def _timing_log_path(self) -> str:
+        """Per-invocation JSONL log path.
+
+        Namespaced by PID + monotonic_ns so that concurrent ``ct-cake --timing``
+        invocations against the same Makefile do not race on the same file.
+        Logs from all concurrent invocations are merged at parse time via
+        ``_timing_log_glob``.
+        """
         makefilename = getattr(self.args, "makefilename", "Makefile")
-        return os.path.join(os.path.dirname(makefilename) or ".", ".ct-make-timing.jsonl")
+        if getattr(self, "_timing_log_path_cached", None) is None:
+            suffix = f"{os.getpid()}.{time.monotonic_ns()}"
+            self._timing_log_path_cached = os.path.join(
+                os.path.dirname(makefilename) or ".",
+                f".ct-make-timing.{suffix}.jsonl",
+            )
+        return self._timing_log_path_cached
+
+    @property
+    def _timing_log_glob(self) -> str:
+        """Glob matching all concurrent timing-log fragments for this Makefile."""
+        makefilename = getattr(self.args, "makefilename", "Makefile")
+        return os.path.join(
+            os.path.dirname(makefilename) or ".",
+            ".ct-make-timing.*.jsonl",
+        )
 
     def _write_makefile(self, graph: BuildGraph, f) -> None:
         """Write a complete Makefile from the BuildGraph."""
@@ -258,15 +281,44 @@ class MakefileBackend(BuildBackend):
         return recipe
 
     def _wrap_with_timing(self, recipe: str, target: str) -> str:
-        """Wrap a recipe with shell timing that writes to the JSONL log."""
+        """Wrap a recipe with shell timing that writes to the JSONL log.
+
+        Strategy for getting nanosecond timestamps portably:
+
+        1. Prefer bash 5+'s ``$EPOCHREALTIME`` (e.g. ``1745247600.123456``).
+           Stripping the dot yields microseconds; appending ``000`` gives
+           nanoseconds. This is the only fully portable option (works on
+           macOS/BSD where ``date`` does not support ``%N``).
+        2. Fall back to ``date +%s%N`` and validate the output is purely
+           numeric (BSD ``date`` returns e.g. ``1745247600N`` literally,
+           which would parse as a partial garbage integer in Python).
+        3. If both fail, emit ``0`` so the JSONL line is well-formed and
+           parsing produces a 0-second event rather than corrupt data.
+
+        Namespace the JSONL by PID + monotonic_ns to avoid races between
+        concurrent ``ct-cake --timing`` invocations against the same
+        Makefile (logs are merged at parse time).
+        """
         log = shlex.quote(self._timing_log_path)
         tgt = shlex.quote(target)
-        # Use bash's $EPOCHREALTIME (bash 5+) for sub-second precision,
-        # with date +%s%N fallback for older bash
+        # Helper shell snippet that prints ns as integer or 0
+        ns_expr = (
+            "{ "
+            'if [ -n "${EPOCHREALTIME-}" ]; then '
+            'printf %s "${EPOCHREALTIME//./}000"; '
+            "else "
+            "_ct_d=$$(date +%s%N 2>/dev/null); "
+            'case "$$_ct_d" in '
+            "''|*[!0-9]*) printf 0 ;; "
+            '*) printf %s "$$_ct_d" ;; '
+            "esac; "
+            "fi; "
+            "}"
+        )
         return (
-            f"@_ct_s=$$(date +%s%N 2>/dev/null || echo 0); "
+            f"@_ct_s=$$({ns_expr}); "
             f"{recipe.lstrip('@+')}; _ct_rc=$$?; "
-            f"_ct_e=$$(date +%s%N 2>/dev/null || echo 0); "
+            f"_ct_e=$$({ns_expr}); "
             f"echo '{{\"target\":{tgt},\"start_ns\":'$$_ct_s',\"end_ns\":'$$_ct_e'}}' >> {log}; "
             f"exit $$_ct_rc"
         )
@@ -319,9 +371,11 @@ class MakefileBackend(BuildBackend):
         f.write(f"\t-{realclean_recipe}\n\n")
 
     def _execute_build(self, target: str) -> None:
-        # Clean up any stale timing log before the build
-        timing_log = self._timing_log_path
-        if self._timing_enabled:
+        # Per-invocation timing log path (PID + monotonic_ns suffix);
+        # safe against concurrent ct-cake --timing invocations.
+        timing_log = self._timing_log_path if self._timing_enabled else None
+        if timing_log:
+            # Defensive: remove our own fragment if it somehow exists already
             try:
                 os.remove(timing_log)
             except FileNotFoundError:
@@ -344,9 +398,11 @@ class MakefileBackend(BuildBackend):
             print(" ".join(cmd))
         subprocess.check_call(cmd, text=True)
 
-        # Parse per-file timing from the JSONL log written by instrumented recipes
+        # Parse per-file timing from the JSONL log written by instrumented recipes.
+        # Only consume this invocation's fragment to avoid swallowing logs
+        # belonging to a concurrent ct-cake --timing invocation.
         timer = self._timer
-        if timer and os.path.exists(timing_log):
+        if timer and timing_log and os.path.exists(timing_log):
             timer.record_rules_from_make_timing(timing_log, graph=self._graph)
             try:
                 os.remove(timing_log)

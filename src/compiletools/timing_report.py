@@ -64,15 +64,28 @@ def main(argv=None) -> int:
 # -------------------------------------------------------- file loading
 
 
-def _find_timing_file(path: str | None) -> str | None:
-    """Resolve timing file path, auto-detecting in cwd if not given."""
+def _find_timing_file(path: str | None, objdir: str | None = None) -> str | None:
+    """Resolve timing file path, auto-detecting in cwd if not given.
+
+    Search order:
+      1. Explicit ``path`` argument (if given).
+      2. ``./.ct-timing.json`` in cwd.
+      3. ``{objdir}/.ct-timing.json`` if ``objdir`` is provided.
+      4. Common objdir/bindir conventions: ``bin/``, ``obj/``.
+
+    Users with a custom ``--objdir=shared-objdir/...`` should pass
+    ``objdir`` so the search reaches their actual output location.
+    """
     if path:
         return path
     default = ".ct-timing.json"
     if os.path.exists(default):
         return default
-    # Try common objdir locations
-    for candidate in ["bin/.ct-timing.json", "obj/.ct-timing.json"]:
+    candidates = []
+    if objdir:
+        candidates.append(os.path.join(objdir, ".ct-timing.json"))
+    candidates.extend(["bin/.ct-timing.json", "obj/.ct-timing.json"])
+    for candidate in candidates:
         if os.path.exists(candidate):
             return candidate
     return None
@@ -80,7 +93,8 @@ def _find_timing_file(path: str | None) -> str | None:
 
 def _resolve_and_load(args) -> BuildTimer | None:
     """Find and load the timing file, printing errors on failure."""
-    path = _find_timing_file(getattr(args, "timing_file", None))
+    objdir = getattr(args, "objdir", None)
+    path = _find_timing_file(getattr(args, "timing_file", None), objdir=objdir)
     if path is None:
         print("No .ct-timing.json found. Run ct-cake --timing first.", file=sys.stderr)
         return None
@@ -228,7 +242,7 @@ def _run_tui(args) -> int:
         )
         return _print_summary(args)
 
-    path = _find_timing_file(getattr(args, "timing_file", None)) or ""
+    path = _find_timing_file(getattr(args, "timing_file", None), objdir=getattr(args, "objdir", None)) or ""
     app = TimingReportApp(timer, path)
     app.run()
     return 0
