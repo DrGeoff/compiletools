@@ -418,3 +418,176 @@ class TestMainCLI:
         os.makedirs(pchdir)
         rc = main(["--dry-run", "--pchdir-only", f"--pchdir={pchdir}"])
         assert rc == 0
+
+
+# ── _safe_locked_unlink / _safe_locked_rmtree behavior ───────────────
+
+
+class TestSafeLockedUnlink:
+    def test_refuses_when_lock_unavailable(self, tmp_path, monkeypatch):
+        """I-2: when FileLock raises OSError (filesystem unsupported,
+        permissions, etc.), we MUST NOT delete the file unlocked. Caller
+        sees False; the file remains on disk for retry."""
+        from compiletools import trim_cache
+
+        target = tmp_path / "victim.o"
+        target.write_bytes(b"x" * 1024)
+
+        class _RaisingLock:
+            def __init__(self, *_args, **_kwargs):
+                raise OSError("lock subsystem unavailable")
+
+        monkeypatch.setattr("compiletools.locking.FileLock", _RaisingLock)
+        result = trim_cache._safe_locked_unlink(str(target))
+
+        assert result is False, "must refuse to delete when lock unavailable"
+        assert target.exists(), "file must NOT be deleted unlocked"
+
+
+class TestSafeLockedRmtree:
+    def test_refuses_when_lock_unavailable(self, tmp_path, monkeypatch):
+        """I-2: when FileLock raises OSError on a contained file, we
+        MUST NOT rmtree unlocked. Caller sees False; dir remains."""
+        from compiletools import trim_cache
+
+        d = tmp_path / "cmd_hash_dir"
+        d.mkdir()
+        gch = d / "stdafx.h.gch"
+        gch.write_bytes(b"x" * 1024)
+
+        class _RaisingLock:
+            def __init__(self, *_args, **_kwargs):
+                raise OSError("lock subsystem unavailable")
+
+        monkeypatch.setattr("compiletools.locking.FileLock", _RaisingLock)
+        result = trim_cache._safe_locked_rmtree(str(d))
+
+        assert result is False
+        assert d.exists()
+        assert gch.exists()
+
+    def test_aborts_on_concurrent_file_creation(self, tmp_path, monkeypatch):
+        """I-1: if a peer build creates a fresh file in the dir between
+        the initial scan and the lock window, we re-scan inside the lock
+        and abort the rmtree. The new (unlocked) file would be deleted
+        half-written otherwise."""
+        from compiletools import trim_cache
+
+        d = tmp_path / "cmd_hash_dir"
+        d.mkdir()
+        existing = d / "stdafx.h.gch"
+        existing.write_bytes(b"x" * 1024)
+        new_file_path = d / "newheader.h.gch"
+
+        # Fake lock that simulates the lock-window pause by creating a
+        # new file as a side-effect of __enter__ (mimics a peer build
+        # racing in between scan and lock acquisition).
+        class _RacingLock:
+            def __init__(self, target_file, _args):
+                self.target_file = target_file
+
+            def __enter__(self):
+                # Simulate concurrent peer creating a NEW file in the
+                # same dir during our lock window.
+                if not new_file_path.exists():
+                    new_file_path.write_bytes(b"y" * 512)
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr("compiletools.locking.FileLock", _RacingLock)
+        result = trim_cache._safe_locked_rmtree(str(d))
+
+        assert result is False, "must refuse to rmtree when new files appeared"
+        assert d.exists(), "dir must still exist"
+        assert new_file_path.exists(), "the racing peer file must NOT be deleted"
+
+
+# ── Issue #4 placeholder (per-realpath bucketing) ────────────────────
+
+
+class TestPchPerRealpathBucketing:
+    """Per-realpath bucketing requires a sidecar manifest written by
+    build_backend.py at PCH compile time (the realpath is not stored on
+    disk inside the cmd_hash dir today). Documented as deferred in
+    NOTES.md. This test pins the current global-keep_count behavior so
+    that any future implementation MUST update this test."""
+
+    def test_current_global_keep_count_documented(self, tmp_path):
+        pchdir = str(tmp_path / "pch")
+        os.makedirs(pchdir)
+
+        # Three cmd_hash dirs that conceptually share one realpath
+        # (cross-variant builds of the same header). With keep_count=1
+        # current behavior keeps only the newest globally — the
+        # cross-variant ones are evicted. A future per-realpath
+        # implementation should keep all 3 in the same bucket.
+        a = _make_pchdir_entry(pchdir, "1" * 16, ["stdafx.h"], age_seconds=3600)
+        b = _make_pchdir_entry(pchdir, "2" * 16, ["stdafx.h"], age_seconds=1800)
+        c = _make_pchdir_entry(pchdir, "3" * 16, ["stdafx.h"], age_seconds=60)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        trimmer.trim_pchdir(pchdir)
+
+        # Pin current behavior: only newest survives globally.
+        assert os.path.isdir(c)
+        assert not os.path.isdir(a)
+        assert not os.path.isdir(b)
+
+
+# ── Issue #7: noncurrent_kept accounting ─────────────────────────────
+
+
+class TestNoncurrentKeptAccounting:
+    def test_keep_count_zero_with_safety_floor(self, tmp_path):
+        """I-7: when keep_count=0 AND no current entry exists, the
+        safety pop bumps a candidate up to to_keep BEFORE the
+        noncurrent_kept calculation runs. Verify the count stays
+        accurate (one survivor reported, one removed)."""
+        objdir = str(tmp_path / "obj")
+        os.makedirs(objdir)
+
+        _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=7200)
+        _touch_obj(objdir, "foo", "222222222222", "11223344556677", "0011223344556677", age_seconds=60)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=0))
+        stats = trimmer.trim_objdir(objdir, set())
+
+        assert stats["noncurrent_kept"] == 1, f"safety should keep exactly 1; got {stats['noncurrent_kept']}"
+        assert stats["removed"] == 1
+        assert stats["current_kept"] == 0
+
+    def test_keep_count_zero_safety_with_max_age_keeps_recent(self, tmp_path):
+        """I-7: keep_count=0 + safety + max_age. The safety-popped file
+        must be counted in noncurrent_kept. A second file inside max_age
+        should also be kept and counted."""
+        objdir = str(tmp_path / "obj")
+        os.makedirs(objdir)
+
+        # Three non-current files; only the oldest is beyond max_age=1d
+        _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=172800)
+        _touch_obj(objdir, "foo", "222222222222", "11223344556677", "0011223344556677", age_seconds=3600)
+        _touch_obj(objdir, "foo", "333333333333", "11223344556677", "0011223344556677", age_seconds=60)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=0, max_age=1))
+        stats = trimmer.trim_objdir(objdir, set())
+
+        # Newest popped to to_keep by safety (1), middle kept by max_age (1),
+        # oldest beyond max_age → removed.
+        assert stats["noncurrent_kept"] == 2, f"expected 2 kept (safety + max_age); got {stats['noncurrent_kept']}"
+        assert stats["removed"] == 1
+
+    def test_keep_count_zero_single_noncurrent_file(self, tmp_path):
+        """I-7 edge: single file, keep_count=0, no current → safety
+        keeps the lone file. noncurrent_kept must be 1, removed 0."""
+        objdir = str(tmp_path / "obj")
+        os.makedirs(objdir)
+
+        _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=3600)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=0))
+        stats = trimmer.trim_objdir(objdir, set())
+
+        assert stats["noncurrent_kept"] == 1
+        assert stats["removed"] == 0

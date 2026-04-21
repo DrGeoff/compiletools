@@ -34,7 +34,13 @@ def add_arguments(cap):
         "--max-age",
         type=int,
         default=None,
-        help="Only remove non-current files older than this many days (default: no age limit)",
+        help=(
+            "Only remove non-current files older than this many days "
+            "(default: no age limit). 'Older' means 'written more than N days ago' "
+            "(mtime), NOT 'not accessed in N days' — atime is unreliable on "
+            "noatime-mounted filesystems, so a hot-but-old cache entry will "
+            "still be evicted."
+        ),
     )
     cap.add(
         "--keep-count",
@@ -63,9 +69,7 @@ def main(argv=None):
         int: Exit code (0 = success, 1 = failure)
     """
     try:
-        cap = compiletools.apptools.create_parser(
-            "Trim stale entries from shared build caches", argv=argv
-        )
+        cap = compiletools.apptools.create_parser("Trim stale entries from shared build caches", argv=argv)
 
         add_arguments(cap)
 
@@ -106,9 +110,7 @@ def main(argv=None):
 
         trimmer.print_summary(objdir_stats, pchdir_stats)
 
-        any_failed = (
-            (objdir_stats or {}).get("failed", 0) + (pchdir_stats or {}).get("failed", 0)
-        )
+        any_failed = (objdir_stats or {}).get("failed", 0) + (pchdir_stats or {}).get("failed", 0)
         return 1 if any_failed else 0
 
     except OSError as ioe:

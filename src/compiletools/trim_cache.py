@@ -81,6 +81,11 @@ class CacheTrimmer:
     def trim_objdir(self, objdir, current_hashes):
         """Trim stale object files from a shared object directory.
 
+        Note on ``max_age``: "aged" means "old since written" (mtime), NOT
+        "old since last accessed" (atime). A heavily-used cache entry from
+        months ago will still be evicted because we cannot rely on atime
+        (most production filesystems mount with ``noatime``).
+
         Args:
             objdir: Path to the shared object directory.
             current_hashes: Set of 12-char hex strings representing current
@@ -201,7 +206,24 @@ class CacheTrimmer:
         cache thrash (I-B5): two unrelated projects both using
         ``stdafx.h`` evicted each other at the default ``keep_count=1``.
         cmd_hash dirs are content-addressable, so per-dir bucketing is
-        the correct partitioning.
+        the correct partitioning. Per-realpath bucketing would be
+        ideal (group cross-variant builds of the same header together)
+        but the realpath is not stored on disk; see NOTES.md for the
+        deferred sidecar-manifest follow-up.
+
+        Note on ``max_age``: "aged" means "old since written" (the
+        cmd_hash dir's mtime), NOT "old since last accessed". A
+        heavily-used PCH cmd_hash dir from months ago is still evicted
+        if it falls outside ``keep_count`` and ``max_age``. atime is
+        unreliable on noatime-mounted filesystems.
+
+        Note on cache-key composition: the cmd_hash captures the
+        immediate header's realpath but NOT the content of headers it
+        transitively includes. GCC's PCH stamp is the backstop — if a
+        transitive header changes, the .gch is silently rejected at
+        consume time and the user pays a slow rebuild. TODO(M-B6):
+        write a sidecar manifest with transitive-header content hashes
+        so the trim path can pre-evict known-stale entries.
 
         Args:
             pchdir: Path to the shared PCH directory.
@@ -359,7 +381,13 @@ def _safe_locked_unlink(path):
 
     Used by ct-trim-cache to avoid deleting an .o file that a concurrent
     build is currently writing. Returns True on success, False on failure.
-    Best effort: lock acquisition errors fall through to a plain unlink.
+
+    If the lock subsystem cannot acquire a lock (filesystem unsupported,
+    permissions, etc.), this function REFUSES to delete the file —
+    deleting unlocked would defeat the entire purpose of the wrapper
+    and could clobber an in-flight write from a peer build. The caller
+    sees False and reports the file as failed; a future trim run can
+    retry once the underlying lock issue is resolved.
     """
     from types import SimpleNamespace
 
@@ -384,22 +412,32 @@ def _safe_locked_unlink(path):
                 return True  # peer already removed
             except OSError:
                 return False
-    except OSError:
-        # Locking failed entirely — fall through to plain unlink
-        try:
-            os.remove(path)
-            return True
-        except OSError:
-            return False
+    except OSError as exc:
+        # Lock acquisition failed — refuse to delete unlocked. Deleting
+        # without a lock could clobber a peer build that is mid-write.
+        print(
+            f"  Refusing to remove {path}: lock unavailable ({exc})",
+            file=sys.stderr,
+        )
+        return False
 
 
 def _safe_locked_rmtree(dir_path):
     """Remove dir_path after acquiring a build lock on each contained file.
 
     Used by ct-trim-cache to avoid deleting files that a concurrent build
-    is currently writing. Returns True on success, False on failure. Best
-    effort: if the lock subsystem can't lock these files (unsupported
-    filesystem, missing permissions), falls through to a plain rmtree.
+    is currently writing. Returns True on success, False on failure.
+
+    Lock-unavailable safety: if any file's lock cannot be acquired, this
+    function REFUSES to remove the directory and returns False. Deleting
+    unlocked would defeat the wrapper's purpose and risk clobbering a
+    peer build's in-flight write.
+
+    TOCTOU safety: after locks are acquired, the directory is re-scanned.
+    If any new file appeared between the initial scan and lock window
+    (a peer build creating a fresh .gch), we abort the removal so the
+    new file is not deleted unlocked. Caller sees False and the dir is
+    naturally retried on the next trim pass.
     """
     from types import SimpleNamespace
 
@@ -432,10 +470,35 @@ def _safe_locked_rmtree(dir_path):
                 fl = FileLock(path, lock_args)
                 fl.__enter__()
                 locks.append(fl)
-            except OSError:
-                # Couldn't lock this file — skip locking the rest and
-                # fall through to rmtree (best effort).
-                break
+            except OSError as exc:
+                # Lock acquisition failed — refuse to delete unlocked.
+                # Deleting without a lock could clobber a peer build
+                # that is mid-write to one of these files.
+                print(
+                    f"  Refusing to remove {dir_path}: lock unavailable for {path} ({exc})",
+                    file=sys.stderr,
+                )
+                return False
+
+        # Re-scan inside the lock window to catch files that appeared
+        # between the initial scan and lock acquisition. A peer build
+        # creating a fresh .gch in this dir is unlocked from our side,
+        # so removing it would be unsafe — abort instead.
+        try:
+            current_files = {entry.path for entry in os.scandir(dir_path) if entry.is_file()}
+        except OSError:
+            # Dir vanished between scan and re-scan; nothing more to do
+            return True
+
+        locked_set = set(files_to_lock)
+        new_files = current_files - locked_set
+        if new_files:
+            print(
+                f"  Refusing to remove {dir_path}: {len(new_files)} new file(s) "
+                f"appeared after scan (peer build active)",
+                file=sys.stderr,
+            )
+            return False
 
         try:
             shutil.rmtree(dir_path)
