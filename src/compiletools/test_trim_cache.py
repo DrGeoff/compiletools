@@ -1,6 +1,6 @@
 """Tests for trim_cache module."""
 
-import json  # noqa: F401  # used by tests added in Task 4
+import json
 import os
 import time
 import types
@@ -538,32 +538,62 @@ class TestLoadPchManifest:
 
 
 class TestPchPerRealpathBucketing:
-    """Per-realpath bucketing requires a sidecar manifest written by
-    build_backend.py at PCH compile time (the realpath is not stored on
-    disk inside the cmd_hash dir today). Documented as deferred in
-    NOTES.md. This test pins the current global-keep_count behavior so
-    that any future implementation MUST update this test."""
+    """With sidecar manifests present, keep_count applies per-realpath
+    so cross-variant builds of the same header are not mutually evicted
+    at the default keep_count=1 (I-4)."""
 
-    def test_current_global_keep_count_documented(self, tmp_path):
+    @staticmethod
+    def _write_manifest(pchdir, cmd_hash, header_realpath, transitive=None, age_seconds=0):
+        manifest = {
+            "header_realpath": header_realpath,
+            "compiler": "g++",
+            "compiler_identity": "g++|0|0",
+            "transitive_hashes": transitive or {},
+        }
+        d = os.path.join(pchdir, cmd_hash)
+        with open(os.path.join(d, "manifest.json"), "w") as f:
+            json.dump(manifest, f)
+        # Re-stamp mtime AFTER writing manifest, since writing the file
+        # bumps the directory's mtime back to "now".
+        if age_seconds:
+            mtime = time.time() - age_seconds
+            os.utime(d, (mtime, mtime))
+
+    def test_distinct_realpaths_get_independent_keep_count(self, tmp_path):
         pchdir = str(tmp_path / "pch")
         os.makedirs(pchdir)
 
-        # Three cmd_hash dirs that conceptually share one realpath
-        # (cross-variant builds of the same header). With keep_count=1
-        # current behavior keeps only the newest globally — the
-        # cross-variant ones are evicted. A future per-realpath
-        # implementation should keep all 3 in the same bucket.
-        a = _make_pchdir_entry(pchdir, "1" * 16, ["stdafx.h"], age_seconds=3600)
-        b = _make_pchdir_entry(pchdir, "2" * 16, ["stdafx.h"], age_seconds=1800)
-        c = _make_pchdir_entry(pchdir, "3" * 16, ["stdafx.h"], age_seconds=60)
+        # Two different headers, each with two cmd_hash variants.
+        a1 = _make_pchdir_entry(pchdir, "a" * 16, ["headerA.h"])
+        a2 = _make_pchdir_entry(pchdir, "b" * 16, ["headerA.h"])
+        b1 = _make_pchdir_entry(pchdir, "c" * 16, ["headerB.h"])
+        b2 = _make_pchdir_entry(pchdir, "d" * 16, ["headerB.h"])
+        # Manifests first, then re-stamp mtime so write doesn't reset it.
+        self._write_manifest(pchdir, "a" * 16, "/proj/headerA.h", age_seconds=3600)
+        self._write_manifest(pchdir, "b" * 16, "/proj/headerA.h", age_seconds=60)
+        self._write_manifest(pchdir, "c" * 16, "/proj/headerB.h", age_seconds=3600)
+        self._write_manifest(pchdir, "d" * 16, "/proj/headerB.h", age_seconds=60)
 
         trimmer = CacheTrimmer(_make_args(keep_count=1))
         trimmer.trim_pchdir(pchdir)
 
-        # Pin current behavior: only newest survives globally.
-        assert os.path.isdir(c)
+        # keep_count=1 PER realpath bucket — newest of each survives.
+        assert os.path.isdir(a2) and not os.path.isdir(a1)
+        assert os.path.isdir(b2) and not os.path.isdir(b1)
+
+    def test_legacy_entries_without_manifest_use_global_ranking(self, tmp_path):
+        pchdir = str(tmp_path / "pch")
+        os.makedirs(pchdir)
+        # No manifests written — legacy behavior.
+        a = _make_pchdir_entry(pchdir, "1" * 16, ["x.h"], age_seconds=3600)
+        b = _make_pchdir_entry(pchdir, "2" * 16, ["x.h"], age_seconds=60)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        trimmer.trim_pchdir(pchdir)
+
+        # Legacy: global keep_count=1 keeps newest, drops older.
+        assert os.path.isdir(b)
         assert not os.path.isdir(a)
-        assert not os.path.isdir(b)
 
 
 # ── Issue #7: noncurrent_kept accounting ─────────────────────────────

@@ -308,15 +308,28 @@ class CacheTrimmer:
         stats["headers_found"] = len(unique_headers)
         now = time.time()
 
-        # Phase 2: rank all cmd_hash dirs globally by mtime; keep the newest
-        # ``keep_count`` plus anything within ``max_age_seconds``.
-        all_dirs_sorted = sorted(dir_info.keys(), key=lambda ch: dir_info[ch][1], reverse=True)
-        needed_dirs = set(all_dirs_sorted[: self.keep_count])
+        # Phase 2: bucket cmd_hash dirs by header_realpath (from sidecar
+        # manifest) and apply ``keep_count`` per bucket. Legacy entries
+        # without a manifest fall into the ``__legacy__`` bucket and use
+        # the previous global-ranking semantics so the rollout is
+        # backwards-compatible (I-4).
+        buckets: dict[str, list[str]] = {}
+        for cmd_hash, (path, _mtime, _size, _headers) in dir_info.items():
+            manifest = _load_pch_manifest(path)
+            realpath = manifest.get("header_realpath") if manifest else None
+            key = realpath or "__legacy__"
+            buckets.setdefault(key, []).append(cmd_hash)
+
+        needed_dirs: set[str] = set()
+        for _bucket_key, hashes in buckets.items():
+            sorted_hashes = sorted(hashes, key=lambda ch: dir_info[ch][1], reverse=True)
+            needed_dirs.update(sorted_hashes[: self.keep_count])
+
         if self.max_age_seconds is not None:
             cutoff = now - self.max_age_seconds
-            for ch in all_dirs_sorted[self.keep_count :]:
-                if dir_info[ch][1] >= cutoff:
-                    needed_dirs.add(ch)
+            for cmd_hash, (_path, mtime, _size, _headers) in dir_info.items():
+                if mtime >= cutoff:
+                    needed_dirs.add(cmd_hash)
 
         # Phase 3: remove directories not needed
         for cmd_hash, (path, _mtime, total_size, _headers) in dir_info.items():
