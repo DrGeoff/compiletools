@@ -19,7 +19,7 @@ import time
 # Anchored from the END (the three hash fields have fixed widths) so the
 # basename can contain anything — including embedded substrings that look
 # like our hash fields. Per-trailing-component matching avoids the regex
-# backtracking quirks of a greedy ``(.+)`` first group (M-B1).
+# backtracking quirks of a greedy ``(.+)`` first group.
 _OBJ_FILENAME_RE = re.compile(
     r"^(?P<basename>.+)_(?P<file>[0-9a-f]{12})_(?P<dep>[0-9a-f]{14})_(?P<macro>[0-9a-f]{16})\.o$"
 )
@@ -67,7 +67,7 @@ def build_current_hash_set(context):
     of a collision is over-retention (treating a non-current entry as
     current and keeping it), never under-deletion. With ~80k tracked
     files the birthday probability of a collision is non-trivial but
-    benign (M-B3).
+    benign.
 
     Args:
         context: BuildContext with loaded file hashes.
@@ -220,9 +220,9 @@ class CacheTrimmer:
           than that even beyond ``keep_count``.
 
         Bucketing-by-header-basename was tried in v8.0.2 but caused
-        cache thrash (I-B5): two unrelated projects both using
-        ``stdafx.h`` evicted each other at the default ``keep_count=1``.
-        Per-realpath bucketing (I-4) is now used instead — each
+        cache thrash: two unrelated projects both using ``stdafx.h``
+        evicted each other at the default ``keep_count=1``.
+        Per-realpath bucketing is now used instead — each
         ``<pchdir>/<cmd_hash>/`` writes a sidecar ``manifest.json``
         recording the immediate header's realpath, and ``keep_count``
         is enforced per realpath bucket so cross-variant builds of the
@@ -237,10 +237,10 @@ class CacheTrimmer:
 
         Note on cache-key composition: the cmd_hash captures the
         immediate header's realpath. Transitive-header content hashes
-        are stored in the sidecar manifest (I-5) and consulted during
-        trim — entries whose transitive content has changed are
-        pre-evicted so the user does not pay the slow ``cc1``
-        PCH-stamp rejection at consume time.
+        are stored in the sidecar manifest and consulted during trim —
+        entries whose transitive content has changed are pre-evicted so
+        the user does not pay the slow ``cc1`` PCH-stamp rejection at
+        consume time.
 
         Args:
             pchdir: Path to the shared PCH directory.
@@ -313,7 +313,7 @@ class CacheTrimmer:
         # manifest) and apply ``keep_count`` per bucket. Legacy entries
         # without a manifest fall into the ``__legacy__`` bucket and use
         # the previous global-ranking semantics so the rollout is
-        # backwards-compatible (I-4).
+        # backwards-compatible.
         buckets: dict[str, list[str]] = {}
         for cmd_hash, (path, _mtime, _size, _headers) in dir_info.items():
             manifest = _load_pch_manifest(path)
@@ -334,7 +334,7 @@ class CacheTrimmer:
 
         # Phase 2b: pre-evict entries whose transitive headers have
         # changed since the .gch was built. Best-effort — manifest
-        # absence or unreadable headers leave the entry alone (I-5).
+        # absence or unreadable headers leave the entry alone.
         # Hashes use the same git-blob-SHA1 algorithm as
         # ``global_hash_registry._compute_external_file_hash`` so
         # comparisons are meaningful without taking on a BuildContext
@@ -373,7 +373,7 @@ class CacheTrimmer:
                 print(f"  {action}: {path} ({_format_size(total_size)})")
 
             if not self.dry_run:
-                # I-B4: lock each .gch file before removing the cmd_hash
+                # Lock each .gch file before removing the cmd_hash
                 # dir. If a build is currently generating one of the .gch
                 # files, we block until it releases — never deleting a
                 # file a peer is mid-write to. Best-effort: filesystems

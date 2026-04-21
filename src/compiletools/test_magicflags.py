@@ -324,7 +324,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         ), "GCC's legacy #define linux 1 must not corrupt pkg-config -L paths"
 
     def test_user_redefined_legacy_macro_is_honored(self):
-        """I-2 regression: the legacy-name filter in _parse() drops compiler
+        """Regression: the legacy-name filter in _parse() drops compiler
         predefined names without leading underscore (e.g. ``linux``, ``unix``)
         UNLESS the user has redefined them via ``#define``.
 

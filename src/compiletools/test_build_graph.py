@@ -149,7 +149,7 @@ class TestBuildGraphFiltering:
 
 
 class TestFilterToChanged:
-    """I-A1: filter_to_changed has nontrivial fixed-point semantics. Cover
+    """filter_to_changed has nontrivial fixed-point semantics. Cover
     leaf changes, multi-level propagation, diamond dependencies, the
     no-affected case, and the asymmetric phony-rule pruning."""
 

@@ -813,7 +813,7 @@ class TestSetupPkgConfigOverrides:
         assert pkg_config_path.count(str(pkgconfig_dir)) == 1
 
     def test_prepend_promotes_existing_entry_to_front(self, monkeypatch, tmp_path):
-        """I-C1 regression: --prepend-PKG-CONFIG-PATH=/X with PKG_CONFIG_PATH=/Y:/X
+        """Regression: --prepend-PKG-CONFIG-PATH=/X with PKG_CONFIG_PATH=/Y:/X
         must produce /X:/Y (X promoted), not /Y:/X (unchanged)."""
         monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: None)
         monkeypatch.chdir(tmp_path)
@@ -826,7 +826,7 @@ class TestSetupPkgConfigOverrides:
         assert dirs == ["/local", "/system"]
 
     def test_append_demotes_existing_entry_to_end(self, monkeypatch, tmp_path):
-        """Symmetric I-C1: --append-PKG-CONFIG-PATH should move an existing
+        """Symmetric: --append-PKG-CONFIG-PATH should move an existing
         entry to the end."""
         monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: None)
         monkeypatch.chdir(tmp_path)
@@ -839,7 +839,7 @@ class TestSetupPkgConfigOverrides:
         assert dirs == ["/system", "/local"]
 
     def test_flag_set_only_after_env_mutation_succeeds(self, monkeypatch, tmp_path):
-        """I-C4 regression: pkg_config_overrides_applied must NOT be set
+        """Regression: pkg_config_overrides_applied must NOT be set
         if the function raises before mutating PKG_CONFIG_PATH — otherwise
         a retry within the same context is silently suppressed."""
 
@@ -860,7 +860,7 @@ class TestSetupPkgConfigOverrides:
         )
 
     def test_restore_pkg_config_path_undoes_mutation(self, monkeypatch, tmp_path):
-        """I-C5 regression: BuildContext must expose a way to undo the
+        """Regression: BuildContext must expose a way to undo the
         global env mutation, so long-lived processes / tests using
         multiple sequential contexts don't leak PKG_CONFIG_PATH state."""
         pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
@@ -898,7 +898,7 @@ class TestSetupPkgConfigOverrides:
         assert "PKG_CONFIG_PATH" not in os.environ
 
     def test_restore_runs_after_subprocess_exception(self, monkeypatch, tmp_path):
-        """I-10 regression: restore_pkg_config_path() must cleanly undo the
+        """Regression: restore_pkg_config_path() must cleanly undo the
         env mutation even when a downstream pkg-config subprocess raises
         between apply and restore. Long-lived processes / tests rely on
         this for cleanup-by-context-manager / try/finally patterns."""

@@ -33,7 +33,7 @@ class TupBackend(BuildBackend):
         return "Tupfile"
 
     def generate(self, graph: BuildGraph, output=None) -> None:
-        # M-A12: tup has no phony-rule equivalent, so a `runtests` target
+        # tup has no phony-rule equivalent, so a `runtests` target
         # cannot be expressed in the Tupfile. Tests will still run via
         # the backend-agnostic Python test runner (BuildBackend._run_tests
         # invoked from BuildBackend.execute("runtests")) — warn the user

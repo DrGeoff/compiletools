@@ -990,7 +990,7 @@ def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_p
     # Each entry appears at most once. An entry that is already in
     # PKG_CONFIG_PATH gets *moved* to the requested position rather than
     # being silently dropped — so --prepend-PKG-CONFIG-PATH=/X actually
-    # promotes /X to the front when /X was already present (I-C1).
+    # promotes /X to the front when /X was already present.
     prepend_normd = [os.path.normpath(d) for d in (prepend_paths or [])]
     candidates_normd = [os.path.normpath(d) for d in candidates]
     append_normd = [os.path.normpath(d) for d in (append_paths or [])]
@@ -1018,7 +1018,7 @@ def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_p
 
     # Save original ONLY if we are about to mutate, so restore_pkg_config_path
     # can faithfully undo. Set the flag AFTER the mutation succeeds so a
-    # caller hitting an exception above can retry (I-C4).
+    # caller hitting an exception above can retry.
     if new_value is not None and new_value != existing:
         context._original_pkg_config_path = existing if "PKG_CONFIG_PATH" in os.environ else True
         os.environ["PKG_CONFIG_PATH"] = new_value

@@ -242,7 +242,7 @@ class TestSimplePreprocessor:
         assert result in ["X", "Y"]  # Could be either depending on iteration count
 
     def test_recursive_expansion_warns_on_truncation(self, capsys):
-        """I-3 regression: hitting max_iterations on a still-mutating
+        """Regression: hitting max_iterations on a still-mutating
         expression must emit a warning at verbose>=1, not silently return
         a truncated result. Pathological recursive macros otherwise hide
         broken user definitions."""

@@ -1057,7 +1057,7 @@ _PCHDIR_WARNED: set[str] = set()
 def _warn_if_pchdir_not_cross_user_safe(pchdir: str, verbose: int) -> None:
     """Emit a one-time warning if pchdir's parent isn't group-writable + SGID.
 
-    The shared PCH cache is intended to be readable across users (I-B2):
+    The shared PCH cache is intended to be readable across users:
     user A creates ``<pchdir>/<cmd_hash>/stdafx.h.gch``, user B should be
     able to consume it. With a default ``umask 0077`` and no SGID on the
     parent, A's directory is mode ``0700`` and B silently re-builds the
@@ -1071,7 +1071,7 @@ def _warn_if_pchdir_not_cross_user_safe(pchdir: str, verbose: int) -> None:
         return
     _PCHDIR_WARNED.add(pchdir)
 
-    # I-6: skip the warning when pchdir is a per-user path (cwd-relative
+    # Skip the warning when pchdir is a per-user path (cwd-relative
     # or under the build's bin tree). The cross-user-safety guidance only
     # applies to genuinely shared cache locations.
     abs_pchdir = os.path.abspath(pchdir)
@@ -1110,7 +1110,7 @@ def _warn_if_pchdir_not_cross_user_safe(pchdir: str, verbose: int) -> None:
 def _compiler_identity(cxx: str) -> str:
     """Return a stable identity string for a compiler binary.
 
-    Used as part of the PCH cache key (I-B1): two users on the same shared
+    Used as part of the PCH cache key: two users on the same shared
     filesystem with different ``$PATH``s could otherwise collide on the
     same key while resolving ``args.CXX`` (e.g. bare ``g++``) to different
     binaries (different versions, different stdlibs). GCC's PCH stamp
@@ -1148,16 +1148,16 @@ def _pch_command_hash(
     containing literal spaces (``-DFOO="a b"``) cannot collide with
     space-separated flag pairs.
     """
-    # M-A11: 64 bits (16 hex chars) of SHA-256 — birthday-collision risk at
+    # 64 bits (16 hex chars) of SHA-256 — birthday-collision risk at
     # ~4 billion entries, fine in practice. PCH cache validity is also
     # guarded by GCC's PCH stamp at consume time, so a hash collision
     # would only cause a slow rebuild, not a miscompile.
-    # M-B6 (resolved): the cache key still hashes only the immediate
-    # header's realpath, but transitive-header content hashes are now
-    # recorded in the sidecar manifest written by ``_write_pch_manifest``.
-    # ``trim_cache.trim_pchdir`` reads those hashes and pre-evicts entries
-    # whose transitive headers have changed, so the slow ``cc1`` PCH-stamp
-    # rebuild is avoided in the cross-user-mixed-content case.
+    # The cache key hashes only the immediate header's realpath, but
+    # transitive-header content hashes are recorded in the sidecar
+    # manifest written by ``_write_pch_manifest``. ``trim_cache.trim_pchdir``
+    # reads those hashes and pre-evicts entries whose transitive headers
+    # have changed, so the slow ``cc1`` PCH-stamp rebuild is avoided in
+    # the cross-user-mixed-content case.
     canonical = {
         "compiler_identity": _compiler_identity(args.CXX),
         "cxx_command": args.CXX,
@@ -1183,12 +1183,12 @@ def _write_pch_manifest(
     The manifest enables ``trim_cache.trim_pchdir`` to:
 
     * Bucket ``<pchdir>/<cmd_hash>/`` directories by ``header_realpath``
-      so ``keep_count`` is enforced per real header rather than globally
-      (I-4: cross-variant builds of the same header no longer evict
-      each other at ``keep_count=1``).
+      so ``keep_count`` is enforced per real header rather than globally —
+      cross-variant builds of the same header no longer evict each other
+      at the default ``keep_count=1``.
     * Pre-evict entries whose transitive header content has changed
-      since the .gch was built (I-5: avoid the slow ``cc1`` PCH-stamp
-      rejection at consume time).
+      since the .gch was built, avoiding the slow ``cc1`` PCH-stamp
+      rejection at consume time.
 
     Hashes are git-blob SHA1 (the algorithm used by
     ``global_hash_registry``) so that ``trim_cache``'s standalone
@@ -1384,7 +1384,7 @@ def register_backend(cls: type[_BackendT]) -> type[_BackendT]:
     BuildBackend, declare ``@staticmethod tool_command()`` if the backend
     needs an external tool (return None / ``("a", "b")`` for fallbacks),
     and register. The registry is the single source of truth for
-    discovery, availability, and CLI argument registration (I-A3).
+    discovery, availability, and CLI argument registration.
     """
     _REGISTRY[cls.name()] = cls
     return cls
@@ -1454,7 +1454,7 @@ def detect_available_backends(requested: list[str]) -> list[str]:
 
 def register_backend_cli_arguments(cap) -> None:
     """Call ``cls.add_arguments(cap)`` on every registered backend that
-    declares one (I-A4). Replaces the v8.0.2 pattern of cake.py
+    declares one. Replaces the v8.0.2 pattern of cake.py
     hardcoding which backends contributed CLI args, which silently
     dropped any add_arguments() declared on ninja/cmake/bazel/tup/shake.
     """

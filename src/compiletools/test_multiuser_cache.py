@@ -1074,7 +1074,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 assert obj_file.stat().st_size > 0, f"{obj_file.name} is empty"
 
     def _create_pch_source_dir(self, tmpdir, source_name, objdir, pchdir):
-        """I-B3 helper: create a build dir using the samples/pch source.
+        """Helper: create a build dir using the samples/pch source.
 
         Returns (source_dir, config_name)."""
         import shutil
@@ -1099,7 +1099,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
 
     @uth.requires_functional_compiler
     def test_concurrent_pch_compilation_shares_cache(self):
-        """I-B3 regression: two workers concurrently compiling the same
+        """Regression: two workers concurrently compiling the same
         PCH must produce a single .gch in the shared pchdir, both succeed,
         and the .gch must be group-readable so cross-user consumers don't
         silently rebuild."""

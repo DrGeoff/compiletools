@@ -205,7 +205,7 @@ class Cake:
         if not getattr(self.args, "compilation_database", True):
             return
         if self.args.clean or getattr(self.args, "realclean", False):
-            # I-A6: Both clean and realclean tear down build artifacts —
+            # Both clean and realclean tear down build artifacts —
             # generating compile_commands.json immediately before doing
             # so is wasted work and confuses tooling that picks it up.
             return
@@ -478,7 +478,7 @@ def main(argv=None):
         else:
             raise
     except compiletools.utils.LDFLAGSCycleError as ve:
-        # M-C7: catch ONLY the cycle error so unrelated ValueErrors
+        # Catch ONLY the cycle error so unrelated ValueErrors
         # don't get rendered through the Rich cycle-error formatter
         # (which would confuse the user with a panel that doesn't apply).
         if args.verbose < 2:

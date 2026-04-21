@@ -496,7 +496,7 @@ class LDFLAGSCycleError(ValueError):
     """Raised when merge_ldflags_with_topo_sort cannot break a cycle.
 
     A subclass of ValueError so cake.py's outer error handler can match
-    only this specific error (M-C7) rather than rendering every random
+    only this specific error rather than rendering every random
     ValueError through the cycle-error formatter.
     """
 
@@ -543,7 +543,7 @@ def _format_cycle_error(
         lines.append("  Constraints contributing to the cycle:")
         for i in range(len(cycle_path) - 1):
             edge = (cycle_path[i], cycle_path[i + 1])
-            # M-C6: dedupe files per-edge so a single source contributing
+            # Dedupe files per-edge so a single source contributing
             # the same edge multiple times doesn't get listed N times.
             files = list(dict.fromkeys(edge_sources.get(edge, [])))
             if files:
@@ -591,7 +591,7 @@ def merge_ldflags_with_topo_sort(
             for hard_orderings (used in cycle error messages).
     """
     if not per_file_ldflags:
-        # M-C11: hard_orderings without per_file_ldflags is impossible
+        # hard_orderings without per_file_ldflags is impossible
         # in practice — multi-package PKG-CONFIG always populates LDFLAGS
         # alongside the hard ordering. If it ever changes, an empty
         # return here would silently lose the hard constraints.

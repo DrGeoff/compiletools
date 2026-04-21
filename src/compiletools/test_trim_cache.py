@@ -304,7 +304,7 @@ class TestTrimPchdir:
         assert os.path.isdir(newest)
 
     def test_per_cmd_hash_bucketing_unrelated_basenames_coexist(self, tmp_path):
-        """I-B5 regression: two unrelated cmd_hash dirs that happen to
+        """Regression: two unrelated cmd_hash dirs that happen to
         share a header basename (e.g. ``stdafx.h`` from two different
         projects) must NOT evict each other. Each cmd_hash dir is an
         independent cache unit; the keep_count and max_age policies
@@ -426,7 +426,7 @@ class TestMainCLI:
 
 class TestSafeLockedUnlink:
     def test_refuses_when_lock_unavailable(self, tmp_path, monkeypatch):
-        """I-2: when FileLock raises OSError (filesystem unsupported,
+        """When FileLock raises OSError (filesystem unsupported,
         permissions, etc.), we MUST NOT delete the file unlocked. Caller
         sees False; the file remains on disk for retry."""
         from compiletools import trim_cache
@@ -447,7 +447,7 @@ class TestSafeLockedUnlink:
 
 class TestSafeLockedRmtree:
     def test_refuses_when_lock_unavailable(self, tmp_path, monkeypatch):
-        """I-2: when FileLock raises OSError on a contained file, we
+        """When FileLock raises OSError on a contained file, we
         MUST NOT rmtree unlocked. Caller sees False; dir remains."""
         from compiletools import trim_cache
 
@@ -468,7 +468,7 @@ class TestSafeLockedRmtree:
         assert gch.exists()
 
     def test_aborts_on_concurrent_file_creation(self, tmp_path, monkeypatch):
-        """I-1: if a peer build creates a fresh file in the dir between
+        """If a peer build creates a fresh file in the dir between
         the initial scan and the lock window, we re-scan inside the lock
         and abort the rmtree. The new (unlocked) file would be deleted
         half-written otherwise."""
@@ -540,7 +540,7 @@ class TestLoadPchManifest:
 class TestPchPerRealpathBucketing:
     """With sidecar manifests present, keep_count applies per-realpath
     so cross-variant builds of the same header are not mutually evicted
-    at the default keep_count=1 (I-4)."""
+    at the default keep_count=1."""
 
     @staticmethod
     def _write_manifest(pchdir, cmd_hash, header_realpath, transitive=None, age_seconds=0):
@@ -599,7 +599,7 @@ class TestPchPerRealpathBucketing:
 class TestPchTransitiveStaleness:
     """When a transitive header recorded in the manifest no longer matches
     the on-disk content, the cmd_hash dir is pre-evicted so the user never
-    pays the slow ``cc1`` PCH-stamp rebuild (I-5)."""
+    pays the slow ``cc1`` PCH-stamp rebuild."""
 
     @staticmethod
     def _git_blob_sha1(content: bytes) -> str:
@@ -684,7 +684,7 @@ class TestPchTransitiveStaleness:
 
 class TestNoncurrentKeptAccounting:
     def test_keep_count_zero_with_safety_floor(self, tmp_path):
-        """I-7: when keep_count=0 AND no current entry exists, the
+        """When keep_count=0 AND no current entry exists, the
         safety pop bumps a candidate up to to_keep BEFORE the
         noncurrent_kept calculation runs. Verify the count stays
         accurate (one survivor reported, one removed)."""
@@ -702,7 +702,7 @@ class TestNoncurrentKeptAccounting:
         assert stats["current_kept"] == 0
 
     def test_keep_count_zero_safety_with_max_age_keeps_recent(self, tmp_path):
-        """I-7: keep_count=0 + safety + max_age. The safety-popped file
+        """keep_count=0 + safety + max_age. The safety-popped file
         must be counted in noncurrent_kept. A second file inside max_age
         should also be kept and counted."""
         objdir = str(tmp_path / "obj")
@@ -722,7 +722,7 @@ class TestNoncurrentKeptAccounting:
         assert stats["removed"] == 1
 
     def test_keep_count_zero_single_noncurrent_file(self, tmp_path):
-        """I-7 edge: single file, keep_count=0, no current → safety
+        """Edge: single file, keep_count=0, no current → safety
         keeps the lone file. noncurrent_kept must be 1, removed 0."""
         objdir = str(tmp_path / "obj")
         os.makedirs(objdir)

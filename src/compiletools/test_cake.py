@@ -749,7 +749,7 @@ class TestCake(BaseCompileToolsTestCase):
             cake._call_compilation_database()
 
     def test_call_compilation_database_skipped_on_realclean(self):
-        """I-A6 regression: _call_compilation_database must also bail
+        """Regression: _call_compilation_database must also bail
         when realclean is set, not just clean. Generating
         compile_commands.json immediately before nuking the bin/obj
         dirs is wasted work and confuses tooling."""

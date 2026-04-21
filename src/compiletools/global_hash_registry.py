@@ -77,7 +77,7 @@ def _load_hashes(verbose: int = 0, *, context: BuildContext) -> tuple[dict[str, 
         del all_hashes
 
     except Exception as e:
-        # M-D8: log non-fatal git failures so users running outside a
+        # Log non-fatal git failures so users running outside a
         # repo (or with a broken git invocation) can see why hashes
         # came back empty. Bare-Exception catch is preserved because
         # we genuinely want to fall back regardless of failure mode.

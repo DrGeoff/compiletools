@@ -68,7 +68,7 @@ class TestBuildBackendContract:
         assert backend.name() == "minimal"
 
     def test_must_supply_hunter_or_context(self):
-        """I-A2: silent fallback to a fresh BuildContext defeated the
+        """Silent fallback to a fresh BuildContext defeated the
         BuildContext-mandatory refactor (commit e352d20c). Constructing a
         backend with no hunter and no context must raise so the caller
         is forced to thread the right one through."""
@@ -706,7 +706,7 @@ class TestPchManifest:
 
 
 class TestWarnIfPchdirNotCrossUserSafe:
-    """I-6: the cross-user-safety warning is noise when pchdir is per-user
+    """The cross-user-safety warning is noise when pchdir is per-user
     (cwd-relative or under the build's bin tree)."""
 
     def setup_method(self):
@@ -925,7 +925,7 @@ class TestPchIncrementalHash:
         assert gch1 != gch2
 
     def test_different_compiler_binary_at_same_path_produces_different_gch_path(self, tmp_path):
-        """I-B1 regression: two compilers identifying as ``g++`` but
+        """Regression: two compilers identifying as ``g++`` but
         resolving to *different* binaries (e.g. different versions on
         different users' $PATH) must NOT collide on the same cache key."""
         from compiletools.build_backend import _compiler_identity, _pch_command_hash
@@ -1004,7 +1004,7 @@ class TestPchIncrementalHash:
         assert h1 != h2
 
     def test_warns_when_pchdir_not_group_writable(self, tmp_path, capsys):
-        """I-B2 regression: a one-time stderr warning is emitted when
+        """Regression: a one-time stderr warning is emitted when
         the pchdir parent is not group-writable + SGID, so cross-user
         cache misses don't surprise operators."""
         import stringzilla as sz
@@ -1494,7 +1494,7 @@ class TestLinkOrderCorrectness:
         assert l_flags.count("-llibbase") == 1, f"Expected -llibbase exactly once, got: {l_flags}"
 
     def test_hard_orderings_win_over_opposing_soft_constraints(self, tmp_path):
-        """I-C2 regression: a multi-package PKG-CONFIG hard ordering must
+        """Regression: a multi-package PKG-CONFIG hard ordering must
         beat a single-file LDFLAGS soft ordering that disagrees with it.
         End-to-end through magicflags -> _merge_ldflags_for_sources ->
         final link line."""

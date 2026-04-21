@@ -80,7 +80,7 @@ class TestLockdirLock:
             assert lock.sleep_interval > 0
 
     def test_pid_file_includes_process_start_time(self):
-        """I-D1 regression: pid file format must be host:pid:starttime so we
+        """Regression: pid file format must be host:pid:starttime so we
         can detect PID reuse on busy build hosts."""
         import psutil
 
