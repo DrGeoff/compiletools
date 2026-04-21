@@ -2,59 +2,83 @@
 from compiletools.headerdeps import HeaderDepsBase
 
 
-class _Stub(HeaderDepsBase):
-    """Minimal subclass to access protected helpers."""
-    def __init__(self):
-        pass
+# Shorthand aliases — these are static methods so call directly.
+_extract_isystem = HeaderDepsBase._extract_isystem_paths_from_flags
+_extract_include = HeaderDepsBase._extract_include_paths_from_flags
 
-    def _process_impl(self, *a, **kw):
-        raise NotImplementedError
 
+# -- list input (regression: -isystem variant used to crash) --
 
 def test_extract_isystem_handles_list_input():
-    """List input (from configargparse multi-value) should work like string."""
-    stub = _Stub()
-    result = stub._extract_isystem_paths_from_flags(["-isystem", "/opt/inc"])
-    assert result == ["/opt/inc"]
-
-
-def test_extract_isystem_handles_string_input():
-    stub = _Stub()
-    result = stub._extract_isystem_paths_from_flags("-isystem /opt/inc")
-    assert result == ["/opt/inc"]
-
-
-def test_extract_isystem_attached_form():
-    stub = _Stub()
-    result = stub._extract_isystem_paths_from_flags("-isystem/opt/inc")
-    assert result == ["/opt/inc"]
+    assert _extract_isystem(["-isystem", "/opt/inc"]) == ["/opt/inc"]
 
 
 def test_extract_include_handles_list_input():
-    stub = _Stub()
-    result = stub._extract_include_paths_from_flags(["-I", "/opt/inc"])
-    assert result == ["/opt/inc"]
+    assert _extract_include(["-I", "/opt/inc"]) == ["/opt/inc"]
+
+
+# -- separate-token form --
+
+def test_extract_isystem_handles_string_input():
+    assert _extract_isystem("-isystem /opt/inc") == ["/opt/inc"]
 
 
 def test_extract_include_handles_string_input():
-    stub = _Stub()
-    result = stub._extract_include_paths_from_flags("-I /opt/inc")
-    assert result == ["/opt/inc"]
+    assert _extract_include("-I /opt/inc") == ["/opt/inc"]
+
+
+# -- attached form --
+
+def test_extract_isystem_attached_form():
+    assert _extract_isystem("-isystem/opt/inc") == ["/opt/inc"]
 
 
 def test_extract_include_attached_form():
-    stub = _Stub()
-    result = stub._extract_include_paths_from_flags("-I/opt/inc")
-    assert result == ["/opt/inc"]
+    assert _extract_include("-I/opt/inc") == ["/opt/inc"]
 
+
+# -- multiple paths in one flag string --
+
+def test_extract_include_multiple_paths():
+    assert _extract_include("-I /a -I /b") == ["/a", "/b"]
+
+
+def test_extract_isystem_multiple_paths():
+    assert _extract_isystem("-isystem /a -isystem /b") == ["/a", "/b"]
+
+
+def test_extract_include_mixed_forms():
+    assert _extract_include("-I/a -I /b -I/c") == ["/a", "/b", "/c"]
+
+
+# -- quoted paths with spaces (shell parsing) --
+
+def test_extract_include_quoted_path_with_spaces():
+    assert _extract_include('-I "/path with spaces"') == ["/path with spaces"]
+
+
+def test_extract_isystem_quoted_path_with_spaces():
+    assert _extract_isystem('-isystem "/path with spaces"') == ["/path with spaces"]
+
+
+# -- empty / None --
 
 def test_extract_isystem_empty():
-    stub = _Stub()
-    assert stub._extract_isystem_paths_from_flags("") == []
-    assert stub._extract_isystem_paths_from_flags(None) == []
+    assert _extract_isystem("") == []
+    assert _extract_isystem(None) == []
 
 
 def test_extract_include_empty():
-    stub = _Stub()
-    assert stub._extract_include_paths_from_flags("") == []
-    assert stub._extract_include_paths_from_flags(None) == []
+    assert _extract_include("") == []
+    assert _extract_include(None) == []
+
+
+# -- prefix-only token (no following path) --
+
+def test_extract_include_prefix_only_no_path():
+    """A trailing '-I' with no following path should produce no paths."""
+    assert _extract_include("-I") == []
+
+
+def test_extract_isystem_prefix_only_no_path():
+    assert _extract_isystem("-isystem") == []

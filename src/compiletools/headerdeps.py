@@ -115,7 +115,8 @@ class HeaderDepsBase:
 
         return result
 
-    def _extract_prefixed_paths(self, flag_value, prefix):
+    @staticmethod
+    def _extract_prefixed_paths(flag_value, prefix):
         """Extract paths following ``prefix`` (e.g. ``-I`` or ``-isystem``).
 
         Handles three forms:
@@ -156,13 +157,15 @@ class HeaderDepsBase:
                 i += 1
         return paths
 
-    def _extract_isystem_paths_from_flags(self, flag_value):
+    @staticmethod
+    def _extract_isystem_paths_from_flags(flag_value):
         """Extract -isystem paths from command-line flags."""
-        return self._extract_prefixed_paths(flag_value, "-isystem")
+        return HeaderDepsBase._extract_prefixed_paths(flag_value, "-isystem")
 
-    def _extract_include_paths_from_flags(self, flag_value):
+    @staticmethod
+    def _extract_include_paths_from_flags(flag_value):
         """Extract -I include paths from command-line flags."""
-        return self._extract_prefixed_paths(flag_value, "-I")
+        return HeaderDepsBase._extract_prefixed_paths(flag_value, "-I")
 
     @staticmethod
     def clear_cache():
