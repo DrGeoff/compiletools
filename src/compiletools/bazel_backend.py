@@ -287,6 +287,21 @@ class BazelBackend(BuildBackend):
             "--spawn_strategy=local",
             "--action_env=PATH",
         ]
+        # Bazel's local_config_cc autoconfig is a repo rule and does NOT
+        # inherit the client PATH, so pass CC/CXX as absolute paths via
+        # --repo_env (so the autoconfig wraps the right compiler) and
+        # --action_env (so any toolchain that re-reads them at action
+        # time agrees). Without this, bazel falls back to /bin/gcc, which
+        # on RHEL 8 is gcc 8 and rejects -std=c++20.
+        for var in ("CC", "CXX"):
+            value = getattr(self.args, var, None)
+            if not value:
+                continue
+            resolved = value if os.path.isabs(value) else shutil.which(value)
+            if not resolved:
+                continue
+            cmd.append(f"--repo_env={var}={resolved}")
+            cmd.append(f"--action_env={var}={resolved}")
         parallel = getattr(self.args, "parallel", None)
         if parallel:
             cmd.append(f"--jobs={parallel}")

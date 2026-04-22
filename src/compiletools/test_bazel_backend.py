@@ -372,6 +372,34 @@ class TestBazelExecute:
         assert "--spawn_strategy=local" in cmd
         assert "--action_env=PATH" in cmd
 
+    @patch("subprocess.check_call")
+    def test_execute_propagates_configured_compiler(self, mock_check_call):
+        """args.CC / args.CXX must be passed to bazel so its autoconfig
+        toolchain doesn't fall back to /bin/gcc (which on RHEL 8 is gcc 8
+        and rejects -std=c++20)."""
+        args = MagicMock()
+        args.CC = "/opt/gcc-15/bin/gcc"
+        args.CXX = "/opt/gcc-15/bin/g++"
+        args.parallel = 4
+        backend = BazelBackend(args=args, hunter=MagicMock())
+
+        def which_side(name):
+            if name in ("bazel", "bazelisk"):
+                return "/usr/bin/bazel" if name == "bazel" else None
+            return name
+
+        with (
+            patch("shutil.which", side_effect=which_side),
+            patch("os.path.exists", return_value=False),
+        ):
+            backend.execute("build")
+
+        cmd = mock_check_call.call_args[0][0]
+        assert "--repo_env=CC=/opt/gcc-15/bin/gcc" in cmd, f"missing CC repo_env in {cmd}"
+        assert "--repo_env=CXX=/opt/gcc-15/bin/g++" in cmd, f"missing CXX repo_env in {cmd}"
+        assert "--action_env=CC=/opt/gcc-15/bin/gcc" in cmd, f"missing CC action_env in {cmd}"
+        assert "--action_env=CXX=/opt/gcc-15/bin/g++" in cmd, f"missing CXX action_env in {cmd}"
+
 
 class TestBazelGenerateNoFilesystemMutation:
     """generate() to a StringIO must NOT create files in ext/.
