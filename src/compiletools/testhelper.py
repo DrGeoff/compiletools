@@ -64,6 +64,17 @@ def requires_backend_tool(backend_name_or_param="backend_name"):
     return decorator
 
 
+import importlib.util
+
+HAS_PSUTIL = importlib.util.find_spec("psutil") is not None
+requires_psutil = pytest.mark.skipif(not HAS_PSUTIL, reason="psutil library not available")
+
+
+def requires_platform(name):
+    """Decorator to skip tests that require a specific platform."""
+    return pytest.mark.skipif(not sys.platform.startswith(name), reason=f"requires platform: {name}")
+
+
 def requires_functional_compiler(func):
     """Decorator to skip tests that require a functional C++ compiler.
 

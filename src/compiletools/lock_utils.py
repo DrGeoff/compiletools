@@ -122,25 +122,37 @@ def is_process_alive_local(pid, start_time=None):
             lock holder. False if the pid does not exist, or if it
             does but its start_time does not match the recorded one.
     """
-    import psutil
+    try:
+        import psutil
+    except ImportError:
+        # Fallback when psutil is missing (e.g. on Termux/Android)
+        try:
+            os.kill(pid, 0)
+            # If start_time was provided but we don't have psutil,
+            # we can't verify it. We return True (conservative)
+            # to avoid cleaning an active process, even if it
+            # might be a PID reuse.
+            return True
+        except (ProcessLookupError, OSError):
+            return False
 
     if start_time is None:
         return psutil.pid_exists(pid)
 
     try:
         proc = psutil.Process(pid)
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        return False
-    try:
         actual_start = proc.create_time()
+        return abs(actual_start - start_time) < _PID_REUSE_TOLERANCE_SECONDS
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return False
-    return abs(actual_start - start_time) < _PID_REUSE_TOLERANCE_SECONDS
 
 
 def get_process_start_time(pid):
     """Return psutil create_time for pid, or None if unavailable."""
-    import psutil
+    try:
+        import psutil
+    except ImportError:
+        return None
 
     try:
         return psutil.Process(pid).create_time()

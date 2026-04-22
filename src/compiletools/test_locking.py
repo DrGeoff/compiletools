@@ -13,7 +13,11 @@ import pytest
 
 import compiletools.apptools
 from compiletools.locking import CIFSLock, FcntlLock, FileLock, FlockLock, LockdirLock, atomic_compile, atomic_link
-from compiletools.testhelper import requires_functional_compiler
+from compiletools.testhelper import (
+    requires_functional_compiler,
+    requires_platform,
+    requires_psutil,
+)
 
 
 def _make_lock_args(**overrides):
@@ -79,6 +83,7 @@ class TestLockdirLock:
             # Should have auto-detected a sleep interval
             assert lock.sleep_interval > 0
 
+    @requires_psutil
     def test_pid_file_includes_process_start_time(self):
         """Regression: pid file format must be host:pid:starttime so we
         can detect PID reuse on busy build hosts."""
@@ -107,6 +112,7 @@ class TestLockdirLock:
             finally:
                 lock.release()
 
+    @requires_psutil
     def test_stale_detection_rejects_pid_reuse(self):
         """If the pid in the file matches a live process but with a
         different start_time, the lock is stale (PID reuse)."""
@@ -605,6 +611,7 @@ class TestCIFSLock:
                 lock.release()
             assert "Failed to release CIFS lock" in capsys.readouterr().err
 
+    @requires_psutil
     def test_excl_holder_format_is_host_pid_starttime(self):
         """Issue #4 prerequisite: excl file carries host:pid:start_time so
         peers can detect dead local holders."""
@@ -1290,15 +1297,12 @@ class TestPidReuseTolerance:
         else:
             assert _PID_REUSE_TOLERANCE_SECONDS == 1.0
 
+    @requires_platform("linux")
+    @requires_psutil
     def test_pid_reuse_within_loose_window_is_detected_on_linux(self):
         """A simulated PID reuse where the impostor's start_time is 0.5s
         from the recorded holder must be flagged as STALE on Linux. The
         old 1.0s tolerance would have wrongly marked it ACTIVE."""
-        import sys as _sys
-
-        if not _sys.platform.startswith("linux"):
-            pytest.skip("Tighter tolerance is Linux-only")
-
         import psutil
 
         from compiletools.lock_utils import is_process_alive_local
@@ -1311,6 +1315,7 @@ class TestPidReuseTolerance:
             "0.5s mismatch must be flagged as stale on Linux (tolerance 0.1s)"
         )
 
+    @requires_psutil
     def test_exact_match_still_alive(self):
         """Sanity: matching start_time still resolves to ACTIVE."""
         import psutil

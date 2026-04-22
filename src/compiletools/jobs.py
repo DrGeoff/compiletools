@@ -28,11 +28,22 @@ def _cpus_termux():
     # which is why we use nproc
     import subprocess
 
-    return subprocess.run(
-        ["nproc"],
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.rstrip()
+    try:
+        res = subprocess.run(
+            ["nproc"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        if res.returncode == 0:
+            return int(res.stdout.rstrip())
+    except (OSError, ValueError):
+        pass
+    return 4
+
+
+def _cpus_android():
+    return _cpus_termux()
 
 
 def _cpus_darwin():
@@ -40,11 +51,18 @@ def _cpus_darwin():
     # nproc isn't installed by default
     import subprocess
 
-    return subprocess.run(
-        ["sysctl", "-n", "hw.ncpu"],
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.rstrip()
+    try:
+        res = subprocess.run(
+            ["sysctl", "-n", "hw.ncpu"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        if res.returncode == 0:
+            return int(res.stdout.rstrip())
+    except (OSError, ValueError):
+        pass
+    return 4
 
 
 def _cpu_count():
