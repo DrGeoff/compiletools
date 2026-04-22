@@ -208,12 +208,25 @@ class CMakeBackend(BuildBackend):
         os.makedirs(build_dir, exist_ok=True)
 
         # Configure — pass the user-configured compilers so CMake does not
-        # fall back to the system default (which may be too old).
+        # fall back to the system default (which may be too old). A wrapper
+        # prefix (e.g. CXX="ccache g++") is split off into
+        # CMAKE_*_COMPILER_LAUNCHER because CMAKE_*_COMPILER itself must be
+        # a single executable path.
         configure_cmd = [cmake, "-S", source_dir, "-B", build_dir]
         if hasattr(self.args, "CXX") and self.args.CXX:
-            configure_cmd.append(f"-DCMAKE_CXX_COMPILER={self.args.CXX}")
+            cxx_parts = compiletools.utils.split_command_cached(self.args.CXX)
+            configure_cmd.append(f"-DCMAKE_CXX_COMPILER={cxx_parts[-1]}")
+            if len(cxx_parts) > 1:
+                configure_cmd.append(
+                    "-DCMAKE_CXX_COMPILER_LAUNCHER=" + ";".join(cxx_parts[:-1])
+                )
         if hasattr(self.args, "CC") and self.args.CC:
-            configure_cmd.append(f"-DCMAKE_C_COMPILER={self.args.CC}")
+            cc_parts = compiletools.utils.split_command_cached(self.args.CC)
+            configure_cmd.append(f"-DCMAKE_C_COMPILER={cc_parts[-1]}")
+            if len(cc_parts) > 1:
+                configure_cmd.append(
+                    "-DCMAKE_C_COMPILER_LAUNCHER=" + ";".join(cc_parts[:-1])
+                )
         subprocess.check_call(configure_cmd, text=True)
 
         # Build

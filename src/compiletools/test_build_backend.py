@@ -611,6 +611,121 @@ class TestBuildGraphPopulation:
         assert "-I" not in source_rules[0].command
 
 
+class TestCompilerWrapperSplit:
+    """args.CC / args.CXX / args.LD may carry a wrapper prefix like
+    ``ccache g++``. The kernel's execve() needs ['ccache', 'g++', ...],
+    not the literal string 'ccache g++' as argv[0] (that fails ENOENT
+    with filename='ccache g++'). Every site that builds a command list
+    from these args must split via shlex/split_command_cached."""
+
+    def _build(self, tmp_path, *, per_file_magicflags=None, sources=None,
+               filename=None, tests=None, dynamic=None,
+               CC="ccache gcc", CXX="ccache g++", LD="ccache g++"):
+        args = make_backend_args(
+            tmp_path,
+            filename=filename if filename is not None else ["/src/main.cpp"],
+            tests=tests or [],
+            dynamic=dynamic or [],
+            CC=CC,
+            CXX=CXX,
+            LD=LD,
+            CXXFLAGS="-O2",
+            CFLAGS="-O2",
+        )
+        hunter = make_mock_hunter(
+            sources=sources if sources is not None else ["/src/main.cpp"],
+            headers=["/src/util.h"],
+            per_file_magicflags=per_file_magicflags,
+        )
+        StubClass = make_stub_backend_class()
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        return backend
+
+    def test_cxx_compile_command_splits_wrapper(self, tmp_path):
+        backend = self._build(tmp_path)
+        graph = backend.build_graph()
+
+        compile_rules = [
+            r for r in graph.rules
+            if r.rule_type == "compile" and r.output.endswith("main.o")
+        ]
+        assert len(compile_rules) == 1
+        cmd = compile_rules[0].command
+        assert cmd[0] == "ccache", f"argv[0] should be 'ccache', got {cmd[0]!r}"
+        assert cmd[1] == "g++", f"argv[1] should be 'g++', got {cmd[1]!r}"
+
+    def test_c_compile_command_splits_wrapper(self, tmp_path):
+        backend = self._build(
+            tmp_path,
+            filename=["/src/main.c"],
+            sources=["/src/main.c"],
+        )
+        graph = backend.build_graph()
+
+        compile_rules = [
+            r for r in graph.rules
+            if r.rule_type == "compile" and "/src/main.c" in r.inputs
+        ]
+        assert len(compile_rules) == 1
+        cmd = compile_rules[0].command
+        assert cmd[0] == "ccache", f"argv[0] should be 'ccache', got {cmd[0]!r}"
+        assert cmd[1] == "gcc", f"argv[1] should be 'gcc', got {cmd[1]!r}"
+
+    def test_pch_compile_command_splits_wrapper(self, tmp_path):
+        import stringzilla as sz
+
+        pch_flags = {
+            "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
+            "/src/stdafx.h": {},
+        }
+        backend = self._build(tmp_path, per_file_magicflags=pch_flags)
+        graph = backend.build_graph()
+
+        gch_rules = [r for r in graph.rules if r.output.endswith(".gch")]
+        assert len(gch_rules) == 1
+        cmd = gch_rules[0].command
+        assert cmd[0] == "ccache", f"PCH argv[0] should be 'ccache', got {cmd[0]!r}"
+        assert cmd[1] == "g++", f"PCH argv[1] should be 'g++', got {cmd[1]!r}"
+
+    def test_link_command_splits_wrapper(self, tmp_path):
+        backend = self._build(tmp_path)
+        graph = backend.build_graph()
+
+        link_rules = [r for r in graph.rules if r.rule_type == "link"]
+        assert len(link_rules) >= 1
+        cmd = link_rules[0].command
+        assert cmd[0] == "ccache", f"link argv[0] should be 'ccache', got {cmd[0]!r}"
+        assert cmd[1] == "g++", f"link argv[1] should be 'g++', got {cmd[1]!r}"
+
+    def test_dynamic_lib_link_command_splits_wrapper(self, tmp_path):
+        backend = self._build(
+            tmp_path,
+            filename=[],
+            dynamic=["/src/mylib.cpp"],
+            sources=["/src/mylib.cpp"],
+        )
+        graph = backend.build_graph()
+
+        lib_rules = [r for r in graph.rules if r.rule_type == "shared_library"]
+        assert len(lib_rules) == 1
+        cmd = lib_rules[0].command
+        assert cmd[0] == "ccache", f"shared-lib argv[0] should be 'ccache', got {cmd[0]!r}"
+        assert cmd[1] == "g++", f"shared-lib argv[1] should be 'g++', got {cmd[1]!r}"
+
+    def test_plain_compiler_unchanged(self, tmp_path):
+        """Without a wrapper prefix, command should still start with the bare compiler."""
+        backend = self._build(tmp_path, CC="gcc", CXX="g++", LD="g++")
+        graph = backend.build_graph()
+
+        compile_rules = [
+            r for r in graph.rules
+            if r.rule_type == "compile" and r.output.endswith("main.o")
+        ]
+        assert len(compile_rules) == 1
+        assert compile_rules[0].command[0] == "g++"
+
+
 class TestPchManifest:
     def test_manifest_records_header_realpath_and_compiler_identity(self, tmp_path, monkeypatch):
         from compiletools.build_backend import _write_pch_manifest

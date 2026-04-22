@@ -312,6 +312,71 @@ class TestCMakeExecute:
             with pytest.raises(RuntimeError, match=r"cmake.*not found"):
                 backend.execute()
 
+    def _capture_configure(self, *, CXX, CC, tmp_path):
+        """Run _execute_build('build') with subprocess and FS calls stubbed,
+        returning the configure command list."""
+        import os
+
+        args = MagicMock()
+        args.CXX = CXX
+        args.CC = CC
+        args.objdir = str(tmp_path / "obj")
+        args.parallel = 0
+        args.output = str(tmp_path / "out")
+        os.makedirs(args.objdir, exist_ok=True)
+
+        hunter = MagicMock()
+        backend = CMakeBackend(args=args, hunter=hunter)
+        backend._graph = None
+
+        captured = []
+
+        def fake_check_call(cmd, **kwargs):
+            captured.append(cmd)
+
+        with patch("shutil.which", return_value="/usr/bin/cmake"), \
+             patch("subprocess.check_call", side_effect=fake_check_call), \
+             patch.object(backend, "_copy_built_executables"), \
+             patch.object(backend, "build_filename", return_value=str(tmp_path / "CMakeLists.txt")):
+            (tmp_path / "CMakeLists.txt").write_text("")
+            backend._execute_build("build")
+
+        # First call is configure
+        return captured[0]
+
+    def test_configure_with_plain_compiler(self, tmp_path):
+        """Without a wrapper, CMAKE_CXX_COMPILER gets the bare compiler and
+        no LAUNCHER variable is emitted."""
+        cmd = self._capture_configure(CXX="g++", CC="gcc", tmp_path=tmp_path)
+
+        assert "-DCMAKE_CXX_COMPILER=g++" in cmd
+        assert "-DCMAKE_C_COMPILER=gcc" in cmd
+        assert not any(a.startswith("-DCMAKE_CXX_COMPILER_LAUNCHER=") for a in cmd)
+        assert not any(a.startswith("-DCMAKE_C_COMPILER_LAUNCHER=") for a in cmd)
+
+    def test_configure_with_ccache_wrapper(self, tmp_path):
+        """``CXX='ccache g++'`` must split into COMPILER + COMPILER_LAUNCHER —
+        passing the literal string to -DCMAKE_CXX_COMPILER would fail because
+        CMake expects a single executable path."""
+        cmd = self._capture_configure(CXX="ccache g++", CC="ccache gcc", tmp_path=tmp_path)
+
+        assert "-DCMAKE_CXX_COMPILER=g++" in cmd, (
+            f"Expected bare compiler in CMAKE_CXX_COMPILER; got {cmd}"
+        )
+        assert "-DCMAKE_C_COMPILER=gcc" in cmd, (
+            f"Expected bare compiler in CMAKE_C_COMPILER; got {cmd}"
+        )
+        assert "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache" in cmd, (
+            f"Expected wrapper in CMAKE_CXX_COMPILER_LAUNCHER; got {cmd}"
+        )
+        assert "-DCMAKE_C_COMPILER_LAUNCHER=ccache" in cmd, (
+            f"Expected wrapper in CMAKE_C_COMPILER_LAUNCHER; got {cmd}"
+        )
+        # The literal "ccache g++" must never appear as an argument value
+        assert not any("ccache g++" in a for a in cmd), (
+            f"CMake compiler argument still contains the literal wrapped string: {cmd}"
+        )
+
 
 class TestCMakeAllOutputsCurrent:
     """CMake backends place outputs in cmake-build/, not at namer paths,

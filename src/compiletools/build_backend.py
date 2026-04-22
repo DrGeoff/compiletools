@@ -478,7 +478,7 @@ class BuildBackend(abc.ABC):
 
             pch_deps = [pch_header] + sorted(str(d) for d in self.hunter.header_dependencies(pch_header))
             pch_cmd = (
-                [self.args.CXX]
+                compiletools.utils.split_command_cached(self.args.CXX)
                 + compiletools.utils.split_command_cached(self.args.CXXFLAGS)
                 + [str(f) for f in magic_cpp_flags]
                 + [str(f) for f in magic_cxx_flags]
@@ -855,7 +855,7 @@ class BuildBackend(abc.ABC):
         if compiletools.utils.is_c_source(filename):
             magic_c_flags = magicflags.get(sz.Str("CFLAGS"), [])
             compile_cmd = (
-                [self.args.CC]
+                compiletools.utils.split_command_cached(self.args.CC)
                 + compiletools.utils.split_command_cached(self.args.CFLAGS)
                 + pch_include_flags
                 + [str(flag) for flag in magic_cpp_flags]
@@ -864,7 +864,7 @@ class BuildBackend(abc.ABC):
         else:
             magic_cxx_flags = magicflags.get(sz.Str("CXXFLAGS"), [])
             compile_cmd = (
-                [self.args.CXX]
+                compiletools.utils.split_command_cached(self.args.CXX)
                 + compiletools.utils.split_command_cached(self.args.CXXFLAGS)
                 + pch_include_flags
                 + [str(flag) for flag in magic_cpp_flags]
@@ -952,7 +952,12 @@ class BuildBackend(abc.ABC):
         )
 
         merged_ldflags = self._merge_ldflags_for_sources(completesources)
-        link_cmd = [self.args.LD, "-o", exename] + list(object_names) + merged_ldflags
+        link_cmd = (
+            compiletools.utils.split_command_cached(self.args.LD)
+            + ["-o", exename]
+            + list(object_names)
+            + merged_ldflags
+        )
 
         inputs = list(object_names)
         if library_outputs:
@@ -1024,7 +1029,11 @@ class BuildBackend(abc.ABC):
         lib_path = self.namer.dynamiclibrary_pathname()
 
         merged_ldflags = self._merge_ldflags_for_sources(all_source_files)
-        lib_cmd = [self.args.LD, "-shared", "-o", lib_path] + list(object_names)
+        lib_cmd = (
+            compiletools.utils.split_command_cached(self.args.LD)
+            + ["-shared", "-o", lib_path]
+            + list(object_names)
+        )
         lib_cmd.extend(merged_ldflags)
         if self.args.LDFLAGS:
             lib_cmd.extend(compiletools.utils.split_command_cached(self.args.LDFLAGS))
