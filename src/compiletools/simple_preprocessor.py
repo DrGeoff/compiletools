@@ -131,10 +131,8 @@ class SimplePreprocessor:
         stripped_sz = self._strip_comments_sz(expr_sz)
         # Then expand macros
         expanded_sz = self._recursive_expand_macros_sz(stripped_sz)
-        # Final result (no need to strip again since comments already removed)
-        final_sz = expanded_sz
         # For now, convert final expression to str for safe_eval, but this could be optimized
-        expr_str = str(final_sz)
+        expr_str = str(expanded_sz)
         result = self._safe_eval(expr_str)
         return result
 
@@ -518,7 +516,7 @@ class SimplePreprocessor:
 
         _, seen_else, any_condition_met = condition_stack.pop()
         if not seen_else:
-            parent_active = condition_stack[-1][0] if condition_stack else True
+            parent_active = condition_stack[-1][0]
             new_active = not any_condition_met and parent_active
             condition_stack.append((new_active, True, any_condition_met or new_active))
             if self.verbose >= 9:
@@ -618,7 +616,7 @@ class SimplePreprocessor:
 
         _, seen_else, any_condition_met = condition_stack.pop()
         if not seen_else and not any_condition_met and directive.condition:
-            parent_active = condition_stack[-1][0] if condition_stack else True
+            parent_active = condition_stack[-1][0]
             try:
                 # Strip comments before processing - work with StringZilla strings
                 expr_sz = self._strip_comments_sz(directive.condition)
