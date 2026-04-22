@@ -394,6 +394,18 @@ class TestLibrary:
                 uth.skip_if_bazel_env_error(captured.err)
             assert ret == 0, f"{backend_name}: library build failed (rc={ret})"
 
+            # Verify the static-library artifact actually exists on disk.
+            # Catches a silent backend regression where rc==0 but no .a is
+            # produced at the namer-expected path (the subsequent exe link
+            # would fail, but the failure mode would be confusing).
+            lib_paths = [
+                os.path.join(root, ff)
+                for root, _dirs, files in os.walk(tmpdir)
+                for ff in files
+                if ff == "libget_numbers.a"
+            ]
+            assert lib_paths, f"{backend_name}: libget_numbers.a not produced anywhere under {tmpdir}"
+
             # Copy the main that will link to the library into the test build location
             relativepaths = ["library/main.cpp"]
             realpaths = [os.path.join(uth.samplesdir(), filename) for filename in relativepaths]
