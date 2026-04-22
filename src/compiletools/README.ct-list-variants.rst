@@ -9,7 +9,7 @@ List available build variants
 :Author: drgeoffathome@gmail.com
 :Date:   2016-08-16
 :Copyright: Copyright (C) 2011-2016 Zomojo Pty Ltd
-:Version: 8.1.1
+:Version: 8.2.0
 :Manual section: 1
 :Manual group: developers
 
