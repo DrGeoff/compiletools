@@ -533,6 +533,80 @@ class TestCake(BaseCompileToolsTestCase):
                 ):
                     compiletools.cake.main(self._create_argv() + ["-vvv"])
 
+    def test_main_called_process_error(self, capsys):
+        """Test that main() handles subprocess.CalledProcessError and returns 1."""
+        import subprocess
+        from unittest.mock import patch
+
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            cpe = subprocess.CalledProcessError(
+                returncode=2,
+                cmd=["g++", "-c", "foo.cpp"],
+                output=b"",
+                stderr=b"foo.cpp:1:1: error: expected ';'\n",
+            )
+            with patch("compiletools.cake.Cake.process", side_effect=cpe):
+                result = compiletools.cake.main(self._create_argv())
+                assert result == 1
+            captured = capsys.readouterr()
+            assert "Command failed (exit 2)" in captured.out
+            assert "foo.cpp:1:1: error: expected ';'" in captured.err
+
+    def test_main_called_process_error_verbose_reraises(self):
+        """Test that main() re-raises subprocess.CalledProcessError when verbose >= 2."""
+        import subprocess
+        from unittest.mock import patch
+
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            import pytest
+
+            cpe = subprocess.CalledProcessError(
+                returncode=2,
+                cmd=["g++", "-c", "foo.cpp"],
+                output=b"",
+                stderr=b"foo.cpp:1:1: error: expected ';'\n",
+            )
+            with pytest.raises(subprocess.CalledProcessError):
+                with patch("compiletools.cake.Cake.process", side_effect=cpe):
+                    compiletools.cake.main(self._create_argv() + ["-vvv"])
+
+    def test_main_called_process_error_string_cmd(self, capsys):
+        """Test that main() handles CalledProcessError with a plain-string cmd (output-only branch)."""
+        import subprocess
+        from unittest.mock import patch
+
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            cpe = subprocess.CalledProcessError(
+                returncode=3,
+                cmd="g++ -c foo.cpp",
+                output=b"some compiler output\n",
+                stderr=None,
+            )
+            with patch("compiletools.cake.Cake.process", side_effect=cpe):
+                result = compiletools.cake.main(self._create_argv())
+                assert result == 1
+            captured = capsys.readouterr()
+            assert "Command failed (exit 3): g++ -c foo.cpp" in captured.out
+            assert "some compiler output" in captured.err
+
     def test_signal_handler_exits(self):
         """Test that signal_handler calls sys.exit(0)."""
         import pytest

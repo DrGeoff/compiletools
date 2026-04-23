@@ -1,6 +1,8 @@
 import os
+import shlex
 import shutil
 import signal
+import subprocess
 import sys
 
 import compiletools.apptools
@@ -471,9 +473,29 @@ def main(argv=None):
         cake.process()
         # For testing purposes, clear out the memcaches for the times when main is called more than once.
         cake.clear_cache()
+    except subprocess.CalledProcessError as cpe:
+        if args.verbose < 2:
+            cmd = cpe.cmd
+            if isinstance(cmd, (list, tuple)):
+                cmd_str = shlex.join(str(c) for c in cmd)
+            else:
+                cmd_str = str(cmd)
+            print(f"Command failed (exit {cpe.returncode}): {cmd_str}")
+            if cpe.stderr:
+                stderr = cpe.stderr.decode() if isinstance(cpe.stderr, bytes) else cpe.stderr
+                print(stderr, file=sys.stderr)
+            elif cpe.output:
+                output = cpe.output.decode() if isinstance(cpe.output, bytes) else cpe.output
+                print(output, file=sys.stderr)
+            return 1
+        else:
+            raise
     except OSError as ioe:
         if args.verbose < 2:
-            print(f"Error processing {ioe.filename}: {ioe.strerror}")
+            if ioe.filename:
+                print(f"Error processing {ioe.filename}: {ioe.strerror}")
+            else:
+                print(f"Error: {ioe.strerror or ioe}")
             return 1
         else:
             raise
