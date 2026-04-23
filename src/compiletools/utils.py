@@ -122,12 +122,9 @@ def is_header(filename: str) -> bool:
 @functools.cache
 def is_cpp_source(path: str) -> bool:
     """Lightweight C++ source detection by extension (case-insensitive)."""
-    # Fast path: split once
     _, ext = os.path.splitext(path)
-    # Handle .C (uppercase) as C++, but regular extensions use lowercase
-    if ext == ".C":
-        return True
-    return ext.lower() in CPP_SOURCE_EXTS
+    # .C (uppercase) is C++; .c (lowercase) is C — must check before lowercasing.
+    return ext == ".C" or ext.lower() in CPP_SOURCE_EXTS
 
 
 @functools.cache
@@ -408,7 +405,7 @@ def deduplicate_compiler_flags(flags: list[str]) -> list[str]:
         # Find matching flag prefix efficiently
         matched_flag = None
         for flag_prefix in FLAG_WITH_ARGS:
-            if flag == flag_prefix or (flag.startswith(flag_prefix) and len(flag) > len(flag_prefix)):
+            if flag.startswith(flag_prefix):
                 matched_flag = flag_prefix
                 break
 
