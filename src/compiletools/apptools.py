@@ -435,13 +435,12 @@ def _extend_includes_using_git_root(args):
 def _add_include_paths_to_flags(args):
     """Add all the include paths to all three compile flags"""
     for path in args.INCLUDE.split():
-        if path is not None:
-            if path not in args.CPPFLAGS.split():
-                args.CPPFLAGS += " -I " + path
-            if path not in args.CFLAGS.split():
-                args.CFLAGS += " -I " + path
-            if path not in args.CXXFLAGS.split():
-                args.CXXFLAGS += " -I " + path
+        if path not in args.CPPFLAGS.split():
+            args.CPPFLAGS += " -I " + path
+        if path not in args.CFLAGS.split():
+            args.CFLAGS += " -I " + path
+        if path not in args.CXXFLAGS.split():
+            args.CXXFLAGS += " -I " + path
 
     if args.verbose >= 6 and len(args.INCLUDE) > 0:
         print("Extra include paths have been appended to the *FLAG variables:")
@@ -890,11 +889,7 @@ def filter_pkg_config_cflags(cflags_str, verbose=0):
 
             # Normalize and check
             normalized_path = os.path.normpath(path)
-            is_system = False
-            for sys_path in system_include_paths:
-                if normalized_path == sys_path:
-                    is_system = True
-                    break
+            is_system = normalized_path in system_include_paths
 
             if is_system:
                 if verbose >= 6:
@@ -1257,7 +1252,7 @@ def _safely_unquote_string(value):
     value = value.strip()
 
     # If the string doesn't look like it has shell quotes, don't process it
-    if not (value.startswith('"') or value.startswith("'")):
+    if not value.startswith(('"', "'")):
         return value
 
     try:
@@ -1274,8 +1269,7 @@ def _safely_unquote_string(value):
                 unquoted.startswith("'") and unquoted.endswith("'")
             ):
                 return _safely_unquote_string(unquoted)
-            else:
-                return unquoted
+            return unquoted
         else:
             # Multiple tokens or parsing issues - return original
             return value
