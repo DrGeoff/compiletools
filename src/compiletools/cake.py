@@ -509,9 +509,9 @@ def main(argv=None):
     except OSError as ioe:
         if args.verbose < 2:
             if ioe.filename:
-                print(f"Error processing {ioe.filename}: {ioe.strerror}")
+                print(f"Error processing {ioe.filename}: {ioe.strerror}", file=sys.stderr)
             else:
-                print(f"Error: {ioe.strerror or ioe}")
+                print(f"Error: {ioe.strerror or ioe}", file=sys.stderr)
             return 1
         else:
             raise
