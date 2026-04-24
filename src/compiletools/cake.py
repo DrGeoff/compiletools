@@ -493,10 +493,10 @@ def main(argv=None):
         if args.verbose < 2:
             cmd = cpe.cmd
             if isinstance(cmd, (list, tuple)):
-                cmd_str = shlex.join(str(c) for c in cmd)
+                cmd_str = shlex.join(cmd)
             else:
                 cmd_str = str(cmd)
-            print(f"Command failed (exit {cpe.returncode}): {cmd_str}")
+            print(f"Command failed (exit {cpe.returncode}): {cmd_str}", file=sys.stderr)
             if cpe.stderr:
                 stderr = cpe.stderr.decode() if isinstance(cpe.stderr, bytes) else cpe.stderr
                 print(stderr, file=sys.stderr)

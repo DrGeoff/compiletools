@@ -556,7 +556,7 @@ class TestCake(BaseCompileToolsTestCase):
                 result = compiletools.cake.main(self._create_argv())
                 assert result == 1
             captured = capsys.readouterr()
-            assert "Command failed (exit 2)" in captured.out
+            assert "Command failed (exit 2)" in captured.err
             assert "foo.cpp:1:1: error: expected ';'" in captured.err
 
     def test_main_called_process_error_verbose_reraises(self):
@@ -605,7 +605,7 @@ class TestCake(BaseCompileToolsTestCase):
                 result = compiletools.cake.main(self._create_argv())
                 assert result == 1
             captured = capsys.readouterr()
-            assert "Command failed (exit 3): g++ -c foo.cpp" in captured.out
+            assert "Command failed (exit 3): g++ -c foo.cpp" in captured.err
             assert "some compiler output" in captured.err
 
     def test_signal_handler_exits(self):
