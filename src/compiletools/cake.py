@@ -4,12 +4,14 @@ import shutil
 import signal
 import subprocess
 import sys
+from typing import Optional
 
 import compiletools.apptools
 import compiletools.compilation_database
 import compiletools.configutils
 import compiletools.filelist
 import compiletools.findtargets
+import compiletools.git_utils
 import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.jobs
@@ -50,10 +52,10 @@ class Cake:
             backend=getattr(args, "backend", "make"),
         )
 
-        self.namer = None
-        self.headerdeps = None
-        self.magicparser = None
-        self.hunter = None
+        self.namer: Optional[compiletools.namer.Namer] = None
+        self.headerdeps: Optional[compiletools.headerdeps.HeaderDepsBase] = None
+        self.magicparser: Optional[compiletools.magicflags.MagicFlagsBase] = None
+        self.hunter: Optional[compiletools.hunter.Hunter] = None
 
     @staticmethod
     def _hide_makefilename(args):
@@ -199,6 +201,7 @@ class Cake:
         )
 
     def _callfilelist(self):
+        assert self.hunter is not None
         filelist = compiletools.filelist.Filelist(self.args, self.hunter, style="flat")
         filelist.process()
 
@@ -212,6 +215,10 @@ class Cake:
             # so is wasted work and confuses tooling that picks it up.
             return
 
+        assert self.namer is not None
+        assert self.headerdeps is not None
+        assert self.magicparser is not None
+        assert self.hunter is not None
         # Reuse existing objects to avoid duplicating work
         creator = compiletools.compilation_database.CompilationDatabaseCreator(
             self.args,
@@ -224,6 +231,7 @@ class Cake:
         creator.write_compilation_database()
 
     def _copyexes(self):
+        assert self.namer is not None
         # Copy the executables into the "bin" dir (as per cake)
         # Unless the user has changed the bindir (or set --output)
         # in which case assume that they know what they are doing
@@ -270,6 +278,7 @@ class Cake:
 
     def _clean_topbindir(self):
         """Remove copied executables from the top-level bin directory."""
+        assert self.namer is not None
         if self.args.output:
             try:
                 os.remove(self.args.output)
@@ -287,6 +296,9 @@ class Cake:
 
     def _call_backend(self):
         """Dispatch to the selected build backend."""
+        assert self.namer is not None
+        assert self.hunter is not None
+        assert self.context.timer is not None
         timer = self.context.timer
         backend_name = getattr(self.args, "backend", "make")
         BackendClass = get_backend_class(backend_name)
@@ -321,6 +333,7 @@ class Cake:
         """Transform the arguments into suitable versions for ct-* tools
         and call the appropriate tool.
         """
+        assert self.context.timer is not None
         timer = self.context.timer
         try:
             # If the user specified only a single file to be turned into a library, guess that
@@ -330,6 +343,7 @@ class Cake:
 
             with timer.phase("target_discovery"):
                 self._createctobjs()
+                assert self.hunter is not None
                 recreateobjs = False
                 if self.args.static and len(self.args.static) == 1:
                     self.args.static.extend(self.hunter.required_source_files(self.args.static[0]))
@@ -370,6 +384,8 @@ class Cake:
 
     def clear_cache(self):
         """Only useful in test scenarios where you need to reset to a pristine state"""
+        assert self.namer is not None
+        assert self.hunter is not None
         compiletools.wrappedos.clear_cache()
         compiletools.utils.clear_cache()
         compiletools.git_utils.clear_cache()

@@ -8,6 +8,7 @@ import compiletools.namer
 
 # import pdb
 import compiletools.testhelper as uth
+import compiletools.utils
 from compiletools.build_context import BuildContext
 from compiletools.test_base import BaseCompileToolsTestCase
 
@@ -664,6 +665,7 @@ class TestCake(BaseCompileToolsTestCase):
 
             cake = compiletools.cake.Cake(args)
             cake._createctobjs()
+            assert cake.namer is not None
 
             # Create a fake executable to copy
             src_exe = cake.namer.executable_pathname("test.cpp")
@@ -692,6 +694,7 @@ class TestCake(BaseCompileToolsTestCase):
 
             cake = compiletools.cake.Cake(args)
             cake._createctobjs()
+            assert cake.namer is not None
 
             src_lib = cake.namer.staticlibrary_pathname()
             os.makedirs(os.path.dirname(src_lib), exist_ok=True)
@@ -719,6 +722,7 @@ class TestCake(BaseCompileToolsTestCase):
 
             cake = compiletools.cake.Cake(args)
             cake._createctobjs()
+            assert cake.namer is not None
 
             src_lib = cake.namer.dynamiclibrary_pathname()
             os.makedirs(os.path.dirname(src_lib), exist_ok=True)
@@ -746,6 +750,7 @@ class TestCake(BaseCompileToolsTestCase):
 
             cake = compiletools.cake.Cake(args)
             cake._createctobjs()
+            assert cake.namer is not None
 
             src_lib = cake.namer.staticlibrary_pathname()
             os.makedirs(os.path.dirname(src_lib), exist_ok=True)
@@ -776,6 +781,7 @@ class TestCake(BaseCompileToolsTestCase):
 
             cake = compiletools.cake.Cake(args)
             cake._createctobjs()
+            assert cake.namer is not None
 
             src_lib = cake.namer.dynamiclibrary_pathname()
             os.makedirs(os.path.dirname(src_lib), exist_ok=True)
