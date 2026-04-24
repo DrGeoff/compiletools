@@ -8,7 +8,7 @@ Automated version bump + build + publish for compiletools
 
 :Author: drgeoffathome@gmail.com
 :Date:   2025-11-26
-:Version: 8.2.0
+:Version: 8.2.1
 :Manual section: 1
 :Manual group: developers
 
