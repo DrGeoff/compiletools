@@ -918,6 +918,7 @@ def make_mock_hunter(sources=None, headers=None, magicflags_map=None, per_file_m
     # than an auto-attribute MagicMock that silently returns mocks for
     # every attribute and breaks JSON-serializing consumers.
     from compiletools.build_context import BuildContext
+
     hunter.context = BuildContext()
     return hunter
 
@@ -1029,4 +1030,8 @@ def CakeTestContext(backend_name="make", **arg_overrides):
         namer.executable_dir.return_value = os.path.join(tmpdir, "exe")
         namer.topbindir.return_value = os.path.join(tmpdir, "topbin")
         cake.namer = namer
+        # MagicMock is the unittest.mock stdlib idiom; unrelated to compiletools.magicflags.MagicFlags.
+        cake.headerdeps = MagicMock()
+        cake.magicparser = MagicMock()
+        cake.hunter = MagicMock()
         yield cake, tmpdir
