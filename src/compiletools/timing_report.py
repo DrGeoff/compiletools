@@ -183,12 +183,14 @@ def _run_comparison(args) -> int:
         pct = (delta / b_time * 100) if b_time > 0 else 0
 
         delta_style = "green" if delta < 0 else ("red" if delta > 0 else "")
+        delta_cell = f"[{delta_style}]{delta:+.2f}[/]" if delta_style else f"{delta:+.2f}"
+        pct_cell = f"[{delta_style}]{pct:+.1f}%[/]" if delta_style else f"{pct:+.1f}%"
         table.add_row(
             name.replace("_", " ").title(),
             f"{b_time:.2f}",
             f"{a_time:.2f}",
-            f"[{delta_style}]{delta:+.2f}[/]",
-            f"[{delta_style}]{pct:+.1f}%[/]",
+            delta_cell,
+            pct_cell,
         )
 
         # Compare rules within phases

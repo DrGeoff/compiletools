@@ -128,6 +128,20 @@ class TestComparison:
         rc = main(["--compare", before, "/nonexistent.json"])
         assert rc == 1
 
+    def test_comparison_zero_delta_phase(self, tmp_path):
+        # Phase elapsed of exactly 0 → empty colour style; must not emit "[]…[/]" markup.
+        path = str(tmp_path / "same.json")
+        with open(path, "w") as f:
+            json.dump(
+                {
+                    "meta": {"variant": "gcc.debug", "backend": "make",
+                             "started_iso": "2026-04-25T00:00:00", "total_elapsed_s": 0.0},
+                    "phases": [{"name": "build_execution", "elapsed_s": 0.0, "children": []}],
+                },
+                f,
+            )
+        assert main(["--compare", path, path]) == 0
+
 
 class TestTUIFallback:
     def test_tui_fallback_when_textual_missing(self, tmp_path, monkeypatch):
