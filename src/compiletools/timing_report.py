@@ -134,6 +134,27 @@ def _export_chrome_trace(args) -> int:
 # -------------------------------------------------------- comparison mode
 
 
+def _styled(text: str, style: str) -> str:
+    """Wrap ``text`` in Rich markup, or return it bare when no style applies.
+
+    Empty markup tags ('[]…[/]') raise rich.errors.MarkupError, so the empty
+    style must short-circuit rather than render.
+    """
+    return f"[{style}]{text}[/]" if style else text
+
+
+def _format_pct(b_time: float, delta: float) -> str:
+    """Format a percentage-change cell honestly when the baseline is zero.
+
+    The naive ``delta / b_time * 100 if b_time > 0 else 0`` form silently
+    returns 0% when a phase is *new* (b_time == 0, delta > 0), hiding a real
+    regression. Use ``(new)`` for that case and an em-dash for genuine no-ops.
+    """
+    if b_time > 0:
+        return f"{(delta / b_time * 100):+.1f}%"
+    return "(new)" if delta > 0 else "—"
+
+
 def _run_comparison(args) -> int:
     before_path, after_path = args.compare
     for p in (before_path, after_path):
@@ -156,9 +177,8 @@ def _run_comparison(args) -> int:
     before_total = before.total_elapsed_s
     after_total = after.total_elapsed_s
     delta_total = after_total - before_total
-    pct_total = (delta_total / before_total * 100) if before_total > 0 else 0
 
-    delta_str = f"{delta_total:+.1f}s / {pct_total:+.1f}%"
+    delta_str = f"{delta_total:+.1f}s / {_format_pct(before_total, delta_total)}"
     table = Table(
         title=f"Build Comparison: {os.path.basename(before_path)} ({before_total:.1f}s) "
         f"vs {os.path.basename(after_path)} ({after_total:.1f}s) [{delta_str}]"
@@ -180,17 +200,14 @@ def _run_comparison(args) -> int:
         b_time = bp.elapsed_s if bp else 0.0
         a_time = ap.elapsed_s if ap else 0.0
         delta = a_time - b_time
-        pct = (delta / b_time * 100) if b_time > 0 else 0
 
         delta_style = "green" if delta < 0 else ("red" if delta > 0 else "")
-        delta_cell = f"[{delta_style}]{delta:+.2f}[/]" if delta_style else f"{delta:+.2f}"
-        pct_cell = f"[{delta_style}]{pct:+.1f}%[/]" if delta_style else f"{pct:+.1f}%"
         table.add_row(
             name.replace("_", " ").title(),
             f"{b_time:.2f}",
             f"{a_time:.2f}",
-            delta_cell,
-            pct_cell,
+            _styled(f"{delta:+.2f}", delta_style),
+            _styled(_format_pct(b_time, delta), delta_style),
         )
 
         # Compare rules within phases
@@ -211,15 +228,14 @@ def _run_comparison(args) -> int:
             for key, bt, at, rd in rule_deltas[:5]:
                 if abs(rd) < 0.01:
                     continue
-                rpct = (rd / bt * 100) if bt > 0 else 0
                 rs = "green" if rd < 0 else "red"
                 label = os.path.basename(key) if "/" in key else key
                 table.add_row(
                     f"  {label}",
                     f"{bt:.2f}",
                     f"{at:.2f}",
-                    f"[{rs}]{rd:+.2f}[/]",
-                    f"[{rs}]{rpct:+.1f}%[/]",
+                    _styled(f"{rd:+.2f}", rs),
+                    _styled(_format_pct(bt, rd), rs),
                 )
 
     console.print(table)

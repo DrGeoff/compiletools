@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from compiletools.build_timer import BuildTimer
-from compiletools.timing_report import _find_timing_file, main
+from compiletools.timing_report import _find_timing_file, _format_pct, _styled, main
 
 
 class TestFindTimingFile:
@@ -128,18 +128,37 @@ class TestComparison:
         rc = main(["--compare", before, "/nonexistent.json"])
         assert rc == 1
 
-    def test_comparison_zero_delta_phase(self, tmp_path):
-        # Phase elapsed of exactly 0 → empty colour style; must not emit "[]…[/]" markup.
-        path = str(tmp_path / "same.json")
+    @staticmethod
+    def _write_raw(path, total_elapsed_s, phases):
         with open(path, "w") as f:
             json.dump(
                 {
-                    "meta": {"variant": "gcc.debug", "backend": "make",
-                             "started_iso": "2026-04-25T00:00:00", "total_elapsed_s": 0.0},
-                    "phases": [{"name": "build_execution", "elapsed_s": 0.0, "children": []}],
+                    "version": 1,
+                    "timestamp": "2026-04-25T00:00:00+00:00",
+                    "total_elapsed_s": total_elapsed_s,
+                    "variant": "gcc.debug",
+                    "backend": "make",
+                    "phases": phases,
                 },
                 f,
             )
+
+    def test_comparison_new_phase_shows_meaningful_pct(self, tmp_path, capfd):
+        # Phase exists in `after` only; previous code silently rendered "+0.0%"
+        # because it short-circuited on b_time == 0, hiding the regression.
+        before = str(tmp_path / "before.json")
+        after = str(tmp_path / "after.json")
+        self._write_raw(before, 0.0, [])
+        self._write_raw(after, 5.0, [{"name": "build_execution", "elapsed_s": 5.0, "children": []}])
+        assert main(["--compare", before, after]) == 0
+        rendered = capfd.readouterr().err
+        assert "(new)" in rendered, rendered
+        assert "+0.0%" not in rendered, rendered
+
+    def test_comparison_zero_delta_phase(self, tmp_path):
+        # Phase elapsed of exactly 0 → empty colour style; must not emit "[]…[/]" markup.
+        path = str(tmp_path / "same.json")
+        self._write_raw(path, 0.0, [{"name": "build_execution", "elapsed_s": 0.0, "children": []}])
         assert main(["--compare", path, path]) == 0
 
 
@@ -165,3 +184,31 @@ class TestTUIFallback:
         monkeypatch.setattr(builtins, "__import__", mock_import)
         rc = main([path])
         assert rc == 0
+
+
+class TestStyled:
+    def test_empty_style_returns_plain_text(self):
+        # Empty style would produce "[]text[/]" — invalid Rich markup.
+        assert _styled("hello", "") == "hello"
+
+    def test_nonempty_style_wraps_in_markup(self):
+        assert _styled("+0.50", "red") == "[red]+0.50[/]"
+
+
+class TestFormatPct:
+    def test_normal_positive(self):
+        assert _format_pct(b_time=10.0, delta=5.0) == "+50.0%"
+
+    def test_normal_negative(self):
+        assert _format_pct(b_time=10.0, delta=-2.5) == "-25.0%"
+
+    def test_new_phase_when_before_is_zero(self):
+        # Was: silently "+0.0%" — hides a regression where a new phase was added.
+        assert _format_pct(b_time=0.0, delta=5.0) == "(new)"
+
+    def test_zero_before_zero_delta_renders_dash(self):
+        assert _format_pct(b_time=0.0, delta=0.0) == "—"
+
+    def test_negative_before_treated_as_no_baseline(self):
+        # Defensive: negative b_time shouldn't crash or yield a bogus pct.
+        assert _format_pct(b_time=-1.0, delta=5.0) == "(new)"
