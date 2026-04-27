@@ -370,15 +370,10 @@ class CacheTrimmer:
                         content = fh.read()
                 except OSError:
                     continue  # best-effort: missing or unreadable
-                current = hashlib.sha1(
-                    f"blob {len(content)}\0".encode() + content
-                ).hexdigest()
+                current = hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
                 if current != expected_hash:
                     if self.verbose >= 1:
-                        print(
-                            f"  Pre-evicting {path} "
-                            f"(transitive {h_realpath} changed)"
-                        )
+                        print(f"  Pre-evicting {path} (transitive {h_realpath} changed)")
                     needed_dirs.discard(cmd_hash)
                     break
 
