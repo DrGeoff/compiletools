@@ -59,13 +59,13 @@ class TestPreProcessorProcess:
             assert kwargs["stderr"] == subprocess.STDOUT
 
     def test_no_redirect_stderr(self):
-        """Without redirect, stderr key is absent."""
+        """Without redirect, stderr defaults to inherit (None)."""
         args = _make_args()
         pp = PreProcessor(args)
         with mock.patch("subprocess.check_output", return_value="output") as m:
             pp.process("/tmp/foo.cpp", "")
             kwargs = m.call_args[1]
-            assert "stderr" not in kwargs
+            assert kwargs.get("stderr") is None
 
     def test_verbose_3_prints_cmd(self, capsys):
         """verbose >= 3 prints the command."""

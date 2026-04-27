@@ -1,6 +1,7 @@
 import subprocess
 import sys
 
+import compiletools.apptools
 import compiletools.utils
 
 
@@ -26,11 +27,11 @@ class PreProcessor:
             print(" ".join(cmd))
 
         try:
-            kwargs = {"universal_newlines": True}
-            if redirect_stderr_to_stdout:
-                kwargs["stderr"] = subprocess.STDOUT
-
-            output = subprocess.check_output(cmd, **kwargs)
+            output = subprocess.check_output(
+                cmd,
+                text=True,
+                stderr=subprocess.STDOUT if redirect_stderr_to_stdout else None,
+            )
             if self.args.verbose >= 5:
                 print(output)
         except OSError as err:
@@ -38,12 +39,12 @@ class PreProcessor:
                 f"Failed to preprocess {realpath}. Error={err}",
                 file=sys.stderr,
             )
-            raise err
+            raise
         except subprocess.CalledProcessError as err:
             print(
                 f"Preprocessing failed for {realpath}. Return code={err.returncode}, Output={err.output}",
                 file=sys.stderr,
             )
-            raise err
+            raise
 
         return output
