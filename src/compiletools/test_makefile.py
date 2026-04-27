@@ -420,8 +420,10 @@ class TestWrapLinkWithLock:
                 args,
                 "ext4",
             )
-        # Native flock binary used instead of ct-lock-helper
-        assert result == "flock bin/foo g++ -o bin/foo obj/foo.o"
+        # Native flock binary used instead of ct-lock-helper. Lock acquired
+        # on ``<target>.lock`` sidecar (not target itself — flock O_CREAT
+        # would create an empty target and trick peer make's mtime check).
+        assert result == "flock bin/foo.lock g++ -o bin/foo obj/foo.o"
         assert "ct-lock-helper" not in result
 
     def test_wraps_link_with_flock_fallback(self):

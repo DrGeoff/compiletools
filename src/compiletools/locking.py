@@ -36,19 +36,23 @@ class FcntlLock:
     and automatic release on process death — no polling, no stale detection,
     no holder info needed.
 
-    Locks the target file directly (no sidecar .lock file). The lock fd
-    refers to the inode that exists at acquire() time; atomic_compile()
-    renames a temp file over the target, so the next peer's acquire() will
-    re-os.open() and lock the NEW inode. This is fine — only one peer can
-    hold the lock at a time, and readers (link rules) get a complete .o
-    via temp+rename rather than partial bytes via shared inode. See
-    atomic_compile() in this module for the full rationale.
+    Locks a sidecar ``<target>.lock`` file rather than the target itself.
+    Locking the target directly is incorrect under concurrent peer ``make``
+    invocations on a shared objdir: ``os.open(target, O_CREAT)`` creates an
+    empty target file with mtime=now, which fools a peer make's mtime-based
+    dependency check into treating the target as up-to-date. The peer make
+    then skips the compile recipe and proceeds to link an empty ``.o``,
+    producing ``undefined reference to 'main'`` errors. The sidecar file is
+    invisible to make's dependency graph, so its creation has no effect on
+    peer scheduling decisions. atomic_compile() still routes through a
+    temp+rename so the build target itself only ever appears with full
+    content.
     """
 
     direct_compile = True
 
     def __init__(self, target_file, args):
-        self.lockfile = compiletools.wrappedos.realpath(target_file)
+        self.lockfile = compiletools.wrappedos.realpath(target_file) + ".lock"
         self.fd = None
         self.args = args
 
@@ -79,10 +83,9 @@ class FcntlLock:
         try:
             fcntl.lockf(self.fd, fcntl.LOCK_EX)
         except BaseException:
-            # Close the fd but do NOT unlink — self.lockfile IS the build
-            # target. atomic_compile() will rename a temp file over it;
-            # unlinking here would race with a peer that already holds the
-            # lock and is about to rename its temp file into place.
+            # Close the fd but do NOT unlink — peers may already hold the
+            # lock via the same sidecar inode; unlinking would race with
+            # them and break flock's inode-based serialisation.
             os.close(self.fd)
             self.fd = None
             raise
@@ -561,18 +564,17 @@ class FlockLock:
     for GPFS or LockdirLock for NFS/Lustre. This class should only be
     used when filesystem detection confirms a local filesystem.
 
-    Locks the target file directly (no sidecar .lock file). The lock fd
-    refers to the inode that exists at acquire() time; atomic_compile()
-    routes the compiler's output through a temp file and renames over the
-    target, so the next peer's acquire() locks the NEW inode. See
-    atomic_compile() in this module for why the temp+rename is required
-    even though this lock is held during the compile.
+    Locks a sidecar ``<target>.lock`` file rather than the target itself.
+    See FcntlLock for the full rationale: locking the target directly
+    creates an empty target file at acquire-time which fools peer make
+    processes' mtime-based dependency check into skipping the compile
+    recipe and linking an empty ``.o`` (``undefined reference to 'main'``).
     """
 
     direct_compile = True
 
     def __init__(self, target_file, args):
-        self.lockfile = compiletools.wrappedos.realpath(target_file)
+        self.lockfile = compiletools.wrappedos.realpath(target_file) + ".lock"
         self.fd = None
         self.args = args
 
@@ -783,10 +785,11 @@ def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.Comp
     short-circuit (the test in atomic_compile's caller checks for an
     existing complete output) and saves the duplicated work.
 
-    Implementation note: the lock fd for direct_compile=True locks refers
-    to the OLD inode after rename; that's fine — both FcntlLock and
-    FlockLock re-os.open() the target on every acquire(), so the next
-    peer locks the NEW inode.
+    Implementation note: FcntlLock and FlockLock lock a ``<target>.lock``
+    sidecar file rather than the target itself. Locking the target directly
+    is incorrect because ``os.open(target, O_CREAT)`` creates an empty
+    target file at acquire-time, which a peer ``make`` process's mtime
+    check then mistakes for an up-to-date build artifact and links empty.
 
     Stdout/stderr inherit the parent's fds — compile diagnostics stream to
     the user as they happen rather than being captured and only surfaced on

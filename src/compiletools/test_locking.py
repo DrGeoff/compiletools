@@ -457,13 +457,16 @@ class TestFcntlLock:
             # Release without acquire — should not crash
             lock.release()
 
-    def test_locks_target_directly(self):
-        """FcntlLock.lockfile should be the target itself (no .lock suffix)."""
+    def test_locks_sidecar_not_target(self):
+        """FcntlLock.lockfile should be ``<target>.lock`` sidecar, never the
+        target itself. Locking the target directly creates an empty target
+        file at acquire-time which fools peer make's mtime check into
+        skipping the compile recipe."""
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args()
             lock = FcntlLock(target, args)
-            assert lock.lockfile == os.path.realpath(target)
+            assert lock.lockfile == os.path.realpath(target) + ".lock"
 
     def test_fcntl_direct_compile_true(self):
         """FcntlLock should have direct_compile = True."""
@@ -473,15 +476,21 @@ class TestFcntlLock:
             lock = FcntlLock(target, args)
             assert lock.direct_compile is True
 
-    def test_no_sidecar_file(self):
-        """Acquiring FcntlLock should NOT create a .lock sidecar file."""
+    def test_acquire_does_not_create_target(self):
+        """Acquire must NOT create the target file. Peer make uses target
+        mtime to decide whether to recompile; an empty target file with
+        fresh mtime tricks it into skipping compile and linking empty."""
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args()
             lock = FcntlLock(target, args)
             lock.acquire()
             try:
-                assert not os.path.exists(target + ".lock")
+                assert not os.path.exists(target), (
+                    "FcntlLock.acquire created the build target — peer make "
+                    "will treat the empty file as up-to-date and skip compile"
+                )
+                assert os.path.exists(target + ".lock")
             finally:
                 lock.release()
 
@@ -528,23 +537,30 @@ class TestFlockLock:
             assert not hasattr(lock, "lockfile_pid")
             assert not hasattr(lock, "sleep_interval")
 
-    def test_flock_locks_target_directly(self):
-        """FlockLock.lockfile should be the target itself (no .lock suffix)."""
+    def test_flock_locks_sidecar_not_target(self):
+        """FlockLock.lockfile should be ``<target>.lock`` sidecar, never the
+        target itself. See FcntlLock.test_locks_sidecar_not_target for why."""
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args()
             lock = FlockLock(target, args)
-            assert lock.lockfile == os.path.realpath(target)
+            assert lock.lockfile == os.path.realpath(target) + ".lock"
 
-    def test_flock_no_sidecar_file(self):
-        """Acquiring FlockLock should NOT create a .lock sidecar file."""
+    def test_flock_acquire_does_not_create_target(self):
+        """Acquire must NOT create the target file. Peer make uses target
+        mtime to decide whether to recompile; an empty target file with
+        fresh mtime tricks it into skipping compile and linking empty."""
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
             args = _make_lock_args()
             lock = FlockLock(target, args)
             lock.acquire()
             try:
-                assert not os.path.exists(target + ".lock")
+                assert not os.path.exists(target), (
+                    "FlockLock.acquire created the build target — peer make "
+                    "will treat the empty file as up-to-date and skip compile"
+                )
+                assert os.path.exists(target + ".lock")
             finally:
                 lock.release()
 

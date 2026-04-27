@@ -1303,24 +1303,28 @@ def wrap_compile_with_lock(compile_cmd: str, target: str, args, filesystem_type:
     strategy = compiletools.filesystem_utils.get_lock_strategy(filesystem_type)
 
     # Fast path: use native flock binary for flock strategy (avoids Python startup).
-    # Compile to a temp file then atomically rename — same pattern and same
-    # rationale as locking.atomic_compile (which the helper-mode path below
-    # routes through). DO NOT 'optimize' back to a bare `flock <target>
-    # gcc -o <target>` form: the flock serialises concurrent compiles of
-    # the same target, but link rules read .o files WITHOUT any lock, so a
-    # peer linker would mmap-read a half-written .o under `make -j N` or
-    # two concurrent ct-cake invocations on the same objdir, producing
-    # sporadic 'undefined reference to main' / 'undefined symbol' errors.
-    # Temp+rename eliminates the race for all readers without needing
-    # read-side locks. The flock keeps a deterministic ".compiletools.tmp"
-    # suffix collision-free across peer writers.
-    # See locking.atomic_compile() for the full DO-NOT-REVERT story.
+    # Two invariants must hold under concurrent peer makes on a shared objdir:
+    #   1. Lock on a SIDECAR ``<target>.lock`` file, NOT on ``<target>``. flock
+    #      opens its lock argument with O_RDWR|O_CREAT, so locking the target
+    #      directly would create an empty ``<target>`` with mtime=now BEFORE
+    #      the inner compile runs. A peer make's mtime check then treats the
+    #      target as up-to-date and skips the compile recipe entirely, going
+    #      straight to link — producing ``undefined reference to 'main'``
+    #      errors. Locking a sidecar leaves ``<target>`` untouched until the
+    #      mv lands, so peer makes see ``<target>`` only when it is complete.
+    #   2. Compile to a temp file then atomically rename — protects link rules
+    #      that read .o files WITHOUT any lock. Without temp+rename a peer
+    #      linker could mmap-read a half-written .o.
+    # DO NOT 'optimize' back to ``flock <target> gcc -o <target>``: that form
+    # violates BOTH invariants. See locking.atomic_compile() for the rationale
+    # the helper-mode path below relies on.
     if strategy == "flock" and _native_flock_available():
         target_q = shlex.quote(target)
+        lock_q = shlex.quote(f"{target}.lock")
         temp_q = shlex.quote(f"{target}.compiletools.tmp")
         # $$ escapes to $ at Make-recipe expansion so the shell sees $? / $ec.
         inner = f"{compile_cmd} -o {temp_q} && mv -f {temp_q} {target_q}; ec=$$?; rm -f {temp_q}; exit $$ec"
-        return f"flock {target_q} sh -c {shlex.quote(inner)}"
+        return f"flock {lock_q} sh -c {shlex.quote(inner)}"
 
     env_prefix = _build_lock_env_prefix(strategy, args, filesystem_type)
     return f"{env_prefix}ct-lock-helper compile --target={target} --strategy={strategy} -- {compile_cmd}"
@@ -1352,9 +1356,15 @@ def wrap_link_with_lock(link_cmd: str, target: str, args, filesystem_type: str) 
 
     strategy = compiletools.filesystem_utils.get_lock_strategy(filesystem_type)
 
-    # Fast path: use native flock binary for flock strategy (avoids Python startup)
+    # Fast path: use native flock binary for flock strategy (avoids Python startup).
+    # Lock on ``<target>.lock`` sidecar, NOT on ``<target>``: ``flock`` opens
+    # its lock argument with O_CREAT, which would create an empty ``<target>``
+    # with mtime=now and trick a peer make process into treating the target
+    # as up-to-date (mtime newer than its prerequisites). See
+    # wrap_compile_with_lock for the full rationale.
     if strategy == "flock" and _native_flock_available():
-        return f"flock {target} {link_cmd}"
+        lock_q = shlex.quote(f"{target}.lock")
+        return f"flock {lock_q} {link_cmd}"
 
     env_prefix = _build_lock_env_prefix(strategy, args, filesystem_type)
     return f"{env_prefix}ct-lock-helper link --target={target} --strategy={strategy} -- {link_cmd}"

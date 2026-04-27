@@ -112,14 +112,16 @@ class TestLockHelper:
             # Verify failure
             assert result.returncode != 0, "Should fail with syntax error"
 
-            # Verify lock was cleaned up even on error (flock keeps lockfile on disk).
+            # Verify lock was cleaned up even on error (flock/fcntl keep lockfile
+            # on disk: their ``<target>.lock`` sidecar is a persistent marker
+            # that peer locks share — unlinking would race peers).
             # CIFSLock intentionally leaves the base .lock file as a persistent marker; only
             # the .lock_excl exclusivity marker is removed on release.
             if strategy == "lockdir":
                 assert not os.path.exists(temp_target + ".lockdir"), "Lock not cleaned up on error"
             elif strategy == "cifs":
                 assert not os.path.exists(temp_target + ".lock_excl"), "Excl marker not cleaned up on error"
-            elif strategy != "flock":
+            elif strategy not in ("flock", "fcntl"):
                 assert not os.path.exists(temp_target + ".lock"), "Lock not cleaned up on error"
 
         finally:

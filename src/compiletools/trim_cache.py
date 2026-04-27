@@ -527,10 +527,19 @@ def _safe_locked_rmtree(dir_path):
         sleep_interval_flock_fallback=0.1,
     )
 
+    # Lock-metadata sidecars (FlockLock/FcntlLock/CIFSLock create
+    # ``<target>.lock`` and ``.lock.excl`` files alongside build artifacts).
+    # They aren't build outputs, so we neither lock them (locking a .lock
+    # file would create .lock.lock) nor count them as peer activity in the
+    # TOCTOU re-scan — the .lock files we acquire below would otherwise
+    # show up there as "new files" and abort the removal.
+    def _is_build_artifact(name):
+        return not (name.endswith(".lock") or name.endswith(".lock.excl"))
+
     files_to_lock = []
     try:
         for entry in os.scandir(dir_path):
-            if entry.is_file():
+            if entry.is_file() and _is_build_artifact(entry.name):
                 files_to_lock.append(entry.path)
     except OSError:
         # Dir vanished — nothing to do
@@ -560,7 +569,11 @@ def _safe_locked_rmtree(dir_path):
         # creating a fresh .gch in this dir is unlocked from our side,
         # so removing it would be unsafe — abort instead.
         try:
-            current_files = {entry.path for entry in os.scandir(dir_path) if entry.is_file()}
+            current_files = {
+                entry.path
+                for entry in os.scandir(dir_path)
+                if entry.is_file() and _is_build_artifact(entry.name)
+            }
         except OSError:
             # Dir vanished between scan and re-scan; nothing more to do
             return True
