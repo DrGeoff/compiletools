@@ -61,7 +61,6 @@ class BuildContext:
         self.analyzer_args: argparse.Namespace | None = None
         self.file_reading_strategy: str | None = None
         self.warned_low_ulimit: bool = False
-        self.warned_mmap_failure: bool = False
         self.analyze_file_cache: dict[str, FileAnalysisResult] = {}
 
         # -- build timer --

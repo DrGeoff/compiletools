@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from compiletools.build_context import BuildContext
 
 import stringzilla
+from stringzilla import Str
 
 import compiletools.filesystem_utils
 import compiletools.wrappedos
@@ -45,18 +46,11 @@ def is_position_commented_simd_optimized(str_text: "stringzilla.Str", pos: int, 
 
     # Check for single-line comment on current line using StringZilla
     line_prefix_slice = str_text[line_start:pos]
-    comment_pos = line_prefix_slice.find("//")
-    if comment_pos != -1:
+    if line_prefix_slice.find("//") != -1:
         return True
 
-    # Check for multi-line block comment using StringZilla rfind
-    last_block_start = str_text.rfind("/*", 0, pos)
-    if last_block_start != -1:
-        last_block_end = str_text.rfind("*/", last_block_start, pos)
-        if last_block_end == -1:
-            return True
-
-    return False
+    # Delegate block-comment check to the dedicated helper to avoid duplication.
+    return is_inside_block_comment_simd(str_text, pos)
 
 
 def is_inside_block_comment_simd(str_text: "stringzilla.Str", pos: int) -> bool:
@@ -299,21 +293,6 @@ def _warn_low_ulimit(total_files: int, soft_limit: int, context: "BuildContext")
     context.warned_low_ulimit = True
 
 
-def _warn_mmap_failure(filepath: str, error: Exception, context: "BuildContext"):
-    """Warn once about unexpected mmap failure and fallback."""
-    if context.warned_mmap_failure:
-        return
-    args = context.analyzer_args
-
-    if args and getattr(args, "suppress_fd_warnings", False):
-        return
-
-    print(f"Warning: mmap failed for {filepath}: {error}", file=sys.stderr)
-    print("  Falling back to traditional file reading for this and subsequent files", file=sys.stderr)
-    print("  To suppress this warning: add '--suppress-fd-warnings' flag or config", file=sys.stderr)
-    context.warned_mmap_failure = True
-
-
 def _determine_file_reading_strategy(context: "BuildContext") -> str:
     """Determine which file reading strategy to use for this session.
 
@@ -403,90 +382,60 @@ def set_analyzer_args(args, context: "BuildContext"):
     _determine_file_reading_strategy(context)
 
 
-def analyze_file(content_hash: str, context: "BuildContext") -> "FileAnalysisResult":
-    """File analysis with per-context caching - content hash based.
+def _load_file_text(filepath: str, file_size: int, max_read_size: int, strategy: str):
+    """Load file text into a stringzilla.Str, honoring strategy and truncation.
 
-    Args:
-        content_hash: Git blob hash of file content
-        context: BuildContext where cache and args are stored
-
-    Raises:
-        FileNotFoundError: If file with given hash not found
-        RuntimeError: If analyzer args not set via set_analyzer_args()
+    Returns:
+        tuple: (str_text, bytes_analyzed, was_truncated)
     """
-    cached = context.analyze_file_cache.get(content_hash)
-    if cached is not None:
-        return cached
-
-    if context.analyzer_args is None:
-        raise RuntimeError("analyze_file: analyzer args not set on context. Call set_analyzer_args() first.")
-
-    args = context.analyzer_args
-
-    # Reverse lookup to get filepath (already realpath from registry)
-    from compiletools.global_hash_registry import get_filepath_by_hash
-
-    filepath = get_filepath_by_hash(content_hash, context)
-
-    from stringzilla import Str
-
-    # Extract parameters from args
-    max_read_size = getattr(args, "max_read_size", 0)
-    exe_markers = getattr(args, "exemarkers", [])
-    test_markers = getattr(args, "testmarkers", [])
-    library_markers = getattr(args, "librarymarkers", [])
-
-    file_size = compiletools.wrappedos.getsize(filepath)
-
-    # Determine file reading strategy
-    strategy = _determine_file_reading_strategy(context)
-
     # Handle empty files - StringZilla cannot memory-map zero-byte files
     if file_size == 0:
-        str_text = Str("")
-        bytes_analyzed = 0
-        was_truncated = False
-    else:
-        read_entire_file = (max_read_size == 0) or (file_size <= max_read_size)
+        return Str(""), 0, False
 
-        if read_entire_file:
-            # Read entire file using appropriate strategy
-            str_text = _read_file_with_strategy(filepath, strategy)
-            bytes_analyzed = len(str_text)
-            was_truncated = False
-        else:
-            # Read limited amount using mmap for better performance
-            text, bytes_analyzed, was_truncated = read_file_mmap(filepath, max_read_size)
-            try:
-                str_text = Str(text)
-            except UnicodeDecodeError:
-                # This shouldn't happen since read_file_mmap decodes with errors='ignore'
-                # But if it does, provide useful debugging info
-                print(f"ERROR: Failed to create Str from text in {filepath}", file=sys.stderr)
-                print(f"  text type: {type(text)}, len: {len(text)}", file=sys.stderr)
-                print(f"  First 100 chars: {text[:100]!r}", file=sys.stderr)
-                raise
+    read_entire_file = (max_read_size == 0) or (file_size <= max_read_size)
 
-    # Use StringZilla's splitlines for optimal line processing
-    lines = str_text.splitlines()
+    if read_entire_file:
+        # Read entire file using appropriate strategy
+        str_text = _read_file_with_strategy(filepath, strategy)
+        return str_text, len(str_text), False
 
-    # Build line_byte_offsets efficiently in a single pass
-    # Vectorization: Avoid Python loop by using single-pass find with accumulation
+    # Read limited amount using mmap for better performance
+    text, bytes_analyzed, was_truncated = read_file_mmap(filepath, max_read_size)
+    try:
+        str_text = Str(text)
+    except UnicodeDecodeError:
+        # This shouldn't happen since read_file_mmap decodes with errors='ignore'
+        # But if it does, provide useful debugging info
+        print(f"ERROR: Failed to create Str from text in {filepath}", file=sys.stderr)
+        print(f"  text type: {type(text)}, len: {len(text)}", file=sys.stderr)
+        print(f"  First 100 chars: {text[:100]!r}", file=sys.stderr)
+        raise
+    return str_text, bytes_analyzed, was_truncated
+
+
+def _compute_line_byte_offsets(str_text) -> list[int]:
+    """Build the list of byte offsets where each line begins."""
     line_byte_offsets = [0]  # First line starts at position 0
     pos = str_text.find("\n", 0)
     while pos != -1:
         line_byte_offsets.append(pos + 1)  # Next line starts after newline
         pos = str_text.find("\n", pos + 1)  # Continue from next position
+    return line_byte_offsets
 
-    # Find all pattern positions using optimized StringZilla bulk operations
-    include_positions = find_include_positions_simd_bulk(str_text, line_byte_offsets)
-    magic_positions = find_magic_positions_simd_bulk(str_text, line_byte_offsets)
-    directive_positions = find_directive_positions_simd_bulk(str_text, line_byte_offsets)
 
-    # Extract structured directive information
-    directives = []
-    directive_by_line = {}
-    processed_lines = set()
+def _extract_directives(
+    directive_positions: dict[str, list[int]],
+    lines: list["stringzilla.Str"],
+    line_byte_offsets: list[int],
+) -> tuple[list["PreprocessorDirective"], dict[int, "PreprocessorDirective"]]:
+    """Extract structured directive records from raw directive positions.
+
+    Honors line continuations (lines ending with backslash). Each line is processed
+    only once even if it appears under multiple directive types.
+    """
+    directives: list[PreprocessorDirective] = []
+    directive_by_line: dict[int, PreprocessorDirective] = {}
+    processed_lines: set[int] = set()
 
     for dtype, positions in directive_positions.items():
         for pos in positions:
@@ -511,115 +460,144 @@ def analyze_file(content_hash: str, context: "BuildContext") -> "FileAnalysisRes
             directives.append(directive)
             directive_by_line[line_num] = directive
 
-    # Extract includes with full information using bulk processing
-    includes = []
-    if include_positions:
-        for pos in include_positions:
-            line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
-            line = lines[line_num] if line_num < len(lines) else Str("")  # Already Str from splitlines()
+    return directives, directive_by_line
 
-            is_commented = is_position_commented_simd_optimized(str_text, pos, line_byte_offsets)
 
-            # Extract filename and type using StringZilla, replacing regex
-            include_keyword_pos = line.find("#include")
-            if include_keyword_pos == -1:
-                continue
+def _extract_includes(
+    include_positions: list[int],
+    lines: list["stringzilla.Str"],
+    line_byte_offsets: list[int],
+    str_text: "stringzilla.Str",
+) -> list[dict]:
+    """Build include records for each #include position."""
+    includes: list[dict] = []
+    if not include_positions:
+        return includes
 
-            search_start = include_keyword_pos + 8  # len('#include')
+    for pos in include_positions:
+        line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
+        line = lines[line_num] if line_num < len(lines) else Str("")  # Already Str from splitlines()
 
-            quote_pos = line.find('"', search_start)
-            lt_pos = line.find("<", search_start)
+        is_commented = is_position_commented_simd_optimized(str_text, pos, line_byte_offsets)
 
-            start_delim_pos = -1
+        # Extract filename and type using StringZilla, replacing regex
+        include_keyword_pos = line.find("#include")
+        if include_keyword_pos == -1:
+            continue
+
+        search_start = include_keyword_pos + 8  # len('#include')
+
+        quote_pos = line.find('"', search_start)
+        lt_pos = line.find("<", search_start)
+
+        start_delim_pos = -1
+        is_system = False
+        end_delim = ""
+
+        if quote_pos != -1 and (lt_pos == -1 or quote_pos < lt_pos):
+            start_delim_pos = quote_pos
+            end_delim = '"'
             is_system = False
-            end_delim = ""
+        elif lt_pos != -1:
+            start_delim_pos = lt_pos
+            end_delim = ">"
+            is_system = True
 
-            if quote_pos != -1 and (lt_pos == -1 or quote_pos < lt_pos):
-                start_delim_pos = quote_pos
-                end_delim = '"'
-                is_system = False
-            elif lt_pos != -1:
-                start_delim_pos = lt_pos
-                end_delim = ">"
-                is_system = True
+        if start_delim_pos != -1:
+            end_delim_pos = line.find(end_delim, start_delim_pos + 1)
+            if end_delim_pos != -1:
+                filename_slice = line[start_delim_pos + 1 : end_delim_pos]
+                includes.append(
+                    {
+                        "line_num": line_num,
+                        "byte_pos": pos,
+                        "full_line": line,
+                        "filename": filename_slice,
+                        "is_system": is_system,
+                        "is_commented": is_commented,
+                    }
+                )
 
-            if start_delim_pos != -1:
-                end_delim_pos = line.find(end_delim, start_delim_pos + 1)
-                if end_delim_pos != -1:
-                    filename_slice = line[start_delim_pos + 1 : end_delim_pos]
-                    includes.append(
-                        {
-                            "line_num": line_num,
-                            "byte_pos": pos,
-                            "full_line": line,
-                            "filename": filename_slice,
-                            "is_system": is_system,
-                            "is_commented": is_commented,
-                        }
-                    )
+    return includes
 
-    # Extract magic flags with full information using StringZilla operations
-    magic_flags = []
-    if magic_positions:
-        for pos in magic_positions:
-            line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
-            line = lines[line_num] if line_num < len(lines) else ""
 
-            # Parse magic flag using StringZilla operations - ensure line is Str
-            if not isinstance(line, Str):
-                line = Str(line)
-            hash_pos = line.find("//#")
-            if hash_pos != -1:
-                after_hash = line[hash_pos + 3 :]  # Skip //#
+def _extract_magic_flags(
+    magic_positions: list[int],
+    lines: list["stringzilla.Str"],
+    line_byte_offsets: list[int],
+) -> list[dict]:
+    """Build magic-flag records for each //#KEY=value position."""
+    magic_flags: list[dict] = []
+    if not magic_positions:
+        return magic_flags
 
-                # Use StringZilla split for KEY=value parsing
-                equals_parts = after_hash.split("=", maxsplit=1)
-                if len(equals_parts) == 2:
-                    key_part = equals_parts[0]
-                    value_part = equals_parts[1]
+    for pos in magic_positions:
+        line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
+        line = lines[line_num] if line_num < len(lines) else ""
 
-                    # Trim whitespace using StringZilla character set operations
-                    key_start = key_part.find_first_not_of(" \t")
-                    if key_start != -1:
-                        key_end = key_part.find_last_not_of(" \t")
-                        key_trimmed = key_part[key_start : key_end + 1]
+        # Parse magic flag using StringZilla operations - ensure line is Str
+        if not isinstance(line, Str):
+            line = Str(line)
+        hash_pos = line.find("//#")
+        if hash_pos == -1:
+            continue
 
-                        # Validate key format using StringZilla character set operations
-                        if len(key_trimmed) > 0 and is_alpha_or_underscore_sz(key_trimmed, 0):
-                            # Use StringZilla to check if all chars are valid (alphanumeric, _, -)
-                            invalid_pos = key_trimmed.find_first_not_of(
-                                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
-                            )
-                            if invalid_pos == -1:  # No invalid characters found
-                                # Trim value whitespace
-                                value_start = value_part.find_first_not_of(" \t")
-                                if value_start != -1:
-                                    value_end = value_part.find_last_not_of(" \t\r\n")
-                                    value_trimmed = value_part[value_start : value_end + 1]
-                                else:
-                                    value_trimmed = value_part[0:0]  # Empty Str
+        after_hash = line[hash_pos + 3 :]  # Skip //#
 
-                                magic_flags.append(
-                                    {
-                                        "line_num": line_num,
-                                        "byte_pos": pos,
-                                        "full_line": line,
-                                        "key": key_trimmed,
-                                        "value": value_trimmed,
-                                    }
-                                )
+        # Use StringZilla split for KEY=value parsing
+        equals_parts = after_hash.split("=", maxsplit=1)
+        if len(equals_parts) != 2:
+            continue
 
-    # Sort directives by line number for correct guard detection
-    # The directives list is built by iterating directive_positions.items()
-    # which processes by directive TYPE, not line number order
-    directives_sorted = sorted(directives, key=lambda d: d.line_num)
+        key_part = equals_parts[0]
+        value_part = equals_parts[1]
 
-    # Detect include guard first so we can exclude it from defines
-    include_guard = detect_include_guard(directives_sorted)
+        # Trim whitespace using StringZilla character set operations
+        key_start = key_part.find_first_not_of(" \t")
+        if key_start == -1:
+            continue
+        key_end = key_part.find_last_not_of(" \t")
+        key_trimmed = key_part[key_start : key_end + 1]
 
-    # Extract defines with full information (excluding include guard)
-    defines = []
-    for pos in directive_positions.get("define", []):
+        # Validate key format using StringZilla character set operations
+        if len(key_trimmed) == 0 or not is_alpha_or_underscore_sz(key_trimmed, 0):
+            continue
+
+        # Use StringZilla to check if all chars are valid (alphanumeric, _, -)
+        invalid_pos = key_trimmed.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+        if invalid_pos != -1:
+            continue
+
+        # Trim value whitespace
+        value_start = value_part.find_first_not_of(" \t")
+        if value_start != -1:
+            value_end = value_part.find_last_not_of(" \t\r\n")
+            value_trimmed = value_part[value_start : value_end + 1]
+        else:
+            value_trimmed = value_part[0:0]  # Empty Str
+
+        magic_flags.append(
+            {
+                "line_num": line_num,
+                "byte_pos": pos,
+                "full_line": line,
+                "key": key_trimmed,
+                "value": value_trimmed,
+            }
+        )
+
+    return magic_flags
+
+
+def _extract_defines(
+    define_positions: list[int],
+    lines: list["stringzilla.Str"],
+    line_byte_offsets: list[int],
+    include_guard: Optional["stringzilla.Str"],
+) -> list[dict]:
+    """Build define records, excluding the include guard if set."""
+    defines: list[dict] = []
+    for pos in define_positions:
         line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
 
         # Get all lines including continuations using StringZilla
@@ -706,6 +684,107 @@ def analyze_file(content_hash: str, context: "BuildContext") -> "FileAnalysisRes
             }
         )
 
+    return defines
+
+
+def _detect_marker_type(
+    str_text,
+    exe_markers: list,
+    test_markers: list,
+    library_markers: list,
+) -> MarkerType:
+    """Detect EXE/TEST/LIBRARY marker type by scanning the source text.
+
+    Priority is intentional: EXE > TEST > LIBRARY. The first matching list
+    short-circuits the rest, mirroring the cumulative-flag check in the
+    pre-decompose orchestrator.
+    """
+    if exe_markers:
+        for marker in exe_markers:
+            if str_text.count(marker) > 0:
+                return MarkerType.EXE
+
+    if test_markers:
+        for marker in test_markers:
+            if str_text.count(marker) > 0:
+                return MarkerType.TEST
+
+    if library_markers:
+        for marker in library_markers:
+            if str_text.count(marker) > 0:
+                return MarkerType.LIBRARY
+
+    return MarkerType.NONE
+
+
+def analyze_file(content_hash: str, context: "BuildContext") -> "FileAnalysisResult":
+    """File analysis with per-context caching - content hash based.
+
+    Args:
+        content_hash: Git blob hash of file content
+        context: BuildContext where cache and args are stored
+
+    Raises:
+        FileNotFoundError: If file with given hash not found
+        RuntimeError: If analyzer args not set via set_analyzer_args()
+    """
+    cached = context.analyze_file_cache.get(content_hash)
+    if cached is not None:
+        return cached
+
+    if context.analyzer_args is None:
+        raise RuntimeError("analyze_file: analyzer args not set on context. Call set_analyzer_args() first.")
+
+    args = context.analyzer_args
+
+    # Reverse lookup to get filepath (already realpath from registry)
+    from compiletools.global_hash_registry import get_filepath_by_hash
+
+    filepath = get_filepath_by_hash(content_hash, context)
+
+    # Extract parameters from args
+    max_read_size = getattr(args, "max_read_size", 0)
+    exe_markers = getattr(args, "exemarkers", [])
+    test_markers = getattr(args, "testmarkers", [])
+    library_markers = getattr(args, "librarymarkers", [])
+
+    file_size = compiletools.wrappedos.getsize(filepath)
+
+    # Determine file reading strategy and read file content
+    strategy = _determine_file_reading_strategy(context)
+    str_text, bytes_analyzed, was_truncated = _load_file_text(filepath, file_size, max_read_size, strategy)
+
+    # Use StringZilla's splitlines for optimal line processing
+    lines = str_text.splitlines()
+
+    # Build line_byte_offsets efficiently in a single pass
+    line_byte_offsets = _compute_line_byte_offsets(str_text)
+
+    # Find all pattern positions using optimized StringZilla bulk operations
+    include_positions = find_include_positions_simd_bulk(str_text, line_byte_offsets)
+    magic_positions = find_magic_positions_simd_bulk(str_text, line_byte_offsets)
+    directive_positions = find_directive_positions_simd_bulk(str_text, line_byte_offsets)
+
+    # Extract structured directive information
+    directives, directive_by_line = _extract_directives(directive_positions, lines, line_byte_offsets)
+
+    # Extract includes with full information using bulk processing
+    includes = _extract_includes(include_positions, lines, line_byte_offsets, str_text)
+
+    # Extract magic flags with full information using StringZilla operations
+    magic_flags = _extract_magic_flags(magic_positions, lines, line_byte_offsets)
+
+    # Sort directives by line number for correct guard detection
+    # The directives list is built by iterating directive_positions.items()
+    # which processes by directive TYPE, not line number order
+    directives_sorted = sorted(directives, key=lambda d: d.line_num)
+
+    # Detect include guard first so we can exclude it from defines
+    include_guard = detect_include_guard(directives_sorted)
+
+    # Extract defines with full information (excluding include guard)
+    defines = _extract_defines(directive_positions.get("define", []), lines, line_byte_offsets, include_guard)
+
     # Extract unique headers
     system_headers = {inc["filename"] for inc in includes if inc["is_system"]}
     quoted_headers = {inc["filename"] for inc in includes if not inc["is_system"]}
@@ -717,24 +796,7 @@ def analyze_file(content_hash: str, context: "BuildContext") -> "FileAnalysisRes
     undef_targets = frozenset(d.macro_name for d in directives if d.directive_type == "undef" and d.macro_name)
 
     # Detect marker type - check for exe, test, or library markers
-    marker_type = MarkerType.NONE
-    if exe_markers:
-        for marker in exe_markers:
-            if str_text.count(marker) > 0:
-                marker_type = MarkerType.EXE
-                break
-
-    if marker_type == MarkerType.NONE and test_markers:
-        for marker in test_markers:
-            if str_text.count(marker) > 0:
-                marker_type = MarkerType.TEST
-                break
-
-    if marker_type == MarkerType.NONE and library_markers:
-        for marker in library_markers:
-            if str_text.count(marker) > 0:
-                marker_type = MarkerType.LIBRARY
-                break
+    marker_type = _detect_marker_type(str_text, exe_markers, test_markers, library_markers)
 
     result = FileAnalysisResult(
         line_count=len(lines),
@@ -767,7 +829,6 @@ def cache_clear(context: "BuildContext"):
     context.analyzer_args = None
     context.file_reading_strategy = None
     context.warned_low_ulimit = False
-    context.warned_mmap_failure = False
     context.analyze_file_cache.clear()
 
 
@@ -932,7 +993,7 @@ def detect_include_guard(directives: list[PreprocessorDirective]) -> Optional["s
 
     # Check for #pragma once first (must be early in file)
     # Note: pragma directives have macro_name set (e.g., "once")
-    for _i, directive in enumerate(directives[:3]):  # Only first 3 directives
+    for directive in directives[:3]:  # Only first 3 directives
         if directive.directive_type == "pragma":
             # Check macro_name for "once" (how parse_directive_struct stores it)
             if directive.macro_name and str(directive.macro_name) == "once":
@@ -1059,16 +1120,11 @@ class FileAnalysisResult:
 
 
 class FileAnalyzer:
-    """SIMD-optimized implementation using StringZilla.
+    """Namespace for file-analyzer command-line arguments.
 
-    IMPORTANT: FileAnalyzer provides an INVARIANT file summary - the same file
-    should always produce the same analysis result regardless of external context
-    like preprocessor flags, compiler settings, or magic mode. This ensures
-    reliable caching and consistent behavior across different build configurations.
-
-    Preprocessing and context-dependent analysis should be handled at higher levels
-    (e.g., in MagicFlags classes) that can use FileAnalyzer's invariant results
-    as a foundation.
+    The module-level ``analyze_file()`` is the canonical entry point for file
+    analysis; this class only exists to host ``add_arguments`` for backward
+    compatibility with existing call sites in ``findtargets`` and ``headerdeps``.
     """
 
     @staticmethod
@@ -1119,233 +1175,3 @@ class FileAnalyzer:
             default=False,
             help="Suppress filesystem compatibility warnings",
         )
-
-    def __init__(self, content_hash: str, args, context: "BuildContext"):
-        """Initialize file analyzer.
-
-        Args:
-            content_hash: Git blob hash of file content
-            args: Args object containing max_read_size, verbose, exemarkers, testmarkers, librarymarkers
-            context: BuildContext where state is stored
-        """
-        if content_hash is None:
-            raise ValueError("content_hash must be provided")
-
-        self.content_hash = content_hash
-        self.args = args
-        self.context = context
-
-        # Set analyzer args on context
-        set_analyzer_args(args, context)
-
-        # StringZilla is now mandatory - no fallbacks
-        import stringzilla as sz
-
-        self.Str = sz.Str
-
-    # StringZilla utility methods now use the shared stringzilla_utils module
-
-    def _should_read_entire_file(self, file_size: Optional[int] = None) -> bool:
-        """Determine if entire file should be read based on configuration."""
-        max_read_size = getattr(self.args, "max_read_size", 0)
-        if max_read_size == 0:
-            return True
-        return bool(file_size and file_size <= max_read_size)
-
-    def analyze(self) -> FileAnalysisResult:
-        """Analyze file using context-based cache."""
-        return analyze_file(self.content_hash, self.context)
-
-    # _parse_directive_struct method removed - now uses stringzilla_utils module
-
-    def _find_include_positions_simd_bulk(self, str_text, line_byte_offsets: list[int]) -> list[int]:
-        """Optimized include position finder using pre-computed line byte offsets."""
-        # Pre-allocate using StringZilla count for better performance
-        include_count = str_text.count("#include")
-        include_positions = [0] * include_count  # Pre-allocate list
-        pos_idx = 0
-
-        # Find all '#include' occurrences in bulk
-        start = 0
-        while pos_idx < include_count:
-            pos = str_text.find("#include", start)
-            if pos == -1:
-                break
-            include_positions[pos_idx] = pos
-            pos_idx += 1
-            start = pos + 8  # len('#include')
-
-        # Truncate list if we found fewer than expected
-        if pos_idx < include_count:
-            include_positions = include_positions[:pos_idx]
-
-        positions = []
-
-        # Batch process all include positions using pre-computed line starts
-        for pos in include_positions:
-            if not is_position_commented_simd_optimized(str_text, pos, line_byte_offsets):
-                positions.append(pos)
-
-        return positions
-
-    def _find_magic_positions_simd_bulk(self, str_text, line_byte_offsets: list[int]) -> list[int]:
-        """Optimized magic position finder using pre-computed line byte offsets."""
-        positions = []
-
-        # Pre-allocate using StringZilla count for better performance
-        magic_count = str_text.count("//#")
-        magic_positions = [0] * magic_count  # Pre-allocate list
-        pos_idx = 0
-
-        # Find all '//# occurrences in bulk
-        start = 0
-        while pos_idx < magic_count:
-            pos = str_text.find("//#", start)
-            if pos == -1:
-                break
-            magic_positions[pos_idx] = pos
-            pos_idx += 1
-            start = pos + 3  # len('//#')
-
-        # Truncate list if we found fewer than expected
-        if pos_idx < magic_count:
-            magic_positions = magic_positions[:pos_idx]
-
-        # Batch process all magic flag positions using pre-computed line starts
-        for pos in magic_positions:
-            # Binary search for line start
-            line_start_idx = bisect.bisect_right(line_byte_offsets, pos) - 1
-            line_start = line_byte_offsets[line_start_idx] if line_start_idx >= 0 else 0
-
-            # Check if only whitespace before //# using StringZilla slice
-            if pos > line_start:
-                line_prefix_slice = str_text[line_start:pos]
-                # Use StringZilla's character set operations for efficient whitespace checking
-                if line_prefix_slice.find_first_not_of(" \t\r\n") != -1:
-                    continue
-
-            # Check if we're inside a block comment
-            if is_inside_block_comment_simd(str_text, pos):
-                continue
-
-            # Look for KEY=value pattern after //# using StringZilla
-            after_hash = pos + 3
-            # Find the end of this line using line_byte_offsets
-            current_line_idx = bisect.bisect_right(line_byte_offsets, pos) - 1
-            if current_line_idx + 1 < len(line_byte_offsets):
-                line_end = line_byte_offsets[current_line_idx + 1] - 1  # End before next line starts
-            else:
-                line_end = len(str_text)  # Last line
-
-            # Use StringZilla slice to find = efficiently
-            line_content_slice = str_text[after_hash:line_end]
-            equals_pos = line_content_slice.find("=")
-            if equals_pos != -1:
-                # Extract key part using StringZilla slice
-                key_slice = line_content_slice[:equals_pos]
-
-                # Use StringZilla's character set operations for efficient whitespace trimming
-                start_pos = key_slice.find_first_not_of(" \t")
-                if start_pos != -1:
-                    end_pos = key_slice.find_last_not_of(" \t")
-                    trimmed_key = key_slice[start_pos : end_pos + 1]
-                else:
-                    trimmed_key = key_slice[0:0]  # Empty slice
-
-                if len(trimmed_key) > 0:
-                    # Validate key format using StringZilla character set operations
-                    if (
-                        trimmed_key.find_first_not_of(
-                            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
-                        )
-                        == -1
-                    ):
-                        if is_alpha_or_underscore_sz(trimmed_key, 0):
-                            positions.append(pos)
-
-        return positions
-
-    def _find_directive_positions_simd_bulk(self, str_text, line_byte_offsets: list[int]) -> dict[str, list[int]]:
-        """Optimized directive position finder using pre-computed newline positions."""
-        directive_positions = {}
-
-        # Pre-define common directives for faster lookup
-        target_directives = {
-            "include",
-            "ifdef",
-            "ifndef",
-            "define",
-            "undef",
-            "endif",
-            "else",
-            "elif",
-            "pragma",
-            "error",
-            "warning",
-            "line",
-            "if",
-        }
-
-        # Pre-allocate using StringZilla count for better performance
-        hash_count = str_text.count("#")
-        hash_positions = [0] * hash_count  # Pre-allocate list
-        pos_idx = 0
-
-        # Find all # characters in bulk
-        start = 0
-        while pos_idx < hash_count:
-            pos = str_text.find("#", start)
-            if pos == -1:
-                break
-            hash_positions[pos_idx] = pos
-            pos_idx += 1
-            start = pos + 1
-
-        # Truncate list if we found fewer than expected
-        if pos_idx < hash_count:
-            hash_positions = hash_positions[:pos_idx]
-
-        # Process hash positions efficiently using pre-computed line boundaries
-        for hash_pos in hash_positions:
-            # Binary search for line start using precomputed line starts
-            line_start_idx = bisect.bisect_right(line_byte_offsets, hash_pos) - 1
-            line_start = line_byte_offsets[line_start_idx] if line_start_idx >= 0 else 0
-
-            # Check if only whitespace before # using StringZilla slice
-            if hash_pos > line_start:
-                line_prefix_slice = str_text[line_start:hash_pos]
-                # Use StringZilla's character set operations for efficient whitespace checking
-                if line_prefix_slice.find_first_not_of(" \t\r\n") != -1:
-                    continue
-
-            # Extract directive name efficiently
-            directive_start = hash_pos + 1
-            # Skip whitespace after # using StringZilla
-            directive_start = str_text.find_first_not_of(" \t", directive_start)
-            if directive_start == -1:
-                continue
-
-            # Find end of directive name using character set
-            directive_end = str_text.find_first_not_of(
-                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_", directive_start
-            )
-            if directive_end == -1:  # Directive takes up rest of string
-                directive_end = len(str_text)
-
-            if directive_end > directive_start:
-                # Use StringZilla slice for directive name
-                directive_slice = str_text[directive_start:directive_end]
-
-                # Check if directive matches any target directive using StringZilla direct comparison
-                for target_directive in target_directives:
-                    # Use StringZilla's efficient string comparison
-                    if directive_slice == target_directive:
-                        if target_directive not in directive_positions:
-                            directive_positions[target_directive] = []
-                        directive_positions[target_directive].append(hash_pos)
-                        break
-
-        return directive_positions
-
-    # Note: _is_position_commented_simd_optimized and _is_inside_block_comment_simd methods
-    # are now module-level functions in this file
