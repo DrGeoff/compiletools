@@ -127,15 +127,31 @@ class CacheTrimmer:
                 print(f"Object directory does not exist: {objdir}")
             return stats
 
-        # Phase 1: scan and parse
-        groups = {}  # basename -> list of (path, file_hash, mtime, size)
         try:
-            entries = os.scandir(objdir)
+            groups = self._scan_object_files(objdir, stats)
         except OSError as exc:
             print(f"Error scanning {objdir}: {exc}", file=sys.stderr)
             return stats
 
-        with entries:
+        now = time.time()
+        for _basename, files in groups.items():
+            self._process_basename_group(files, current_hashes, now, stats)
+
+        return stats
+
+    def _scan_object_files(self, objdir, stats):
+        """Scan ``objdir`` for parseable ``.o`` entries, grouped by basename.
+
+        Mutates ``stats`` in place: increments ``total_scanned`` per
+        successfully-parsed entry and sets ``basenames_found`` to the final
+        number of distinct basenames discovered.
+
+        Returns a dict mapping basename to a list of
+        ``(path, file_hash, mtime, size)`` tuples. May raise ``OSError`` if
+        the initial ``os.scandir`` call fails.
+        """
+        groups = {}  # basename -> list of (path, file_hash, mtime, size)
+        with os.scandir(objdir) as entries:
             for entry in entries:
                 if entry.name.endswith(".lockdir"):
                     continue
@@ -153,55 +169,59 @@ class CacheTrimmer:
                 groups.setdefault(basename, []).append((entry.path, file_hash, st.st_mtime, st.st_size))
 
         stats["basenames_found"] = len(groups)
-        now = time.time()
+        return groups
 
-        # Phase 2: decide per basename
-        for _basename, files in groups.items():
-            current = [(p, fh, mt, sz) for p, fh, mt, sz in files if fh in current_hashes]
-            noncurrent = [(p, fh, mt, sz) for p, fh, mt, sz in files if fh not in current_hashes]
+    def _process_basename_group(self, files, current_hashes, now, stats):
+        """Apply the keep/remove policy to one basename's object files.
 
-            stats["current_kept"] += len(current)
+        Mutates ``stats`` in place additively (``current_kept``,
+        ``noncurrent_kept``, ``removed``, ``failed``, ``bytes_freed``) and
+        performs the per-file ``print`` / ``_safe_locked_unlink`` side effects
+        in the order ``files`` was accumulated.
+        """
+        current = [(p, fh, mt, sz) for p, fh, mt, sz in files if fh in current_hashes]
+        noncurrent = [(p, fh, mt, sz) for p, fh, mt, sz in files if fh not in current_hashes]
 
-            # Sort non-current by mtime descending (newest first)
-            noncurrent.sort(key=lambda x: x[2], reverse=True)
+        stats["current_kept"] += len(current)
 
-            to_keep = noncurrent[: self.keep_count]
-            candidates = noncurrent[self.keep_count :]
+        # Sort non-current by mtime descending (newest first)
+        noncurrent.sort(key=lambda x: x[2], reverse=True)
 
-            # Safety: always keep at least 1 file per basename total.
-            # Only fires when keep_count=0 AND no current entry exists; if
-            # the basename has zero non-current entries it stays absent (no
-            # file to retain — nothing is silently lost, there is nothing
-            # to keep).
-            if not current and not to_keep and candidates:
-                to_keep.append(candidates.pop(0))
+        to_keep = noncurrent[: self.keep_count]
+        candidates = noncurrent[self.keep_count :]
 
-            # Apply max_age filter: only remove candidates older than max_age
-            if self.max_age_seconds is not None:
-                cutoff = now - self.max_age_seconds
-                to_remove = [f for f in candidates if f[2] < cutoff]
-            else:
-                to_remove = candidates
+        # Safety: always keep at least 1 file per basename total.
+        # Only fires when keep_count=0 AND no current entry exists; if
+        # the basename has zero non-current entries it stays absent (no
+        # file to retain — nothing is silently lost, there is nothing
+        # to keep).
+        if not current and not to_keep and candidates:
+            to_keep.append(candidates.pop(0))
 
-            stats["noncurrent_kept"] += len(to_keep) + (len(candidates) - len(to_remove))
+        # Apply max_age filter: only remove candidates older than max_age
+        if self.max_age_seconds is not None:
+            cutoff = now - self.max_age_seconds
+            to_remove = [f for f in candidates if f[2] < cutoff]
+        else:
+            to_remove = candidates
 
-            for path, _fh, _mt, size in to_remove:
-                if self.verbose >= 1:
-                    action = "Would remove" if self.dry_run else "Removing"
-                    print(f"  {action}: {path} ({_format_size(size)})")
-                if not self.dry_run:
-                    if _safe_locked_unlink(path):
-                        stats["removed"] += 1
-                        stats["bytes_freed"] += size
-                    else:
-                        stats["failed"] += 1
-                        if self.verbose >= 1:
-                            print(f"  Failed to remove {path}", file=sys.stderr)
-                else:
+        stats["noncurrent_kept"] += len(to_keep) + (len(candidates) - len(to_remove))
+
+        for path, _fh, _mt, size in to_remove:
+            if self.verbose >= 1:
+                action = "Would remove" if self.dry_run else "Removing"
+                print(f"  {action}: {path} ({_format_size(size)})")
+            if not self.dry_run:
+                if _safe_locked_unlink(path):
                     stats["removed"] += 1
                     stats["bytes_freed"] += size
-
-        return stats
+                else:
+                    stats["failed"] += 1
+                    if self.verbose >= 1:
+                        print(f"  Failed to remove {path}", file=sys.stderr)
+            else:
+                stats["removed"] += 1
+                stats["bytes_freed"] += size
 
     # ------------------------------------------------------------------
     # PCH directory trimming
