@@ -27,10 +27,8 @@ def add_arguments(parser):
         help="Shorten from the full path to the config filenames to only the variant name",
     )
 
-    # Figure out what style classes are available and add them to the command
-    # line options
-    styles = [st[:-5].lower() for st in dict(globals()) if st.endswith("Style")]
-    parser.add("--style", choices=styles, default="pretty", help="Output formatting style")
+    # Style choices come from the explicit registry below.
+    parser.add("--style", choices=list(_STYLE_REGISTRY), default="pretty", help="Output formatting style")
 
 
 class PrettyStyle:
@@ -74,13 +72,20 @@ class FilelistStyle:
             self.output += vv + "\n"
 
 
+_STYLE_REGISTRY = {
+    "pretty": PrettyStyle,
+    "flat": FlatStyle,
+    "filelist": FilelistStyle,
+}
+
+
 def find_possible_variants(
     user_config_dir=None, system_config_dir=None, exedir=None, args=None, verbose=0, gitroot=None
 ):
-    stylename = "Pretty"
+    stylename = "pretty"
     if args and args.style:
         stylename = args.style
-    styleclass = globals()[stylename.title() + "Style"]
+    styleclass = _STYLE_REGISTRY[stylename.lower()]
     style = styleclass()
 
     shorten = True

@@ -55,10 +55,8 @@ def add_arguments(cap):
         "(Useful for automatically building tests)",
     )
 
-    # Figure out what style classes are available and add them to the command
-    # line options
-    styles = [st[:-5].lower() for st in dict(globals()) if st.endswith("Style")]
-    cap.add("--style", choices=styles, default="indent", help="Output formatting style")
+    # Style choices come from the explicit registry below.
+    cap.add("--style", choices=list(_STYLE_REGISTRY), default="indent", help="Output formatting style")
 
     compiletools.utils.add_flag_argument(
         parser=cap,
@@ -106,6 +104,14 @@ class ArgsStyle:
             sys.stdout.write(" --tests")
             for target in testtargets:
                 sys.stdout.write(f" {target}")
+
+
+_STYLE_REGISTRY = {
+    "null": NullStyle,
+    "flat": FlatStyle,
+    "indent": IndentStyle,
+    "args": ArgsStyle,
+}
 
 
 class FindTargets:
@@ -237,7 +243,7 @@ def main(argv=None):
     args = compiletools.apptools.parseargs(cap, argv, context=context)
     findtargets = FindTargets(args, context=context)
 
-    styleclass = globals()[args.style.title() + "Style"]
+    styleclass = _STYLE_REGISTRY[args.style.lower()]
     styleobj = styleclass()
     executabletargets, testtargets = findtargets()
     styleobj(executabletargets, testtargets)

@@ -37,6 +37,18 @@ class AllPassFilter:
         return files
 
 
+_STYLE_REGISTRY = {
+    "flat": FlatStyle,
+    "indent": IndentStyle,
+}
+
+_FILTER_REGISTRY = {
+    "header": HeaderPassFilter,
+    "source": SourcePassFilter,
+    "all": AllPassFilter,
+}
+
+
 def check_filename(filename):
     if not compiletools.wrappedos.isfile(filename):
         sys.stderr.write(
@@ -56,7 +68,7 @@ class Filelist:
 
         if style is None:
             style = self.args.style
-        styleclass = globals()[style.title() + "Style"]
+        styleclass = _STYLE_REGISTRY[style.lower()]
         self.styleobject = styleclass(args)
 
     @staticmethod
@@ -76,15 +88,12 @@ class Filelist:
             nargs="*",
         )
 
-        # Figure out what output style classes are available and add them to the
-        # command line options
-        styles = [st[:-5].lower() for st in dict(globals()) if st.endswith("Style")]
-        cap.add("--style", choices=styles, default="flat", help="Output formatting style")
+        # Output style and filter choices come from the explicit registries above.
+        cap.add("--style", choices=list(_STYLE_REGISTRY), default="flat", help="Output formatting style")
 
-        passfilters = [st[:-10].lower() for st in dict(globals()) if st.endswith("PassFilter")]
         cap.add(
             "--filter",
-            choices=passfilters,
+            choices=list(_FILTER_REGISTRY),
             default="all",
             help="What type of files are allowed in the output",
         )
@@ -93,7 +102,7 @@ class Filelist:
         compiletools.hunter.add_arguments(cap)
 
     def process(self):
-        filterclass = globals()[self.args.filter.title() + "PassFilter"]
+        filterclass = _FILTER_REGISTRY[self.args.filter.lower()]
         filterobject = filterclass()
         extras = set()
 
