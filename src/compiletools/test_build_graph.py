@@ -49,6 +49,25 @@ class TestBuildRule:
         )
         assert rule.order_only_deps == ["/tmp/obj/"]
 
+    def test_success_marker_defaults_to_none(self):
+        rule = BuildRule(
+            output="/tmp/obj/foo.o",
+            inputs=["/src/foo.cpp"],
+            command=["g++", "-c", "/src/foo.cpp"],
+            rule_type="compile",
+        )
+        assert rule.success_marker is None
+
+    def test_success_marker_accepts_path(self):
+        rule = BuildRule(
+            output="/tmp/bin/foo.result",
+            inputs=["/tmp/bin/foo"],
+            command=["/tmp/bin/foo"],
+            rule_type="test",
+            success_marker="/tmp/bin/foo.result",
+        )
+        assert rule.success_marker == "/tmp/bin/foo.result"
+
 
 class TestBuildGraph:
     def test_empty_graph(self):

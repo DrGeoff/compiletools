@@ -10,7 +10,7 @@ from compiletools.build_backend import (
     BuildBackend,
     register_backend,
 )
-from compiletools.build_graph import BuildGraph
+from compiletools.build_graph import BuildGraph, render_shell_recipe
 
 
 @register_backend
@@ -94,7 +94,7 @@ class NinjaBackend(BuildBackend):
                 elif rule.rule_type in ("link", "static_library", "shared_library"):
                     cmd_str = self._wrap_link_cmd(rule.command)
                 else:
-                    cmd_str = " ".join(rule.command)
+                    cmd_str = render_shell_recipe(rule)
                 f.write(f"  cmd = {cmd_str}\n")
             f.write("\n")
 

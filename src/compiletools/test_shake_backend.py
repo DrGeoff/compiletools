@@ -27,6 +27,7 @@ from compiletools.trace_backend import (
     TraceEntry,
     TraceStore,
     _is_build_artifact,
+    _make_trace_entry,
     hash_command,
 )
 
@@ -1295,3 +1296,68 @@ def test_quoted_define_with_space_compiles_end_to_end(tmp_path, monkeypatch):
     assert result.returncode == 0, (
         f"greeting exe failed (rc={result.returncode}): stdout={result.stdout!r} stderr={result.stderr!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test rules: must NOT pass through _execute_rule
+# ---------------------------------------------------------------------------
+
+
+class TestMakeTraceEntryGuard:
+    """_make_trace_entry's invariant is that the rule's output exists.
+
+    If a future executor ever violates this (e.g. a test rule slipping into
+    the trace-execution path again), the diagnostic should name the rule and
+    hint at the cause — not bubble up a cryptic FileNotFoundError from deep
+    inside global_hash_registry.
+    """
+
+    def test_raises_clear_error_when_output_missing(self, tmp_path):
+        rule = BuildRule(
+            output=str(tmp_path / "missing.result"),
+            inputs=[],
+            command=["/bin/true"],
+            rule_type="test",
+        )
+        context = BuildContext()
+        with pytest.raises(RuntimeError, match="executed successfully but its output file is missing"):
+            _make_trace_entry(rule, context)
+
+
+class TestShakeTestRulesNotExecutedDuringBuild:
+    """Test rules carry pure-argv commands (no `&&`/`touch`); their .result
+    marker is touched by the Python test runner via execute("runtests"), not
+    by atomic_link.  If _do_build ever recurses into a test rule and feeds
+    it to _execute_rule, atomic_link would invoke the test exe with no
+    side-effect, and _make_trace_entry would crash trying to hash the
+    never-touched .result file.
+
+    cake.py invokes execute("build") then execute("runtests") separately, so
+    the bug is latent today (build's deps don't include test rules).  This
+    test pins the defensive short-circuit that closes execute("all").
+    """
+
+    def test_do_build_short_circuits_test_rules(self, tmp_path):
+        import asyncio
+
+        result_path = str(tmp_path / "test_foo.result")
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output=result_path,
+                inputs=[str(tmp_path / "test_foo")],
+                command=[str(tmp_path / "test_foo")],
+                rule_type="test",
+                success_marker=result_path,
+            )
+        )
+
+        with ShakeBackendTestContext(graph) as (backend, _tmpdir):
+            traces = TraceStore(str(tmp_path / ".ct-traces.json"))
+            with mock.patch.object(backend, "_execute_rule") as mock_exec:
+                memo: dict[str, asyncio.Task[bool]] = {}
+                changed = asyncio.run(
+                    backend._build_async(result_path, graph, traces, memo, asyncio.Semaphore(1))
+                )
+            mock_exec.assert_not_called()
+            assert changed is False

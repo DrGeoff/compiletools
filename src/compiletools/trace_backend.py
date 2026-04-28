@@ -197,6 +197,13 @@ def _make_trace_entry(rule: BuildRule, context, output_hash: str | None = None) 
     Pass *output_hash* when already computed (avoids a redundant disk read).
     """
     assert rule.command is not None, "only call _make_trace_entry after a rule executes"
+    if output_hash is None and not os.path.isfile(rule.output):
+        raise RuntimeError(
+            f"_make_trace_entry: rule {rule.output!r} executed successfully but its "
+            f"output file is missing. The rule's command may have side-effect-only "
+            f"semantics (e.g., a test rule whose success_marker was never touched) "
+            f"and should not be in the trace-execution path."
+        )
     input_hashes = {}
     for p in rule.inputs:
         if os.path.isfile(p):
@@ -326,6 +333,13 @@ class ShakeBackend(BuildBackend):
         if rule.rule_type == "phony":
             results = await asyncio.gather(*(self._build_async(inp, graph, traces, memo, sem) for inp in rule.inputs))
             return any(results)
+
+        if rule.rule_type == "test":
+            # Test rules are handled by execute("runtests") -> _run_tests();
+            # walking into them here would invoke the test exe with no
+            # success-marker side-effect, leaving the .result file absent
+            # and crashing _make_trace_entry's get_file_hash call.
+            return False
 
         # Ensure order-only deps (directories) exist
         for dep in rule.order_only_deps:
@@ -880,7 +894,10 @@ class SlurmBackend(ShakeBackend):
         # parallel where dependency order permits.  Mirrors the Shake backend's
         # asyncio approach so independent links don't serialize on the
         # submitter (I5).
-        local_rules = [r for r in graph.rules if r.rule_type not in ("phony", "mkdir", "compile", "clean")]
+        # Test rules carry pure-argv commands and are touched by the Python
+        # test runner via execute("runtests"); they have no atomic-output
+        # semantics and must not pass through atomic_link.
+        local_rules = [r for r in graph.rules if r.rule_type not in ("phony", "mkdir", "compile", "clean", "test")]
         if local_rules:
             asyncio.run(self._run_local_async(local_rules, traces))
 

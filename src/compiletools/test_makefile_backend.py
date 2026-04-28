@@ -456,6 +456,119 @@ class TestMakefileTestRules:
         defaults.update(overrides)
         return SimpleNamespace(**defaults)
 
+    def test_test_recipe_with_testprefix_then_marker(self):
+        """TESTPREFIX tokens precede the exe; marker touch is appended after."""
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="bin/test_foo.result",
+                inputs=["bin/test_foo"],
+                command=["valgrind", "--leak-check=full", "bin/test_foo"],
+                rule_type="test",
+                success_marker="bin/test_foo.result",
+            )
+        )
+
+        args = self._make_args()
+        hunter = MagicMock()
+        backend = MakefileBackend(args=args, hunter=hunter)
+
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        assert "valgrind --leak-check=full bin/test_foo && touch bin/test_foo.result" in content
+
+    def test_test_recipe_quotes_exe_path_with_space(self):
+        """A test exe path containing a space must be shell-quoted in the recipe.
+
+        Without quoting, /bin/sh word-splits the path and invokes the wrong
+        binary (or none at all), masking the test.
+        """
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="bin/dir with space/test_foo.result",
+                inputs=["bin/dir with space/test_foo"],
+                command=["bin/dir with space/test_foo"],
+                rule_type="test",
+                success_marker="bin/dir with space/test_foo.result",
+            )
+        )
+
+        args = self._make_args()
+        hunter = MagicMock()
+        backend = MakefileBackend(args=args, hunter=hunter)
+
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        assert "'bin/dir with space/test_foo'" in content
+
+    def test_test_recipe_quotes_success_marker_with_space(self):
+        """A success_marker path with a space must be shell-quoted in the touch tail."""
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="bin/dir with space/test_foo.result",
+                inputs=["bin/test_foo"],
+                command=["bin/test_foo"],
+                rule_type="test",
+                success_marker="bin/dir with space/test_foo.result",
+            )
+        )
+
+        args = self._make_args()
+        hunter = MagicMock()
+        backend = MakefileBackend(args=args, hunter=hunter)
+
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        assert "&& touch 'bin/dir with space/test_foo.result'" in content
+
+    def test_test_result_rule_appends_success_marker_touch(self):
+        """A rule with success_marker renders recipe as 'cmd && touch marker'.
+
+        Producers emit pure-argv command + success_marker; this backend
+        appends the touch tail at render time so make's recipe runs through
+        /bin/sh.
+        """
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="bin/test_foo.result",
+                inputs=["bin/test_foo"],
+                command=["bin/test_foo"],
+                rule_type="test",
+                success_marker="bin/test_foo.result",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="runtests",
+                inputs=["bin/test_foo.result"],
+                command=None,
+                rule_type="phony",
+            )
+        )
+
+        args = self._make_args()
+        hunter = MagicMock()
+        backend = MakefileBackend(args=args, hunter=hunter)
+
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        assert "bin/test_foo.result: bin/test_foo" in content
+        assert "bin/test_foo && touch bin/test_foo.result" in content
+        assert "rm -f bin/test_foo.result" not in content
+        assert ".PHONY: runtests" in content
+        assert "runtests: bin/test_foo.result" in content
+
     def test_test_result_rule_in_makefile(self):
         """Test rules should produce .result file recipes in the Makefile."""
         graph = BuildGraph()
@@ -463,8 +576,9 @@ class TestMakefileTestRules:
             BuildRule(
                 output="bin/test_foo.result",
                 inputs=["bin/test_foo"],
-                command=["bin/test_foo", "&&", "touch", "bin/test_foo.result"],
+                command=["bin/test_foo"],
                 rule_type="test",
+                success_marker="bin/test_foo.result",
             )
         )
         graph.add_rule(
@@ -497,8 +611,9 @@ class TestMakefileTestRules:
             BuildRule(
                 output="bin/test_foo.result",
                 inputs=["bin/test_foo"],
-                command=["bin/test_foo", "&&", "touch", "bin/test_foo.result"],
+                command=["bin/test_foo"],
                 rule_type="test",
+                success_marker="bin/test_foo.result",
             )
         )
 
@@ -519,8 +634,9 @@ class TestMakefileTestRules:
             BuildRule(
                 output="bin/test_foo.result",
                 inputs=["bin/test_foo"],
-                command=["bin/test_foo", "&&", "touch", "bin/test_foo.result"],
+                command=["bin/test_foo"],
                 rule_type="test",
+                success_marker="bin/test_foo.result",
             )
         )
 
@@ -541,8 +657,9 @@ class TestMakefileTestRules:
             BuildRule(
                 output="bin/test_foo.result",
                 inputs=["bin/test_foo"],
-                command=["bin/test_foo", "&&", "touch", "bin/test_foo.result"],
+                command=["bin/test_foo"],
                 rule_type="test",
+                success_marker="bin/test_foo.result",
             )
         )
 

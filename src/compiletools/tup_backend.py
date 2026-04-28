@@ -65,6 +65,8 @@ class TupBackend(BuildBackend):
         for rule in graph.rules:
             if rule.rule_type == "phony":
                 continue  # Tup has no phony rule equivalent
+            if rule.rule_type == "test":
+                continue  # Tests are run via the Python runner; the warning above explains.
             if not rule.command:
                 continue
 

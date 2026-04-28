@@ -7,6 +7,7 @@ Backends consume a BuildGraph to produce their native output format.
 
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass, field
 
 VALID_RULE_TYPES = frozenset(
@@ -29,19 +30,26 @@ class BuildRule:
     Attributes:
         output: The file this rule produces (or a phony target name).
         inputs: Files this rule depends on (source files, headers, objects).
-        command: List of **shell tokens** (NOT argv) to execute, or None
-            for phony rules. Tokens are space-joined and executed under
-            ``/bin/sh -c`` by every backend, so shell metacharacters
-            (``&&``, ``||``, ``>``, ``$VAR``, ...) are interpreted as
-            shell syntax — *not* passed literally to the program. A
-            future backend that hands the list straight to
-            ``subprocess.run(..., shell=False)`` would need to either
-            re-shellify the tokens or refuse rules that contain
-            metacharacter elements.
+        command: argv list passed directly to ``subprocess.run`` (with
+            ``shell=False`` semantics), or None for phony rules. Tokens
+            MUST NOT contain shell metacharacters (``&&``, ``||``, ``>``,
+            ``$VAR``, ...) — side effects like "touch a marker on success"
+            belong in ``success_marker``, not in command tokens. Shell-rendered
+            backends (Make, Ninja) join with spaces and let the underlying
+            tool run the result through ``/bin/sh -c``; argv-executing
+            backends (Shake, Slurm) hand the list straight to subprocess.
+            Both behaviours agree as long as no token is shell-active.
         rule_type: One of "compile", "link", "test", "phony", "mkdir", "clean",
             "copy", "static_library", "shared_library".
         order_only_deps: Dependencies that must exist but whose timestamps are
             not checked (e.g., output directories).
+        success_marker: Optional path to ``touch`` after the command exits
+            successfully. Used by test rules to record passes for incremental
+            re-runs. Each backend renders this in its native idiom: shell
+            backends append ``&& touch <marker>`` to the recipe; argv backends
+            call ``Path(marker).touch()`` after the subprocess returns 0.
+            Backends that own their own pass/fail bookkeeping (CMake CTest,
+            Bazel cc_test) ignore this field.
 
     Equality and hash are by ``output`` only — deliberate so that
     BuildGraph._rules (a dict keyed by output) deduplicates rules. Rules
@@ -55,6 +63,7 @@ class BuildRule:
     rule_type: str
     order_only_deps: list[str] = field(default_factory=list)
     include_weight: int = 0
+    success_marker: str | None = None
 
     def __post_init__(self):
         if self.rule_type not in VALID_RULE_TYPES:
@@ -158,3 +167,16 @@ class BuildGraph:
                 filtered.add_rule(rule)
 
         return filtered
+
+
+def render_shell_recipe(rule: BuildRule) -> str:
+    """Render rule.command as a shell-executable string, appending the
+    success_marker touch tail when set.
+
+    Used by shell-rendered backends (Make, Ninja) for non-compile/non-link
+    rules whose command is intended to run through ``/bin/sh -c``.
+    """
+    cmd_str = shlex.join(rule.command)
+    if rule.success_marker:
+        cmd_str += f" && touch {shlex.quote(rule.success_marker)}"
+    return cmd_str

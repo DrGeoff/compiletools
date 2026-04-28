@@ -354,12 +354,44 @@ class TestBuildGraphPopulation:
         rule = test_rules[0]
         assert rule.output == f"{bindir}/test_foo.result"
         assert rule.inputs == [f"{bindir}/test_foo"]
-        # The recipe must NOT self-delete its own output (Fix 2): make's
-        # mtime check skips re-running the test only when .result is fresher
-        # than the executable.
+        # The recipe must NOT self-delete its own output: make's mtime check
+        # skips re-running the test only when .result is fresher than the exe.
         assert "rm" not in rule.command
-        assert "touch" in rule.command
         assert f"{bindir}/test_foo" in rule.command
+
+    def test_test_result_rule_command_is_pure_argv(self, tmp_path):
+        """Test rule command must be argv-only — no shell metacharacters.
+
+        Touch-on-success is modeled via success_marker, not embedded in command
+        tokens. argv-executing backends (Shake, Slurm) pass command straight to
+        subprocess.run and would otherwise feed '&&' / 'touch' to the test exe
+        as ignored argv parameters.
+        """
+        args = make_backend_args(tmp_path, filename=[], tests=["/src/test_foo.cpp"])
+        hunter = make_mock_hunter(sources=["/src/test_foo.cpp"])
+        backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+        bindir = str(tmp_path / "bin")
+
+        graph = backend.build_graph()
+
+        test_rules = graph.rules_by_type("test")
+        assert len(test_rules) == 1
+        rule = test_rules[0]
+        assert "&&" not in rule.command
+        assert "touch" not in rule.command
+        assert rule.command == [f"{bindir}/test_foo"]
+
+    def test_test_result_rule_carries_success_marker(self, tmp_path):
+        """Test rule must declare its .result file as success_marker."""
+        args = make_backend_args(tmp_path, filename=[], tests=["/src/test_foo.cpp"])
+        hunter = make_mock_hunter(sources=["/src/test_foo.cpp"])
+        backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+        bindir = str(tmp_path / "bin")
+
+        graph = backend.build_graph()
+
+        test_rules = graph.rules_by_type("test")
+        assert test_rules[0].success_marker == f"{bindir}/test_foo.result"
 
     def test_test_result_rules_include_testprefix(self, tmp_path):
         """Test result rules should include TESTPREFIX when set."""

@@ -163,6 +163,36 @@ class TestTupGenerate:
         # Must NOT use the misleading "ignores --tests" wording.
         assert "ignores --tests" not in err
 
+    def test_test_rule_not_emitted_as_tup_rule(self, capsys):
+        """Tup must NOT emit a `: exe |> exe |> exe.result` line for test rules.
+
+        Test rules carry pure-argv commands (no `&&`/`touch`); the .result
+        marker is touched only by the Python test runner.  If tup emits the
+        rule, it would invoke the exe but never produce its declared output,
+        so tup itself would error on the next build (`output not produced`).
+        """
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="bin/test_foo.result",
+                inputs=["bin/test_foo"],
+                command=["bin/test_foo"],
+                rule_type="test",
+                success_marker="bin/test_foo.result",
+            )
+        )
+
+        args = self._make_args(tests=["/src/test_foo.cpp"])
+        hunter = MagicMock()
+        backend = TupBackend(args=args, hunter=hunter)
+
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        assert "test_foo.result" not in content
+        assert "|> bin/test_foo |>" not in content
+
     def test_tests_execute_through_run_tests(self, tmp_path):
         """Tup backend: backend.execute('runtests') still calls _run_tests
         from the base class — tests are NOT silently skipped."""

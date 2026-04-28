@@ -554,13 +554,14 @@ class BuildBackend(abc.ABC):
             test_result_paths = []
             for exe_path in test_exe_paths:
                 result_path = exe_path + ".result"
-                test_cmd = testprefix_parts + [exe_path, "&&", "touch", result_path]
+                test_cmd = testprefix_parts + [exe_path]
                 graph.add_rule(
                     BuildRule(
                         output=result_path,
                         inputs=[exe_path],
                         command=test_cmd,
                         rule_type="test",
+                        success_marker=result_path,
                     )
                 )
                 test_result_paths.append(result_path)

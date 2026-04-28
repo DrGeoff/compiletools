@@ -22,7 +22,7 @@ from compiletools.build_backend import (
     BuildBackend,
     register_backend,
 )
-from compiletools.build_graph import BuildGraph
+from compiletools.build_graph import BuildGraph, render_shell_recipe
 
 
 @functools.lru_cache(maxsize=1)
@@ -271,14 +271,14 @@ class MakefileBackend(BuildBackend):
             else:
                 recipe = cmd_str
         elif rule.rule_type == "test":
-            cmd_str = " ".join(rule.command)
+            cmd_str = render_shell_recipe(rule)
             if self.args.verbose >= 1:
                 exe_name = rule.inputs[0] if rule.inputs else rule.output
                 recipe = f"@echo ... {exe_name} ; {cmd_str}"
             else:
                 recipe = cmd_str
         else:
-            recipe = " ".join(rule.command)
+            recipe = render_shell_recipe(rule)
 
         if self._timing_enabled and rule.rule_type in ("compile", "link", "shared_library", "static_library"):
             recipe = self._wrap_with_timing(recipe, rule.output)

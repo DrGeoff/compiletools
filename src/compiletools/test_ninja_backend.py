@@ -96,6 +96,84 @@ class TestNinjaGenerate:
         # Order-only deps use || in Ninja
         assert "|| /tmp/obj" in content
 
+    def test_test_recipe_quotes_exe_path_with_space(self):
+        """A test exe path containing a space must be shell-quoted in cmd=."""
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="bin/dir with space/test_foo.result",
+                inputs=["bin/dir with space/test_foo"],
+                command=["bin/dir with space/test_foo"],
+                rule_type="test",
+                success_marker="bin/dir with space/test_foo.result",
+            )
+        )
+
+        args = self._make_args()
+        hunter = MagicMock()
+        hunter.huntsource = MagicMock()
+        backend = NinjaBackend(args=args, hunter=hunter)
+
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        assert "'bin/dir with space/test_foo'" in content
+
+    def test_test_recipe_quotes_success_marker_with_space(self):
+        """A success_marker path with a space must be shell-quoted in the touch tail."""
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="bin/dir with space/test_foo.result",
+                inputs=["bin/test_foo"],
+                command=["bin/test_foo"],
+                rule_type="test",
+                success_marker="bin/dir with space/test_foo.result",
+            )
+        )
+
+        args = self._make_args()
+        hunter = MagicMock()
+        hunter.huntsource = MagicMock()
+        backend = NinjaBackend(args=args, hunter=hunter)
+
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        assert "&& touch 'bin/dir with space/test_foo.result'" in content
+
+    def test_test_rule_appends_success_marker_touch(self):
+        """A rule with success_marker renders cmd=$cmd && touch $marker.
+
+        Producers emit pure-argv command + success_marker; this backend
+        appends the touch tail at render time so ninja's recipe runs
+        through a shell.
+        """
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="bin/test_foo.result",
+                inputs=["bin/test_foo"],
+                command=["bin/test_foo"],
+                rule_type="test",
+                success_marker="bin/test_foo.result",
+            )
+        )
+
+        args = self._make_args()
+        hunter = MagicMock()
+        hunter.huntsource = MagicMock()
+        backend = NinjaBackend(args=args, hunter=hunter)
+
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        assert "build bin/test_foo.result: test_cmd bin/test_foo" in content
+        assert "cmd = bin/test_foo && touch bin/test_foo.result" in content
+
     def test_restat_suppressed_for_mkdir_rule(self):
         """restat=1 must NOT be emitted for mkdir rules — directory
         mtimes change every time a child is added/removed, so restat

@@ -2143,8 +2143,46 @@ class TestTracesAlwaysSaved:
 
 
 # ---------------------------------------------------------------------------
-# scancel-on-signal (Fix C3, signal path)
+# Test rules: must NOT pass through _run_local
 # ---------------------------------------------------------------------------
+
+
+class TestTestRulesAreNotExecutedLocally:
+    """Test rules carry pure-argv commands (no `&&`/`touch`); their .result
+    marker is touched by the Python test runner via execute("runtests"), not
+    by atomic_link.  If _execute_impl ever feeds a test rule to _run_local,
+    atomic_link would invoke the test exe with `&&`/`touch` as ignored argv,
+    return 0, and then _make_trace_entry would crash trying to hash the
+    never-touched .result file.  This test pins the filter that prevents
+    that regression.
+    """
+
+    def test_execute_impl_skips_test_rules(self, tmp_path):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        result_path = str(bin_dir / "test_foo.result")
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output=result_path,
+                inputs=[str(bin_dir / "test_foo")],
+                command=[str(bin_dir / "test_foo")],
+                rule_type="test",
+                success_marker=result_path,
+            )
+        )
+        graph.add_rule(make_phony_rule("runtests", [result_path]))
+
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            backend._invocation_prefix = "test"
+            backend._created_aux_files = []
+            backend._tracked_jobs = {}
+            backend._chunk_id_for_job = {}
+            with patch.object(backend, "_run_local") as mock_run_local:
+                traces = TraceStore(os.path.join(backend.args.objdir, "traces.json"))
+                backend._execute_impl(graph, traces)
+
+            mock_run_local.assert_not_called()
 
 
 class TestScancelOnSignal:
