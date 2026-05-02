@@ -179,16 +179,16 @@ class TestLockCleanerUnit:
         assert is_alive is False
         assert ssh_error is True  # Timeout treated as SSH failure
 
-    @patch("psutil.pid_exists")
-    def test_is_process_alive_local(self, mock_psutil, mock_args):
-        """Test local process check using psutil."""
-        mock_psutil.return_value = True
+    @patch("compiletools.lock_utils.os.kill")
+    def test_is_process_alive_local(self, mock_kill, mock_args):
+        """Local process check probes pid existence with os.kill(pid, 0)."""
+        mock_kill.return_value = None
         cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
 
         result = cleaner._is_process_alive_local(12345)
 
         assert result is True
-        mock_psutil.assert_called_once_with(12345)
+        mock_kill.assert_called_once_with(12345, 0)
 
     def test_get_lock_age_future_mtime(self, tmpdir_with_locks, mock_args):
         """Test clock skew handling (future mtime returns age 0)."""

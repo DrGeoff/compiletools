@@ -23,7 +23,6 @@ classifiers = [
 dependencies = [
     "configargparse>=1.5.3",
     "appdirs>=1.4.4",
-    "psutil>=5.9.0",
     "rich>=12.0.0",
     "rich_rst>=1.1.7",
     "stringzilla>=3.0.0",

@@ -1,59 +1,47 @@
 import os
-import platform
+import sys
 
 import compiletools.apptools
 
 
-def _determine_system():
-    system = platform.system().lower()
-    if platform.system() == "Linux":
-        try:
-            # A Termux fingerprint is that it
-            # doesn't have permissions for /proc/stat
-            os.stat("/proc/stat")
-        except PermissionError:
-            system = "termux"
-    return system
-
-
 def _cpus_linux():
-    import psutil
-
-    thisprocess = psutil.Process()
-    return len(thisprocess.cpu_affinity())
+    return len(os.sched_getaffinity(0))
 
 
-def _cpus_termux():
-    # Termux can't import psutil without double exceptions
-    # which is why we use nproc
-    import subprocess
-
-    return subprocess.run(
-        ["nproc"],
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.rstrip()
+_cpus_android = _cpus_linux  # Termux is Linux; sched_getaffinity works there
 
 
 def _cpus_darwin():
-    # psutil isn't supported on Darwin and
-    # nproc isn't installed by default
+    # macOS lacks os.sched_getaffinity; nproc isn't installed by default.
     import subprocess
 
-    return subprocess.run(
-        ["sysctl", "-n", "hw.ncpu"],
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.rstrip()
+    try:
+        res = subprocess.run(
+            ["sysctl", "-n", "hw.ncpu"],
+            stdout=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        return int(res.stdout.strip())
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return os.cpu_count() or 4
+
+
+_CPU_DISPATCH = {
+    "linux": _cpus_linux,
+    "android": _cpus_android,
+    "darwin": _cpus_darwin,
+}
 
 
 def _cpu_count():
+    fn = _CPU_DISPATCH.get(sys.platform)
+    if fn is None:
+        return os.cpu_count() or 4
     try:
-        cpu_func = globals()["_".join(["_cpus", _determine_system()])]
-        return cpu_func()
+        return fn()
     except Exception:
-        # A safe-ish default even for phones
-        return 4
+        return os.cpu_count() or 4
 
 
 def add_arguments(cap):

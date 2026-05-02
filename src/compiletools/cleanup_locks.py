@@ -103,7 +103,7 @@ class LockCleaner:
             return True, "STALE (no lock info)"
 
         if self._is_local_host(lock_host):
-            # Local lock - psutil + start_time match (PID-reuse safe)
+            # Local lock - pid liveness + start_time match (PID-reuse safe)
             if self._is_process_alive_local(lock_pid, lock_start_time):
                 return False, "ACTIVE (local process running)"
             else:

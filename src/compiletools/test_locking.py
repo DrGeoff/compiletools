@@ -82,7 +82,7 @@ class TestLockdirLock:
     def test_pid_file_includes_process_start_time(self):
         """Regression: pid file format must be host:pid:starttime so we
         can detect PID reuse on busy build hosts."""
-        import psutil
+        from compiletools.lock_utils import get_process_start_time
 
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
@@ -98,11 +98,9 @@ class TestLockdirLock:
                 # Issue #6: hostname is FQDN (with gethostname fallback)
                 assert host == (socket.getfqdn() or socket.gethostname())
                 assert int(pid_str) == os.getpid()
-                # start_time should match psutil's view of our process
-                expected = psutil.Process(os.getpid()).create_time()
-                # Allow tiny float tolerance
+                expected = get_process_start_time(os.getpid())
                 assert abs(float(start_str) - expected) < 1.0, (
-                    f"start_time {start_str} does not match psutil create_time {expected}"
+                    f"start_time {start_str} does not match get_process_start_time {expected}"
                 )
             finally:
                 lock.release()
@@ -110,7 +108,7 @@ class TestLockdirLock:
     def test_stale_detection_rejects_pid_reuse(self):
         """If the pid in the file matches a live process but with a
         different start_time, the lock is stale (PID reuse)."""
-        import psutil
+        from compiletools.lock_utils import get_process_start_time
 
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
@@ -119,8 +117,7 @@ class TestLockdirLock:
 
             os.mkdir(lock.lockdir)
             os.chmod(lock.lockdir, 0o775)
-            # Write pid file with current pid but a wildly different start_time
-            real_start = psutil.Process(os.getpid()).create_time()
+            real_start = get_process_start_time(os.getpid())
             fake_start = real_start - 10000.0  # 10000s earlier — clearly different
             with open(lock.pid_file, "w") as f:
                 f.write(f"{lock.hostname}:{os.getpid()}:{fake_start}\n")
@@ -624,7 +621,7 @@ class TestCIFSLock:
     def test_excl_holder_format_is_host_pid_starttime(self):
         """Issue #4 prerequisite: excl file carries host:pid:start_time so
         peers can detect dead local holders."""
-        import psutil
+        from compiletools.lock_utils import get_process_start_time
 
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
@@ -640,7 +637,7 @@ class TestCIFSLock:
                 # host is FQDN (or gethostname fallback) — match the same
                 assert host == (socket.getfqdn() or socket.gethostname())
                 assert int(pid_str) == os.getpid()
-                expected = psutil.Process(os.getpid()).create_time()
+                expected = get_process_start_time(os.getpid())
                 assert abs(float(st_str) - expected) < 1.0
             finally:
                 lock.release()
@@ -1293,7 +1290,7 @@ class TestFileLock:
 
 
 class TestPidReuseTolerance:
-    """Issue #5: tolerance for psutil create_time mismatch must be tight on
+    """Issue #5: tolerance for process start_time mismatch must be tight on
     Linux (0.1s) where /proc/[pid]/stat is fine-grained, looser elsewhere."""
 
     def test_tolerance_constant_linux_is_0_1s(self):
@@ -1309,17 +1306,19 @@ class TestPidReuseTolerance:
     def test_pid_reuse_within_loose_window_is_detected_on_linux(self):
         """A simulated PID reuse where the impostor's start_time is 0.5s
         from the recorded holder must be flagged as STALE on Linux. The
-        old 1.0s tolerance would have wrongly marked it ACTIVE."""
+        old 1.0s tolerance would have wrongly marked it ACTIVE.
+
+        get_process_start_time returns ticks-since-boot in seconds (from
+        /proc/[pid]/stat field 22), so a 0.5s offset in either format is
+        still 0.5s — the arithmetic is unchanged."""
         import sys as _sys
 
         if not _sys.platform.startswith("linux"):
             pytest.skip("Tighter tolerance is Linux-only")
 
-        import psutil
+        from compiletools.lock_utils import get_process_start_time, is_process_alive_local
 
-        from compiletools.lock_utils import is_process_alive_local
-
-        recorded_start = psutil.Process(os.getpid()).create_time()
+        recorded_start = get_process_start_time(os.getpid())
         # Pretend the recorded holder started 0.5s before the live process
         # (i.e. live process is a PID-reuse impostor at 0.5s offset).
         impostor_start = recorded_start - 0.5
@@ -1329,11 +1328,9 @@ class TestPidReuseTolerance:
 
     def test_exact_match_still_alive(self):
         """Sanity: matching start_time still resolves to ACTIVE."""
-        import psutil
+        from compiletools.lock_utils import get_process_start_time, is_process_alive_local
 
-        from compiletools.lock_utils import is_process_alive_local
-
-        st = psutil.Process(os.getpid()).create_time()
+        st = get_process_start_time(os.getpid())
         assert is_process_alive_local(os.getpid(), st) is True
 
 
