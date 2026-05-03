@@ -34,7 +34,6 @@ tui = [
 ]
 dev = [
     "bump-my-version>=0.26.0",
-    "twine>=5.0.0",
     "pytest>=8.2.3",
     "pytest-xdist>=3.5",
     "ruff>=0.14.0",
@@ -42,6 +41,9 @@ dev = [
     "pre-commit>=4.0",
     "pytest-cov>=6.0",
     "textual>=0.40.0",
+]
+release = [
+    "twine>=5.0.0",
 ]
 
 [project.urls]

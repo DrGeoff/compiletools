@@ -8,8 +8,8 @@ A variety of installation methods are possible.
 
 1) clone the github repository
 
-Use your system tools (yum, dnf, apt-get, pip) to install the python dependencies: psutil, appdirs, configargparse.
-For example, on recent Fedora use: sudo dnf install python3-setuptools python3-configargparse python3-appdirs python3-psutil
+Use your system tools (yum, dnf, apt-get, pip) to install the python dependencies: appdirs, configargparse, rich, rich_rst, stringzilla.
+For example, on recent Fedora use: sudo dnf install python3-setuptools python3-configargparse python3-appdirs python3-rich
 
 git clone git://github.com/DrGeoff/compiletools
 
@@ -50,7 +50,7 @@ will install into /usr/local.  By default /usr/local/bin is in your path so no e
 3) Build an RPM (these instructions were tested on Fedora 31)
 Make sure you have the building tools installed
 
-sudo dnf install rpm-build python3-setuptools python3-docutils python3-configargparse python3-appdirs python3-psutil python3-devel
+sudo dnf install rpm-build python3-setuptools python3-docutils python3-configargparse python3-appdirs python3-rich python3-devel
 
 Then download a tarball and turn it into the RPM
 
@@ -79,7 +79,7 @@ sudo mkdir /etc/xdg/ct/
 sudo chmod a+rwx /etc/xdg/ct/
 
 # If you are going to work from the git repo then just install the dependencies
-# pip install configargparse appdirs psutil
+# pip install configargparse appdirs rich rich_rst stringzilla
 # otherwise you can
 pip install compiletools
 
@@ -95,3 +95,78 @@ intrinsics. Point the build at a modern GCC (12+) before installing:
 export CC=/path/to/modern/gcc   # GCC 12 or newer
 export CFLAGS="-mavx512f -mavx512bw -mavx512vl -mavx512vbmi"
 uv pip install stringzilla==4.6.0
+
+
+Termux (Android, aarch64)
+
+The simplest path is to run the bundled bootstrap script:
+
+    git clone https://github.com/DrGeoff/compiletools
+    cd compiletools
+    scripts/ct-termux-install
+
+It performs every step in this section automatically, is idempotent, and
+exits non-zero on any verification failure. Pass `--dry-run` to inspect
+the plan first or `--help` for full option documentation.
+
+The remainder of this section documents the manual recipe -- useful if
+you need to deviate from the defaults, debug a failure, or audit what
+the script does.
+
+A plain `uv pip install -e ".[dev]"` on Termux fails for two independent
+reasons. Both are addressed by the recipe below.
+
+  1. stringzilla does not compile cleanly under Termux's clang 21+.
+     The compiler flags two real C-conformance issues in stringzilla's
+     CPython binding — incompatible function pointer types in
+     PySequenceMethods/PyMappingMethods/PyMethodDef slot tables, plus
+     const-discarding calls to free/realloc/munmap. Older clang
+     accepted both as warnings; clang 21 promotes them to errors.
+
+  2. ruff has no prebuilt wheel for android_30_arm64_v8a on PyPI, so
+     `uv pip install` falls back to building the sdist via maturin
+     and `cargo rustc`. The release profile uses `-C lto=fat -C
+     codegen-units=16`, which spikes RAM at the LTO link stage and
+     OOM-kills the device (Android sends SIGKILL to the whole shell).
+     The Termux package repository ships a prebuilt aarch64 ruff
+     binary — use that instead of pip.
+
+Step 1: install Termux prerequisites
+
+    pkg install python clang nodejs ruff uv git
+
+    # `ruff`     -- prebuilt aarch64 binary; do NOT let pip build it
+    # `nodejs`   -- needed by pyright at runtime
+    # `clang`    -- needed to compile stringzilla
+    # `uv`/`git` -- the install tooling itself
+
+Step 2: create and activate a venv
+
+    uv venv && source .venv/bin/activate
+
+Step 3: build stringzilla with downgraded errors
+
+    export CFLAGS="-Wno-error=incompatible-function-pointer-types \
+                   -Wno-error=incompatible-pointer-types \
+                   -Wno-error=incompatible-pointer-types-discards-qualifiers \
+                   -Wno-incompatible-function-pointer-types"
+    uv pip install "stringzilla>=4.6.0"
+
+    # Strictly only -Wno-error=incompatible-function-pointer-types is
+    # required; the others suppress noise so the warning page is
+    # readable. The resulting wheel is fully functional — this is a
+    # build-flag issue, not a runtime issue.
+
+Step 4: install compiletools and dev tooling EXCLUDING ruff
+
+    uv pip install -e .
+    uv pip install bump-my-version pytest pytest-xdist pyright \
+                   pre-commit pytest-cov textual
+
+    # `[dev]` is deliberately not used here because it pulls in ruff,
+    # which would trigger the cargo build that OOMs the device. Ruff
+    # is already on $PATH from `pkg install ruff` (Step 1), so
+    # pre-commit and `ruff check` work normally.
+
+Verified on Android 15, aarch64, CPython 3.13, clang 21.1.8, ruff 0.15.12
+(Termux pkg).
