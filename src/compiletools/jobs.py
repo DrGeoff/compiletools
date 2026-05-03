@@ -5,10 +5,14 @@ import compiletools.apptools
 
 
 def _cpus_linux():
-    return len(os.sched_getaffinity(0))
+    # PyPy does not expose os.sched_getaffinity; fall back to os.cpu_count().
+    sched_getaffinity = getattr(os, "sched_getaffinity", None)
+    if sched_getaffinity is not None:
+        return len(sched_getaffinity(0))
+    return os.cpu_count() or 4
 
 
-_cpus_android = _cpus_linux  # Termux is Linux; sched_getaffinity works there
+_cpus_android = _cpus_linux  # Termux is Linux; sched_getaffinity works on CPython
 
 
 def _cpus_darwin():
