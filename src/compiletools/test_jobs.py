@@ -2,13 +2,16 @@ import compiletools.jobs as jobs
 
 
 def test_cpu_count_handles_platform_errors(monkeypatch):
-    """_cpu_count falls back to 4 when the dispatched function raises."""
+    """_cpu_count falls back to os.cpu_count() (or 4) when dispatched fn raises."""
 
     def failing_cpus():
         raise PermissionError("sched_getaffinity denied")
 
     monkeypatch.setitem(jobs._CPU_DISPATCH, "linux", failing_cpus)
     monkeypatch.setattr(jobs.sys, "platform", "linux")
+    # Force the inner `or 4` branch by making os.cpu_count() return None;
+    # otherwise the result is host-CPU-count and the test is platform-fragile.
+    monkeypatch.setattr(jobs.os, "cpu_count", lambda: None)
     assert jobs._cpu_count() == 4
 
 
