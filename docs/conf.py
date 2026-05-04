@@ -52,6 +52,9 @@ def _generate_tool_stubs():
     src_dir = REPO_ROOT / "src" / "compiletools"
     out_dir = DOCS_DIR / "_generated"
     out_dir.mkdir(exist_ok=True)
+    # Clean stale stubs so renamed/removed tools don't leave dangling pages.
+    for stale in out_dir.glob("ct-*.rst"):
+        stale.unlink()
 
     for readme in sorted(src_dir.glob("README.ct-*.rst")):
         # README.ct-cake.rst -> ct-cake

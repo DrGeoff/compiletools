@@ -35,7 +35,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./docs/_build/html
           publish_branch: gh-pages
-          force_orphan: true
+          force_orphan: true  # intentionally discards gh-pages history; Sphinx output is the source of truth
           user_name: "github-actions[bot]"
           user_email: "github-actions[bot]@users.noreply.github.com"
           commit_message: "docs: deploy ${{ github.ref_name }}"
