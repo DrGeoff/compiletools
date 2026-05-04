@@ -1,6 +1,6 @@
-==================
-ct-stress-test
-==================
+====================
+ct-pytest-monitor
+====================
 
 ----------------------------------------------------------------------
 Run pytest with crash-survivable diagnostics (Termux/OOM friendly)
@@ -14,22 +14,27 @@ Run pytest with crash-survivable diagnostics (Termux/OOM friendly)
 
 SYNOPSIS
 ========
-ct-stress-test [--logdir DIR] [--interval SECONDS] [-h|--help] [-- pytest args...]
+ct-pytest-monitor [--logdir DIR] [--interval SECONDS] [-h|--help] [-- pytest args...]
 
 DESCRIPTION
 ===========
 On constrained devices -- notably Termux on Android, where the kernel
 OOM-killer can SIGKILL the entire shell mid-test -- ordinary
 ``pytest`` runs leave no record of which test triggered the kill.
-``ct-stress-test`` wraps ``pytest`` with three durable side channels so
-post-mortem inspection can identify both the offending test and the
-memory pressure leading up to it.
+``ct-pytest-monitor`` wraps ``pytest`` with three durable side
+channels so post-mortem inspection can identify both the offending
+test and the memory pressure leading up to it.
+
+This is **not** a stress harness or a retry loop. It runs ``pytest``
+exactly once; the value-add is that test progress and host memory
+state are flushed to disk before each test body runs, so a hard kill
+leaves a usable trail.
 
 The three side channels are:
 
 1. **Checkpoint log (authoritative).** A pytest hook in
    ``conftest.py`` writes each test's nodeid to
-   ``$CT_STRESS_CHECKPOINT`` *before* the test body runs, then
+   ``$CT_PYTEST_CHECKPOINT`` *before* the test body runs, then
    ``fsync``\ s the file. The wrapper sets that env var. After a
    SIGKILL, ``tail -n1 checkpoint.log`` is the test that was running.
 
@@ -43,13 +48,13 @@ The three side channels are:
    SIGKILL because they can sit in tee's userspace buffer; rely on the
    checkpoint log for the authoritative last-test record.
 
-The script is non-invasive: when ``$CT_STRESS_CHECKPOINT`` is unset,
+The script is non-invasive: when ``$CT_PYTEST_CHECKPOINT`` is unset,
 the conftest hook is a no-op, so normal ``pytest`` runs are unaffected.
 
 OUTPUT FILES
 ============
 All written under ``$LOG_DIR`` (default
-``$TMPDIR/ct-stress-YYYYMMDD-HHMMSS``):
+``$TMPDIR/ct-pytest-monitor-YYYYMMDD-HHMMSS``):
 
 ``checkpoint.log``
     One nodeid per line, fsync'd before each test runs. The last line
@@ -87,7 +92,7 @@ OPTIONS
     sharper spikes at the cost of log size and IO.
 
 ``--``
-    End of ct-stress-test options. Everything after ``--`` is
+    End of ct-pytest-monitor options. Everything after ``--`` is
     forwarded verbatim to ``pytest``. Use this when forwarding flags
     that overlap (e.g. ``-h``).
 
@@ -99,7 +104,7 @@ EXAMPLES.
 
 ENVIRONMENT
 ===========
-``CT_STRESS_CHECKPOINT``
+``CT_PYTEST_CHECKPOINT``
     Set automatically by the wrapper to the path of
     ``checkpoint.log``. The conftest hook reads it and writes one
     line (with ``os.fsync``) per test before the test runs. Unset =
@@ -118,20 +123,20 @@ EXAMPLES
 
 Run the entire suite::
 
-    scripts/ct-stress-test
+    scripts/ct-pytest-monitor
 
 Run a single test file with a tighter sampler interval::
 
-    scripts/ct-stress-test --interval 1 src/compiletools/test_headerdeps.py
+    scripts/ct-pytest-monitor --interval 1 src/compiletools/test_headerdeps.py
 
 Forward arbitrary pytest flags after ``--``::
 
-    scripts/ct-stress-test -- -k "not slow" --maxfail=3
+    scripts/ct-pytest-monitor -- -k "not slow" --maxfail=3
 
 Inspect the post-mortem after a Termux OOM kill::
 
-    tail -n1 /tmp/ct-stress-*/checkpoint.log    # culprit
-    tail -n40 /tmp/ct-stress-*/meminfo.log      # memory at death
+    tail -n1 /tmp/ct-pytest-monitor-*/checkpoint.log    # culprit
+    tail -n40 /tmp/ct-pytest-monitor-*/meminfo.log      # memory at death
 
 EXIT STATUS
 ===========
@@ -149,7 +154,7 @@ NOTES
 identify the offending test, but only the wrapper guarantees the env
 var is set, the memory sampler is running, and logs land in a known
 location. Running ``pytest`` directly (without this wrapper) is fine
-for normal use; the hook is a no-op without ``CT_STRESS_CHECKPOINT``.
+for normal use; the hook is a no-op without ``CT_PYTEST_CHECKPOINT``.
 
 **Why not ``pytest --forked``?** Per-test forking would let the
 runner survive a single test's OOM, but Termux's OOM-killer SIGKILLs
@@ -161,5 +166,5 @@ SEE ALSO
 ========
 The ``Termux (Android, aarch64)`` subsection of the project ``INSTALL``
 file documents the install-time OOM workaround
-(``scripts/ct-termux-install``); ``ct-stress-test`` is the runtime
+(``scripts/ct-termux-install``); ``ct-pytest-monitor`` is the runtime
 counterpart for the test suite.

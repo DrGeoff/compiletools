@@ -197,11 +197,23 @@ if [[ "$DRY_RUN" -eq 0 ]] && python -c 'import stringzilla' 2>/dev/null; then
     info "stringzilla already installed (${sz_ver}); skipping rebuild"
 else
     info "installing stringzilla with clang-21 CFLAGS workaround"
-    # The CFLAGS only need to be live for stringzilla's compile; export
-    # them in a subshell so the rest of the script is unaffected.
+    # CFLAGS only need to be live for stringzilla's compile. Save+restore
+    # any pre-existing parent-shell value so we don't clobber it (`unset`
+    # would drop it entirely rather than restoring it).
+    if [[ -v CFLAGS ]]; then
+        _saved_cflags="$CFLAGS"
+        _had_cflags=1
+    else
+        _had_cflags=0
+    fi
     export CFLAGS="${STRINGZILLA_CFLAGS[*]}"
     run uv pip install "stringzilla>=4.6.0"
-    unset CFLAGS
+    if [[ "$_had_cflags" -eq 1 ]]; then
+        export CFLAGS="$_saved_cflags"
+    else
+        unset CFLAGS
+    fi
+    unset _saved_cflags _had_cflags
 fi
 
 # ---------- step 4: compiletools + dev tooling -----------------------------

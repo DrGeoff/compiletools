@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# ct-stress-test -- run pytest with crash-survivable diagnostics.
+# ct-pytest-monitor -- run pytest with crash-survivable diagnostics.
 #
 # On constrained devices (notably Termux on Android), the kernel OOM-killer
-# can SIGKILL the entire shell mid-test. This script captures enough state
-# to disk -- before each kill arrives -- to identify the offending test and
-# the memory pressure leading up to it.
+# can SIGKILL the entire shell mid-test. This script monitors test progress
+# and host memory and writes both to disk -- before each kill arrives -- so
+# post-mortem inspection can identify the offending test and the memory
+# pressure leading up to it. It does NOT retry crashed runs or stress the
+# system; it is a single pytest invocation with durable side channels.
 #
 # What gets written to the log directory:
 #
@@ -61,7 +63,7 @@ done
 # ---------- log dir --------------------------------------------------------
 
 if [[ -z "$LOG_DIR" ]]; then
-    LOG_DIR="${TMPDIR:-/tmp}/ct-stress-$(date +%Y%m%d-%H%M%S)"
+    LOG_DIR="${TMPDIR:-/tmp}/ct-pytest-monitor-$(date +%Y%m%d-%H%M%S)"
 fi
 mkdir -p "$LOG_DIR"
 LOG_DIR=$(cd "$LOG_DIR" && pwd)
@@ -79,7 +81,7 @@ SUMMARY_LOG="${LOG_DIR}/summary.log"
 # ---------- one-shot system snapshot ---------------------------------------
 
 {
-    echo "=== ct-stress-test started at $(date -Is) ==="
+    echo "=== ct-pytest-monitor started at $(date -Is) ==="
     echo "=== uname -a ==="
     uname -a
     if [[ -n "${TERMUX_VERSION:-}" ]]; then
@@ -128,7 +130,7 @@ cleanup() {
         wait "$SAMPLER_PID" 2>/dev/null || true
     fi
     {
-        echo "=== ct-stress-test ended at $(date -Is) (exit ${exit_code}) ==="
+        echo "=== ct-pytest-monitor ended at $(date -Is) (exit ${exit_code}) ==="
         echo "=== last test seen (checkpoint tail) ==="
         tail -n 5 "$CHECKPOINT_LOG" 2>/dev/null || true
         echo "=== last 20 lines of pytest.log ==="
@@ -138,7 +140,7 @@ cleanup() {
     } > "$SUMMARY_LOG"
     cat <<EOF
 
-ct-stress-test logs in: ${LOG_DIR}
+ct-pytest-monitor logs in: ${LOG_DIR}
   checkpoint.log -- last line = test running when shell died
   pytest.log     -- full pytest output
   meminfo.log    -- memory snapshots every ${INTERVAL}s
@@ -155,7 +157,7 @@ trap cleanup EXIT INT TERM
 
 cd "$REPO_ROOT"
 
-export CT_STRESS_CHECKPOINT="$CHECKPOINT_LOG"
+export CT_PYTEST_CHECKPOINT="$CHECKPOINT_LOG"
 export PYTHONUNBUFFERED=1
 
 # `stdbuf -oL -eL` keeps tee's input line-buffered so each line reaches the

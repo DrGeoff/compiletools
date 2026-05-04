@@ -82,13 +82,22 @@ def read_lock_info(lockdir):
         parts = lock_info.split(":", 2)
         if len(parts) == 2:
             lock_host, lock_pid = parts
-            return lock_host, int(lock_pid), None
+            pid = int(lock_pid)
+            # Reject pid <= 0: os.kill(0, 0) targets the calling pgrp and
+            # os.kill(-1, 0) targets all signalable processes — both succeed
+            # and would be misread as "lock holder still alive".
+            if pid <= 0:
+                return None, None, None
+            return lock_host, pid, None
         lock_host, lock_pid, start_time_str = parts
+        pid = int(lock_pid)
+        if pid <= 0:
+            return None, None, None
         try:
             start_time = float(start_time_str)
         except ValueError:
             start_time = None
-        return lock_host, int(lock_pid), start_time
+        return lock_host, pid, start_time
 
     except (OSError, ValueError):
         return None, None, None

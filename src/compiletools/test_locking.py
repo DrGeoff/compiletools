@@ -99,7 +99,10 @@ class TestLockdirLock:
                 assert host == (socket.getfqdn() or socket.gethostname())
                 assert int(pid_str) == os.getpid()
                 expected = get_process_start_time(os.getpid())
-                assert abs(float(start_str) - expected) < 1.0, (
+                # /proc starttime is deterministic per (pid, boot) and the
+                # writer/reader both convert via the same SC_CLK_TCK divisor,
+                # so the round-trip should match within fp formatting noise.
+                assert abs(float(start_str) - expected) < 0.001, (
                     f"start_time {start_str} does not match get_process_start_time {expected}"
                 )
             finally:
@@ -638,7 +641,9 @@ class TestCIFSLock:
                 assert host == (socket.getfqdn() or socket.gethostname())
                 assert int(pid_str) == os.getpid()
                 expected = get_process_start_time(os.getpid())
-                assert abs(float(st_str) - expected) < 1.0
+                # See LockdirLock equivalent: /proc starttime round-trip is
+                # deterministic; only fp formatting noise should differ.
+                assert abs(float(st_str) - expected) < 0.001
             finally:
                 lock.release()
 

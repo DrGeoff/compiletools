@@ -2,15 +2,31 @@ import compiletools.jobs as jobs
 
 
 def test_cpu_count_handles_platform_errors(monkeypatch):
-    """_cpu_count falls back to os.cpu_count() (or 4) when dispatched fn raises."""
+    """_cpu_count falls back to os.cpu_count() when the dispatched fn raises.
+
+    Pins os.cpu_count() to a sentinel value so the assertion proves both
+    that the exception was caught AND that the fallback path produced the
+    expected result (i.e. removing the try/except would surface the
+    PermissionError instead of returning 7).
+    """
 
     def failing_cpus():
         raise PermissionError("sched_getaffinity denied")
 
     monkeypatch.setitem(jobs._CPU_DISPATCH, "linux", failing_cpus)
     monkeypatch.setattr(jobs.sys, "platform", "linux")
-    # Force the inner `or 4` branch by making os.cpu_count() return None;
-    # otherwise the result is host-CPU-count and the test is platform-fragile.
+    monkeypatch.setattr(jobs.os, "cpu_count", lambda: 7)
+    assert jobs._cpu_count() == 7
+
+
+def test_cpu_count_handles_platform_errors_falls_back_to_four(monkeypatch):
+    """_cpu_count returns 4 when both the dispatched fn raises and cpu_count is None."""
+
+    def failing_cpus():
+        raise PermissionError("sched_getaffinity denied")
+
+    monkeypatch.setitem(jobs._CPU_DISPATCH, "linux", failing_cpus)
+    monkeypatch.setattr(jobs.sys, "platform", "linux")
     monkeypatch.setattr(jobs.os, "cpu_count", lambda: None)
     assert jobs._cpu_count() == 4
 

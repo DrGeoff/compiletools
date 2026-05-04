@@ -18,14 +18,12 @@ Umask Requirements:
 
 import multiprocessing
 import os
-import sys
 import tempfile
 import time
 from pathlib import Path
 
 import pytest
 
-import compiletools.apptools
 import compiletools.cake
 import compiletools.testhelper as uth
 from compiletools.test_base import BaseCompileToolsTestCase
@@ -470,8 +468,11 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         """
         # 10 concurrent ct-cake builds (each forking make -> g++) peak around
         # 3 GB resident on Termux and trigger Android's OOM-killer; 4 workers
-        # still exercises the lock-fairness property without OOMing.
-        num_workers = 4 if sys.platform == "android" else 10
+        # still exercises the lock-fairness property without OOMing. Termux
+        # reports sys.platform == "linux" on standard CPython, so detect via
+        # the TERMUX_VERSION env var or the /data/data/com.termux marker.
+        on_termux = "TERMUX_VERSION" in os.environ or os.path.isdir("/data/data/com.termux")
+        num_workers = 4 if on_termux else 10
 
         with tempfile.TemporaryDirectory() as tmpdir:
             objdir = Path(tmpdir) / "shared_obj"

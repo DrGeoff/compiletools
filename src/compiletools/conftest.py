@@ -12,15 +12,15 @@ import pytest
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_runtest_logstart(nodeid, location):
-    """Append each test nodeid to ``$CT_STRESS_CHECKPOINT`` (with fsync) before the test runs.
+    """Append each test nodeid to ``$CT_PYTEST_CHECKPOINT`` (with fsync) before the test runs.
 
     Opt-in: does nothing unless the env var is set. The fsync guarantees the
     line hits disk before the test body executes, so when the kernel SIGKILLs
     the whole shell (e.g. Android OOM-killer on Termux), the last entry in
-    the file is the test that triggered it. ``scripts/ct-stress-test`` sets
-    this up automatically.
+    the file is the test that triggered it. ``scripts/ct-pytest-monitor``
+    sets this up automatically.
     """
-    path = os.environ.get("CT_STRESS_CHECKPOINT")
+    path = os.environ.get("CT_PYTEST_CHECKPOINT")
     if not path:
         return
     with open(path, "ab") as f:

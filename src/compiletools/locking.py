@@ -451,7 +451,9 @@ class CIFSLock:
     def _read_excl_holder(self):
         """Return (hostname, pid, start_time) from lockfile_excl, or
         (None, None, None) if unreadable. Uses host:pid:start_time format,
-        matching LockdirLock."""
+        matching LockdirLock. Rejects pid <= 0 since os.kill(0|-1, 0)
+        targets pgrp/all-procs and would falsely report the holder alive.
+        """
         try:
             with open(self.lockfile_excl) as f:
                 content = f.read().strip()
@@ -459,13 +461,19 @@ class CIFSLock:
                 return None, None, None
             parts = content.split(":", 2)
             if len(parts) == 2:
-                return parts[0], int(parts[1]), None
+                pid = int(parts[1])
+                if pid <= 0:
+                    return None, None, None
+                return parts[0], pid, None
             host, pid_str, st_str = parts
+            pid = int(pid_str)
+            if pid <= 0:
+                return None, None, None
             try:
                 start_time = float(st_str)
             except ValueError:
                 start_time = None
-            return host, int(pid_str), start_time
+            return host, pid, start_time
         except (OSError, ValueError):
             return None, None, None
 

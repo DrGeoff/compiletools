@@ -6,13 +6,12 @@ import compiletools.apptools
 
 def _cpus_linux():
     # PyPy does not expose os.sched_getaffinity; fall back to os.cpu_count().
+    # Termux/Android reports sys.platform == "linux" on standard CPython, so
+    # this path covers Termux as well — sched_getaffinity is available there.
     sched_getaffinity = getattr(os, "sched_getaffinity", None)
     if sched_getaffinity is not None:
         return len(sched_getaffinity(0))
     return os.cpu_count() or 4
-
-
-_cpus_android = _cpus_linux  # Termux is Linux; sched_getaffinity works on CPython
 
 
 def _cpus_darwin():
@@ -33,7 +32,6 @@ def _cpus_darwin():
 
 _CPU_DISPATCH = {
     "linux": _cpus_linux,
-    "android": _cpus_android,
     "darwin": _cpus_darwin,
 }
 
