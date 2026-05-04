@@ -1,49 +1,31 @@
 import os
-import sys
 
 import compiletools.apptools
 
 
-def _cpus_linux():
-    # PyPy does not expose os.sched_getaffinity; fall back to os.cpu_count().
-    # Termux/Android reports sys.platform == "linux" on standard CPython, so
-    # this path covers Termux as well — sched_getaffinity is available there.
+def _cpu_count():
+    # Python 3.13+: os.process_cpu_count() honours sched_getaffinity on Linux
+    # and falls back to os.cpu_count() elsewhere — exactly the semantics we want
+    # for build-tool parallelism inside cgroups, taskset, slurm, etc.
+    process_cpu_count = getattr(os, "process_cpu_count", None)
+    if process_cpu_count is not None:
+        count = process_cpu_count()
+        if count is None:
+            raise RuntimeError("os.process_cpu_count() could not determine CPU count")
+        return count
+
+    # Pre-3.13 Linux: do it ourselves. PyPy historically lacked sched_getaffinity.
     sched_getaffinity = getattr(os, "sched_getaffinity", None)
     if sched_getaffinity is not None:
-        return len(sched_getaffinity(0))
-    return os.cpu_count() or 4
+        try:
+            return len(sched_getaffinity(0))
+        except OSError:
+            pass
 
-
-def _cpus_darwin():
-    # macOS lacks os.sched_getaffinity; nproc isn't installed by default.
-    import subprocess
-
-    try:
-        res = subprocess.run(
-            ["sysctl", "-n", "hw.ncpu"],
-            stdout=subprocess.PIPE,
-            text=True,
-            check=True,
-        )
-        return int(res.stdout.strip())
-    except (OSError, ValueError, subprocess.CalledProcessError):
-        return os.cpu_count() or 4
-
-
-_CPU_DISPATCH = {
-    "linux": _cpus_linux,
-    "darwin": _cpus_darwin,
-}
-
-
-def _cpu_count():
-    fn = _CPU_DISPATCH.get(sys.platform)
-    if fn is None:
-        return os.cpu_count() or 4
-    try:
-        return fn()
-    except Exception:
-        return os.cpu_count() or 4
+    count = os.cpu_count()
+    if count is None:
+        raise RuntimeError("os.cpu_count() could not determine CPU count")
+    return count
 
 
 def add_arguments(cap):
