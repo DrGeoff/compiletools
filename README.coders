@@ -71,6 +71,12 @@ pytest src/compiletools/test_utils.py
 # Run with verbose output
 pytest src/compiletools -v
 
+# Run pytest with crash-survivable diagnostics (useful on Termux/low-RAM
+# devices where the OOM killer can SIGKILL the whole shell mid-test):
+scripts/ct-stress-test
+# After a crash: tail -n1 /tmp/ct-stress-*/checkpoint.log identifies the
+# offending test. See scripts/ct-stress-test --help for full docs.
+
 #
 # Caches/Performance
 #

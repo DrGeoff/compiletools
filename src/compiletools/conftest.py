@@ -10,6 +10,25 @@ import sys
 import pytest
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_logstart(nodeid, location):
+    """Append each test nodeid to ``$CT_STRESS_CHECKPOINT`` (with fsync) before the test runs.
+
+    Opt-in: does nothing unless the env var is set. The fsync guarantees the
+    line hits disk before the test body executes, so when the kernel SIGKILLs
+    the whole shell (e.g. Android OOM-killer on Termux), the last entry in
+    the file is the test that triggered it. ``scripts/ct-stress-test`` sets
+    this up automatically.
+    """
+    path = os.environ.get("CT_STRESS_CHECKPOINT")
+    if not path:
+        return
+    with open(path, "ab") as f:
+        f.write(f"{nodeid}\n".encode())
+        f.flush()
+        os.fsync(f.fileno())
+
+
 @pytest.fixture(scope="session", autouse=True)
 def ensure_lock_helper_in_path():
     """Ensure ct-lock-helper is available in PATH.
