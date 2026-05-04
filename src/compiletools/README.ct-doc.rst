@@ -171,6 +171,7 @@ SEE ALSO
 ========
 * ct-backends (7) -- build backend architecture and selection guide
 * ct-build
+* ct-build-docs
 * ct-build-dynamic-library
 * ct-build-static-library
 * ct-cake
