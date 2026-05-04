@@ -44,6 +44,8 @@ uv.lock
 
 # Local directories
 docs/superpowers/
+docs/_build/
+docs/_generated/
 shared-objdir/
 tmp0727b5fl/
 tmp4zhl2bgr/
