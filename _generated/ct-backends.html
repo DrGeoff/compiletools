@@ -1,0 +1,831 @@
+<!doctype html>
+<html class="no-js" lang="en" data-content_root="../">
+  <head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="index" title="Index" href="../genindex.html"><link rel="search" title="Search" href="../search.html"><link rel="next" title="ct-build" href="ct-build.html"><link rel="prev" title="Tools" href="../tools.html">
+
+    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
+        <title>ct-backends - compiletools 8.2.3</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=d111a655" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/furo.css?v=7bdb33bb" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/furo-extensions.css?v=8dab3a3b" />
+    
+    
+
+
+<style>
+  body {
+    --color-code-background: #f2f2f2;
+  --color-code-foreground: #1e1e1e;
+  
+  }
+  @media not print {
+    body[data-theme="dark"] {
+      --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  
+    }
+    @media (prefers-color-scheme: dark) {
+      body:not([data-theme="light"]) {
+        --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  
+      }
+    }
+  }
+</style></head>
+  <body>
+    
+    <script>
+      document.body.dataset.theme = localStorage.getItem("theme") || "auto";
+    </script>
+    
+
+<svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+  <symbol id="svg-toc" viewBox="0 0 24 24">
+    <title>Contents</title>
+    <svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 1024 1024">
+      <path d="M408 442h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8zm-8 204c0 4.4 3.6 8 8 8h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56zm504-486H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zm0 632H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zM115.4 518.9L271.7 642c5.8 4.6 14.4.5 14.4-6.9V388.9c0-7.4-8.5-11.5-14.4-6.9L115.4 505.1a8.74 8.74 0 0 0 0 13.8z"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-menu" viewBox="0 0 24 24">
+    <title>Menu</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-menu">
+      <line x1="3" y1="12" x2="21" y2="12"></line>
+      <line x1="3" y1="6" x2="21" y2="6"></line>
+      <line x1="3" y1="18" x2="21" y2="18"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-arrow-right" viewBox="0 0 24 24">
+    <title>Expand</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-chevron-right">
+      <polyline points="9 18 15 12 9 6"></polyline>
+    </svg>
+  </symbol>
+  <symbol id="svg-sun" viewBox="0 0 24 24">
+    <title>Light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="feather-sun">
+      <circle cx="12" cy="12" r="5"></circle>
+      <line x1="12" y1="1" x2="12" y2="3"></line>
+      <line x1="12" y1="21" x2="12" y2="23"></line>
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+      <line x1="1" y1="12" x2="3" y2="12"></line>
+      <line x1="21" y1="12" x2="23" y2="12"></line>
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon" viewBox="0 0 24 24">
+    <title>Dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-moon">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z" />
+    </svg>
+  </symbol>
+  <symbol id="svg-sun-with-moon" viewBox="0 0 24 24">
+    <title>Auto light/dark, in light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path style="opacity: 50%" d="M 5.411 14.504 C 5.471 14.504 5.532 14.504 5.591 14.504 C 3.639 16.319 4.383 19.569 6.931 20.352 C 7.693 20.586 8.512 20.551 9.25 20.252 C 8.023 23.207 4.056 23.725 2.11 21.184 C 0.166 18.642 1.702 14.949 4.874 14.536 C 5.051 14.512 5.231 14.5 5.411 14.5 L 5.411 14.504 Z"/>
+      <line x1="14.5" y1="3.25" x2="14.5" y2="1.25"/>
+      <line x1="14.5" y1="15.85" x2="14.5" y2="17.85"/>
+      <line x1="10.044" y1="5.094" x2="8.63" y2="3.68"/>
+      <line x1="19" y1="14.05" x2="20.414" y2="15.464"/>
+      <line x1="8.2" y1="9.55" x2="6.2" y2="9.55"/>
+      <line x1="20.8" y1="9.55" x2="22.8" y2="9.55"/>
+      <line x1="10.044" y1="14.006" x2="8.63" y2="15.42"/>
+      <line x1="19" y1="5.05" x2="20.414" y2="3.636"/>
+      <circle cx="14.5" cy="9.55" r="3.6"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon-with-sun" viewBox="0 0 24 24">
+    <title>Auto light/dark, in dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path d="M 8.282 7.007 C 8.385 7.007 8.494 7.007 8.595 7.007 C 5.18 10.184 6.481 15.869 10.942 17.24 C 12.275 17.648 13.706 17.589 15 17.066 C 12.851 22.236 5.91 23.143 2.505 18.696 C -0.897 14.249 1.791 7.786 7.342 7.063 C 7.652 7.021 7.965 7 8.282 7 L 8.282 7.007 Z"/>
+      <line style="opacity: 50%" x1="18" y1="3.705" x2="18" y2="2.5"/>
+      <line style="opacity: 50%" x1="18" y1="11.295" x2="18" y2="12.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="4.816" x2="14.464" y2="3.964"/>
+      <line style="opacity: 50%" x1="20.711" y1="10.212" x2="21.563" y2="11.063"/>
+      <line style="opacity: 50%" x1="14.205" y1="7.5" x2="13.001" y2="7.5"/>
+      <line style="opacity: 50%" x1="21.795" y1="7.5" x2="23" y2="7.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="10.184" x2="14.464" y2="11.036"/>
+      <line style="opacity: 50%" x1="20.711" y1="4.789" x2="21.563" y2="3.937"/>
+      <circle style="opacity: 50%" cx="18" cy="7.5" r="2.169"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-pencil" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-pencil-code">
+      <path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" />
+      <path d="M13.5 6.5l4 4" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+  <symbol id="svg-eye" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-eye-code">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+      <path
+        d="M11.11 17.958c-3.209 -.307 -5.91 -2.293 -8.11 -5.958c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6c-.21 .352 -.427 .688 -.647 1.008" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+</svg>
+
+<input type="checkbox" class="sidebar-toggle" name="__navigation" id="__navigation" aria-label="Toggle site navigation sidebar">
+<input type="checkbox" class="sidebar-toggle" name="__toc" id="__toc" aria-label="Toggle table of contents sidebar">
+<label class="overlay sidebar-overlay" for="__navigation"></label>
+<label class="overlay toc-overlay" for="__toc"></label>
+
+<a class="skip-to-content muted-link" href="#furo-main-content">Skip to content</a>
+
+
+
+<div class="page">
+  <header class="mobile-header">
+    <div class="header-left">
+      <label class="nav-overlay-icon" for="__navigation">
+        <span class="icon"><svg><use href="#svg-menu"></use></svg></span>
+      </label>
+    </div>
+    <div class="header-center">
+      <a href="../index.html"><div class="brand">compiletools 8.2.3</div></a>
+    </div>
+    <div class="header-right">
+      <div class="theme-toggle-container theme-toggle-header">
+        <button class="theme-toggle" aria-label="Toggle Light / Dark / Auto color theme">
+          <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+          <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+          <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+          <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+        </button>
+      </div>
+      <label class="toc-overlay-icon toc-header-icon" for="__toc">
+        <span class="icon"><svg><use href="#svg-toc"></use></svg></span>
+      </label>
+    </div>
+  </header>
+  <aside class="sidebar-drawer">
+    <div class="sidebar-container">
+      
+      <div class="sidebar-sticky"><a class="sidebar-brand" href="../index.html">
+  
+  <span class="sidebar-brand-text">compiletools 8.2.3</span>
+  
+</a><form class="sidebar-search-container" method="get" action="../search.html" role="search">
+  <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
+  <input type="hidden" name="check_keywords" value="yes">
+  <input type="hidden" name="area" value="default">
+</form>
+<div id="searchbox"></div><div class="sidebar-scroll"><div class="sidebar-tree">
+  <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1 current has-children"><a class="reference internal" href="../tools.html">Tools</a><input aria-label="Toggle navigation of Tools" checked="" class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" role="switch" type="checkbox"/><label for="toctree-checkbox-1"><span class="icon"><svg><use href="#svg-arrow-right"></use></svg></span></label><ul class="current">
+<li class="toctree-l2 current current-page"><a class="current reference internal" href="#">ct-backends</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-build.html">ct-build</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-build-docs.html">ct-build-docs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-build-dynamic-library.html">ct-build-dynamic-library</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-build-static-library.html">ct-build-static-library</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-cake.html">ct-cake</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-cleanup-locks.html">ct-cleanup-locks</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-commandline.html">ct-commandline</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-compilation-database.html">ct-compilation-database</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-config.html">ct-config</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-cppdeps.html">ct-cppdeps</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-create-makefile.html">ct-create-makefile</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-doc.html">compiletools</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-filelist.html">ct-filelist</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-findtargets.html">ct-findtargets</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-git-sha-report.html">ct-git-sha-report</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-gitroot.html">ct-gitroot</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-headertree.html">ct-headertree</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-jobs.html">ct-jobs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-list-backends.html">ct-list-backends</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-list-variants.html">ct-list-variants</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-lock-helper.html">ct-lock-helper</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-magicflags.html">ct-magicflags</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-pytest-monitor.html">ct-pytest-monitor</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-release.html">ct-release</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-termux-install.html">ct-termux-install</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-timing-report.html">ct-timing-report</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-trim-cache.html">ct-trim-cache</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-watch-build.html">ct-watch-build</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../contributing.html">Contributing</a></li>
+</ul>
+
+</div>
+</div>
+
+      </div>
+      
+    </div>
+  </aside>
+  <div class="main">
+    <div class="content">
+      <div class="article-container">
+        <a href="#" class="back-to-top muted-link">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8v12z"></path>
+          </svg>
+          <span>Back to top</span>
+        </a>
+        <div class="content-icon-container">
+          <div class="view-this-page">
+  <a class="muted-link" href="../_sources/_generated/ct-backends.rst.txt" title="View this page">
+    <svg><use href="#svg-eye"></use></svg>
+    <span class="visually-hidden">View this page</span>
+  </a>
+</div>
+<div class="theme-toggle-container theme-toggle-content">
+            <button class="theme-toggle" aria-label="Toggle Light / Dark / Auto color theme">
+              <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+              <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+              <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+              <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+            </button>
+          </div>
+          <label class="toc-overlay-icon toc-content-icon" for="__toc">
+            <span class="icon"><svg><use href="#svg-toc"></use></svg></span>
+          </label>
+        </div>
+        <article role="main" id="furo-main-content">
+          <section id="ct-backends">
+<h1>ct-backends<a class="headerlink" href="#ct-backends" title="Link to this heading">¶</a></h1>
+<section id="build-backend-architecture-and-selection-guide">
+<h2>Build backend architecture and selection guide<a class="headerlink" href="#build-backend-architecture-and-selection-guide" title="Link to this heading">¶</a></h2>
+<dl class="field-list simple">
+<dt class="field-odd">Author<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="mailto:drgeoffathome&#37;&#52;&#48;gmail&#46;com">drgeoffathome<span>&#64;</span>gmail<span>&#46;</span>com</a></p>
+</dd>
+<dt class="field-even">Date<span class="colon">:</span></dt>
+<dd class="field-even"><p>2026-04-02</p>
+</dd>
+<dt class="field-odd">Version<span class="colon">:</span></dt>
+<dd class="field-odd"><p>8.2.3</p>
+</dd>
+<dt class="field-even">Manual section<span class="colon">:</span></dt>
+<dd class="field-even"><p>7</p>
+</dd>
+<dt class="field-odd">Manual group<span class="colon">:</span></dt>
+<dd class="field-odd"><p>developers</p>
+</dd>
+</dl>
+<section id="description">
+<h3>DESCRIPTION<a class="headerlink" href="#description" title="Link to this heading">¶</a></h3>
+<p>compiletools supports multiple build backends that generate native build files
+for different build systems.  All backends share the same dependency analysis,
+magic flag extraction, and header dependency tracking — only the build file
+generation and execution differ.</p>
+<p>Select a backend with:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ct</span><span class="o">-</span><span class="n">cake</span> <span class="o">--</span><span class="n">backend</span><span class="o">=&lt;</span><span class="n">name</span><span class="o">&gt;</span>
+</pre></div>
+</div>
+<p>Use <code class="docutils literal notranslate"><span class="pre">ct-list-backends</span></code> to discover which backends are installed and available.</p>
+</section>
+<section id="backend-summary">
+<h3>BACKEND SUMMARY<a class="headerlink" href="#backend-summary" title="Link to this heading">¶</a></h3>
+<div class="table-wrapper docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Name</p></th>
+<th class="head"><p>Build file</p></th>
+<th class="head"><p>Tool</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>make</p></td>
+<td><p>Makefile</p></td>
+<td><p>make</p></td>
+</tr>
+<tr class="row-odd"><td><p>ninja</p></td>
+<td><p>build.ninja</p></td>
+<td><p>ninja</p></td>
+</tr>
+<tr class="row-even"><td><p>cmake</p></td>
+<td><p>CMakeLists.txt</p></td>
+<td><p>cmake</p></td>
+</tr>
+<tr class="row-odd"><td><p>bazel</p></td>
+<td><p>BUILD.bazel</p></td>
+<td><p>bazel</p></td>
+</tr>
+<tr class="row-even"><td><p>tup</p></td>
+<td><p>Tupfile</p></td>
+<td><p>tup</p></td>
+</tr>
+<tr class="row-odd"><td><p>shake</p></td>
+<td><p>.ct-traces.json</p></td>
+<td><p>(builtin)</p></td>
+</tr>
+<tr class="row-even"><td><p>slurm</p></td>
+<td><p>.ct-slurm-traces.json</p></td>
+<td><p>sbatch</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="feature-matrix">
+<h3>FEATURE MATRIX<a class="headerlink" href="#feature-matrix" title="Link to this heading">¶</a></h3>
+<p>Y = supported, N = not supported, D = supported and on by default.</p>
+<div class="table-wrapper docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Name</p></th>
+<th class="head"><p>File-lock</p></th>
+<th class="head"><p>–build-only-changed</p></th>
+<th class="head"><p>–realclean</p></th>
+<th class="head"><p>PCH cache</p></th>
+<th class="head"><p>Libraries</p></th>
+<th class="head"><p>Test runner</p></th>
+<th class="head"><p>CA outputs</p></th>
+<th class="head"><p>Early cutoff</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>make</p></td>
+<td><p>D</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>N</p></td>
+<td><p>N</p></td>
+</tr>
+<tr class="row-odd"><td><p>ninja</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>N</p></td>
+<td><p>Y (restat)</p></td>
+</tr>
+<tr class="row-even"><td><p>cmake</p></td>
+<td><p>N</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>N</p></td>
+<td><p>N</p></td>
+</tr>
+<tr class="row-odd"><td><p>bazel</p></td>
+<td><p>N</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>N</p></td>
+<td><p>N</p></td>
+</tr>
+<tr class="row-even"><td><p>tup</p></td>
+<td><p>N</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>N (no phony)</p></td>
+<td><p>N</p></td>
+<td><p>N</p></td>
+</tr>
+<tr class="row-odd"><td><p>shake</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+</tr>
+<tr class="row-even"><td><p>slurm</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y (local)</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+<td><p>Y</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Notes:</p>
+<ul class="simple">
+<li><p><strong>File-lock</strong> — <code class="docutils literal notranslate"><span class="pre">--file-locking</span></code> enables multi-user shared object/PCH
+caches.  CMake/Bazel/Tup manage their own coordination and skip this
+layer (see <em>FILE LOCKING</em> below).</p></li>
+<li><p><strong>–build-only-changed</strong> — restrict the graph to a whitespace-separated
+set of source files supplied on the command line.  Implemented in the
+shared base class, so all backends honor it.</p></li>
+<li><p><strong>–realclean</strong> — selectively remove only this build’s products from a
+shared objdir (and <code class="docutils literal notranslate"><span class="pre">.gch</span></code> files from a shared pchdir), instead of
+<code class="docutils literal notranslate"><span class="pre">rm</span> <span class="pre">-rf</span></code> of the whole tree.  Inherited from the base backend; the
+Make backend additionally generates a <code class="docutils literal notranslate"><span class="pre">realclean</span></code> rule in the Makefile.</p></li>
+<li><p><strong>PCH cache</strong> — content-addressable precompiled header cache via
+<code class="docutils literal notranslate"><span class="pre">--pchdir</span></code>; the compile rules carry the per-cmd_hash <code class="docutils literal notranslate"><span class="pre">.gch</span></code> paths,
+so all backends produce and consume the cache transparently.</p></li>
+<li><p><strong>Libraries</strong> — static and dynamic library targets via <code class="docutils literal notranslate"><span class="pre">--static</span></code> /
+<code class="docutils literal notranslate"><span class="pre">--dynamic</span></code>.  All backends support both; the Slurm backend
+distributes compile rules but always links locally.</p></li>
+<li><p><strong>Test runner</strong> — <code class="docutils literal notranslate"><span class="pre">execute(&quot;runtests&quot;)</span></code> runs test executables.
+Tup cannot express phony rules, so it has no top-level <code class="docutils literal notranslate"><span class="pre">runtests</span></code>
+target — run test binaries by hand or pick a different backend.</p></li>
+<li><p><strong>CA outputs / Early cutoff</strong> — content-addressable filenames and
+build skipping when an output’s bytes are unchanged.  Native to the
+Shake/Slurm builtin engine; Ninja approximates early cutoff via
+<code class="docutils literal notranslate"><span class="pre">restat</span> <span class="pre">=</span> <span class="pre">1</span></code>.</p></li>
+</ul>
+</section>
+<section id="backends">
+<h3>BACKENDS<a class="headerlink" href="#backends" title="Link to this heading">¶</a></h3>
+<section id="make-default">
+<h4>make (default)<a class="headerlink" href="#make-default" title="Link to this heading">¶</a></h4>
+<p>Generates a non-recursive Makefile following Peter Miller’s <em>Recursive Make
+Considered Harmful</em> design.</p>
+<p><strong>When to use:</strong> General-purpose default.  Widely available, well-understood
+output, good diagnostic support via <code class="docutils literal notranslate"><span class="pre">--trace</span></code> (GNU Make 4.0+).</p>
+<p><strong>Features:</strong></p>
+<ul class="simple">
+<li><p>File locking enabled by default for multi-user shared caches</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">.DELETE_ON_ERROR</span></code> to clean partial outputs on failure</p></li>
+<li><p>Implicit rules disabled (<code class="docutils literal notranslate"><span class="pre">-rR</span></code>) for predictable behaviour</p></li>
+<li><p>Output synchronisation per target (<code class="docutils literal notranslate"><span class="pre">--output-sync=target</span></code>, Make 4.0+)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--shuffle</span></code> support (Make 4.4+) to detect missing dependencies in CI</p></li>
+<li><p>Selective build via <code class="docutils literal notranslate"><span class="pre">--build-only-changed</span></code></p></li>
+<li><p>Wraps compile and link commands with <code class="docutils literal notranslate"><span class="pre">ct-lock-helper</span></code> when file locking
+is enabled</p></li>
+</ul>
+<p><strong>Requires:</strong> GNU Make (<code class="docutils literal notranslate"><span class="pre">make</span></code> in PATH).</p>
+</section>
+<section id="ninja">
+<h4>ninja<a class="headerlink" href="#ninja" title="Link to this heading">¶</a></h4>
+<p>Generates a <code class="docutils literal notranslate"><span class="pre">build.ninja</span></code> file targeting the Ninja build system.</p>
+<p><strong>When to use:</strong> Large incremental rebuilds where Ninja’s minimal overhead
+outperforms Make.  Ninja re-evaluates the build graph faster than Make on
+projects with many targets.</p>
+<p><strong>Features:</strong></p>
+<ul class="simple">
+<li><p>Depfile tracking via <code class="docutils literal notranslate"><span class="pre">-MMD</span> <span class="pre">-MF</span></code> and Ninja’s <code class="docutils literal notranslate"><span class="pre">deps</span> <span class="pre">=</span> <span class="pre">gcc</span></code> integration</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">restat</span> <span class="pre">=</span> <span class="pre">1</span></code> on rules to support early cutoff when outputs are unchanged</p></li>
+<li><p>File locking via <code class="docutils literal notranslate"><span class="pre">ct-lock-helper</span></code> wrappers (optional)</p></li>
+<li><p>Selective build via <code class="docutils literal notranslate"><span class="pre">--build-only-changed</span></code></p></li>
+</ul>
+<p><strong>Requires:</strong> Ninja (<code class="docutils literal notranslate"><span class="pre">ninja</span></code> in PATH).</p>
+</section>
+<section id="cmake">
+<h4>cmake<a class="headerlink" href="#cmake" title="Link to this heading">¶</a></h4>
+<p>Generates a <code class="docutils literal notranslate"><span class="pre">CMakeLists.txt</span></code> and builds via CMake in an out-of-source
+build directory (<code class="docutils literal notranslate"><span class="pre">{objdir}/cmake-build</span></code>).</p>
+<p><strong>When to use:</strong> Integration with CMake-based toolchains or IDEs that expect
+CMake projects.  Useful when downstream consumers need a <code class="docutils literal notranslate"><span class="pre">CMakeLists.txt</span></code>.</p>
+<p><strong>Features:</strong></p>
+<ul class="simple">
+<li><p>Aggregates low-level compile/link rules into high-level CMake targets
+(<code class="docutils literal notranslate"><span class="pre">add_executable</span></code>, <code class="docutils literal notranslate"><span class="pre">add_library</span></code>)</p></li>
+<li><p>Separates flags into <code class="docutils literal notranslate"><span class="pre">target_include_directories</span></code>,
+<code class="docutils literal notranslate"><span class="pre">target_compile_options</span></code>, <code class="docutils literal notranslate"><span class="pre">target_link_directories</span></code>,
+<code class="docutils literal notranslate"><span class="pre">target_link_libraries</span></code>, and <code class="docutils literal notranslate"><span class="pre">target_link_options</span></code></p></li>
+<li><p>Automatically detects C, C++, or both languages</p></li>
+<li><p>Passes user-configured <code class="docutils literal notranslate"><span class="pre">CC</span></code> and <code class="docutils literal notranslate"><span class="pre">CXX</span></code> to CMake</p></li>
+<li><p>Enforces out-of-source builds</p></li>
+</ul>
+<p><strong>Requires:</strong> CMake 3.15+ (<code class="docutils literal notranslate"><span class="pre">cmake</span></code> in PATH).</p>
+<p><strong>Limitations:</strong> File locking is disabled — CMake manages its own
+coordination.</p>
+</section>
+<section id="bazel">
+<h4>bazel<a class="headerlink" href="#bazel" title="Link to this heading">¶</a></h4>
+<p>Generates <code class="docutils literal notranslate"><span class="pre">BUILD.bazel</span></code>, <code class="docutils literal notranslate"><span class="pre">WORKSPACE</span></code>, and <code class="docutils literal notranslate"><span class="pre">MODULE.bazel</span></code> files
+targeting Bazel.</p>
+<p><strong>When to use:</strong> Projects that need Bazel’s hermeticity, remote caching,
+or remote execution capabilities.</p>
+<p><strong>Features:</strong></p>
+<ul class="simple">
+<li><p>Aggregates rules into <code class="docutils literal notranslate"><span class="pre">cc_binary</span></code> and <code class="docutils literal notranslate"><span class="pre">cc_library</span></code> targets using
+<code class="docutils literal notranslate"><span class="pre">&#64;rules_cc</span></code></p></li>
+<li><p>Strips <code class="docutils literal notranslate"><span class="pre">-I</span></code> paths (Bazel manages includes internally)</p></li>
+<li><p>Resolves relative <code class="docutils literal notranslate"><span class="pre">-L</span></code> paths to absolute for Bazel’s sandbox</p></li>
+<li><p>Sources outside the workspace are copied to <code class="docutils literal notranslate"><span class="pre">ext/</span></code></p></li>
+<li><p>Outputs in <code class="docutils literal notranslate"><span class="pre">bazel-bin/</span></code> are copied to the final destination</p></li>
+</ul>
+<p><strong>Requires:</strong> Bazel or Bazelisk (<code class="docutils literal notranslate"><span class="pre">bazel</span></code> or <code class="docutils literal notranslate"><span class="pre">bazelisk</span></code> in PATH).</p>
+<p><strong>Limitations:</strong> File locking is disabled — Bazel manages its own
+sandboxing and caching.</p>
+</section>
+<section id="tup">
+<h4>tup<a class="headerlink" href="#tup" title="Link to this heading">¶</a></h4>
+<p>Generates a <code class="docutils literal notranslate"><span class="pre">Tupfile</span></code> targeting the Tup build system.</p>
+<p><strong>When to use:</strong> Projects where Tup’s file-system monitoring provides
+fast incremental rebuilds without explicit dependency declarations.</p>
+<p><strong>Features:</strong></p>
+<ul class="simple">
+<li><p>Simple rule format: <code class="docutils literal notranslate"><span class="pre">:</span> <span class="pre">inputs</span> <span class="pre">|&gt;</span> <span class="pre">command</span> <span class="pre">|&gt;</span> <span class="pre">outputs</span></code></p></li>
+<li><p>No explicit depfile tracking — Tup monitors the filesystem directly</p></li>
+<li><p>Automatic <code class="docutils literal notranslate"><span class="pre">.tup/</span></code> initialisation on first run</p></li>
+</ul>
+<p><strong>Requires:</strong> Tup (<code class="docutils literal notranslate"><span class="pre">tup</span></code> in PATH).</p>
+<p><strong>Limitations:</strong></p>
+<ul class="simple">
+<li><p>File locking is disabled (Tup manages file monitoring internally)</p></li>
+<li><p>No phony target support — top-level <code class="docutils literal notranslate"><span class="pre">build</span></code> and <code class="docutils literal notranslate"><span class="pre">runtests</span></code> targets
+are unavailable</p></li>
+</ul>
+</section>
+<section id="shake-builtin">
+<h4>shake (builtin)<a class="headerlink" href="#shake-builtin" title="Link to this heading">¶</a></h4>
+<p>A self-executing backend implementing the <em>Build Systems a la Carte</em>
+(Mokhov, Mitchell, Jones 2018) rebuild strategy with verifying traces and
+early cutoff.  No external build tool is required.</p>
+<p><strong>When to use:</strong> Best rebuild precision.  Ideal for large projects where
+avoiding unnecessary rebuilds matters most, and for shared caches on
+network filesystems where content-addressable outputs prevent stale reuse.</p>
+<p><strong>Features:</strong></p>
+<ul class="simple">
+<li><p><strong>Content-addressable outputs:</strong> compile rules produce files whose names
+encode source hash, dependency hash, and macro state — existence implies
+correctness, skipping expensive content checks</p></li>
+<li><p><strong>Verifying traces:</strong> records content hashes of all inputs, outputs, and
+commands in <code class="docutils literal notranslate"><span class="pre">.ct-traces.json</span></code>; on rebuild, verifies all input hashes
+before re-executing</p></li>
+<li><p><strong>Early cutoff:</strong> if a rebuilt output is byte-identical to the previous
+version, dependents are not rebuilt</p></li>
+<li><p>Async execution with <code class="docutils literal notranslate"><span class="pre">asyncio.Semaphore</span></code> limiting concurrency</p></li>
+<li><p>File locking via <code class="docutils literal notranslate"><span class="pre">FileLock</span></code> for multi-user shared caches</p></li>
+<li><p>Atomic output creation via temp file + rename</p></li>
+</ul>
+<p><strong>Requires:</strong> Nothing — builtin to compiletools.</p>
+</section>
+<section id="slurm-hpc">
+<h4>slurm (HPC)<a class="headerlink" href="#slurm-hpc" title="Link to this heading">¶</a></h4>
+<p>Extends the Shake backend to distribute compile rules across an HPC cluster
+via Slurm job arrays.  Link and library rules still run locally.</p>
+<p><strong>When to use:</strong> Large codebases on HPC clusters where distributing
+compilation across many nodes dramatically reduces wall-clock time.</p>
+<p><strong>Features:</strong></p>
+<ul class="simple">
+<li><p>Distributes compile rules via <code class="docutils literal notranslate"><span class="pre">sbatch</span> <span class="pre">--array</span></code></p></li>
+<li><p>Dynamic memory estimation per rule based on include complexity</p></li>
+<li><p>Memory tiers with automatic OOM retry (doubles memory and resubmits)</p></li>
+<li><p>Job chunking for large submissions (<code class="docutils literal notranslate"><span class="pre">--slurm-max-array</span></code>, default 1000)</p></li>
+<li><p>Polls <code class="docutils literal notranslate"><span class="pre">sacct</span></code> for job completion</p></li>
+<li><p>Traces recorded for successfully compiled outputs (incremental rebuilds
+across cluster jobs)</p></li>
+<li><p>Slurm logs written to <code class="docutils literal notranslate"><span class="pre">{objdir}/slurm-ct-*.out</span></code> (cleaned on success)</p></li>
+</ul>
+<p><strong>Requires:</strong> Slurm (<code class="docutils literal notranslate"><span class="pre">sbatch</span></code> in PATH).</p>
+<p><strong>Configuration options:</strong></p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--slurm-partition</span></code> — Slurm partition name</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--slurm-account</span></code> — Slurm account for billing</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--slurm-time</span></code> — job time limit</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--slurm-mem</span></code> — maximum memory per job (also the OOM retry ceiling)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--slurm-cpus</span></code> — CPUs per task</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--slurm-poll-interval</span></code> — seconds between <code class="docutils literal notranslate"><span class="pre">sacct</span></code> polls</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--slurm-export</span></code> — comma-separated env vars passed via <code class="docutils literal notranslate"><span class="pre">sbatch</span> <span class="pre">--export=</span></code>.
+Default propagates a curated allowlist
+(<code class="docutils literal notranslate"><span class="pre">PATH,HOME,USER,LANG,LC_ALL,CC,CXX,CPATH,LD_LIBRARY_PATH</span></code>) instead of the
+submitter’s full environment, so unrelated state does not leak into compute
+nodes.  <code class="docutils literal notranslate"><span class="pre">LD_LIBRARY_PATH</span></code> is included because non-system compilers
+(Spack, Lmod, custom installs) typically need it to locate their shared libs.</p></li>
+</ul>
+<p><strong>Overriding the default export list:</strong></p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">--slurm-export=ALL</span></code> — propagate the full submitter environment (legacy
+behavior; use sparingly, leaks unrelated state).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--slurm-export=NONE</span></code> — fully isolated environment.</p></li>
+<li><p>For Lmod/Spack sites, extend the default explicitly, e.g.:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">slurm</span><span class="o">-</span><span class="n">export</span><span class="o">=</span><span class="n">PATH</span><span class="p">,</span><span class="n">HOME</span><span class="p">,</span><span class="n">USER</span><span class="p">,</span><span class="n">LANG</span><span class="p">,</span><span class="n">LC_ALL</span><span class="p">,</span><span class="n">CC</span><span class="p">,</span><span class="n">CXX</span><span class="p">,</span><span class="n">CPATH</span><span class="p">,</span><span class="n">LD_LIBRARY_PATH</span><span class="p">,</span><span class="n">MODULEPATH</span><span class="p">,</span><span class="n">LMOD_CMD</span><span class="p">,</span><span class="n">LMOD_DIR</span><span class="p">,</span><span class="n">SPACK_ROOT</span>
+</pre></div>
+</div>
+</li>
+</ul>
+<p><strong>File-locking semantics:</strong> For the slurm backend, “file locking” means
+(a) local link/library steps go through <code class="docutils literal notranslate"><span class="pre">FileLock</span></code> + <code class="docutils literal notranslate"><span class="pre">atomic_link</span></code> on
+the submitter, and (b) compute-node compiles use atomic temp+rename
+(compile to <code class="docutils literal notranslate"><span class="pre">$OUT.$SLURM_JOB_ID.$SLURM_ARRAY_TASK_ID.tmp</span></code>, then
+<code class="docutils literal notranslate"><span class="pre">mv</span> <span class="pre">-f</span></code> onto the final <code class="docutils literal notranslate"><span class="pre">.o</span></code>) – the same correctness guarantee that
+<code class="docutils literal notranslate"><span class="pre">atomic_compile</span></code> provides locally, without requiring a cross-node lock
+on the compute path.</p>
+<p><strong>Limitations:</strong> Link rules cannot be distributed and always run locally.</p>
+</section>
+</section>
+<section id="file-locking">
+<h3>FILE LOCKING<a class="headerlink" href="#file-locking" title="Link to this heading">¶</a></h3>
+<p>File locking enables multiple users and build hosts to share compiled object
+files safely.  It is supported by the Make, Ninja, Shake, and Slurm backends.</p>
+<p>Enable with <code class="docutils literal notranslate"><span class="pre">--file-locking</span></code> (on by default for Make).  The locking
+strategy is auto-detected based on the target filesystem:</p>
+<ul class="simple">
+<li><p><strong>lockdir</strong> — NFS, Lustre (mkdir-based, works everywhere)</p></li>
+<li><p><strong>fcntl</strong> — GPFS (kernel-managed cross-node locks)</p></li>
+<li><p><strong>cifs</strong> — CIFS/SMB (exclusive file creation)</p></li>
+<li><p><strong>flock</strong> — local filesystems like ext4, xfs, btrfs</p></li>
+</ul>
+<p>See <code class="docutils literal notranslate"><span class="pre">ct-lock-helper</span></code> (1) and <code class="docutils literal notranslate"><span class="pre">ct-cleanup-locks</span></code> (1) for details.</p>
+</section>
+<section id="content-addressable-outputs">
+<h3>CONTENT-ADDRESSABLE OUTPUTS<a class="headerlink" href="#content-addressable-outputs" title="Link to this heading">¶</a></h3>
+<p>The Shake and Slurm backends use content-addressable object file naming:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">basename_filehash_dephash_macrohash</span><span class="o">.</span><span class="n">o</span>
+</pre></div>
+</div>
+<p>Because the filename encodes all inputs (source content, dependency hashes,
+and macro state), if the file exists it is guaranteed correct.  This
+eliminates the need for content verification on cache hits and prevents
+stale reuse on low-resolution filesystems.</p>
+</section>
+<section id="choosing-a-backend">
+<h3>CHOOSING A BACKEND<a class="headerlink" href="#choosing-a-backend" title="Link to this heading">¶</a></h3>
+<div class="table-wrapper docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Scenario</p></th>
+<th class="head"><p>Recommended backend</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>General-purpose builds</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">make</span></code> (default)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Large incremental rebuilds</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ninja</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Shared multi-user caches</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">shake</span></code> or <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">--file-locking</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>HPC cluster distribution</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">slurm</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>CMake IDE integration</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">cmake</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Bazel ecosystem integration</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">bazel</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Filesystem-monitored rebuilds</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tup</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Maximum rebuild precision</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">shake</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="examples">
+<h3>EXAMPLES<a class="headerlink" href="#examples" title="Link to this heading">¶</a></h3>
+<p>Build with Ninja backend:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ct</span><span class="o">-</span><span class="n">cake</span> <span class="o">--</span><span class="n">backend</span><span class="o">=</span><span class="n">ninja</span>
+</pre></div>
+</div>
+<p>Build with Shake backend and file locking:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ct</span><span class="o">-</span><span class="n">cake</span> <span class="o">--</span><span class="n">backend</span><span class="o">=</span><span class="n">shake</span> <span class="o">--</span><span class="n">file</span><span class="o">-</span><span class="n">locking</span>
+</pre></div>
+</div>
+<p>Distribute compilation across a Slurm cluster:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ct</span><span class="o">-</span><span class="n">cake</span> <span class="o">--</span><span class="n">backend</span><span class="o">=</span><span class="n">slurm</span> <span class="o">--</span><span class="n">slurm</span><span class="o">-</span><span class="n">partition</span><span class="o">=</span><span class="n">build</span> <span class="o">--</span><span class="n">slurm</span><span class="o">-</span><span class="n">mem</span><span class="o">=</span><span class="mi">8</span><span class="n">G</span>
+</pre></div>
+</div>
+<p>List available backends:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ct</span><span class="o">-</span><span class="nb">list</span><span class="o">-</span><span class="n">backends</span>
+<span class="n">ct</span><span class="o">-</span><span class="nb">list</span><span class="o">-</span><span class="n">backends</span> <span class="o">--</span><span class="nb">all</span> <span class="o">--</span><span class="n">style</span><span class="o">=</span><span class="n">pretty</span>
+</pre></div>
+</div>
+</section>
+<section id="references">
+<h3>REFERENCES<a class="headerlink" href="#references" title="Link to this heading">¶</a></h3>
+<ul class="simple">
+<li><p>Andrey Mokhov, Neil Mitchell, Simon Peyton Jones. <em>Build Systems a la Carte</em>.
+Proc. ACM Program. Lang., Vol. 2, ICFP, Article 79, September 2018.
+<a class="reference external" href="https://doi.org/10.1145/3236774">https://doi.org/10.1145/3236774</a></p></li>
+<li><p>Peter Miller. <em>Recursive Make Considered Harmful</em>. 2008.
+<a class="reference external" href="https://api.semanticscholar.org/CorpusID:54117644">https://api.semanticscholar.org/CorpusID:54117644</a></p></li>
+</ul>
+</section>
+<section id="see-also">
+<h3>SEE ALSO<a class="headerlink" href="#see-also" title="Link to this heading">¶</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">ct-cake</span></code> (1), <code class="docutils literal notranslate"><span class="pre">ct-list-backends</span></code> (1), <code class="docutils literal notranslate"><span class="pre">ct-lock-helper</span></code> (1),
+<code class="docutils literal notranslate"><span class="pre">ct-cleanup-locks</span></code> (1)</p>
+</section>
+</section>
+</section>
+
+        </article>
+      </div>
+      <footer>
+        
+        <div class="related-pages">
+          <a class="next-page" href="ct-build.html">
+              <div class="page-info">
+                <div class="context">
+                  <span>Next</span>
+                </div>
+                <div class="title">ct-build</div>
+              </div>
+              <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
+            </a>
+          <a class="prev-page" href="../tools.html">
+              <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
+              <div class="page-info">
+                <div class="context">
+                  <span>Previous</span>
+                </div>
+                
+                <div class="title">Tools</div>
+                
+              </div>
+            </a>
+        </div>
+        <div class="bottom-of-page">
+          <div class="left-details">
+            <div class="copyright">
+                Copyright &#169; 2026, DrGeoff
+            </div>
+            Made with <a href="https://www.sphinx-doc.org/">Sphinx</a> and <a class="muted-link" href="https://pradyunsg.me">@pradyunsg</a>'s
+            
+            <a href="https://github.com/pradyunsg/furo">Furo</a>
+            
+          </div>
+          <div class="right-details">
+            
+          </div>
+        </div>
+        
+      </footer>
+    </div>
+    <aside class="toc-drawer">
+      
+      
+      <div class="toc-sticky toc-scroll">
+        <div class="toc-title-container">
+          <span class="toc-title">
+            On this page
+          </span>
+        </div>
+        <div class="toc-tree-container">
+          <div class="toc-tree">
+            <ul>
+<li><a class="reference internal" href="#">ct-backends</a><ul>
+<li><a class="reference internal" href="#build-backend-architecture-and-selection-guide">Build backend architecture and selection guide</a><ul>
+<li><a class="reference internal" href="#description">DESCRIPTION</a></li>
+<li><a class="reference internal" href="#backend-summary">BACKEND SUMMARY</a></li>
+<li><a class="reference internal" href="#feature-matrix">FEATURE MATRIX</a></li>
+<li><a class="reference internal" href="#backends">BACKENDS</a><ul>
+<li><a class="reference internal" href="#make-default">make (default)</a></li>
+<li><a class="reference internal" href="#ninja">ninja</a></li>
+<li><a class="reference internal" href="#cmake">cmake</a></li>
+<li><a class="reference internal" href="#bazel">bazel</a></li>
+<li><a class="reference internal" href="#tup">tup</a></li>
+<li><a class="reference internal" href="#shake-builtin">shake (builtin)</a></li>
+<li><a class="reference internal" href="#slurm-hpc">slurm (HPC)</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#file-locking">FILE LOCKING</a></li>
+<li><a class="reference internal" href="#content-addressable-outputs">CONTENT-ADDRESSABLE OUTPUTS</a></li>
+<li><a class="reference internal" href="#choosing-a-backend">CHOOSING A BACKEND</a></li>
+<li><a class="reference internal" href="#examples">EXAMPLES</a></li>
+<li><a class="reference internal" href="#references">REFERENCES</a></li>
+<li><a class="reference internal" href="#see-also">SEE ALSO</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+          </div>
+        </div>
+      </div>
+      
+      
+    </aside>
+  </div>
+</div><script src="../_static/documentation_options.js?v=2231f592"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/scripts/furo.js?v=46bd48cc"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    </body>
+</html>

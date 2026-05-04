@@ -1,0 +1,809 @@
+<!doctype html>
+<html class="no-js" lang="en" data-content_root="../">
+  <head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="index" title="Index" href="../genindex.html"><link rel="search" title="Search" href="../search.html"><link rel="next" title="ct-cleanup-locks" href="ct-cleanup-locks.html"><link rel="prev" title="ct-build-static-library" href="ct-build-static-library.html">
+
+    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
+        <title>ct-cake - compiletools 8.2.3</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=d111a655" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/furo.css?v=7bdb33bb" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/furo-extensions.css?v=8dab3a3b" />
+    
+    
+
+
+<style>
+  body {
+    --color-code-background: #f2f2f2;
+  --color-code-foreground: #1e1e1e;
+  
+  }
+  @media not print {
+    body[data-theme="dark"] {
+      --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  
+    }
+    @media (prefers-color-scheme: dark) {
+      body:not([data-theme="light"]) {
+        --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  
+      }
+    }
+  }
+</style></head>
+  <body>
+    
+    <script>
+      document.body.dataset.theme = localStorage.getItem("theme") || "auto";
+    </script>
+    
+
+<svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+  <symbol id="svg-toc" viewBox="0 0 24 24">
+    <title>Contents</title>
+    <svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 1024 1024">
+      <path d="M408 442h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8zm-8 204c0 4.4 3.6 8 8 8h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56zm504-486H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zm0 632H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zM115.4 518.9L271.7 642c5.8 4.6 14.4.5 14.4-6.9V388.9c0-7.4-8.5-11.5-14.4-6.9L115.4 505.1a8.74 8.74 0 0 0 0 13.8z"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-menu" viewBox="0 0 24 24">
+    <title>Menu</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-menu">
+      <line x1="3" y1="12" x2="21" y2="12"></line>
+      <line x1="3" y1="6" x2="21" y2="6"></line>
+      <line x1="3" y1="18" x2="21" y2="18"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-arrow-right" viewBox="0 0 24 24">
+    <title>Expand</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-chevron-right">
+      <polyline points="9 18 15 12 9 6"></polyline>
+    </svg>
+  </symbol>
+  <symbol id="svg-sun" viewBox="0 0 24 24">
+    <title>Light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="feather-sun">
+      <circle cx="12" cy="12" r="5"></circle>
+      <line x1="12" y1="1" x2="12" y2="3"></line>
+      <line x1="12" y1="21" x2="12" y2="23"></line>
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+      <line x1="1" y1="12" x2="3" y2="12"></line>
+      <line x1="21" y1="12" x2="23" y2="12"></line>
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon" viewBox="0 0 24 24">
+    <title>Dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-moon">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z" />
+    </svg>
+  </symbol>
+  <symbol id="svg-sun-with-moon" viewBox="0 0 24 24">
+    <title>Auto light/dark, in light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path style="opacity: 50%" d="M 5.411 14.504 C 5.471 14.504 5.532 14.504 5.591 14.504 C 3.639 16.319 4.383 19.569 6.931 20.352 C 7.693 20.586 8.512 20.551 9.25 20.252 C 8.023 23.207 4.056 23.725 2.11 21.184 C 0.166 18.642 1.702 14.949 4.874 14.536 C 5.051 14.512 5.231 14.5 5.411 14.5 L 5.411 14.504 Z"/>
+      <line x1="14.5" y1="3.25" x2="14.5" y2="1.25"/>
+      <line x1="14.5" y1="15.85" x2="14.5" y2="17.85"/>
+      <line x1="10.044" y1="5.094" x2="8.63" y2="3.68"/>
+      <line x1="19" y1="14.05" x2="20.414" y2="15.464"/>
+      <line x1="8.2" y1="9.55" x2="6.2" y2="9.55"/>
+      <line x1="20.8" y1="9.55" x2="22.8" y2="9.55"/>
+      <line x1="10.044" y1="14.006" x2="8.63" y2="15.42"/>
+      <line x1="19" y1="5.05" x2="20.414" y2="3.636"/>
+      <circle cx="14.5" cy="9.55" r="3.6"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon-with-sun" viewBox="0 0 24 24">
+    <title>Auto light/dark, in dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path d="M 8.282 7.007 C 8.385 7.007 8.494 7.007 8.595 7.007 C 5.18 10.184 6.481 15.869 10.942 17.24 C 12.275 17.648 13.706 17.589 15 17.066 C 12.851 22.236 5.91 23.143 2.505 18.696 C -0.897 14.249 1.791 7.786 7.342 7.063 C 7.652 7.021 7.965 7 8.282 7 L 8.282 7.007 Z"/>
+      <line style="opacity: 50%" x1="18" y1="3.705" x2="18" y2="2.5"/>
+      <line style="opacity: 50%" x1="18" y1="11.295" x2="18" y2="12.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="4.816" x2="14.464" y2="3.964"/>
+      <line style="opacity: 50%" x1="20.711" y1="10.212" x2="21.563" y2="11.063"/>
+      <line style="opacity: 50%" x1="14.205" y1="7.5" x2="13.001" y2="7.5"/>
+      <line style="opacity: 50%" x1="21.795" y1="7.5" x2="23" y2="7.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="10.184" x2="14.464" y2="11.036"/>
+      <line style="opacity: 50%" x1="20.711" y1="4.789" x2="21.563" y2="3.937"/>
+      <circle style="opacity: 50%" cx="18" cy="7.5" r="2.169"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-pencil" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-pencil-code">
+      <path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" />
+      <path d="M13.5 6.5l4 4" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+  <symbol id="svg-eye" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-eye-code">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+      <path
+        d="M11.11 17.958c-3.209 -.307 -5.91 -2.293 -8.11 -5.958c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6c-.21 .352 -.427 .688 -.647 1.008" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+</svg>
+
+<input type="checkbox" class="sidebar-toggle" name="__navigation" id="__navigation" aria-label="Toggle site navigation sidebar">
+<input type="checkbox" class="sidebar-toggle" name="__toc" id="__toc" aria-label="Toggle table of contents sidebar">
+<label class="overlay sidebar-overlay" for="__navigation"></label>
+<label class="overlay toc-overlay" for="__toc"></label>
+
+<a class="skip-to-content muted-link" href="#furo-main-content">Skip to content</a>
+
+
+
+<div class="page">
+  <header class="mobile-header">
+    <div class="header-left">
+      <label class="nav-overlay-icon" for="__navigation">
+        <span class="icon"><svg><use href="#svg-menu"></use></svg></span>
+      </label>
+    </div>
+    <div class="header-center">
+      <a href="../index.html"><div class="brand">compiletools 8.2.3</div></a>
+    </div>
+    <div class="header-right">
+      <div class="theme-toggle-container theme-toggle-header">
+        <button class="theme-toggle" aria-label="Toggle Light / Dark / Auto color theme">
+          <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+          <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+          <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+          <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+        </button>
+      </div>
+      <label class="toc-overlay-icon toc-header-icon" for="__toc">
+        <span class="icon"><svg><use href="#svg-toc"></use></svg></span>
+      </label>
+    </div>
+  </header>
+  <aside class="sidebar-drawer">
+    <div class="sidebar-container">
+      
+      <div class="sidebar-sticky"><a class="sidebar-brand" href="../index.html">
+  
+  <span class="sidebar-brand-text">compiletools 8.2.3</span>
+  
+</a><form class="sidebar-search-container" method="get" action="../search.html" role="search">
+  <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
+  <input type="hidden" name="check_keywords" value="yes">
+  <input type="hidden" name="area" value="default">
+</form>
+<div id="searchbox"></div><div class="sidebar-scroll"><div class="sidebar-tree">
+  <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1 current has-children"><a class="reference internal" href="../tools.html">Tools</a><input aria-label="Toggle navigation of Tools" checked="" class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" role="switch" type="checkbox"/><label for="toctree-checkbox-1"><span class="icon"><svg><use href="#svg-arrow-right"></use></svg></span></label><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="ct-backends.html">ct-backends</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-build.html">ct-build</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-build-docs.html">ct-build-docs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-build-dynamic-library.html">ct-build-dynamic-library</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-build-static-library.html">ct-build-static-library</a></li>
+<li class="toctree-l2 current current-page"><a class="current reference internal" href="#">ct-cake</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-cleanup-locks.html">ct-cleanup-locks</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-commandline.html">ct-commandline</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-compilation-database.html">ct-compilation-database</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-config.html">ct-config</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-cppdeps.html">ct-cppdeps</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-create-makefile.html">ct-create-makefile</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-doc.html">compiletools</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-filelist.html">ct-filelist</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-findtargets.html">ct-findtargets</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-git-sha-report.html">ct-git-sha-report</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-gitroot.html">ct-gitroot</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-headertree.html">ct-headertree</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-jobs.html">ct-jobs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-list-backends.html">ct-list-backends</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-list-variants.html">ct-list-variants</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-lock-helper.html">ct-lock-helper</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-magicflags.html">ct-magicflags</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-pytest-monitor.html">ct-pytest-monitor</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-release.html">ct-release</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-termux-install.html">ct-termux-install</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-timing-report.html">ct-timing-report</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-trim-cache.html">ct-trim-cache</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-watch-build.html">ct-watch-build</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../contributing.html">Contributing</a></li>
+</ul>
+
+</div>
+</div>
+
+      </div>
+      
+    </div>
+  </aside>
+  <div class="main">
+    <div class="content">
+      <div class="article-container">
+        <a href="#" class="back-to-top muted-link">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8v12z"></path>
+          </svg>
+          <span>Back to top</span>
+        </a>
+        <div class="content-icon-container">
+          <div class="view-this-page">
+  <a class="muted-link" href="../_sources/_generated/ct-cake.rst.txt" title="View this page">
+    <svg><use href="#svg-eye"></use></svg>
+    <span class="visually-hidden">View this page</span>
+  </a>
+</div>
+<div class="theme-toggle-container theme-toggle-content">
+            <button class="theme-toggle" aria-label="Toggle Light / Dark / Auto color theme">
+              <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+              <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+              <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+              <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+            </button>
+          </div>
+          <label class="toc-overlay-icon toc-content-icon" for="__toc">
+            <span class="icon"><svg><use href="#svg-toc"></use></svg></span>
+          </label>
+        </div>
+        <article role="main" id="furo-main-content">
+          <section id="ct-cake">
+<h1>ct-cake<a class="headerlink" href="#ct-cake" title="Link to this heading">¶</a></h1>
+<section id="swiss-army-knife-for-building-a-c-c-project">
+<h2>Swiss army knife for building a C/C++ project<a class="headerlink" href="#swiss-army-knife-for-building-a-c-c-project" title="Link to this heading">¶</a></h2>
+<dl class="field-list simple">
+<dt class="field-odd">Author<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="mailto:drgeoffathome&#37;&#52;&#48;gmail&#46;com">drgeoffathome<span>&#64;</span>gmail<span>&#46;</span>com</a></p>
+</dd>
+<dt class="field-even">Date<span class="colon">:</span></dt>
+<dd class="field-even"><p>2018-02-06</p>
+</dd>
+<dt class="field-odd">Copyright<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Copyright (C) 2011-2016 Zomojo Pty Ltd</p>
+</dd>
+<dt class="field-even">Version<span class="colon">:</span></dt>
+<dd class="field-even"><p>8.2.3</p>
+</dd>
+<dt class="field-odd">Manual section<span class="colon">:</span></dt>
+<dd class="field-odd"><p>1</p>
+</dd>
+<dt class="field-even">Manual group<span class="colon">:</span></dt>
+<dd class="field-even"><p>developers</p>
+</dd>
+</dl>
+<section id="synopsis">
+<h3>SYNOPSIS<a class="headerlink" href="#synopsis" title="Link to this heading">¶</a></h3>
+<p>ct-cake [compilation args] [–variant=&lt;VARIANT&gt;] [–backend=&lt;BACKEND&gt;] filename.cpp</p>
+</section>
+<section id="description">
+<h3>DESCRIPTION<a class="headerlink" href="#description" title="Link to this heading">¶</a></h3>
+<p>ct-cake is the Swiss army knife of build tools that combines many of the
+compiletools into one uber-tool. For many C/C++ projects you can compile
+simply using</p>
+<blockquote>
+<div><p><code class="docutils literal notranslate"><span class="pre">ct-cake</span></code></p>
+</div></blockquote>
+<p>ct-cake will automatically determine the correct source files to generate executables
+from and also determine the tests to build and run. It works by spidering over
+the source code to determine what implementation files to build, what libraries
+to link against and what compiler flags to set. Only build what you
+need, and throw out your Makefiles.</p>
+<p>By default (<code class="docutils literal notranslate"><span class="pre">--auto</span></code>), ct-cake searches for files that will be the “main” file.
+From that set of files, ct-cake then uses the header includes to
+determine what implementation (cpp) files are also required to be built and
+linked into the final executable/s. Use <code class="docutils literal notranslate"><span class="pre">--no-auto</span></code> to disable automatic
+target detection and specify files explicitly.</p>
+<p>ct-cake will make your life easy if you don’t arbitrarily name things.
+The main rules are:</p>
+<blockquote>
+<div><ul class="simple">
+<li><p>ct-cake only builds C and C++. Everything can be done just fine with
+other tools, so there’s no point reinventing them. Anyway, it’s easy to
+embed ct-cake into other toolchains, see the last section.</p></li>
+<li><p>All binaries end up in the bin directory, with the same base name as
+their source filename. You can override this at the command-line, but it’s
+against the spirit of the tool.</p></li>
+<li><p>The implementation file for point.hpp should be called point.cpp. ct-cake
+supports common C/C++ extensions for headers (.h, .hpp, .hxx, .hh) and
+implementation files (.cpp, .cxx, .cc, .c). This naming convention allows
+ct-cake to compile files and recursively hunt down their dependencies.</p></li>
+<li><p>If a header or implementation file will not work without being linked
+with a certain flag, add a //#LDFLAGS=myflag directly to the source code.</p></li>
+<li><p>Likewise, if a special compiler option is needed, use //#CXXFLAGS=myflag.</p></li>
+<li><p>Minimise the use of “-I” include flags. They make it hard not only for
+cake to generate dependencies, but also autocomplete tools like Eclipse
+and ctags. You can avoid -I flags by structuring your code in the same way
+you refer to paths in your source code.</p></li>
+<li><p>Currently only varieties of Linux are actively supported because that’s
+what the compiletools developers have easy access to. That said, it stands
+a good chance of working on *BSD and macOS. We are interested in receiving
+patches for other platforms including Windows.</p></li>
+</ul>
+</div></blockquote>
+<p>ct-cake works off a “pull” philosophy of building, unlike the “push” model
+of most build processes. Often, there is the monolithic build script that
+rebuilds everything. Users iterate over changing a file, relinking everything
+and then rerunning their binary. A hierarchy of libraries is built up and
+then linked in to the final executables. All of this takes a lot of time,
+particularly for C++.</p>
+<p>With ct-cake, you only pull in what is strictly necessary to what you need to
+run right now. Say, you are testing a particular tool in a large project, with
+a large base of 2000 library files for string handling, sockets, etc. There
+is simply no Makefile (by default ct-cake generates one behind the scenes, but
+you can also use <code class="docutils literal notranslate"><span class="pre">--backend</span></code> to target Ninja, CMake, Bazel, Shake, or Tup).
+You might want to create a build.sh for regression testing, but it’s not
+essential.</p>
+<p>The basic workflow is to simply type:</p>
+<blockquote>
+<div><p><code class="docutils literal notranslate"><span class="pre">ct-cake</span></code></p>
+</div></blockquote>
+<p>If there are multiple executables found and you only want to build one specific one:</p>
+<blockquote>
+<div><p><code class="docutils literal notranslate"><span class="pre">ct-cake</span> <span class="pre">path/to/src/app.cpp</span></code></p>
+</div></blockquote>
+<p>Only the library cpp files that are needed, directly, or indirectly to create
+./bin/app are actually compiled. If you don’t #include anything that refers
+to a library file, you don’t pay for it. Also, only the link options that
+are strictly needed to generate the app are included. Its possible to do in
+make files, but such fine-level granularity is rarely set up in practice,
+because its too error-prone to do manually, or with recursive make goodness.</p>
+</section>
+<section id="how-it-works">
+<h3>How it Works<a class="headerlink" href="#how-it-works" title="Link to this heading">¶</a></h3>
+<p>ct-cake generates the header dependencies for the “main.cpp”
+file you specify at the command line by either examining the “#include” lines in
+the source code (or by executing “gcc -MM -MF” if you use the –preprocess flag).
+For each header file found in the source file, it looks for
+an underlying implementation (c,cpp,cc,cxx,etc) file with the same name, and
+adds that implementation file to the build.  ct-cake also reads the entire file
+(configurable via –max-file-read-size) for “magic flags” (//#KEY=VALUE)
+that indicate needed link and compile flags.  Then it recurses through the
+dependencies of the cpp file, and uses this spidering to generate complete
+dependency information for the application. This information is collected into a
+backend-agnostic build graph, which is then handed to the selected backend
+(Make by default) to generate native build files and execute the build.</p>
+</section>
+<section id="magic-comments-magic-flags">
+<h3>Magic Comments / Magic Flags<a class="headerlink" href="#magic-comments-magic-flags" title="Link to this heading">¶</a></h3>
+<p>ct-cake works very differently to other build systems, which specify a hierarchy
+of link flags and compile options, because ct-cake ties the compiler flags
+directly to the source code. If you have compress.hpp that requires “-lzip”
+on the link line, add the following comment into the header file:</p>
+<p><code class="docutils literal notranslate"><span class="pre">//#LDFLAGS=-lzip</span></code></p>
+<p>Whenever the header is included (either directly or indirectly), the -lzip
+will be automatically added to the link step. If you stop using the header,
+for a particular executable, cake will figure that out and not link against it.</p>
+<p>If you want to compile a cpp file with a particular optimization enabled,
+add, say:</p>
+<p><code class="docutils literal notranslate"><span class="pre">//#CXXFLAGS=-fstrict-aliasing</span></code></p>
+<p>Because the code and build flags are defined so close to each other, its
+much easier to tweak the compilation locally.</p>
+<section id="cppflags-and-cxxflags">
+<h4>CPPFLAGS and CXXFLAGS<a class="headerlink" href="#cppflags-and-cxxflags" title="Link to this heading">¶</a></h4>
+<p>By default, CPPFLAGS and CXXFLAGS are unified into a single deduplicated set.
+This means flags specified via <code class="docutils literal notranslate"><span class="pre">//#CPPFLAGS=</span></code> or <code class="docutils literal notranslate"><span class="pre">--CPPFLAGS</span></code> are also
+applied as CXXFLAGS and vice versa. Use <code class="docutils literal notranslate"><span class="pre">--separate-flags-CPP-CXX</span></code> to keep
+them separate if your build requires different flags for preprocessing and
+compilation.</p>
+</section>
+<section id="computed-includes">
+<h4>Computed Includes<a class="headerlink" href="#computed-includes" title="Link to this heading">¶</a></h4>
+<p>ct-cake’s <code class="docutils literal notranslate"><span class="pre">direct</span></code> dependency mode (the default) now resolves computed
+<code class="docutils literal notranslate"><span class="pre">#include</span></code> directives where the path is specified via a macro, for example:</p>
+<div class="highlight-cpp notranslate"><div class="highlight"><pre><span></span><span class="cp">#define PLATFORM_HEADER &quot;linux_extra.h&quot;</span>
+<span class="cp">#include PLATFORM_HEADER</span>
+</pre></div>
+</div>
+<p>Previously this required <code class="docutils literal notranslate"><span class="pre">--headerdeps=cpp</span></code> to track correctly.</p>
+</section>
+</section>
+<section id="performance">
+<h3>Performance<a class="headerlink" href="#performance" title="Link to this heading">¶</a></h3>
+<p>ct-cake’s dependency analysis is fast — one particular (old) example project took
+0.04 seconds to build if nothing is out of date, versus 2 seconds for, say,
+Boost.Build. The default Make backend is about as fast as a handrolled Makefile
+that uses the same lazily generated dependencies; alternative backends like Ninja
+can be even faster for large incremental rebuilds.</p>
+<p>ct-cake also eliminates the redundant generation of static archive files that
+a more hierarchical build process would generate as intermediaries, saving
+the cost of running ‘ar’.</p>
+<p>Note that ct-cake doesn’t build all cpp files that you have checked out, only
+those strictly needed to build your particular binary, so you only pay for what
+you use. This difference alone should see a large improvement on most
+projects, especially for incremental rebuilds.</p>
+<section id="file-locking">
+<h4>File Locking<a class="headerlink" href="#file-locking" title="Link to this heading">¶</a></h4>
+<p>ct-cake supports file locking that enables multiple users and build
+hosts to share compiled object files. This significantly speeds up builds in
+multi-developer and CI/CD environments by reusing object files across builds.</p>
+<p>Enable by setting <code class="docutils literal notranslate"><span class="pre">file-locking</span> <span class="pre">=</span> <span class="pre">true</span></code> in your configuration file. This adds
+filesystem-aware locking to ensure safe concurrent access (flock on local filesystems,
+atomic mkdir on network filesystems). The cache uses content-addressable storage
+(files named by hash of source + compiler flags) and includes automatic stale lock
+detection for crashed builds.</p>
+<p>See the main compiletools README for setup details.</p>
+</section>
+<section id="precompiled-header-caching">
+<h4>Precompiled Header Caching<a class="headerlink" href="#precompiled-header-caching" title="Link to this heading">¶</a></h4>
+<p>ct-cake supports content-addressable caching of precompiled headers (PCH) to
+speed up builds that reuse common header files across multiple targets. Mark
+headers for precompilation using the <code class="docutils literal notranslate"><span class="pre">//#PCH=</span></code> magic flag in your source files:</p>
+<div class="highlight-cpp notranslate"><div class="highlight"><pre><span></span><span class="c1">//#PCH=stdafx.h</span>
+<span class="cp">#include</span><span class="w"> </span><span class="cpf">&quot;stdafx.h&quot;</span>
+</pre></div>
+</div>
+<p>The build system compiles PCH-marked headers into <code class="docutils literal notranslate"><span class="pre">.gch</span></code> files, cached in
+<code class="docutils literal notranslate"><span class="pre">{git_root}/shared-pchdir/{variant}</span></code> (or a custom path via <code class="docutils literal notranslate"><span class="pre">--pchdir</span></code>).
+The cache key includes compiler, compiler flags, and header path, preventing
+collisions across different build configurations.</p>
+<p>Enable PCH caching by:</p>
+<ul class="simple">
+<li><p>Setting <code class="docutils literal notranslate"><span class="pre">pchdir</span> <span class="pre">=</span> <span class="pre">{git_root}/shared-pchdir</span></code> in your <code class="docutils literal notranslate"><span class="pre">ct.conf.d/ct.conf</span></code>
+to enable caching for all builds (default behavior in v8.0+)</p></li>
+<li><p>Passing <code class="docutils literal notranslate"><span class="pre">--pchdir=/path/to/cache</span></code> on the command line to override
+for a single build</p></li>
+</ul>
+<p>PCH caching is especially effective in multi-developer environments where
+the same headers are precompiled many times. Use <code class="docutils literal notranslate"><span class="pre">ct-trim-cache</span> <span class="pre">--pchdir-only</span></code>
+to selectively clean aged PCH entries while preserving active builds. Without
+<code class="docutils literal notranslate"><span class="pre">--pchdir</span></code>, PCH files fall back to legacy <code class="docutils literal notranslate"><span class="pre">.gch</span></code> placement in the object
+directory.</p>
+</section>
+</section>
+<section id="selective-build-and-test">
+<h3>Selective build and test<a class="headerlink" href="#selective-build-and-test" title="Link to this heading">¶</a></h3>
+<p>You can instruct ct-cake to only build binaries dependant on a list of
+source files using the <code class="docutils literal notranslate"><span class="pre">--build-only-changed</span></code> flag. This is helpful for
+limiting building and testing in a Continuous Integration pipeline to only
+source that has changed from master.</p>
+<p><code class="docutils literal notranslate"><span class="pre">changed_source=git</span> <span class="pre">diff</span> <span class="pre">--name-only</span> <span class="pre">master</span> <span class="pre">|</span> <span class="pre">sed</span> <span class="pre">&quot;s,^,$(git</span> <span class="pre">rev-parse</span> <span class="pre">--show-toplevel)/,&quot;</span>
+<span class="pre">ct-cake</span> <span class="pre">--build-only-changed</span> <span class="pre">\&quot;$changed_source\&quot;</span></code></p>
+</section>
+<section id="configuration">
+<h3>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">¶</a></h3>
+<p>The compiletools programs require <em>almost</em> no configuration. However, it is
+still useful to have some shortcut build templates such as ‘release’,
+‘profile’ etc.</p>
+<p>Config files for the ct-* applications are programmatically located using
+python-appdirs, which on linux is a wrapper around the XDG specification.  Thus
+default locations are /etc/xdg/ct/ and $HOME/.config/ct/.  Configuration parsing
+is done using python-configargparse which automatically handles environment
+variables, command line arguments, system configs
+and user configs.</p>
+<p>Specifically, the config files are searched for in the following locations (from
+lowest to highest priority):</p>
+<blockquote>
+<div><ul class="simple">
+<li><p>ct/ct.conf.d subdirectory alongside the ct-* executable</p></li>
+<li><p>system config (XDG compliant, so usually /etc/xdg/ct)</p></li>
+<li><p>python virtual environment configs (${python-site-packages}/ct/ct.conf.d)</p></li>
+<li><p>package bundled config (&lt;installed-package&gt;/ct.conf.d)</p></li>
+<li><p>user config (XDG compliant, so usually ~/.config/ct)</p></li>
+<li><p>project config (&lt;gitroot&gt;/ct.conf.d)</p></li>
+<li><p>gitroot directory</p></li>
+<li><p>current working directory</p></li>
+<li><p>environment variables</p></li>
+<li><p>command line arguments</p></li>
+</ul>
+</div></blockquote>
+<p>The ct-* applications are aware of two levels of configs.  There is a base level
+ct.conf that contains the basic variables that apply no  matter what variant
+(i.e, debug/release/etc) is being built.</p>
+<p>The second layer of config files are the variant configs that contain the
+details for the debug/release/etc.  The variant names are simply a config file
+name but without the .conf. There are also variant aliases to make for less
+typing. So <code class="docutils literal notranslate"><span class="pre">--variant=debug</span></code> looks up the variant alias (specified in ct.conf).
+The default aliases are <code class="docutils literal notranslate"><span class="pre">{'debug':'blank',</span> <span class="pre">'release':'blank.release'}</span></code>, so
+“debug” maps to “blank” and uses <code class="docutils literal notranslate"><span class="pre">blank.conf</span></code>.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">blank.conf</span></code> file is intentionally empty, inheriting all settings from the
+environment or parent configs. This allows environment variables (CC, CXX,
+CFLAGS, etc.) to control the build without explicit config file settings.</p>
+<p>To use explicit compiler configs, either specify them directly
+(<code class="docutils literal notranslate"><span class="pre">--variant=gcc.debug</span></code>) or customize the aliases in your
+<code class="docutils literal notranslate"><span class="pre">~/.config/ct/ct.conf</span></code>:</p>
+<div class="highlight-ini notranslate"><div class="highlight"><pre><span></span><span class="na">variantaliases = {&#39;debug&#39;</span><span class="o">:</span><span class="s">&#39;gcc.debug&#39;</span><span class="na">, &#39;release&#39;</span><span class="o">:</span><span class="s">&#39;gcc.release&#39;</span><span class="na">}</span>
+</pre></div>
+</div>
+<p>If any config value is specified in more than one way then the following
+hierarchy is used</p>
+<ul class="simple">
+<li><p>command line &gt; environment variables &gt; config file values &gt; defaults</p></li>
+</ul>
+<p>If you need to append values rather than replace values, this can be
+done (currently only for environment variables) by specifying
+–variable-handling-method append
+or equivalently add an environment variable
+VARIABLE_HANDLING_METHOD=append</p>
+<p>The example /etc/xdg/ct/gcc.release.conf file looks as follows:</p>
+<div class="highlight-ini notranslate"><div class="highlight"><pre><span></span><span class="na">ID</span><span class="o">=</span><span class="s">GNU</span>
+<span class="na">CC</span><span class="o">=</span><span class="s">gcc</span>
+<span class="na">CXX</span><span class="o">=</span><span class="s">g++</span>
+<span class="na">LD</span><span class="o">=</span><span class="s">g++</span>
+<span class="na">CFLAGS</span><span class="o">=</span><span class="s">-fPIC -g -Wall -O3 -DNDEBUG -finline-functions -Wno-inline</span>
+<span class="na">CXXFLAGS</span><span class="o">=</span><span class="s">-std=c++11 -fPIC -g -Wall -O3 -DNDEBUG -finline-functions -Wno-inline</span>
+<span class="na">LDFLAGS</span><span class="o">=</span><span class="s">-fPIC -Wall -Werror -Xlinker --build-id</span>
+<span class="na">TESTPREFIX</span><span class="o">=</span><span class="s">timeout 300 valgrind --quiet --error-exitcode=1</span>
+</pre></div>
+</div>
+<p>CXXFLAGS lists the flags appended to each compilation job. The value in
+/etc/xdg/ct/*.conf
+is overridden by the environment variable, which is in return overridden by
+the command-line argument –CXXFLAGS=. Likewise, LDFLAGS sets the default
+options used for linking.</p>
+<p>TESTPREFIX specifies a command prefix to place in front of unit test runs. This
+should ideally be a tool like valgrind, gdb or purify that can be configured
+to execute the app and return a non-zero exit code on any failure.</p>
+</section>
+<section id="build-variants">
+<h3>Build variants<a class="headerlink" href="#build-variants" title="Link to this heading">¶</a></h3>
+<p>A variant is a configuration file that specifies various configurable settings
+like the compiler and compiler flags. Common variants are “debug” and “release”.
+Build variants are used by specifying the variant name at the command-line as
+follows:</p>
+<blockquote>
+<div><p><code class="docutils literal notranslate"><span class="pre">$</span> <span class="pre">ct-cake</span> <span class="pre">--variant=release</span> <span class="pre">a.cpp</span></code></p>
+</div></blockquote>
+</section>
+<section id="unit-tests">
+<h3>Unit Tests<a class="headerlink" href="#unit-tests" title="Link to this heading">¶</a></h3>
+<p>ct-cake integrates with unit tests in a fairly simple (and perhaps simplistic)
+way.</p>
+<p>By default, <code class="docutils literal notranslate"><span class="pre">ct-cake</span></code> automatically builds all executables and unit tests,
+then runs the unit tests. This automatic behavior happens when you run
+<code class="docutils literal notranslate"><span class="pre">ct-cake</span></code> without arguments (equivalent to <code class="docutils literal notranslate"><span class="pre">ct-cake</span> <span class="pre">--auto</span></code>). To disable
+automatic test discovery and execution, use <code class="docutils literal notranslate"><span class="pre">--no-auto</span></code>.</p>
+<p>If you would prefer to be explicity, ct-cake allows you to specify multiple
+build targets on each line, so the following is valid and useful:</p>
+<blockquote>
+<div><p><code class="docutils literal notranslate"><span class="pre">$</span> <span class="pre">ct-cake</span> <span class="pre">utilities/*.cpp</span>&#160; <span class="pre">#</span> <span class="pre">builds</span> <span class="pre">specified</span> <span class="pre">apps</span> <span class="pre">into</span> <span class="pre">bin/</span></code></p>
+</div></blockquote>
+<p>To explicitly specify build targets and unit tests to be generated and run
+use the following example.  Unit tests are built and when run must return
+an exit code of 0 otherwise this will become a build failure. The flag used
+to specify that executables are unit tests is –tests.</p>
+<blockquote>
+<div><p><code class="docutils literal notranslate"><span class="pre">$</span> <span class="pre">ct-cake</span> <span class="pre">utilities/*.cpp</span> <span class="pre">--tests</span> <span class="pre">tests/*.cpp</span></code></p>
+</div></blockquote>
+<p>If the <em>TESTPREFIX</em> variable is set, you can automatically check
+all unit tests with a code purifying tool. For example:</p>
+<blockquote>
+<div><p><code class="docutils literal notranslate"><span class="pre">export</span> <span class="pre">TESTPREFIX=&quot;valgrind</span> <span class="pre">--quiet</span> <span class="pre">--error-exitcode=1&quot;</span></code></p>
+</div></blockquote>
+<p>will cause all unit tests to only pass if they run through valgrind with no
+memory errors.</p>
+</section>
+<section id="common-options">
+<h3>Common Options<a class="headerlink" href="#common-options" title="Link to this heading">¶</a></h3>
+<dl class="simple">
+<dt><strong>–auto / –no-auto</strong></dt><dd><p>Enable or disable automatic target detection. <code class="docutils literal notranslate"><span class="pre">--auto</span></code> is the default.
+When enabled, ct-cake searches for source files containing exemarkers
+(like <code class="docutils literal notranslate"><span class="pre">main(</span></code>) and testmarkers (like <code class="docutils literal notranslate"><span class="pre">unit_test.hpp</span></code>).</p>
+</dd>
+<dt><strong>–disable-tests</strong></dt><dd><p>When <code class="docutils literal notranslate"><span class="pre">--auto</span></code> is specified, skip automatic building and running of tests.
+Useful when you only want to build executables.</p>
+</dd>
+<dt><strong>–disable-exes</strong></dt><dd><p>When <code class="docutils literal notranslate"><span class="pre">--auto</span></code> is specified, skip automatic building of executables.
+Useful when you only want to build and run tests.</p>
+</dd>
+<dt><strong>-o, –output</strong></dt><dd><p>When building a single target, rename the output to this name.
+Example: <code class="docutils literal notranslate"><span class="pre">ct-cake</span> <span class="pre">main.cpp</span> <span class="pre">-o</span> <span class="pre">myapp</span></code></p>
+</dd>
+<dt><strong>–backend</strong></dt><dd><p>Build system backend to use. Choices: <code class="docutils literal notranslate"><span class="pre">make</span></code> (default), <code class="docutils literal notranslate"><span class="pre">ninja</span></code>,
+<code class="docutils literal notranslate"><span class="pre">cmake</span></code>, <code class="docutils literal notranslate"><span class="pre">bazel</span></code>, <code class="docutils literal notranslate"><span class="pre">shake</span></code>, <code class="docutils literal notranslate"><span class="pre">tup</span></code>.
+Example: <code class="docutils literal notranslate"><span class="pre">ct-cake</span> <span class="pre">--backend=ninja</span></code></p>
+</dd>
+<dt><strong>–clean</strong></dt><dd><p>Remove all build artifacts.</p>
+</dd>
+<dt><strong>–realclean, –real-clean</strong></dt><dd><p>Remove bin/ entirely and selectively clean this build’s objects from
+the shared objdir. Superset of <code class="docutils literal notranslate"><span class="pre">--clean</span></code> – also removes copied
+executables from the top-level output directory. Unlike <code class="docutils literal notranslate"><span class="pre">--clean</span></code>,
+only removes object files that belong to the current build, preserving
+other sub-projects’ objects in a shared object directory.</p>
+</dd>
+<dt><strong>-j, –parallel</strong></dt><dd><p>Number of parallel jobs. Defaults to the output of <code class="docutils literal notranslate"><span class="pre">ct-jobs</span></code>
+(typically the number of CPU cores). Passed to the selected backend.</p>
+</dd>
+<dt><strong>–compilation-database / –no-compilation-database</strong></dt><dd><p>Generate a <code class="docutils literal notranslate"><span class="pre">compile_commands.json</span></code> file for clang tooling. Enabled by
+default. The file is placed in the git root directory.</p>
+</dd>
+<dt><strong>–compilation-database-output</strong></dt><dd><p>Custom output path for the compilation database.</p>
+</dd>
+<dt><strong>–timing</strong></dt><dd><p>Collect and report build timing information.  Writes
+<code class="docutils literal notranslate"><span class="pre">.ct-timing.json</span></code> to the object directory and prints a summary
+table after the build.  Analyze the results with <code class="docutils literal notranslate"><span class="pre">ct-timing-report</span></code>.</p>
+</dd>
+<dt><strong>–objdir PATH</strong></dt><dd><p>Use a shared object directory for compiled object files across multiple
+builds. Enables content-addressable object file caching and cross-user
+build sharing. Default: <code class="docutils literal notranslate"><span class="pre">{git_root}/shared-objdir</span></code>. Requires
+<code class="docutils literal notranslate"><span class="pre">file-locking</span> <span class="pre">=</span> <span class="pre">true</span></code> in <code class="docutils literal notranslate"><span class="pre">ct.conf.d/ct.conf</span></code> for safe concurrent access.
+Example: <code class="docutils literal notranslate"><span class="pre">ct-cake</span> <span class="pre">--objdir=/shared/build/objects</span></code></p>
+</dd>
+<dt><strong>–pchdir PATH</strong></dt><dd><p>Use a shared precompiled header (PCH) cache directory. Headers marked with
+the <code class="docutils literal notranslate"><span class="pre">//#PCH=</span></code> magic flag are compiled into <code class="docutils literal notranslate"><span class="pre">.gch</span></code> files and cached here.
+The cache key includes compiler, flags, and header path, enabling safe reuse
+across builds and developers. Default: <code class="docutils literal notranslate"><span class="pre">{git_root}/shared-pchdir/{variant}</span></code>.
+Without this flag, PCH files fall back to legacy <code class="docutils literal notranslate"><span class="pre">.gch</span></code> placement in the
+object directory. Use <code class="docutils literal notranslate"><span class="pre">ct-trim-cache</span> <span class="pre">--pchdir-only</span></code> to clean aged entries.
+Example: <code class="docutils literal notranslate"><span class="pre">ct-cake</span> <span class="pre">--pchdir=/shared/build/pch</span></code></p>
+</dd>
+<dt><strong>–prepend-PKG-CONFIG-PATH PATH</strong></dt><dd><p>Prepend PATH to <code class="docutils literal notranslate"><span class="pre">PKG_CONFIG_PATH</span></code> before any pkg-config invocation.
+Takes highest priority — overrides both <code class="docutils literal notranslate"><span class="pre">ct.conf.d/pkgconfig/</span></code> directory
+layers and the existing environment variable. Useful for CI pipelines or
+one-off debugging where you need a specific <code class="docutils literal notranslate"><span class="pre">.pc</span></code> file to take precedence.
+May be repeated to prepend multiple directories.
+Example: <code class="docutils literal notranslate"><span class="pre">ct-cake</span> <span class="pre">--prepend-PKG-CONFIG-PATH=/opt/custom/pkgconfig</span></code></p>
+</dd>
+<dt><strong>–append-PKG-CONFIG-PATH PATH</strong></dt><dd><p>Append PATH to <code class="docutils literal notranslate"><span class="pre">PKG_CONFIG_PATH</span></code> after any pkg-config invocation.
+Takes lowest priority — only consulted when the package is not found via
+any other mechanism. Useful for fallback paths or system-wide package
+locations as a last resort. May be repeated to append multiple directories.
+Example: <code class="docutils literal notranslate"><span class="pre">ct-cake</span> <span class="pre">--append-PKG-CONFIG-PATH=/usr/local/lib/pkgconfig</span></code></p>
+</dd>
+<dt><strong>–static / –dynamic</strong></dt><dd><p>Build a static or dynamic library instead of an executable.
+Example: <code class="docutils literal notranslate"><span class="pre">ct-cake</span> <span class="pre">--static</span> <span class="pre">mylib.cpp</span></code></p>
+</dd>
+</dl>
+</section>
+<section id="putting-it-all-together-a-typical-build-setup">
+<h3>Putting it all together - a typical build setup<a class="headerlink" href="#putting-it-all-together-a-typical-build-setup" title="Link to this heading">¶</a></h3>
+<p>For most simple projects, a build.sh script that looks like the
+following is quite useful. You can simply add more cpp to the apps directory to
+generate more tools from the project,
+or add test scripts to the regression directory to improve
+test coverage.</p>
+<p>Code generation steps can be added at the beginning of
+the build.sh, before cake runs.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="ch">#!/bin/sh</span>
+<span class="nb">set</span><span class="w"> </span>-e
+python<span class="w"> </span>fancypythoncodegenerator.py
+ct-cake<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$@</span><span class="s2">&quot;</span>
+</pre></div>
+</div>
+<p>The special <em>“$&#64;”</em> marker is the recommended way
+of forwarding arguments to an application. You can then
+run the build script like this:</p>
+<blockquote>
+<div><p><code class="docutils literal notranslate"><span class="pre">$</span> <span class="pre">./build.sh</span> <span class="pre">--variant=release</span></code></p>
+</div></blockquote>
+<p>or:</p>
+<blockquote>
+<div><p><code class="docutils literal notranslate"><span class="pre">$</span> <span class="pre">./build.sh</span> <span class="pre">--variant=release</span> <span class="pre">--append-CXXFLAGS=-DSPECIALMODE</span></code></p>
+</div></blockquote>
+</section>
+<section id="references">
+<h3>References<a class="headerlink" href="#references" title="Link to this heading">¶</a></h3>
+<p>The content-addressable backend architecture was informed by:</p>
+<ul class="simple">
+<li><p>Andrey Mokhov, Neil Mitchell, Simon Peyton Jones. <em>Build Systems à la Carte</em>.
+Proc. ACM Program. Lang., Vol. 2, ICFP, Article 79, September 2018.
+<a class="reference external" href="https://doi.org/10.1145/3236774">https://doi.org/10.1145/3236774</a></p></li>
+</ul>
+<p>The non-recursive Makefile generation was informed by:</p>
+<ul class="simple">
+<li><p>Peter Miller. <em>Recursive Make Considered Harmful</em>. 2008.
+<a class="reference external" href="https://api.semanticscholar.org/CorpusID:54117644">https://api.semanticscholar.org/CorpusID:54117644</a></p></li>
+</ul>
+</section>
+<section id="see-also">
+<h3>SEE ALSO<a class="headerlink" href="#see-also" title="Link to this heading">¶</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">compiletools</span></code> (1), <code class="docutils literal notranslate"><span class="pre">ct-timing-report</span></code> (1), <code class="docutils literal notranslate"><span class="pre">ct-list-variants</span></code> (1), <code class="docutils literal notranslate"><span class="pre">ct-config</span></code> (1)</p>
+</section>
+</section>
+</section>
+
+        </article>
+      </div>
+      <footer>
+        
+        <div class="related-pages">
+          <a class="next-page" href="ct-cleanup-locks.html">
+              <div class="page-info">
+                <div class="context">
+                  <span>Next</span>
+                </div>
+                <div class="title">ct-cleanup-locks</div>
+              </div>
+              <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
+            </a>
+          <a class="prev-page" href="ct-build-static-library.html">
+              <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
+              <div class="page-info">
+                <div class="context">
+                  <span>Previous</span>
+                </div>
+                
+                <div class="title">ct-build-static-library</div>
+                
+              </div>
+            </a>
+        </div>
+        <div class="bottom-of-page">
+          <div class="left-details">
+            <div class="copyright">
+                Copyright &#169; 2026, DrGeoff
+            </div>
+            Made with <a href="https://www.sphinx-doc.org/">Sphinx</a> and <a class="muted-link" href="https://pradyunsg.me">@pradyunsg</a>'s
+            
+            <a href="https://github.com/pradyunsg/furo">Furo</a>
+            
+          </div>
+          <div class="right-details">
+            
+          </div>
+        </div>
+        
+      </footer>
+    </div>
+    <aside class="toc-drawer">
+      
+      
+      <div class="toc-sticky toc-scroll">
+        <div class="toc-title-container">
+          <span class="toc-title">
+            On this page
+          </span>
+        </div>
+        <div class="toc-tree-container">
+          <div class="toc-tree">
+            <ul>
+<li><a class="reference internal" href="#">ct-cake</a><ul>
+<li><a class="reference internal" href="#swiss-army-knife-for-building-a-c-c-project">Swiss army knife for building a C/C++ project</a><ul>
+<li><a class="reference internal" href="#synopsis">SYNOPSIS</a></li>
+<li><a class="reference internal" href="#description">DESCRIPTION</a></li>
+<li><a class="reference internal" href="#how-it-works">How it Works</a></li>
+<li><a class="reference internal" href="#magic-comments-magic-flags">Magic Comments / Magic Flags</a><ul>
+<li><a class="reference internal" href="#cppflags-and-cxxflags">CPPFLAGS and CXXFLAGS</a></li>
+<li><a class="reference internal" href="#computed-includes">Computed Includes</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#performance">Performance</a><ul>
+<li><a class="reference internal" href="#file-locking">File Locking</a></li>
+<li><a class="reference internal" href="#precompiled-header-caching">Precompiled Header Caching</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#selective-build-and-test">Selective build and test</a></li>
+<li><a class="reference internal" href="#configuration">Configuration</a></li>
+<li><a class="reference internal" href="#build-variants">Build variants</a></li>
+<li><a class="reference internal" href="#unit-tests">Unit Tests</a></li>
+<li><a class="reference internal" href="#common-options">Common Options</a></li>
+<li><a class="reference internal" href="#putting-it-all-together-a-typical-build-setup">Putting it all together - a typical build setup</a></li>
+<li><a class="reference internal" href="#references">References</a></li>
+<li><a class="reference internal" href="#see-also">SEE ALSO</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+          </div>
+        </div>
+      </div>
+      
+      
+    </aside>
+  </div>
+</div><script src="../_static/documentation_options.js?v=2231f592"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/scripts/furo.js?v=46bd48cc"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    </body>
+</html>

@@ -1,0 +1,631 @@
+<!doctype html>
+<html class="no-js" lang="en" data-content_root="../">
+  <head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="index" title="Index" href="../genindex.html"><link rel="search" title="Search" href="../search.html"><link rel="next" title="ct-pytest-monitor" href="ct-pytest-monitor.html"><link rel="prev" title="ct-lock-helper" href="ct-lock-helper.html">
+
+    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
+        <title>ct-magicflags - compiletools 8.2.3</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=d111a655" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/furo.css?v=7bdb33bb" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/furo-extensions.css?v=8dab3a3b" />
+    
+    
+
+
+<style>
+  body {
+    --color-code-background: #f2f2f2;
+  --color-code-foreground: #1e1e1e;
+  
+  }
+  @media not print {
+    body[data-theme="dark"] {
+      --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  
+    }
+    @media (prefers-color-scheme: dark) {
+      body:not([data-theme="light"]) {
+        --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  
+      }
+    }
+  }
+</style></head>
+  <body>
+    
+    <script>
+      document.body.dataset.theme = localStorage.getItem("theme") || "auto";
+    </script>
+    
+
+<svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+  <symbol id="svg-toc" viewBox="0 0 24 24">
+    <title>Contents</title>
+    <svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 1024 1024">
+      <path d="M408 442h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8zm-8 204c0 4.4 3.6 8 8 8h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56zm504-486H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zm0 632H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zM115.4 518.9L271.7 642c5.8 4.6 14.4.5 14.4-6.9V388.9c0-7.4-8.5-11.5-14.4-6.9L115.4 505.1a8.74 8.74 0 0 0 0 13.8z"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-menu" viewBox="0 0 24 24">
+    <title>Menu</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-menu">
+      <line x1="3" y1="12" x2="21" y2="12"></line>
+      <line x1="3" y1="6" x2="21" y2="6"></line>
+      <line x1="3" y1="18" x2="21" y2="18"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-arrow-right" viewBox="0 0 24 24">
+    <title>Expand</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-chevron-right">
+      <polyline points="9 18 15 12 9 6"></polyline>
+    </svg>
+  </symbol>
+  <symbol id="svg-sun" viewBox="0 0 24 24">
+    <title>Light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="feather-sun">
+      <circle cx="12" cy="12" r="5"></circle>
+      <line x1="12" y1="1" x2="12" y2="3"></line>
+      <line x1="12" y1="21" x2="12" y2="23"></line>
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+      <line x1="1" y1="12" x2="3" y2="12"></line>
+      <line x1="21" y1="12" x2="23" y2="12"></line>
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon" viewBox="0 0 24 24">
+    <title>Dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-moon">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z" />
+    </svg>
+  </symbol>
+  <symbol id="svg-sun-with-moon" viewBox="0 0 24 24">
+    <title>Auto light/dark, in light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path style="opacity: 50%" d="M 5.411 14.504 C 5.471 14.504 5.532 14.504 5.591 14.504 C 3.639 16.319 4.383 19.569 6.931 20.352 C 7.693 20.586 8.512 20.551 9.25 20.252 C 8.023 23.207 4.056 23.725 2.11 21.184 C 0.166 18.642 1.702 14.949 4.874 14.536 C 5.051 14.512 5.231 14.5 5.411 14.5 L 5.411 14.504 Z"/>
+      <line x1="14.5" y1="3.25" x2="14.5" y2="1.25"/>
+      <line x1="14.5" y1="15.85" x2="14.5" y2="17.85"/>
+      <line x1="10.044" y1="5.094" x2="8.63" y2="3.68"/>
+      <line x1="19" y1="14.05" x2="20.414" y2="15.464"/>
+      <line x1="8.2" y1="9.55" x2="6.2" y2="9.55"/>
+      <line x1="20.8" y1="9.55" x2="22.8" y2="9.55"/>
+      <line x1="10.044" y1="14.006" x2="8.63" y2="15.42"/>
+      <line x1="19" y1="5.05" x2="20.414" y2="3.636"/>
+      <circle cx="14.5" cy="9.55" r="3.6"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon-with-sun" viewBox="0 0 24 24">
+    <title>Auto light/dark, in dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path d="M 8.282 7.007 C 8.385 7.007 8.494 7.007 8.595 7.007 C 5.18 10.184 6.481 15.869 10.942 17.24 C 12.275 17.648 13.706 17.589 15 17.066 C 12.851 22.236 5.91 23.143 2.505 18.696 C -0.897 14.249 1.791 7.786 7.342 7.063 C 7.652 7.021 7.965 7 8.282 7 L 8.282 7.007 Z"/>
+      <line style="opacity: 50%" x1="18" y1="3.705" x2="18" y2="2.5"/>
+      <line style="opacity: 50%" x1="18" y1="11.295" x2="18" y2="12.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="4.816" x2="14.464" y2="3.964"/>
+      <line style="opacity: 50%" x1="20.711" y1="10.212" x2="21.563" y2="11.063"/>
+      <line style="opacity: 50%" x1="14.205" y1="7.5" x2="13.001" y2="7.5"/>
+      <line style="opacity: 50%" x1="21.795" y1="7.5" x2="23" y2="7.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="10.184" x2="14.464" y2="11.036"/>
+      <line style="opacity: 50%" x1="20.711" y1="4.789" x2="21.563" y2="3.937"/>
+      <circle style="opacity: 50%" cx="18" cy="7.5" r="2.169"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-pencil" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-pencil-code">
+      <path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" />
+      <path d="M13.5 6.5l4 4" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+  <symbol id="svg-eye" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-eye-code">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+      <path
+        d="M11.11 17.958c-3.209 -.307 -5.91 -2.293 -8.11 -5.958c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6c-.21 .352 -.427 .688 -.647 1.008" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+</svg>
+
+<input type="checkbox" class="sidebar-toggle" name="__navigation" id="__navigation" aria-label="Toggle site navigation sidebar">
+<input type="checkbox" class="sidebar-toggle" name="__toc" id="__toc" aria-label="Toggle table of contents sidebar">
+<label class="overlay sidebar-overlay" for="__navigation"></label>
+<label class="overlay toc-overlay" for="__toc"></label>
+
+<a class="skip-to-content muted-link" href="#furo-main-content">Skip to content</a>
+
+
+
+<div class="page">
+  <header class="mobile-header">
+    <div class="header-left">
+      <label class="nav-overlay-icon" for="__navigation">
+        <span class="icon"><svg><use href="#svg-menu"></use></svg></span>
+      </label>
+    </div>
+    <div class="header-center">
+      <a href="../index.html"><div class="brand">compiletools 8.2.3</div></a>
+    </div>
+    <div class="header-right">
+      <div class="theme-toggle-container theme-toggle-header">
+        <button class="theme-toggle" aria-label="Toggle Light / Dark / Auto color theme">
+          <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+          <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+          <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+          <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+        </button>
+      </div>
+      <label class="toc-overlay-icon toc-header-icon" for="__toc">
+        <span class="icon"><svg><use href="#svg-toc"></use></svg></span>
+      </label>
+    </div>
+  </header>
+  <aside class="sidebar-drawer">
+    <div class="sidebar-container">
+      
+      <div class="sidebar-sticky"><a class="sidebar-brand" href="../index.html">
+  
+  <span class="sidebar-brand-text">compiletools 8.2.3</span>
+  
+</a><form class="sidebar-search-container" method="get" action="../search.html" role="search">
+  <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
+  <input type="hidden" name="check_keywords" value="yes">
+  <input type="hidden" name="area" value="default">
+</form>
+<div id="searchbox"></div><div class="sidebar-scroll"><div class="sidebar-tree">
+  <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1 current has-children"><a class="reference internal" href="../tools.html">Tools</a><input aria-label="Toggle navigation of Tools" checked="" class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" role="switch" type="checkbox"/><label for="toctree-checkbox-1"><span class="icon"><svg><use href="#svg-arrow-right"></use></svg></span></label><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="ct-backends.html">ct-backends</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-build.html">ct-build</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-build-docs.html">ct-build-docs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-build-dynamic-library.html">ct-build-dynamic-library</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-build-static-library.html">ct-build-static-library</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-cake.html">ct-cake</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-cleanup-locks.html">ct-cleanup-locks</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-commandline.html">ct-commandline</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-compilation-database.html">ct-compilation-database</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-config.html">ct-config</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-cppdeps.html">ct-cppdeps</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-create-makefile.html">ct-create-makefile</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-doc.html">compiletools</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-filelist.html">ct-filelist</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-findtargets.html">ct-findtargets</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-git-sha-report.html">ct-git-sha-report</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-gitroot.html">ct-gitroot</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-headertree.html">ct-headertree</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-jobs.html">ct-jobs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-list-backends.html">ct-list-backends</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-list-variants.html">ct-list-variants</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-lock-helper.html">ct-lock-helper</a></li>
+<li class="toctree-l2 current current-page"><a class="current reference internal" href="#">ct-magicflags</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-pytest-monitor.html">ct-pytest-monitor</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-release.html">ct-release</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-termux-install.html">ct-termux-install</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-timing-report.html">ct-timing-report</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-trim-cache.html">ct-trim-cache</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ct-watch-build.html">ct-watch-build</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../contributing.html">Contributing</a></li>
+</ul>
+
+</div>
+</div>
+
+      </div>
+      
+    </div>
+  </aside>
+  <div class="main">
+    <div class="content">
+      <div class="article-container">
+        <a href="#" class="back-to-top muted-link">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8v12z"></path>
+          </svg>
+          <span>Back to top</span>
+        </a>
+        <div class="content-icon-container">
+          <div class="view-this-page">
+  <a class="muted-link" href="../_sources/_generated/ct-magicflags.rst.txt" title="View this page">
+    <svg><use href="#svg-eye"></use></svg>
+    <span class="visually-hidden">View this page</span>
+  </a>
+</div>
+<div class="theme-toggle-container theme-toggle-content">
+            <button class="theme-toggle" aria-label="Toggle Light / Dark / Auto color theme">
+              <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+              <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+              <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+              <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+            </button>
+          </div>
+          <label class="toc-overlay-icon toc-content-icon" for="__toc">
+            <span class="icon"><svg><use href="#svg-toc"></use></svg></span>
+          </label>
+        </div>
+        <article role="main" id="furo-main-content">
+          <section id="ct-magicflags">
+<h1>ct-magicflags<a class="headerlink" href="#ct-magicflags" title="Link to this heading">¶</a></h1>
+<section id="show-the-magic-flags-magic-comments-that-a-file-exports">
+<h2>Show the magic flags / magic comments that a file exports<a class="headerlink" href="#show-the-magic-flags-magic-comments-that-a-file-exports" title="Link to this heading">¶</a></h2>
+<dl class="field-list simple">
+<dt class="field-odd">Author<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="mailto:drgeoffathome&#37;&#52;&#48;gmail&#46;com">drgeoffathome<span>&#64;</span>gmail<span>&#46;</span>com</a></p>
+</dd>
+<dt class="field-even">Date<span class="colon">:</span></dt>
+<dd class="field-even"><p>2018-02-23</p>
+</dd>
+<dt class="field-odd">Copyright<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Copyright (C) 2011-2018 Zomojo Pty Ltd</p>
+</dd>
+<dt class="field-even">Version<span class="colon">:</span></dt>
+<dd class="field-even"><p>8.2.3</p>
+</dd>
+<dt class="field-odd">Manual section<span class="colon">:</span></dt>
+<dd class="field-odd"><p>1</p>
+</dd>
+<dt class="field-even">Manual group<span class="colon">:</span></dt>
+<dd class="field-even"><p>developers</p>
+</dd>
+</dl>
+<section id="synopsis">
+<h3>SYNOPSIS<a class="headerlink" href="#synopsis" title="Link to this heading">¶</a></h3>
+<dl class="simple">
+<dt>ct-magicflags [-h] [-c CONFIG_FILE] [–headerdeps {direct,cpp}]</dt><dd><p>[–variant VARIANT] [-v] [-q] [–version] [-?]
+[–ID ID] [–CPP CPP] [–CC CC]
+[–CXX CXX] [–CPPFLAGS CPPFLAGS] [–CXXFLAGS CXXFLAGS]
+[–CFLAGS CFLAGS] [–git-root | –no-git-root]
+[–include [INCLUDE [INCLUDE …]]]
+[–shorten | –no-shorten] [–magic {cpp,direct}]
+[–style {null,pretty}]
+filename [filename …]</p>
+</dd>
+</dl>
+</section>
+<section id="description">
+<h3>DESCRIPTION<a class="headerlink" href="#description" title="Link to this heading">¶</a></h3>
+<p>ct-magicflags extracts the magic flags/magic comments from a given file.
+It is mostly used for debugging purposes so that you can see what the
+other compiletools will be using as the magic flags.  A magic flag /
+magic comment is simply a C++ style comment that provides information
+required to complete the build process.</p>
+<p>compiletools works very differently to other build systems, because
+compiletools expects that the compiler/link flags will be directly in the
+source code. For example, if you have written your own “compress.hpp” that
+requires linking against libzip you would normally specify “-lzip” in your
+Makefile (or build system) on the link line.  However, compiletools based
+applications add the following comment in the file that includes:</p>
+<div class="highlight-cpp notranslate"><div class="highlight"><pre><span></span><span class="c1">//#LDFLAGS=-lzip</span>
+</pre></div>
+</div>
+<p>For easy maintainence, it is convenient to put the magic flag directly after
+the include:</p>
+<div class="highlight-cpp notranslate"><div class="highlight"><pre><span></span><span class="cp">#include</span><span class="w"> </span><span class="cpf">&lt;zip.h&gt;</span>
+<span class="c1">//#LDFLAGS=-lzip</span>
+</pre></div>
+</div>
+<p>Whenever “compress.hpp” is included (either directly or indirectly), the
+“-lzip” will be automatically added to the link step. If you stop using the
+header, for a particular executable, compiletools will figure that out and
+stop linking against libzip.</p>
+<p>If you want to compile a cpp file with a particular optimization enabled you
+would add something like:</p>
+<div class="highlight-cpp notranslate"><div class="highlight"><pre><span></span><span class="c1">//#CXXFLAGS=-fstrict-aliasing</span>
+</pre></div>
+</div>
+<p>Because the code and build flags are defined so close to each other, it is
+much easier to tweak the compilation locally and allow for easier maintainence.</p>
+</section>
+<section id="using-pkg-config">
+<h3>Using PKG-CONFIG<a class="headerlink" href="#using-pkg-config" title="Link to this heading">¶</a></h3>
+<p>Instead of manually specifying compiler and linker flags, you can use pkg-config
+to automatically extract the correct flags for a library. For example, with zlib:</p>
+<div class="highlight-cpp notranslate"><div class="highlight"><pre><span></span><span class="c1">//#PKG-CONFIG=zlib</span>
+<span class="cp">#include</span><span class="w"> </span><span class="cpf">&lt;zlib.h&gt;</span>
+</pre></div>
+</div>
+<p>This single line automatically adds both the compilation flags (from <code class="docutils literal notranslate"><span class="pre">pkg-config</span> <span class="pre">--cflags</span> <span class="pre">zlib</span></code>)
+and link flags (from <code class="docutils literal notranslate"><span class="pre">pkg-config</span> <span class="pre">--libs</span> <span class="pre">zlib</span></code>) to your build. This approach is
+preferred over manual <code class="docutils literal notranslate"><span class="pre">LDFLAGS</span></code> because:</p>
+<ul class="simple">
+<li><p>It’s more portable across different systems and distributions</p></li>
+<li><p>It automatically includes the correct include paths</p></li>
+<li><p>It handles library dependencies correctly</p></li>
+<li><p>It adapts to different installation locations</p></li>
+</ul>
+<p>The PKG-CONFIG magic flag works with any library that provides a .pc file,
+including common libraries like gtk+-3.0, libpng, libcurl, openssl, and many more.</p>
+<section id="project-level-pkg-config-overrides">
+<h4>Project-Level PKG-CONFIG Overrides<a class="headerlink" href="#project-level-pkg-config-overrides" title="Link to this heading">¶</a></h4>
+<p>If your project needs custom or patched <code class="docutils literal notranslate"><span class="pre">.pc</span></code> files (e.g., to pin a library
+version, override flags, or provide a package that isn’t installed system-wide),
+place them in <code class="docutils literal notranslate"><span class="pre">ct.conf.d/pkgconfig/</span></code> at the root of your git repository:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">myproject</span><span class="o">/</span>
+    <span class="n">ct</span><span class="o">.</span><span class="n">conf</span><span class="o">.</span><span class="n">d</span><span class="o">/</span>
+        <span class="n">pkgconfig</span><span class="o">/</span>
+            <span class="n">zlib</span><span class="o">.</span><span class="n">pc</span>        <span class="c1"># overrides the system zlib.pc</span>
+            <span class="n">mylib</span><span class="o">.</span><span class="n">pc</span>       <span class="c1"># provides a package not installed system-wide</span>
+    <span class="n">src</span><span class="o">/</span>
+        <span class="n">main</span><span class="o">.</span><span class="n">cpp</span>
+</pre></div>
+</div>
+<p>compiletools prepends this directory to <code class="docutils literal notranslate"><span class="pre">PKG_CONFIG_PATH</span></code> before any
+pkg-config invocation, so project-level <code class="docutils literal notranslate"><span class="pre">.pc</span></code> files take priority over
+system-installed ones. This follows the same layering principle as the rest
+of the configuration system (project config overrides system config).</p>
+<p>In monorepos, a subdirectory can have its own <code class="docutils literal notranslate"><span class="pre">ct.conf.d/pkgconfig/</span></code> that
+takes priority over the repo-wide one. When <code class="docutils literal notranslate"><span class="pre">ct-cake</span></code> is invoked from a
+subdirectory that contains <code class="docutils literal notranslate"><span class="pre">ct.conf.d/pkgconfig/</span></code>, the resulting
+<code class="docutils literal notranslate"><span class="pre">PKG_CONFIG_PATH</span></code> priority is:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">cwd</span><span class="o">/</span><span class="n">ct</span><span class="o">.</span><span class="n">conf</span><span class="o">.</span><span class="n">d</span><span class="o">/</span><span class="n">pkgconfig</span><span class="o">/</span>  <span class="o">&gt;</span>  <span class="n">gitroot</span><span class="o">/</span><span class="n">ct</span><span class="o">.</span><span class="n">conf</span><span class="o">.</span><span class="n">d</span><span class="o">/</span><span class="n">pkgconfig</span><span class="o">/</span>  <span class="o">&gt;</span>  <span class="n">system</span>
+</pre></div>
+</div>
+<p>This lets subprojects override repo-wide <code class="docutils literal notranslate"><span class="pre">.pc</span></code> files without shell-script
+workarounds.</p>
+<p>For one-off overrides that cannot be committed (e.g., CI pipelines, temporary
+debugging, or machine-specific paths), use the <code class="docutils literal notranslate"><span class="pre">--prepend-PKG-CONFIG-PATH</span></code>
+and <code class="docutils literal notranslate"><span class="pre">--append-PKG-CONFIG-PATH</span></code> command-line flags. The complete priority
+order is:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>--prepend-PKG-CONFIG-PATH  &gt;  cwd/ct.conf.d/pkgconfig/  &gt;  gitroot/ct.conf.d/pkgconfig/  &gt;  $PKG_CONFIG_PATH  &gt;  --append-PKG-CONFIG-PATH
+</pre></div>
+</div>
+<p>Use <code class="docutils literal notranslate"><span class="pre">--prepend-PKG-CONFIG-PATH</span></code> to override all project and system paths
+(e.g., <code class="docutils literal notranslate"><span class="pre">ct-cake</span> <span class="pre">--prepend-PKG-CONFIG-PATH=/opt/custom/pkgconfig</span></code> to test
+a patched version). Use <code class="docutils literal notranslate"><span class="pre">--append-PKG-CONFIG-PATH</span></code> as a fallback for
+system-wide or user-local package paths not in the environment.</p>
+</section>
+</section>
+<section id="cppflags-and-cxxflags-unification">
+<h3>CPPFLAGS and CXXFLAGS Unification<a class="headerlink" href="#cppflags-and-cxxflags-unification" title="Link to this heading">¶</a></h3>
+<p>By default, <code class="docutils literal notranslate"><span class="pre">CPPFLAGS</span></code> and <code class="docutils literal notranslate"><span class="pre">CXXFLAGS</span></code> magic flags are merged into a single
+deduplicated set. A flag set via <code class="docutils literal notranslate"><span class="pre">//#CPPFLAGS=</span></code> is also applied as a CXXFLAGS
+and vice versa. Use <code class="docutils literal notranslate"><span class="pre">--separate-flags-CPP-CXX</span></code> on the command line to keep
+them separate.</p>
+</section>
+<section id="valid-magic-flags">
+<h3>VALID MAGIC FLAGS<a class="headerlink" href="#valid-magic-flags" title="Link to this heading">¶</a></h3>
+<p>A magic flag follows the pattern <code class="docutils literal notranslate"><span class="pre">//#key=value</span></code>. Whitespace around the
+equal sign is acceptable.</p>
+<p>The known magic flags are:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>===========  ==============================================================
+Key          Description
+===========  ==============================================================
+CPPFLAGS     C Pre Processor flags
+CFLAGS       C compiler flags
+CXXFLAGS     C++ flags (do not confuse these with the C PreProcessor flags)
+INCLUDE      Specify include paths without &quot;-I&quot;.
+             Adds the path to CPPFLAGS, CFLAGS and CXXFLAGS.
+LDFLAGS      Linker flags
+LINKFLAGS    Linker flags (deprecated, use LDFLAGS)
+SOURCE       Inject an extra source file into the list of files to be built.
+             This is most commonly used in cross platform work.
+PKG-CONFIG   Extract the cflags and libs using pkg-config.
+             Multiple packages on one line (``PKG-CONFIG=a b``)
+             create hard link-order constraints between them.
+PCH          Precompiled header. Specifies a header to precompile into a
+             .gch file. The path is resolved relative to the source file.
+READMACROS   Read macro definitions from specified file before evaluating
+             conditional compilation. Useful for system headers.
+===========  ==============================================================
+</pre></div>
+</div>
+<p><strong>Note:</strong> Magic flags with arbitrary keys (not listed above) are also accepted
+and will be passed through to the output. This will allow for project-specific
+extensions in the future.</p>
+<section id="multi-package-pkg-config">
+<h4>Multi-Package PKG-CONFIG<a class="headerlink" href="#multi-package-pkg-config" title="Link to this heading">¶</a></h4>
+<p>When a source file depends on multiple packages <em>and their relative link order
+matters</em>, list them in a single annotation:</p>
+<div class="highlight-cpp notranslate"><div class="highlight"><pre><span></span><span class="c1">//#PKG-CONFIG=libssh2 numa</span>
+</pre></div>
+</div>
+<p>This tells compiletools that <code class="docutils literal notranslate"><span class="pre">libssh2</span></code> must be linked <strong>before</strong> <code class="docutils literal notranslate"><span class="pre">numa</span></code>.
+The ordering is treated as a <strong>hard constraint</strong> — it will never be
+silently discarded, and contradictory hard constraints between files
+are reported as a cyclic-dependency error.</p>
+<p>Compare this with two separate single-package annotations:</p>
+<div class="highlight-cpp notranslate"><div class="highlight"><pre><span></span><span class="c1">//#PKG-CONFIG=libssh2</span>
+<span class="c1">//#PKG-CONFIG=numa</span>
+</pre></div>
+</div>
+<p>Here each package’s <code class="docutils literal notranslate"><span class="pre">pkg-config</span> <span class="pre">--libs</span></code> output is collected independently.
+The ordering between <code class="docutils literal notranslate"><span class="pre">libssh2</span></code> and <code class="docutils literal notranslate"><span class="pre">numa</span></code> flags is a <strong>soft constraint</strong>
+— if another file’s pkg-config output implies the opposite order (common
+with shared transitive dependencies like <code class="docutils literal notranslate"><span class="pre">-lssl</span></code>/<code class="docutils literal notranslate"><span class="pre">-lcrypto</span></code>), compiletools
+cancels both directions and picks a deterministic order instead of raising an
+error.</p>
+<p><strong>Rule of thumb:</strong> use a single multi-package annotation when you know the
+link order matters; use separate annotations when you just need both
+packages and don’t care about their relative order.</p>
+</section>
+<section id="library-link-order-resolution">
+<h4>Library Link-Order Resolution<a class="headerlink" href="#library-link-order-resolution" title="Link to this heading">¶</a></h4>
+<p>When multiple source files contribute <code class="docutils literal notranslate"><span class="pre">LDFLAGS</span></code> or <code class="docutils literal notranslate"><span class="pre">PKG-CONFIG</span></code> flags,
+compiletools merges the <code class="docutils literal notranslate"><span class="pre">-l</span></code> flags using a topological sort:</p>
+<ol class="arabic simple">
+<li><p>Each file’s flag list defines pairwise ordering constraints
+(<code class="docutils literal notranslate"><span class="pre">-la</span> <span class="pre">-lb</span></code> means <code class="docutils literal notranslate"><span class="pre">a</span></code> before <code class="docutils literal notranslate"><span class="pre">b</span></code>).</p></li>
+<li><p>Constraints from single-package <code class="docutils literal notranslate"><span class="pre">PKG-CONFIG</span></code> or plain <code class="docutils literal notranslate"><span class="pre">LDFLAGS</span></code> are
+<strong>soft</strong>.  If two files disagree on the order of the same pair, both
+edges are cancelled — this commonly happens when different packages
+list shared transitive dependencies in different orders.</p></li>
+<li><p>Constraints from multi-package <code class="docutils literal notranslate"><span class="pre">PKG-CONFIG</span></code> annotations are <strong>hard</strong>.
+A hard edge always wins over a soft edge for the same pair.</p></li>
+<li><p>If a genuine cycle remains after cancellation (e.g., two multi-package
+annotations asserting opposite orders), compiletools reports a
+<code class="docutils literal notranslate"><span class="pre">Cyclic</span> <span class="pre">library</span> <span class="pre">dependency</span></code> error with the cycle path and the
+contributing source files.</p></li>
+</ol>
+</section>
+</section>
+<section id="important-library-linking">
+<h3>IMPORTANT: Library Linking<a class="headerlink" href="#important-library-linking" title="Link to this heading">¶</a></h3>
+<p>compiletools does <strong>not</strong> automatically detect library requirements from includes.
+For example, <code class="docutils literal notranslate"><span class="pre">#include</span> <span class="pre">&lt;pthread.h&gt;</span></code> does NOT automatically add <code class="docutils literal notranslate"><span class="pre">-lpthread</span></code>.
+All library linking must be explicitly specified using either:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">//#LDFLAGS=-lpthread</span></code> for direct library specification</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">//#PKG-CONFIG=libname</span></code> for pkg-config managed libraries</p></li>
+</ul>
+</section>
+<section id="using-readmacros">
+<h3>Using READMACROS<a class="headerlink" href="#using-readmacros" title="Link to this heading">¶</a></h3>
+<p>The READMACROS magic flag allows extracting macro definitions from a file
+before evaluating conditional compilation. This is useful when magic flags
+depend on macros defined in system headers that aren’t in the include path.</p>
+<div class="highlight-cpp notranslate"><div class="highlight"><pre><span></span><span class="cp">#include</span><span class="w"> </span><span class="cpf">&lt;fake_system_include/system/version.h&gt;</span>
+<span class="c1">//#READMACROS=fake_system_include/system/version.h</span>
+
+<span class="cp">#if SYSTEM_VERSION_MAJOR &gt;= 2</span>
+<span class="c1">//#CPPFLAGS=-DSYSTEM_ENABLE_V2</span>
+<span class="cp">#else</span>
+<span class="c1">//#CPPFLAGS=-DUSE_LEGACY_API</span>
+<span class="cp">#endif</span>
+</pre></div>
+</div>
+<p>The file path is resolved relative to the source file containing the READMACROS
+flag, or as an absolute path if specified.</p>
+</section>
+<section id="using-pch-precompiled-headers">
+<h3>Using PCH (Precompiled Headers)<a class="headerlink" href="#using-pch-precompiled-headers" title="Link to this heading">¶</a></h3>
+<p>The PCH magic flag marks a header for precompilation. The build system
+compiles the header into a <code class="docutils literal notranslate"><span class="pre">.gch</span></code> file and ensures it is built before any
+source that references it.</p>
+<div class="highlight-cpp notranslate"><div class="highlight"><pre><span></span><span class="c1">//#PCH=stdafx.h</span>
+<span class="cp">#include</span><span class="w"> </span><span class="cpf">&quot;stdafx.h&quot;</span>
+
+<span class="kt">int</span><span class="w"> </span><span class="nf">main</span><span class="p">()</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+</pre></div>
+</div>
+<p>The header path is resolved relative to the source file containing the
+annotation, matching SOURCE semantics. Absolute paths are also accepted.</p>
+</section>
+<section id="examples">
+<h3>EXAMPLES<a class="headerlink" href="#examples" title="Link to this heading">¶</a></h3>
+<ul class="simple">
+<li><p>ct-magicflags main.cpp</p></li>
+<li><p>ct-magicflags –variant=release main.cpp</p></li>
+</ul>
+</section>
+<section id="see-also">
+<h3>SEE ALSO<a class="headerlink" href="#see-also" title="Link to this heading">¶</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">compiletools</span></code> (1), <code class="docutils literal notranslate"><span class="pre">ct-cake</span></code> (1)</p>
+</section>
+</section>
+</section>
+
+        </article>
+      </div>
+      <footer>
+        
+        <div class="related-pages">
+          <a class="next-page" href="ct-pytest-monitor.html">
+              <div class="page-info">
+                <div class="context">
+                  <span>Next</span>
+                </div>
+                <div class="title">ct-pytest-monitor</div>
+              </div>
+              <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
+            </a>
+          <a class="prev-page" href="ct-lock-helper.html">
+              <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
+              <div class="page-info">
+                <div class="context">
+                  <span>Previous</span>
+                </div>
+                
+                <div class="title">ct-lock-helper</div>
+                
+              </div>
+            </a>
+        </div>
+        <div class="bottom-of-page">
+          <div class="left-details">
+            <div class="copyright">
+                Copyright &#169; 2026, DrGeoff
+            </div>
+            Made with <a href="https://www.sphinx-doc.org/">Sphinx</a> and <a class="muted-link" href="https://pradyunsg.me">@pradyunsg</a>'s
+            
+            <a href="https://github.com/pradyunsg/furo">Furo</a>
+            
+          </div>
+          <div class="right-details">
+            
+          </div>
+        </div>
+        
+      </footer>
+    </div>
+    <aside class="toc-drawer">
+      
+      
+      <div class="toc-sticky toc-scroll">
+        <div class="toc-title-container">
+          <span class="toc-title">
+            On this page
+          </span>
+        </div>
+        <div class="toc-tree-container">
+          <div class="toc-tree">
+            <ul>
+<li><a class="reference internal" href="#">ct-magicflags</a><ul>
+<li><a class="reference internal" href="#show-the-magic-flags-magic-comments-that-a-file-exports">Show the magic flags / magic comments that a file exports</a><ul>
+<li><a class="reference internal" href="#synopsis">SYNOPSIS</a></li>
+<li><a class="reference internal" href="#description">DESCRIPTION</a></li>
+<li><a class="reference internal" href="#using-pkg-config">Using PKG-CONFIG</a><ul>
+<li><a class="reference internal" href="#project-level-pkg-config-overrides">Project-Level PKG-CONFIG Overrides</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#cppflags-and-cxxflags-unification">CPPFLAGS and CXXFLAGS Unification</a></li>
+<li><a class="reference internal" href="#valid-magic-flags">VALID MAGIC FLAGS</a><ul>
+<li><a class="reference internal" href="#multi-package-pkg-config">Multi-Package PKG-CONFIG</a></li>
+<li><a class="reference internal" href="#library-link-order-resolution">Library Link-Order Resolution</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#important-library-linking">IMPORTANT: Library Linking</a></li>
+<li><a class="reference internal" href="#using-readmacros">Using READMACROS</a></li>
+<li><a class="reference internal" href="#using-pch-precompiled-headers">Using PCH (Precompiled Headers)</a></li>
+<li><a class="reference internal" href="#examples">EXAMPLES</a></li>
+<li><a class="reference internal" href="#see-also">SEE ALSO</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+          </div>
+        </div>
+      </div>
+      
+      
+    </aside>
+  </div>
+</div><script src="../_static/documentation_options.js?v=2231f592"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/scripts/furo.js?v=46bd48cc"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    </body>
+</html>

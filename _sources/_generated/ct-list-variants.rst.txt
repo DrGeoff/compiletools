@@ -1,0 +1,1 @@
+.. include:: ../../src/compiletools/README.ct-list-variants.rst
