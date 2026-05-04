@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# ct-pytest-monitor -- run pytest with crash-survivable diagnostics.
+#
+# On constrained devices (notably Termux on Android), the kernel OOM-killer
+# can SIGKILL the entire shell mid-test. This script monitors test progress
+# and host memory and writes both to disk -- before each kill arrives -- so
+# post-mortem inspection can identify the offending test and the memory
+# pressure leading up to it. It does NOT retry crashed runs or stress the
+# system; it is a single pytest invocation with durable side channels.
+#
+# What gets written to the log directory:
+#
+#   checkpoint.log -- one line per test, fsync'd BEFORE the test body runs.
+#                     The last line is the test that was running when the
+#                     kernel killed us.
+#   pytest.log     -- full unbuffered pytest output (verbose).
+#   meminfo.log    -- /proc/meminfo + top RSS consumers, sampled periodically.
+#   system.log     -- one-shot snapshot of host state at startup.
+#   summary.log    -- post-run summary (last test seen, final memory state).
+#
+# Run from anywhere; the script auto-detects the repo root from its own
+# location.
+set -euo pipefail
+
+SCRIPT_NAME=$(basename "$0")
+SCRIPT_DIR=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+
+if [[ -f "/usr/share/doc/compiletools/README.${SCRIPT_NAME}.rst" ]]; then
+    README_PATH="/usr/share/doc/compiletools/README.${SCRIPT_NAME}.rst"
+else
+    README_PATH="${REPO_ROOT}/src/compiletools/README.${SCRIPT_NAME}.rst"
+fi
+
+# ---------- options --------------------------------------------------------
+
+LOG_DIR=""
+INTERVAL=2
+PYTEST_ARGS=()
+
+show_help() {
+    echo "Usage: ${SCRIPT_NAME} [--logdir DIR] [--interval SECONDS] [-h|--help] [-- pytest args...]"
+    echo ""
+    if [[ -f "$README_PATH" ]]; then
+        cat "$README_PATH"
+    else
+        echo "No documentation available for ${SCRIPT_NAME}"
+        echo "See: https://github.com/drgeoffathome/compiletools"
+    fi
+    exit 0
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --logdir)   LOG_DIR="$2"; shift 2 ;;
+        --interval) INTERVAL="$2"; shift 2 ;;
+        -h|--help)  show_help ;;
+        --)         shift; PYTEST_ARGS+=("$@"); break ;;
+        *)          PYTEST_ARGS+=("$1"); shift ;;
+    esac
+done
+
+# ---------- log dir --------------------------------------------------------
+
+if [[ -z "$LOG_DIR" ]]; then
+    LOG_DIR="${TMPDIR:-/tmp}/ct-pytest-monitor-$(date +%Y%m%d-%H%M%S)"
+fi
+mkdir -p "$LOG_DIR"
+LOG_DIR=$(cd "$LOG_DIR" && pwd)
+
+CHECKPOINT_LOG="${LOG_DIR}/checkpoint.log"
+PYTEST_LOG="${LOG_DIR}/pytest.log"
+MEMINFO_LOG="${LOG_DIR}/meminfo.log"
+SYSTEM_LOG="${LOG_DIR}/system.log"
+SUMMARY_LOG="${LOG_DIR}/summary.log"
+
+: > "$CHECKPOINT_LOG"
+: > "$PYTEST_LOG"
+: > "$MEMINFO_LOG"
+
+# ---------- one-shot system snapshot ---------------------------------------
+
+{
+    echo "=== ct-pytest-monitor started at $(date -Is) ==="
+    echo "=== uname -a ==="
+    uname -a
+    if [[ -n "${TERMUX_VERSION:-}" ]]; then
+        echo "=== TERMUX_VERSION=${TERMUX_VERSION} ==="
+    fi
+    echo "=== /proc/meminfo (initial) ==="
+    cat /proc/meminfo 2>/dev/null || echo "/proc/meminfo not available"
+    echo "=== free -h ==="
+    free -h 2>/dev/null || true
+    echo "=== python ==="
+    python --version 2>&1 || true
+    echo "=== pytest ==="
+    python -m pytest --version 2>&1 || true
+    echo "=== argv ==="
+    printf '%q ' "${PYTEST_ARGS[@]}"
+    echo
+} > "$SYSTEM_LOG"
+
+# ---------- background memory sampler --------------------------------------
+#
+# Each iteration opens, writes, and closes the log so a hard kill leaves the
+# file flushed up to the last completed sample.
+
+sampler_loop() {
+    while :; do
+        {
+            echo "--- $(date -Is) ---"
+            grep -E '^(MemTotal|MemFree|MemAvailable|Buffers|Cached|SwapTotal|SwapFree|AnonPages|Active|Inactive):' \
+                /proc/meminfo 2>/dev/null || true
+            echo "--- top RSS consumers (pid rss_kb cmd) ---"
+            ps -eo pid,rss,comm --no-headers 2>/dev/null | sort -k2 -nr | head -10 || true
+        } >> "$MEMINFO_LOG"
+        sleep "$INTERVAL"
+    done
+}
+
+sampler_loop &
+SAMPLER_PID=$!
+
+# ---------- cleanup --------------------------------------------------------
+
+cleanup() {
+    local exit_code=$?
+    if kill -0 "$SAMPLER_PID" 2>/dev/null; then
+        kill "$SAMPLER_PID" 2>/dev/null || true
+        wait "$SAMPLER_PID" 2>/dev/null || true
+    fi
+    {
+        echo "=== ct-pytest-monitor ended at $(date -Is) (exit ${exit_code}) ==="
+        echo "=== last test seen (checkpoint tail) ==="
+        tail -n 5 "$CHECKPOINT_LOG" 2>/dev/null || true
+        echo "=== last 20 lines of pytest.log ==="
+        tail -n 20 "$PYTEST_LOG" 2>/dev/null || true
+        echo "=== final /proc/meminfo ==="
+        cat /proc/meminfo 2>/dev/null || true
+    } > "$SUMMARY_LOG"
+    cat <<EOF
+
+ct-pytest-monitor logs in: ${LOG_DIR}
+  checkpoint.log -- last line = test running when shell died
+  pytest.log     -- full pytest output
+  meminfo.log    -- memory snapshots every ${INTERVAL}s
+  system.log     -- initial state
+  summary.log    -- end-of-run summary
+
+If the shell was SIGKILLed: tail -n1 "${CHECKPOINT_LOG}"
+EOF
+    exit "$exit_code"
+}
+trap cleanup EXIT INT TERM
+
+# ---------- run pytest -----------------------------------------------------
+
+cd "$REPO_ROOT"
+
+export CT_PYTEST_CHECKPOINT="$CHECKPOINT_LOG"
+export PYTHONUNBUFFERED=1
+
+# `stdbuf -oL -eL` keeps tee's input line-buffered so each line reaches the
+# log file as soon as pytest emits it. Lines that pass through tee may still
+# be lost on SIGKILL if they sit in tee's userspace buffer; the checkpoint
+# file (fsync'd by the conftest hook) is the authoritative crash record.
+if command -v stdbuf >/dev/null 2>&1; then
+    stdbuf -oL -eL python -u -m pytest -v "${PYTEST_ARGS[@]}" 2>&1 | tee "$PYTEST_LOG"
+else
+    python -u -m pytest -v "${PYTEST_ARGS[@]}" 2>&1 | tee "$PYTEST_LOG"
+fi

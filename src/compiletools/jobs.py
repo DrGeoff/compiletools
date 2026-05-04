@@ -1,59 +1,31 @@
 import os
-import platform
 
 import compiletools.apptools
 
 
-def _determine_system():
-    system = platform.system().lower()
-    if platform.system() == "Linux":
-        try:
-            # A Termux fingerprint is that it
-            # doesn't have permissions for /proc/stat
-            os.stat("/proc/stat")
-        except PermissionError:
-            system = "termux"
-    return system
-
-
-def _cpus_linux():
-    import psutil
-
-    thisprocess = psutil.Process()
-    return len(thisprocess.cpu_affinity())
-
-
-def _cpus_termux():
-    # Termux can't import psutil without double exceptions
-    # which is why we use nproc
-    import subprocess
-
-    return subprocess.run(
-        ["nproc"],
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.rstrip()
-
-
-def _cpus_darwin():
-    # psutil isn't supported on Darwin and
-    # nproc isn't installed by default
-    import subprocess
-
-    return subprocess.run(
-        ["sysctl", "-n", "hw.ncpu"],
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.rstrip()
-
-
 def _cpu_count():
-    try:
-        cpu_func = globals()["_".join(["_cpus", _determine_system()])]
-        return cpu_func()
-    except Exception:
-        # A safe-ish default even for phones
-        return 4
+    # Python 3.13+: os.process_cpu_count() honours sched_getaffinity on Linux
+    # and falls back to os.cpu_count() elsewhere — exactly the semantics we want
+    # for build-tool parallelism inside cgroups, taskset, slurm, etc.
+    process_cpu_count = getattr(os, "process_cpu_count", None)
+    if process_cpu_count is not None:
+        count = process_cpu_count()
+        if count is None:
+            raise RuntimeError("os.process_cpu_count() could not determine CPU count")
+        return count
+
+    # Pre-3.13 Linux: do it ourselves. PyPy historically lacked sched_getaffinity.
+    sched_getaffinity = getattr(os, "sched_getaffinity", None)
+    if sched_getaffinity is not None:
+        try:
+            return len(sched_getaffinity(0))
+        except OSError:
+            pass
+
+    count = os.cpu_count()
+    if count is None:
+        raise RuntimeError("os.cpu_count() could not determine CPU count")
+    return count
 
 
 def add_arguments(cap):

@@ -1,71 +1,57 @@
-import os
-import platform
-
 import compiletools.jobs as jobs
 
 
-def test_cpu_count_handles_platform_errors(monkeypatch):
-    """_cpu_count falls back to 4 when platform function raises."""
+def test_cpu_count_uses_process_cpu_count_when_available(monkeypatch):
+    """On Python 3.13+, _cpu_count uses os.process_cpu_count()."""
+    monkeypatch.setattr(jobs.os, "process_cpu_count", lambda: 11, raising=False)
+    assert jobs._cpu_count() == 11
 
-    def failing_cpus():
-        raise PermissionError("cpu_affinity denied")
 
-    monkeypatch.setattr(jobs, "_cpus_linux", failing_cpus)
-    monkeypatch.setattr(jobs, "_determine_system", lambda: "linux")
+def test_cpu_count_process_cpu_count_none_raises(monkeypatch):
+    """When os.process_cpu_count() returns None, _cpu_count raises RuntimeError."""
+    import pytest
+
+    monkeypatch.setattr(jobs.os, "process_cpu_count", lambda: None, raising=False)
+    with pytest.raises(RuntimeError, match="process_cpu_count"):
+        jobs._cpu_count()
+
+
+def test_cpu_count_uses_sched_getaffinity_pre_313(monkeypatch):
+    """Pre-3.13 path: when process_cpu_count is missing, use sched_getaffinity."""
+    monkeypatch.delattr(jobs.os, "process_cpu_count", raising=False)
+    monkeypatch.setattr(jobs.os, "sched_getaffinity", lambda _: {0, 1, 2}, raising=False)
+    assert jobs._cpu_count() == 3
+
+
+def test_cpu_count_sched_getaffinity_oserror_falls_back(monkeypatch):
+    """When sched_getaffinity raises OSError, fall back to os.cpu_count()."""
+    monkeypatch.delattr(jobs.os, "process_cpu_count", raising=False)
+
+    def raises(_):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(jobs.os, "sched_getaffinity", raises, raising=False)
+    monkeypatch.setattr(jobs.os, "cpu_count", lambda: 7)
+    assert jobs._cpu_count() == 7
+
+
+def test_cpu_count_no_process_no_sched(monkeypatch):
+    """When neither process_cpu_count nor sched_getaffinity exists, use os.cpu_count()."""
+    monkeypatch.delattr(jobs.os, "process_cpu_count", raising=False)
+    monkeypatch.delattr(jobs.os, "sched_getaffinity", raising=False)
+    monkeypatch.setattr(jobs.os, "cpu_count", lambda: 4)
     assert jobs._cpu_count() == 4
 
 
-def test_cpu_count_handles_missing_platform(monkeypatch):
-    """_cpu_count falls back to 4 for unknown platforms."""
-    monkeypatch.setattr(jobs, "_determine_system", lambda: "unknown_os")
-    assert jobs._cpu_count() == 4
+def test_cpu_count_all_apis_none_raises(monkeypatch):
+    """When every API returns None and process/sched paths are unavailable, raise."""
+    import pytest
 
-
-def test_determine_system_linux(monkeypatch):
-    """On Linux, _determine_system returns 'linux'."""
-    monkeypatch.setattr(platform, "system", lambda: "Linux")
-    result = jobs._determine_system()
-    # Could be "linux" or "termux" depending on /proc/stat permissions
-    assert result in ("linux", "termux")
-
-
-def test_determine_system_termux(monkeypatch):
-    """On Linux with PermissionError on /proc/stat, returns 'termux'."""
-    monkeypatch.setattr(platform, "system", lambda: "Linux")
-    monkeypatch.setattr(os, "stat", _raise_permission_error)
-    assert jobs._determine_system() == "termux"
-
-
-def _raise_permission_error(path):
-    raise PermissionError("no access")
-
-
-def test_determine_system_darwin(monkeypatch):
-    """On Darwin, _determine_system returns 'darwin'."""
-    monkeypatch.setattr(platform, "system", lambda: "Darwin")
-    assert jobs._determine_system() == "darwin"
-
-
-def test_cpus_termux(monkeypatch):
-    """_cpus_termux calls nproc and returns its output."""
-    import subprocess
-    from unittest.mock import MagicMock
-
-    mock_result = MagicMock()
-    mock_result.stdout = "8\n"
-    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: mock_result)
-    assert jobs._cpus_termux() == "8"
-
-
-def test_cpus_darwin(monkeypatch):
-    """_cpus_darwin calls sysctl and returns its output."""
-    import subprocess
-    from unittest.mock import MagicMock
-
-    mock_result = MagicMock()
-    mock_result.stdout = "10\n"
-    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: mock_result)
-    assert jobs._cpus_darwin() == "10"
+    monkeypatch.delattr(jobs.os, "process_cpu_count", raising=False)
+    monkeypatch.delattr(jobs.os, "sched_getaffinity", raising=False)
+    monkeypatch.setattr(jobs.os, "cpu_count", lambda: None)
+    with pytest.raises(RuntimeError, match="cpu_count"):
+        jobs._cpu_count()
 
 
 def test_cpu_count_success():

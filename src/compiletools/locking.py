@@ -154,10 +154,11 @@ class LockdirLock:
     def _write_pid_file(self):
         """Write hostname:pid:start_time into self.pid_file using plain
         open+rename INSIDE self.lockdir. The start_time is what
-        psutil.Process.create_time() reports for our pid; it lets cleanup
-        detect PID reuse on busy build hosts (a stale lock whose pid is
-        now owned by an unrelated process is correctly identified as
-        stale rather than ACTIVE forever).
+        ``compiletools.lock_utils.get_process_start_time`` returns for our
+        pid (ticks-since-boot in seconds on Linux/Android; None elsewhere);
+        it lets cleanup detect PID reuse on busy build hosts (a stale lock
+        whose pid is now owned by an unrelated process is correctly
+        identified as stale rather than ACTIVE forever).
 
         Raises FileNotFoundError if the lockdir was torn down between our
         mkdir and this call."""
@@ -450,7 +451,9 @@ class CIFSLock:
     def _read_excl_holder(self):
         """Return (hostname, pid, start_time) from lockfile_excl, or
         (None, None, None) if unreadable. Uses host:pid:start_time format,
-        matching LockdirLock."""
+        matching LockdirLock. Rejects pid <= 0 since os.kill(0|-1, 0)
+        targets pgrp/all-procs and would falsely report the holder alive.
+        """
         try:
             with open(self.lockfile_excl) as f:
                 content = f.read().strip()
@@ -458,13 +461,19 @@ class CIFSLock:
                 return None, None, None
             parts = content.split(":", 2)
             if len(parts) == 2:
-                return parts[0], int(parts[1]), None
+                pid = int(parts[1])
+                if pid <= 0:
+                    return None, None, None
+                return parts[0], pid, None
             host, pid_str, st_str = parts
+            pid = int(pid_str)
+            if pid <= 0:
+                return None, None, None
             try:
                 start_time = float(st_str)
             except ValueError:
                 start_time = None
-            return host, int(pid_str), start_time
+            return host, pid, start_time
         except (OSError, ValueError):
             return None, None, None
 
@@ -489,8 +498,9 @@ class CIFSLock:
 
         Algorithm mirrors ct-lock-helper cifs strategy. Adds a stale-holder
         check (Issue #4): a killed peer can leave lockfile_excl behind
-        forever; we identify same-host stale holders via psutil and remove
-        the lockfile_excl so live peers can proceed.
+        forever; we identify same-host stale holders via pid liveness +
+        start_time match and remove the lockfile_excl so live peers can
+        proceed.
         """
         # Ensure parent directory exists
         compiletools.lock_utils.ensure_parent_dir(self.lockfile)

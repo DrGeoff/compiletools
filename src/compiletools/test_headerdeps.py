@@ -183,7 +183,10 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         linux_hpp = self._get_sample_path("platform_has_include/linux_func.hpp")
         windows_hpp = self._get_sample_path("platform_has_include/windows_func.hpp")
 
-        if sys.platform.startswith("linux"):
+        # Any POSIX platform (Linux, macOS, Android/Termux, *BSD) provides
+        # <unistd.h>; only Windows provides <windows.h>. The sample's
+        # __has_include chain checks <windows.h> first, then <unistd.h>.
+        if sys.platform != "win32":
             assert linux_hpp in result_set, f"Expected linux_func.hpp in deps: {result_set}"
             assert windows_hpp not in result_set, f"windows_func.hpp should NOT be in deps: {result_set}"
 

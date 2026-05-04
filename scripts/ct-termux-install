@@ -1,0 +1,282 @@
+#!/usr/bin/env bash
+# ct-termux-install -- bootstrap a compiletools dev environment on Termux.
+#
+# Performs the recipe documented in INSTALL section 6:
+#   1. install required Termux pkgs (clang, nodejs, ruff, uv, git, ...)
+#   2. create a venv if missing
+#   3. install stringzilla with the clang-21+ CFLAGS workaround
+#   4. install compiletools (editable) and dev tooling, EXCLUDING ruff
+#      (ruff is satisfied by the Termux pkg; building it from sdist via
+#      cargo OOM-kills the device at the LTO link stage)
+#
+# Run from anywhere; the script auto-detects the repo root from its own
+# location.
+set -euo pipefail
+
+SCRIPT_NAME=$(basename "$0")
+SCRIPT_DIR=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+
+# Find README: check installed location first, then development location.
+if [[ -f "/usr/share/doc/compiletools/README.${SCRIPT_NAME}.rst" ]]; then
+    README_PATH="/usr/share/doc/compiletools/README.${SCRIPT_NAME}.rst"
+else
+    README_PATH="${REPO_ROOT}/src/compiletools/README.${SCRIPT_NAME}.rst"
+fi
+
+# ---------- options --------------------------------------------------------
+
+SKIP_PKG=0
+SKIP_VENV=0
+DRY_RUN=0
+ASSUME_YES=0
+
+show_help() {
+    echo "Usage: ${SCRIPT_NAME} [--skip-pkg] [--skip-venv] [--dry-run] [-y|--yes] [-h|--help]"
+    echo ""
+    if [[ -f "$README_PATH" ]]; then
+        cat "$README_PATH"
+    else
+        echo "No documentation available for ${SCRIPT_NAME}"
+        echo "See: https://github.com/drgeoffathome/compiletools"
+    fi
+    exit 0
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --skip-pkg)  SKIP_PKG=1 ;;
+        --skip-venv) SKIP_VENV=1 ;;
+        --dry-run)   DRY_RUN=1 ;;
+        -y|--yes)    ASSUME_YES=1 ;;
+        -h|--help)   show_help ;;
+        *)           echo "Error: unknown option: $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+# ---------- helpers --------------------------------------------------------
+
+if [[ -t 1 ]]; then
+    C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'
+    C_BOLD=$'\033[1m'; C_RESET=$'\033[0m'
+else
+    C_RED=''; C_GREEN=''; C_YELLOW=''; C_BOLD=''; C_RESET=''
+fi
+
+info()  { printf '%s==>%s %s\n' "$C_BOLD" "$C_RESET" "$*"; }
+warn()  { printf '%sWARN:%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
+err()   { printf '%sERROR:%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; }
+ok()    { printf '%sOK%s   %s\n' "$C_GREEN" "$C_RESET" "$*"; }
+
+run() {
+    printf '    %s$%s %s\n' "$C_BOLD" "$C_RESET" "$*"
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+        "$@"
+    fi
+}
+
+confirm() {
+    local prompt=$1 answer
+    if [[ "$ASSUME_YES" -eq 1 ]]; then
+        return 0
+    fi
+    read -rp "$prompt [y/N] " answer
+    [[ "${answer,,}" == y || "${answer,,}" == yes ]]
+}
+
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || {
+        err "required command not found: $1"
+        exit 1
+    }
+}
+
+# ---------- preflight ------------------------------------------------------
+
+# Refuse to run anywhere except Termux: the recipe is Termux-specific and
+# would clobber a non-Termux dev environment with the wrong CFLAGS.
+if [[ -z "${TERMUX_VERSION-}" ]] && [[ ! -d /data/data/com.termux ]]; then
+    err "this script is Termux-only (no TERMUX_VERSION env var, no /data/data/com.termux dir)."
+    err "for other platforms, see INSTALL."
+    exit 1
+fi
+
+# Confirm we are sitting in a compiletools checkout.
+if [[ ! -f "$REPO_ROOT/pyproject.toml" ]]; then
+    err "cannot find $REPO_ROOT/pyproject.toml -- is this a compiletools checkout?"
+    exit 1
+fi
+if ! grep -q '^name = "compiletools"' "$REPO_ROOT/pyproject.toml"; then
+    err "$REPO_ROOT/pyproject.toml does not look like compiletools"
+    exit 1
+fi
+
+# Memory check: cargo+rustc routinely needs 3+GB; warn if very tight.
+if command -v free >/dev/null 2>&1; then
+    avail_mb=$(free -m | awk '/^Mem:/ {print $7}')
+    swap_mb=$(free -m  | awk '/^Swap:/ {print $4}')
+    avail_mb=${avail_mb:-0}
+    swap_mb=${swap_mb:-0}
+    if (( avail_mb + swap_mb < 2048 )); then
+        warn "low memory: ${avail_mb}MB available + ${swap_mb}MB free swap"
+        warn "stringzilla compile or pip resolution may OOM. Close other apps."
+        confirm "Continue anyway?" || { err "aborted by user"; exit 1; }
+    fi
+fi
+
+info "compiletools repo root: $REPO_ROOT"
+[[ "$DRY_RUN" -eq 1 ]] && info "DRY RUN -- no commands will be executed"
+
+# ---------- step 1: Termux pkgs --------------------------------------------
+
+# 'ruff' is essential here -- there is no aarch64-android wheel on PyPI,
+# and building from sdist uses cargo+rustc with -C lto=fat which OOMs.
+# 'nodejs' is needed by pyright at runtime.
+# 'clang' is needed to compile stringzilla.
+TERMUX_PKGS=(python clang nodejs ruff uv git)
+
+if [[ "$SKIP_PKG" -eq 1 ]]; then
+    info "skipping pkg install (--skip-pkg)"
+else
+    require_cmd pkg
+    info "installing Termux prerequisites: ${TERMUX_PKGS[*]}"
+    # 'pkg install' is idempotent; already-installed pkgs are no-ops.
+    run pkg install -y "${TERMUX_PKGS[@]}"
+fi
+
+# Whether or not we ran pkg install, the binaries we depend on must now exist.
+if [[ "$DRY_RUN" -eq 0 ]]; then
+    for cmd in clang node ruff uv git python3; do
+        require_cmd "$cmd"
+    done
+    ok "all required tools on PATH"
+fi
+
+# ---------- step 2: venv ---------------------------------------------------
+
+VENV_DIR="$REPO_ROOT/.venv"
+
+if [[ "$SKIP_VENV" -eq 1 ]]; then
+    info "skipping venv creation (--skip-venv)"
+    if [[ "$DRY_RUN" -eq 0 && ! -x "$VENV_DIR/bin/python" ]]; then
+        err "--skip-venv given but $VENV_DIR/bin/python is missing"
+        exit 1
+    fi
+elif [[ -x "$VENV_DIR/bin/python" ]]; then
+    info "reusing existing venv: $VENV_DIR"
+else
+    info "creating venv at $VENV_DIR"
+    run uv venv "$VENV_DIR"
+fi
+
+# Activate. The activation script is bash-compatible and only sets a few env
+# vars, so 'set -u' is fine after sourcing.
+# shellcheck source=/dev/null
+[[ "$DRY_RUN" -eq 0 ]] && source "$VENV_DIR/bin/activate"
+
+# Hardlinks across Termux's bind-mounted home don't always work; copy mode is
+# safe and only marginally slower.
+export UV_LINK_MODE=copy
+
+# ---------- step 3: stringzilla --------------------------------------------
+
+# Clang 21+ promotes two stringzilla source issues from warnings to errors:
+# incompatible function pointer types in the CPython slot tables, and
+# const-discarding free()/realloc()/munmap() calls. Downgrading them keeps
+# the build going; the wheel is functionally correct.
+STRINGZILLA_CFLAGS=(
+    "-Wno-error=incompatible-function-pointer-types"
+    "-Wno-error=incompatible-pointer-types"
+    "-Wno-error=incompatible-pointer-types-discards-qualifiers"
+    "-Wno-incompatible-function-pointer-types"
+)
+
+if [[ "$DRY_RUN" -eq 0 ]] && python -c 'import stringzilla' 2>/dev/null; then
+    sz_ver=$(python -c 'import stringzilla; print(stringzilla.__version__)')
+    info "stringzilla already installed (${sz_ver}); skipping rebuild"
+else
+    info "installing stringzilla with clang-21 CFLAGS workaround"
+    # CFLAGS only need to be live for stringzilla's compile. Save+restore
+    # any pre-existing parent-shell value so we don't clobber it (`unset`
+    # would drop it entirely rather than restoring it).
+    if [[ -v CFLAGS ]]; then
+        _saved_cflags="$CFLAGS"
+        _had_cflags=1
+    else
+        _had_cflags=0
+    fi
+    export CFLAGS="${STRINGZILLA_CFLAGS[*]}"
+    run uv pip install "stringzilla>=4.6.0"
+    if [[ "$_had_cflags" -eq 1 ]]; then
+        export CFLAGS="$_saved_cflags"
+    else
+        unset CFLAGS
+    fi
+    unset _saved_cflags _had_cflags
+fi
+
+# ---------- step 4: compiletools + dev tooling -----------------------------
+
+info "installing compiletools (editable, runtime deps only)"
+run uv pip install -e "$REPO_ROOT"
+
+# DEV deps minus ruff. Ruff is provided by the Termux pkg installed in
+# step 1; do not let pip try to build it from sdist (cargo OOM).
+DEV_PKGS=(
+    bump-my-version
+    pytest
+    pytest-xdist
+    pytest-cov
+    pyright
+    pre-commit
+    textual
+)
+
+info "installing dev tooling (excluding ruff): ${DEV_PKGS[*]}"
+run uv pip install "${DEV_PKGS[@]}"
+
+# ---------- verify ---------------------------------------------------------
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+    ok "dry run complete"
+    exit 0
+fi
+
+info "verifying install"
+
+verify_failed=0
+verify() {
+    local label=$1
+    shift
+    if "$@" >/dev/null 2>&1; then
+        ok "$label"
+    else
+        err "$label FAILED: $*"
+        verify_failed=1
+    fi
+}
+
+verify "stringzilla import"   python -c 'import stringzilla; assert stringzilla.hash(b"abc") != 0'
+verify "compiletools import"  python -c 'import compiletools'
+verify "ruff on PATH"         ruff --version
+verify "pre-commit installed" pre-commit --version
+verify "pytest installed"     pytest --version
+verify "pyright installed"    pyright --version
+
+if [[ "$verify_failed" -ne 0 ]]; then
+    err "one or more verification steps failed; see messages above"
+    exit 1
+fi
+
+cat <<EOF
+
+${C_GREEN}${C_BOLD}Termux dev install complete.${C_RESET}
+
+  Activate the venv:    source $VENV_DIR/bin/activate
+  Install hooks:        pre-commit install
+  Run tests:            pytest -n auto
+
+Note: ruff lives on the system PATH (Termux pkg), not inside the venv.
+Pre-commit hooks and 'ruff check src/compiletools/' will find it normally.
+EOF

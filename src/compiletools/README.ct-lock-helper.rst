@@ -125,7 +125,7 @@ Uses ``mkdir`` for atomic lock acquisition. Works on all POSIX filesystems.
 
 **Stale lock handling:**
 
-- Same-host: Checks if process alive (psutil)
+- Same-host: Checks if process alive (``os.kill(pid, 0)``)
 - Cross-host: Cannot verify, relies on age-based timeout warnings
 
 fcntl (GPFS)

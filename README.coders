@@ -6,6 +6,12 @@ This file contains notes to coders who want to contribute to the project.
 # Install development dependencies
 uv pip install -e ".[dev]"
 
+# On Termux (Android, aarch64), do NOT run the line above as-is. Use:
+scripts/ct-termux-install
+# It handles the clang 21+ stringzilla CFLAGS and avoids the ruff sdist
+# cargo build (which OOM-kills the device). See INSTALL section 6 or
+# `scripts/ct-termux-install --help` for the manual recipe and options.
+
 # Install pre-commit hooks (required for all contributors)
 pre-commit install
 
@@ -64,6 +70,12 @@ pytest src/compiletools/test_utils.py
 
 # Run with verbose output
 pytest src/compiletools -v
+
+# Run pytest with crash-survivable diagnostics (useful on Termux/low-RAM
+# devices where the OOM killer can SIGKILL the whole shell mid-test):
+scripts/ct-pytest-monitor
+# After a crash: tail -n1 /tmp/ct-pytest-monitor-*/checkpoint.log identifies
+# the offending test. See scripts/ct-pytest-monitor --help for full docs.
 
 #
 # Caches/Performance
@@ -139,4 +151,9 @@ worktrees as siblings (e.g., compiletools/profile_worktree_master/).
 #
 # Making a release
 #
+Release-only tooling (twine) lives in the [release] extra so a plain dev
+install stays minimal. Install it before publishing:
+
+uv pip install -e ".[release]"
+
 The ct-release script automates the release process.  Read that script if you want to do each step manually.
