@@ -40,7 +40,7 @@ html_title = f"{project} {release}"
 html_static_path = []  # add "_static" here later if custom CSS appears
 
 
-def _generate_tool_stubs(app):
+def _generate_tool_stubs():
     """Write one .rst stub per src/compiletools/README.ct-*.rst.
 
     Each stub is a single ``.. include::`` directive pointing at the
@@ -65,6 +65,6 @@ def _generate_tool_stubs(app):
         stub.write_text(f".. include:: {rel.as_posix()}\n")
 
 
-def setup(app):
-    _generate_tool_stubs(app)
+def setup(_app):  # pyright: ignore[reportUnusedParameter]  # Sphinx API
+    _generate_tool_stubs()
     return {"version": release, "parallel_read_safe": True}
