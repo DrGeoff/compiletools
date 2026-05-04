@@ -10,7 +10,7 @@ from pathlib import Path
 try:
     import tomllib
 except ImportError:
-    import tomli as tomllib  # Python 3.10 backport
+    import tomli as tomllib  # type: ignore[import-not-found]  # Python 3.10 backport
 
 DOCS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = DOCS_DIR.parent
