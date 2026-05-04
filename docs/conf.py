@@ -4,7 +4,6 @@ Project metadata is pulled from pyproject.toml so the version is never
 duplicated. A small build-time hook generates per-tool stub .rst files
 into docs/_generated/ before the build runs (see Task 5).
 """
-import sys
 import tomllib
 from pathlib import Path
 
