@@ -45,6 +45,11 @@ dev = [
 release = [
     "twine>=5.0.0",
 ]
+docs = [
+    "sphinx>=7",
+    "furo",
+    "sphinx-copybutton",
+]
 
 [project.urls]
 Homepage = "http://drgeoff.github.io/compiletools/"
