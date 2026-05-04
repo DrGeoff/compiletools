@@ -49,6 +49,7 @@ docs = [
     "sphinx>=7",
     "furo",
     "sphinx-copybutton",
+    "tomli; python_version < '3.11'",
 ]
 
 [project.urls]

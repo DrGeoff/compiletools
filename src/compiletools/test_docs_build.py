@@ -1,5 +1,6 @@
 """End-to-end check that the Sphinx docs site builds without warnings."""
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,7 @@ def test_docs_build_clean(tmp_path):
         pytest.fail(f"docs/conf.py not found at {docs_src}")
 
     result = subprocess.run(
-        ["sphinx-build", "-W", "-b", "html", str(docs_src), str(tmp_path)],
+        [sys.executable, "-m", "sphinx", "-W", "-b", "html", str(docs_src), str(tmp_path)],
         capture_output=True,
         text=True,
     )
