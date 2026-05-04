@@ -6,3 +6,4 @@
    :hidden:
 
    tools
+   contributing
