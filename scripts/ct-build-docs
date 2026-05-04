@@ -1,0 +1,52 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+SCRIPT_NAME=$(basename "$0")
+
+# Find README: check installed location first, then development location
+if [[ -f "/usr/share/doc/compiletools/README.${SCRIPT_NAME}.rst" ]]; then
+    README_PATH="/usr/share/doc/compiletools/README.${SCRIPT_NAME}.rst"
+else
+    README_PATH="$(dirname "$(readlink -f "$0")")/../src/compiletools/README.${SCRIPT_NAME}.rst"
+fi
+
+show_help() {
+    echo "Usage: ${SCRIPT_NAME}"
+    echo ""
+    if [[ -f "$README_PATH" ]]; then
+        cat "$README_PATH"
+    else
+        echo "No documentation available for ${SCRIPT_NAME}"
+        echo "See: https://github.com/DrGeoff/compiletools"
+    fi
+    exit 0
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        --help|-h) show_help ;;
+    esac
+done
+
+# Ensure sphinx-build is available
+if ! command -v sphinx-build >/dev/null 2>&1; then
+    echo "Error: sphinx-build not found." >&2
+    echo "Install the [docs] extra:" >&2
+    echo "    uv pip install -e \".[docs]\"" >&2
+    exit 1
+fi
+
+REPO_ROOT="$(git -C "$(dirname "$(readlink -f "$0")")" rev-parse --show-toplevel)"
+DOCS_SRC="${REPO_ROOT}/docs"
+DOCS_OUT="${REPO_ROOT}/docs/_build/html"
+
+if [[ ! -f "${DOCS_SRC}/conf.py" ]]; then
+    echo "Error: ${DOCS_SRC}/conf.py not found" >&2
+    exit 1
+fi
+
+echo "Building docs from ${DOCS_SRC} -> ${DOCS_OUT}"
+sphinx-build -W -b html "${DOCS_SRC}" "${DOCS_OUT}"
+
+echo ""
+echo "Done. Open: ${DOCS_OUT}/index.html"
