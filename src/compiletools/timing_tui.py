@@ -9,7 +9,7 @@ import os
 from typing import TYPE_CHECKING, ClassVar
 
 from textual.app import App, ComposeResult
-from textual.binding import Binding
+from textual.binding import Binding, BindingType
 from textual.widgets import Footer, Header, Tree
 from textual.widgets.tree import TreeNode
 
@@ -70,9 +70,10 @@ class TimingReportApp(App):
     }
     """
 
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "quit", "Quit"),
         Binding("s", "cycle_sort", "Sort"),
+        Binding("v", "show_timeline", "Timeline"),
         Binding("?", "help", "Help"),
     ]
 
@@ -126,9 +127,15 @@ class TimingReportApp(App):
         self._populate(tree.root, self._timer.phases, total)
         tree.root.expand()
 
+    def action_show_timeline(self) -> None:
+        from compiletools.timing_timeline import TimelineScreen
+
+        self.push_screen(TimelineScreen(self._timer))
+
     def action_help(self) -> None:
         self.notify(
-            "Navigation: arrows/j/k  Expand: Enter/Right  Collapse: Left\nSort: [s]  Quit: [q]",
+            "Navigation: arrows/j/k  Expand: Enter/Right  Collapse: Left\n"
+            "Sort: [s]  Timeline: [v]  Quit: [q]",
             title="Help",
             timeout=8,
         )
