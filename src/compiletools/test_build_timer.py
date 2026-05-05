@@ -431,6 +431,98 @@ class TestChromeTrace:
         assert compile_events[0]["args"]["target"] == "obj/foo.o"
         assert compile_events[0]["args"]["source"] == "src/foo.cpp"
 
+    def test_normalizes_mixed_clock_domains(self):
+        """Real traces mix three incompatible clock domains:
+
+          * Make backend:  bash ``EPOCHREALTIME`` (Unix-epoch wall clock,
+            ~1.78e9 s) — written by the recipe wrapper.
+          * Test runner:   Python ``time.monotonic()`` (boot-relative,
+            often ~10^6 s on a long-uptime machine, ~10^3 s on a fresh
+            boot).
+          * Slurm backend: ``sacct`` ISO timestamps (Unix-epoch wall
+            clock).
+
+        A single global offset cannot reconcile these because the
+        clusters are 10^3 s apart in absolute terms.  ``to_chrome_trace``
+        must therefore use a per-phase origin so rule parallelism is
+        preserved within each phase, and stack phases sequentially so
+        the overall timeline stays bounded by total build time.
+
+        Mirror the loaded-from-JSON path because that is where the bug
+        surfaces in practice (``ct-timing-report --chrome-trace`` always
+        loads from disk first)."""
+        wall = 1_777_948_039.7  # realistic EPOCHREALTIME value (~2026)
+        mono = 1_966_176.6  # realistic time.monotonic() value (~22 days uptime)
+        snapshot = {
+            "version": 1,
+            "total_elapsed_s": 0.28,
+            "variant": "gcc.debug",
+            "backend": "make",
+            "phases": [
+                {
+                    "name": "build_execution",
+                    "elapsed_s": 0.27,
+                    "rules": [
+                        {
+                            "name": "a.cpp",
+                            "rule_type": "compile",
+                            "target": "a.o",
+                            "source": "a.cpp",
+                            "elapsed_s": 0.17,
+                            "start_s": wall,
+                            "end_s": wall + 0.17,
+                        },
+                        {
+                            "name": "b.cpp",
+                            "rule_type": "compile",
+                            "target": "b.o",
+                            "source": "b.cpp",
+                            "elapsed_s": 0.20,
+                            "start_s": wall + 0.05,
+                            "end_s": wall + 0.25,
+                        },
+                    ],
+                },
+                {
+                    "name": "test_execution",
+                    "elapsed_s": 0.01,
+                    "rules": [
+                        {
+                            "name": "test_x",
+                            "rule_type": "test",
+                            "target": "bin/test_x",
+                            "source": "bin/test_x",
+                            "elapsed_s": 0.01,
+                            "start_s": mono,
+                            "end_s": mono + 0.01,
+                        },
+                    ],
+                },
+            ],
+        }
+        timer = BuildTimer.from_dict(snapshot)
+        events = timer.to_chrome_trace()
+        # Without normalization, the gap between the wall-clock and
+        # monotonic-clock rules would push max ts to ~1.78e15 µs.  After
+        # normalization every event must fit inside the build's wall
+        # time (0.28 s) plus its own duration.
+        max_ts = max(e["ts"] + e["dur"] for e in events)
+        assert max_ts < 1_000_000, f"ts not normalized across clock domains: max_ts={max_ts}"
+        # Phases must stack sequentially on tid=0.
+        phase_events = [e for e in events if e["cat"] == "phase" and e["name"] != "total"]
+        assert phase_events[0]["name"] == "build_execution"
+        assert phase_events[0]["ts"] == 0.0
+        assert phase_events[1]["name"] == "test_execution"
+        assert abs(phase_events[1]["ts"] - 270_000.0) < 1.0  # after build_execution's 0.27 s
+        # Within build_execution, the second compile started 50 ms after the first.
+        compile_events = sorted((e for e in events if e["cat"] == "compile"), key=lambda e: e["ts"])
+        assert compile_events[0]["ts"] == 0.0
+        assert abs(compile_events[1]["ts"] - 50_000.0) < 1.0
+        # The test rule lands at the start of test_execution, not at
+        # some absurd absolute offset from the wall-clock compile rules.
+        test_event = next(e for e in events if e["cat"] == "test")
+        assert abs(test_event["ts"] - 270_000.0) < 1.0
+
 
 # ----------------------------------------------------------- summary table
 

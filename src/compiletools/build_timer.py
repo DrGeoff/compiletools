@@ -359,14 +359,28 @@ class BuildTimer:
         Returns a list of trace events suitable for wrapping in
         ``{"traceEvents": [...]}`` and viewing in chrome://tracing
         or https://ui.perfetto.dev/.
+
+        The on-disk JSON mixes timestamp scales: phase events serialize
+        without ``start_s`` (deserialized to 0); rule events keep their
+        raw ``start_s`` from whichever ingest path created them — bash
+        ``EPOCHREALTIME`` for make (Unix-epoch wall clock), Python
+        ``time.monotonic()`` for the test runner (boot-relative), and
+        ``sacct`` ISO timestamps for Slurm (Unix-epoch wall clock).
+        Emitting those raw values puts events ~50 years apart on the
+        Perfetto canvas, collapsing the actual build to a sub-pixel
+        sliver.  We instead synthesise a coherent timeline:
+
+          * Phases stack sequentially on ``tid=0`` using their
+            ``elapsed_s`` (matches the order they ran).
+          * Rule children of a phase share a per-phase origin (the
+            smallest positive ``start_s`` among them), so within-phase
+            parallelism stays correct regardless of which clock the
+            ingest path used.
         """
         self.finish()
         events: list[dict[str, Any]] = []
-        # Allocate a fresh, monotonically increasing tid for each rule
-        # event across the whole walk so siblings under different phases
-        # never collide on the same lane.
         tid_counter = [1]
-        self._chrome_trace_walk(self._root, events, tid=0, pid=1, tid_counter=tid_counter)
+        self._chrome_trace_walk(self._root, events, tid=0, pid=1, tid_counter=tid_counter, ts_offset_us=0.0)
         return events
 
     def _chrome_trace_walk(
@@ -376,14 +390,14 @@ class BuildTimer:
         tid: int,
         pid: int,
         tid_counter: list[int],
+        ts_offset_us: float,
     ) -> None:
-        ts_us = event.start_s * 1_000_000
         dur_us = event.elapsed_s * 1_000_000
         trace_event: dict[str, Any] = {
             "name": event.name,
             "cat": event.category,
             "ph": "X",  # complete event
-            "ts": ts_us,
+            "ts": ts_offset_us,
             "dur": dur_us,
             "pid": pid,
             "tid": tid,
@@ -394,16 +408,33 @@ class BuildTimer:
             trace_event.setdefault("args", {})["source"] = event.source
         events.append(trace_event)
 
-        # Phase children stay on the parent's lane; rule children each
-        # get a unique tid from the global counter so unrelated parallel
-        # compiles never overlap visually in Perfetto.
+        # Per-phase rule origin: smallest positive start_s among children.
+        # All rule children under this phase share the same clock domain
+        # (whichever ingest path populated them), so this rebases them to
+        # 0 within the phase and preserves their relative parallelism.
+        rule_starts = [c.start_s for c in event.children if c.category != "phase" and c.start_s > 0]
+        rule_origin_s = min(rule_starts) if rule_starts else 0.0
+
+        cumulative_phase_us = 0.0
         for child in event.children:
             if child.category == "phase":
+                child_ts_offset_us = ts_offset_us + cumulative_phase_us
+                cumulative_phase_us += child.elapsed_s * 1_000_000
                 child_tid = tid
             else:
+                # Rule child: place at parent's ts plus its offset within
+                # the phase's clock domain.  Each rule gets its own tid
+                # so parallel compiles don't overlap visually.
+                if rule_origin_s > 0 and child.start_s > 0:
+                    rel_us = (child.start_s - rule_origin_s) * 1_000_000
+                else:
+                    rel_us = 0.0
+                child_ts_offset_us = ts_offset_us + rel_us
                 child_tid = tid_counter[0]
                 tid_counter[0] += 1
-            self._chrome_trace_walk(child, events, tid=child_tid, pid=pid, tid_counter=tid_counter)
+            self._chrome_trace_walk(
+                child, events, tid=child_tid, pid=pid, tid_counter=tid_counter, ts_offset_us=child_ts_offset_us
+            )
 
     # --------------------------------------------------------- summary table
 
