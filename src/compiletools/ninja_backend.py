@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 
 import compiletools.filesystem_utils
 from compiletools.build_backend import (
@@ -115,8 +116,18 @@ class NinjaBackend(BuildBackend):
         if self.args.verbose >= 1:
             cmd.append("-v")
         cmd.append(target)
+        # Capture monotonic time immediately before invoking ninja so the
+        # build-relative timestamps in .ninja_log can be folded onto this
+        # timer's monotonic timeline (required for a coherent Chrome trace
+        # spanning phases + ninja rules).
+        build_start_mono = time.monotonic() if timer else None
         subprocess.check_call(cmd, text=True)
 
         # Parse timing from newly appended ninja log entries
         if timer:
-            timer.record_rules_from_ninja_log(ninja_log, offset=log_offset, graph=self._graph)
+            timer.record_rules_from_ninja_log(
+                ninja_log,
+                offset=log_offset,
+                graph=self._graph,
+                build_start_mono=build_start_mono,
+            )

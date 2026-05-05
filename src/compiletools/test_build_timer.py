@@ -547,6 +547,30 @@ class TestChromeTrace:
         test_event = next(e for e in events if e["cat"] == "test")
         assert abs(test_event["ts"] - 270_000.0) < 1.0
 
+    def test_ninja_relative_events_share_timeline(self, tmp_path):
+        """Regression: ninja log timestamps are ms relative to the
+        ninja invocation; without folding onto the parent timer's
+        monotonic clock they appear at ts ~ 0us, far below the phase's
+        actual ts.  After the fix, build_start_mono is added on so
+        the ninja rule overlaps the build_execution phase."""
+        timer = BuildTimer(enabled=True, backend="ninja")
+        with timer.phase("build_execution"):
+            mono_at_ninja = time.monotonic()
+            log = tmp_path / ".ninja_log"
+            # ninja v5: <start_ms>\t<end_ms>\t<mtime_ms>\t<output>\t<hash>
+            log.write_text("# ninja log v5\n0\t100\t0\tobj/foo.o\tdeadbeef\n")
+            timer.record_rules_from_ninja_log(str(log), build_start_mono=mono_at_ninja)
+
+        events = timer.to_chrome_trace()
+        compile_ev = next(e for e in events if e["cat"] == "compile")
+        phase_ev = next(e for e in events if e["cat"] == "phase" and e["name"] != "total")
+        # The compile event starts within 1s of the phase start (they
+        # should overlap, since the synthetic ninja log was "captured"
+        # right at phase entry).
+        assert abs(compile_ev["ts"] - phase_ev["ts"]) < 1_000_000, (
+            f"ninja compile ts {compile_ev['ts']} not on same timeline as phase ts {phase_ev['ts']}"
+        )
+
 
 # ----------------------------------------------------------- summary table
 

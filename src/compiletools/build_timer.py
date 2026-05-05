@@ -216,6 +216,7 @@ class BuildTimer:
         log_path: str,
         offset: int = 0,
         graph: BuildGraph | None = None,
+        build_start_mono: float | None = None,
     ) -> None:
         """Parse .ninja_log entries appended after *offset* bytes.
 
@@ -226,6 +227,14 @@ class BuildTimer:
 
         When the same output appears multiple times, only the last
         entry is kept (ninja appends without truncating).
+
+        ``build_start_mono`` is the value of ``time.monotonic()`` captured
+        immediately before invoking ninja.  ninja's log records build-
+        relative milliseconds (start_ms = 0 at ninja's launch); folding
+        ``build_start_mono`` onto each timestamp anchors the rule events
+        on the same monotonic timeline as in-Python phase events, so the
+        Chrome trace lays them out coherently.  If omitted, ninja rules
+        will appear ~50 years before phase events in the trace.
         """
         if not self.enabled:
             return
@@ -233,6 +242,7 @@ class BuildTimer:
             return
 
         source_for_output, type_for_output = self._build_graph_lookups(graph)
+        anchor = build_start_mono or 0.0
 
         entries: dict[str, tuple[int, int, str, str]] = {}
         with open(log_path, encoding="utf-8", errors="replace") as f:
@@ -263,8 +273,8 @@ class BuildTimer:
                 target=output,
                 source=source,
                 elapsed_s=elapsed_s,
-                start_s=start_ms / 1000.0,
-                end_s=end_ms / 1000.0,
+                start_s=start_ms / 1000.0 + anchor,
+                end_s=end_ms / 1000.0 + anchor,
             )
 
     # ------------------------------------------------- make timing parsing
