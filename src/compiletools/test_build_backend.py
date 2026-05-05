@@ -1228,6 +1228,42 @@ class TestRunTests:
 
         mock_run.assert_not_called()
 
+    @patch("subprocess.run")
+    @patch("compiletools.wrappedos.realpath", side_effect=lambda x: x)
+    def test_run_tests_records_per_test_timing(self, mock_realpath, mock_run, tmp_path):
+        """When ``--timing`` is enabled, every test invocation must add a
+        per-test rule on the BuildTimer so the post-build summary breaks
+        ``test_execution`` down per test exe.
+        """
+        from compiletools.build_timer import BuildTimer
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        args = make_backend_args(tmp_path, tests=["/src/test_a.cpp", "/src/test_b.cpp"])
+        backend = self._make_backend(tmp_path, args=args)
+        backend.context.timer = BuildTimer(enabled=True, backend="stub")
+
+        backend._run_tests()
+
+        # _run_tests is called outside any phase context (cake.py wraps
+        # it in a ``test_execution`` phase, but the unit test exercises
+        # _run_tests directly), so rules attach to the root.
+        rules = [c for c in backend.context.timer._root.children if c.category == "test"]
+        assert len(rules) == 2, f"expected 2 per-test rules; got {len(rules)}: {[(r.target, r.category) for r in rules]}"
+        assert {r.target for r in rules} == {f"{tmp_path}/bin/test_a", f"{tmp_path}/bin/test_b"}
+        assert all(r.elapsed_s >= 0 for r in rules)
+
+    @patch("subprocess.run")
+    @patch("compiletools.wrappedos.realpath", side_effect=lambda x: x)
+    def test_run_tests_no_timing_when_disabled(self, mock_realpath, mock_run, tmp_path):
+        """No BuildTimer in context (or disabled) must not raise and must
+        not affect test execution.
+        """
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        backend = self._make_backend(tmp_path)
+        # Default context has no timer; this must not raise.
+        backend._run_tests()
+        mock_run.assert_called_once()
+
 
 class TestExtractLinkopts:
     """extract_linkopts must normalise paths before stripping object files."""

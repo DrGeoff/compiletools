@@ -23,6 +23,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from typing import NamedTuple, TypeVar
 
 import compiletools.filesystem_utils
@@ -619,13 +620,32 @@ class BuildBackend(abc.ABC):
             self._run_tests_sequential(tests_to_run, testprefix)
 
     def _run_single_test(self, exe_path: str, testprefix: str) -> tuple[str, int, str, str]:
-        """Run a single test executable. Returns (exe_path, returncode, stdout, stderr)."""
+        """Run a single test executable. Returns (exe_path, returncode, stdout, stderr).
+
+        When ``--timing`` is enabled, records a per-test rule on the
+        BuildTimer so the post-build report breaks ``test_execution`` down
+        to individual test wall-clock times.  Recording happens inside the
+        worker (which may be a thread under parallel execution); the
+        timer's lock makes ``record_rule`` thread-safe.
+        """
         cmd = []
         if testprefix:
             cmd.extend(testprefix.split())
         cmd.append(exe_path)
 
+        timer = self._timer
+        start = time.monotonic() if timer else 0.0
         result = subprocess.run(cmd, capture_output=True, text=True)
+        if timer:
+            elapsed = time.monotonic() - start
+            timer.record_rule(
+                rule_type="test",
+                target=exe_path,
+                source=exe_path,
+                elapsed_s=elapsed,
+                start_s=start,
+                end_s=start + elapsed,
+            )
         return exe_path, result.returncode, result.stdout, result.stderr
 
     def _run_tests_sequential(self, tests_to_run: list[str], testprefix: str) -> None:

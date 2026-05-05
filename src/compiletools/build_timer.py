@@ -492,7 +492,7 @@ class BuildTimer:
             console = Console(stderr=True, force_terminal=force_terminal)
             console.print(table)
 
-            # Print slowest compilations
+            # Print slowest compilations and tests
             all_rules = self._collect_rules()
             compiles = sorted(
                 [r for r in all_rules if r.category == "compile"],
@@ -502,6 +502,16 @@ class BuildTimer:
                 console.print("\n[bold]Slowest compilations:[/bold]")
                 for rule in compiles[:10]:
                     label = rule.source or rule.target
+                    console.print(f"  {rule.elapsed_s:6.1f}s  {label}")
+
+            tests = sorted(
+                [r for r in all_rules if r.category == "test"],
+                key=lambda r: -r.elapsed_s,
+            )
+            if tests:
+                console.print("\n[bold]Slowest tests:[/bold]")
+                for rule in tests[:10]:
+                    label = rule.target or rule.source
                     console.print(f"  {rule.elapsed_s:6.1f}s  {label}")
         except ImportError:
             pass
