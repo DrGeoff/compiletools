@@ -400,6 +400,37 @@ class TestMakeTimingParsing:
             timer.record_rules_from_make_timing("/nonexistent/log.jsonl")
         assert len(timer._root.children[0].children) == 0
 
+    def test_wall_to_monotonic_conversion(self, tmp_path):
+        """Recipe wrappers write bash $EPOCHREALTIME (wall clock since
+        1970, ~1.78e9 s in 2026), but in-Python record_rule callers use
+        time.monotonic() (boot-relative, often ~10^6 s).  Without
+        conversion the make-recorded rules end up ~1.78e9 s away from
+        rules in the same trace, defeating any single-clock invariant.
+
+        record_rules_from_make_timing must rebase wall-clock timestamps
+        into the monotonic clock domain using the offset captured at
+        BuildTimer init.  Record one rule via the make path and one
+        via the in-Python path under the same phase, then assert their
+        start_s values land within a few seconds of each other."""
+        timer = BuildTimer(enabled=True)
+        wall_ns = int(time.time() * 1_000_000_000)
+        log = tmp_path / ".ct-make-timing.jsonl"
+        log.write_text(
+            f'{{"target":"obj/foo.o","start_ns":{wall_ns},"end_ns":{wall_ns + 100_000_000}}}\n'
+        )
+        with timer.phase("build_execution"):
+            timer.record_rules_from_make_timing(str(log))
+            now = time.monotonic()
+            timer.record_rule("compile", "obj/bar.o", "bar.cpp", 0.05, start_s=now, end_s=now + 0.05)
+
+        phase = timer._root.children[0]
+        make_rule = next(r for r in phase.children if r.target == "obj/foo.o")
+        py_rule = next(r for r in phase.children if r.target == "obj/bar.o")
+        # The make-recorded start_s must be on the monotonic clock,
+        # not the wall clock — i.e. close to the in-Python rule's start_s.
+        gap = abs(make_rule.start_s - py_rule.start_s)
+        assert gap < 1.0, f"clocks not aligned: make={make_rule.start_s} python={py_rule.start_s} gap={gap}s"
+
 
 # --------------------------------------------------------- chrome trace
 
@@ -432,36 +463,30 @@ class TestChromeTrace:
         assert compile_events[0]["args"]["source"] == "src/foo.cpp"
 
     def test_normalizes_mixed_clock_domains(self):
-        """Real traces mix three incompatible clock domains:
+        """All ingest paths now feed monotonic-aligned timestamps:
+        in-Python recorders use ``time.monotonic()`` directly; the
+        make recipe ingest converts bash ``$EPOCHREALTIME`` using the
+        wall-to-monotonic offset captured at ``BuildTimer.__init__``;
+        Slurm sacct timestamps are converted the same way.
 
-          * Make backend:  bash ``EPOCHREALTIME`` (Unix-epoch wall clock,
-            ~1.78e9 s) — written by the recipe wrapper.
-          * Test runner:   Python ``time.monotonic()`` (boot-relative,
-            often ~10^6 s on a long-uptime machine, ~10^3 s on a fresh
-            boot).
-          * Slurm backend: ``sacct`` ISO timestamps (Unix-epoch wall
-            clock).
-
-        A single global offset cannot reconcile these because the
-        clusters are 10^3 s apart in absolute terms.  ``to_chrome_trace``
-        must therefore use a per-phase origin so rule parallelism is
-        preserved within each phase, and stack phases sequentially so
-        the overall timeline stays bounded by total build time.
-
-        Mirror the loaded-from-JSON path because that is where the bug
-        surfaces in practice (``ct-timing-report --chrome-trace`` always
-        loads from disk first)."""
-        wall = 1_777_948_039.7  # realistic EPOCHREALTIME value (~2026)
-        mono = 1_966_176.6  # realistic time.monotonic() value (~22 days uptime)
+        ``to_chrome_trace`` therefore just rebases against the root's
+        ``start_s``.  Verify the round-trip preserves real start times
+        for both phases and rules (no synthesised sequential stacking)
+        — phases land at their actual offsets and within-phase rule
+        parallelism comes through directly."""
+        origin = 1_973_555.799  # realistic time.monotonic() value
         snapshot = {
             "version": 1,
             "total_elapsed_s": 0.28,
             "variant": "gcc.debug",
             "backend": "make",
+            "start_s": origin,
             "phases": [
                 {
                     "name": "build_execution",
                     "elapsed_s": 0.27,
+                    "start_s": origin + 0.01,
+                    "end_s": origin + 0.28,
                     "rules": [
                         {
                             "name": "a.cpp",
@@ -469,8 +494,8 @@ class TestChromeTrace:
                             "target": "a.o",
                             "source": "a.cpp",
                             "elapsed_s": 0.17,
-                            "start_s": wall,
-                            "end_s": wall + 0.17,
+                            "start_s": origin + 0.01,
+                            "end_s": origin + 0.18,
                         },
                         {
                             "name": "b.cpp",
@@ -478,14 +503,16 @@ class TestChromeTrace:
                             "target": "b.o",
                             "source": "b.cpp",
                             "elapsed_s": 0.20,
-                            "start_s": wall + 0.05,
-                            "end_s": wall + 0.25,
+                            "start_s": origin + 0.06,
+                            "end_s": origin + 0.26,
                         },
                     ],
                 },
                 {
                     "name": "test_execution",
                     "elapsed_s": 0.01,
+                    "start_s": origin + 0.27,
+                    "end_s": origin + 0.28,
                     "rules": [
                         {
                             "name": "test_x",
@@ -493,8 +520,8 @@ class TestChromeTrace:
                             "target": "bin/test_x",
                             "source": "bin/test_x",
                             "elapsed_s": 0.01,
-                            "start_s": mono,
-                            "end_s": mono + 0.01,
+                            "start_s": origin + 0.27,
+                            "end_s": origin + 0.28,
                         },
                     ],
                 },
@@ -502,24 +529,21 @@ class TestChromeTrace:
         }
         timer = BuildTimer.from_dict(snapshot)
         events = timer.to_chrome_trace()
-        # Without normalization, the gap between the wall-clock and
-        # monotonic-clock rules would push max ts to ~1.78e15 µs.  After
-        # normalization every event must fit inside the build's wall
-        # time (0.28 s) plus its own duration.
+        # All events fit inside the build's wall time (0.28 s).
         max_ts = max(e["ts"] + e["dur"] for e in events)
-        assert max_ts < 1_000_000, f"ts not normalized across clock domains: max_ts={max_ts}"
-        # Phases must stack sequentially on tid=0.
-        phase_events = [e for e in events if e["cat"] == "phase" and e["name"] != "total"]
-        assert phase_events[0]["name"] == "build_execution"
-        assert phase_events[0]["ts"] == 0.0
-        assert phase_events[1]["name"] == "test_execution"
-        assert abs(phase_events[1]["ts"] - 270_000.0) < 1.0  # after build_execution's 0.27 s
-        # Within build_execution, the second compile started 50 ms after the first.
-        compile_events = sorted((e for e in events if e["cat"] == "compile"), key=lambda e: e["ts"])
-        assert compile_events[0]["ts"] == 0.0
-        assert abs(compile_events[1]["ts"] - 50_000.0) < 1.0
-        # The test rule lands at the start of test_execution, not at
-        # some absurd absolute offset from the wall-clock compile rules.
+        assert max_ts < 1_000_000, f"ts not normalized: max_ts={max_ts}"
+        # The root sits at ts=0 by construction.
+        total = next(e for e in events if e["name"] == "total")
+        assert total["ts"] == 0.0
+        # Phases land at their actual offsets within the build.
+        phases = {e["name"]: e for e in events if e["cat"] == "phase" and e["name"] != "total"}
+        assert abs(phases["build_execution"]["ts"] - 10_000.0) < 1.0
+        assert abs(phases["test_execution"]["ts"] - 270_000.0) < 1.0
+        # Compile rules show their actual relative parallelism.
+        compiles = sorted((e for e in events if e["cat"] == "compile"), key=lambda e: e["ts"])
+        assert abs(compiles[0]["ts"] - 10_000.0) < 1.0
+        assert abs(compiles[1]["ts"] - 60_000.0) < 1.0
+        # The test rule sits at the start of test_execution.
         test_event = next(e for e in events if e["cat"] == "test")
         assert abs(test_event["ts"] - 270_000.0) < 1.0
 

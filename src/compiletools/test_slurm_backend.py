@@ -1979,6 +1979,7 @@ class TestTimingIncludesRetries:
 
         with SlurmBackendTestContext(graph, slurm_mem="8G") as (backend, _tmpdir):
             mock_timer = MagicMock()
+            mock_timer._wall_to_monotonic_offset = 0.0
             with (
                 patch.object(type(backend), "_timer", new_callable=lambda: property(lambda self: mock_timer)),
                 patch.object(backend, "_wait_for_arrays", side_effect=lambda im: next(wait_results)),
@@ -2011,6 +2012,10 @@ class TestTimingPopulatesStartEnd:
         b = SlurmBackend.__new__(SlurmBackend)
         b.args = SimpleNamespace()
         mock_timer = MagicMock()
+        # _collect_timing reads timer._wall_to_monotonic_offset to shift
+        # sacct's wall-clock timestamps into the monotonic clock domain;
+        # MagicMock's auto-attr would otherwise poison the arithmetic.
+        mock_timer._wall_to_monotonic_offset = 0.0
         # sacct row with ISO 8601 Start/End.
         sacct_row = "100_0|00:00:05|COMPLETED|2026-04-21T10:00:00|2026-04-21T10:00:05\n"
 

@@ -1090,14 +1090,19 @@ class SlurmBackend(ShakeBackend):
             return
 
         # sacct formats Start/End as ISO 8601 ("2026-04-21T11:22:33"); convert
-        # to wall-clock seconds.  We use Unix-epoch seconds — the timer just
-        # needs a consistent ordering and duration for Chrome trace rendering.
+        # to wall-clock seconds, then shift into the BuildTimer's monotonic
+        # clock domain so the rule events share an origin with the in-Python
+        # record_rule callers (test runner, etc.).  Wall clocks across the
+        # cluster are NTP-synced, so the conversion is meaningful for the
+        # local viewer even though sacct timestamps come from the controller.
+        offset = timer._wall_to_monotonic_offset
+
         def _parse_iso(ts: str) -> float | None:
             ts = ts.strip()
             if not ts or ts in ("Unknown", "None"):
                 return None
             try:
-                return datetime.datetime.fromisoformat(ts).timestamp()
+                return datetime.datetime.fromisoformat(ts).timestamp() + offset
             except ValueError:
                 return None
 

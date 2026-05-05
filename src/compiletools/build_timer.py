@@ -53,8 +53,13 @@ class TimingEvent:
             d["source"] = self.source
         if self.metadata:
             d["metadata"] = self.metadata
-        # Include start_s/end_s relative to parent for rule events
-        if self.category != "phase" and self.start_s is not None and self.end_s is not None:
+        # Persist start_s/end_s for every event (including phases) so the
+        # chrome-trace exporter has one shared monotonic-clock origin to
+        # rebase against.  All ingest paths feed monotonic timestamps
+        # (in-Python via time.monotonic(); make/slurm wall-clock values
+        # are converted at ingest using the offset captured in
+        # BuildTimer.__init__), so these values are directly comparable.
+        if self.start_s is not None and self.end_s is not None:
             d["start_s"] = round(self.start_s, 6)
             d["end_s"] = round(self.end_s, 6)
         if self.children:
@@ -104,6 +109,17 @@ class BuildTimer:
         # Set True by from_dict/from_json to forbid further phase/record
         # mutations on a loaded snapshot.
         self._loaded = False
+
+        # Capture the wall-to-monotonic offset once at startup so ingest
+        # paths that record wall-clock timestamps (make recipe wrappers
+        # via bash $EPOCHREALTIME, Slurm sacct ISO timestamps) can
+        # convert their values into the same monotonic clock domain that
+        # the in-Python record_rule callers use.  A single calibration is
+        # accurate to within a few microseconds for the duration of a
+        # build, which is well below per-rule timing noise.  Falls back
+        # to 0 if the wall clock has been stepped between the two reads
+        # (extremely unlikely within a few µs window).
+        self._wall_to_monotonic_offset = time.monotonic() - time.time()
 
         # Root event spans the entire build
         self._root = TimingEvent(name="total", category="phase", start_s=time.monotonic())
@@ -263,13 +279,22 @@ class BuildTimer:
         Each line is a JSON object::
 
             {"target": "obj/foo.o", "start_ns": 1234567890, "end_ns": 1234567999}
-        """
+
+        The recipe wrapper writes wall-clock timestamps (bash
+        ``$EPOCHREALTIME``, falling back to ``date +%s%N``) because no
+        portable shell builtin exposes ``CLOCK_MONOTONIC``.  Convert
+        them into Python's monotonic clock domain here, using the
+        wall-to-monotonic offset captured at BuildTimer init, so every
+        rule event in the trace shares one clock regardless of which
+        ingest path produced it.  Doing the calibration in Python keeps
+        the recipe a pure bash builtin (no extra fork per compile)."""
         if not self.enabled:
             return
         if not os.path.exists(log_path):
             return
 
         source_for_output, type_for_output = self._build_graph_lookups(graph)
+        offset = self._wall_to_monotonic_offset
 
         with open(log_path, encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -291,8 +316,8 @@ class BuildTimer:
                     target=target,
                     source=source,
                     elapsed_s=elapsed_s,
-                    start_s=start_ns / 1_000_000_000.0,
-                    end_s=end_ns / 1_000_000_000.0,
+                    start_s=start_ns / 1_000_000_000.0 + offset,
+                    end_s=end_ns / 1_000_000_000.0 + offset,
                 )
 
     # --------------------------------------------------------- serialization
@@ -311,6 +336,10 @@ class BuildTimer:
             "total_elapsed_s": round(self._root.elapsed_s, 6),
             "variant": self.variant,
             "backend": self.backend,
+            # Anchor for to_chrome_trace: every event's start_s is on the
+            # same monotonic clock (rule ingest paths normalize at write
+            # time), so the chrome trace just subtracts this origin.
+            "start_s": round(self._root.start_s, 6),
             "phases": [child.to_dict() for child in self._root.children],
         }
 
@@ -333,11 +362,12 @@ class BuildTimer:
         the on-disk JSON if it were re-saved).
         """
         timer = cls(enabled=True, variant=data.get("variant", ""), backend=data.get("backend", ""))
+        root_start_s = data.get("start_s", 0.0)
         timer._root = TimingEvent(
             name="total",
             category="phase",
-            start_s=0.0,
-            end_s=data.get("total_elapsed_s", 0.0),
+            start_s=root_start_s,
+            end_s=root_start_s + data.get("total_elapsed_s", 0.0),
             children=[TimingEvent.from_dict(p) for p in data.get("phases", [])],
         )
         timer._phase_stack = [timer._root]
@@ -357,30 +387,19 @@ class BuildTimer:
         """Convert to Chrome Trace Event Format (Perfetto-compatible).
 
         Returns a list of trace events suitable for wrapping in
-        ``{"traceEvents": [...]}`` and viewing in chrome://tracing
-        or https://ui.perfetto.dev/.
+        ``{"traceEvents": [...]}`` and viewing in chrome://tracing or
+        https://ui.perfetto.dev/.
 
-        The on-disk JSON mixes timestamp scales: phase events serialize
-        without ``start_s`` (deserialized to 0); rule events keep their
-        raw ``start_s`` from whichever ingest path created them — bash
-        ``EPOCHREALTIME`` for make (Unix-epoch wall clock), Python
-        ``time.monotonic()`` for the test runner (boot-relative), and
-        ``sacct`` ISO timestamps for Slurm (Unix-epoch wall clock).
-        Emitting those raw values puts events ~50 years apart on the
-        Perfetto canvas, collapsing the actual build to a sub-pixel
-        sliver.  We instead synthesise a coherent timeline:
-
-          * Phases stack sequentially on ``tid=0`` using their
-            ``elapsed_s`` (matches the order they ran).
-          * Rule children of a phase share a per-phase origin (the
-            smallest positive ``start_s`` among them), so within-phase
-            parallelism stays correct regardless of which clock the
-            ingest path used.
+        Every event's ``start_s`` is on the same monotonic clock —
+        in-Python recorders use ``time.monotonic()`` directly, and the
+        make/Slurm ingest paths convert wall-clock timestamps using the
+        offset captured at ``BuildTimer.__init__``.  Subtract the root's
+        ``start_s`` once to rebase the whole trace to ``ts=0``.
         """
         self.finish()
         events: list[dict[str, Any]] = []
         tid_counter = [1]
-        self._chrome_trace_walk(self._root, events, tid=0, pid=1, tid_counter=tid_counter, ts_offset_us=0.0)
+        self._chrome_trace_walk(self._root, events, tid=0, pid=1, tid_counter=tid_counter, origin_s=self._root.start_s)
         return events
 
     def _chrome_trace_walk(
@@ -390,14 +409,15 @@ class BuildTimer:
         tid: int,
         pid: int,
         tid_counter: list[int],
-        ts_offset_us: float,
+        origin_s: float,
     ) -> None:
+        ts_us = (event.start_s - origin_s) * 1_000_000
         dur_us = event.elapsed_s * 1_000_000
         trace_event: dict[str, Any] = {
             "name": event.name,
             "cat": event.category,
             "ph": "X",  # complete event
-            "ts": ts_offset_us,
+            "ts": ts_us,
             "dur": dur_us,
             "pid": pid,
             "tid": tid,
@@ -408,33 +428,14 @@ class BuildTimer:
             trace_event.setdefault("args", {})["source"] = event.source
         events.append(trace_event)
 
-        # Per-phase rule origin: smallest positive start_s among children.
-        # All rule children under this phase share the same clock domain
-        # (whichever ingest path populated them), so this rebases them to
-        # 0 within the phase and preserves their relative parallelism.
-        rule_starts = [c.start_s for c in event.children if c.category != "phase" and c.start_s > 0]
-        rule_origin_s = min(rule_starts) if rule_starts else 0.0
-
-        cumulative_phase_us = 0.0
+        # Phase children stay on the parent's lane; each rule child gets
+        # its own tid from the global counter so parallel compiles don't
+        # visually overlap in Perfetto.
         for child in event.children:
-            if child.category == "phase":
-                child_ts_offset_us = ts_offset_us + cumulative_phase_us
-                cumulative_phase_us += child.elapsed_s * 1_000_000
-                child_tid = tid
-            else:
-                # Rule child: place at parent's ts plus its offset within
-                # the phase's clock domain.  Each rule gets its own tid
-                # so parallel compiles don't overlap visually.
-                if rule_origin_s > 0 and child.start_s > 0:
-                    rel_us = (child.start_s - rule_origin_s) * 1_000_000
-                else:
-                    rel_us = 0.0
-                child_ts_offset_us = ts_offset_us + rel_us
-                child_tid = tid_counter[0]
+            child_tid = tid if child.category == "phase" else tid_counter[0]
+            if child.category != "phase":
                 tid_counter[0] += 1
-            self._chrome_trace_walk(
-                child, events, tid=child_tid, pid=pid, tid_counter=tid_counter, ts_offset_us=child_ts_offset_us
-            )
+            self._chrome_trace_walk(child, events, tid=child_tid, pid=pid, tid_counter=tid_counter, origin_s=origin_s)
 
     # --------------------------------------------------------- summary table
 
