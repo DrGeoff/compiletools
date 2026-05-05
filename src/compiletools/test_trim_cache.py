@@ -86,9 +86,17 @@ def _make_args(**overrides):
 
 
 def _touch_obj(objdir, basename, file_hash, dep_hash, macro_hash, *, age_seconds=0, size=1024):
-    """Create a fake .o file with controlled mtime and size."""
+    """Create a fake .o file in its sharded bucket dir, with controlled mtime/size.
+
+    Mirrors production layout: ``<objdir>/<file_hash[:2]>/<basename>_<...>.o``.
+    Sidecar lockdirs/lockfiles in the same bucket are managed by the lock
+    subsystem, not this fixture — tests exercising lockdir behavior place
+    them explicitly.
+    """
     name = f"{basename}_{file_hash}_{dep_hash}_{macro_hash}.o"
-    path = os.path.join(objdir, name)
+    bucket_dir = os.path.join(objdir, file_hash[:2])
+    os.makedirs(bucket_dir, exist_ok=True)
+    path = os.path.join(bucket_dir, name)
     with open(path, "wb") as f:
         f.write(b"\0" * size)
     if age_seconds:
@@ -204,9 +212,14 @@ class TestTrimObjdir:
         assert stats["removed"] == 1  # but reported as would-remove
 
     def test_skips_lockdirs(self, tmp_path):
+        """Lockdirs live next to their .o inside a bucket dir (sidecar
+        siblings, not top-level entries). The scanner must descend into
+        bucket dirs to find .o files but skip ``.lockdir`` siblings.
+        """
         objdir = str(tmp_path / "obj")
-        os.makedirs(objdir)
-        lockdir = os.path.join(objdir, "foo.o.lockdir")
+        bucket_dir = os.path.join(objdir, "ab")
+        os.makedirs(bucket_dir)
+        lockdir = os.path.join(bucket_dir, "foo_aabbccddeeff_11223344556677_0011223344556677.o.lockdir")
         os.makedirs(lockdir)
 
         trimmer = CacheTrimmer(_make_args())
@@ -220,6 +233,84 @@ class TestTrimObjdir:
         stats = trimmer.trim_objdir(str(tmp_path / "nonexistent"), set())
         assert stats["total_scanned"] == 0
         assert stats["removed"] == 0
+
+    def test_scans_inside_bucket_dirs_not_flat_objdir(self, tmp_path):
+        """Object files now live one level down in 2-hex bucket dirs
+        (``<objdir>/<file_hash[:2]>/<basename>_<...>.o``). The scanner must
+        descend into bucket subdirs to find them, and must ignore any stray
+        ``.o`` accidentally placed flat at the top level — those would be
+        leftovers from a pre-sharding install and (per the rollout doc) are
+        the operator's responsibility to wipe before first run.
+        """
+        objdir = str(tmp_path / "obj")
+        os.makedirs(objdir)
+        current_hash = "aabbccddeeff"
+
+        # Bucket-resident object: the only one that should be discovered.
+        bucket_dir = os.path.join(objdir, current_hash[:2])
+        os.makedirs(bucket_dir)
+        bucket_obj_name = f"in_bucket_{current_hash}_11223344556677_0011223344556677.o"
+        bucket_obj_path = os.path.join(bucket_dir, bucket_obj_name)
+        with open(bucket_obj_path, "wb") as f:
+            f.write(b"\0" * 256)
+
+        # Stray flat-layout object: pre-sharding leftover. Scanner must NOT
+        # see it (so trim's ``current_kept`` count reflects the sharded
+        # population only). It also must NOT crash on it.
+        stray_flat_name = "stray_111111111111_11223344556677_0011223344556677.o"
+        stray_flat_path = os.path.join(objdir, stray_flat_name)
+        with open(stray_flat_path, "wb") as f:
+            f.write(b"\0" * 256)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        stats = trimmer.trim_objdir(objdir, {current_hash})
+
+        # Discriminating assertion: the bucket-resident file's hash IS the
+        # current hash, so a bucket-aware scanner reports current_kept=1.
+        # A flat scanner would only see the stray (non-current) and report
+        # current_kept=0 — so this assertion fails on the pre-sharding code.
+        assert stats["current_kept"] == 1, (
+            f"the bucket-resident .o has the current hash and must be counted "
+            f"as current_kept. Got stats={stats}"
+        )
+        assert stats["total_scanned"] == 1
+        assert os.path.exists(bucket_obj_path), "current bucket-resident object kept"
+        assert os.path.exists(stray_flat_path), (
+            "scanner must not touch flat-layout files — they are outside its world"
+        )
+
+    def test_skips_non_bucket_top_level_entries(self, tmp_path):
+        """Slurm ``slurm-ct-*.out`` files and ``TraceStore`` directories live
+        flat at ``$objdir/`` (per the proposal carve-outs). The scanner must
+        skip anything at the top level whose name is not a 2-hex bucket dir.
+        """
+        objdir = str(tmp_path / "obj")
+        os.makedirs(objdir)
+
+        # Real bucket with a real .o
+        os.makedirs(os.path.join(objdir, "aa"))
+        with open(os.path.join(objdir, "aa", "x_aabbccddeeff_11223344556677_0011223344556677.o"), "wb") as f:
+            f.write(b"\0" * 64)
+
+        # Carve-outs that share the objdir root
+        with open(os.path.join(objdir, "slurm-ct-foo-1234.out"), "wb") as f:
+            f.write(b"slurm log")
+        os.makedirs(os.path.join(objdir, "TraceStore"))
+        os.makedirs(os.path.join(objdir, "not-a-hash"))  # 3-char dir, not a bucket
+        os.makedirs(os.path.join(objdir, "AA"))  # uppercase, not lowercase hex
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        stats = trimmer.trim_objdir(objdir, {"aabbccddeeff"})
+
+        assert stats["total_scanned"] == 1, (
+            f"only the real bucket-resident .o should be counted; carve-out files "
+            f"and non-bucket dirs must be invisible. Got total_scanned={stats['total_scanned']}"
+        )
+        # And the carve-outs must remain on disk untouched.
+        assert os.path.exists(os.path.join(objdir, "slurm-ct-foo-1234.out"))
+        assert os.path.isdir(os.path.join(objdir, "TraceStore"))
+        assert os.path.isdir(os.path.join(objdir, "not-a-hash"))
+        assert os.path.isdir(os.path.join(objdir, "AA"))
 
     def test_multiple_basenames_independent(self, tmp_path):
         objdir = str(tmp_path / "obj")

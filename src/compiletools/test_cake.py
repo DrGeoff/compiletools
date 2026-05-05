@@ -279,8 +279,9 @@ class TestCake(BaseCompileToolsTestCase):
             _, name = os.path.split(fname)
             basename = os.path.splitext(name)[0]
             # Find object files matching the pattern: basename_<file_hash>_<dep_hash>_<macro_state_hash>.o
-            # Pattern {basename}_*_*.o matches both old (2 underscores) and new (3 underscores) formats
-            pattern = os.path.join(objdir, f"{basename}_*_*.o")
+            # Object files live one level down in 2-hex shard buckets:
+            # <objdir>/<file_hash[:2]>/{basename}_*_*.o
+            pattern = os.path.join(objdir, "*", f"{basename}_*_*.o")
             matching_objs = glob.glob(pattern)
             fnames.extend(matching_objs)
 

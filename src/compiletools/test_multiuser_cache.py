@@ -855,7 +855,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             compiletools.cake.main(argv)
 
             # Find the generated object file
-            obj_files = list(objdir.glob("*.o"))
+            obj_files = list(objdir.glob("**/*.o"))
             assert len(obj_files) > 0, "Should have generated at least one object file"
 
             # Clean the object file to force rebuild
@@ -992,7 +992,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 assert r["returncode"] == 0, f"Worker {r['worker_id']} failed: {r['error']}"
 
             # Should have 2 distinct object files (different macro_state_hash)
-            obj_files = list(objdir.glob("*.o"))
+            obj_files = list(objdir.glob("**/*.o"))
             assert len(obj_files) == 2, (
                 f"Expected 2 object files (one per variant), found {len(obj_files)}: {[f.name for f in obj_files]}"
             )
@@ -1011,7 +1011,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             )
 
             # No stale locks
-            lockdirs = list(objdir.glob("*.lockdir"))
+            lockdirs = list(objdir.glob("**/*.lockdir"))
             assert len(lockdirs) == 0, f"Found stale lock directories: {lockdirs}"
 
     @uth.requires_functional_compiler
@@ -1043,7 +1043,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             uth.reset()
             compiletools.cake.main(argv_opt)
 
-            opt_objs = set(objdir.glob("*.o"))
+            opt_objs = set(objdir.glob("**/*.o"))
             assert len(opt_objs) == 1, f"Expected 1 object after optimized build, found {len(opt_objs)}"
             opt_obj_name = next(iter(opt_objs)).name
 
@@ -1059,7 +1059,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             uth.reset()
             compiletools.cake.main(argv_def)
 
-            all_objs = set(objdir.glob("*.o"))
+            all_objs = set(objdir.glob("**/*.o"))
 
             # Should have 2 distinct objects
             assert len(all_objs) == 2, (

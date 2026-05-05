@@ -143,7 +143,7 @@ class TestSharedCacheLowMtimeResolution(BaseCompileToolsTestCase):
             self._run_cake_build(main_repo, config_name)
 
             # Capture object files BEFORE header change
-            obj_files_before = list(shared_objdir.glob("*.o"))
+            obj_files_before = list(shared_objdir.glob("**/*.o"))
             assert len(obj_files_before) == 1, f"Expected 1 object file, found {len(obj_files_before)}"
 
             obj_file_before = obj_files_before[0]
@@ -192,7 +192,7 @@ class TestSharedCacheLowMtimeResolution(BaseCompileToolsTestCase):
             self._run_cake_build(worktree, config_name)
 
             # Capture object files AFTER rebuild
-            obj_files_after = list(shared_objdir.glob("*.o"))
+            obj_files_after = list(shared_objdir.glob("**/*.o"))
 
             # The test: Was a NEW object created with different name?
             new_obj_files = [f for f in obj_files_after if f.name != obj_name_before]

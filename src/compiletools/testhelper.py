@@ -924,13 +924,36 @@ def make_mock_hunter(sources=None, headers=None, magicflags_map=None, per_file_m
 
 
 def make_mock_namer(args):
-    """Create a MagicMock namer deriving paths from args.objdir/bindir."""
+    """Create a MagicMock namer deriving paths from args.objdir/bindir.
+
+    Mirrors the production sharded layout: ``object_pathname`` returns
+    ``<objdir>/<bucket>/<basename>.o`` where ``bucket`` is a deterministic
+    2-hex prefix of ``sha256(filename)``. The hash function differs from
+    production (which keys on the per-source content hash via the global
+    registry), but the on-disk shape is identical so build-graph tests
+    exercise the same mkdir / order_only_deps wiring.
+    """
+    import hashlib
+
     objdir = args.objdir
     bindir = args.bindir
     namer = MagicMock()
-    namer.object_pathname = MagicMock(
-        side_effect=lambda f, mh, dh: f"{objdir}/{f.split('/')[-1].replace('.cpp', '.o')}"
-    )
+
+    def _bucket(filename):
+        return hashlib.sha256(filename.encode()).hexdigest()[:2]
+
+    def _object_pathname(filename, _macro_hash, _dep_hash):
+        bucket = _bucket(filename)
+        basename = filename.split("/")[-1].replace(".cpp", ".o")
+        return f"{objdir}/{bucket}/{basename}"
+
+    def _object_dir(sourcefilename=None, file_hash=None):
+        if file_hash is not None:
+            return f"{objdir}/{file_hash[:2]}"
+        return objdir
+
+    namer.object_pathname = MagicMock(side_effect=_object_pathname)
+    namer.object_dir = MagicMock(side_effect=_object_dir)
     namer.executable_pathname = MagicMock(side_effect=lambda f: f"{bindir}/{f.split('/')[-1].replace('.cpp', '')}")
     namer.staticlibrary_pathname = MagicMock(return_value=f"{bindir}/libmylib.a")
     namer.dynamiclibrary_pathname = MagicMock(return_value=f"{bindir}/libmylib.so")

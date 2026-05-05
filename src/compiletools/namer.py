@@ -64,12 +64,31 @@ class Namer:
         return compiletools.wrappedos.realpath(relative)
 
     @functools.cache
-    def object_dir(self, sourcefilename=None):
-        """This function allows for alternative behaviour to be explore.
-        Previously we tried replicating the source directory structure
-        to keep object files separated.  The mkdir involved slowed
-        down the build process by about 25%.
+    def object_dir(self, sourcefilename=None, file_hash=None):
+        """Return the directory in which an object file lives.
+
+        With ``file_hash`` provided, returns the 2-hex shard bucket
+        ``<objdir>/<file_hash[:2]>``. The 256-bucket layout splits
+        writes and renames across separate directory inodes:
+
+        * On any single-directory cache, lookups and the per-directory
+          rename serialization stay cheap once the cache grows past
+          the filesystem's per-directory sweet spot (~10k entries on
+          most local filesystems, lower on shared ones).
+        * Concurrent writers — peer ``make`` jobs on one box, or many
+          hosts against a shared cache — contend on 1/256 of the inode
+          surface instead of all serializing on the same parent.
+
+        Cost on local FS is sub-µs per call and a sub-100 ms one-shot
+        ``mkdir`` storm on first build, so the same layout is used
+        unconditionally for private and shared caches.
+
+        With no ``file_hash`` (the default), returns the bare
+        ``args.objdir`` — the cache-tree root used by ``clean()`` /
+        ``realclean()`` and by ``trim_cache`` as its scan root.
         """
+        if file_hash is not None:
+            return os.path.join(self.args.objdir, file_hash[:2])
         return self.args.objdir
 
     def compute_dep_hash(self, header_list):
@@ -171,14 +190,20 @@ class Namer:
     def object_pathname(self, sourcefilename, macro_state_hash, dep_hash):
         """Return full path to object file.
 
+        Layout: ``<objdir>/<file_hash[:2]>/<basename>_<file_hash_12>_<dep_hash_14>_<macro_state_hash_16>.o``.
+        See ``object_dir`` for the sharding rationale.
+
         Args:
             sourcefilename: Path to source file
             macro_state_hash: Required 16-char hex hash (no default)
             dep_hash: Required 14-char hex hash of dependencies (precomputed)
         """
+        from compiletools.global_hash_registry import get_file_hash
+
+        file_hash = get_file_hash(sourcefilename, self.context)
         return "".join(
             [
-                self.object_dir(sourcefilename),
+                self.object_dir(sourcefilename, file_hash),
                 os.sep,
                 self.object_name(sourcefilename, macro_state_hash, dep_hash),
             ]

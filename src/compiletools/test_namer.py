@@ -244,6 +244,83 @@ def test_dep_hash_handles_missing_generated_headers():
         uth.reset()
 
 
+def test_object_pathname_is_sharded_by_file_hash():
+    """``object_pathname`` returns ``<objdir>/<file_hash[:2]>/<basename>_<...>.o``.
+
+    Sharding splits writes/renames across 256 directory inodes so that
+    no single parent dir grows past its filesystem's per-directory
+    sweet spot. The bucket key is the leading 2 hex chars of the
+    per-source ``file_hash`` (the high-entropy field already in the
+    filename), so every artifact for one source — ``.o``, ``.lock``,
+    ``.lockdir``, ``.tmp`` — collapses into the same bucket as a
+    side-effect of being derived from the same target path string.
+
+    Identical layout on local and shared caches; the cost is sub-µs
+    per ``object_pathname`` and bucket dirs are created lazily by the
+    build, so an empty private cache stays empty until the first
+    compile lands.
+    """
+    uth.reset()
+
+    try:
+        with tempfile.TemporaryDirectory() as srcdir:
+            src = uth.write_sources(
+                {"shardme.cpp": "int main() { return 0; }\n"},
+                target_dir=srcdir,
+            )
+            source_file = str(src["shardme.cpp"])
+
+            config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
+            config_files = [os.path.join(config_dir, "gcc.debug.conf")]
+            cap = configargparse.ArgumentParser(
+                conflict_handler="resolve",
+                description="TestNamerSharding",
+                formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+                default_config_files=config_files,
+                args_for_setting_config_path=["-c", "--config"],
+                ignore_unknown_config_file_keys=True,
+            )
+            argv = ["--no-git-root"]
+            compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
+            compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
+            ctx = BuildContext()
+            args = compiletools.apptools.parseargs(cap, argv, context=ctx)
+            namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=ctx)
+
+            dep_hash = namer.compute_dep_hash([])
+            obj_path = namer.object_pathname(source_file, "0123456789abcdef", dep_hash)
+
+            from compiletools.trim_cache import parse_object_filename
+
+            obj_filename = os.path.basename(obj_path)
+            parsed = parse_object_filename(obj_filename)
+            assert parsed is not None, f"object filename should still parse: {obj_filename}"
+            _basename, file_hash, _dep, _macro = parsed
+            expected_bucket = file_hash[:2]
+
+            bucket_dir = os.path.basename(os.path.dirname(obj_path))
+            assert bucket_dir == expected_bucket, (
+                f"Expected sharded bucket dir {expected_bucket!r} (file_hash[:2]); "
+                f"got {bucket_dir!r}. Full path: {obj_path}"
+            )
+
+            objdir_root = os.path.dirname(os.path.dirname(obj_path))
+            assert objdir_root == args.objdir, (
+                f"Bucket dir should sit directly under args.objdir={args.objdir!r}; "
+                f"got grandparent={objdir_root!r}"
+            )
+
+            # object_dir(sourcefilename) with no file_hash must still return the
+            # bare objdir so realclean()/clean() can rmtree the whole cache root.
+            assert namer.object_dir() == args.objdir
+            # And the explicit form must return the same bucket dir as
+            # object_pathname picks, so build_backend can use it for
+            # ``order_only_deps`` without recomputing the join.
+            assert namer.object_dir(source_file, file_hash) == os.path.join(args.objdir, expected_bucket)
+    finally:
+        uth.reset()
+
+
 @uth.requires_functional_compiler
 def test_source_magic_produces_different_hash_with_different_flags():
     """Regression: //#SOURCE= expanded files must get different macro_state_hash when flags differ.

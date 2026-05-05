@@ -299,6 +299,85 @@ class TestBuildGraphPopulation:
         assert len(compile_rules) == 0
         assert len(link_rules) == 0
 
+    def test_compile_rule_order_only_dep_is_bucket_dir(self, tmp_path):
+        """Each compile rule depends on its sharded bucket directory, not the
+        bare ``args.objdir``. Pre-sharding, every compile rule serialized on
+        the single ``mkdir $objdir`` node and every concurrent
+        ``rename(.tmp -> .o)`` contended on the same directory inode —
+        cheap when the cache is small, increasingly expensive once entry
+        counts cross the per-filesystem sweet spot or peer writers pile
+        up. With per-bucket order-only deps the same contention is
+        spread across 256 inodes.
+        """
+        args = make_backend_args(
+            tmp_path,
+            filename=["/src/main.cpp", "/src/util.cpp"],
+        )
+        hunter = make_mock_hunter(sources=["/src/main.cpp", "/src/util.cpp"])
+        backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+
+        graph = backend.build_graph()
+
+        objdir = str(tmp_path / "obj")
+        compile_rules = [r for r in graph.rules if r.rule_type == "compile"]
+        assert len(compile_rules) >= 2
+
+        for rule in compile_rules:
+            assert rule.order_only_deps, (
+                f"compile rule {rule.output!r} must declare its bucket dir as an "
+                f"order-only dep so the sharded mkdir runs first"
+            )
+            bucket_dir = rule.order_only_deps[0]
+            expected_bucket_dir = os.path.dirname(rule.output)
+            assert bucket_dir == expected_bucket_dir, (
+                f"order_only_deps[0]={bucket_dir!r} must match the rule output's "
+                f"parent dir {expected_bucket_dir!r} so each compile is gated only "
+                f"on its own bucket's mkdir, not the shared objdir root"
+            )
+            assert bucket_dir != objdir, (
+                f"order_only_deps[0]={bucket_dir!r} should be a sharded bucket under "
+                f"{objdir!r}, not the bare objdir — sharing the bare objdir defeats "
+                f"the whole point of bucket sharding"
+            )
+            assert bucket_dir.startswith(objdir + os.sep), (
+                f"bucket dir {bucket_dir!r} must sit directly under objdir {objdir!r}"
+            )
+
+    def test_per_bucket_mkdir_rule_emitted_for_each_used_bucket(self, tmp_path):
+        """One ``mkdir`` rule per *used* bucket — not one per possible
+        bucket, and not a single mkdir for the bare objdir. Only-used
+        keeps the cold-cache build's mkdir count proportional to source
+        breadth (~50-100 buckets typical) rather than the full 256.
+        """
+        args = make_backend_args(
+            tmp_path,
+            filename=["/src/main.cpp", "/src/util.cpp", "/src/other.cpp"],
+        )
+        hunter = make_mock_hunter(sources=["/src/main.cpp", "/src/util.cpp", "/src/other.cpp"])
+        backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+
+        graph = backend.build_graph()
+
+        objdir = str(tmp_path / "obj")
+        compile_rules = [r for r in graph.rules if r.rule_type == "compile"]
+        used_buckets = {os.path.dirname(r.output) for r in compile_rules}
+        assert used_buckets, "fixture should produce at least one compile rule"
+
+        mkdir_rules = [
+            r for r in graph.rules
+            if r.rule_type == "mkdir" and r.output.startswith(objdir + os.sep)
+        ]
+        emitted_bucket_dirs = {r.output for r in mkdir_rules}
+
+        assert emitted_bucket_dirs == used_buckets, (
+            f"build_graph must emit exactly one mkdir per used bucket. "
+            f"Used: {sorted(used_buckets)}; emitted: {sorted(emitted_bucket_dirs)}"
+        )
+        for rule in mkdir_rules:
+            assert "mkdir" in " ".join(rule.command), (
+                f"sharded bucket mkdir rule {rule.output!r} must invoke mkdir"
+            )
+
     def test_tests_produce_link_rules(self, tmp_path):
         """build_graph() should create link rules for args.tests."""
         args = make_backend_args(tmp_path, filename=[], tests=["/src/test_foo.cpp"])

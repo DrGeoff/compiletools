@@ -506,9 +506,29 @@ class BuildBackend(abc.ABC):
                 )
             )
 
+        compile_bucket_dirs: set[str] = set()
         for filename in all_compile_sources:
             rule = self._create_compile_rule(filename)
             graph.add_rule(rule)
+            if rule.order_only_deps:
+                compile_bucket_dirs.add(rule.order_only_deps[0])
+
+        # One mkdir rule per *used* bucket, not per possible bucket.
+        # Cold-cache cost is sub-100 ms total on local FS; avoiding the
+        # unused 156-200 buckets keeps directory metadata operations
+        # proportional to source breadth and stays cheap on shared
+        # filesystems too.
+        for bucket_dir in sorted(compile_bucket_dirs):
+            if bucket_dir == self.args.objdir:
+                continue  # already covered by the bare-objdir mkdir above
+            graph.add_rule(
+                BuildRule(
+                    output=bucket_dir,
+                    inputs=[],
+                    command=["mkdir", "-p", bucket_dir],
+                    rule_type="mkdir",
+                )
+            )
 
         library_outputs = []
         if self.args.static:
@@ -897,12 +917,18 @@ class BuildBackend(abc.ABC):
 
         compile_cmd.extend(["-c", filename, "-o", obj_name])
 
+        # The bucket dir is the immediate parent of the sharded object path
+        # (``<objdir>/<file_hash[:2]>``). Gating only on the per-target
+        # bucket — not on the bare objdir — splits concurrent rename
+        # contention across 256 directory inodes instead of serializing
+        # every writer on the same parent.
+        bucket_dir = os.path.dirname(obj_name)
         return BuildRule(
             output=obj_name,
             inputs=prerequisites,
             command=compile_cmd,
             rule_type="compile",
-            order_only_deps=[self.args.objdir],
+            order_only_deps=[bucket_dir],
             include_weight=include_weight,
         )
 

@@ -24,6 +24,12 @@ _OBJ_FILENAME_RE = re.compile(
     r"^(?P<basename>.+)_(?P<file>[0-9a-f]{12})_(?P<dep>[0-9a-f]{14})_(?P<macro>[0-9a-f]{16})\.o$"
 )
 
+# Object bucket directories are exactly 2 lowercase hex chars (the leading
+# 2 chars of the per-source ``file_hash``). Top-level entries that don't
+# match — Slurm ``slurm-ct-*.out`` files, ``TraceStore/`` dirs, anything
+# else — are invisible to the scanner.
+_OBJ_BUCKET_RE = re.compile(r"^[0-9a-f]{2}$")
+
 # PCH command hash directories are exactly 16 lowercase hex chars.
 _PCH_COMMAND_HASH_RE = re.compile(r"^[0-9a-f]{16}$")
 
@@ -142,31 +148,56 @@ class CacheTrimmer:
     def _scan_object_files(self, objdir, stats):
         """Scan ``objdir`` for parseable ``.o`` entries, grouped by basename.
 
+        Walks two levels: ``<objdir>/<bucket>/*.o`` where ``<bucket>`` is
+        a 2-hex shard derived from the per-source ``file_hash[:2]``.
+        Top-level entries that aren't 2-hex bucket dirs (Slurm ``.out``
+        logs, ``TraceStore/`` dirs, stray pre-sharding ``.o`` leftovers)
+        are skipped — they are outside the sharded cache's world.
+
+        Within each bucket, ``.lockdir`` entries are skipped (they sit
+        next to their ``.o`` and are managed by the lock subsystem, not
+        the trimmer).
+
         Mutates ``stats`` in place: increments ``total_scanned`` per
         successfully-parsed entry and sets ``basenames_found`` to the final
         number of distinct basenames discovered.
 
         Returns a dict mapping basename to a list of
         ``(path, file_hash, mtime, size)`` tuples. May raise ``OSError`` if
-        the initial ``os.scandir`` call fails.
+        the initial ``os.scandir`` call fails. Per-bucket ``OSError`` (e.g.
+        a bucket dir vanishes mid-scan) is swallowed and that bucket's
+        contribution is just skipped — best-effort scan.
         """
         groups = {}  # basename -> list of (path, file_hash, mtime, size)
         with os.scandir(objdir) as entries:
+            bucket_paths = []
             for entry in entries:
-                if entry.name.endswith(".lockdir"):
+                if not _OBJ_BUCKET_RE.match(entry.name):
                     continue
-                if not entry.name.endswith(".o"):
+                if not entry.is_dir(follow_symlinks=False):
                     continue
-                parsed = parse_object_filename(entry.name)
-                if parsed is None:
-                    continue
-                stats["total_scanned"] += 1
-                basename, file_hash, _dep_hash, _macro_hash = parsed
-                try:
-                    st = entry.stat()
-                except OSError:
-                    continue
-                groups.setdefault(basename, []).append((entry.path, file_hash, st.st_mtime, st.st_size))
+                bucket_paths.append(entry.path)
+
+        for bucket_path in bucket_paths:
+            try:
+                with os.scandir(bucket_path) as bucket_entries:
+                    for entry in bucket_entries:
+                        if entry.name.endswith(".lockdir"):
+                            continue
+                        if not entry.name.endswith(".o"):
+                            continue
+                        parsed = parse_object_filename(entry.name)
+                        if parsed is None:
+                            continue
+                        stats["total_scanned"] += 1
+                        basename, file_hash, _dep_hash, _macro_hash = parsed
+                        try:
+                            st = entry.stat()
+                        except OSError:
+                            continue
+                        groups.setdefault(basename, []).append((entry.path, file_hash, st.st_mtime, st.st_size))
+            except OSError:
+                continue  # bucket vanished or unreadable; skip and move on
 
         stats["basenames_found"] = len(groups)
         return groups
