@@ -303,8 +303,17 @@ class MakefileBackend(BuildBackend):
         concurrent ``ct-cake --timing`` invocations against the same
         Makefile (logs are merged at parse time).
         """
+        import json as _json
+
         log = shlex.quote(self._timing_log_path)
-        tgt = shlex.quote(target)
+        # Embed the target as a JSON string literal (not a bare token); a
+        # bare path produces invalid JSON like {"target":/foo.o,...} which
+        # ``BuildTimer.record_rules_from_make_timing`` silently drops on
+        # ``JSONDecodeError`` — leaving ``.ct-timing.json`` with phase rows
+        # but no per-rule entries.  Single quotes inside the JSON encoding
+        # must be escaped because the surrounding shell echo is a
+        # single-quoted string.
+        tgt_json = _json.dumps(target).replace("'", "'\\''")
         # Helper shell snippet that prints ns as integer or 0
         ns_expr = (
             "{ "
@@ -323,7 +332,7 @@ class MakefileBackend(BuildBackend):
             f"@_ct_s=$$({ns_expr}); "
             f"{recipe.lstrip('@+')}; _ct_rc=$$?; "
             f"_ct_e=$$({ns_expr}); "
-            f"echo '{{\"target\":{tgt},\"start_ns\":'$$_ct_s',\"end_ns\":'$$_ct_e'}}' >> {log}; "
+            f"echo '{{\"target\":{tgt_json},\"start_ns\":'$$_ct_s',\"end_ns\":'$$_ct_e'}}' >> {log}; "
             f"exit $$_ct_rc"
         )
 

@@ -966,14 +966,86 @@ class TestTimingWrapBSDDate:
         try:
             with open(log_path) as f:
                 line = f.readline().strip()
+            # The line MUST be valid JSON — substring-only checks miss
+            # malformed payloads (e.g. an unquoted target value), which
+            # ``BuildTimer.record_rules_from_make_timing`` would silently
+            # drop on ``JSONDecodeError``, leaving ``.ct-timing.json``
+            # with phase rows but no per-rule entries.
+            import json as _json
+
+            entry = _json.loads(line)
             # Critical guarantee: when only BSD `date` is available and
             # $EPOCHREALTIME is unset, our wrapper validates the date
             # output and substitutes 0 (well-formed) rather than
-            # ``1745247600`` (a truncated garbage int).  Look for the
-            # ``"start_ns":0`` and ``"end_ns":0`` substrings — which
-            # confirms the validation rejected the bogus BSD output.
-            assert '"start_ns":0' in line, f"BSD date corruption leaked into log line: {line!r}"
-            assert '"end_ns":0' in line, f"BSD date corruption leaked into log line: {line!r}"
+            # ``1745247600`` (a truncated garbage int).
+            assert entry["start_ns"] == 0, f"BSD date corruption leaked into log line: {line!r}"
+            assert entry["end_ns"] == 0, f"BSD date corruption leaked into log line: {line!r}"
+            assert entry["target"] == "foo.o", f"target field was mangled: {line!r}"
+        finally:
+            try:
+                os.remove(log_path)
+            except FileNotFoundError:
+                pass
+
+
+class TestTimingWrapEmitsValidJSON:
+    """Regression: ``_wrap_with_timing`` must emit a JSONL line that
+    actually parses as JSON.  The previous implementation embedded the
+    target as a bare token (``"target":/abs/path``), producing invalid
+    JSON that ``BuildTimer.record_rules_from_make_timing`` silently
+    dropped — leaving ``--timing`` runs with phase rows but no per-rule
+    entries.
+    """
+
+    def _make_args(self):
+        return SimpleNamespace(
+            verbose=0,
+            file_locking=False,
+            makefilename="Makefile",
+        )
+
+    def _backend_with_timer(self):
+        backend = MakefileBackend(args=self._make_args(), hunter=MagicMock())
+        backend._filesystem_type = None
+        return backend
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            "foo.o",
+            "/abs/path/to/widget_factory_4b501471279f.o",
+            "bin/blank/test_factory",
+            'path with "quote".o',
+            "path with space.o",
+            "path-with'apostrophe.o",
+        ],
+    )
+    def test_wrapped_recipe_emits_valid_json(self, tmp_path, target):
+        if not os.path.exists("/bin/bash"):
+            pytest.skip("requires /bin/bash")
+        import json as _json
+
+        backend = self._backend_with_timer()
+        wrapped = backend._wrap_with_timing("true", target)
+        # Convert Make's $$ back to a single $ so we can run via bash.
+        shell_recipe = wrapped.replace("$$", "$").lstrip("@+")
+        result = subprocess.run(
+            ["/bin/bash", "--norc", "--noprofile", "-c", shell_recipe],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"recipe failed: {result.stderr}"
+
+        log_path = backend._timing_log_path
+        if not os.path.exists(log_path):
+            pytest.skip(f"log path {log_path} not present after recipe run; cwd-dependent")
+        try:
+            with open(log_path) as f:
+                line = f.readline().strip()
+            entry = _json.loads(line)
+            assert entry["target"] == target, f"target round-tripped wrong: {entry['target']!r}"
+            assert isinstance(entry["start_ns"], int)
+            assert isinstance(entry["end_ns"], int)
         finally:
             try:
                 os.remove(log_path)
