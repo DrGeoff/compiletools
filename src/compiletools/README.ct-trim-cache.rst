@@ -8,7 +8,7 @@ Trim stale entries from shared object and PCH caches
 
 :Author: drgeoffathome@gmail.com
 :Date:   2026-04-21
-:Version: 8.2.3
+:Version: 8.3.0
 :Manual section: 1
 :Manual group: developers
 

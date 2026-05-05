@@ -8,7 +8,7 @@ Produce a shared object from a root source file with zero boilerplate
 
 :Author: drgeoffathome@gmail.com
 :Date:   2025-11-26
-:Version: 8.2.3
+:Version: 8.3.0
 :Manual section: 1
 :Manual group: developers
 
