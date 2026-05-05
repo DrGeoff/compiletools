@@ -6,7 +6,7 @@
 <link rel="index" title="Index" href="../genindex.html"><link rel="search" title="Search" href="../search.html"><link rel="next" title="ct-trim-cache" href="ct-trim-cache.html"><link rel="prev" title="ct-termux-install" href="ct-termux-install.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>ct-timing-report - compiletools 8.2.3</title>
+        <title>ct-timing-report - compiletools 8.3.0</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
@@ -162,7 +162,7 @@
       </label>
     </div>
     <div class="header-center">
-      <a href="../index.html"><div class="brand">compiletools 8.2.3</div></a>
+      <a href="../index.html"><div class="brand">compiletools 8.3.0</div></a>
     </div>
     <div class="header-right">
       <div class="theme-toggle-container theme-toggle-header">
@@ -183,7 +183,7 @@
       
       <div class="sidebar-sticky"><a class="sidebar-brand" href="../index.html">
   
-  <span class="sidebar-brand-text">compiletools 8.2.3</span>
+  <span class="sidebar-brand-text">compiletools 8.3.0</span>
   
 </a><form class="sidebar-search-container" method="get" action="../search.html" role="search">
   <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
@@ -276,7 +276,7 @@
 <dd class="field-even"><p>2026-04-06</p>
 </dd>
 <dt class="field-odd">Version<span class="colon">:</span></dt>
-<dd class="field-odd"><p>8.2.3</p>
+<dd class="field-odd"><p>8.3.0</p>
 </dd>
 <dt class="field-even">Manual section<span class="colon">:</span></dt>
 <dd class="field-even"><p>1</p>
@@ -295,10 +295,11 @@
 It supports four output modes: an interactive TUI, a static summary table,
 a comparison between two runs, and Chrome Trace export for visualization
 in Perfetto.</p>
-<p>When run without arguments, ct-timing-report launches an interactive
-ncdu-style TUI (requires <code class="docutils literal notranslate"><span class="pre">textual</span></code>; install with
-<code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">'compiletools[tui]'</span></code>).  If textual is not installed, it
-falls back to the static summary table.</p>
+<p>When run without arguments, ct-timing-report launches an interactive TUI
+with two views — a tree view (default) and a Gantt timeline view — that
+can be switched between in-app.  Requires <code class="docutils literal notranslate"><span class="pre">textual</span></code> (install with
+<code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">'compiletools[tui]'</span></code>); falls back to the static summary
+table if textual is not installed.</p>
 <p>The timing file (<code class="docutils literal notranslate"><span class="pre">.ct-timing.json</span></code>) is auto-detected in the current
 directory, <code class="docutils literal notranslate"><span class="pre">bin/</span></code>, or <code class="docutils literal notranslate"><span class="pre">obj/</span></code> if not specified explicitly.</p>
 </section>
@@ -328,16 +329,47 @@ differences per phase and per rule (top 5 largest deltas per phase).</p>
 </section>
 <section id="interactive-tui">
 <h3>INTERACTIVE TUI<a class="headerlink" href="#interactive-tui" title="Link to this heading">¶</a></h3>
-<p>The TUI presents a tree view of build phases and individual compile/link
-rules with time, percentage, and a proportional bar chart.</p>
+<p>The TUI has two views.  Press <strong>v</strong> in the tree view to open the
+timeline; press <strong>t</strong> or <strong>escape</strong> in the timeline to return to the
+tree.</p>
+<section id="tree-view-ncdu-style">
+<h4>Tree view (ncdu-style)<a class="headerlink" href="#tree-view-ncdu-style" title="Link to this heading">¶</a></h4>
+<p>A hierarchical view of build phases and individual compile/link rules
+with time, percentage, and a proportional bar chart.</p>
 <p>Keybindings:</p>
 <ul class="simple">
 <li><p><strong>Arrows / j / k</strong> — navigate</p></li>
 <li><p><strong>Enter / Right</strong> — expand node</p></li>
 <li><p><strong>Left</strong> — collapse node</p></li>
 <li><p><strong>s</strong> — cycle sort mode (time / name)</p></li>
+<li><p><strong>v</strong> — switch to timeline view</p></li>
 <li><p><strong>q</strong> — quit</p></li>
 </ul>
+</section>
+<section id="timeline-view-gantt">
+<h4>Timeline view (Gantt)<a class="headerlink" href="#timeline-view-gantt" title="Link to this heading">¶</a></h4>
+<p>A swimlane-style view of every rule plotted on a wall-clock axis with
+parallel rules packed into separate lanes.  Phases run as a coloured
+header band above the lanes; rules are coloured by category (compile,
+link, static_library, shared_library, test).  Selected events are
+outlined with rose <code class="docutils literal notranslate"><span class="pre">┃</span></code> brackets; chevrons (<code class="docutils literal notranslate"><span class="pre">‹</span></code> / <code class="docutils literal notranslate"><span class="pre">›</span></code>) flag bars
+that extend past the viewport.  A status panel at the bottom shows the
+selected event’s target, category, elapsed time, start/end relative to
+build start, lane, and source path.</p>
+<p>Keybindings:</p>
+<ul class="simple">
+<li><p><strong>+ / -</strong> — zoom in / out (anchored on selection)</p></li>
+<li><p><strong>0</strong> — fit entire build to width</p></li>
+<li><p><strong>← / → / h / l</strong> — pan</p></li>
+<li><p><strong>↑ / ↓ / k / j</strong> — switch lanes (selection follows)</p></li>
+<li><p><strong>n / p</strong> — next / previous event in time order</p></li>
+<li><p><strong>Home / End</strong> — first / last event</p></li>
+<li><p><strong>Mouse click</strong> — select event under cursor</p></li>
+<li><p><strong>t / escape</strong> — return to tree view</p></li>
+<li><p><strong>q</strong> — quit</p></li>
+<li><p><strong>?</strong> — help</p></li>
+</ul>
+</section>
 </section>
 <section id="examples">
 <h3>EXAMPLES<a class="headerlink" href="#examples" title="Link to this heading">¶</a></h3>
@@ -346,7 +378,8 @@ rules with time, percentage, and a proportional bar chart.</p>
 <span class="n">ct</span><span class="o">-</span><span class="n">timing</span><span class="o">-</span><span class="n">report</span> <span class="o">.</span><span class="n">ct</span><span class="o">-</span><span class="n">timing</span><span class="o">.</span><span class="n">json</span>
 </pre></div>
 </div>
-<p>Launch the interactive TUI (auto-detects timing file):</p>
+<p>Launch the interactive TUI (auto-detects timing file; press <strong>v</strong> for
+the Gantt timeline view):</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ct</span><span class="o">-</span><span class="n">timing</span><span class="o">-</span><span class="n">report</span>
 </pre></div>
 </div>
@@ -430,7 +463,11 @@ rules with time, percentage, and a proportional bar chart.</p>
 <li><a class="reference internal" href="#synopsis">SYNOPSIS</a></li>
 <li><a class="reference internal" href="#description">DESCRIPTION</a></li>
 <li><a class="reference internal" href="#options">OPTIONS</a></li>
-<li><a class="reference internal" href="#interactive-tui">INTERACTIVE TUI</a></li>
+<li><a class="reference internal" href="#interactive-tui">INTERACTIVE TUI</a><ul>
+<li><a class="reference internal" href="#tree-view-ncdu-style">Tree view (ncdu-style)</a></li>
+<li><a class="reference internal" href="#timeline-view-gantt">Timeline view (Gantt)</a></li>
+</ul>
+</li>
 <li><a class="reference internal" href="#examples">EXAMPLES</a></li>
 <li><a class="reference internal" href="#see-also">SEE ALSO</a></li>
 </ul>
@@ -446,7 +483,7 @@ rules with time, percentage, and a proportional bar chart.</p>
       
     </aside>
   </div>
-</div><script src="../_static/documentation_options.js?v=2231f592"></script>
+</div><script src="../_static/documentation_options.js?v=641c35a1"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/scripts/furo.js?v=46bd48cc"></script>
