@@ -2288,6 +2288,31 @@ class TestBuildLogDirResolver:
         ns = cap.parse_args(["--build-log-dir", "/tmp/build-logs"])
         assert ns.build_log_dir == "/tmp/build-logs"
 
+    def test_no_call_site_uses_objdir_for_slurm_log_filenames(self):
+        """Regression guard: every slurm-ct-*.out path must route through _build_log_dir().
+
+        If this fails, a future change has reintroduced an objdir-resident
+        slurm log path.  Add a call to self._build_log_dir() instead.
+        """
+        import compiletools.trace_backend as tb
+
+        source = open(tb.__file__, encoding="utf-8").read()
+        # Find every line that constructs a slurm-ct-*.out filename.
+        offending = []
+        for lineno, line in enumerate(source.splitlines(), start=1):
+            if "slurm-ct-" not in line or ".out" not in line:
+                continue
+            # Allowed: lines that compose the filename with _build_log_dir()
+            # (the helper is called separately, so the assignment line itself
+            # contains the literal "f\"slurm-ct-...\"").  Forbidden: lines
+            # that join with self.args.objdir or real_objdir on the same line.
+            if "self.args.objdir" in line or "real_objdir" in line:
+                offending.append((lineno, line.strip()))
+        assert not offending, (
+            "slurm log filenames must be joined with self._build_log_dir(), "
+            f"not objdir.  Offending lines: {offending}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Sbatch routing through _build_log_dir
