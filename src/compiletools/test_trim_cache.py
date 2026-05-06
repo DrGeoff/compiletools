@@ -280,9 +280,10 @@ class TestTrimObjdir:
         """Anything at the top level of ``$objdir/`` whose name is not a
         2-hex bucket directory must be invisible to the scanner.
         ``TraceStore/`` lives there by design; ``slurm-ct-*.out`` files only
-        appear here if the user has overridden ``--build-log-dir`` to point
-        back into ``--objdir`` (the default is ``<bindir>/logs/``).  Either
-        way, the scanner ignores them.
+        appear here if the user has overridden ``--diagnostics-dir`` to point
+        back into ``--objdir`` (the default is
+        ``<bindir>/diagnostics/<invocation>/``).  Either way, the scanner
+        ignores them.
         """
         objdir = str(tmp_path / "obj")
         os.makedirs(objdir)
