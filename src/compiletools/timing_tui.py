@@ -44,6 +44,26 @@ def _label(event: TimingEvent, total: float) -> str:
     return f"{_format_time(event.elapsed_s):>9s}  {pct:5.1f}%  {bar}  {name}"
 
 
+def _category_label(
+    cat: str, wall: float, cpu: float, parallelism: float, total: float
+) -> str:
+    """Format a per-rule-type aggregation node.
+
+    Shows the same numbers as the static summary table's indented rows:
+    Wall (union of category intervals), CPU (sum of rule durations),
+    parallelism factor (CPU / Wall).  Bar width tracks Wall as a
+    fraction of total build time so it lines up visually with phase
+    rows.
+    """
+    bar = _bar(wall / total if total > 0 else 0)
+    name = cat.replace("_", " ").title()
+    return (
+        f"{_format_time(wall):>9s}  "
+        f"CPU {_format_time(cpu):>9s}  "
+        f"{parallelism:5.1f}×  {bar}  {name}"
+    )
+
+
 # ----------------------------------------------------------- sort modes
 
 SORT_MODES = ["time", "name"]
@@ -104,13 +124,30 @@ class TimingReportApp(App):
         events: list[TimingEvent],
         total: float,
     ) -> None:
-        """Recursively populate tree nodes from timing events."""
+        """Recursively populate tree nodes from timing events.
+
+        For phases that the timer aggregates by category (build_execution,
+        test_execution), insert a category-level grouping node between
+        the phase and its individual rules so the tree exposes the same
+        Wall / CPU / parallelism numbers as the static summary table.
+        """
         mode = SORT_MODES[self._sort_mode_idx]
         sorted_events = sorted(events, key=_sort_key(mode))
 
         for event in sorted_events:
             lbl = _label(event, total)
-            if event.children:
+            cat_rows = (
+                self._timer.aggregate_by_category(event)
+                if event.category == "phase"
+                else []
+            )
+            if cat_rows:
+                phase_node = parent.add(lbl, expand=True)
+                for cat, wall, cpu, parallelism, cat_events in cat_rows:
+                    cat_lbl = _category_label(cat, wall, cpu, parallelism, total)
+                    cat_node = phase_node.add(cat_lbl, expand=False)
+                    self._populate(cat_node, cat_events, total)
+            elif event.children:
                 node = parent.add(lbl, expand=event.category == "phase")
                 self._populate(node, event.children, total)
             else:

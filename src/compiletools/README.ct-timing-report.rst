@@ -41,6 +41,7 @@ TIMING_FILE
 
 --summary
     Print a static Rich summary table to stdout (non-interactive).
+    See `SUMMARY TABLE`_ for column semantics.
 
 --compare BEFORE AFTER
     Compare two timing files and display a delta table showing time
@@ -60,8 +61,13 @@ tree.
 Tree view (ncdu-style)
 ----------------------
 
-A hierarchical view of build phases and individual compile/link rules
-with time, percentage, and a proportional bar chart.
+A hierarchical view of build phases, per-rule-type aggregations, and
+individual rules.  Top-level rows are phases (``Build Execution``,
+``Test Execution``, ...).  Inside the parallelizable phases (build and
+test execution), an intermediate level groups rules by category
+(``Compile``, ``Link``, ``Test``, ...) and shows the same Wall / CPU /
+parallelism numbers as the static summary table.  Individual rules
+appear as leaves under their category.
 
 Keybindings:
 
@@ -96,6 +102,36 @@ Keybindings:
 - **t / escape** — return to tree view
 - **q** — quit
 - **?** — help
+
+SUMMARY TABLE
+=============
+
+The static summary (printed inline by ``ct-cake --timing`` and on demand
+by ``ct-timing-report --summary``) has four columns:
+
+================== =========================================================
+Column             Meaning
+================== =========================================================
+Phase              Phase name (top-level rows) or rule category (indented).
+Wall (s)           Wall-clock elapsed.  For phases, the phase span.  For
+                   indented sub-rows, the union of intervals during which
+                   any rule of that category was running -- i.e. real
+                   elapsed time spent on the category, accounting for
+                   parallel overlap.
+CPU (s)            Sum of per-rule durations within the category (total
+                   work performed across all rules).  Blank for phase
+                   rows, which are not parallel-aggregated.
+% / parallelism    Phase rows: share of total build wall-clock (``99.2%``).
+                   Indented rows: parallelism factor = CPU ÷ Wall
+                   (``15.2×`` means that category averaged 15.2 cores
+                   busy).  The multiplier is reported instead of a
+                   percentage because CPU/wall ratios on ``-j N`` builds
+                   routinely exceed 10×, and percentages above 100% are
+                   not informative.
+================== =========================================================
+
+Below the table, ``Slowest compilations`` and ``Slowest tests`` list the
+ten longest individual rule durations from the run.
 
 EXAMPLES
 ========

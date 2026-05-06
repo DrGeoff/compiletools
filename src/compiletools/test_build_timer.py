@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from compiletools.build_timer import BuildTimer, TimingEvent, _classify_output
+from compiletools.build_timer import BuildTimer, TimingEvent, _classify_output, _union_span
 
 # ------------------------------------------------------------------ TimingEvent
 
@@ -665,8 +665,13 @@ class TestSummaryTableCPUTimeColumn:
         table = timer.summary_table()
         assert table is not None
         headers = [c.header for c in table.columns]
-        assert any("CPU-time" in h or "sum" in h for h in headers), (
-            f"Expected CPU-time-aware column header, got: {headers}"
+        # Wall and CPU are presented as separate columns; sub-rows fill
+        # CPU with the per-rule duration sum (which can exceed Wall).
+        assert any("Wall" in h for h in headers), (
+            f"Expected a Wall column, got: {headers}"
+        )
+        assert any("CPU" in h for h in headers), (
+            f"Expected a CPU column distinct from Wall, got: {headers}"
         )
 
     def test_summed_children_may_exceed_phase_wall_clock(self):
@@ -690,6 +695,113 @@ class TestSummaryTableCPUTimeColumn:
         assert sum_children > phase.elapsed_s
         # summary_table must still render without error
         assert timer.summary_table() is not None
+
+
+# ----------------------------------------------------------- _union_span
+
+
+class TestUnionSpan:
+    @staticmethod
+    def _ev(start: float, end: float) -> TimingEvent:
+        return TimingEvent(name="r", category="compile", start_s=start, end_s=end)
+
+    def test_disjoint_intervals_sum(self):
+        events = [self._ev(0.0, 1.0), self._ev(2.0, 3.5)]
+        assert _union_span(events) == pytest.approx(2.5)
+
+    def test_overlapping_intervals_merged(self):
+        events = [self._ev(0.0, 2.0), self._ev(1.0, 3.0)]
+        assert _union_span(events) == pytest.approx(3.0)
+
+    def test_fully_contained_interval(self):
+        events = [self._ev(0.0, 5.0), self._ev(1.0, 2.0)]
+        assert _union_span(events) == pytest.approx(5.0)
+
+    def test_in_flight_event_skipped(self):
+        finished = self._ev(0.0, 1.0)
+        in_flight = TimingEvent(name="r", category="compile", start_s=2.0, end_s=None)
+        assert _union_span([finished, in_flight]) == pytest.approx(1.0)
+
+    def test_empty(self):
+        assert _union_span([]) == 0.0
+
+
+# ----------------------------------------- aggregate_by_category
+
+
+class TestAggregateByCategory:
+    """The category aggregation is the single source of truth shared by
+    the static summary table and the Textual TUI tree.  Both interfaces
+    must show the same Wall / CPU / parallelism numbers; if this helper
+    drifts, the two views silently disagree."""
+
+    def _build_timer_with_overlap(self) -> BuildTimer:
+        # Two compiles: 0..2s and 1..3s -> Wall=3, CPU=4, parallelism=4/3
+        # One link: 3..4s -> Wall=1, CPU=1, parallelism=1.0
+        timer = BuildTimer(enabled=True)
+        phase = TimingEvent(name="build_execution", category="phase", start_s=0.0, end_s=4.0)
+        phase.children.append(
+            TimingEvent(name="a", category="compile", start_s=0.0, end_s=2.0, target="a.o", source="a.cpp")
+        )
+        phase.children.append(
+            TimingEvent(name="b", category="compile", start_s=1.0, end_s=3.0, target="b.o", source="b.cpp")
+        )
+        phase.children.append(
+            TimingEvent(name="app", category="link", start_s=3.0, end_s=4.0, target="app")
+        )
+        timer._root.children.append(phase)
+        timer._root.end_s = 4.0
+        return timer
+
+    def test_wall_is_union_not_sum(self):
+        timer = self._build_timer_with_overlap()
+        phase = timer.phases[0]
+        rows = timer.aggregate_by_category(phase)
+        compile_row = next(r for r in rows if r[0] == "compile")
+        cat, wall, cpu, parallelism, _ = compile_row
+        assert wall == pytest.approx(3.0)  # union [0,3]
+        assert cpu == pytest.approx(4.0)   # 2 + 2
+        assert parallelism == pytest.approx(4.0 / 3.0)
+
+    def test_sorted_by_cpu_descending(self):
+        timer = self._build_timer_with_overlap()
+        rows = timer.aggregate_by_category(timer.phases[0])
+        cpus = [r[2] for r in rows]
+        assert cpus == sorted(cpus, reverse=True)
+
+    def test_non_aggregating_phase_returns_empty(self):
+        timer = BuildTimer(enabled=True)
+        phase = TimingEvent(name="build_graph", category="phase", start_s=0.0, end_s=1.0)
+        phase.children.append(
+            TimingEvent(name="x", category="compile", start_s=0.0, end_s=1.0, target="x.o")
+        )
+        timer._root.children.append(phase)
+        assert timer.aggregate_by_category(phase) == []
+
+    def test_empty_phase_returns_empty(self):
+        timer = BuildTimer(enabled=True)
+        phase = TimingEvent(name="build_execution", category="phase", start_s=0.0, end_s=0.0)
+        timer._root.children.append(phase)
+        assert timer.aggregate_by_category(phase) == []
+
+    def test_summary_table_uses_aggregation(self):
+        # Numbers in the rendered cells must equal what aggregate_by_category
+        # returns -- they're the same source of truth, formatted differently.
+        timer = self._build_timer_with_overlap()
+        rows = timer.aggregate_by_category(timer.phases[0])
+        compile_row = next(r for r in rows if r[0] == "compile")
+        _, wall, cpu, parallelism, _ = compile_row
+
+        table = timer.summary_table()
+        assert table is not None
+        # Materialize cell text per column.  Rich doesn't expose row data
+        # directly; iterate columns and zip their cells.
+        cols = [list(c.cells) for c in table.columns]
+        cells = list(zip(*cols))
+        compile_cells = next(row for row in cells if "Compile" in row[0])
+        assert compile_cells[1] == f"{wall:.2f}"
+        assert compile_cells[2] == f"{cpu:.2f}"
+        assert compile_cells[3] == f"{parallelism:.1f}×"
 
 
 # ----------------------------------------- ANSI in non-TTY stderr

@@ -15,7 +15,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
     from compiletools.build_graph import BuildGraph
@@ -88,6 +88,29 @@ class TimingEvent:
 
 # -- JSON format version --
 _FORMAT_VERSION = 1
+
+
+def _union_span(events: list["TimingEvent"]) -> float:
+    """Total wall-clock time during which any of ``events`` was running.
+
+    Merges overlapping [start_s, end_s) intervals.  Events still in
+    flight (end_s is None) are skipped.
+    """
+    intervals = sorted(
+        (e.start_s, e.end_s) for e in events if e.end_s is not None
+    )
+    if not intervals:
+        return 0.0
+    total = 0.0
+    cur_start, cur_end = intervals[0]
+    for s, e in intervals[1:]:
+        if s <= cur_end:
+            cur_end = max(cur_end, e)
+        else:
+            total += cur_end - cur_start
+            cur_start, cur_end = s, e
+    total += cur_end - cur_start
+    return total
 
 
 class BuildTimer:
@@ -447,20 +470,59 @@ class BuildTimer:
                 tid_counter[0] += 1
             self._chrome_trace_walk(child, events, tid=child_tid, pid=pid, tid_counter=tid_counter, origin_s=origin_s)
 
+    # ----------------------------------------------- per-category aggregation
+
+    AGGREGATING_PHASES: ClassVar[frozenset[str]] = frozenset(
+        {"build_execution", "test_execution"}
+    )
+
+    def aggregate_by_category(
+        self, phase: TimingEvent
+    ) -> list[tuple[str, float, float, float, list[TimingEvent]]]:
+        """Group a phase's child rules by category and aggregate them.
+
+        Returns ``(category, wall, cpu, parallelism, events)`` tuples
+        sorted by descending CPU, where:
+          - ``wall`` is the union of intervals during which any rule of
+            this category was running (real elapsed, accounting for
+            parallel overlap).
+          - ``cpu`` is the sum of per-rule durations (total work).
+          - ``parallelism`` is ``cpu / wall`` (0 when ``wall`` is 0).
+
+        Returns an empty list for phases not in ``AGGREGATING_PHASES``
+        or with no children — callers should treat that as "no
+        aggregation row to render".
+        """
+        if phase.name not in self.AGGREGATING_PHASES or not phase.children:
+            return []
+        by_cat: dict[str, list[TimingEvent]] = {}
+        for child in phase.children:
+            by_cat.setdefault(child.category, []).append(child)
+        rows = []
+        for cat, events in by_cat.items():
+            cpu = sum(e.elapsed_s for e in events)
+            wall = _union_span(events)
+            parallelism = cpu / wall if wall > 0 else 0.0
+            rows.append((cat, wall, cpu, parallelism, events))
+        rows.sort(key=lambda r: -r[2])
+        return rows
+
     # --------------------------------------------------------- summary table
 
     def summary_table(self):
         """Return a Rich Table summarizing the build timing.
 
-        Phase rows show wall-clock elapsed time and the phase's share of
-        total wall-clock build time.
+        Phase rows show wall-clock elapsed time (Wall column) and the
+        phase's share of total build wall-clock (% column).  CPU column
+        is blank for phases.
 
-        Sub-rows (per-rule-type) are summed wall-clock spans across
-        rules that ran inside the phase.  Because rules execute in
-        parallel, that sum may exceed the phase wall-clock by up to N
-        (with ``-j N``); the column is therefore labeled
-        ``CPU-time (sum)`` and the ``%`` column for sub-rows is the
-        share of the *phase* wall-clock (so >100% indicates parallelism).
+        Sub-rows (per-rule-type) show:
+          - Wall: union of intervals during which any rule of this
+            category was running (real elapsed time spent on this
+            category, accounting for parallel overlap).
+          - CPU: sum of per-rule durations (total work performed).
+          - %/parallelism: parallelism factor = CPU ÷ Wall, e.g.
+            ``15.1×`` means the category averaged 15.1 cores busy.
 
         Returns None if rich is not available.
         """
@@ -473,13 +535,15 @@ class BuildTimer:
         table = Table(
             title=f"Build Timing Report ({self._root.elapsed_s:.1f}s total)",
             caption=(
-                "Phase rows are wall-clock; indented rows are CPU-time (sum) "
-                "across parallel rules — may exceed phase wall-clock with -j N."
+                "Phase rows: wall-clock & % of total build. "
+                "Indented rows: Wall = union of category intervals; "
+                "CPU = sum of rule durations; parallelism = CPU ÷ Wall."
             ),
         )
         table.add_column("Phase", style="cyan", no_wrap=True)
-        table.add_column("Time / CPU-time (sum) (s)", justify="right", style="magenta")
-        table.add_column("%", justify="right")
+        table.add_column("Wall (s)", justify="right", style="magenta")
+        table.add_column("CPU (s)", justify="right", style="magenta")
+        table.add_column("% / parallelism", justify="right")
 
         total = self._root.elapsed_s or 1.0
 
@@ -488,22 +552,16 @@ class BuildTimer:
             table.add_row(
                 phase.name.replace("_", " ").title(),
                 f"{phase.elapsed_s:.2f}",
+                "",
                 f"{pct:.1f}%",
             )
-            # Sub-aggregate rules by type within build_execution
-            if phase.children and phase.name in ("build_execution", "test_execution"):
-                type_totals: dict[str, float] = {}
-                for child in phase.children:
-                    cat = child.category
-                    type_totals[cat] = type_totals.get(cat, 0.0) + child.elapsed_s
-                phase_wall = phase.elapsed_s or 1.0
-                for cat, cat_time in sorted(type_totals.items(), key=lambda x: -x[1]):
-                    cat_pct = (cat_time / phase_wall) * 100
-                    table.add_row(
-                        f"  {cat.replace('_', ' ').title()}",
-                        f"{cat_time:.2f}",
-                        f"{cat_pct:.1f}%",
-                    )
+            for cat, wall, cpu, parallelism, _events in self.aggregate_by_category(phase):
+                table.add_row(
+                    f"  {cat.replace('_', ' ').title()}",
+                    f"{wall:.2f}",
+                    f"{cpu:.2f}",
+                    f"{parallelism:.1f}×",
+                )
 
         return table
 
