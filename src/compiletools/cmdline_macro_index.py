@@ -24,8 +24,14 @@ class CmdlineMacroIndex:
     ):
         self._cmdline_d_macro_names = cmdline_d_macro_names
         self._bytes_provider = bytes_provider
+        # Pre-tokenize each macro name to ASCII bytes once, avoiding N*M
+        # redundant `bytes(str(macro_name), "ascii")` conversions per TU
+        # (N transitive headers x M cmdline-D macros).
+        self._needles: dict[sz.Str, bytes] = {
+            macro: bytes(str(macro), "ascii") for macro in cmdline_d_macro_names
+        }
         self._is_referenced_cache: dict[tuple[str, str], bool] = {}
-        self._tu_cache: dict[tuple[str, str], frozenset[sz.Str]] = {}
+        self._tu_cache: dict[tuple[str, str, str], frozenset[sz.Str]] = {}
 
     def is_referenced(self, content_hash: str, macro_name: sz.Str) -> bool:
         """True if the file contains macro_name as a C identifier."""
@@ -47,13 +53,15 @@ class CmdlineMacroIndex:
         """Subset of cmdline_d_macro_names referenced by the TU or its headers.
 
         The TU's own bytes (identified by ``tu_content_hash``) are always scanned
-        alongside everything in ``transitive_content_hashes``. The cache key
-        remains ``(tu_filename, dep_hash)`` since ``tu_content_hash`` is
-        determined by ``tu_filename``.
+        alongside everything in ``transitive_content_hashes``. The cache key is
+        ``(tu_filename, tu_content_hash, dep_hash)`` so that if the same logical
+        TU name ever maps to different content within one ``CmdlineMacroIndex``
+        lifetime (e.g., a file edited mid-build), the cache cannot return a
+        stale answer.
         """
         if not self._cmdline_d_macro_names:
             return frozenset()
-        cache_key = (tu_filename, dep_hash)
+        cache_key = (tu_filename, tu_content_hash, dep_hash)
         cached = self._tu_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -72,7 +80,12 @@ class CmdlineMacroIndex:
         data = self._bytes_provider(content_hash)
         if not data:
             return False
-        needle = bytes(str(macro_name), "ascii")
+        needle = self._needles.get(macro_name)
+        if needle is None:
+            # `is_referenced` accepts arbitrary macro names; fall back to an
+            # on-the-fly conversion when the caller passes one that wasn't
+            # pre-tokenized in __init__.
+            needle = bytes(str(macro_name), "ascii")
         haystack = sz.Str(data)
         needle_len = len(needle)
         data_len = len(data)

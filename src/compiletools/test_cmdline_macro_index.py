@@ -102,7 +102,7 @@ def test_tu_referenced_macros_scans_tu_bytes_when_transitive_empty():
     assert "hash_tu" in provider.calls
 
 
-def test_tu_referenced_macros_caches_by_dep_hash():
+def test_tu_referenced_macros_caches_per_tu_state():
     byte_dict = {
         "hash_tu": b"int x = FOO;",
         "hash_h1": b"int y = BAR;",
@@ -110,6 +110,7 @@ def test_tu_referenced_macros_caches_by_dep_hash():
     idx, provider = _index_with(byte_dict, ["FOO", "BAR"])
     idx.tu_referenced_macros("tu.cpp", "hash_tu", "depABC", ["hash_h1"])
     calls_after_first = provider.call_count
+    # Same (tu_filename, tu_content_hash, dep_hash) -> cache hit, no new provider calls.
     idx.tu_referenced_macros("tu.cpp", "hash_tu", "depABC", ["hash_h1"])
     assert provider.call_count == calls_after_first
 
