@@ -13,6 +13,7 @@ import warnings
 
 # Only used for the verbose print.
 import configargparse
+import stringzilla as sz
 
 import compiletools.configutils
 import compiletools.git_utils
@@ -653,6 +654,140 @@ def extract_command_line_macros_sz(args, flag_sources_sz, verbose=0):
                     )
 
     return macros
+
+
+def cmdline_d_macro_names(args, flag_sources=None, verbose=0) -> frozenset:
+    """Set of macro names defined via cmdline -D flags (CPPFLAGS/CFLAGS/CXXFLAGS).
+
+    Excludes compiler builtins. The returned set is the universe of macros
+    that the per-TU cache-key scoping will consider for filtering.
+
+    Recognizes both attached form (-DFOO, -DFOO=bar) and detached form
+    (-D FOO, -D FOO=bar) of the -D flag. The macro VALUE is irrelevant
+    here -- only the name matters for the scope-filter universe.
+
+    Args:
+        args: Parsed arguments object (must have CPPFLAGS/CFLAGS/CXXFLAGS attrs)
+        flag_sources: List of flag names to extract from
+            (default: ['CPPFLAGS', 'CFLAGS', 'CXXFLAGS'])
+        verbose: Verbosity level (uses args.verbose if 0)
+
+    Returns:
+        frozenset[sz.Str]: Macro names from cmdline -D flags.
+    """
+    if verbose == 0 and hasattr(args, "verbose"):
+        verbose = args.verbose
+
+    if flag_sources is None:
+        flag_sources = ["CPPFLAGS", "CFLAGS", "CXXFLAGS"]
+
+    names = set()
+    for flag_name in flag_sources:
+        flag_value = getattr(args, flag_name, None)
+        if not flag_value:
+            continue
+
+        if isinstance(flag_value, list):
+            flag_string = " ".join(flag_value)
+        else:
+            flag_string = flag_value
+
+        try:
+            tokens = split_command_cached(flag_string)
+        except ValueError:
+            tokens = flag_string.split()
+
+        i = 0
+        n = len(tokens)
+        while i < n:
+            tok = tokens[i]
+            macro_def = None
+            if tok == "-D":
+                # Detached form: name is the next token.
+                if i + 1 < n:
+                    macro_def = tokens[i + 1]
+                i += 2
+            elif tok.startswith("-D"):
+                macro_def = tok[2:]
+                i += 1
+            else:
+                i += 1
+                continue
+
+            if not macro_def:
+                continue
+            eq_pos = macro_def.find("=")
+            macro_name = macro_def[:eq_pos] if eq_pos >= 0 else macro_def
+            if macro_name:
+                names.add(macro_name)
+                if verbose >= 9:
+                    print(f"cmdline_d_macro_names: added {macro_name} from {flag_name}")
+
+    return frozenset(sz.Str(name) for name in names)
+
+
+def tokenize_compile_flags(
+    cppflags,
+    cflags,
+    cxxflags,
+):
+    """Tokenize compile-flag strings into structured lists with -D/-U removed.
+
+    Used by MacroState's structured build-context hash. -D and -U entries
+    are stripped because cmdline -D macros are hashed separately via the
+    per-TU scoping mechanism. Other flags (-I, -O, -std, -W, -f...) pass
+    through unchanged.
+
+    Each input may be a string (will be shlex-split, with simple-split
+    fallback on ValueError, matching extract_command_line_macros) or a
+    pre-tokenized list of strings.
+
+    Both attached form (-DFOO, -DFOO=bar, -UFOO, -ITrue/path) and
+    detached form (-D FOO, -D FOO=bar, -U FOO, -I /path) of -D/-U are
+    stripped. Detached form drops both the flag token and the following
+    value token.
+
+    Returns:
+        (cppflags_tokens, cflags_tokens, cxxflags_tokens) -- three lists
+        of remaining tokens, in original order, with -D/-U stripped.
+    """
+
+    def _to_tokens(value):
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return list(value)
+        if not value:
+            return []
+        try:
+            return split_command_cached(value)
+        except ValueError:
+            return value.split()
+
+    def _strip_d_u(tokens):
+        out = []
+        i = 0
+        n = len(tokens)
+        while i < n:
+            tok = tokens[i]
+            if tok == "-D" or tok == "-U":
+                # Detached form: skip flag and the next token (value).
+                # Dangling flag at end of list: skip just the flag.
+                i += 2
+                continue
+            if tok.startswith("-D") or tok.startswith("-U"):
+                # Attached form: skip this single token.
+                i += 1
+                continue
+            out.append(tok)
+            i += 1
+        return out
+
+    return (
+        _strip_d_u(_to_tokens(cppflags)),
+        _strip_d_u(_to_tokens(cflags)),
+        _strip_d_u(_to_tokens(cxxflags)),
+    )
 
 
 def clear_cache():
