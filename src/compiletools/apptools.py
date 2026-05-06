@@ -656,7 +656,7 @@ def extract_command_line_macros_sz(args, flag_sources_sz, verbose=0):
     return macros
 
 
-def cmdline_d_macro_names(args, flag_sources=None, verbose=0) -> frozenset:
+def cmdline_d_macro_names(args, flag_sources=None, verbose=0) -> frozenset[sz.Str]:
     """Set of macro names defined via cmdline -D flags (CPPFLAGS/CFLAGS/CXXFLAGS).
 
     Excludes compiler builtins. The returned set is the universe of macros
@@ -730,7 +730,7 @@ def tokenize_compile_flags(
     cppflags,
     cflags,
     cxxflags,
-):
+) -> tuple[list[str], list[str], list[str]]:
     """Tokenize compile-flag strings into structured lists with -D/-U removed.
 
     Used by MacroState's structured build-context hash. -D and -U entries
