@@ -663,6 +663,17 @@ class SlurmBackend(ShakeBackend):
             "Tune upward on busy clusters where queue waits exceed the default. "
             "Default: 7200.0 (2 hours)",
         )
+        cap.add(
+            "--build-log-dir",
+            default=None,
+            help=(
+                "Directory for per-job build log files. Currently used by "
+                "the slurm backend for slurm-ct-<prefix>-<chunk>-%%a.out. "
+                "Defaults to <bindir>/logs/. Must NOT be set to --objdir, "
+                "which is a content-addressable cache: log files have no "
+                "eviction path there and will pollute the cache forever."
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Core execute() — overrides ShakeBackend's async engine

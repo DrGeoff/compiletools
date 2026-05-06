@@ -2263,3 +2263,25 @@ class TestBuildLogDirResolver:
             backend.args.build_log_dir = ""
             expected = os.path.join(backend.args.bindir, "logs")
             assert backend._build_log_dir() == expected
+
+    def test_argparse_registers_option_with_none_default(self):
+        """--build-log-dir is registered on SlurmBackend's argparse group with default None."""
+        import configargparse
+
+        cap = configargparse.ArgumentParser()
+        # Add bindir first because SlurmBackend.add_arguments only adds
+        # slurm-* options; bindir comes from add_output_directory_arguments
+        # in real builds.  We just need argparse parsing to succeed.
+        cap.add_argument("--bindir", default="bin/blank")
+        SlurmBackend.add_arguments(cap)
+        ns = cap.parse_args([])
+        assert ns.build_log_dir is None
+
+    def test_argparse_accepts_explicit_value(self):
+        import configargparse
+
+        cap = configargparse.ArgumentParser()
+        cap.add_argument("--bindir", default="bin/blank")
+        SlurmBackend.add_arguments(cap)
+        ns = cap.parse_args(["--build-log-dir", "/tmp/build-logs"])
+        assert ns.build_log_dir == "/tmp/build-logs"
