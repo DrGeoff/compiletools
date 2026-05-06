@@ -1286,7 +1286,7 @@ class SlurmBackend(ShakeBackend):
             if chunk_id is None or prefix is None:
                 # No chunk index available (e.g. synthetic 'retry'/'retry-cap' job_ids).
                 continue
-            log_path = os.path.join(self.args.objdir, f"slurm-ct-{prefix}-{chunk_id}-{task_idx}.out")
+            log_path = os.path.join(self._build_log_dir(), f"slurm-ct-{prefix}-{chunk_id}-{task_idx}.out")
             try:
                 with open(log_path) as fh:
                     content = fh.read().strip()

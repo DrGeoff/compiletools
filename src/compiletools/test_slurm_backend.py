@@ -1925,11 +1925,12 @@ class TestLogLookupExactChunk:
             # Pre-set invocation prefix and chunk maps directly
             backend._invocation_prefix = "testprefix"
             backend._chunk_id_for_job = {"100": 0, "200": 1}
-            objdir = backend.args.objdir
+            log_dir = backend._build_log_dir()
+            os.makedirs(log_dir, exist_ok=True)
 
             # Two logs, both with task_idx=0 but different chunk_ids
-            log_chunk0 = os.path.join(objdir, "slurm-ct-testprefix-0-0.out")
-            log_chunk1 = os.path.join(objdir, "slurm-ct-testprefix-1-0.out")
+            log_chunk0 = os.path.join(log_dir, "slurm-ct-testprefix-0-0.out")
+            log_chunk1 = os.path.join(log_dir, "slurm-ct-testprefix-1-0.out")
             with open(log_chunk0, "w") as f:
                 f.write("CONTENT-CHUNK-0\n")
             with open(log_chunk1, "w") as f:
