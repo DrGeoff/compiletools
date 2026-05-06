@@ -40,17 +40,24 @@ class CmdlineMacroIndex:
     def tu_referenced_macros(
         self,
         tu_filename: str,
+        tu_content_hash: str,
         dep_hash: str,
         transitive_content_hashes: Iterable[str],
     ) -> frozenset[sz.Str]:
-        """Subset of cmdline_d_macro_names referenced by the TU or its headers."""
+        """Subset of cmdline_d_macro_names referenced by the TU or its headers.
+
+        The TU's own bytes (identified by ``tu_content_hash``) are always scanned
+        alongside everything in ``transitive_content_hashes``. The cache key
+        remains ``(tu_filename, dep_hash)`` since ``tu_content_hash`` is
+        determined by ``tu_filename``.
+        """
         if not self._cmdline_d_macro_names:
             return frozenset()
         cache_key = (tu_filename, dep_hash)
         cached = self._tu_cache.get(cache_key)
         if cached is not None:
             return cached
-        hashes = list(transitive_content_hashes)
+        hashes = [tu_content_hash, *transitive_content_hashes]
         referenced: set[sz.Str] = set()
         for macro in self._cmdline_d_macro_names:
             for content_hash in hashes:

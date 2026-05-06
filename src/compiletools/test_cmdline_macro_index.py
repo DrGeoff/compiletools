@@ -90,8 +90,16 @@ def test_tu_referenced_macros_unions_transitive():
         "hash_h2": b"int unrelated = 1;",
     }
     idx, _ = _index_with(byte_dict, ["FOO", "BAR", "BAZ"])
-    result = idx.tu_referenced_macros("tu.cpp", "depABC", ["hash_tu", "hash_h1", "hash_h2"])
+    result = idx.tu_referenced_macros("tu.cpp", "hash_tu", "depABC", ["hash_h1", "hash_h2"])
     assert result == frozenset({sz.Str("FOO"), sz.Str("BAR")})
+
+
+def test_tu_referenced_macros_scans_tu_bytes_when_transitive_empty():
+    byte_dict = {"hash_tu": b"int x = FOO;"}
+    idx, provider = _index_with(byte_dict, ["FOO"])
+    result = idx.tu_referenced_macros("tu.cpp", "hash_tu", "depABC", [])
+    assert result == frozenset({sz.Str("FOO")})
+    assert "hash_tu" in provider.calls
 
 
 def test_tu_referenced_macros_caches_by_dep_hash():
@@ -100,16 +108,16 @@ def test_tu_referenced_macros_caches_by_dep_hash():
         "hash_h1": b"int y = BAR;",
     }
     idx, provider = _index_with(byte_dict, ["FOO", "BAR"])
-    idx.tu_referenced_macros("tu.cpp", "depABC", ["hash_tu", "hash_h1"])
+    idx.tu_referenced_macros("tu.cpp", "hash_tu", "depABC", ["hash_h1"])
     calls_after_first = provider.call_count
-    idx.tu_referenced_macros("tu.cpp", "depABC", ["hash_tu", "hash_h1"])
+    idx.tu_referenced_macros("tu.cpp", "hash_tu", "depABC", ["hash_h1"])
     assert provider.call_count == calls_after_first
 
 
 def test_tu_referenced_macros_empty_cmdline_d_short_circuits():
     byte_dict = {"hash_tu": b"int x = FOO;", "hash_h1": b"int y = BAR;"}
     idx, provider = _index_with(byte_dict, [])
-    result = idx.tu_referenced_macros("tu.cpp", "depABC", ["hash_tu", "hash_h1"])
+    result = idx.tu_referenced_macros("tu.cpp", "hash_tu", "depABC", ["hash_h1"])
     assert result == frozenset()
     assert provider.call_count == 0
 
