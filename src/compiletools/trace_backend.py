@@ -64,6 +64,7 @@ from dataclasses import asdict, dataclass
 from typing import ClassVar
 
 import compiletools.apptools
+import compiletools.diagnostics
 import compiletools.filesystem_utils
 import compiletools.wrappedos
 from compiletools.build_backend import (
@@ -663,17 +664,6 @@ class SlurmBackend(ShakeBackend):
             "Tune upward on busy clusters where queue waits exceed the default. "
             "Default: 7200.0 (2 hours)",
         )
-        cap.add(
-            "--build-log-dir",
-            default=None,
-            help=(
-                "Directory for per-job build log files. Currently used by "
-                "the slurm backend for slurm-ct-<prefix>-<chunk>-%%a.out. "
-                "Defaults to <bindir>/logs/. Must NOT be set to --objdir, "
-                "which is a content-addressable cache: log files have no "
-                "eviction path there and will pollute the cache forever."
-            ),
-        )
 
     # ------------------------------------------------------------------
     # Core execute() — overrides ShakeBackend's async engine
@@ -690,10 +680,9 @@ class SlurmBackend(ShakeBackend):
         trace_path = os.path.join(self.args.objdir, self.build_filename())
         traces = TraceStore(trace_path)
 
-        # Per-invocation prefix for cmds/outs/log files.  Prevents collisions
-        # between concurrent ct-cake processes sharing the same objdir, and
-        # bounds cleanup to files this invocation actually produced.
-        self._invocation_prefix = f"{os.getpid()}-{int(time.monotonic_ns())}"
+        # Per-invocation aux-file tracking.  cmds/outs filenames use a
+        # per-invocation prefix sourced from compiletools.diagnostics so peer
+        # ct-cake processes sharing the same objdir don't collide.
         self._created_aux_files: list[str] = []
         self._tracked_jobs: dict[str, str] = {}  # job_id -> "pending"|"terminal"
 
@@ -1014,8 +1003,10 @@ class SlurmBackend(ShakeBackend):
         real_objdir = compiletools.wrappedos.realpath(self.args.objdir)
 
         # Per-invocation prefix prevents collisions with peer ct-cake processes
-        # sharing the same objdir on a network filesystem.
-        prefix = getattr(self, "_invocation_prefix", f"{os.getpid()}-{int(time.monotonic_ns())}")
+        # sharing the same objdir on a network filesystem.  Sourced from the
+        # shared diagnostics module so all per-invocation artifacts (timing.json,
+        # slurm logs, cmds/outs files) share one id.
+        prefix = compiletools.diagnostics.invocation_id()
         cmds_file = os.path.join(real_objdir, f".ct-slurm-cmds-{prefix}-{chunk_id}.txt")
         outs_file = os.path.join(real_objdir, f".ct-slurm-outs-{prefix}-{chunk_id}.txt")
         with open(cmds_file, "w") as fc, open(outs_file, "w") as fo:
@@ -1062,9 +1053,8 @@ class SlurmBackend(ShakeBackend):
         )
 
         effective_mem = mem if mem is not None else self.args.slurm_mem
-        log_dir = self._build_log_dir()
-        os.makedirs(log_dir, exist_ok=True)
-        slurm_log = os.path.join(log_dir, f"slurm-ct-{prefix}-{chunk_id}-%a.out")
+        log_dir = compiletools.diagnostics.resolve_diagnostics_dir(self.args)
+        slurm_log = os.path.join(log_dir, f"slurm-ct-{chunk_id}-%a.out")
         export_value = getattr(self.args, "slurm_export", _DEFAULT_SLURM_EXPORT)
         cmd = [
             "sbatch",
@@ -1172,25 +1162,16 @@ class SlurmBackend(ShakeBackend):
                     kwargs["end_s"] = end_s
                 timer.record_rule(**kwargs)
 
-    def _build_log_dir(self) -> str:
-        """Resolve the directory for per-job slurm log files.
-
-        Default is ``<bindir>/logs/``.  Logs are invocation-scoped artifacts
-        and must NOT live under ``--objdir``, which is a content-addressable
-        cache with no eviction path for non-cache files.  Override with
-        ``--build-log-dir <path>`` (e.g. a per-build CI scratch directory).
-        """
-        override = getattr(self.args, "build_log_dir", None)
-        if override:
-            return override
-        return os.path.join(self.args.bindir, "logs")
-
     def _invocation_log_paths(self) -> list[str]:
-        """Slurm log paths produced by THIS invocation (no cross-invocation glob)."""
-        prefix = getattr(self, "_invocation_prefix", None)
-        if not prefix:
-            return []
-        return sorted(glob.glob(os.path.join(self._build_log_dir(), f"slurm-ct-{prefix}-*.out")))
+        """Slurm log paths produced by THIS invocation.
+
+        The diagnostics directory is per-invocation by construction (its leaf
+        is ``compiletools.diagnostics.invocation_id()``), so every
+        ``slurm-ct-*.out`` it contains belongs to this ct-cake invocation —
+        no per-prefix glob filter is required.
+        """
+        diag_dir = compiletools.diagnostics.resolve_diagnostics_dir(self.args)
+        return sorted(glob.glob(os.path.join(diag_dir, "slurm-ct-*.out")))
 
     def _cleanup_slurm_logs(self) -> None:
         """Remove THIS invocation's slurm log files when verbosity is low."""
@@ -1271,22 +1252,23 @@ class SlurmBackend(ShakeBackend):
     def _read_slurm_logs_for_failures(self, failures: list[SlurmBackend._TaskFailure]) -> str:
         """Read slurm log content for failed tasks and return formatted diagnostics.
 
-        Log files for a chunk are named ``slurm-ct-<prefix>-<chunk_id>-<array_index>.out``.
-        Looks up the exact chunk_id for the failure's array job to avoid matching
-        retry chunks that share the same array_index.
+        Log files for a chunk are named ``slurm-ct-<chunk_id>-<array_index>.out``
+        inside the per-invocation diagnostics directory.  Looks up the exact
+        chunk_id for the failure's array job to avoid matching retry chunks
+        that share the same array_index.
         """
         diagnostics: list[str] = []
-        prefix = getattr(self, "_invocation_prefix", None)
+        diag_dir = compiletools.diagnostics.resolve_diagnostics_dir(self.args)
         for f in failures:
             parts = f.job_id.rsplit("_", 1)
             if len(parts) != 2:
                 continue
             array_job_id, task_idx = parts
             chunk_id = getattr(self, "_chunk_id_for_job", {}).get(array_job_id)
-            if chunk_id is None or prefix is None:
+            if chunk_id is None:
                 # No chunk index available (e.g. synthetic 'retry'/'retry-cap' job_ids).
                 continue
-            log_path = os.path.join(self._build_log_dir(), f"slurm-ct-{prefix}-{chunk_id}-{task_idx}.out")
+            log_path = os.path.join(diag_dir, f"slurm-ct-{chunk_id}-{task_idx}.out")
             try:
                 with open(log_path) as fh:
                     content = fh.read().strip()

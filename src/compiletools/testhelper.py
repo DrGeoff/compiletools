@@ -868,6 +868,7 @@ def make_backend_args(tmpdir, **overrides):
         file_locking=False,
         serialisetests=False,
         build_only_changed=None,
+        diagnostics_dir=None,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)

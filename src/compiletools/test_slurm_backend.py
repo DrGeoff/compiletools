@@ -13,7 +13,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import compiletools.trace_backend  # noqa: F401 — ensure registered
+import compiletools.diagnostics
+import compiletools.trace_backend  # ensure registered
 from compiletools.build_backend import available_backends, get_backend_class, is_backend_available
 from compiletools.build_context import BuildContext
 from compiletools.build_graph import BuildGraph, BuildRule
@@ -46,6 +47,14 @@ class _ScancelMock:
 
     def start(self):
         self.mock = self._patcher.start()
+
+
+@pytest.fixture(autouse=True)
+def _reset_diagnostics_cache():
+    """Clear cached invocation_id around every test so filenames don't leak across tests."""
+    compiletools.diagnostics._reset_for_tests()
+    yield
+    compiletools.diagnostics._reset_for_tests()
 
 
 @pytest.fixture(autouse=True)
@@ -560,14 +569,14 @@ class TestJobFailures:
             # Pre-create only real_out; ghost_out stays missing
             open(real_out, "w").close()
 
-            log_dir = backend._build_log_dir()
-            os.makedirs(log_dir, exist_ok=True)
+            log_dir = compiletools.diagnostics.resolve_diagnostics_dir(backend.args)
             log_paths_created: list[str] = []
 
             def fake_sbatch(*_args, **_kwargs):
-                # Create a slurm log named for this invocation's prefix and chunk
-                prefix = backend._invocation_prefix
-                log_path = os.path.join(log_dir, f"slurm-ct-{prefix}-0-0.out")
+                # Create a slurm log named for this invocation's chunk.  The
+                # diagnostics directory is per-invocation by construction, so
+                # the filename no longer needs the prefix.
+                log_path = os.path.join(log_dir, "slurm-ct-0-0.out")
                 with open(log_path, "w") as f:
                     f.write("OOM-kill: task ran out of memory\n")
                 log_paths_created.append(log_path)
@@ -1370,13 +1379,20 @@ class TestInvocationFiles:
 
         prefixes: list[str] = []
         for graph in (graph1, graph2):
+            # Reset cached invocation_id so each loop iteration is treated as a
+            # fresh ct-cake invocation.  The autouse fixture only brackets the
+            # whole test, not per-loop.
+            compiletools.diagnostics._reset_for_tests()
+            # Sleep > 1s so the seconds-resolution timestamp portion of
+            # invocation_id() advances even on hosts where the pid is reused.
+            time.sleep(1.1)
             with SlurmBackendTestContext(graph) as (backend, _tmp):
                 with (
                     patch("subprocess.check_output", return_value="1\n"),
                     patch.object(backend, "_wait_for_arrays", return_value=[]),
                 ):
                     backend.execute("build")
-                prefixes.append(backend._invocation_prefix)
+                prefixes.append(compiletools.diagnostics.invocation_id())
         assert prefixes[0] != prefixes[1]
 
     def test_invocation_files_cleaned_up_in_finally(self, tmp_path):
@@ -1673,7 +1689,7 @@ class TestWrapScriptEval:
         assert "'-DFOO=$(rogue)'" in line
 
 
-def test_quoted_define_with_space_survives_flatten(tmp_path):
+def test_quoted_define_with_space_survives_flatten(tmp_path, monkeypatch):
     """A token like -DGREETING=Hello World (literal space, no quotes — what
     magicflags emits after its single shlex split) must reach the cmds file as
     a single shell-quoted argv element so the compiler receives one -D, not two
@@ -1702,8 +1718,8 @@ def test_quoted_define_with_space_survives_flatten(tmp_path):
     graph.add_rule(rule)
     graph.add_rule(make_phony_rule("build", [rule.output]))
 
+    monkeypatch.setattr(compiletools.diagnostics, "invocation_id", lambda: "test")
     with SlurmBackendTestContext(graph) as (backend, _tmpdir):
-        backend._invocation_prefix = "test"
         backend._created_aux_files = []
         with patch("subprocess.check_output", return_value="42\n"):
             backend._sbatch_array([rule], chunk_id=0)
@@ -1732,7 +1748,7 @@ class TestAtomicComputeNodeCompile:
     reattaches ``-o "$TMP"`` and renames to ``$OUT`` on success.
     """
 
-    def test_cmds_file_omits_o_flag(self, tmp_path):
+    def test_cmds_file_omits_o_flag(self, tmp_path, monkeypatch):
         """The cmds file line must NOT contain '-o <path>'."""
         import shlex as _shlex
 
@@ -1741,8 +1757,8 @@ class TestAtomicComputeNodeCompile:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [rule.output]))
 
+        monkeypatch.setattr(compiletools.diagnostics, "invocation_id", lambda: "atomic")
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
-            backend._invocation_prefix = "atomic"
             backend._created_aux_files = []
             with patch("subprocess.check_output", return_value="1\n"):
                 backend._sbatch_array([rule], chunk_id=0)
@@ -1797,7 +1813,6 @@ class TestAtomicComputeNodeCompile:
             rule_type="compile",
         )
         with SlurmBackendTestContext(BuildGraph()) as (backend, _tmpdir):
-            backend._invocation_prefix = "bad"
             backend._created_aux_files = []
             with patch("subprocess.check_output", return_value="1\n"):
                 with pytest.raises(AssertionError, match="-o"):
@@ -1922,15 +1937,14 @@ class TestLogLookupExactChunk:
         graph.add_rule(make_phony_rule("build", [out_a, out_b]))
 
         with SlurmBackendTestContext(graph, slurm_max_array=1) as (backend, _tmpdir):
-            # Pre-set invocation prefix and chunk maps directly
-            backend._invocation_prefix = "testprefix"
             backend._chunk_id_for_job = {"100": 0, "200": 1}
-            log_dir = backend._build_log_dir()
-            os.makedirs(log_dir, exist_ok=True)
+            log_dir = compiletools.diagnostics.resolve_diagnostics_dir(backend.args)
 
-            # Two logs, both with task_idx=0 but different chunk_ids
-            log_chunk0 = os.path.join(log_dir, "slurm-ct-testprefix-0-0.out")
-            log_chunk1 = os.path.join(log_dir, "slurm-ct-testprefix-1-0.out")
+            # Two logs, both with task_idx=0 but different chunk_ids.  The
+            # diagnostics directory is per-invocation, so filenames no longer
+            # carry a prefix.
+            log_chunk0 = os.path.join(log_dir, "slurm-ct-0-0.out")
+            log_chunk1 = os.path.join(log_dir, "slurm-ct-1-0.out")
             with open(log_chunk0, "w") as f:
                 f.write("CONTENT-CHUNK-0\n")
             with open(log_chunk1, "w") as f:
@@ -2181,7 +2195,6 @@ class TestTestRulesAreNotExecutedLocally:
         graph.add_rule(make_phony_rule("runtests", [result_path]))
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
-            backend._invocation_prefix = "test"
             backend._created_aux_files = []
             backend._tracked_jobs = {}
             backend._chunk_id_for_job = {}
@@ -2240,100 +2253,53 @@ class TestScancelOnSignal:
 # ---------------------------------------------------------------------------
 
 
-class TestBuildLogDirResolver:
-    def test_default_is_bindir_logs(self):
-        """When --build-log-dir is unset, logs land in <bindir>/logs/."""
-        graph = BuildGraph()
-        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
-            # SlurmBackendTestContext doesn't set build_log_dir; default is None.
-            backend.args.build_log_dir = None
-            expected = os.path.join(backend.args.bindir, "logs")
-            assert backend._build_log_dir() == expected
-
-    def test_explicit_override_wins(self, tmp_path):
-        """Explicit --build-log-dir overrides the bindir default."""
-        graph = BuildGraph()
-        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
-            override = str(tmp_path / "explicit-logs")
-            backend.args.build_log_dir = override
-            assert backend._build_log_dir() == override
-
-    def test_empty_string_treated_as_unset(self):
-        """Empty string falls back to the default — same as None."""
-        graph = BuildGraph()
-        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
-            backend.args.build_log_dir = ""
-            expected = os.path.join(backend.args.bindir, "logs")
-            assert backend._build_log_dir() == expected
-
-    def test_argparse_registers_option_with_none_default(self):
-        """--build-log-dir is registered on SlurmBackend's argparse group with default None."""
-        import configargparse
-
-        cap = configargparse.ArgumentParser()
-        # Add bindir first because SlurmBackend.add_arguments only adds
-        # slurm-* options; bindir comes from add_output_directory_arguments
-        # in real builds.  We just need argparse parsing to succeed.
-        cap.add_argument("--bindir", default="bin/blank")
-        SlurmBackend.add_arguments(cap)
-        ns = cap.parse_args([])
-        assert ns.build_log_dir is None
-
-    def test_argparse_accepts_explicit_value(self):
-        import configargparse
-
-        cap = configargparse.ArgumentParser()
-        cap.add_argument("--bindir", default="bin/blank")
-        SlurmBackend.add_arguments(cap)
-        ns = cap.parse_args(["--build-log-dir", "/tmp/build-logs"])
-        assert ns.build_log_dir == "/tmp/build-logs"
+class TestSlurmLogsRouteThroughDiagnostics:
+    """Slurm log paths must route through compiletools.diagnostics, not objdir."""
 
     def test_no_call_site_uses_objdir_for_slurm_log_filenames(self):
-        """Regression guard: every slurm-ct-*.out path must route through _build_log_dir().
-
-        If this fails, a future change has reintroduced an objdir-resident
-        slurm log path.  Add a call to self._build_log_dir() instead.
+        """Regression guard: every slurm-ct-*.out path must route through
+        compiletools.diagnostics.resolve_diagnostics_dir(self.args), never join
+        with self.args.objdir / real_objdir.  Slurm logs are user-facing
+        diagnostics, not content-addressable cache artifacts; if this fails a
+        future change has reintroduced an objdir-resident slurm log path.
         """
         import compiletools.trace_backend as tb
 
         with open(tb.__file__, encoding="utf-8") as fh:
             source = fh.read()
-        # Find every line that constructs a slurm-ct-*.out filename.
         offending = []
         for lineno, line in enumerate(source.splitlines(), start=1):
             if "slurm-ct-" not in line or ".out" not in line:
                 continue
-            # Allowed: lines that compose the filename with _build_log_dir()
-            # (the helper is called separately, so the assignment line itself
-            # contains the literal "f\"slurm-ct-...\"").  Forbidden: lines
-            # that join with self.args.objdir or real_objdir on the same line.
             if "self.args.objdir" in line or "real_objdir" in line:
                 offending.append((lineno, line.strip()))
         assert not offending, (
-            f"slurm log filenames must be joined with self._build_log_dir(), not objdir.  Offending lines: {offending}"
+            "slurm log filenames must be joined with "
+            "compiletools.diagnostics.resolve_diagnostics_dir(self.args), not objdir.  "
+            f"Offending lines: {offending}"
         )
 
 
 # ---------------------------------------------------------------------------
-# Sbatch routing through _build_log_dir
+# Sbatch routing through diagnostics
 # ---------------------------------------------------------------------------
 
 
-class TestSbatchUsesBuildLogDir:
-    """sbatch --output/--error paths must come from _build_log_dir(), not objdir."""
+class TestSbatchUsesDiagnosticsDir:
+    """sbatch --output/--error paths must come from
+    compiletools.diagnostics.resolve_diagnostics_dir(), not objdir.
+    """
 
-    def test_sbatch_output_path_under_bindir_logs_by_default(self, tmp_path):
+    def test_sbatch_output_path_under_bindir_diagnostics_by_default(self, tmp_path):
         rule = make_compile_rule(output=str(tmp_path / "foo.o"), src="foo.cpp")
         graph = BuildGraph()
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [rule.output]))
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
-            backend.args.build_log_dir = None  # default
             captured = {}
 
             def fake_sbatch(cmd, *args, **kwargs):
-                # Pull --output=... out of the sbatch argv
                 for tok in cmd:
                     if tok.startswith("--output="):
                         captured["output"] = tok.split("=", 1)[1]
@@ -2350,21 +2316,22 @@ class TestSbatchUsesBuildLogDir:
                 with contextlib.suppress(Exception):
                     backend.execute("build")
 
-            expected_dir = os.path.join(backend.args.bindir, "logs")
+            iid = compiletools.diagnostics.invocation_id()
+            expected_dir = os.path.join(backend.args.bindir, "diagnostics", iid)
             assert "output" in captured, "sbatch was never called"
             assert captured["output"].startswith(expected_dir + os.sep), (
                 f"slurm --output should live under {expected_dir}, got {captured['output']}"
             )
             assert captured["error"] == captured["output"]
 
-    def test_sbatch_output_path_uses_explicit_override(self, tmp_path):
+    def test_sbatch_output_path_uses_explicit_diagnostics_dir(self, tmp_path):
         rule = make_compile_rule(output=str(tmp_path / "foo.o"), src="foo.cpp")
         graph = BuildGraph()
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [rule.output]))
 
-        override = str(tmp_path / "scratch-logs")
-        with SlurmBackendTestContext(graph, build_log_dir=override) as (backend, _tmpdir):
+        override = str(tmp_path / "scratch-diag")
+        with SlurmBackendTestContext(graph, diagnostics_dir=override) as (backend, _tmpdir):
             captured = {}
 
             def fake_sbatch(cmd, *args, **kwargs):
@@ -2382,24 +2349,34 @@ class TestSbatchUsesBuildLogDir:
                 with contextlib.suppress(Exception):
                     backend.execute("build")
 
+            iid = compiletools.diagnostics.invocation_id()
+            expected_dir = os.path.join(override, iid)
             assert "output" in captured, "sbatch was never called"
-            assert captured["output"].startswith(override + os.sep), (
-                f"slurm --output should live under {override}, got {captured.get('output')}"
+            assert captured["output"].startswith(expected_dir + os.sep), (
+                f"slurm --output should live under {expected_dir}, got {captured.get('output')}"
             )
-            # And the directory must have been created.
-            assert os.path.isdir(override), "build-log-dir must be created if missing"
+            assert os.path.isdir(expected_dir), "diagnostics dir must be created if missing"
 
-    def test_log_dir_created_when_missing(self, tmp_path):
-        """The default <bindir>/logs/ must be created on first sbatch."""
+    def test_diagnostics_dir_created_when_missing(self, tmp_path):
+        """The default <bindir>/diagnostics/<iid>/ must be created on first sbatch."""
         rule = make_compile_rule(output=str(tmp_path / "foo.o"), src="foo.cpp")
         graph = BuildGraph()
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [rule.output]))
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
-            backend.args.build_log_dir = None
-            log_dir = os.path.join(backend.args.bindir, "logs")
-            assert not os.path.exists(log_dir), "precondition: log dir absent"
+            iid = compiletools.diagnostics.invocation_id()
+            diag_dir = os.path.join(backend.args.bindir, "diagnostics", iid)
+            # The autouse fixture reset the cache, so only resolve_diagnostics_dir
+            # has been called from this test (and only via invocation_id() above
+            # to predict the path).  The directory itself shouldn't exist yet.
+            # Reset again so the in-execute() resolve_diagnostics_dir call is the
+            # one that creates the leaf directory.
+            import shutil
+
+            if os.path.isdir(diag_dir):
+                shutil.rmtree(diag_dir)
+            assert not os.path.exists(diag_dir), "precondition: diagnostics dir absent"
 
             sbatch_calls = []
 
@@ -2417,4 +2394,4 @@ class TestSbatchUsesBuildLogDir:
                     backend.execute("build")
 
             assert sbatch_calls, "sbatch was never called"
-            assert os.path.isdir(log_dir), "log dir must exist after sbatch"
+            assert os.path.isdir(diag_dir), "diagnostics dir must exist after sbatch"
