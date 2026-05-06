@@ -30,14 +30,35 @@ can be switched between in-app.  Requires ``textual`` (install with
 ``pip install 'compiletools[tui]'``); falls back to the static summary
 table if textual is not installed.
 
-The timing file (``.ct-timing.json``) is auto-detected in the current
-directory, ``bin/``, or ``obj/`` if not specified explicitly.
+The timing file (``timing.json``) is auto-detected if not specified
+explicitly.  ct-timing-report walks the per-invocation diagnostics
+layout under ``<bindir>/diagnostics/<invocation-id>/timing.json`` first
+(picking the most recent invocation), then falls back to legacy
+locations in the current directory, ``bin/``, and ``obj/``.
+
+The diagnostics root is configurable on ct-timing-report's own CLI via
+``--diagnostics-dir`` (or ``--bindir``, which implies
+``<bindir>/diagnostics/``).  The same ``DIAGNOSTICS_DIR`` environment
+variable and ``diagnostics-dir = <path>`` ct.conf setting that ct-cake
+honours are also consulted here, so a project that overrides the
+location once is picked up by both tools.
 
 OPTIONS
 =======
 TIMING_FILE
-    Path to a ``.ct-timing.json`` file.  If omitted, auto-detected in the
-    current directory or common objdir locations.
+    Path to a ``timing.json`` file.  If omitted, auto-detected via the
+    diagnostics-dir layout described above and then the legacy fallback
+    locations.
+
+--diagnostics-dir PATH
+    Override the diagnostics root searched for ``timing.json``.  Same
+    semantics as ``ct-cake --diagnostics-dir``; also settable via
+    ``DIAGNOSTICS_DIR`` env or ``diagnostics-dir = <path>`` in any
+    ``ct.conf``.
+
+--bindir PATH
+    Override the bindir.  Used to derive the default diagnostics root
+    (``<bindir>/diagnostics/``) when ``--diagnostics-dir`` is not set.
 
 --summary
     Print a static Rich summary table to stdout (non-interactive).
@@ -139,7 +160,7 @@ EXAMPLES
 Build with timing and view the report::
 
     ct-cake --auto --timing
-    ct-timing-report .ct-timing.json
+    ct-timing-report timing.json
 
 Launch the interactive TUI (auto-detects timing file; press **v** for
 the Gantt timeline view)::

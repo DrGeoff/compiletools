@@ -400,9 +400,24 @@ Common Options
     Custom output path for the compilation database.
 
 **--timing**
-    Collect and report build timing information.  Writes
-    ``.ct-timing.json`` to the object directory and prints a summary
-    table after the build.  Analyze the results with ``ct-timing-report``.
+    Collect and report build timing information.  Writes ``timing.json``
+    into the per-invocation diagnostics directory (see
+    ``--diagnostics-dir``) and prints a summary table after the build.
+    Analyze the results with ``ct-timing-report``.
+
+**--diagnostics-dir PATH**
+    Parent directory for per-invocation diagnostic artifacts -- the
+    ``--timing`` JSON, slurm job logs from the ``slurm`` backend, and
+    future per-build reports.  Each ct-cake invocation gets its own
+    ``<invocation-id>`` subdirectory under this path so concurrent peers
+    sharing a bindir or objdir never collide.  Default:
+    ``<bindir>/diagnostics/<invocation-id>/``.  Also settable via the
+    ``DIAGNOSTICS_DIR`` environment variable or
+    ``diagnostics-dir = <path>`` in any ``ct.conf`` file.  Must NOT be
+    set to ``--objdir``, which is a content-addressable cache:
+    diagnostic files have no eviction path there and races with peer
+    ct-cake invocations clobber the data.
+    Example: ``ct-cake --diagnostics-dir=/scratch/ct-diag``
 
 **--objdir PATH**
     Use a shared object directory for compiled object files across multiple
