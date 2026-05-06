@@ -75,6 +75,20 @@ class BazelBackend(BuildBackend):
                 "sufficient for bazel's worker threads. Set empty to skip."
             ),
         )
+        cap.add(
+            "--bazel-host-cpus",
+            default=16,
+            type=int,
+            help=(
+                "Upper bound for bazel's JVM CPU view, passed as "
+                "--host_jvm_args=-XX:ActiveProcessorCount=<value>. The JVM "
+                "sizes ForkJoinPool and IncrementalArtifactConflictFinder "
+                "by Runtime.availableProcessors(); on a 127-core host that "
+                "pre-spawns >100 native threads at startup and OOMs. "
+                "Bazel coordination scales sub-linearly past ~16. Effective "
+                "value is min(--parallel, --bazel-host-cpus); set to 0 to skip."
+            ),
+        )
 
     def generate(self, graph: BuildGraph, output=None) -> None:
         graph = self._apply_build_only_changed(graph)
@@ -319,6 +333,18 @@ class BazelBackend(BuildBackend):
         jvm_stack = getattr(self.args, "bazel_jvm_stack_size", "256k") or ""
         if jvm_stack:
             startup_args.append(f"--host_jvm_args=-Xss{jvm_stack}")
+        # During server startup ("Computing main repo mapping" etc.) bazel
+        # sizes ForkJoinPool.commonPool() and IncrementalArtifactConflictFinder
+        # from Runtime.availableProcessors(). On a 127-core host that
+        # pre-spawns >100 native threads and OOMs before --jobs even applies.
+        # Cap the JVM's CPU view to min(--parallel, --bazel-host-cpus); the
+        # latter has a sane upper bound (default 16) since bazel coordination
+        # scales sub-linearly past ~16 threads.
+        parallel = getattr(self.args, "parallel", None)
+        host_cpus = getattr(self.args, "bazel_host_cpus", 16) or 0
+        if parallel and host_cpus:
+            active_cpus = min(int(parallel), int(host_cpus))
+            startup_args.append(f"--host_jvm_args=-XX:ActiveProcessorCount={active_cpus}")
 
         cmd = startup_args + [
             "build",
