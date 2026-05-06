@@ -1190,7 +1190,7 @@ class SlurmBackend(ShakeBackend):
         prefix = getattr(self, "_invocation_prefix", None)
         if not prefix:
             return []
-        return sorted(glob.glob(os.path.join(self.args.objdir, f"slurm-ct-{prefix}-*.out")))
+        return sorted(glob.glob(os.path.join(self._build_log_dir(), f"slurm-ct-{prefix}-*.out")))
 
     def _cleanup_slurm_logs(self) -> None:
         """Remove THIS invocation's slurm log files when verbosity is low."""

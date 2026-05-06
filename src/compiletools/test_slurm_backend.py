@@ -560,13 +560,14 @@ class TestJobFailures:
             # Pre-create only real_out; ghost_out stays missing
             open(real_out, "w").close()
 
-            objdir = backend.args.objdir
+            log_dir = backend._build_log_dir()
+            os.makedirs(log_dir, exist_ok=True)
             log_paths_created: list[str] = []
 
             def fake_sbatch(*_args, **_kwargs):
                 # Create a slurm log named for this invocation's prefix and chunk
                 prefix = backend._invocation_prefix
-                log_path = os.path.join(objdir, f"slurm-ct-{prefix}-0-0.out")
+                log_path = os.path.join(log_dir, f"slurm-ct-{prefix}-0-0.out")
                 with open(log_path, "w") as f:
                     f.write("OOM-kill: task ran out of memory\n")
                 log_paths_created.append(log_path)
