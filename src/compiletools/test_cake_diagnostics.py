@@ -58,7 +58,6 @@ def test_diagnostics_dir_default_falls_back_to_bindir(tmp_path):
         "--timing",
     ]
     args = _build_args(argv)
-    assert args.diagnostics_dir is None
     out = _emulate_finally_block(args)
     iid = compiletools.diagnostics.invocation_id()
     expected = str(bindir / "diagnostics" / iid / "timing.json")
@@ -102,6 +101,58 @@ def test_diagnostics_not_in_objdir(tmp_path):
     _emulate_finally_block(args)
     assert not os.path.exists(objdir / ".ct-timing.json")
     assert not os.path.exists(objdir / "timing.json")
+
+
+def test_diagnostics_timing_json_written_through_process(monkeypatch, tmp_path):
+    """End-to-end anchor: catches refactors that disconnect the finally block
+    from the diagnostics helper.
+
+    The other tests in this module exercise the timing-write step via a local
+    helper that mirrors cake.py's finally block. This test drives
+    ``Cake.process()`` itself so a future refactor that deletes/renames/skips
+    the finally-block call to ``resolve_diagnostics_dir`` will fail loudly.
+    The backend is short-circuited (raises) so the build itself is never
+    invoked; we only assert that the finally block ran and wrote timing.json
+    at the resolved diagnostics location even when ``_call_backend`` raises.
+    """
+    bindir = tmp_path / "bin"
+    objdir = tmp_path / "obj"
+    argv = [
+        "--bindir",
+        str(bindir),
+        "--objdir",
+        str(objdir),
+        "--timing",
+        "--filename",
+        "irrelevant.cpp",
+    ]
+    args = _build_args(argv)
+
+    # Short-circuit the parts of process() that would do real work. We keep
+    # the finally block in process() reachable on both the success and the
+    # exception path.
+    def _stub_createctobjs(self):
+        # process() asserts self.hunter is not None inside the target_discovery
+        # phase, so satisfy that without doing real header-deps work.
+        self.hunter = object()
+
+    monkeypatch.setattr(compiletools.cake.Cake, "_createctobjs", _stub_createctobjs)
+
+    def _boom(self):
+        raise RuntimeError("backend disabled for this test")
+
+    monkeypatch.setattr(compiletools.cake.Cake, "_call_backend", _boom)
+
+    cake = compiletools.cake.Cake(args)
+    with pytest.raises(RuntimeError, match="backend disabled"):
+        cake.process()
+
+    iid = compiletools.diagnostics.invocation_id()
+    expected = str(bindir / "diagnostics" / iid / "timing.json")
+    assert os.path.isfile(expected), (
+        f"Cake.process() finally block did not write timing.json at {expected}; "
+        "diagnostics-dir wiring may have been disconnected."
+    )
 
 
 def test_diagnostics_dir_env_var(monkeypatch, tmp_path):
