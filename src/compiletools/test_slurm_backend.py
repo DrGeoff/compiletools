@@ -2242,7 +2242,7 @@ class TestBuildLogDirResolver:
     def test_default_is_bindir_logs(self):
         """When --build-log-dir is unset, logs land in <bindir>/logs/."""
         graph = BuildGraph()
-        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             # SlurmBackendTestContext doesn't set build_log_dir; default is None.
             backend.args.build_log_dir = None
             expected = os.path.join(backend.args.bindir, "logs")
@@ -2251,7 +2251,7 @@ class TestBuildLogDirResolver:
     def test_explicit_override_wins(self, tmp_path):
         """Explicit --build-log-dir overrides the bindir default."""
         graph = BuildGraph()
-        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             override = str(tmp_path / "explicit-logs")
             backend.args.build_log_dir = override
             assert backend._build_log_dir() == override
@@ -2259,7 +2259,7 @@ class TestBuildLogDirResolver:
     def test_empty_string_treated_as_unset(self):
         """Empty string falls back to the default — same as None."""
         graph = BuildGraph()
-        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             backend.args.build_log_dir = ""
             expected = os.path.join(backend.args.bindir, "logs")
             assert backend._build_log_dir() == expected
