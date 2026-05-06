@@ -968,6 +968,50 @@ class TestMemoryEstimation:
         custom = [(1, "500M"), (4, "1G")]
         assert self._make_backend(tiers=custom)._estimate_memory(rule) == "500M"
 
+    @pytest.mark.parametrize(
+        "rule_type", ["link", "static_library", "shared_library"]
+    )
+    @pytest.mark.parametrize(
+        "n_inputs,expected",
+        [(1, "1G"), (2, "2G"), (4, "4G"), (8, "8G"), (16, "16G")],
+    )
+    def test_link_rule_sized_by_input_count(self, rule_type, n_inputs, expected):
+        """Link/library rules must size on len(inputs), not include_weight=0.
+
+        Regression: link rules carry include_weight=0 (no source file walked),
+        which previously matched the smallest tier and OOM-killed real binaries.
+        """
+        rule = BuildRule(
+            output="bin/app",
+            inputs=[f"obj{i}.o" for i in range(n_inputs)],
+            command=["g++", "-o", "bin/app"] + [f"obj{i}.o" for i in range(n_inputs)],
+            rule_type=rule_type,
+            include_weight=0,
+        )
+        assert self._make_backend()._estimate_memory(rule) == expected
+
+    def test_link_rule_above_top_tier_gets_slurm_mem(self):
+        """A link rule with more inputs than the largest tier falls off to --slurm-mem."""
+        rule = BuildRule(
+            output="bin/app",
+            inputs=[f"obj{i}.o" for i in range(200)],
+            command=["g++", "-o", "bin/app"],
+            rule_type="link",
+            include_weight=0,
+        )
+        assert self._make_backend(slurm_mem="64G")._estimate_memory(rule) == "64G"
+
+    def test_link_rule_ignores_include_weight(self):
+        """include_weight on a link rule is ignored — sizing is by input count."""
+        rule = BuildRule(
+            output="bin/app",
+            inputs=["a.o", "b.o"],
+            command=["g++", "-o", "bin/app", "a.o", "b.o"],
+            rule_type="link",
+            include_weight=999,
+        )
+        assert self._make_backend()._estimate_memory(rule) == "2G"
+
 
 class TestTieredSubmission:
     """Test that rules with different include_weight produce separate sbatch calls."""

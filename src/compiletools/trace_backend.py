@@ -623,8 +623,9 @@ class SlurmBackend(ShakeBackend):
             default=_DEFAULT_MEM_TIERS_STR,
             type=_slurm_mem_tiers_arg,
             help="Memory tier mapping as 'threshold:mem,threshold:mem,...' where threshold is "
-            "the maximum quoted-include count for that tier. Rules whose include_weight exceeds "
-            "the largest threshold use --slurm-mem. Default: " + _DEFAULT_MEM_TIERS_STR,
+            "the maximum work-weight for that tier (quoted-include count for compile rules, "
+            "input-object count for link/library rules). Rules whose weight exceeds the largest "
+            "threshold use --slurm-mem. Default: " + _DEFAULT_MEM_TIERS_STR,
         )
         cap.add(
             "--slurm-sacct-failure-threshold",
@@ -974,19 +975,31 @@ class SlurmBackend(ShakeBackend):
     ]
 
     def _estimate_memory(self, rule: BuildRule) -> str:
-        """Estimate Slurm memory from the source file's quoted-include count.
+        """Estimate Slurm memory from the rule's work weight.
 
-        rule.include_weight is ``len(FileAnalyzer.quoted_headers)`` for the
-        source file, computed in BuildBackend._create_compile_rule() at zero
-        cost (analyze_file results are cached from the header dep walk).
+        The same --slurm-mem-tiers table sizes both compile and link work;
+        only the *weight* differs by rule type:
 
-        Uses --slurm-mem-tiers if configured, otherwise the class default.
-        Rules whose include_weight exceeds the largest threshold use
-        ``--slurm-mem`` (the per-job ceiling).
+        * Compile rules use ``rule.include_weight`` (=
+          ``len(FileAnalyzer.quoted_headers)`` for the source file, set in
+          ``BuildBackend._create_compile_rule()`` at zero cost — analyze_file
+          results are cached from the header-dep walk).
+        * Link / static_library / shared_library rules have no source file
+          (``include_weight`` is 0), so they would always match the smallest
+          tier and OOM on real binaries.  Use the input-object count instead
+          — peak linker RSS scales with the number of objects' symbol tables
+          and section data the linker has to merge.
+
+        Rules whose weight exceeds the largest threshold use ``--slurm-mem``
+        (the per-job ceiling).
         """
+        if rule.rule_type in ("link", "static_library", "shared_library"):
+            weight = len(rule.inputs)
+        else:
+            weight = rule.include_weight
         tiers = getattr(self.args, "slurm_mem_tiers", None) or self._MEMORY_TIERS
         for threshold, mem in tiers:
-            if rule.include_weight <= threshold:
+            if weight <= threshold:
                 return mem
         return self.args.slurm_mem
 
