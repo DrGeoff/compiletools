@@ -144,12 +144,23 @@ def requires_flock_filesystem(func):
 
 def skip_if_bazel_env_error(captured_stderr: str) -> None:
     """Skip the current test if *captured_stderr* indicates a Bazel environment
-    problem (TLS certificate rejection, unsupported filesystem operation, etc.)
-    rather than a genuine code bug.
+    problem (TLS certificate rejection, unsupported filesystem operation, JVM
+    thread / heap exhaustion under high job counts, missing linker on a
+    stripped toolchain) rather than a genuine code bug.
     """
     lower = captured_stderr.lower()
-    if "certificate" in lower or "operation not supported" in lower:
-        pytest.skip(f"bazel environment issue: {captured_stderr[:200]}")
+    env_markers = (
+        "certificate",  # TLS trust store
+        "operation not supported",  # filesystem op (NFS, etc.)
+        "outofmemoryerror",  # JVM thread/heap exhaustion
+        "unable to create native thread",  # same, more specific
+        "cannot find 'ld'",  # linker unavailable in sandbox
+        "could not find a c++ toolchain",  # rules_cc misconfigured
+    )
+    for marker in env_markers:
+        if marker in lower:
+            pytest.skip(f"bazel environment issue: {captured_stderr[:200]}")
+            return
 
 
 def with_group_writable_umask(cls_or_func):

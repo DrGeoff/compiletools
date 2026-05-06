@@ -7,10 +7,13 @@ than Make/Ninja.
 
 from __future__ import annotations
 
+import collections
 import os
 import shutil
 import subprocess
+import sys
 
+import compiletools.apptools
 import compiletools.filesystem_utils
 import compiletools.wrappedos
 from compiletools.build_backend import (
@@ -52,6 +55,26 @@ class BazelBackend(BuildBackend):
     @staticmethod
     def build_filename() -> str:
         return "BUILD.bazel"
+
+    @staticmethod
+    def add_arguments(cap) -> None:
+        """Register Bazel-specific CLI arguments.
+
+        Safe to call more than once on the same parser.
+        """
+        if compiletools.apptools._parser_has_option(cap, "--bazel-jvm-stack-size"):
+            return
+        cap.add(
+            "--bazel-jvm-stack-size",
+            default="256k",
+            help=(
+                "Per-thread JVM stack size passed to bazel as "
+                "--host_jvm_args=-Xss<value>. Bazel sizes its internal "
+                "thread pool by --jobs and reserves the default 1MB stack "
+                "per slot, which OOMs on many-core hosts. 256k is "
+                "sufficient for bazel's worker threads. Set empty to skip."
+            ),
+        )
 
     def generate(self, graph: BuildGraph, output=None) -> None:
         graph = self._apply_build_only_changed(graph)
@@ -258,6 +281,7 @@ class BazelBackend(BuildBackend):
         build logic, and guarantee the post-build copy runs every time
         so the user-visible ``bin/`` stays in sync.
         """
+        del graph  # signature-compatible with base; bazel ignores graph here
         return False
 
     def _execute_build(self, target: str) -> None:
@@ -288,12 +312,29 @@ class BazelBackend(BuildBackend):
                     "--host_jvm_args=-Djavax.net.ssl.trustStorePassword=changeit",
                 ]
             )
+        # Bazel sizes its internal thread pool by --jobs and reserves the
+        # default 1MB JVM thread stack per slot. On many-core hosts that
+        # pre-reserves >100 MB of native memory and OOMs before any compile
+        # runs. Default 256k via --bazel-jvm-stack-size; empty disables.
+        jvm_stack = getattr(self.args, "bazel_jvm_stack_size", "256k") or ""
+        if jvm_stack:
+            startup_args.append(f"--host_jvm_args=-Xss{jvm_stack}")
 
         cmd = startup_args + [
             "build",
             "--spawn_strategy=local",
             "--action_env=PATH",
         ]
+        # rules_cc 0.2.x defaults to -fuse-ld=lld at the GLOBAL bazel link
+        # action, which gcc-only toolchains (e.g. gcc-15.2.0 ships gold, not
+        # lld) cannot satisfy. Per-target linkopts (driven by LDFLAGS and
+        # magic flags via extract_linkopts) propagate normally, but they
+        # don't reliably override the global rules_cc default. Compensate
+        # by adding gold globally, unless the user has already chosen a
+        # linker via LDFLAGS or a per-rule command — in which case we trust
+        # their LDFLAGS-driven choice (same contract as every other backend).
+        if not self._user_set_fuse_ld():
+            cmd.append("--linkopt=-fuse-ld=gold")
         # Bazel's local_config_cc autoconfig is a repo rule and does NOT
         # inherit the client PATH, so pass CC/CXX as absolute paths via
         # --repo_env (so the autoconfig wraps the right compiler) and
@@ -313,7 +354,7 @@ class BazelBackend(BuildBackend):
         if parallel:
             cmd.append(f"--jobs={parallel}")
         cmd.append(bazel_target)
-        subprocess.check_call(cmd, text=True)
+        self._run_bazel(cmd)
 
         # Bazel outputs executables to bazel-bin/.  Copy directly to the
         # final output directory (topbindir or --output) to avoid a
@@ -323,6 +364,63 @@ class BazelBackend(BuildBackend):
             dest = getattr(self.args, "output", None) or self.namer.topbindir()
             self._copy_built_executables(bazel_bin, dest_dir=dest)
             self._copy_bazel_libraries(bazel_bin)
+
+    def _user_set_fuse_ld(self) -> bool:
+        """Return True if the user has already chosen a linker via -fuse-ld=...
+
+        Checks LDFLAGS (CLI/config) and any per-target link command in the
+        graph (covers magic-flag-injected linker choices).
+        """
+        ldflags = getattr(self.args, "LDFLAGS", "") or ""
+        if "-fuse-ld=" in ldflags:
+            return True
+        if self._graph is not None:
+            for rule in self._graph.rules:
+                if rule.rule_type not in ("link", "shared_library"):
+                    continue
+                for tok in rule.command or ():
+                    if tok.startswith("-fuse-ld=") or tok.startswith("-Wl,-fuse-ld="):
+                        return True
+        return False
+
+    def _run_bazel(self, cmd: list[str]) -> None:
+        """Run *cmd*, streaming stderr through and diagnosing toolchain failures.
+
+        On non-zero exit, if stderr matches the rules_cc-defaults-to-lld /
+        missing-toolchain failure mode, augment the error with a clear
+        remediation hint before raising CalledProcessError so cake.main's
+        existing handler renders it normally and tests can capfd-match it.
+        """
+        proc = subprocess.Popen(cmd, text=True, stderr=subprocess.PIPE)
+        assert proc.stderr is not None
+        # 32k lines (~3 MB worst case) is enough headroom for noisy bazel
+        # builds — verbose linker chatter and per-target deprecation warnings
+        # can easily push the real failure signature past a few hundred lines.
+        tail: collections.deque[str] = collections.deque(maxlen=32000)
+        for line in proc.stderr:
+            sys.stderr.write(line)
+            tail.append(line)
+        rc = proc.wait()
+        if rc == 0:
+            return
+        captured = "".join(tail)
+        lower = captured.lower()
+        lld_markers = ("cannot find 'ld'", "cannot find -lld", "fuse-ld=lld")
+        toolchain_markers = ("could not find a c++ toolchain",)
+        if any(m in lower for m in lld_markers) or any(m in lower for m in toolchain_markers):
+            hint = (
+                "\n"
+                "Bazel's link step failed because the toolchain cannot find lld.\n"
+                "rules_cc 0.2.x defaults to -fuse-ld=lld, which gcc-only modules\n"
+                "(e.g. the gcc-15.2.0 module on this system) do not provide.\n"
+                "\n"
+                "Fix: load a clang module that ships lld (for example clang-latest)\n"
+                "and rerun, or remove an explicit -fuse-ld= setting from your\n"
+                "LDFLAGS / magic flags so the bazel backend can default to gold.\n"
+            )
+            sys.stderr.write(hint)
+            captured += hint
+        raise subprocess.CalledProcessError(rc, cmd, stderr=captured)
 
     def _copy_bazel_libraries(self, bazel_bin: str) -> None:
         """Copy Bazel-built libraries to namer paths.

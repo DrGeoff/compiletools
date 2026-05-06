@@ -3,6 +3,8 @@
 import io
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from compiletools.bazel_backend import BazelBackend
 from compiletools.build_backend import extract_copts, extract_linkopts, get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
@@ -229,7 +231,7 @@ class TestBazelExecuteRuntests:
 
         with (
             patch.object(backend, "_run_tests") as mock_run_tests,
-            patch("subprocess.check_call"),
+            patch.object(backend, "_run_bazel"),
             patch("shutil.which", return_value="/usr/bin/bazel"),
             patch("os.path.exists", return_value=False),
             patch("os.path.isdir", return_value=False),
@@ -340,40 +342,39 @@ class TestBazelExecute:
         hunter = MagicMock()
         return BazelBackend(args=args, hunter=hunter)
 
-    @patch("subprocess.check_call")
     @patch("shutil.which", side_effect=lambda name: "/usr/bin/bazel" if name == "bazel" else None)
     @patch("os.path.exists", return_value=True)
-    def test_execute_includes_tls_workaround_when_cacerts_exist(self, mock_exists, mock_which, mock_check_call):
+    def test_execute_includes_tls_workaround_when_cacerts_exist(self, mock_exists, mock_which):
         backend = self._make_backend()
-        backend.execute("build")
+        with patch.object(backend, "_run_bazel") as mock_run:
+            backend.execute("build")
 
-        cmd = mock_check_call.call_args[0][0]
+        cmd = mock_run.call_args[0][0]
         assert any("trustStore=" in arg for arg in cmd), f"Expected trustStore in {cmd}"
         assert any("trustStorePassword=" in arg for arg in cmd), f"Expected trustStorePassword in {cmd}"
 
-    @patch("subprocess.check_call")
     @patch("shutil.which", side_effect=lambda name: "/usr/bin/bazel" if name == "bazel" else None)
     @patch("os.path.exists", return_value=False)
-    def test_execute_omits_tls_workaround_when_no_cacerts(self, mock_exists, mock_which, mock_check_call):
+    def test_execute_omits_tls_workaround_when_no_cacerts(self, mock_exists, mock_which):
         backend = self._make_backend()
-        backend.execute("build")
+        with patch.object(backend, "_run_bazel") as mock_run:
+            backend.execute("build")
 
-        cmd = mock_check_call.call_args[0][0]
+        cmd = mock_run.call_args[0][0]
         assert not any("trustStore" in arg for arg in cmd), f"Unexpected trustStore in {cmd}"
 
-    @patch("subprocess.check_call")
     @patch("shutil.which", side_effect=lambda name: "/usr/bin/bazel" if name == "bazel" else None)
     @patch("os.path.exists", return_value=False)
-    def test_execute_includes_spawn_strategy_and_action_env(self, mock_exists, mock_which, mock_check_call):
+    def test_execute_includes_spawn_strategy_and_action_env(self, mock_exists, mock_which):
         backend = self._make_backend()
-        backend.execute("build")
+        with patch.object(backend, "_run_bazel") as mock_run:
+            backend.execute("build")
 
-        cmd = mock_check_call.call_args[0][0]
+        cmd = mock_run.call_args[0][0]
         assert "--spawn_strategy=local" in cmd
         assert "--action_env=PATH" in cmd
 
-    @patch("subprocess.check_call")
-    def test_execute_propagates_configured_compiler(self, mock_check_call):
+    def test_execute_propagates_configured_compiler(self):
         """args.CC / args.CXX must be passed to bazel so its autoconfig
         toolchain doesn't fall back to /bin/gcc (which on RHEL 8 is gcc 8
         and rejects -std=c++20)."""
@@ -391,14 +392,182 @@ class TestBazelExecute:
         with (
             patch("shutil.which", side_effect=which_side),
             patch("os.path.exists", return_value=False),
+            patch.object(backend, "_run_bazel") as mock_run,
         ):
             backend.execute("build")
 
-        cmd = mock_check_call.call_args[0][0]
+        cmd = mock_run.call_args[0][0]
         assert "--repo_env=CC=/opt/gcc-15/bin/gcc" in cmd, f"missing CC repo_env in {cmd}"
         assert "--repo_env=CXX=/opt/gcc-15/bin/g++" in cmd, f"missing CXX repo_env in {cmd}"
         assert "--action_env=CC=/opt/gcc-15/bin/gcc" in cmd, f"missing CC action_env in {cmd}"
         assert "--action_env=CXX=/opt/gcc-15/bin/g++" in cmd, f"missing CXX action_env in {cmd}"
+
+
+class TestBazelLinkerDefault:
+    """`--linkopt=-fuse-ld=gold` is added by default but skipped when the
+    user has set their own -fuse-ld=... in LDFLAGS or in any per-rule
+    link command (covers magic-flag-injected linker choices)."""
+
+    def _backend_with(self, *, ldflags="", graph=None):
+        args = MagicMock()
+        args.LDFLAGS = ldflags
+        args.bazel_jvm_stack_size = "256k"
+        args.parallel = 1
+        args.CC = ""
+        args.CXX = ""
+        args.tests = []
+        backend = BazelBackend(args=args, hunter=MagicMock())
+        backend._graph = graph
+        return backend
+
+    def _exec_and_capture(self, backend):
+        with (
+            patch("shutil.which", side_effect=lambda n: "/usr/bin/bazel" if n == "bazel" else None),
+            patch("os.path.exists", return_value=False),
+            patch("os.path.isdir", return_value=False),
+            patch.object(backend, "_run_bazel") as mock_run,
+        ):
+            backend.execute("build")
+        return mock_run.call_args[0][0]
+
+    def test_gold_added_when_no_user_setting(self):
+        cmd = self._exec_and_capture(self._backend_with())
+        assert "--linkopt=-fuse-ld=gold" in cmd
+
+    def test_gold_skipped_when_ldflags_sets_fuse_ld(self):
+        cmd = self._exec_and_capture(self._backend_with(ldflags="-Wall -fuse-ld=mold"))
+        assert not any("--linkopt=-fuse-ld=" in arg for arg in cmd), cmd
+
+    def test_user_set_fuse_ld_via_link_rule_command(self):
+        # Test the predicate directly to avoid running the full execute path.
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="bin/app",
+                inputs=["obj/main.o"],
+                command=["g++", "-Wl,-fuse-ld=lld", "-o", "bin/app", "obj/main.o"],
+                rule_type="link",
+            )
+        )
+        backend = self._backend_with(graph=graph)
+        assert backend._user_set_fuse_ld() is True
+
+    def test_user_set_fuse_ld_via_shared_library_command(self):
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="bin/libfoo.so",
+                inputs=["obj/foo.o"],
+                command=["g++", "-shared", "-fuse-ld=mold", "-o", "bin/libfoo.so", "obj/foo.o"],
+                rule_type="shared_library",
+            )
+        )
+        backend = self._backend_with(graph=graph)
+        assert backend._user_set_fuse_ld() is True
+
+    def test_user_set_fuse_ld_ignores_non_link_rules(self):
+        # A compile rule containing -fuse-ld= shouldn't trigger (defensive: it can't
+        # legitimately appear there, but the predicate filters by rule_type).
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="obj/foo.o",
+                inputs=["foo.cpp"],
+                command=["g++", "-c", "-fuse-ld=lld", "foo.cpp", "-o", "obj/foo.o"],
+                rule_type="compile",
+            )
+        )
+        backend = self._backend_with(graph=graph)
+        assert backend._user_set_fuse_ld() is False
+
+
+class TestBazelJvmStackSize:
+    """`--bazel-jvm-stack-size` drives the JVM -Xss host_jvm_args; empty disables."""
+
+    def _backend_with(self, *, jvm_stack):
+        args = MagicMock()
+        args.LDFLAGS = ""
+        args.bazel_jvm_stack_size = jvm_stack
+        args.parallel = 1
+        args.CC = ""
+        args.CXX = ""
+        args.tests = []
+        backend = BazelBackend(args=args, hunter=MagicMock())
+        backend._graph = None
+        return backend
+
+    def _exec_and_capture(self, backend):
+        with (
+            patch("shutil.which", side_effect=lambda n: "/usr/bin/bazel" if n == "bazel" else None),
+            patch("os.path.exists", return_value=False),
+            patch("os.path.isdir", return_value=False),
+            patch.object(backend, "_run_bazel") as mock_run,
+        ):
+            backend.execute("build")
+        return mock_run.call_args[0][0]
+
+    def test_default_size_appears_in_cmd(self):
+        cmd = self._exec_and_capture(self._backend_with(jvm_stack="256k"))
+        assert "--host_jvm_args=-Xss256k" in cmd
+
+    def test_custom_size_appears_in_cmd(self):
+        cmd = self._exec_and_capture(self._backend_with(jvm_stack="512k"))
+        assert "--host_jvm_args=-Xss512k" in cmd
+        assert "--host_jvm_args=-Xss256k" not in cmd
+
+    def test_empty_skips_xss_flag(self):
+        cmd = self._exec_and_capture(self._backend_with(jvm_stack=""))
+        assert not any("-Xss" in arg for arg in cmd), cmd
+
+
+class TestBazelRunBazelDiagnostic:
+    """`_run_bazel` augments CalledProcessError with a remediation hint
+    when bazel stderr matches the rules_cc / missing-lld pattern."""
+
+    def _make_backend(self):
+        args = MagicMock()
+        return BazelBackend(args=args, hunter=MagicMock())
+
+    def _fake_proc(self, stderr_text: str, returncode: int):
+        proc = MagicMock()
+        proc.stderr = io.StringIO(stderr_text)
+        proc.wait.return_value = returncode
+        return proc
+
+    def test_success_returns_quietly(self):
+        backend = self._make_backend()
+        with patch("subprocess.Popen", return_value=self._fake_proc("INFO: Build completed\n", 0)):
+            backend._run_bazel(["bazel", "build", "//:all"])  # no exception
+
+    def test_failure_without_marker_raises_plain_called_process_error(self):
+        backend = self._make_backend()
+        import subprocess as sp
+
+        with patch("subprocess.Popen", return_value=self._fake_proc("undefined reference to `foo'\n", 1)):
+            with pytest.raises(sp.CalledProcessError) as excinfo:
+                backend._run_bazel(["bazel", "build", "//:all"])
+        assert "Bazel's link step failed" not in (excinfo.value.stderr or "")
+
+    def test_lld_failure_augments_stderr_with_clang_hint(self):
+        backend = self._make_backend()
+        import subprocess as sp
+
+        stderr = "collect2: fatal error: cannot find 'ld'\ncompilation terminated.\n"
+        with patch("subprocess.Popen", return_value=self._fake_proc(stderr, 1)):
+            with pytest.raises(sp.CalledProcessError) as excinfo:
+                backend._run_bazel(["bazel", "build", "//:all"])
+        assert "clang" in (excinfo.value.stderr or "").lower()
+        assert "fuse-ld=lld" in (excinfo.value.stderr or "")
+
+    def test_toolchain_failure_augments_stderr(self):
+        backend = self._make_backend()
+        import subprocess as sp
+
+        stderr = "ERROR: Could not find a C++ toolchain for the requested platform\n"
+        with patch("subprocess.Popen", return_value=self._fake_proc(stderr, 1)):
+            with pytest.raises(sp.CalledProcessError) as excinfo:
+                backend._run_bazel(["bazel", "build", "//:all"])
+        assert "clang" in (excinfo.value.stderr or "").lower()
 
 
 class TestBazelGenerateNoFilesystemMutation:
