@@ -10,6 +10,41 @@ import sys
 import pytest
 
 
+def pytest_configure(config):
+    """Cap default --parallel under pytest-xdist to avoid the fork storm.
+
+    pytest -n N × make -j nproc × bazel --jobs=nproc on a many-core host
+    spawns thousands of compile/link children concurrently, exhausting
+    RLIMIT_NPROC and triggering sporadic failures across unrelated tests
+    (atomic_compile signal-forwarding races, slurm sbatch contention,
+    bazel JVM thread OOMs, etc.). Cap each worker's view of nproc so
+    args.parallel defaults to a sustainable value. Tests that pass
+    --parallel=K explicitly still get K; explicit CAKE_PARALLEL env
+    override is also respected.
+    """
+    del config
+    if "PYTEST_XDIST_WORKER" not in os.environ:
+        return
+    if "CAKE_PARALLEL" in os.environ:
+        return
+    import compiletools.jobs
+
+    workers = int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1") or "1")
+    actual = compiletools.jobs._cpu_count()
+    capped = max(2, actual // (workers * 4))
+    if capped >= actual:
+        return
+    # Patch the underlying os probe rather than _cpu_count itself, so
+    # tests that monkeypatch.setattr their own values for the os APIs
+    # (e.g. src/compiletools/test_jobs.py) override and then restore
+    # cleanly across our cap.
+    if hasattr(os, "process_cpu_count"):
+        os.process_cpu_count = lambda: capped
+    if hasattr(os, "sched_getaffinity"):
+        _orig_affinity = os.sched_getaffinity
+        os.sched_getaffinity = lambda pid=0: set(list(_orig_affinity(pid))[:capped])
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_runtest_logstart(nodeid, location):
     """Append each test nodeid to ``$CT_PYTEST_CHECKPOINT`` (with fsync) before the test runs.
