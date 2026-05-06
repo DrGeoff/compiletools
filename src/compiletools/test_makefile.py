@@ -671,7 +671,8 @@ class TestMakefile:
     def setup_method(self):
         uth.reset()
 
-    def _create_makefile_and_make(self, tempdir):
+    def _create_makefile_and_make(self, tempdir, parallel_argv=None):
+        parallel_argv = parallel_argv or []
         origdir = uth.ctdir()
         print("origdir=" + origdir)
         print(tempdir)
@@ -688,7 +689,9 @@ class TestMakefile:
             ]
             realpaths = [os.path.join(samplesdir, filename) for filename in relativepaths]
             with uth.ParserContext():
-                compiletools.makefile_backend.main(["--config=" + temp_config_name, "--no-file-locking"] + realpaths)
+                compiletools.makefile_backend.main(
+                    parallel_argv + ["--config=" + temp_config_name, "--no-file-locking"] + realpaths
+                )
 
             filelist = os.listdir(".")
             makefilename = [ff for ff in filelist if ff.startswith("Makefile")]
@@ -715,9 +718,9 @@ class TestMakefile:
             assert expected_exes == actual_exes
 
     @uth.requires_functional_compiler
-    def test_makefile(self):
+    def test_makefile(self, capped_parallel_argv):
         with uth.TempDirContextNoChange() as tempdir1:
-            self._create_makefile_and_make(tempdir1)
+            self._create_makefile_and_make(tempdir1, parallel_argv=capped_parallel_argv)
 
     @uth.requires_functional_compiler
     def test_static_library(self):

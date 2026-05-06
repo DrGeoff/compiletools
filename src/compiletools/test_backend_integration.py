@@ -25,7 +25,7 @@ from compiletools.test_base import BaseCompileToolsTestCase
 ensure_backends_registered()
 
 
-def _setup_backend_for_source(backend_name, tmp_path, src_file="helloworld_cpp.cpp"):
+def _setup_backend_for_source(backend_name, tmp_path, src_file="helloworld_cpp.cpp", extra_argv=None):
     """Create a backend with real args and hunter for a simple source.
 
     Returns (backend, graph, args) with everything ready for generate()/execute().
@@ -35,7 +35,7 @@ def _setup_backend_for_source(backend_name, tmp_path, src_file="helloworld_cpp.c
 
     objdir = os.path.join(str(tmp_path), "obj")
     bindir = os.path.join(str(tmp_path), "bin")
-    argv = [
+    argv = (extra_argv or []) + [
         "--include",
         str(tmp_path),
         "--cas-objdir",
@@ -70,11 +70,11 @@ class TestBackendBuildApplication(BaseCompileToolsTestCase):
     @uth.requires_functional_compiler
     @uth.requires_backend_tool()
     @pytest.mark.parametrize("backend_name", available_backends())
-    def test_build_helloworld(self, backend_name, tmp_path, monkeypatch, capfd):
+    def test_build_helloworld(self, backend_name, tmp_path, monkeypatch, capfd, capped_parallel_argv):
         """Build helloworld_cpp.cpp with each registered backend."""
         with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp, uth.ParserContext():
             effective_tmp = pathlib.Path(effective_tmp)
-            backend, graph, args = _setup_backend_for_source(backend_name, effective_tmp)
+            backend, graph, args = _setup_backend_for_source(backend_name, effective_tmp, extra_argv=capped_parallel_argv)
 
             # Verify graph has expected structure
             compile_rules = graph.rules_by_type("compile")
@@ -214,7 +214,7 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
     @uth.requires_functional_compiler
     @uth.requires_backend_tool()
     @pytest.mark.parametrize("backend_name", available_backends())
-    def test_build_pch(self, backend_name, tmp_path, monkeypatch, capfd):
+    def test_build_pch(self, backend_name, tmp_path, monkeypatch, capfd, capped_parallel_argv):
         """Build pch sample with each registered backend."""
         with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp, uth.ParserContext():
             effective_tmp = pathlib.Path(effective_tmp)
@@ -227,7 +227,7 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
             objdir = os.path.join(str(effective_tmp), "obj")
             bindir = os.path.join(str(effective_tmp), "bin")
             pchdir = os.path.join(str(effective_tmp), "pch")
-            argv = [
+            argv = capped_parallel_argv + [
                 "--include",
                 str(effective_tmp),
                 "--cas-objdir",

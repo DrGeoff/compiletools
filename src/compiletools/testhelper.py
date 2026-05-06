@@ -1025,10 +1025,12 @@ def add_backend_arguments(cap):
     does not pull them into the testhelper import graph.
     """
     # ``from ... import name`` (not ``import compiletools.X``) so the local
-    # binding is on ``hunter``/``namer`` directly, not on ``compiletools`` —
-    # the latter would shadow the module-level ``import compiletools.apptools``
-    # for the rest of the function scope and make pyright lose ``apptools``.
+    # binding is on ``hunter``/``namer``/``jobs`` directly, not on
+    # ``compiletools`` — the latter would shadow the module-level
+    # ``import compiletools.apptools`` for the rest of the function scope
+    # and make pyright lose ``apptools``.
     from compiletools import hunter as _hunter
+    from compiletools import jobs as _jobs
     from compiletools import namer as _namer
     from compiletools.makefile_backend import MakefileBackend
     from compiletools.trace_backend import SlurmBackend
@@ -1037,6 +1039,7 @@ def add_backend_arguments(cap):
     compiletools.apptools.add_link_arguments(cap)
     _namer.Namer.add_arguments(cap)
     _hunter.add_arguments(cap)
+    _jobs.add_arguments(cap)
     MakefileBackend.add_arguments(cap)
     SlurmBackend.add_arguments(cap)
 

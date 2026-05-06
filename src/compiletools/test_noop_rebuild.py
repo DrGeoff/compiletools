@@ -59,17 +59,17 @@ _BUILD_SCRIPT = textwrap.dedent("""\
 
     tmp_path = sys.argv[1]
     report_path = sys.argv[2]
-    # sys.argv[3:] = the four --cas-*dir argv pairs from the parent's
-    # isolated_cas_dirs context manager, passed through verbatim so the
-    # subprocess shares the parent's cas roots (and the parent cleans
-    # them up on exit).
-    cas_argv = sys.argv[3:]
+    # sys.argv[3:] = capped_parallel_argv from the parent (no-op outside
+    # pytest-xdist) followed by the four --cas-*dir argv pairs from the
+    # parent's isolated_cas_dirs context manager. Passed through verbatim
+    # so the subprocess shares the parent's cas roots (and the parent
+    # cleans them up on exit).
+    extra_argv = sys.argv[3:]
 
     source_path = os.path.realpath(os.path.join(tmp_path, "main.cpp"))
     bindir = os.path.join(tmp_path, "bin")
-    argv = [
+    argv = extra_argv + [
         "--include", tmp_path,
-        *cas_argv,
         "--bindir", bindir,
         source_path,
     ]
@@ -112,7 +112,7 @@ _BUILD_SCRIPT = textwrap.dedent("""\
 """)
 
 
-def _run_build(tmp_path, report_name, seed, cas_argv):
+def _run_build(tmp_path, report_name, seed, cas_argv, capped_parallel_argv=()):
     """Run the build script in a subprocess with the given PYTHONHASHSEED.
 
     ``cas_argv`` is the four ``--cas-*dir`` argv pairs produced by
@@ -120,6 +120,10 @@ def _run_build(tmp_path, report_name, seed, cas_argv):
     subprocess's ct-cake call doesn't fall back to ``{git_root}/cas-*dir/``
     (which is the compiletools repo, since the subprocess inherits the
     parent's cwd).
+
+    ``capped_parallel_argv`` is the conftest fixture's ``--parallel`` cap
+    (no-op outside pytest-xdist) so the subprocess inherits the parent's
+    parallelism cap.
     """
     import compiletools
 
@@ -132,8 +136,13 @@ def _run_build(tmp_path, report_name, seed, cas_argv):
     # different version of the code than the parent pytest process.
     worktree_src = os.path.dirname(os.path.dirname(compiletools.__file__))
     env["PYTHONPATH"] = os.pathsep.join([worktree_src, env.get("PYTHONPATH", "")])
+    cmd = [
+        sys.executable, "-c", _BUILD_SCRIPT, str(tmp_path), report_path,
+        *capped_parallel_argv,
+        *cas_argv,
+    ]
     result = subprocess.run(
-        [sys.executable, "-c", _BUILD_SCRIPT, str(tmp_path), report_path, *cas_argv],
+        cmd,
         env=env,
         capture_output=True,
         text=True,
@@ -152,14 +161,17 @@ class TestNoopRebuild:
     """A back-to-back build with no source changes must not compile or link."""
 
     @uth.requires_functional_compiler
-    def test_repeat_build_skips_compile_and_link(self, tmp_path):
+    def test_repeat_build_skips_compile_and_link(self, tmp_path, capped_parallel_argv):
         # Write multi-file source tree
         for name, content in _SOURCES.items():
             (tmp_path / name).write_text(content)
 
         with uth.isolated_cas_dirs(tmp_path) as cas_argv:
             # Build 1 (seed=42): real compilation — produces .o, executable, traces
-            report1 = _run_build(tmp_path, "report1.json", seed=42, cas_argv=cas_argv)
+            report1 = _run_build(
+                tmp_path, "report1.json", seed=42,
+                cas_argv=cas_argv, capped_parallel_argv=capped_parallel_argv,
+            )
             assert report1["subprocess_calls"] >= 1, "First build should invoke the compiler"
 
             exe_path = os.path.join(str(tmp_path), "bin", "main")
@@ -167,7 +179,10 @@ class TestNoopRebuild:
 
             # Build 2 (seed=999): different hash seed, same source files on disk.
             # Nothing should compile or link.
-            report2 = _run_build(tmp_path, "report2.json", seed=999, cas_argv=cas_argv)
+            report2 = _run_build(
+                tmp_path, "report2.json", seed=999,
+                cas_argv=cas_argv, capped_parallel_argv=capped_parallel_argv,
+            )
             assert report2["subprocess_calls"] == 0, (
                 f"Expected zero compiler/linker calls on repeat build, got {report2['subprocess_calls']}"
             )

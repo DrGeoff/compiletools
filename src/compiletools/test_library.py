@@ -364,7 +364,7 @@ class TestLibrary:
     @uth.requires_functional_compiler
     @uth.requires_backend_tool()
     @pytest.mark.parametrize("backend_name", available_backends())
-    def test_build_and_link_static_library(self, backend_name, capfd):
+    def test_build_and_link_static_library(self, backend_name, capfd, capped_parallel_argv):
         # Slurm submits compile jobs to remote nodes, so the temp dir must
         # be on a shared filesystem (not node-local scratch) and outside the
         # git tree to avoid hash registry interference from untracked files.
@@ -388,7 +388,7 @@ class TestLibrary:
             # Build the library
             temp_config_name = uth.create_temp_config(tmpdir)
             uth.create_temp_ct_conf(tmpdir, defaultvariant=temp_config_name[:-5])
-            argv = [
+            argv = capped_parallel_argv + [
                 "--exemarkers=main",
                 "--testmarkers=unittest.hpp",
                 "--config=" + temp_config_name,
@@ -430,7 +430,7 @@ class TestLibrary:
                     f.write(f"// Test copy: {os.path.basename(ff)}\n{content}")
 
             # Build the exe, linking against the library
-            argv = [
+            argv = capped_parallel_argv + [
                 "--config=" + temp_config_name,
                 f"--backend={backend_name}",
             ] + realpaths
