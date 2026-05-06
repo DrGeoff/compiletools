@@ -1062,7 +1062,9 @@ class SlurmBackend(ShakeBackend):
         )
 
         effective_mem = mem if mem is not None else self.args.slurm_mem
-        slurm_log = os.path.join(real_objdir, f"slurm-ct-{prefix}-{chunk_id}-%a.out")
+        log_dir = self._build_log_dir()
+        os.makedirs(log_dir, exist_ok=True)
+        slurm_log = os.path.join(log_dir, f"slurm-ct-{prefix}-{chunk_id}-%a.out")
         export_value = getattr(self.args, "slurm_export", _DEFAULT_SLURM_EXPORT)
         cmd = [
             "sbatch",

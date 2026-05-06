@@ -2285,3 +2285,102 @@ class TestBuildLogDirResolver:
         SlurmBackend.add_arguments(cap)
         ns = cap.parse_args(["--build-log-dir", "/tmp/build-logs"])
         assert ns.build_log_dir == "/tmp/build-logs"
+
+
+# ---------------------------------------------------------------------------
+# Sbatch routing through _build_log_dir
+# ---------------------------------------------------------------------------
+
+
+class TestSbatchUsesBuildLogDir:
+    """sbatch --output/--error paths must come from _build_log_dir(), not objdir."""
+
+    def test_sbatch_output_path_under_bindir_logs_by_default(self, tmp_path):
+        rule = make_compile_rule(output=str(tmp_path / "foo.o"), src="foo.cpp")
+        graph = BuildGraph()
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [rule.output]))
+
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            backend.args.build_log_dir = None  # default
+            captured = {}
+
+            def fake_sbatch(cmd, *args, **kwargs):
+                # Pull --output=... out of the sbatch argv
+                for tok in cmd:
+                    if tok.startswith("--output="):
+                        captured["output"] = tok.split("=", 1)[1]
+                    elif tok.startswith("--error="):
+                        captured["error"] = tok.split("=", 1)[1]
+                return "42\n"
+
+            with (
+                patch("subprocess.check_output", side_effect=fake_sbatch),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
+                patch.object(backend, "_wait_for_output_files"),
+            ):
+                # Pre-create real_out so _wait_for_output_files passes if invoked
+                open(rule.output, "w").close()
+                with contextlib.suppress(Exception):
+                    backend.execute("build")
+
+            expected_dir = os.path.join(backend.args.bindir, "logs")
+            assert "output" in captured, "sbatch was never called"
+            assert captured["output"].startswith(expected_dir + os.sep), (
+                f"slurm --output should live under {expected_dir}, got {captured['output']}"
+            )
+            assert captured["error"] == captured["output"]
+
+    def test_sbatch_output_path_uses_explicit_override(self, tmp_path):
+        rule = make_compile_rule(output=str(tmp_path / "foo.o"), src="foo.cpp")
+        graph = BuildGraph()
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [rule.output]))
+
+        override = str(tmp_path / "scratch-logs")
+        with SlurmBackendTestContext(graph, build_log_dir=override) as (backend, _tmpdir):
+            captured = {}
+
+            def fake_sbatch(cmd, *args, **kwargs):
+                for tok in cmd:
+                    if tok.startswith("--output="):
+                        captured["output"] = tok.split("=", 1)[1]
+                return "42\n"
+
+            with (
+                patch("subprocess.check_output", side_effect=fake_sbatch),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
+                patch.object(backend, "_wait_for_output_files"),
+            ):
+                open(rule.output, "w").close()
+                with contextlib.suppress(Exception):
+                    backend.execute("build")
+
+            assert captured["output"].startswith(override + os.sep), (
+                f"slurm --output should live under {override}, got {captured.get('output')}"
+            )
+            # And the directory must have been created.
+            assert os.path.isdir(override), "build-log-dir must be created if missing"
+
+    def test_log_dir_created_when_missing(self, tmp_path):
+        """The default <bindir>/logs/ must be created on first sbatch."""
+        rule = make_compile_rule(output=str(tmp_path / "foo.o"), src="foo.cpp")
+        graph = BuildGraph()
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [rule.output]))
+
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            backend.args.build_log_dir = None
+            log_dir = os.path.join(backend.args.bindir, "logs")
+            assert not os.path.exists(log_dir), "precondition: log dir absent"
+
+            with (
+                patch("subprocess.check_output", return_value="42\n"),
+                patch.object(backend, "_wait_for_arrays", return_value=[]),
+                patch.object(backend, "_wait_for_output_files"),
+            ):
+                open(rule.output, "w").close()
+                with contextlib.suppress(Exception):
+                    backend.execute("build")
+
+            assert os.path.isdir(log_dir), "log dir must exist after sbatch"
