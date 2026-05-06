@@ -603,9 +603,7 @@ def _safe_locked_rmtree(dir_path):
         # so removing it would be unsafe — abort instead.
         try:
             current_files = {
-                entry.path
-                for entry in os.scandir(dir_path)
-                if entry.is_file() and _is_build_artifact(entry.name)
+                entry.path for entry in os.scandir(dir_path) if entry.is_file() and _is_build_artifact(entry.name)
             }
         except OSError:
             # Dir vanished between scan and re-scan; nothing more to do

@@ -270,14 +270,11 @@ class TestTrimObjdir:
         # A flat scanner would only see the stray (non-current) and report
         # current_kept=0 — so this assertion fails on the pre-sharding code.
         assert stats["current_kept"] == 1, (
-            f"the bucket-resident .o has the current hash and must be counted "
-            f"as current_kept. Got stats={stats}"
+            f"the bucket-resident .o has the current hash and must be counted as current_kept. Got stats={stats}"
         )
         assert stats["total_scanned"] == 1
         assert os.path.exists(bucket_obj_path), "current bucket-resident object kept"
-        assert os.path.exists(stray_flat_path), (
-            "scanner must not touch flat-layout files — they are outside its world"
-        )
+        assert os.path.exists(stray_flat_path), "scanner must not touch flat-layout files — they are outside its world"
 
     def test_skips_non_bucket_top_level_entries(self, tmp_path):
         """Anything at the top level of ``$objdir/`` whose name is not a
@@ -605,6 +602,7 @@ class TestSafeLockedRmtree:
 class TestLoadPchManifest:
     def test_returns_dict_when_manifest_present(self, tmp_path):
         from compiletools.trim_cache import _load_pch_manifest
+
         cmd_hash_dir = tmp_path / "abc1234567890123"
         cmd_hash_dir.mkdir()
         (cmd_hash_dir / "manifest.json").write_text(
@@ -616,12 +614,14 @@ class TestLoadPchManifest:
 
     def test_returns_none_when_missing(self, tmp_path):
         from compiletools.trim_cache import _load_pch_manifest
+
         cmd_hash_dir = tmp_path / "abc1234567890123"
         cmd_hash_dir.mkdir()
         assert _load_pch_manifest(str(cmd_hash_dir)) is None
 
     def test_returns_none_on_corrupt_json(self, tmp_path):
         from compiletools.trim_cache import _load_pch_manifest
+
         cmd_hash_dir = tmp_path / "abc1234567890123"
         cmd_hash_dir.mkdir()
         (cmd_hash_dir / "manifest.json").write_text("{not json")
@@ -699,6 +699,7 @@ class TestPchTransitiveStaleness:
     def _git_blob_sha1(content: bytes) -> str:
         """Helper matching global_hash_registry._compute_external_file_hash."""
         import hashlib
+
         return hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
 
     def test_stale_transitive_hash_evicts_entry(self, tmp_path):
