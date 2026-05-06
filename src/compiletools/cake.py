@@ -9,6 +9,7 @@ from typing import Optional
 import compiletools.apptools
 import compiletools.compilation_database
 import compiletools.configutils
+import compiletools.diagnostics
 import compiletools.filelist
 import compiletools.findtargets
 import compiletools.git_utils
@@ -196,8 +197,26 @@ class Cake:
             name="timing",
             dest="timing",
             default=False,
-            help="Collect and report build timing information. Writes .ct-timing.json "
+            help="Collect and report build timing information. Writes timing.json "
+            "into the per-invocation diagnostics directory (see --diagnostics-dir) "
             "and prints a summary table after the build.",
+        )
+
+        cap.add(
+            "--diagnostics-dir",
+            default=None,
+            help=(
+                "Parent directory for per-invocation diagnostic artifacts "
+                "(build timing JSON, slurm job logs, ...). Each ct-cake "
+                "invocation gets its own <invocation-id> subdirectory under "
+                "this path so concurrent peers sharing a bindir or objdir "
+                "never collide. Defaults to <bindir>/diagnostics/. "
+                "Also settable via the DIAGNOSTICS_DIR environment variable "
+                "or 'diagnostics-dir = <path>' in any ct.conf file. "
+                "Must NOT be set to --objdir, which is a content-addressable "
+                "cache: diagnostic files have no eviction path there and "
+                "races with peer ct-cake invocations clobber the data."
+            ),
         )
 
     def _callfilelist(self):
@@ -378,8 +397,8 @@ class Cake:
                 self._call_backend()
         finally:
             if timer.enabled:
-                objdir = getattr(self.args, "objdir", ".")
-                timer.to_json(os.path.join(objdir, ".ct-timing.json"))
+                diag_dir = compiletools.diagnostics.resolve_diagnostics_dir(self.args)
+                timer.to_json(os.path.join(diag_dir, "timing.json"))
                 timer.print_summary()
 
     def clear_cache(self):
