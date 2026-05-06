@@ -8,7 +8,13 @@ invocation land in one shared, easily-located subdirectory.
 from __future__ import annotations
 
 import os
+import re
 import time
+
+# Pattern matching the YYYYMMDDTHHMMSS-PID invocation-id format produced
+# by ``invocation_id()``. Shared with ``timing_report._find_timing_file``
+# so its diagnostics-dir scan can ignore stray non-invocation entries.
+INVOCATION_ID_RE = re.compile(r"^\d{8}T\d{6}-\d+$")
 
 _invocation_id: str | None = None
 

@@ -41,6 +41,130 @@ class TestFindTimingFile:
         objdir.mkdir()
         assert _find_timing_file(None, objdir=str(objdir)) is None
 
+    def test_auto_detect_bindir_diagnostics_newest(self, tmp_path, monkeypatch):
+        """With the new diagnostics-dir layout, look up the newest invocation
+        subdir under <bindir>/diagnostics/ by lex sort and return its
+        timing.json."""
+        monkeypatch.chdir(tmp_path)
+        bindir = tmp_path / "bin"
+        diag = bindir / "diagnostics"
+        older = diag / "20260506T120000-100"
+        newer = diag / "20260506T143022-200"
+        for d in (older, newer):
+            d.mkdir(parents=True)
+            (d / "timing.json").write_text("{}")
+        result = _find_timing_file(None, bindir=str(bindir))
+        assert result == str(newer / "timing.json")
+
+    def test_auto_detect_diagnostics_dir_overrides_bindir(self, tmp_path, monkeypatch):
+        """An explicit ``diagnostics_dir`` is used directly even if it lives
+        outside any ``bindir``."""
+        monkeypatch.chdir(tmp_path)
+        bindir = tmp_path / "bin"
+        bindir.mkdir()  # exists but contains no diagnostics
+        diag = tmp_path / "elsewhere" / "diag"
+        invocation = diag / "20260506T120000-100"
+        invocation.mkdir(parents=True)
+        timing = invocation / "timing.json"
+        timing.write_text("{}")
+        result = _find_timing_file(None, bindir=str(bindir), diagnostics_dir=str(diag))
+        assert result == str(timing)
+
+    def test_auto_detect_nonexistent_diagnostics_dir_falls_through(self, tmp_path, monkeypatch):
+        """If the diagnostics-dir doesn't exist, fall through to the legacy
+        ``./.ct-timing.json`` candidate (which exists in this test) instead
+        of erroring."""
+        monkeypatch.chdir(tmp_path)
+        legacy = tmp_path / ".ct-timing.json"
+        legacy.write_text("{}")
+        result = _find_timing_file(None, diagnostics_dir=str(tmp_path / "does-not-exist"))
+        assert result == ".ct-timing.json"
+
+    def test_auto_detect_nonexistent_diagnostics_dir_returns_none(self, tmp_path, monkeypatch):
+        """If diagnostics-dir doesn't exist and no other fallback hits,
+        return None rather than raising."""
+        monkeypatch.chdir(tmp_path)
+        assert _find_timing_file(None, diagnostics_dir=str(tmp_path / "does-not-exist")) is None
+
+    def test_auto_detect_ignores_non_invocation_entries(self, tmp_path, monkeypatch):
+        """Stray files or non-matching directories under diagnostics-dir
+        must not confuse the lex sort; only entries matching the
+        ``YYYYMMDDTHHMMSS-PID`` pattern count."""
+        monkeypatch.chdir(tmp_path)
+        bindir = tmp_path / "bin"
+        diag = bindir / "diagnostics"
+        diag.mkdir(parents=True)
+        # Stray entries: a plain directory, a non-matching name, a file
+        (diag / "tmp").mkdir()
+        (diag / "some-other-thing").mkdir()
+        (diag / "README.txt").write_text("")
+        # The real invocation
+        real = diag / "20260506T120000-100"
+        real.mkdir()
+        (real / "timing.json").write_text("{}")
+        result = _find_timing_file(None, bindir=str(bindir))
+        assert result == str(real / "timing.json")
+
+    def test_auto_detect_prefers_cwd_timing_json_over_legacy(self, tmp_path, monkeypatch):
+        """``./timing.json`` (no leading dot, the new name) takes precedence
+        over the legacy ``./.ct-timing.json`` when both are present."""
+        monkeypatch.chdir(tmp_path)
+        new = tmp_path / "timing.json"
+        new.write_text("{}")
+        legacy = tmp_path / ".ct-timing.json"
+        legacy.write_text("{}")
+        assert _find_timing_file(None) == "timing.json"
+
+    def test_auto_detect_falls_back_to_legacy_dotfile(self, tmp_path, monkeypatch):
+        """When ``./timing.json`` is absent, fall back to the legacy
+        ``./.ct-timing.json``."""
+        monkeypatch.chdir(tmp_path)
+        legacy = tmp_path / ".ct-timing.json"
+        legacy.write_text("{}")
+        assert _find_timing_file(None) == ".ct-timing.json"
+
+    def test_auto_detect_empty_diagnostics_dir_falls_through(self, tmp_path, monkeypatch):
+        """An existing-but-empty diagnostics-dir falls through to legacy
+        candidates rather than returning a bogus path."""
+        monkeypatch.chdir(tmp_path)
+        bindir = tmp_path / "bin"
+        diag = bindir / "diagnostics"
+        diag.mkdir(parents=True)  # empty
+        legacy = tmp_path / ".ct-timing.json"
+        legacy.write_text("{}")
+        assert _find_timing_file(None, bindir=str(bindir)) == ".ct-timing.json"
+
+
+class TestMainCLI:
+    def test_diagnostics_dir_accepted_on_argv(self, tmp_path, monkeypatch):
+        """ct-timing-report's parser must accept --diagnostics-dir on the
+        CLI so users / orchestrators can direct the auto-discovery."""
+        monkeypatch.chdir(tmp_path)
+        # No timing file anywhere -> exits 1, but the parser must accept
+        # the flag without erroring out at parse time.
+        rc = main(["--summary", "--diagnostics-dir", str(tmp_path / "nonexistent")])
+        assert rc == 1
+
+    def test_bindir_accepted_on_argv(self, tmp_path, monkeypatch):
+        """ct-timing-report's parser must accept --bindir on the CLI."""
+        monkeypatch.chdir(tmp_path)
+        rc = main(["--summary", "--bindir", str(tmp_path / "bin")])
+        assert rc == 1
+
+    def test_diagnostics_dir_routes_to_correct_file(self, tmp_path, monkeypatch):
+        """End-to-end: --diagnostics-dir on the CLI should make ct-timing-report
+        find the timing.json under <diag>/<invocation-id>/."""
+        monkeypatch.chdir(tmp_path)
+        diag = tmp_path / "diag"
+        invocation = diag / "20260506T143022-200"
+        invocation.mkdir(parents=True)
+        timer = BuildTimer(enabled=True, variant="gcc.debug", backend="make")
+        with timer.phase("build_execution"):
+            timer.record_rule("compile", "a.o", "a.cpp", 1.0)
+        timer.to_json(str(invocation / "timing.json"))
+        rc = main(["--summary", "--diagnostics-dir", str(diag)])
+        assert rc == 0
+
 
 class TestMainSummary:
     def test_summary_with_valid_file(self, tmp_path):

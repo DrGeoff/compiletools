@@ -3,7 +3,7 @@
 Usage::
 
     ct-timing-report                          # TUI (or fallback to summary)
-    ct-timing-report .ct-timing.json          # TUI for specific file
+    ct-timing-report timing.json              # TUI for specific file
     ct-timing-report --summary                # print Rich table
     ct-timing-report --compare a.json b.json  # diff two runs
     ct-timing-report --chrome-trace out.json   # export for Perfetto
@@ -16,7 +16,9 @@ import os
 import sys
 
 import compiletools.apptools
+import compiletools.configutils
 from compiletools.build_timer import BuildTimer
+from compiletools.diagnostics import INVOCATION_ID_RE
 
 # ------------------------------------------------------------------ CLI
 
@@ -25,13 +27,32 @@ def main(argv=None) -> int:
     parser = compiletools.apptools.create_parser(
         "Analyze and display build timing reports from ct-cake --timing.",
         argv=argv,
-        include_config=False,
+        include_config=True,
+    )
+    # ct-cake writes timing.json under <bindir>/diagnostics/<invocation-id>/.
+    # Registering --bindir / --diagnostics-dir lets ct-timing-report participate
+    # in the same configargparse layering (CLI > env > ct.conf > default), so
+    # an orchestrator that already exports DIAGNOSTICS_DIR for ct-cake gets
+    # auto-discovery here for free.
+    variant = compiletools.configutils.extract_variant(argv=argv)
+    compiletools.apptools.add_output_directory_arguments(parser, variant=variant)
+    parser.add(
+        "--diagnostics-dir",
+        default=None,
+        help=(
+            "Parent directory for per-invocation diagnostic artifacts. "
+            "When set, ct-timing-report looks for the newest "
+            "<diagnostics-dir>/<invocation-id>/timing.json. Defaults to "
+            "<bindir>/diagnostics/. Also settable via the DIAGNOSTICS_DIR "
+            "environment variable or 'diagnostics-dir = <path>' in any "
+            "ct.conf file."
+        ),
     )
     parser.add(
         "timing_file",
         nargs="?",
         default=None,
-        help="Path to .ct-timing.json (default: auto-detect in cwd)",
+        help="Path to timing.json (default: auto-detect in cwd / diagnostics-dir / bindir)",
     )
     parser.add(
         "--summary",
@@ -64,23 +85,64 @@ def main(argv=None) -> int:
 # -------------------------------------------------------- file loading
 
 
-def _find_timing_file(path: str | None, objdir: str | None = None) -> str | None:
-    """Resolve timing file path, auto-detecting in cwd if not given.
+def _newest_invocation_timing(diagnostics_dir: str) -> str | None:
+    """Return ``<diagnostics_dir>/<newest-invocation>/timing.json`` or None.
+
+    The "newest invocation" is the lexicographically-largest entry in
+    ``diagnostics_dir`` whose name matches ``INVOCATION_ID_RE`` (the
+    ``YYYYMMDDTHHMMSS-PID`` format from ``diagnostics.invocation_id()``,
+    which is naturally sortable). Non-matching entries (stray files, tmp
+    dirs, etc.) are ignored. Returns None if the dir doesn't exist, has
+    no matching entries, or the newest entry has no timing.json yet.
+    """
+    if not os.path.isdir(diagnostics_dir):
+        return None
+    try:
+        entries = os.listdir(diagnostics_dir)
+    except OSError:
+        return None
+    invocations = [
+        name for name in entries if INVOCATION_ID_RE.match(name) and os.path.isdir(os.path.join(diagnostics_dir, name))
+    ]
+    if not invocations:
+        return None
+    invocations.sort()  # lex sort == chronological for the YYYYMMDDTHHMMSS-PID format
+    candidate = os.path.join(diagnostics_dir, invocations[-1], "timing.json")
+    return candidate if os.path.exists(candidate) else None
+
+
+def _find_timing_file(
+    path: str | None,
+    *,
+    objdir: str | None = None,
+    bindir: str | None = None,
+    diagnostics_dir: str | None = None,
+) -> str | None:
+    """Resolve timing file path, auto-detecting if not given.
 
     Search order:
       1. Explicit ``path`` argument (if given).
-      2. ``./.ct-timing.json`` in cwd.
-      3. ``{objdir}/.ct-timing.json`` if ``objdir`` is provided.
-      4. Common objdir/bindir conventions: ``bin/``, ``obj/``.
-
-    Users with a custom ``--objdir=shared-objdir/...`` should pass
-    ``objdir`` so the search reaches their actual output location.
+      2. ``./timing.json`` in cwd (the new no-leading-dot filename).
+      3. ``./.ct-timing.json`` in cwd (legacy name, kept for one release).
+      4. Newest ``<diagnostics-dir>/<invocation-id>/timing.json``. If
+         ``diagnostics_dir`` is provided, use it directly; otherwise
+         derive ``<bindir>/diagnostics/`` if ``bindir`` is provided.
+      5. ``{objdir}/.ct-timing.json`` if ``objdir`` is provided (legacy).
+      6. ``bin/.ct-timing.json``, ``obj/.ct-timing.json`` (legacy).
     """
     if path:
         return path
-    default = ".ct-timing.json"
-    if os.path.exists(default):
-        return default
+    if os.path.exists("timing.json"):
+        return "timing.json"
+    if os.path.exists(".ct-timing.json"):
+        return ".ct-timing.json"
+    diag_dir = diagnostics_dir
+    if diag_dir is None and bindir:
+        diag_dir = os.path.join(bindir, "diagnostics")
+    if diag_dir:
+        found = _newest_invocation_timing(diag_dir)
+        if found is not None:
+            return found
     candidates = []
     if objdir:
         candidates.append(os.path.join(objdir, ".ct-timing.json"))
@@ -93,10 +155,14 @@ def _find_timing_file(path: str | None, objdir: str | None = None) -> str | None
 
 def _resolve_and_load(args) -> BuildTimer | None:
     """Find and load the timing file, printing errors on failure."""
-    objdir = getattr(args, "objdir", None)
-    path = _find_timing_file(getattr(args, "timing_file", None), objdir=objdir)
+    path = _find_timing_file(
+        getattr(args, "timing_file", None),
+        objdir=getattr(args, "objdir", None),
+        bindir=getattr(args, "bindir", None),
+        diagnostics_dir=getattr(args, "diagnostics_dir", None),
+    )
     if path is None:
-        print("No .ct-timing.json found. Run ct-cake --timing first.", file=sys.stderr)
+        print("No timing.json found. Run ct-cake --timing first.", file=sys.stderr)
         return None
     if not os.path.exists(path):
         print(f"File not found: {path}", file=sys.stderr)
@@ -260,7 +326,15 @@ def _run_tui(args) -> int:
         )
         return _print_summary(args)
 
-    path = _find_timing_file(getattr(args, "timing_file", None), objdir=getattr(args, "objdir", None)) or ""
+    path = (
+        _find_timing_file(
+            getattr(args, "timing_file", None),
+            objdir=getattr(args, "objdir", None),
+            bindir=getattr(args, "bindir", None),
+            diagnostics_dir=getattr(args, "diagnostics_dir", None),
+        )
+        or ""
+    )
     app = TimingReportApp(timer, path)
     app.run()
     return 0
