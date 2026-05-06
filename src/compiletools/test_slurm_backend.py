@@ -2319,7 +2319,6 @@ class TestSbatchUsesBuildLogDir:
                 patch.object(backend, "_wait_for_arrays", return_value=[]),
                 patch.object(backend, "_wait_for_output_files"),
             ):
-                # Pre-create real_out so _wait_for_output_files passes if invoked
                 open(rule.output, "w").close()
                 with contextlib.suppress(Exception):
                     backend.execute("build")
@@ -2356,6 +2355,7 @@ class TestSbatchUsesBuildLogDir:
                 with contextlib.suppress(Exception):
                     backend.execute("build")
 
+            assert "output" in captured, "sbatch was never called"
             assert captured["output"].startswith(override + os.sep), (
                 f"slurm --output should live under {override}, got {captured.get('output')}"
             )
@@ -2374,8 +2374,14 @@ class TestSbatchUsesBuildLogDir:
             log_dir = os.path.join(backend.args.bindir, "logs")
             assert not os.path.exists(log_dir), "precondition: log dir absent"
 
+            sbatch_calls = []
+
+            def fake_sbatch(*_args, **_kwargs):
+                sbatch_calls.append(1)
+                return "42\n"
+
             with (
-                patch("subprocess.check_output", return_value="42\n"),
+                patch("subprocess.check_output", side_effect=fake_sbatch),
                 patch.object(backend, "_wait_for_arrays", return_value=[]),
                 patch.object(backend, "_wait_for_output_files"),
             ):
@@ -2383,4 +2389,5 @@ class TestSbatchUsesBuildLogDir:
                 with contextlib.suppress(Exception):
                     backend.execute("build")
 
+            assert sbatch_calls, "sbatch was never called"
             assert os.path.isdir(log_dir), "log dir must exist after sbatch"
