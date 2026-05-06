@@ -89,6 +89,13 @@ def SlurmBackendTestContext(graph, **arg_overrides):
         slurm_max_array=1000,
         slurm_poll_interval=0.0,  # no sleep in tests
     )
+    # Pop test-only options before make_backend_args sees them.
+    # When set_diag_dir is True (default), the helper pre-creates and assigns
+    # backend._diag_dir so tests that bypass execute() (and call _sbatch_array
+    # / _read_slurm_logs_for_failures directly) get the same cached path that
+    # execute() would set.  Tests covering the cleanup-path short-circuit when
+    # execute() never ran can pass set_diag_dir=False to leave it unset.
+    set_diag_dir = arg_overrides.pop("set_diag_dir", True)
     slurm_defaults.update(arg_overrides)
     with TempDirContextNoChange() as tmpdir:
         args = make_backend_args(tmpdir, **slurm_defaults)
@@ -98,6 +105,8 @@ def SlurmBackendTestContext(graph, **arg_overrides):
         backend._graph = graph
         backend.namer = MagicMock()
         backend.context = BuildContext()
+        if set_diag_dir:
+            backend._diag_dir = compiletools.diagnostics.resolve_diagnostics_dir(args)
         yield backend, tmpdir
 
 
@@ -2257,11 +2266,13 @@ class TestSlurmLogsRouteThroughDiagnostics:
     """Slurm log paths must route through compiletools.diagnostics, not objdir."""
 
     def test_no_call_site_uses_objdir_for_slurm_log_filenames(self):
-        """Regression guard: every slurm-ct-*.out path must route through
-        compiletools.diagnostics.resolve_diagnostics_dir(self.args), never join
-        with self.args.objdir / real_objdir.  Slurm logs are user-facing
-        diagnostics, not content-addressable cache artifacts; if this fails a
-        future change has reintroduced an objdir-resident slurm log path.
+        """Regression guard: line-based check for slurm-ct-*.out filenames
+        joined with objdir on the same line.  Cheap and catches the naive
+        mistake.  Note: this is intentionally line-based and can be evaded
+        by multi-line ``os.path.join`` calls.  The diagnostics-dir invariant
+        is also enforced by the integration tests in
+        :class:`TestSbatchUsesDiagnosticsDir`, which exercise the actual
+        sbatch argv path.
         """
         import compiletools.trace_backend as tb
 
@@ -2278,6 +2289,30 @@ class TestSlurmLogsRouteThroughDiagnostics:
             "compiletools.diagnostics.resolve_diagnostics_dir(self.args), not objdir.  "
             f"Offending lines: {offending}"
         )
+
+    def test_cleanup_path_does_not_create_diagnostics_dir_when_execute_never_ran(self, tmp_path):
+        """If execute() raised before caching self._diag_dir (or was never
+        called at all), the cleanup path must short-circuit and NOT mint an
+        empty diagnostics directory for an invocation that produced no logs.
+        """
+        rule = make_compile_rule(output=str(tmp_path / "foo.o"), src="foo.cpp")
+        graph = BuildGraph()
+        graph.add_rule(rule)
+        graph.add_rule(make_phony_rule("build", [rule.output]))
+
+        with SlurmBackendTestContext(graph, set_diag_dir=False) as (backend, _tmpdir):
+            iid = compiletools.diagnostics.invocation_id()
+            diag_dir = os.path.join(backend.args.bindir, "diagnostics", iid)
+            assert not os.path.exists(diag_dir), "precondition: diag dir absent"
+
+            # execute() was never called, so backend._diag_dir is unset.
+            assert not hasattr(backend, "_diag_dir")
+
+            # Cleanup-path entry point must return [] without creating anything.
+            assert backend._invocation_log_paths() == []
+            assert not os.path.exists(diag_dir), (
+                "cleanup path must not create diagnostics dir for invocation that never reached execute()"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -2364,19 +2399,15 @@ class TestSbatchUsesDiagnosticsDir:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [rule.output]))
 
-        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+        # set_diag_dir=False: skip the helper's pre-creation so we can
+        # observe execute() minting the leaf on its own.
+        with SlurmBackendTestContext(graph, set_diag_dir=False) as (backend, _tmpdir):
             iid = compiletools.diagnostics.invocation_id()
             diag_dir = os.path.join(backend.args.bindir, "diagnostics", iid)
-            # The autouse fixture reset the cache, so only resolve_diagnostics_dir
-            # has been called from this test (and only via invocation_id() above
-            # to predict the path).  The directory itself shouldn't exist yet.
-            # Reset again so the in-execute() resolve_diagnostics_dir call is the
-            # one that creates the leaf directory.
-            import shutil
-
-            if os.path.isdir(diag_dir):
-                shutil.rmtree(diag_dir)
-            assert not os.path.exists(diag_dir), "precondition: diagnostics dir absent"
+            # invocation_id() is pure-string and creates no directories;
+            # the leaf will be minted by the in-execute()
+            # resolve_diagnostics_dir call.
+            assert not os.path.exists(diag_dir), "precondition: diag dir absent before sbatch"
 
             sbatch_calls = []
 

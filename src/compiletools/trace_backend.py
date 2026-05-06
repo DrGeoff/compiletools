@@ -680,6 +680,16 @@ class SlurmBackend(ShakeBackend):
         trace_path = os.path.join(self.args.objdir, self.build_filename())
         traces = TraceStore(trace_path)
 
+        # Resolve (and create) the per-invocation diagnostics directory once,
+        # so the three downstream sites (sbatch --output=, _invocation_log_paths,
+        # _read_slurm_logs_for_failures) read a stored path instead of
+        # re-invoking the resolver (which would mkdir each time).  The
+        # cleanup path (_invocation_log_paths via _cleanup_slurm_logs in the
+        # finally block) checks for this attribute and short-circuits when
+        # execute() raised before this assignment, so we don't mint an empty
+        # diagnostics dir for an invocation that produced no logs.
+        self._diag_dir = compiletools.diagnostics.resolve_diagnostics_dir(self.args)
+
         # Per-invocation aux-file tracking.  cmds/outs filenames use a
         # per-invocation prefix sourced from compiletools.diagnostics so peer
         # ct-cake processes sharing the same objdir don't collide.
@@ -1053,8 +1063,7 @@ class SlurmBackend(ShakeBackend):
         )
 
         effective_mem = mem if mem is not None else self.args.slurm_mem
-        log_dir = compiletools.diagnostics.resolve_diagnostics_dir(self.args)
-        slurm_log = os.path.join(log_dir, f"slurm-ct-{chunk_id}-%a.out")
+        slurm_log = os.path.join(self._diag_dir, f"slurm-ct-{chunk_id}-%a.out")
         export_value = getattr(self.args, "slurm_export", _DEFAULT_SLURM_EXPORT)
         cmd = [
             "sbatch",
@@ -1169,8 +1178,15 @@ class SlurmBackend(ShakeBackend):
         is ``compiletools.diagnostics.invocation_id()``), so every
         ``slurm-ct-*.out`` it contains belongs to this ct-cake invocation —
         no per-prefix glob filter is required.
+
+        Returns ``[]`` (without creating a diagnostics dir) if execute() never
+        ran or raised before caching ``self._diag_dir`` — the cleanup path in
+        execute()'s finally block must not mint an empty diagnostics directory
+        for an invocation that produced no logs.
         """
-        diag_dir = compiletools.diagnostics.resolve_diagnostics_dir(self.args)
+        diag_dir = getattr(self, "_diag_dir", None)
+        if diag_dir is None:
+            return []
         return sorted(glob.glob(os.path.join(diag_dir, "slurm-ct-*.out")))
 
     def _cleanup_slurm_logs(self) -> None:
@@ -1258,7 +1274,9 @@ class SlurmBackend(ShakeBackend):
         that share the same array_index.
         """
         diagnostics: list[str] = []
-        diag_dir = compiletools.diagnostics.resolve_diagnostics_dir(self.args)
+        diag_dir = getattr(self, "_diag_dir", None)
+        if diag_dir is None:
+            return ""
         for f in failures:
             parts = f.job_id.rsplit("_", 1)
             if len(parts) != 2:
