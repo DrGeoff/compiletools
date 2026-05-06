@@ -2296,7 +2296,8 @@ class TestBuildLogDirResolver:
         """
         import compiletools.trace_backend as tb
 
-        source = open(tb.__file__, encoding="utf-8").read()
+        with open(tb.__file__, encoding="utf-8") as fh:
+            source = fh.read()
         # Find every line that constructs a slurm-ct-*.out filename.
         offending = []
         for lineno, line in enumerate(source.splitlines(), start=1):
@@ -2309,8 +2310,7 @@ class TestBuildLogDirResolver:
             if "self.args.objdir" in line or "real_objdir" in line:
                 offending.append((lineno, line.strip()))
         assert not offending, (
-            "slurm log filenames must be joined with self._build_log_dir(), "
-            f"not objdir.  Offending lines: {offending}"
+            f"slurm log filenames must be joined with self._build_log_dir(), not objdir.  Offending lines: {offending}"
         )
 
 
