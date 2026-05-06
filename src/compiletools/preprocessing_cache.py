@@ -86,6 +86,19 @@ class MacroState:
                 naming so different optimization levels produce different objects.
         cxxflags: Raw C++ compiler flags (e.g., '-std=c++17').  Hashed for object
                   naming so different C++ standards produce different objects.
+        cmdline_origin: Names in `core` that came from cmdline -D flags (vs
+                        compiler built-ins). When non-empty, callers can pass a
+                        scope_filter to get_hash(include_core=True) so only the
+                        cmdline -D macros actually referenced by the TU are
+                        included in the hash. Default empty: no filtering.
+        cppflags_tokens: Optional structured token list for cppflags with -D/-U
+                         already stripped. When provided, get_hash() hashes the
+                         tokens instead of the raw cppflags string (so the -D
+                         tokens that scope_filter is meant to filter don't sneak
+                         back in via the build-context hash). None = today's
+                         raw-string hashing.
+        cflags_tokens: Same idea for cflags.
+        cxxflags_tokens: Same idea for cxxflags.
     """
 
     core: MacroDict  # Static: compiler + cmdline macros
@@ -94,6 +107,10 @@ class MacroState:
     cppflags: str  # Build context: raw flags (-I paths etc.) for __has_* queries
     cflags: str  # Build context: C compiler flags for object naming
     cxxflags: str  # Build context: C++ compiler flags for object naming
+    cmdline_origin: frozenset  # Names in core that came from cmdline -D flags
+    cppflags_tokens: Optional[list]  # Structured cppflags tokens (-D/-U stripped)
+    cflags_tokens: Optional[list]  # Structured cflags tokens (-D/-U stripped)
+    cxxflags_tokens: Optional[list]  # Structured cxxflags tokens (-D/-U stripped)
     _cache_key: Optional[MacroCacheKey]  # Cached frozenset for cache keys
     _hash: Optional[str]  # Cached hex digest for convergence detection (variable only)
     _hash_full: Optional[str]  # Cached hex digest including core + variable + build context
@@ -106,6 +123,10 @@ class MacroState:
         cppflags: str = "",
         cflags: str = "",
         cxxflags: str = "",
+        cmdline_origin: frozenset = frozenset(),
+        cppflags_tokens: Optional[list] = None,
+        cflags_tokens: Optional[list] = None,
+        cxxflags_tokens: Optional[list] = None,
     ):
         """Initialize macro state.
 
@@ -116,6 +137,12 @@ class MacroState:
             cppflags: Additional preprocessor flags forwarded to __has_* queries
             cflags: C compiler flags (e.g., '-O2') for object naming hash
             cxxflags: C++ compiler flags (e.g., '-std=c++17') for object naming hash
+            cmdline_origin: Names in `core` that came from cmdline -D flags
+                (the rest of `core` is compiler built-ins). Default empty.
+            cppflags_tokens: Optional tokenized cppflags with -D/-U stripped.
+                None falls back to hashing the raw cppflags string.
+            cflags_tokens: Optional tokenized cflags with -D/-U stripped.
+            cxxflags_tokens: Optional tokenized cxxflags with -D/-U stripped.
         """
         self.core = core
         self.variable = variable if variable is not None else {}
@@ -123,6 +150,10 @@ class MacroState:
         self.cppflags = cppflags
         self.cflags = cflags
         self.cxxflags = cxxflags
+        self.cmdline_origin = cmdline_origin
+        self.cppflags_tokens = cppflags_tokens
+        self.cflags_tokens = cflags_tokens
+        self.cxxflags_tokens = cxxflags_tokens
         self._cache_key = None  # Lazy-computed cache key
         self._hash = None  # Lazy-computed hash (variable only)
         self._hash_full = None  # Lazy-computed hash (core + variable + build context)
@@ -167,6 +198,10 @@ class MacroState:
             cppflags=self.cppflags,
             cflags=self.cflags,
             cxxflags=self.cxxflags,
+            cmdline_origin=self.cmdline_origin,
+            cppflags_tokens=self.cppflags_tokens,
+            cflags_tokens=self.cflags_tokens,
+            cxxflags_tokens=self.cxxflags_tokens,
         )
 
         # Optimization: incrementally compute cache key when possible
@@ -194,6 +229,10 @@ class MacroState:
             cppflags=self.cppflags,
             cflags=self.cflags,
             cxxflags=self.cxxflags,
+            cmdline_origin=self.cmdline_origin,
+            cppflags_tokens=self.cppflags_tokens,
+            cflags_tokens=self.cflags_tokens,
+            cxxflags_tokens=self.cxxflags_tokens,
         )
 
     # Dict-like interface for easy drop-in replacement
@@ -279,63 +318,94 @@ class MacroState:
         relevant_items = tuple((m, self.variable[m]) for m in relevant_macros if m in self.variable)
         return frozenset(relevant_items) if relevant_items else _EMPTY_FROZENSET
 
-    def get_hash(self, include_core=False) -> str:
+    def get_hash(
+        self,
+        include_core: bool = False,
+        scope_filter: Optional[frozenset] = None,
+    ) -> str:
         """Get or compute stable hash of this MacroState for convergence detection.
 
         Args:
-            include_core: If True, include core macros in hash. If False (default),
-                         only hash variable macros for preprocessing cache compatibility.
+            include_core: If True, include core macros + build context in hash.
+                If False (default), only hash variable macros (preprocessing cache).
+            scope_filter: Optional set of cmdline -D macro names to include from
+                `core`. Names in `core` but NOT in `cmdline_origin` (compiler
+                builtins) are always hashed; names in BOTH `core` and
+                `cmdline_origin` are hashed only if they appear in scope_filter.
+                Variable macros are always hashed (unaffected by scope_filter).
+                Ignored when include_core is False. None preserves today's
+                behavior (no filtering — all of core is hashed).
 
         Returns a hex string of stable 64-bit hash using stringzilla's deterministic hash.
         Hash is deterministic across Python runs (suitable for disk caching).
-        Uses cached hash to avoid recomputation on repeated calls.
+        Uses cached hash to avoid recomputation on repeated calls (only for the
+        unfiltered include_core path; filtered hashes are not cached because
+        each TU may pass a different scope_filter).
 
         INVARIANT: equal cache keys produce equal hashes (1-to-1 mapping)
         Performance: O(n) with no sorting - XOR is commutative so order doesn't matter
         """
-        # Use separate cache attributes for variable-only vs full hash
-        cache_attr = "_hash_full" if include_core else "_hash"
+        # Variable-only path (preprocessing cache) — unaffected by scope_filter.
+        if not include_core:
+            if self._hash is not None:
+                return self._hash
+            combined = 0
+            for name, value in self.get_cache_key():
+                combined ^= sz.hash(bytes(name))
+                combined ^= sz.hash(bytes(value))
+            self._hash = format(combined, "016x")
+            return self._hash
 
-        cached_value = getattr(self, cache_attr, None)
-        if cached_value is not None:
-            return cached_value
+        # Full hash path. Cache only the unfiltered call.
+        if scope_filter is None and self._hash_full is not None:
+            return self._hash_full
 
-        # Determine which macros to hash
-        if include_core:
-            # Hash both core and variable macros
-            all_items = list(self.core.items()) + list(self.variable.items())
-            items_to_hash = frozenset(all_items)
-        else:
-            # Hash only variable macros (existing behavior for preprocessing cache)
-            items_to_hash = self.get_cache_key()
+        combined = self._compute_full_hash_combined(scope_filter)
+        result = format(combined, "016x")
+        if scope_filter is None:
+            self._hash_full = result
+        return result
 
-        # XOR stringzilla hashes of each (name, value) pair
-        # No sorting needed - XOR is commutative (a^b == b^a)
-        # stringzilla.hash() is deterministic across Python runs
-        # Empty frozenset: XOR of 0 items = 0, format as '0000000000000000'
+    def _compute_full_hash_combined(self, scope_filter: Optional[frozenset]) -> int:
+        """Compute the XOR-combined 64-bit hash for the full (include_core) path.
+
+        Filters cmdline-origin core macros against scope_filter when provided,
+        and hashes structured flag tokens instead of raw flag strings when
+        tokens are available.
+        """
         combined = 0
+        # Core + variable macros. Match original behavior: dedup (name, value)
+        # pairs via frozenset so that duplicates between core and variable
+        # don't cancel under XOR.
+        if scope_filter is None or not self.cmdline_origin:
+            items_to_hash = frozenset(list(self.core.items()) + list(self.variable.items()))
+        else:
+            filtered_core = [(n, v) for n, v in self.core.items() if n not in self.cmdline_origin or n in scope_filter]
+            items_to_hash = frozenset(filtered_core + list(self.variable.items()))
         for name, value in items_to_hash:
             combined ^= sz.hash(bytes(name))
             combined ^= sz.hash(bytes(value))
 
-        # When computing the full hash (for object naming), also include
-        # build context fields so that different compilers, include paths,
-        # or optimization flags produce different object file names.
-        # NOTE: We hash a labeled composite string rather than XOR-ing
-        # individual field hashes, because CPPFLAGS and CXXFLAGS may be
-        # identical (unified mode) and XOR of identical values cancels out.
-        if include_core:
-            build_context = (
-                f"CC={self.compiler_path}\x00"
-                f"CPPFLAGS={self.cppflags}\x00"
-                f"CFLAGS={self.cflags}\x00"
-                f"CXXFLAGS={self.cxxflags}"
-            )
-            combined ^= sz.hash(bytes(build_context, "utf-8"))
+        # Build context. When structured token lists are provided, hash those
+        # instead of the raw flag strings (the tokens have -D/-U stripped, so
+        # they don't smuggle filtered cmdline macros back into the hash).
+        # Labeled composite avoids XOR cancellation when fields collide.
+        if self.cppflags_tokens is not None:
+            cppflags_part = "CPPFLAGS_TOKENS=" + "\x00".join(self.cppflags_tokens)
+        else:
+            cppflags_part = f"CPPFLAGS={self.cppflags}"
+        if self.cflags_tokens is not None:
+            cflags_part = "CFLAGS_TOKENS=" + "\x00".join(self.cflags_tokens)
+        else:
+            cflags_part = f"CFLAGS={self.cflags}"
+        if self.cxxflags_tokens is not None:
+            cxxflags_part = "CXXFLAGS_TOKENS=" + "\x00".join(self.cxxflags_tokens)
+        else:
+            cxxflags_part = f"CXXFLAGS={self.cxxflags}"
 
-        result = format(combined, "016x")
-        setattr(self, cache_attr, result)
-        return result
+        build_context = f"CC={self.compiler_path}\x00{cppflags_part}\x00{cflags_part}\x00{cxxflags_part}"
+        combined ^= sz.hash(bytes(build_context, "utf-8"))
+        return combined
 
 
 # Simple cache: if variable dict is empty, return cached empty frozenset
