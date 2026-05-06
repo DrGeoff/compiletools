@@ -10,40 +10,26 @@ import sys
 import pytest
 
 # Each compile/link rule fans out to ~4 children (cpp -MM, cc1, as,
-# collect2/ld). Cap each xdist worker's view of nproc to nproc /
-# (workers * fanout) so the total fork budget across all workers stays
-# under RLIMIT_NPROC on many-core shared hosts. Empirically tuned on a
-# 127-core RHEL8 host; raising to 8 didn't measurably reduce residual
-# flakes (which trace to peer-tenant ulimit pressure, not us). Override
-# via CT_TEST_FORK_FANOUT env var if a different host needs a different
-# budget.
+# collect2/ld). The capped_parallel_argv fixture below uses this to derive
+# a per-worker nproc budget that keeps the total fork count across all
+# xdist workers under RLIMIT_NPROC on many-core shared hosts.
 _FORK_FANOUT_PER_RULE = 4
 _MIN_PARALLEL = 2
 
 
-def pytest_configure(config):
-    """Cap default --parallel under pytest-xdist to avoid the fork storm.
+def _capped_parallel():
+    """Compute a sustainable --parallel value for the current xdist worker.
 
-    pytest -n N x make -j nproc x bazel --jobs=nproc on a many-core host
-    spawns thousands of compile/link children concurrently, exhausting
-    RLIMIT_NPROC and triggering sporadic failures across unrelated tests
-    (atomic_compile signal-forwarding races, slurm sbatch contention,
-    bazel JVM thread OOMs, etc.). Cap each xdist worker's view of nproc
-    by setting CT_PARALLEL — compiletools.jobs.add_arguments registers
-    it as the env_var for --parallel, so configargparse picks it up as
-    the default whenever a test parser is built. Tests that pass
-    --parallel=K explicitly still get K; an existing CT_PARALLEL setting
-    is respected.
+    Returns None when not running under pytest-xdist or when the default
+    nproc is already small enough — callers can short-circuit and pass no
+    --parallel override in that case.
     """
-    del config
     if "PYTEST_XDIST_WORKER" not in os.environ:
-        return
-    if "CT_PARALLEL" in os.environ:
-        return
+        return None
     try:
         workers = int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1") or "1")
     except ValueError:
-        return
+        return None
     try:
         fanout = int(os.environ.get("CT_TEST_FORK_FANOUT") or _FORK_FANOUT_PER_RULE)
     except ValueError:
@@ -53,8 +39,35 @@ def pytest_configure(config):
 
     actual = compiletools.jobs._cpu_count()
     capped = max(_MIN_PARALLEL, actual // (workers * fanout))
-    if capped < actual:
-        os.environ["CT_PARALLEL"] = str(capped)
+    return capped if capped < actual else None
+
+
+@pytest.fixture
+def capped_parallel_argv():
+    """Yield the argv flags needed to cap --parallel under pytest-xdist.
+
+    pytest -n N x make -j nproc x bazel --jobs=nproc on a many-core host
+    spawns thousands of compile/link children concurrently, exhausting
+    RLIMIT_NPROC and triggering sporadic failures across unrelated tests.
+    Tests that invoke a build backend (cake.main, etc.) opt into a
+    sustainable cap by accepting this fixture and prepending the yielded
+    list to their argv:
+
+        def test_something(capped_parallel_argv):
+            argv = capped_parallel_argv + ["--backend=bazel", ...]
+            cake.main(argv)
+
+    Returns an empty list when not under xdist (so opt-in tests are a
+    no-op outside the fork-storm scenario). Honours an explicit
+    CT_PARALLEL env override (returns empty so configargparse picks it
+    up directly).
+    """
+    if "CT_PARALLEL" in os.environ:
+        return []
+    capped = _capped_parallel()
+    if capped is None:
+        return []
+    return ["--parallel", str(capped)]
 
 
 @pytest.hookimpl(tryfirst=True)
