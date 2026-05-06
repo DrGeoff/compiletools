@@ -62,38 +62,47 @@ class TestCmdlineDMacroNames:
         result = cmdline_d_macro_names(args)
         assert result == frozenset({sz.Str("A"), sz.Str("B")})
 
+    def test_cmdline_d_macro_names_strips_value_from_attached_form(self):
+        """The set contains the macro NAME only -- never the `=value` half."""
+        args = SimpleNamespace(CPPFLAGS="-DFOO=bar -DBAZ=qux", CFLAGS="", CXXFLAGS="", verbose=0)
+        result = cmdline_d_macro_names(args)
+        assert result == frozenset({sz.Str("FOO"), sz.Str("BAZ")})
+        # Specifically guard against accidentally including the value half:
+        assert sz.Str("FOO=bar") not in result
+        assert sz.Str("bar") not in result
+
 
 class TestTokenizeCompileFlags:
     def test_tokenize_strips_attached_d(self):
-        cpp, _c, _cxx = tokenize_compile_flags("-O2 -DFOO -Wall", "", "")
+        cpp = tokenize_compile_flags("-O2 -DFOO -Wall", "", "")[0]
         assert cpp == ["-O2", "-Wall"]
 
     def test_tokenize_strips_attached_d_with_value(self):
-        cpp, _c, _cxx = tokenize_compile_flags("-O2 -DFOO=bar -Wall", "", "")
+        cpp = tokenize_compile_flags("-O2 -DFOO=bar -Wall", "", "")[0]
         assert cpp == ["-O2", "-Wall"]
 
     def test_tokenize_strips_attached_u(self):
-        cpp, _c, _cxx = tokenize_compile_flags("-UFOO -Wall", "", "")
+        cpp = tokenize_compile_flags("-UFOO -Wall", "", "")[0]
         assert cpp == ["-Wall"]
 
     def test_tokenize_strips_detached_d(self):
-        cpp, _c, _cxx = tokenize_compile_flags("-O2 -D FOO -Wall", "", "")
+        cpp = tokenize_compile_flags("-O2 -D FOO -Wall", "", "")[0]
         assert cpp == ["-O2", "-Wall"]
 
     def test_tokenize_strips_detached_d_with_value(self):
-        cpp, _c, _cxx = tokenize_compile_flags("-O2 -D FOO=bar -Wall", "", "")
+        cpp = tokenize_compile_flags("-O2 -D FOO=bar -Wall", "", "")[0]
         assert cpp == ["-O2", "-Wall"]
 
     def test_tokenize_strips_detached_u(self):
-        cpp, _c, _cxx = tokenize_compile_flags("-O2 -U FOO -Wall", "", "")
+        cpp = tokenize_compile_flags("-O2 -U FOO -Wall", "", "")[0]
         assert cpp == ["-O2", "-Wall"]
 
     def test_tokenize_dangling_detached_d_at_end(self):
-        cpp, _c, _cxx = tokenize_compile_flags("-O2 -D", "", "")
+        cpp = tokenize_compile_flags("-O2 -D", "", "")[0]
         assert cpp == ["-O2"]
 
     def test_tokenize_keeps_other_flags(self):
-        cpp, _c, _cxx = tokenize_compile_flags("-O2 -Iinclude -std=c++20 -Wall -fPIC", "", "")
+        cpp = tokenize_compile_flags("-O2 -Iinclude -std=c++20 -Wall -fPIC", "", "")[0]
         assert cpp == ["-O2", "-Iinclude", "-std=c++20", "-Wall", "-fPIC"]
 
     def test_tokenize_returns_three_lists(self):
@@ -106,11 +115,11 @@ class TestTokenizeCompileFlags:
         assert cxx == ["-Wall"]
 
     def test_tokenize_accepts_list_input(self):
-        cpp, _c, _cxx = tokenize_compile_flags(["-O2", "-DFOO", "-Wall"], "", "")
+        cpp = tokenize_compile_flags(["-O2", "-DFOO", "-Wall"], "", "")[0]
         assert cpp == ["-O2", "-Wall"]
 
     def test_tokenize_does_not_strip_i_capital(self):
-        cpp, _c, _cxx = tokenize_compile_flags("-I/usr/include -D FOO", "", "")
+        cpp = tokenize_compile_flags("-I/usr/include -D FOO", "", "")[0]
         assert cpp == ["-I/usr/include"]
 
     def test_tokenize_handles_empty_strings(self):
@@ -118,3 +127,14 @@ class TestTokenizeCompileFlags:
         assert cpp == []
         assert c == []
         assert cxx == []
+
+    def test_tokenize_strips_d_in_all_three_slots(self):
+        """Stripping logic applies symmetrically to cpp, c, and cxx flags."""
+        cpp, c, cxx = tokenize_compile_flags(
+            "-O0 -DAAA -Wall",
+            "-O1 -DBBB=val -Wextra",
+            "-O2 -D CCC -Wpedantic",
+        )
+        assert cpp == ["-O0", "-Wall"]
+        assert c == ["-O1", "-Wextra"]
+        assert cxx == ["-O2", "-Wpedantic"]
