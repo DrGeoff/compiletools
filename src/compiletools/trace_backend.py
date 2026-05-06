@@ -986,9 +986,21 @@ class SlurmBackend(ShakeBackend):
           results are cached from the header-dep walk).
         * Link / static_library / shared_library rules have no source file
           (``include_weight`` is 0), so they would always match the smallest
-          tier and OOM on real binaries.  Use the input-object count instead
-          — peak linker RSS scales with the number of objects' symbol tables
-          and section data the linker has to merge.
+          tier and OOM on real binaries.  Use ``len(rule.inputs)`` instead.
+          This is a loose proxy: a static archive counts as 1 input even
+          though the linker scans every object inside it for symbol
+          resolution, so executables that pull in a large ``.a`` will be
+          under-sized here.  The OOM-retry-and-double loop in
+          ``_compile_concurrent`` catches under-estimates by re-submitting
+          at 2x memory, capped at ``--slurm-mem``.
+
+        For real link rules (hundreds of objects, template-heavy framework)
+        ``len(inputs)`` typically exceeds the largest default tier (16) and
+        the rule falls off to ``--slurm-mem`` (16G default — the empirical
+        peak the proposal calibrated against).  The 1G-16G ladder only
+        meaningfully sizes 1-to-16-object link rules; production link work
+        is sized by ``--slurm-mem`` plus the OOM-retry loop, not by the
+        intermediate tiers.
 
         Rules whose weight exceeds the largest threshold use ``--slurm-mem``
         (the per-job ceiling).
