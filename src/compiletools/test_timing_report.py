@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
+import types
 
+import compiletools.timing_report as tr
 from compiletools.build_timer import BuildTimer
-from compiletools.timing_report import _find_timing_file, _format_pct, _styled, main
+from compiletools.timing_report import _find_timing_file, _format_pct, _resolve_and_load, _styled, main
 
 
 class TestFindTimingFile:
@@ -284,6 +288,105 @@ class TestComparison:
         path = str(tmp_path / "same.json")
         self._write_raw(path, 0.0, [{"name": "build_execution", "elapsed_s": 0.0, "children": []}])
         assert main(["--compare", path, path]) == 0
+
+
+class TestResolveAndLoad:
+    def test_returns_timer_and_loaded_path(self, tmp_path):
+        """``_resolve_and_load`` must return both the timer and the path it
+        loaded from so callers (notably ``_run_tui``) don't have to re-call
+        ``_find_timing_file`` and risk a TOCTOU window where a peer
+        ct-cake invocation writes a newer diagnostics subdir between the
+        two lookups."""
+        timer = BuildTimer(enabled=True, variant="gcc.debug", backend="make")
+        with timer.phase("build_execution"):
+            timer.record_rule("compile", "a.o", "a.cpp", 1.0)
+        path = str(tmp_path / "timing.json")
+        timer.to_json(path)
+
+        class _Args:
+            timing_file = path
+            objdir = None
+            bindir = None
+            diagnostics_dir = None
+
+        loaded_timer, loaded_path = _resolve_and_load(_Args())
+        assert loaded_timer is not None
+        assert loaded_path == path
+
+    def test_failure_returns_none_path(self, tmp_path, monkeypatch):
+        """On failure both elements of the tuple are ``None`` so callers can
+        unpack unconditionally."""
+        monkeypatch.chdir(tmp_path)
+
+        class _Args:
+            timing_file = None
+            objdir = None
+            bindir = None
+            diagnostics_dir = None
+
+        loaded_timer, loaded_path = _resolve_and_load(_Args())
+        assert loaded_timer is None
+        assert loaded_path is None
+
+    def test_tui_uses_path_from_resolve_and_load(self, tmp_path, monkeypatch):
+        """Regression: ``_run_tui`` previously called ``_find_timing_file`` a
+        second time to recover the path for the TUI title. A peer ct-cake
+        could write a newer ``<diagnostics-dir>/<invocation-id>/timing.json``
+        between the two lookups, leaving the loaded timer and the displayed
+        path pointing at different invocations.
+
+        Simulate that race by monkeypatching ``_find_timing_file`` to return
+        DIFFERENT values on consecutive calls and assert the TUI is
+        instantiated with the path the timer was actually loaded from
+        (i.e. the FIRST value, not a second lookup).
+        """
+        timer = BuildTimer(enabled=True, variant="gcc.debug", backend="make")
+        with timer.phase("build_execution"):
+            timer.record_rule("compile", "a.o", "a.cpp", 1.0)
+        first_path = str(tmp_path / "first" / "timing.json")
+        second_path = str(tmp_path / "second" / "timing.json")
+        for p in (first_path, second_path):
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            timer.to_json(p)
+
+        # Each call to _find_timing_file returns the next value in the queue.
+        # If _run_tui calls it twice, the TUI gets the second_path and the
+        # timer was loaded from first_path -> mismatch detected by the assert.
+        responses = [first_path, second_path]
+
+        def fake_find(*args, **kwargs):
+            return responses.pop(0) if responses else None
+
+        monkeypatch.setattr(tr, "_find_timing_file", fake_find)
+
+        captured = {}
+
+        class FakeApp:
+            def __init__(self, timer, path):
+                captured["timer"] = timer
+                captured["path"] = path
+
+            def run(self):
+                pass
+
+        # Inject a fake timing_tui module so _run_tui's import succeeds.
+        fake_module = types.ModuleType("compiletools.timing_tui")
+        fake_module.TimingReportApp = FakeApp
+        monkeypatch.setitem(sys.modules, "compiletools.timing_tui", fake_module)
+
+        class _Args:
+            timing_file = None
+            objdir = None
+            bindir = None
+            diagnostics_dir = None
+
+        rc = tr._run_tui(_Args())
+        assert rc == 0
+        # The TUI must receive the SAME path the timer was loaded from
+        # (first_path), proving _find_timing_file was called exactly once.
+        assert captured["path"] == first_path
+        # And exactly one queue entry should have been consumed.
+        assert responses == [second_path]
 
 
 class TestTUIFallback:

@@ -153,8 +153,18 @@ def _find_timing_file(
     return None
 
 
-def _resolve_and_load(args) -> BuildTimer | None:
-    """Find and load the timing file, printing errors on failure."""
+def _resolve_and_load(args) -> tuple[BuildTimer | None, str | None]:
+    """Find and load the timing file, returning ``(timer, path)``.
+
+    Returns the path the timer was loaded from alongside the timer so callers
+    that need both (e.g. the TUI title) don't have to re-run ``_find_timing_file``.
+    A second lookup would also open a TOCTOU window: a peer ``ct-cake``
+    invocation can write a NEWER ``<diagnostics-dir>/<invocation-id>/`` between
+    the two calls, leaving the loaded timer and the displayed path pointing at
+    different invocations.
+
+    On failure, prints to stderr and returns ``(None, None)``.
+    """
     path = _find_timing_file(
         getattr(args, "timing_file", None),
         objdir=getattr(args, "objdir", None),
@@ -163,18 +173,18 @@ def _resolve_and_load(args) -> BuildTimer | None:
     )
     if path is None:
         print("No timing.json found. Run ct-cake --timing first.", file=sys.stderr)
-        return None
+        return None, None
     if not os.path.exists(path):
         print(f"File not found: {path}", file=sys.stderr)
-        return None
-    return BuildTimer.from_json(path)
+        return None, None
+    return BuildTimer.from_json(path), path
 
 
 # -------------------------------------------------------- summary mode
 
 
 def _print_summary(args) -> int:
-    timer = _resolve_and_load(args)
+    timer, _ = _resolve_and_load(args)
     if timer is None:
         return 1
     timer.print_summary()
@@ -185,7 +195,7 @@ def _print_summary(args) -> int:
 
 
 def _export_chrome_trace(args) -> int:
-    timer = _resolve_and_load(args)
+    timer, _ = _resolve_and_load(args)
     if timer is None:
         return 1
     events = timer.to_chrome_trace()
@@ -312,7 +322,7 @@ def _run_comparison(args) -> int:
 
 
 def _run_tui(args) -> int:
-    timer = _resolve_and_load(args)
+    timer, path = _resolve_and_load(args)
     if timer is None:
         return 1
 
@@ -326,16 +336,7 @@ def _run_tui(args) -> int:
         )
         return _print_summary(args)
 
-    path = (
-        _find_timing_file(
-            getattr(args, "timing_file", None),
-            objdir=getattr(args, "objdir", None),
-            bindir=getattr(args, "bindir", None),
-            diagnostics_dir=getattr(args, "diagnostics_dir", None),
-        )
-        or ""
-    )
-    app = TimingReportApp(timer, path)
+    app = TimingReportApp(timer, path or "")
     app.run()
     return 0
 
