@@ -412,7 +412,6 @@ class TestBazelLinkerDefault:
         args = MagicMock()
         args.LDFLAGS = ldflags
         args.bazel_jvm_stack_size = "256k"
-        args.bazel_host_cpus = 16
         args.parallel = 1
         args.CC = ""
         args.CXX = ""
@@ -522,15 +521,14 @@ class TestBazelJvmStackSize:
 
 
 class TestBazelActiveProcessorCount:
-    """`-XX:ActiveProcessorCount` is min(--parallel, --bazel-host-cpus) so
-    bazel's JVM doesn't pre-spawn nproc threads at server startup on
-    many-core hosts."""
+    """`-XX:ActiveProcessorCount` matches args.parallel so bazel's JVM
+    respects the canonical core-limit knob and doesn't pre-spawn nproc
+    threads at server startup on many-core hosts."""
 
-    def _backend_with(self, *, parallel, host_cpus=16):
+    def _backend_with(self, *, parallel):
         args = MagicMock()
         args.LDFLAGS = ""
         args.bazel_jvm_stack_size = "256k"
-        args.bazel_host_cpus = host_cpus
         args.parallel = parallel
         args.CC = ""
         args.CXX = ""
@@ -549,19 +547,9 @@ class TestBazelActiveProcessorCount:
             backend.execute("build")
         return mock_run.call_args[0][0]
 
-    def test_capped_by_host_cpus_when_parallel_is_high(self):
-        # 127-core host scenario: --parallel=127 but --bazel-host-cpus=16 caps it.
-        cmd = self._exec_and_capture(self._backend_with(parallel=127, host_cpus=16))
-        assert "--host_jvm_args=-XX:ActiveProcessorCount=16" in cmd
-
-    def test_capped_by_parallel_when_parallel_is_low(self):
-        # Small host: --parallel=8, host_cpus default 16, effective is 8.
-        cmd = self._exec_and_capture(self._backend_with(parallel=8, host_cpus=16))
+    def test_active_processor_count_matches_parallel(self):
+        cmd = self._exec_and_capture(self._backend_with(parallel=8))
         assert "--host_jvm_args=-XX:ActiveProcessorCount=8" in cmd
-
-    def test_disabled_when_host_cpus_zero(self):
-        cmd = self._exec_and_capture(self._backend_with(parallel=8, host_cpus=0))
-        assert not any("ActiveProcessorCount" in arg for arg in cmd), cmd
 
     def test_no_flag_when_parallel_unset(self):
         cmd = self._exec_and_capture(self._backend_with(parallel=None))
