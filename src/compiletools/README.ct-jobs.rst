@@ -28,9 +28,10 @@ uses ``sysctl hw.ncpu``. On Termux, it uses ``nproc``.
 
 OPTIONS
 =======
--j NUM, --jobs NUM, --parallel NUM, --CT_PARALLEL NUM
+-j NUM, --jobs NUM, --parallel NUM
     Explicitly set the number of parallel jobs. If not specified,
-    defaults to the number of available CPU cores.
+    defaults to the number of available CPU cores. Also settable via
+    the ``CT_PARALLEL`` environment variable.
 
 EXAMPLES
 ========

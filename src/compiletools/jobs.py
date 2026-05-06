@@ -34,11 +34,11 @@ def add_arguments(cap):
     cap.add_argument(
         "-j",
         "--jobs",
-        "--CT_PARALLEL",
         "--parallel",
         dest="parallel",
         type=int,
         default=_cpu_count(),
+        env_var="CT_PARALLEL",
         help="Sets the number of CPUs to use in parallel for a build.",
     )
 
