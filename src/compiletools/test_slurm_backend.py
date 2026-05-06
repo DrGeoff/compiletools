@@ -2239,7 +2239,7 @@ class TestScancelOnSignal:
 
 
 class TestBuildLogDirResolver:
-    def test_default_is_bindir_logs(self, tmp_path):
+    def test_default_is_bindir_logs(self):
         """When --build-log-dir is unset, logs land in <bindir>/logs/."""
         graph = BuildGraph()
         with SlurmBackendTestContext(graph) as (backend, tmpdir):
@@ -2256,7 +2256,7 @@ class TestBuildLogDirResolver:
             backend.args.build_log_dir = override
             assert backend._build_log_dir() == override
 
-    def test_empty_string_treated_as_unset(self, tmp_path):
+    def test_empty_string_treated_as_unset(self):
         """Empty string falls back to the default — same as None."""
         graph = BuildGraph()
         with SlurmBackendTestContext(graph) as (backend, tmpdir):
