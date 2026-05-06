@@ -280,9 +280,12 @@ class TestTrimObjdir:
         )
 
     def test_skips_non_bucket_top_level_entries(self, tmp_path):
-        """Slurm ``slurm-ct-*.out`` files and ``TraceStore`` directories live
-        flat at ``$objdir/`` (per the proposal carve-outs). The scanner must
-        skip anything at the top level whose name is not a 2-hex bucket dir.
+        """Anything at the top level of ``$objdir/`` whose name is not a
+        2-hex bucket directory must be invisible to the scanner.
+        ``TraceStore/`` lives there by design; ``slurm-ct-*.out`` files only
+        appear here if the user has overridden ``--build-log-dir`` to point
+        back into ``--objdir`` (the default is ``<bindir>/logs/``).  Either
+        way, the scanner ignores them.
         """
         objdir = str(tmp_path / "obj")
         os.makedirs(objdir)

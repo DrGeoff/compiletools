@@ -26,8 +26,10 @@ _OBJ_FILENAME_RE = re.compile(
 
 # Object bucket directories are exactly 2 lowercase hex chars (the leading
 # 2 chars of the per-source ``file_hash``). Top-level entries that don't
-# match — Slurm ``slurm-ct-*.out`` files, ``TraceStore/`` dirs, anything
-# else — are invisible to the scanner.
+# match — ``TraceStore/`` dirs, anything else — are invisible to the
+# scanner.  Slurm ``slurm-ct-*.out`` files default to ``<bindir>/logs/``
+# and are not in objdir; if a user overrides ``--build-log-dir`` to
+# point back at ``--objdir`` they remain invisible here too, by design.
 _OBJ_BUCKET_RE = re.compile(r"^[0-9a-f]{2}$")
 
 # PCH command hash directories are exactly 16 lowercase hex chars.
