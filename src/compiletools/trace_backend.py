@@ -1159,6 +1159,19 @@ class SlurmBackend(ShakeBackend):
                     kwargs["end_s"] = end_s
                 timer.record_rule(**kwargs)
 
+    def _build_log_dir(self) -> str:
+        """Resolve the directory for per-job slurm log files.
+
+        Default is ``<bindir>/logs/``.  Logs are invocation-scoped artifacts
+        and must NOT live under ``--objdir``, which is a content-addressable
+        cache with no eviction path for non-cache files.  Override with
+        ``--build-log-dir <path>`` (e.g. a per-build CI scratch directory).
+        """
+        override = getattr(self.args, "build_log_dir", None)
+        if override:
+            return override
+        return os.path.join(self.args.bindir, "logs")
+
     def _invocation_log_paths(self) -> list[str]:
         """Slurm log paths produced by THIS invocation (no cross-invocation glob)."""
         prefix = getattr(self, "_invocation_prefix", None)

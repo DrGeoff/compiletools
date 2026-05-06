@@ -2231,3 +2231,35 @@ class TestScancelOnSignal:
                 t.join(timeout=5.0)
                 # And confirm scancel ran in the finally block
                 assert _mock_scancel.called
+
+
+# ---------------------------------------------------------------------------
+# Build-log-dir resolver
+# ---------------------------------------------------------------------------
+
+
+class TestBuildLogDirResolver:
+    def test_default_is_bindir_logs(self, tmp_path):
+        """When --build-log-dir is unset, logs land in <bindir>/logs/."""
+        graph = BuildGraph()
+        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+            # SlurmBackendTestContext doesn't set build_log_dir; default is None.
+            backend.args.build_log_dir = None
+            expected = os.path.join(backend.args.bindir, "logs")
+            assert backend._build_log_dir() == expected
+
+    def test_explicit_override_wins(self, tmp_path):
+        """Explicit --build-log-dir overrides the bindir default."""
+        graph = BuildGraph()
+        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+            override = str(tmp_path / "explicit-logs")
+            backend.args.build_log_dir = override
+            assert backend._build_log_dir() == override
+
+    def test_empty_string_treated_as_unset(self, tmp_path):
+        """Empty string falls back to the default — same as None."""
+        graph = BuildGraph()
+        with SlurmBackendTestContext(graph) as (backend, tmpdir):
+            backend.args.build_log_dir = ""
+            expected = os.path.join(backend.args.bindir, "logs")
+            assert backend._build_log_dir() == expected
