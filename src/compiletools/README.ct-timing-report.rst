@@ -31,10 +31,19 @@ can be switched between in-app.  Requires ``textual`` (install with
 table if textual is not installed.
 
 The timing file (``timing.json``) is auto-detected if not specified
-explicitly.  ct-timing-report walks the per-invocation diagnostics
-layout under ``<bindir>/diagnostics/<invocation-id>/timing.json`` first
-(picking the most recent invocation), then falls back to legacy
-locations in the current directory, ``bin/``, and ``obj/``.
+explicitly.  Search order:
+
+1. ``./timing.json`` in the current directory
+2. ``./.ct-timing.json`` in the current directory (legacy name)
+3. The newest ``<diagnostics-dir>/<invocation-id>/timing.json`` (the
+   default ``<diagnostics-dir>`` is ``<bindir>/diagnostics/``)
+4. Legacy fallbacks: ``{objdir}/.ct-timing.json``,
+   ``bin/.ct-timing.json``, ``obj/.ct-timing.json``
+
+Note that a hit in the current directory short-circuits the
+diagnostics-dir lookup, so a stale ``./timing.json`` will outrank a
+fresh diagnostics-dir entry.  Pass an explicit path or use
+``--diagnostics-dir`` to bypass cwd.
 
 The diagnostics root is configurable on ct-timing-report's own CLI via
 ``--diagnostics-dir`` (or ``--bindir``, which implies

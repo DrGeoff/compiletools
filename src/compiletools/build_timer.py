@@ -90,7 +90,7 @@ class TimingEvent:
 _FORMAT_VERSION = 1
 
 
-def _union_span(events: list["TimingEvent"]) -> float:
+def _union_span(events: list[TimingEvent]) -> float:
     """Total wall-clock time during which any of ``events`` was running.
 
     Merges overlapping [start_s, end_s) intervals.  Events still in

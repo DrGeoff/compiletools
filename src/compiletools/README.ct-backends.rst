@@ -242,7 +242,8 @@ compilation across many nodes dramatically reduces wall-clock time.
 - Polls ``sacct`` for job completion
 - Traces recorded for successfully compiled outputs (incremental rebuilds
   across cluster jobs)
-- Slurm logs written to ``{objdir}/slurm-ct-*.out`` (cleaned on success)
+- Slurm logs written to ``<diagnostics-dir>/<invocation-id>/slurm-ct-<chunk>-<task>.out``
+  (defaults to ``<bindir>/diagnostics/<invocation-id>/``; cleaned on success)
 
 **Requires:** Slurm (``sbatch`` in PATH).
 

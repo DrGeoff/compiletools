@@ -758,7 +758,7 @@ class TestAggregateByCategory:
         phase = timer.phases[0]
         rows = timer.aggregate_by_category(phase)
         compile_row = next(r for r in rows if r[0] == "compile")
-        cat, wall, cpu, parallelism, _ = compile_row
+        _cat, wall, cpu, parallelism, _ = compile_row
         assert wall == pytest.approx(3.0)  # union [0,3]
         assert cpu == pytest.approx(4.0)   # 2 + 2
         assert parallelism == pytest.approx(4.0 / 3.0)

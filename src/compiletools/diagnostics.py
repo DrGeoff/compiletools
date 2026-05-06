@@ -14,6 +14,8 @@ import time
 # Pattern matching the YYYYMMDDTHHMMSS-PID invocation-id format produced
 # by ``invocation_id()``. Shared with ``timing_report._find_timing_file``
 # so its diagnostics-dir scan can ignore stray non-invocation entries.
+# Sort-safety: the PID suffix has variable width, so consumers picking a
+# "newest" entry must sort by parsed (timestamp, int(pid)) -- not lex.
 INVOCATION_ID_RE = re.compile(r"^\d{8}T\d{6}-\d+$")
 
 _invocation_id: str | None = None
@@ -28,7 +30,9 @@ def invocation_id() -> str:
 
     Cached at module level -- repeated calls within one process return
     the same value, so all diagnostic files for one ct-cake invocation
-    share a single id.
+    share a single id. One process maps to exactly one id; a wrapper
+    needing distinct ids per logical invocation must spawn separate
+    processes (``_reset_for_tests`` is test-only, not for multiplexing).
     """
     global _invocation_id
     if _invocation_id is None:
@@ -46,6 +50,10 @@ def resolve_diagnostics_dir(args) -> str:
     A subdirectory named with ``invocation_id()`` is then appended to the
     parent, and the full path is created with ``os.makedirs(exist_ok=True)``.
     Returns the absolute-or-as-given path of the per-invocation subdir.
+
+    The leaf is created eagerly; an invocation that produces no artifacts
+    leaves an empty ``<iid>/`` behind. ``trim_cache`` ignores diagnostics
+    paths, so reaping empty leaves is the operator's responsibility.
 
     Raises RuntimeError if neither ``args.diagnostics_dir`` nor
     ``args.bindir`` is set (or both are empty/falsy).

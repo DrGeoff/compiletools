@@ -88,12 +88,12 @@ def main(argv=None) -> int:
 def _newest_invocation_timing(diagnostics_dir: str) -> str | None:
     """Return ``<diagnostics_dir>/<newest-invocation>/timing.json`` or None.
 
-    The "newest invocation" is the lexicographically-largest entry in
-    ``diagnostics_dir`` whose name matches ``INVOCATION_ID_RE`` (the
-    ``YYYYMMDDTHHMMSS-PID`` format from ``diagnostics.invocation_id()``,
-    which is naturally sortable). Non-matching entries (stray files, tmp
-    dirs, etc.) are ignored. Returns None if the dir doesn't exist, has
-    no matching entries, or the newest entry has no timing.json yet.
+    The "newest invocation" is the entry in ``diagnostics_dir`` whose name
+    matches ``INVOCATION_ID_RE`` (the ``YYYYMMDDTHHMMSS-PID`` format from
+    ``diagnostics.invocation_id()``) with the greatest ``(timestamp, pid)``
+    key. Non-matching entries (stray files, tmp dirs, etc.) are ignored.
+    Returns None if the dir doesn't exist, has no matching entries, or the
+    newest entry has no timing.json yet.
     """
     if not os.path.isdir(diagnostics_dir):
         return None
@@ -106,7 +106,14 @@ def _newest_invocation_timing(diagnostics_dir: str) -> str | None:
     ]
     if not invocations:
         return None
-    invocations.sort()  # lex sort == chronological for the YYYYMMDDTHHMMSS-PID format
+    # Sort by (timestamp_str, int(pid)): within the same wall-clock second,
+    # lex sort orders '-1000' before '-999' because '1' < '9'. PID must be
+    # compared numerically. INVOCATION_ID_RE guarantees one '-' separator.
+    def _key(name: str) -> tuple[str, int]:
+        ts, pid = name.rsplit("-", 1)
+        return (ts, int(pid))
+
+    invocations.sort(key=_key)
     candidate = os.path.join(diagnostics_dir, invocations[-1], "timing.json")
     return candidate if os.path.exists(candidate) else None
 
@@ -129,6 +136,9 @@ def _find_timing_file(
          derive ``<bindir>/diagnostics/`` if ``bindir`` is provided.
       5. ``{objdir}/.ct-timing.json`` if ``objdir`` is provided (legacy).
       6. ``bin/.ct-timing.json``, ``obj/.ct-timing.json`` (legacy).
+
+    A cwd hit short-circuits the diagnostics-dir lookup, so a stale
+    ``./timing.json`` will outrank a fresh diagnostics-dir entry.
     """
     if path:
         return path

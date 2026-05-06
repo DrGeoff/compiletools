@@ -88,8 +88,8 @@ def _populate_stub(timer: BuildTimer) -> StubNode:
 def test_tree_inserts_category_aggregation_nodes():
     timer = _timer_with_overlap()
     labels = _flatten_labels(_populate_stub(timer))
-    compile_rows = [l for l in labels if "Compile" in l and "CPU" in l]
-    link_rows = [l for l in labels if "Link" in l and "CPU" in l]
+    compile_rows = [line for line in labels if "Compile" in line and "CPU" in line]
+    link_rows = [line for line in labels if "Link" in line and "CPU" in line]
     assert compile_rows, f"no Compile aggregation row in: {labels}"
     assert link_rows, f"no Link aggregation row in: {labels}"
 
@@ -104,8 +104,8 @@ def test_tree_aggregation_numbers_match_summary():
 
     for cat, wall, cpu, parallelism, _ in rows:
         cat_label = next(
-            l for l in labels
-            if cat.replace("_", " ").title() in l and "CPU" in l
+            line for line in labels
+            if cat.replace("_", " ").title() in line and "CPU" in line
         )
         assert f"{wall:.2f}s" in cat_label, f"Wall mismatch in {cat_label!r}"
         assert f"{cpu:.2f}s" in cat_label, f"CPU mismatch in {cat_label!r}"
@@ -117,9 +117,9 @@ def test_tree_aggregation_numbers_match_summary():
 def test_individual_rules_still_appear_under_categories():
     timer = _timer_with_overlap()
     labels = _flatten_labels(_populate_stub(timer))
-    assert any("a.cpp" in l for l in labels)
-    assert any("b.cpp" in l for l in labels)
-    assert any("app" in l for l in labels)
+    assert any("a.cpp" in line for line in labels)
+    assert any("b.cpp" in line for line in labels)
+    assert any("app" in line for line in labels)
 
 
 def test_non_aggregating_phase_keeps_old_behaviour():
@@ -136,6 +136,6 @@ def test_non_aggregating_phase_keeps_old_behaviour():
 
     labels = _flatten_labels(_populate_stub(timer))
     # No aggregation row for this phase
-    assert not any("Compile" in l and "CPU" in l for l in labels)
+    assert not any("Compile" in line and "CPU" in line for line in labels)
     # Individual rule still present
-    assert any("x.cpp" in l for l in labels)
+    assert any("x.cpp" in line for line in labels)

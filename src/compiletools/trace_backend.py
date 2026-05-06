@@ -690,9 +690,6 @@ class SlurmBackend(ShakeBackend):
         # diagnostics dir for an invocation that produced no logs.
         self._diag_dir = compiletools.diagnostics.resolve_diagnostics_dir(self.args)
 
-        # Per-invocation aux-file tracking.  cmds/outs filenames use a
-        # per-invocation prefix sourced from compiletools.diagnostics so peer
-        # ct-cake processes sharing the same objdir don't collide.
         self._created_aux_files: list[str] = []
         self._tracked_jobs: dict[str, str] = {}  # job_id -> "pending"|"terminal"
 

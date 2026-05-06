@@ -160,3 +160,10 @@ ignore = [
     "F823",   # false positive: module-level `import compiletools.X` makes `compiletools` available
     "SIM103", # returning condition directly can obscure test intent
 ]
+# `×` (U+00D7) is the intentional rendering of the parallelism factor in build-timer
+# output (e.g. "15.1× cores busy") and the TUI category labels.  The symbol is paired
+# across production output and the tests asserting it.
+"src/compiletools/build_timer.py" = ["RUF001", "RUF002"]
+"src/compiletools/timing_tui.py" = ["RUF001"]
+"src/compiletools/test_build_timer.py" = ["RUF001"]
+"src/compiletools/test_timing_tui.py" = ["RUF001", "RUF002"]

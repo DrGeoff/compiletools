@@ -1,7 +1,6 @@
 """Tests for headerdeps flag-path extraction helpers."""
 from compiletools.headerdeps import HeaderDepsBase
 
-
 # Shorthand aliases — these are static methods so call directly.
 _extract_isystem = HeaderDepsBase._extract_isystem_paths_from_flags
 _extract_include = HeaderDepsBase._extract_include_paths_from_flags

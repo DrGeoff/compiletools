@@ -309,7 +309,7 @@ class MakefileBackend(BuildBackend):
         # Embed the target as a JSON string literal (not a bare token); a
         # bare path produces invalid JSON like {"target":/foo.o,...} which
         # ``BuildTimer.record_rules_from_make_timing`` silently drops on
-        # ``JSONDecodeError`` — leaving ``.ct-timing.json`` with phase rows
+        # ``JSONDecodeError`` — leaving ``timing.json`` with phase rows
         # but no per-rule entries.  Single quotes inside the JSON encoding
         # must be escaped because the surrounding shell echo is a
         # single-quoted string.

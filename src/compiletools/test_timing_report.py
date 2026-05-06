@@ -60,6 +60,21 @@ class TestFindTimingFile:
         result = _find_timing_file(None, bindir=str(bindir))
         assert result == str(newer / "timing.json")
 
+    def test_auto_detect_sort_is_pid_numeric_within_same_second(self, tmp_path, monkeypatch):
+        """Within the same wall-clock second, PIDs of different string widths
+        must sort numerically. '20260506T120000-1000' is newer than
+        '20260506T120000-999' but lex sort would invert that."""
+        monkeypatch.chdir(tmp_path)
+        bindir = tmp_path / "bin"
+        diag = bindir / "diagnostics"
+        older = diag / "20260506T120000-999"
+        newer = diag / "20260506T120000-1000"
+        for d in (older, newer):
+            d.mkdir(parents=True)
+            (d / "timing.json").write_text("{}")
+        result = _find_timing_file(None, bindir=str(bindir))
+        assert result == str(newer / "timing.json")
+
     def test_auto_detect_diagnostics_dir_overrides_bindir(self, tmp_path, monkeypatch):
         """An explicit ``diagnostics_dir`` is used directly even if it lives
         outside any ``bindir``."""
