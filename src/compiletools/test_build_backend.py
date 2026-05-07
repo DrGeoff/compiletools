@@ -373,6 +373,31 @@ class TestBuildGraphPopulation:
         for rule in mkdir_rules:
             assert "mkdir" in " ".join(rule.command), f"sharded bucket mkdir rule {rule.output!r} must invoke mkdir"
 
+    def test_compile_command_uses_tokens_from_args(self, tmp_path):
+        """build_graph() compile commands must contain the tokens from
+        args.CXXFLAGS_tokens verbatim. This proves that build_backend
+        consumes the pre-tokenized cache instead of re-running
+        split_command_cached on the raw string at each call site.
+        """
+        args = make_backend_args(
+            tmp_path,
+            filename=["/src/main.cpp"],
+            CXXFLAGS="-O2 -std=c++17 -DSPECIAL_TOKEN",
+        )
+        # TOKEN-2: callers populate this on real args; tests using
+        # make_backend_args get it via the same helper.
+        assert hasattr(args, "CXXFLAGS_tokens"), "make_backend_args must populate CXXFLAGS_tokens"
+        backend = self._make_backend(tmp_path, args=args)
+
+        graph = backend.build_graph()
+
+        compile_rules = [r for r in graph.rules if r.rule_type == "compile" and r.output.endswith("main.o")]
+        assert len(compile_rules) == 1
+        cmd = compile_rules[0].command
+        # Each token from CXXFLAGS_tokens must appear in the compile cmd.
+        for token in args.CXXFLAGS_tokens:
+            assert token in cmd, f"CXXFLAGS token {token!r} missing from compile command {cmd!r}"
+
     def test_tests_produce_link_rules(self, tmp_path):
         """build_graph() should create link rules for args.tests."""
         args = make_backend_args(tmp_path, filename=[], tests=["/src/test_foo.cpp"])

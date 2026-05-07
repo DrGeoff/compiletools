@@ -470,7 +470,11 @@ class BuildBackend(abc.ABC):
                 # an irrelevant -DAPP_NAME=... change doesn't pollute
                 # the cache key. Same fix applied to per-TU object
                 # hashing in Hunter.macro_state_hash.
-                cxxflags_tokens = compiletools.apptools.tokenize_compile_flags("", "", self.args.CXXFLAGS)[2]
+                #
+                # Reuses args.CXXFLAGS_tokens populated once by parseargs
+                # (TOKEN-2); strip_d_u_tokens is the same filter that
+                # tokenize_compile_flags would apply on the raw string.
+                cxxflags_tokens = compiletools.apptools.strip_d_u_tokens(self.args.CXXFLAGS_tokens)
                 scope_macro_hash = _pch_scope_macro_hash(self.hunter, pch_header)
                 cmd_hash = _pch_command_hash(
                     self.args,
@@ -500,7 +504,7 @@ class BuildBackend(abc.ABC):
             pch_deps = [pch_header] + sorted(str(d) for d in self.hunter.header_dependencies(pch_header))
             pch_cmd = (
                 compiletools.utils.split_command_cached(self.args.CXX)
-                + compiletools.utils.split_command_cached(self.args.CXXFLAGS)
+                + list(self.args.CXXFLAGS_tokens)
                 + [str(f) for f in magic_cpp_flags]
                 + [str(f) for f in magic_cxx_flags]
                 + ["-x", "c++-header", pch_header, "-o", gch_path]
@@ -917,7 +921,7 @@ class BuildBackend(abc.ABC):
             magic_c_flags = magicflags.get(sz.Str("CFLAGS"), [])
             compile_cmd = (
                 compiletools.utils.split_command_cached(self.args.CC)
-                + compiletools.utils.split_command_cached(self.args.CFLAGS)
+                + list(self.args.CFLAGS_tokens)
                 + pch_include_flags
                 + [str(flag) for flag in magic_cpp_flags]
                 + [str(flag) for flag in magic_c_flags]
@@ -926,7 +930,7 @@ class BuildBackend(abc.ABC):
             magic_cxx_flags = magicflags.get(sz.Str("CXXFLAGS"), [])
             compile_cmd = (
                 compiletools.utils.split_command_cached(self.args.CXX)
-                + compiletools.utils.split_command_cached(self.args.CXXFLAGS)
+                + list(self.args.CXXFLAGS_tokens)
                 + pch_include_flags
                 + [str(flag) for flag in magic_cpp_flags]
                 + [str(flag) for flag in magic_cxx_flags]
@@ -1044,7 +1048,7 @@ class BuildBackend(abc.ABC):
                 inputs.append(lib_output)
 
         if self.args.LDFLAGS:
-            link_cmd.extend(compiletools.utils.split_command_cached(self.args.LDFLAGS))
+            link_cmd.extend(self.args.LDFLAGS_tokens)
 
         exe_dir = self.namer.executable_dir()
 
@@ -1099,7 +1103,7 @@ class BuildBackend(abc.ABC):
         )
         lib_cmd.extend(merged_ldflags)
         if self.args.LDFLAGS:
-            lib_cmd.extend(compiletools.utils.split_command_cached(self.args.LDFLAGS))
+            lib_cmd.extend(self.args.LDFLAGS_tokens)
 
         return BuildRule(
             output=lib_path,

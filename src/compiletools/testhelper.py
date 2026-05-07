@@ -848,7 +848,17 @@ def make_stub_backend_class():
 
 
 def make_backend_args(tmpdir, **overrides):
-    """Create a SimpleNamespace with standard backend args rooted in tmpdir."""
+    """Create a SimpleNamespace with standard backend args rooted in tmpdir.
+
+    Mirrors ``apptools.parseargs`` by populating both the raw flag
+    strings (CPPFLAGS / CFLAGS / CXXFLAGS / LDFLAGS) and their
+    pre-tokenized siblings (``*_tokens``). Production code that
+    consumes ``args.CXXFLAGS_tokens`` etc. (build_backend compile
+    commands, magicflags._parse) thus works without re-tokenizing in
+    the test fixtures.
+    """
+    import compiletools.utils
+
     defaults = dict(
         filename=[],
         tests=[],
@@ -860,6 +870,7 @@ def make_backend_args(tmpdir, **overrides):
         git_root="",
         CC="gcc",
         CXX="g++",
+        CPPFLAGS="",
         CFLAGS="-O2",
         CXXFLAGS="-O2",
         LD="g++",
@@ -871,6 +882,13 @@ def make_backend_args(tmpdir, **overrides):
         diagnostics_dir=None,
     )
     defaults.update(overrides)
+    # Populate *_tokens to match the parseargs() contract. Done here so
+    # callers that override CXXFLAGS=... transparently get matching
+    # CXXFLAGS_tokens without having to compute them at every call site.
+    for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS"):
+        token_slot = f"{slot}_tokens"
+        if token_slot not in defaults:
+            defaults[token_slot] = compiletools.utils.split_command_cached(defaults.get(slot, ""))
     return SimpleNamespace(**defaults)
 
 
