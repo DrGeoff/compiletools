@@ -763,10 +763,10 @@ def tokenize_compile_flags(
     fallback on ValueError, matching extract_command_line_macros) or a
     pre-tokenized list of strings.
 
-    Both attached form (-DFOO, -DFOO=bar, -UFOO, -ITrue/path) and
-    detached form (-D FOO, -D FOO=bar, -U FOO, -I /path) of -D/-U are
-    stripped. Detached form drops both the flag token and the following
-    value token.
+    Both attached form (-DFOO, -DFOO=bar, -UFOO) and detached form
+    (-D FOO, -D FOO=bar, -U FOO) of -D/-U are stripped. Detached form
+    drops both the flag token and the following value token. All other
+    flags (-I, -O, -std, -W, -f...) pass through unchanged.
 
     Returns:
         (cppflags_tokens, cflags_tokens, cxxflags_tokens) -- three lists
