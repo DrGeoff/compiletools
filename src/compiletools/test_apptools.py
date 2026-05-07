@@ -340,6 +340,14 @@ class TestExtractCommandLineMacros:
         result = extract_command_line_macros(args, include_compiler_macros=False)
         assert result == {}
 
+    def test_extract_command_line_macros_handles_detached_d_form(self):
+        """Detached -D form (separate -D and value tokens) was previously
+        silently dropped by extract_command_line_macros. Must now be
+        recognized so it's consistent with cmdline_d_macro_names."""
+        args = SimpleNamespace(CPPFLAGS="-D FOO=1 -D BAR", CFLAGS="", CXXFLAGS="", verbose=0, CXX=None)
+        macros = extract_command_line_macros(args, include_compiler_macros=False)
+        assert macros == {"FOO": "1", "BAR": "1"}  # bare -D BAR defaults value to "1"
+
 
 class TestDoXxpend:
     def test_prepend(self):

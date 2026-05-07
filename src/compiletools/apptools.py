@@ -577,20 +577,41 @@ def extract_command_line_macros(args, flag_sources=None, include_compiler_macros
             # Fallback to simple split if shlex fails on malformed input
             flags = flag_string.split()
 
-        for flag in flags:
-            if flag.startswith("-D"):
-                # Extract macro name and value (handle both -DMACRO and -DMACRO=value)
-                macro_def = flag[2:]  # Remove the -D
-                if "=" in macro_def:
-                    macro_name, macro_value = macro_def.split("=", 1)
-                else:
-                    macro_name = macro_def
-                    macro_value = "1"  # Default value for macros without explicit values
+        # Walk tokens recognizing both attached (-DFOO, -DFOO=val) and
+        # detached (-D FOO, -D FOO=val) forms. The detached form was
+        # previously silently dropped and that disagreed with the macro
+        # universe computed by cmdline_d_macro_names, defeating the
+        # cache-key scoping.
+        i = 0
+        n = len(flags)
+        while i < n:
+            flag = flags[i]
+            macro_def = None
+            if flag == "-D":
+                # Detached: name (and optional =value) is the next token.
+                if i + 1 < n:
+                    macro_def = flags[i + 1]
+                i += 2
+            elif flag.startswith("-D"):
+                macro_def = flag[2:]
+                i += 1
+            else:
+                i += 1
+                continue
 
-                if macro_name:
-                    macros[macro_name] = macro_value
-                    if verbose >= 9:
-                        print(f"extract_command_line_macros: added macro {macro_name} = {macro_value} from {flag_name}")
+            if not macro_def:
+                continue
+
+            if "=" in macro_def:
+                macro_name, macro_value = macro_def.split("=", 1)
+            else:
+                macro_name = macro_def
+                macro_value = "1"  # Default value for macros without explicit values
+
+            if macro_name:
+                macros[macro_name] = macro_value
+                if verbose >= 9:
+                    print(f"extract_command_line_macros: added macro {macro_name} = {macro_value} from {flag_name}")
 
     # Add compiler, platform, and architecture macros if requested
     if include_compiler_macros:
