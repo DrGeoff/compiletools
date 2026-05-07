@@ -64,6 +64,9 @@ class TestFindTargetsModule:
             "computed_include/main.cpp",
             "static_link_order/main.cpp",
             "pch/pch_user.cpp",
+            "cache_scoping/no_ref.cpp",
+            "cache_scoping/with_ref.cpp",
+            "cache_scoping/tu_via_header.cpp",
         }
         relativeexpectedtests = {
             "cross_platform/test_source.cpp",
