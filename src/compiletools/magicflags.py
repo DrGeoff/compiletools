@@ -170,9 +170,19 @@ class MagicFlagsBase:
         # actually take effect: the cmdline -D macros are hashed via core,
         # and stripping them from the token list keeps them from leaking
         # back into the build-context portion of the hash.
-        cppflags_tokens, cflags_tokens, cxxflags_tokens = compiletools.apptools.tokenize_compile_flags(
-            self._args.CPPFLAGS, self._args.CFLAGS, self._args.CXXFLAGS
-        )
+        #
+        # Reuses args.*_tokens populated once at parseargs end (TOKEN-2)
+        # when present; falls back to a fresh tokenize for the rare cases
+        # where args was constructed without going through parseargs (a
+        # handful of tests).
+        if hasattr(self._args, "CPPFLAGS_tokens"):
+            cppflags_tokens = compiletools.apptools.strip_d_u_tokens(self._args.CPPFLAGS_tokens)
+            cflags_tokens = compiletools.apptools.strip_d_u_tokens(self._args.CFLAGS_tokens)
+            cxxflags_tokens = compiletools.apptools.strip_d_u_tokens(self._args.CXXFLAGS_tokens)
+        else:
+            cppflags_tokens, cflags_tokens, cxxflags_tokens = compiletools.apptools.tokenize_compile_flags(
+                self._args.CPPFLAGS, self._args.CFLAGS, self._args.CXXFLAGS
+            )
 
         # Create MacroState with core macros, empty variable macros
         return MacroState(
@@ -539,22 +549,43 @@ class MagicFlagsBase:
                 f"get_structured_data() should have been called first."
             )
 
-        magic_cppflags = " ".join(str(f) for f in flagsforfilename.get(sz.Str("CPPFLAGS"), []))
-        magic_cflags = " ".join(str(f) for f in flagsforfilename.get(sz.Str("CFLAGS"), []))
-        magic_cxxflags = " ".join(str(f) for f in flagsforfilename.get(sz.Str("CXXFLAGS"), []))
+        # Magic-flag entries are already structured (lists of sz.Str / str)
+        # from the magic-flag pipeline. Build the effective token lists by
+        # extending the parse-time global tokens directly, eliminating the
+        # list -> join -> concat -> tokenize round-trip that the previous
+        # implementation performed once per TU.
+        magic_cpp_tokens = [str(f) for f in flagsforfilename.get(sz.Str("CPPFLAGS"), [])]
+        magic_c_tokens = [str(f) for f in flagsforfilename.get(sz.Str("CFLAGS"), [])]
+        magic_cxx_tokens = [str(f) for f in flagsforfilename.get(sz.Str("CXXFLAGS"), [])]
 
-        effective_cppflags = f"{self._args.CPPFLAGS} {magic_cppflags}".strip()
-        effective_cflags = f"{self._args.CFLAGS} {magic_cflags}".strip()
-        effective_cxxflags = f"{self._args.CXXFLAGS} {magic_cxxflags}".strip()
+        # Use args.*_tokens when populated by parseargs (TOKEN-2). Falls
+        # back to a fresh tokenize for the rare paths where the args
+        # object is constructed without parseargs (test fixtures).
+        if hasattr(self._args, "CPPFLAGS_tokens"):
+            args_cpp_tokens = list(self._args.CPPFLAGS_tokens)
+            args_c_tokens = list(self._args.CFLAGS_tokens)
+            args_cxx_tokens = list(self._args.CXXFLAGS_tokens)
+        else:
+            args_cpp_tokens = compiletools.utils.split_command_cached(self._args.CPPFLAGS)
+            args_c_tokens = compiletools.utils.split_command_cached(self._args.CFLAGS)
+            args_cxx_tokens = compiletools.utils.split_command_cached(self._args.CXXFLAGS)
 
-        # Re-tokenize the effective flags and strip -D/-U so per-file magic
-        # `-D`s don't smuggle themselves into the build-context portion of
-        # the hash. Magic-flag macros are file-private; they are NOT
-        # cmdline-origin, so cmdline_origin is propagated unchanged from
-        # the initial state.
-        effective_cppflags_tokens, effective_cflags_tokens, effective_cxxflags_tokens = (
-            compiletools.apptools.tokenize_compile_flags(effective_cppflags, effective_cflags, effective_cxxflags)
-        )
+        # Strip -D/-U so per-file magic `-D`s don't smuggle themselves into
+        # the build-context portion of the hash. Magic-flag macros are
+        # file-private; they are NOT cmdline-origin, so cmdline_origin is
+        # propagated unchanged from the initial state.
+        effective_cppflags_tokens = compiletools.apptools.strip_d_u_tokens(args_cpp_tokens + magic_cpp_tokens)
+        effective_cflags_tokens = compiletools.apptools.strip_d_u_tokens(args_c_tokens + magic_c_tokens)
+        effective_cxxflags_tokens = compiletools.apptools.strip_d_u_tokens(args_cxx_tokens + magic_cxx_tokens)
+
+        # Raw string fields on MacroState are still needed for `__has_*`
+        # queries that grep them as text; rebuild from the unstripped
+        # token lists so all flags (including magic -D entries) are present.
+        # This token round-trip happens once per file -- a strict reduction
+        # from the prior 3-step round-trip on globals + magic strings.
+        effective_cppflags = " ".join(args_cpp_tokens + magic_cpp_tokens)
+        effective_cflags = " ".join(args_c_tokens + magic_c_tokens)
+        effective_cxxflags = " ".join(args_cxx_tokens + magic_cxx_tokens)
 
         self._final_macro_states[abs_filename] = MacroState(
             old_ms.core,
