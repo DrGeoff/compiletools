@@ -84,7 +84,9 @@ def test_scan_pchdir_handles_missing_manifest(tmp_path):
     assert len(entries) == 1
     e = entries[0]
     assert e.cmd_hash == cmd_hash
-    assert e.header_realpath == "<unknown>"
+    # Orphans are tagged with their cmd_hash so unrelated lost manifests
+    # don't get grouped together as duplicates.
+    assert e.header_realpath == f"<unknown:{cmd_hash}>"
     assert e.size_bytes == 30
 
 
@@ -98,7 +100,7 @@ def test_scan_pchdir_handles_corrupt_manifest(tmp_path):
     entries = cache_report.scan_pchdir(str(tmp_path))
     assert len(entries) == 1
     e = entries[0]
-    assert e.header_realpath == "<unknown>"
+    assert e.header_realpath == f"<unknown:{cmd_hash}>"
     assert e.size_bytes == 40 + (d / "manifest.json").stat().st_size
 
 
@@ -208,7 +210,7 @@ def test_cli_json_includes_both_reports(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     data = json.loads(out)
-    assert "cas_objdir_report" in data
-    assert "cas_pchdir_report" in data
-    assert data["cas_objdir_report"] is not None
-    assert data["cas_pchdir_report"] is not None
+    assert "cas-objdir-report" in data
+    assert "cas-pchdir-report" in data
+    assert data["cas-objdir-report"] is not None
+    assert data["cas-pchdir-report"] is not None

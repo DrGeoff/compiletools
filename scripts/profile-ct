@@ -162,7 +162,7 @@ def run_profiling(
                 [
                     "--makefilename",
                     os.path.join(tmpdir, "Makefile"),
-                    "--objdir",
+                    "--cas-objdir",
                     os.path.join(tmpdir, "obj"),
                     "--bindir",
                     os.path.join(tmpdir, "bin"),

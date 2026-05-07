@@ -314,7 +314,9 @@ else
     if [[ -v CC ]]; then _saved_cc="$CC"; _had_cc=1; else _had_cc=0; fi
     if [[ -v CFLAGS ]]; then _saved_cflags="$CFLAGS"; _had_cflags=1; else _had_cflags=0; fi
     export CC="$MODERN_CC"
-    export CFLAGS="${STRINGZILLA_CFLAGS[*]}"
+    # Force space-separated join regardless of caller's IFS (a custom IFS
+    # like $'\n' would otherwise inject newlines into CFLAGS).
+    IFS=' ' eval 'export CFLAGS="${STRINGZILLA_CFLAGS[*]}"'
     run uv pip install "stringzilla>=4.6.0"
     if [[ "$_had_cc" -eq 1 ]]; then export CC="$_saved_cc"; else unset CC; fi
     if [[ "$_had_cflags" -eq 1 ]]; then export CFLAGS="$_saved_cflags"; else unset CFLAGS; fi

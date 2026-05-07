@@ -297,8 +297,10 @@ def scan_pchdir(pchdir: str) -> list[PchEntry]:
 
     Skips top-level entries whose name doesn't match ``_PCH_COMMAND_HASH_RE``
     (legacy dirs, accidental clutter). Entries whose manifest is missing or
-    unparseable are still included with ``header_realpath="<unknown>"`` so
-    the report still reflects on-disk reality.
+    unparseable are still included with ``header_realpath="<unknown:<cmd_hash>>"``.
+    Tagging with the cmd_hash keeps unrelated orphans in distinct groups
+    rather than collapsing them all into a single ``<unknown>`` bucket
+    (which would falsely flag them as duplicates of one lost header).
     """
     entries: list[PchEntry] = []
     if not os.path.isdir(pchdir):
@@ -317,9 +319,9 @@ def scan_pchdir(pchdir: str) -> list[PchEntry]:
     for cmd_hash, cmd_hash_dir in cmd_hash_dirs:
         manifest = _load_pch_manifest(cmd_hash_dir)
         if manifest is None:
-            header_realpath = "<unknown>"
+            header_realpath = f"<unknown:{cmd_hash}>"
         else:
-            header_realpath = manifest.get("header_realpath", "<unknown>") or "<unknown>"
+            header_realpath = manifest.get("header_realpath") or f"<unknown:{cmd_hash}>"
         size_bytes = _dir_size_bytes(cmd_hash_dir)
         entries.append(
             PchEntry(
@@ -489,19 +491,27 @@ def _render_pch_text(rep: PchReport, top_n: int) -> str:
 
 
 def _cas_objdir_json_payload(rep: CacheReport, top_n: int) -> dict:
+    """JSON payload for a cas-objdir scan.
+
+    Top-level keys that mirror CLI flag names use kebab-case so users
+    can grep the report with the same identifier as the CLI (e.g.
+    ``jq '.["cas-objdir"]'`` matches ``--cas-objdir``). Internal field
+    names (``total-entries`` etc.) follow the same convention for
+    consistency within the document.
+    """
     top = top_basenames_by_waste(rep, n=top_n)
     return {
-        "cas_objdir": rep.objdir,
-        "total_entries": rep.total_entries,
-        "total_bytes": rep.total_bytes,
-        "unique_src_deps_count": rep.unique_src_deps_count,
-        "duplicated_groups_count": len(rep.duplicated_groups),
-        "wasted_bytes": rep.wasted_bytes,
-        "top_basenames": [
+        "cas-objdir": rep.objdir,
+        "total-entries": rep.total_entries,
+        "total-bytes": rep.total_bytes,
+        "unique-src-deps-count": rep.unique_src_deps_count,
+        "duplicated-groups-count": len(rep.duplicated_groups),
+        "wasted-bytes": rep.wasted_bytes,
+        "top-basenames": [
             {
                 "basename": b.basename,
                 "variants": b.variants,
-                "wasted_bytes": b.wasted_bytes,
+                "wasted-bytes": b.wasted_bytes,
             }
             for b in top
         ],
@@ -509,19 +519,22 @@ def _cas_objdir_json_payload(rep: CacheReport, top_n: int) -> dict:
 
 
 def _pch_json_payload(rep: PchReport, top_n: int) -> dict:
+    """JSON payload for a cas-pchdir scan. Kebab-case keys; see
+    :func:`_cas_objdir_json_payload` for the rationale.
+    """
     top = top_pch_headers_by_waste(rep, n=top_n)
     return {
-        "cas_pchdir": rep.pchdir,
-        "total_entries": rep.total_entries,
-        "total_bytes": rep.total_bytes,
-        "unique_headers_count": rep.unique_headers_count,
-        "duplicated_groups_count": len(rep.duplicated_groups),
-        "wasted_bytes": rep.wasted_bytes,
-        "top_headers": [
+        "cas-pchdir": rep.pchdir,
+        "total-entries": rep.total_entries,
+        "total-bytes": rep.total_bytes,
+        "unique-headers-count": rep.unique_headers_count,
+        "duplicated-groups-count": len(rep.duplicated_groups),
+        "wasted-bytes": rep.wasted_bytes,
+        "top-headers": [
             {
-                "header_realpath": header_path,
+                "header-realpath": header_path,
                 "variants": variants,
-                "wasted_bytes": wasted,
+                "wasted-bytes": wasted,
             }
             for header_path, variants, wasted in top
         ],
@@ -539,8 +552,8 @@ def _render_combined_json(
     top_n: int,
 ) -> str:
     payload = {
-        "cas_objdir_report": _cas_objdir_json_payload(obj_rep, top_n) if obj_rep is not None else None,
-        "cas_pchdir_report": _pch_json_payload(pch_rep_obj, top_n) if pch_rep_obj is not None else None,
+        "cas-objdir-report": _cas_objdir_json_payload(obj_rep, top_n) if obj_rep is not None else None,
+        "cas-pchdir-report": _pch_json_payload(pch_rep_obj, top_n) if pch_rep_obj is not None else None,
     }
     return json.dumps(payload, indent=2) + "\n"
 

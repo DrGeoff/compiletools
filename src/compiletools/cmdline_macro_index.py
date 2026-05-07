@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterable
 import stringzilla as sz
 
 _IDENT_BYTES = frozenset(b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+_MISSING = object()
 
 
 def _is_ident_byte(b: int) -> bool:
@@ -27,11 +28,13 @@ class CmdlineMacroIndex:
         # Pre-tokenize each macro name to ASCII bytes once, avoiding N*M
         # redundant `bytes(str(macro_name), "ascii")` conversions per TU
         # (N transitive headers x M cmdline-D macros).
-        self._needles: dict[sz.Str, bytes] = {
-            macro: bytes(str(macro), "ascii") for macro in cmdline_d_macro_names
-        }
+        self._needles: dict[sz.Str, bytes] = {macro: bytes(str(macro), "ascii") for macro in cmdline_d_macro_names}
         self._is_referenced_cache: dict[tuple[str, str], bool] = {}
         self._tu_cache: dict[tuple[str, str, str], frozenset[sz.Str]] = {}
+        # Cache (data_bytes, sz.Str_wrapper) per content_hash so that
+        # scanning N macros against the same file does not rebuild the
+        # SIMD wrapper N times. None signals "empty/unknown content".
+        self._haystack_cache: dict[str, tuple[bytes, sz.Str] | None] = {}
 
     def is_referenced(self, content_hash: str, macro_name: sz.Str) -> bool:
         """True if the file contains macro_name as a C identifier."""
@@ -76,17 +79,25 @@ class CmdlineMacroIndex:
         self._tu_cache[cache_key] = result
         return result
 
+    def _haystack(self, content_hash: str) -> tuple[bytes, sz.Str] | None:
+        cached = self._haystack_cache.get(content_hash, _MISSING)
+        if cached is _MISSING:
+            data = self._bytes_provider(content_hash)
+            cached = (data, sz.Str(data)) if data else None
+            self._haystack_cache[content_hash] = cached
+        return cached
+
     def _scan(self, content_hash: str, macro_name: sz.Str) -> bool:
-        data = self._bytes_provider(content_hash)
-        if not data:
+        haystack_pair = self._haystack(content_hash)
+        if haystack_pair is None:
             return False
+        data, haystack = haystack_pair
         needle = self._needles.get(macro_name)
         if needle is None:
             # `is_referenced` accepts arbitrary macro names; fall back to an
             # on-the-fly conversion when the caller passes one that wasn't
             # pre-tokenized in __init__.
             needle = bytes(str(macro_name), "ascii")
-        haystack = sz.Str(data)
         needle_len = len(needle)
         data_len = len(data)
         pos = haystack.find(needle, 0)

@@ -89,7 +89,7 @@ def profile_ct_cake_in_worktree(
                 magic_mode,
                 "--makefilename",
                 str(tmppath / "Makefile"),
-                "--objdir",
+                "--cas-objdir",
                 str(tmppath / "obj"),
                 "--bindir",
                 str(tmppath / "bin"),

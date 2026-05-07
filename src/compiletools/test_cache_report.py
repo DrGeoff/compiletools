@@ -214,15 +214,15 @@ def test_cli_json_output_round_trips(tmp_path, capsys):
     assert rc == 0
 
     data = json.loads(out)
-    assert data["cas_objdir"] == str(tmp_path)
-    assert data["total_entries"] == 3
-    assert data["total_bytes"] == 400
-    assert data["unique_src_deps_count"] == 2
+    assert data["cas-objdir"] == str(tmp_path)
+    assert data["total-entries"] == 3
+    assert data["total-bytes"] == 400
+    assert data["unique-src-deps-count"] == 2
     # Only the (A,A) group is duplicated.
-    assert data["duplicated_groups_count"] == 1
-    assert data["wasted_bytes"] == 100
-    assert "top_basenames" in data
-    assert isinstance(data["top_basenames"], list)
+    assert data["duplicated-groups-count"] == 1
+    assert data["wasted-bytes"] == 100
+    assert "top-basenames" in data
+    assert isinstance(data["top-basenames"], list)
 
 
 def test_cli_help_runs():

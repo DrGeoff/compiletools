@@ -3,6 +3,7 @@ import functools
 import importlib.util
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -21,6 +22,7 @@ import compiletools.configutils
 import compiletools.git_utils
 import compiletools.utils
 import compiletools.wrappedos
+from compiletools.flags import Flags
 from compiletools.utils import split_command_cached
 from compiletools.version import __version__
 
@@ -435,35 +437,61 @@ def _extend_includes_using_git_root(args):
             )
 
 
+def extract_include_paths_from_tokens(tokens) -> set[str]:
+    """Return the set of -I paths (attached or detached form) in tokens.
+
+    Recognises ``-I/p``, ``-I /p`` (two-token detached form), and
+    ``-Idir`` only -- not ``-isystem`` or ``-L`` (those are different
+    flag families). Used by include-path dedup helpers in apptools and
+    flags.py.
+    """
+    paths: set[str] = set()
+    i = 0
+    n = len(tokens)
+    while i < n:
+        tok = tokens[i]
+        if tok == "-I" and i + 1 < n:
+            paths.add(tokens[i + 1])
+            i += 2
+        elif tok.startswith("-I") and len(tok) > 2:
+            paths.add(tok[2:])
+            i += 1
+        else:
+            i += 1
+    return paths
+
+
+def dedup_include_paths_to_append(existing_tokens, new_paths) -> list[str]:
+    """Return tokens to append (in detached ``-I path`` form) to add
+    ``new_paths`` to ``existing_tokens`` without duplicating any path
+    already present as a -I entry.
+    """
+    seen = extract_include_paths_from_tokens(existing_tokens)
+    out: list[str] = []
+    for path in new_paths:
+        if path in seen:
+            continue
+        out.extend(("-I", path))
+        seen.add(path)
+    return out
+
+
 def _add_include_paths_to_flags(args):
     """Add all the include paths to all three compile flags.
 
-    Uses Flags.append_include as the dedup oracle: token-walk dedup (so
-    a path already present as ``-isystem /p``, ``-L /p``, or ``-DFOO=/p``
-    still gets the proper ``-I /p`` added). The raw flag string is only
-    *appended* to (never tokenized-and-rejoined), so existing shell-quoted
-    content is preserved verbatim.
+    Token-walk dedup: a path already present as ``-Ip`` or ``-I p`` is
+    skipped, but presence as ``-isystem /p``, ``-L /p``, or ``-DFOO=/p``
+    is treated as absent (those are different flag families). The raw
+    flag string is only *appended* to (never tokenized-and-rejoined),
+    so existing shell-quoted content is preserved verbatim.
     """
-    from compiletools.flags import Flags
-
     new_paths = args.INCLUDE.split()
     if not new_paths:
         return
 
-    def _make_flags_for_slot(slot: str, tokens: tuple[str, ...]) -> Flags:
-        if slot == "cpp":
-            return Flags(cpp=tokens)
-        if slot == "c":
-            return Flags(c=tokens)
-        return Flags(cxx=tokens)
-
-    slot_map = (("CPPFLAGS", "cpp"), ("CFLAGS", "c"), ("CXXFLAGS", "cxx"))
-    for raw_attr, flags_slot in slot_map:
-        before_tokens = tuple(split_command_cached(getattr(args, raw_attr)))
-        flags = _make_flags_for_slot(flags_slot, before_tokens)
-        for path in new_paths:
-            flags = flags.append_include(path, slots=(flags_slot,))
-        added = getattr(flags, flags_slot)[len(before_tokens):]
+    for raw_attr in ("CPPFLAGS", "CFLAGS", "CXXFLAGS"):
+        existing = split_command_cached(getattr(args, raw_attr))
+        added = dedup_include_paths_to_append(existing, new_paths)
         if added:
             setattr(args, raw_attr, getattr(args, raw_attr) + " " + " ".join(added))
 
@@ -839,13 +867,15 @@ _HASH_IRRELEVANT_PREFIXES: tuple[str, ...] = (
 # future ``-vN``-style flag, and ``-pipe`` must not match
 # ``-pipefoo``. These are checked with ``tok ==`` rather than
 # ``tok.startswith()`` so the match is precise.
-_HASH_IRRELEVANT_EXACT: frozenset[str] = frozenset({
-    "-pipe",
-    "-v",
-    "--verbose",
-    "--help",
-    "-###",
-})
+_HASH_IRRELEVANT_EXACT: frozenset[str] = frozenset(
+    {
+        "-pipe",
+        "-v",
+        "--verbose",
+        "--help",
+        "-###",
+    }
+)
 
 # Exception: -Werror promotes warnings to errors, which CAN affect the
 # build outcome (compile fails vs succeeds). Treat -Werror and
@@ -1706,6 +1736,14 @@ def substitutions(args, verbose=None):
         print("Args after substitutions")
         verboseprintconfig(args)
 
+    # substitutions is the canonical mutation site for raw flag strings.
+    # Refresh args.{*}_tokens, args.flags, and the drift snapshot so any
+    # caller that re-runs substitutions (e.g. cake's two-stage parse for
+    # findtargets) sees a coherent post-mutation state. Idempotent when
+    # nothing changed.
+    if hasattr(args, "CPPFLAGS") or hasattr(args, "CFLAGS") or hasattr(args, "CXXFLAGS") or hasattr(args, "LDFLAGS"):
+        _finalize_flag_state(args)
+
 
 def _fix_variable_handling_method(cap, argv, verbose):
     # TODO: FIXME: Correct fix is to have a PR into configargparse
@@ -1724,6 +1762,39 @@ def _fix_variable_handling_method(cap, argv, verbose):
         print(f"{os.environ=}")
         print("_fix_variable_handling_method is forcing reparsing of cap.parse_args")
     return cap.parse_args(args=argv)
+
+
+_LEGACY_CAS_KEY_RE = re.compile(r"^\s*(objdir|pchdir)\s*=", re.MULTILINE)
+
+
+def _check_legacy_cas_config_keys(config_files) -> None:
+    """Fail loud on legacy ``objdir``/``pchdir`` keys in resolved config files.
+
+    The CAS rename (shared-objdir → cas-objdir, shared-pchdir → cas-pchdir)
+    has no backward-compat alias. configargparse silently ignores unknown
+    keys, so an upgrader's existing ``ct.conf`` with ``objdir = /shared/path``
+    would otherwise fall back to the per-build default and quietly defeat
+    shared-cache deployments. Detect and raise instead.
+    """
+    offenders = []
+    for path in config_files:
+        try:
+            with open(path) as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        for match in _LEGACY_CAS_KEY_RE.finditer(text):
+            line_no = text.count("\n", 0, match.start()) + 1
+            offenders.append((path, line_no, match.group(1)))
+    if offenders:
+        details = "\n".join(f"  {p}:{n}: {k}" for p, n, k in offenders)
+        raise RuntimeError(
+            "Legacy CAS config keys detected (renamed to cas-objdir / cas-pchdir):\n"
+            f"{details}\n"
+            "Edit the offending config file(s) to use 'cas-objdir' and 'cas-pchdir'. "
+            "There is no backward-compat alias; leaving the old keys in place would "
+            "silently fall back to the per-build default and defeat shared-cache deployments."
+        )
 
 
 def create_parser(description, argv=None, include_config=True, include_write_config=False):
@@ -1761,6 +1832,7 @@ def create_parser(description, argv=None, include_config=True, include_write_con
     if include_config:
         variant = compiletools.configutils.extract_variant(argv=argv)
         config_files = compiletools.configutils.config_files_from_variant(variant=variant, argv=argv)
+        _check_legacy_cas_config_keys(config_files)
         kwargs = {
             "description": description,
             "formatter_class": configargparse.ArgumentDefaultsHelpFormatter,
@@ -1855,25 +1927,26 @@ def _finalize_flag_state(args) -> None:
     parseargs. Tests that bypass parseargs (constructing args via
     cap.parse_args / SimpleNamespace) should go through
     ``testhelper.finalize_flag_state`` rather than touching this
-    directly. After this returns, all four CPPFLAGS/CFLAGS/CXXFLAGS/
-    LDFLAGS slots exist as raw strings, *_tokens lists, and as
-    args.flags (a Flags dataclass). Any subsequent in-place mutation of
-    the raw strings will be flagged by check_flag_string_drift.
+    directly. After this returns, args.{*}_tokens lists and args.flags
+    (a Flags dataclass) reflect the slots registered by the caller's
+    CAP. Slots not registered (e.g. compilation_database omits LDFLAGS)
+    are left absent from the drift snapshot so check_flag_string_drift
+    can distinguish "not applicable here" from "mutated after parseargs".
+    Any subsequent in-place mutation of a registered raw string will be
+    flagged by check_flag_string_drift.
     """
-    from compiletools.flags import Flags
-
+    registered = tuple(slot for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS") if hasattr(args, slot))
+    args._registered_flag_slots = registered
+    # Materialise raw strings and *_tokens for ALL four slots so existing
+    # consumers (build_backend, magicflags, ...) don't need to handle the
+    # absent-slot case. Only registered slots are snapshotted for drift.
     for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS"):
         raw = getattr(args, slot, "") or ""
         if not hasattr(args, slot):
-            # CAPs without a particular flag argument (e.g. compilation_database
-            # omits LDFLAGS) need the slot materialised so Flags.from_args has
-            # something to read and so check_flag_string_drift can snapshot it.
             setattr(args, slot, raw)
         setattr(args, f"{slot}_tokens", compiletools.utils.split_command_cached(raw))
     args.flags = Flags.from_args(args)
-    args._flag_string_snapshot = tuple(
-        (slot, getattr(args, slot)) for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS")
-    )
+    args._flag_string_snapshot = tuple((slot, getattr(args, slot)) for slot in registered)
 
 
 def check_flag_string_drift(args) -> None:

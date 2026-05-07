@@ -2,10 +2,10 @@
 # DEPRECATED: This script is deprecated in favor of ct-cleanup-locks
 #
 # Please use the new Python-based tool instead:
-#   ct-cleanup-locks [--dry-run] [--objdir=/path/to/objects]
+#   ct-cleanup-locks [--dry-run] [--cas-objdir=/path/to/objects]
 #
 # The new tool:
-# - Integrates with ct.conf configuration (respects lock timeouts, objdir settings)
+# - Integrates with ct.conf configuration (respects lock timeouts, cas-objdir settings)
 # - Uses the same lock detection logic as the build system
 # - Provides better error handling and reporting
 # - Supports all the same features as this script

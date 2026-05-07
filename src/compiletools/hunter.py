@@ -53,6 +53,7 @@ class Hunter:
     """
 
     def __init__(self, args, headerdeps, magicparser, context):
+        compiletools.apptools.check_flag_string_drift(args)
         self.args = args
         self.headerdeps = headerdeps
         self.magicparser = magicparser
