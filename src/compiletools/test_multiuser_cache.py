@@ -251,7 +251,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Both can access shared objdir without permission errors
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            objdir = Path(tmpdir) / "shared_obj"
+            objdir = Path(tmpdir) / "cas_objdir"
             objdir.mkdir(mode=0o2775)
 
             # Create two separate build directories with identical source
@@ -291,7 +291,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - All can write to shared objdir
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            objdir = Path(tmpdir) / "shared_obj"
+            objdir = Path(tmpdir) / "cas_objdir"
             objdir.mkdir(mode=0o2775)
 
             # Create build directories with different main files
@@ -354,7 +354,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Warning only shown at verbose >= 1 for multi-user awareness
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            objdir = Path(tmpdir) / "shared_obj"
+            objdir = Path(tmpdir) / "cas_objdir"
             objdir.mkdir(mode=0o2775)
 
             source_dir_a, config_name_a = self._create_test_source_dir(tmpdir, "build_a", str(objdir))
@@ -390,7 +390,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Files are group-accessible
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            objdir = Path(tmpdir) / "shared_obj"
+            objdir = Path(tmpdir) / "cas_objdir"
             objdir.mkdir(mode=0o2775)
 
             # Try to set setgid bit explicitly (may not work on all filesystems)
@@ -432,7 +432,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Proper permissions set
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            objdir = Path(tmpdir) / "shared_obj"
+            objdir = Path(tmpdir) / "cas_objdir"
 
             assert not objdir.exists()
 
@@ -475,7 +475,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         num_workers = 4 if on_termux else 10
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            objdir = Path(tmpdir) / "shared_obj"
+            objdir = Path(tmpdir) / "cas_objdir"
             objdir.mkdir(mode=0o2775)
 
             dirs_and_configs = [
@@ -512,7 +512,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - All users successful, no permission errors
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            objdir = Path(tmpdir) / "shared_obj"
+            objdir = Path(tmpdir) / "cas_objdir"
             objdir.mkdir(mode=0o2775)
 
             # User A: Full build (cold cache)
@@ -561,7 +561,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Both builds succeed
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            objdir = Path(tmpdir) / "shared_obj"
+            objdir = Path(tmpdir) / "cas_objdir"
             objdir.mkdir(mode=0o2775)
 
             # Build 1: Default flags
@@ -609,7 +609,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Build fails with permission error
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            objdir = Path(tmpdir) / "shared_obj"
+            objdir = Path(tmpdir) / "cas_objdir"
             objdir.mkdir(mode=0o2775)
 
             # User A: Create cached object
@@ -653,7 +653,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Brief FileNotFoundError during move is acceptable
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            objdir = Path(tmpdir) / "shared_obj"
+            objdir = Path(tmpdir) / "cas_objdir"
             objdir.mkdir(mode=0o2775)
 
             # Initial build
@@ -720,7 +720,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Significantly faster than first build
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            objdir = Path(tmpdir) / "shared_obj"
+            objdir = Path(tmpdir) / "cas_objdir"
             objdir.mkdir(mode=0o2775)
 
             # First build (cold cache)
@@ -839,7 +839,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         import socket
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            objdir = Path(tmpdir) / "shared_obj"
+            objdir = Path(tmpdir) / "cas_objdir"
             objdir.mkdir(mode=0o2775)
 
             source_dir, config_name = self._create_test_source_dir(tmpdir, "build", str(objdir))
@@ -898,7 +898,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Stale lock cleanup works (same user can delete own files)
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            objdir = Path(tmpdir) / "shared_obj"
+            objdir = Path(tmpdir) / "cas_objdir"
             objdir.mkdir(mode=0o2775)
 
             # Create two subproject directories using different sample projects
@@ -970,7 +970,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - No stale lock directories remain
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            objdir = Path(tmpdir) / "shared_obj"
+            objdir = Path(tmpdir) / "cas_objdir"
             objdir.mkdir(mode=0o2775)
 
             # Two build dirs with identical source but different flags
@@ -1027,7 +1027,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Neither build corrupts or overwrites the other
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            objdir = Path(tmpdir) / "shared_obj"
+            objdir = Path(tmpdir) / "cas_objdir"
             objdir.mkdir(mode=0o2775)
 
             # Build 1: Optimized flags FIRST (reverse of test_mixed_compiler_flags)
@@ -1113,7 +1113,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         and the .gch must be group-readable so cross-user consumers don't
         silently rebuild."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            objdir = Path(tmpdir) / "shared_obj"
+            objdir = Path(tmpdir) / "cas_objdir"
             pchdir = Path(tmpdir) / "shared_pch"
             objdir.mkdir(mode=0o2775)
             pchdir.mkdir(mode=0o2775)

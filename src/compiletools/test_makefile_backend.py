@@ -176,7 +176,7 @@ class TestMakefileRealclean:
     def _make_args(self, **overrides):
         defaults = dict(
             verbose=0,
-            cas_objdir="/tmp/shared-obj",
+            cas_objdir="/tmp/cas-objdir",
             bindir="/tmp/proj/bin",
             git_root="",
             file_locking=False,
@@ -201,17 +201,17 @@ class TestMakefileRealclean:
         graph = BuildGraph()
         graph.add_rule(
             BuildRule(
-                output="/tmp/shared-obj/proj/foo.o",
+                output="/tmp/cas-objdir/proj/foo.o",
                 inputs=["foo.cpp"],
-                command=["g++", "-c", "foo.cpp", "-o", "/tmp/shared-obj/proj/foo.o"],
+                command=["g++", "-c", "foo.cpp", "-o", "/tmp/cas-objdir/proj/foo.o"],
                 rule_type="compile",
             )
         )
         graph.add_rule(
             BuildRule(
                 output="/tmp/proj/bin/foo",
-                inputs=["/tmp/shared-obj/proj/foo.o"],
-                command=["g++", "-o", "/tmp/proj/bin/foo", "/tmp/shared-obj/proj/foo.o"],
+                inputs=["/tmp/cas-objdir/proj/foo.o"],
+                command=["g++", "-o", "/tmp/proj/bin/foo", "/tmp/cas-objdir/proj/foo.o"],
                 rule_type="link",
             )
         )
@@ -236,14 +236,14 @@ class TestMakefileRealclean:
         recipe = lines[idx + 1]
 
         # Must NOT do rm -rf on the shared obj_dir
-        assert "rm -rf /tmp/shared-obj" not in recipe
+        assert "rm -rf /tmp/cas-objdir" not in recipe
         # Must list this build's outputs explicitly
-        assert "/tmp/shared-obj/proj/foo.o" in recipe
+        assert "/tmp/cas-objdir/proj/foo.o" in recipe
         assert "/tmp/proj/bin/foo" in recipe
         # exe_dir is per-project so rm -rf on it is OK
         assert "rm -rf /tmp/proj/bin" in recipe
         # Should prune empty dirs in obj_dir afterwards
-        assert "find /tmp/shared-obj -type d -empty -delete" in recipe
+        assert "find /tmp/cas-objdir -type d -empty -delete" in recipe
 
     def test_realclean_with_no_outputs_only_rm_rf_exe_dir(self):
         """When the graph has no compile/link rules, realclean still removes
@@ -265,7 +265,7 @@ class TestMakefileRealclean:
         recipe = lines[idx + 1]
 
         assert "rm -rf /tmp/proj/bin" in recipe
-        assert "rm -rf /tmp/shared-obj" not in recipe
+        assert "rm -rf /tmp/cas-objdir" not in recipe
         assert "rm -f" not in recipe
 
 

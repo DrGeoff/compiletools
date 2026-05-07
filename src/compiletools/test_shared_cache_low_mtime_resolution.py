@@ -49,14 +49,14 @@ def set_mtime_to_second(path, timestamp=None):
 class TestSharedCacheLowMtimeResolution(BaseCompileToolsTestCase):
     """Tests for shared object cache behavior on low mtime resolution filesystems."""
 
-    def _create_worktree_test_env(self, tmpdir, shared_objdir):
+    def _create_worktree_test_env(self, tmpdir, cas_objdir):
         """Create git worktree test environment with shared objdir.
 
         Returns:
             Tuple of (main_repo_dir, worktree_dir, config_name)
         """
         tmpdir = Path(tmpdir)
-        shared_objdir = Path(shared_objdir)
+        cas_objdir = Path(cas_objdir)
 
         # Main repo directory
         main_repo = tmpdir / "main_repo"
@@ -86,7 +86,7 @@ class TestSharedCacheLowMtimeResolution(BaseCompileToolsTestCase):
         uth.create_temp_ct_conf(
             tempdir=str(main_repo),
             defaultvariant=os.path.basename(config_name)[:-5],
-            extralines=["file-locking = true", f"cas-objdir = {shared_objdir}"],
+            extralines=["file-locking = true", f"cas-objdir = {cas_objdir}"],
         )
 
         # Copy config to worktree
@@ -126,10 +126,10 @@ class TestSharedCacheLowMtimeResolution(BaseCompileToolsTestCase):
         - Fast builds completing in < 1 second
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            shared_objdir = Path(tmpdir) / "shared_obj"
-            shared_objdir.mkdir(mode=0o2775)
+            cas_objdir = Path(tmpdir) / "cas_objdir"
+            cas_objdir.mkdir(mode=0o2775)
 
-            main_repo, worktree, config_name = self._create_worktree_test_env(tmpdir, shared_objdir)
+            main_repo, worktree, config_name = self._create_worktree_test_env(tmpdir, cas_objdir)
 
             # Pick a specific timestamp for our simulation
             base_timestamp = int(time.time())
@@ -143,7 +143,7 @@ class TestSharedCacheLowMtimeResolution(BaseCompileToolsTestCase):
             self._run_cake_build(main_repo, config_name)
 
             # Capture object files BEFORE header change
-            obj_files_before = list(shared_objdir.glob("**/*.o"))
+            obj_files_before = list(cas_objdir.glob("**/*.o"))
             assert len(obj_files_before) == 1, f"Expected 1 object file, found {len(obj_files_before)}"
 
             obj_file_before = obj_files_before[0]
@@ -192,7 +192,7 @@ class TestSharedCacheLowMtimeResolution(BaseCompileToolsTestCase):
             self._run_cake_build(worktree, config_name)
 
             # Capture object files AFTER rebuild
-            obj_files_after = list(shared_objdir.glob("**/*.o"))
+            obj_files_after = list(cas_objdir.glob("**/*.o"))
 
             # The test: Was a NEW object created with different name?
             new_obj_files = [f for f in obj_files_after if f.name != obj_name_before]
