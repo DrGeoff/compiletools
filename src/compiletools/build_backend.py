@@ -27,6 +27,7 @@ import time
 from typing import NamedTuple, TypeVar
 
 import compiletools.apptools
+import compiletools.diagnostics
 import compiletools.filesystem_utils
 import compiletools.global_hash_registry
 import compiletools.namer
@@ -1293,6 +1294,8 @@ def _pch_scope_macro_hash(hunter, pch_header: str) -> str:
         transitive_content_hashes=transitive,
     )
 
+    _write_pch_scope_diagnostic(hunter.args, pch_header, cmdline_origin, scope_filter)
+
     if not scope_filter:
         return "0" * 16
 
@@ -1301,6 +1304,55 @@ def _pch_scope_macro_hash(hunter, pch_header: str) -> str:
     if not pairs:
         return "0" * 16
     return hashlib.sha256(json.dumps(pairs).encode()).hexdigest()[:16]
+
+
+def _write_pch_scope_diagnostic(
+    args,
+    pch_header: str,
+    cmdline_origin: frozenset,
+    scope_filter: frozenset,
+) -> None:
+    """Write per-PCH scope diagnostics JSON when --scope-diagnostics is on.
+
+    File path: ``<diagnostics_dir>/scope/pch/<basename>.json``
+
+    Why no dep_hash in the filename: the PCH cache itself is keyed by
+    cmd_hash; one PCH header in one invocation has one canonical scope
+    decision. (Multiple variant builds in one invocation would share
+    a process and one diagnostics dir, but get distinct cmd_hashes via
+    the regular PCH cache.) If we ever observe collisions in practice
+    we can extend with a discriminator.
+
+    Mirrors :meth:`compiletools.hunter.Hunter._write_scope_diagnostic`,
+    but for PCH cache keys. Silently no-ops when no diagnostics dir is
+    resolvable -- callers without ``--diagnostics-dir`` or ``--bindir``
+    set must not crash.
+    """
+    if not getattr(args, "scope_diagnostics", False):
+        return
+
+    try:
+        diagnostics_dir = compiletools.diagnostics.resolve_diagnostics_dir(args)
+    except RuntimeError:
+        return  # No diagnostics dir resolvable -- silently skip
+
+    scope_dir = os.path.join(diagnostics_dir, "scope", "pch")
+    os.makedirs(scope_dir, exist_ok=True)
+
+    excluded = sorted(str(n) for n in cmdline_origin if n not in scope_filter)
+    included = sorted(str(n) for n in scope_filter if n in cmdline_origin)
+
+    payload = {
+        "pch_header": pch_header,
+        "cmdline_d_macros_total": len(cmdline_origin),
+        "cmdline_d_macros_in_hash": included,
+        "cmdline_d_macros_excluded": excluded,
+    }
+
+    basename = os.path.basename(pch_header)
+    out_path = os.path.join(scope_dir, f"{basename}.json")
+    with open(out_path, "w") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
 
 
 def _write_pch_manifest(
