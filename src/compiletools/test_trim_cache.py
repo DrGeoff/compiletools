@@ -281,7 +281,7 @@ class TestTrimObjdir:
         2-hex bucket directory must be invisible to the scanner.
         ``TraceStore/`` lives there by design; ``slurm-ct-*.out`` files only
         appear here if the user has overridden ``--diagnostics-dir`` to point
-        back into ``--objdir`` (the default is
+        back into ``--cas-objdir`` (the default is
         ``<bindir>/diagnostics/<invocation>/``).  Either way, the scanner
         ignores them.
         """
@@ -493,7 +493,7 @@ class TestMainCLI:
     def test_dry_run_with_nonexistent_dirs(self):
         from compiletools.trim_cache_main import main
 
-        rc = main(["--dry-run", "--objdir=/nonexistent/obj", "--pchdir=/nonexistent/pch"])
+        rc = main(["--dry-run", "--cas-objdir=/nonexistent/obj", "--cas-pchdir=/nonexistent/pch"])
         assert rc == 0
 
     def test_objdir_only_flag(self, tmp_path):
@@ -501,7 +501,7 @@ class TestMainCLI:
 
         objdir = str(tmp_path / "obj")
         os.makedirs(objdir)
-        rc = main(["--dry-run", "--objdir-only", f"--objdir={objdir}"])
+        rc = main(["--dry-run", "--objdir-only", f"--cas-objdir={objdir}"])
         assert rc == 0
 
     def test_pchdir_only_flag(self, tmp_path):
@@ -509,7 +509,7 @@ class TestMainCLI:
 
         pchdir = str(tmp_path / "pch")
         os.makedirs(pchdir)
-        rc = main(["--dry-run", "--pchdir-only", f"--pchdir={pchdir}"])
+        rc = main(["--dry-run", "--pchdir-only", f"--cas-pchdir={pchdir}"])
         assert rc == 0
 
 

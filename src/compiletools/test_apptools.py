@@ -552,7 +552,7 @@ class TestAddArguments:
         add_output_directory_arguments(cap, variant="gcc.debug")
         args = cap.parse_args([])
         assert "gcc.debug" in args.bindir
-        assert "obj" in args.objdir
+        assert "obj" in args.cas_objdir
 
     def test_add_target_arguments(self):
         cap = configargparse.ArgParser(default_config_files=[])

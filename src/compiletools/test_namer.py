@@ -305,18 +305,18 @@ def test_object_pathname_is_sharded_by_file_hash():
             )
 
             objdir_root = os.path.dirname(os.path.dirname(obj_path))
-            assert objdir_root == args.objdir, (
-                f"Bucket dir should sit directly under args.objdir={args.objdir!r}; "
+            assert objdir_root == args.cas_objdir, (
+                f"Bucket dir should sit directly under args.cas_objdir={args.cas_objdir!r}; "
                 f"got grandparent={objdir_root!r}"
             )
 
             # object_dir(sourcefilename) with no file_hash must still return the
             # bare objdir so realclean()/clean() can rmtree the whole cache root.
-            assert namer.object_dir() == args.objdir
+            assert namer.object_dir() == args.cas_objdir
             # And the explicit form must return the same bucket dir as
             # object_pathname picks, so build_backend can use it for
             # ``order_only_deps`` without recomputing the join.
-            assert namer.object_dir(source_file, file_hash) == os.path.join(args.objdir, expected_bucket)
+            assert namer.object_dir(source_file, file_hash) == os.path.join(args.cas_objdir, expected_bucket)
     finally:
         uth.reset()
 

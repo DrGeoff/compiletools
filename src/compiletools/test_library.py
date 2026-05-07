@@ -265,7 +265,7 @@ def _layer3_context(backend_class, graph_factory):
         args = make_backend_args(tmpdir, CXXFLAGS="-O2 -std=c++17")
         hunter = make_mock_hunter(sources=["/src/mylib.cpp"], headers=["/src/mylib.h"])
         backend = backend_class(args=args, hunter=hunter)
-        graph = graph_factory(args.objdir, args.bindir)
+        graph = graph_factory(args.cas_objdir, args.bindir)
         buf = io.StringIO()
         backend.generate(graph, output=buf)
         yield buf.getvalue(), args

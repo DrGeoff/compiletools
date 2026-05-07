@@ -284,7 +284,7 @@ class ShakeBackend(BuildBackend):
         if self._graph is None:
             raise RuntimeError("generate() must be called before execute()")
 
-        trace_path = os.path.join(self.args.objdir, self.build_filename())
+        trace_path = os.path.join(self.args.cas_objdir, self.build_filename())
         traces = TraceStore(trace_path)
 
         parallel = getattr(self.args, "parallel", 1)
@@ -678,7 +678,7 @@ class SlurmBackend(ShakeBackend):
             raise RuntimeError("generate() must be called before execute()")
 
         graph = self._graph
-        trace_path = os.path.join(self.args.objdir, self.build_filename())
+        trace_path = os.path.join(self.args.cas_objdir, self.build_filename())
         traces = TraceStore(trace_path)
 
         # Resolve (and create) the per-invocation diagnostics directory once,
@@ -1032,7 +1032,7 @@ class SlurmBackend(ShakeBackend):
         """
         n = len(rules)
         assert n > 0, "_sbatch_array called with empty rules list (would produce --array=0--1)"
-        real_objdir = compiletools.wrappedos.realpath(self.args.objdir)
+        real_objdir = compiletools.wrappedos.realpath(self.args.cas_objdir)
 
         # Per-invocation prefix prevents collisions with peer ct-cake processes
         # sharing the same objdir on a network filesystem.  Sourced from the
@@ -1241,7 +1241,7 @@ class SlurmBackend(ShakeBackend):
         tracked = getattr(self, "_tracked_jobs", {})
         if not tracked:
             return
-        objdir = getattr(self.args, "objdir", None)
+        objdir = getattr(self.args, "cas_objdir", None)
         if not objdir:
             return
         for jid in tracked:

@@ -413,16 +413,16 @@ class BuildBackend(abc.ABC):
         # Create objdir creation rule (needed by compile rules as order-only dep)
         graph.add_rule(
             BuildRule(
-                output=self.args.objdir,
+                output=self.args.cas_objdir,
                 inputs=[],
-                command=["mkdir", "-p", self.args.objdir],
+                command=["mkdir", "-p", self.args.cas_objdir],
                 rule_type="mkdir",
             )
         )
 
         # Create executable dir creation rule (needed by link rules as order-only dep)
         exe_dir = self.namer.executable_dir()
-        if exe_dir != self.args.objdir:
+        if exe_dir != self.args.cas_objdir:
             graph.add_rule(
                 BuildRule(
                     output=exe_dir,
@@ -445,7 +445,7 @@ class BuildBackend(abc.ABC):
         # content-addressable cache: <pchdir>/<command_hash>/<header>.gch
         import stringzilla as sz
 
-        pchdir = getattr(self.args, "pchdir", None)
+        pchdir = getattr(self.args, "cas_pchdir", None)
         self._pch_gch_paths: dict[str, str] = {}  # header_abs -> gch_output
         self._pch_include_dirs: dict[str, str] = {}  # header_abs -> -I dir
 
@@ -509,7 +509,7 @@ class BuildBackend(abc.ABC):
                 + [str(f) for f in magic_cxx_flags]
                 + ["-x", "c++-header", pch_header, "-o", gch_path]
             )
-            order_deps = [os.path.join(pchdir, cmd_hash)] if pchdir and cmd_hash else [self.args.objdir]
+            order_deps = [os.path.join(pchdir, cmd_hash)] if pchdir and cmd_hash else [self.args.cas_objdir]
             graph.add_rule(
                 BuildRule(
                     output=gch_path,
@@ -543,7 +543,7 @@ class BuildBackend(abc.ABC):
         # proportional to source breadth and stays cheap on shared
         # filesystems too.
         for bucket_dir in sorted(compile_bucket_dirs):
-            if bucket_dir == self.args.objdir:
+            if bucket_dir == self.args.cas_objdir:
                 continue  # already covered by the bare-objdir mkdir above
             graph.add_rule(
                 BuildRule(
@@ -776,7 +776,7 @@ class BuildBackend(abc.ABC):
         if getattr(self.args, "file_locking", False):
             if not check_lock_helper_available():
                 report_lock_helper_missing()
-            self._filesystem_type = compiletools.filesystem_utils.get_filesystem_type(self.args.objdir)
+            self._filesystem_type = compiletools.filesystem_utils.get_filesystem_type(self.args.cas_objdir)
             if self.args.verbose >= 3:
                 print(f"Detected filesystem type: {self._filesystem_type}")
             self._validate_umask_for_file_locking()

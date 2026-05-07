@@ -186,7 +186,7 @@ class FindTargets:
 
             def _walk_source_files():
                 for root, _dirs, files in os.walk(path):
-                    if bindir in root or self._args.objdir in root:
+                    if bindir in root or self._args.cas_objdir in root:
                         continue
                     for fname in files:
                         pathname = compiletools.wrappedos.realpath(os.path.join(root, fname))

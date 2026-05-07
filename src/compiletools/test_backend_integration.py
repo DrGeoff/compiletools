@@ -42,7 +42,7 @@ def _setup_backend_for_source(backend_name, tmp_path, src_file="helloworld_cpp.c
     argv = [
         "--include",
         str(tmp_path),
-        "--objdir",
+        "--cas-objdir",
         objdir,
         "--bindir",
         bindir,
@@ -92,7 +92,7 @@ class TestBackendBuildApplication(BaseCompileToolsTestCase):
             # Generate and execute the build
             # Note: do NOT pre-create objdir here — the build system must
             # handle it via the mkdir rule in the BuildGraph.
-            objdir = args.objdir
+            objdir = args.cas_objdir
             bindir = args.bindir
             os.makedirs(bindir, exist_ok=True)
 
@@ -247,11 +247,11 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
             argv = [
                 "--include",
                 str(effective_tmp),
-                "--objdir",
+                "--cas-objdir",
                 objdir,
                 "--bindir",
                 bindir,
-                "--pchdir",
+                "--cas-pchdir",
                 pchdir,
                 source_path,
             ]
@@ -450,7 +450,7 @@ class TestBackendBuildGraphWithTests(BaseCompileToolsTestCase):
             argv = [
                 "--include",
                 str(tmp_path),
-                "--objdir",
+                "--cas-objdir",
                 objdir,
                 "--bindir",
                 bindir,

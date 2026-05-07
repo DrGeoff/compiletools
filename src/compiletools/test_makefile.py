@@ -19,7 +19,7 @@ def _make_args(**overrides):
     defaults = dict(
         file_locking=False,
         verbose=0,
-        objdir="/tmp/test_obj",
+        cas_objdir="/tmp/test_obj",
         bindir="/tmp/test_bin",
         filename=[],
         tests=[],
@@ -55,9 +55,9 @@ def _make_simple_graph(args=None):
     graph = BuildGraph()
     graph.add_rule(
         BuildRule(
-            output=args.objdir,
+            output=args.cas_objdir,
             inputs=[],
-            command=["mkdir", "-p", args.objdir],
+            command=["mkdir", "-p", args.cas_objdir],
             rule_type="mkdir",
         )
     )
@@ -67,7 +67,7 @@ def _make_simple_graph(args=None):
             inputs=["/src/foo.cpp", "/src/foo.h"],
             command=["g++", "-O2", "-c", "/src/foo.cpp", "-o", "/tmp/test_obj/foo.o"],
             rule_type="compile",
-            order_only_deps=[args.objdir],
+            order_only_deps=[args.cas_objdir],
         )
     )
     graph.add_rule(
@@ -205,7 +205,7 @@ class TestMakefileBackendWriteMakefile:
         backend._write_makefile(graph, buf)
         content = buf.getvalue()
 
-        assert f"| {args.objdir}" in content
+        assert f"| {args.cas_objdir}" in content
 
 
 class TestMakefileBackendFileLocking:
@@ -639,7 +639,7 @@ class TestMakefileBackendGenerate:
                 inputs=["/src/bar.cpp", "/src/bar.h"],
                 command=["g++", "-O2", "-c", "/src/bar.cpp", "-o", "/tmp/test_obj/bar.o"],
                 rule_type="compile",
-                order_only_deps=[args.objdir],
+                order_only_deps=[args.cas_objdir],
             )
         )
 

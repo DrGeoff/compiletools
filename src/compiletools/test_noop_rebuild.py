@@ -65,7 +65,7 @@ _BUILD_SCRIPT = textwrap.dedent("""\
     bindir = os.path.join(tmp_path, "bin")
     argv = [
         "--include", tmp_path,
-        "--objdir", objdir,
+        "--cas-objdir", objdir,
         "--bindir", bindir,
         source_path,
     ]

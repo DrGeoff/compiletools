@@ -582,7 +582,7 @@ class TestTracePersistenceOnFailure:
                 with pytest.raises(subprocess.CalledProcessError):
                     backend.execute("build")
 
-            trace_path = Path(backend.args.objdir) / ".ct-traces.json"
+            trace_path = Path(backend.args.cas_objdir) / ".ct-traces.json"
             assert trace_path.exists()
             data = json.loads(trace_path.read_text())
             traces = data.get("traces", {})
@@ -898,7 +898,7 @@ class TestCALinkShortCircuit:
         """Same rule produces the same CA target path."""
         rule = BuildRule(output="foo", inputs=["foo.o"], command=["g++", "-o", "foo", "foo.o"], rule_type="link")
         args = mock.MagicMock()
-        args.objdir = str(tmp_path)
+        args.cas_objdir = str(tmp_path)
         backend = ShakeBackend.__new__(ShakeBackend)
         backend.args = args
         assert backend._ca_target(rule) == backend._ca_target(rule)
@@ -910,7 +910,7 @@ class TestCALinkShortCircuit:
             output="foo", inputs=["foo.o", "bar.o"], command=["g++", "-o", "foo", "foo.o", "bar.o"], rule_type="link"
         )
         args = mock.MagicMock()
-        args.objdir = str(tmp_path)
+        args.cas_objdir = str(tmp_path)
         backend = ShakeBackend.__new__(ShakeBackend)
         backend.args = args
         assert backend._ca_target(rule1) != backend._ca_target(rule2)
@@ -922,7 +922,7 @@ class TestCALinkShortCircuit:
             output="foo", inputs=["foo.o"], command=["g++", "-O2", "-o", "foo", "foo.o"], rule_type="link"
         )
         args = mock.MagicMock()
-        args.objdir = str(tmp_path)
+        args.cas_objdir = str(tmp_path)
         backend = ShakeBackend.__new__(ShakeBackend)
         backend.args = args
         assert backend._ca_target(rule1) != backend._ca_target(rule2)
@@ -933,7 +933,7 @@ class TestCALinkShortCircuit:
             output="libfoo.a", inputs=["foo.o"], command=["ar", "-src", "libfoo.a", "foo.o"], rule_type="static_library"
         )
         args = mock.MagicMock()
-        args.objdir = str(tmp_path)
+        args.cas_objdir = str(tmp_path)
         backend = ShakeBackend.__new__(ShakeBackend)
         backend.args = args
         ca = backend._ca_target(rule)
@@ -1016,7 +1016,7 @@ class TestCompilerIdentityInTrace:
 
         backend = ShakeBackend.__new__(ShakeBackend)
         backend.args = mock.MagicMock()
-        backend.args.objdir = str(tmp_path)
+        backend.args.cas_objdir = str(tmp_path)
         from compiletools.build_context import BuildContext
 
         backend.context = BuildContext()
@@ -1055,7 +1055,7 @@ class TestVerifyCanonicalization:
 
         backend = ShakeBackend.__new__(ShakeBackend)
         backend.args = mock.MagicMock()
-        backend.args.objdir = str(tmp_path)
+        backend.args.cas_objdir = str(tmp_path)
         from compiletools.build_context import BuildContext
 
         backend.context = BuildContext()
@@ -1125,7 +1125,7 @@ class TestVerifyAssertions:
     def test_verify_asserts_when_command_is_none(self, tmp_path):
         backend = ShakeBackend.__new__(ShakeBackend)
         backend.args = mock.MagicMock()
-        backend.args.objdir = str(tmp_path)
+        backend.args.cas_objdir = str(tmp_path)
         backend.context = mock.MagicMock()
         rule = BuildRule(output="x", inputs=[], command=None, rule_type="phony")
         trace = TraceEntry(output_hash="h", input_hashes={}, command_hash="c")
@@ -1258,7 +1258,7 @@ def test_quoted_define_with_space_compiles_end_to_end(tmp_path, monkeypatch):
     argv = [
         "--include",
         str(tmp_path),
-        "--objdir",
+        "--cas-objdir",
         str(objdir),
         "--bindir",
         str(bindir),

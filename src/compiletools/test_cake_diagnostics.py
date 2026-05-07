@@ -53,7 +53,7 @@ def test_diagnostics_dir_default_falls_back_to_bindir(tmp_path):
     argv = [
         "--bindir",
         str(bindir),
-        "--objdir",
+        "--cas-objdir",
         str(objdir),
         "--timing",
     ]
@@ -86,13 +86,13 @@ def test_diagnostics_dir_explicit_override(tmp_path):
 
 
 def test_diagnostics_not_in_objdir(tmp_path):
-    """Timing JSON must not land in --objdir (content-addressable cache)."""
+    """Timing JSON must not land in --cas-objdir (content-addressable cache)."""
     bindir = tmp_path / "bin"
     objdir = tmp_path / "obj"
     argv = [
         "--bindir",
         str(bindir),
-        "--objdir",
+        "--cas-objdir",
         str(objdir),
         "--timing",
     ]
@@ -120,7 +120,7 @@ def test_diagnostics_timing_json_written_through_process(monkeypatch, tmp_path):
     argv = [
         "--bindir",
         str(bindir),
-        "--objdir",
+        "--cas-objdir",
         str(objdir),
         "--timing",
         "--filename",

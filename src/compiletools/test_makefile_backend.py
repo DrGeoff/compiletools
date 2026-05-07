@@ -31,7 +31,7 @@ class TestMakefileGenerate:
     def _make_args(self, **overrides):
         defaults = dict(
             verbose=0,
-            objdir="/tmp/obj",
+            cas_objdir="/tmp/obj",
             bindir="/tmp/bin",
             git_root="",
             file_locking=False,
@@ -176,7 +176,7 @@ class TestMakefileRealclean:
     def _make_args(self, **overrides):
         defaults = dict(
             verbose=0,
-            objdir="/tmp/shared-obj",
+            cas_objdir="/tmp/shared-obj",
             bindir="/tmp/proj/bin",
             git_root="",
             file_locking=False,
@@ -435,7 +435,7 @@ class TestMakefileTestRules:
     def _make_args(self, **overrides):
         defaults = dict(
             verbose=0,
-            objdir="/tmp/obj",
+            cas_objdir="/tmp/obj",
             bindir="/tmp/bin",
             git_root="",
             file_locking=False,
@@ -685,7 +685,7 @@ class TestMakefileHeaderDeterministic:
     def _make_args(self, **overrides):
         defaults = dict(
             verbose=0,
-            objdir="/tmp/obj",
+            cas_objdir="/tmp/obj",
             bindir="/tmp/bin",
             git_root="",
             file_locking=False,

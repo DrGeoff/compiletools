@@ -27,11 +27,11 @@ class TestFindTimingFile:
         assert _find_timing_file(None) is None
 
     def test_auto_detect_objdir(self, tmp_path, monkeypatch):
-        """Fix 6: users with ``--objdir=shared-objdir/...`` previously got
+        """Fix 6: users with ``--cas-objdir=shared-objdir/...`` previously got
         false 'no timing file found'.  ``_find_timing_file`` must accept
         an ``objdir`` argument and search there too."""
         monkeypatch.chdir(tmp_path)
-        objdir = tmp_path / "shared-objdir" / "myproject"
+        objdir = tmp_path / "cas-objdir" / "myproject"
         objdir.mkdir(parents=True)
         timing = objdir / ".ct-timing.json"
         timing.write_text("{}")
@@ -41,7 +41,7 @@ class TestFindTimingFile:
 
     def test_auto_detect_objdir_none_when_missing(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        objdir = tmp_path / "shared-objdir"
+        objdir = tmp_path / "cas-objdir"
         objdir.mkdir()
         assert _find_timing_file(None, objdir=str(objdir)) is None
 

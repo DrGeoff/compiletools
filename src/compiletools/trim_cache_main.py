@@ -6,7 +6,7 @@ that no longer match the current git state, and removes the oldest stale entries
 while preserving a configurable safety margin.
 
 Usage:
-    ct-trim-cache [--dry-run] [--objdir PATH] [--pchdir PATH] [options]
+    ct-trim-cache [--dry-run] [--cas-objdir PATH] [--cas-pchdir PATH] [options]
 
 The tool will:
 1. Load current file hashes from the git repository
@@ -100,13 +100,13 @@ def main(argv=None):
 
             if args.verbose >= 1:
                 print(f"Loaded {len(current_hashes)} current file hashes from git")
-                print(f"Trimming object directory: {args.objdir}")
-            objdir_stats = trimmer.trim_objdir(args.objdir, current_hashes)
+                print(f"Trimming object directory: {args.cas_objdir}")
+            objdir_stats = trimmer.trim_objdir(args.cas_objdir, current_hashes)
 
         if not args.objdir_only:
             if args.verbose >= 1:
-                print(f"Trimming PCH directory: {args.pchdir}")
-            pchdir_stats = trimmer.trim_pchdir(args.pchdir)
+                print(f"Trimming PCH directory: {args.cas_pchdir}")
+            pchdir_stats = trimmer.trim_pchdir(args.cas_pchdir)
 
         trimmer.print_summary(objdir_stats, pchdir_stats)
 

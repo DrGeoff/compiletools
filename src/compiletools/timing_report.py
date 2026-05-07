@@ -177,7 +177,7 @@ def _resolve_and_load(args) -> tuple[BuildTimer | None, str | None]:
     """
     path = _find_timing_file(
         getattr(args, "timing_file", None),
-        objdir=getattr(args, "objdir", None),
+        objdir=getattr(args, "cas_objdir", None),
         bindir=getattr(args, "bindir", None),
         diagnostics_dir=getattr(args, "diagnostics_dir", None),
     )

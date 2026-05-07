@@ -320,10 +320,10 @@ class TestCMakeExecute:
         args = MagicMock()
         args.CXX = CXX
         args.CC = CC
-        args.objdir = str(tmp_path / "obj")
+        args.cas_objdir = str(tmp_path / "obj")
         args.parallel = 0
         args.output = str(tmp_path / "out")
-        os.makedirs(args.objdir, exist_ok=True)
+        os.makedirs(args.cas_objdir, exist_ok=True)
 
         hunter = MagicMock()
         backend = CMakeBackend(args=args, hunter=hunter)

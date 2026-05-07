@@ -204,7 +204,7 @@ class CMakeBackend(BuildBackend):
 
         # Use out-of-source build in {objdir}/cmake-build
         source_dir = os.path.dirname(compiletools.wrappedos.realpath(self.build_filename()))
-        build_dir = os.path.join(self.args.objdir, "cmake-build")
+        build_dir = os.path.join(self.args.cas_objdir, "cmake-build")
         os.makedirs(build_dir, exist_ok=True)
 
         # Configure — pass the user-configured compilers so CMake does not

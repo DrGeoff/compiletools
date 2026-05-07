@@ -213,7 +213,7 @@ class Cake:
                 "never collide. Defaults to <bindir>/diagnostics/. "
                 "Also settable via the DIAGNOSTICS_DIR environment variable "
                 "or 'diagnostics-dir = <path>' in any ct.conf file. "
-                "Must NOT be set to --objdir, which is a content-addressable "
+                "Must NOT be set to --cas-objdir, which is a content-addressable "
                 "cache: diagnostic files have no eviction path there and "
                 "races with peer ct-cake invocations clobber the data."
             ),

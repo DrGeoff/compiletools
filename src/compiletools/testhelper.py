@@ -864,7 +864,7 @@ def make_backend_args(tmpdir, **overrides):
         static=[],
         dynamic=[],
         verbose=0,
-        objdir=os.path.join(tmpdir, "obj"),
+        cas_objdir=os.path.join(tmpdir, "obj"),
         bindir=os.path.join(tmpdir, "bin"),
         git_root="",
         CC="gcc",
@@ -874,7 +874,7 @@ def make_backend_args(tmpdir, **overrides):
         CXXFLAGS="-O2",
         LD="g++",
         LDFLAGS="",
-        pchdir=os.path.join(tmpdir, "pch"),
+        cas_pchdir=os.path.join(tmpdir, "pch"),
         file_locking=False,
         serialisetests=False,
         build_only_changed=None,
@@ -954,7 +954,7 @@ def make_mock_hunter(sources=None, headers=None, magicflags_map=None, per_file_m
 
 
 def make_mock_namer(args):
-    """Create a MagicMock namer deriving paths from args.objdir/bindir.
+    """Create a MagicMock namer deriving paths from args.cas_objdir/bindir.
 
     Mirrors the production sharded layout: ``object_pathname`` returns
     ``<objdir>/<bucket>/<basename>.o`` where ``bucket`` is a deterministic
@@ -965,7 +965,7 @@ def make_mock_namer(args):
     """
     import hashlib
 
-    objdir = args.objdir
+    objdir = args.cas_objdir
     bindir = args.bindir
     namer = MagicMock()
 

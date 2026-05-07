@@ -29,7 +29,7 @@ _OBJ_FILENAME_RE = re.compile(
 # match — ``TraceStore/`` dirs, anything else — are invisible to the
 # scanner.  Diagnostics artifacts (timing JSON and ``slurm-ct-*.out`` logs)
 # default to ``<bindir>/diagnostics/<invocation>/`` and are not in objdir;
-# if a user overrides ``--diagnostics-dir`` to point back at ``--objdir``
+# if a user overrides ``--diagnostics-dir`` to point back at ``--cas-objdir``
 # they remain invisible here too, by design.
 _OBJ_BUCKET_RE = re.compile(r"^[0-9a-f]{2}$")
 

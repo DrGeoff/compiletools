@@ -25,7 +25,7 @@ class TestNinjaGenerate:
     def _make_args(self, **overrides):
         defaults = dict(
             verbose=0,
-            objdir="/tmp/obj",
+            cas_objdir="/tmp/obj",
             bindir="/tmp/bin",
             git_root="",
             file_locking=False,
@@ -297,7 +297,7 @@ class TestNinjaFileLocking:
     def _make_args(self, **overrides):
         defaults = dict(
             verbose=0,
-            objdir="/tmp/obj",
+            cas_objdir="/tmp/obj",
             bindir="/tmp/bin",
             git_root="",
             file_locking=False,

@@ -301,7 +301,7 @@ class TestBuildGraphPopulation:
 
     def test_compile_rule_order_only_dep_is_bucket_dir(self, tmp_path):
         """Each compile rule depends on its sharded bucket directory, not the
-        bare ``args.objdir``. Pre-sharding, every compile rule serialized on
+        bare ``args.cas_objdir``. Pre-sharding, every compile rule serialized on
         the single ``mkdir $objdir`` node and every concurrent
         ``rename(.tmp -> .o)`` contended on the same directory inode —
         cheap when the cache is small, increasingly expensive once entry
@@ -572,7 +572,7 @@ class TestBuildGraphPopulation:
             "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
             "/src/stdafx.h": {},
         }
-        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], pchdir=pchdir)
+        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], cas_pchdir=pchdir)
         hunter = make_mock_hunter(
             sources=["/src/main.cpp"],
             headers=["/src/util.h"],
@@ -600,7 +600,7 @@ class TestBuildGraphPopulation:
             "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
             "/src/stdafx.h": {},
         }
-        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], pchdir=None)
+        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], cas_pchdir=None)
         hunter = make_mock_hunter(
             sources=["/src/main.cpp"],
             headers=["/src/util.h"],
@@ -623,7 +623,7 @@ class TestBuildGraphPopulation:
             "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
             "/src/stdafx.h": {},
         }
-        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], pchdir=pchdir)
+        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], cas_pchdir=pchdir)
         hunter = make_mock_hunter(
             sources=["/src/main.cpp"],
             headers=["/src/util.h"],
@@ -650,7 +650,7 @@ class TestBuildGraphPopulation:
             "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
             "/src/stdafx.h": {},
         }
-        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], pchdir=pchdir)
+        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], cas_pchdir=pchdir)
         hunter = make_mock_hunter(
             sources=["/src/main.cpp"],
             headers=["/src/util.h"],
@@ -674,7 +674,7 @@ class TestBuildGraphPopulation:
             "/src/alpha.h": {sz.Str("CXXFLAGS"): [sz.Str("-DALPHA")]},
             "/src/beta.h": {sz.Str("CXXFLAGS"): [sz.Str("-DBETA")]},
         }
-        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], pchdir=pchdir)
+        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], cas_pchdir=pchdir)
         hunter = make_mock_hunter(
             sources=["/src/main.cpp"],
             headers=["/src/util.h"],
@@ -701,7 +701,7 @@ class TestBuildGraphPopulation:
             "/src/alpha.h": {},
             "/src/beta.h": {sz.Str("CXXFLAGS"): [sz.Str("-DBETA")]},
         }
-        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], pchdir=pchdir)
+        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], cas_pchdir=pchdir)
         hunter = make_mock_hunter(
             sources=["/src/main.cpp"],
             headers=["/src/util.h"],
@@ -727,7 +727,7 @@ class TestBuildGraphPopulation:
             "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
             "/src/stdafx.h": {},
         }
-        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], pchdir=None)
+        args = make_backend_args(tmp_path, filename=["/src/main.cpp"], cas_pchdir=None)
         hunter = make_mock_hunter(
             sources=["/src/main.cpp"],
             headers=["/src/util.h"],
@@ -923,11 +923,11 @@ class TestPchManifest:
         argv = [
             "--include",
             str(tmp_path),
-            "--objdir",
+            "--cas-objdir",
             str(tmp_path / "obj"),
             "--bindir",
             str(tmp_path / "bin"),
-            "--pchdir",
+            "--cas-pchdir",
             pchdir,
             source_path,
         ]
@@ -1069,7 +1069,7 @@ class TestGchPath:
 class TestPchFileLocking:
     """Test that PCH compile rules are wrapped with file-locking like other compiles."""
 
-    def _make_backend_with_locking(self, tmp_path, pchdir=None):
+    def _make_backend_with_locking(self, tmp_path, cas_pchdir=None):
         import stringzilla as sz
 
         StubClass = make_stub_backend_class()
@@ -1080,7 +1080,7 @@ class TestPchFileLocking:
         args = make_backend_args(
             tmp_path,
             filename=["/src/main.cpp"],
-            pchdir=pchdir,
+            cas_pchdir=cas_pchdir,
             file_locking=True,
             sleep_interval_lockdir=0.1,
             sleep_interval_cifs=0.2,
@@ -1100,7 +1100,7 @@ class TestPchFileLocking:
     def test_pch_compile_rule_has_compile_type(self, tmp_path):
         """PCH rules have rule_type='compile' so backends apply lock-wrapping."""
         pchdir = str(tmp_path / "pch")
-        backend = self._make_backend_with_locking(tmp_path, pchdir=pchdir)
+        backend = self._make_backend_with_locking(tmp_path, cas_pchdir=pchdir)
         graph = backend.build_graph()
 
         gch_rules = [r for r in graph.rules if r.output.endswith(".gch")]
@@ -1110,7 +1110,7 @@ class TestPchFileLocking:
     def test_pch_compile_command_has_output_flag(self, tmp_path):
         """PCH compile command ends with -o target, needed for _wrap_compile_cmd()."""
         pchdir = str(tmp_path / "pch")
-        backend = self._make_backend_with_locking(tmp_path, pchdir=pchdir)
+        backend = self._make_backend_with_locking(tmp_path, cas_pchdir=pchdir)
         graph = backend.build_graph()
 
         gch_rules = [r for r in graph.rules if r.output.endswith(".gch")]
@@ -1133,7 +1133,7 @@ class TestPchIncrementalHash:
         args = make_backend_args(
             tmp_path,
             filename=["/src/main.cpp"],
-            pchdir=pchdir,
+            cas_pchdir=pchdir,
             CXXFLAGS=cxxflags,
         )
         hunter = make_mock_hunter(
@@ -1176,8 +1176,8 @@ class TestPchIncrementalHash:
             "/src/stdafx.h": {},
         }
 
-        args1 = make_backend_args(tmp_path, filename=["/src/main.cpp"], pchdir=pchdir, CXX="g++")
-        args2 = make_backend_args(tmp_path, filename=["/src/main.cpp"], pchdir=pchdir, CXX="clang++")
+        args1 = make_backend_args(tmp_path, filename=["/src/main.cpp"], cas_pchdir=pchdir, CXX="g++")
+        args2 = make_backend_args(tmp_path, filename=["/src/main.cpp"], cas_pchdir=pchdir, CXX="clang++")
         hunter = make_mock_hunter(
             sources=["/src/main.cpp"],
             headers=["/src/util.h"],
@@ -1295,7 +1295,7 @@ class TestPchIncrementalHash:
         args = make_backend_args(
             tmp_path,
             filename=["/src/main.cpp"],
-            pchdir=str(pchdir),
+            cas_pchdir=str(pchdir),
             verbose=1,
         )
         hunter = make_mock_hunter(

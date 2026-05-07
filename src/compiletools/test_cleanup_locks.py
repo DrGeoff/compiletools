@@ -516,7 +516,7 @@ class TestCleanupLocksMain:
         create_old_lockdir(tmpdir_with_locks, "test1", hostname, 999999, 100)
 
         result = subprocess.run(
-            ["python", "-m", "compiletools.cleanup_locks_main", "--dry-run", "--objdir", tmpdir_with_locks],
+            ["python", "-m", "compiletools.cleanup_locks_main", "--dry-run", "--cas-objdir", tmpdir_with_locks],
             capture_output=True,
             text=True,
             timeout=10,
@@ -531,13 +531,13 @@ class TestCleanupLocksMain:
     def test_main_oserror_returns_1(self):
         """main() catches OSError and returns 1."""
         with patch("compiletools.apptools.create_parser", side_effect=OSError(2, "No such file", "/bad")):
-            rc = compiletools.cleanup_locks_main.main(argv=["--objdir", "/nonexistent"])
+            rc = compiletools.cleanup_locks_main.main(argv=["--cas-objdir", "/nonexistent"])
         assert rc == 1
 
     def test_main_general_exception_returns_1(self):
         """main() catches general exceptions and returns 1."""
         with patch("compiletools.apptools.create_parser", side_effect=RuntimeError("boom")):
-            rc = compiletools.cleanup_locks_main.main(argv=["--objdir", "/nonexistent"])
+            rc = compiletools.cleanup_locks_main.main(argv=["--cas-objdir", "/nonexistent"])
         assert rc == 1
 
     def test_main_verbose_reraises(self):
@@ -566,7 +566,7 @@ class TestCleanupLocksMain:
     def test_exit_code_on_empty_directory(self, tmpdir_with_locks):
         """Test exit code 0 when no locks found."""
         result = subprocess.run(
-            ["python", "-m", "compiletools.cleanup_locks_main", "--objdir", tmpdir_with_locks],
+            ["python", "-m", "compiletools.cleanup_locks_main", "--cas-objdir", tmpdir_with_locks],
             capture_output=True,
             text=True,
             timeout=10,

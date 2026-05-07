@@ -54,7 +54,7 @@ class Namer:
 
     def _outputdir(self, defaultdir, sourcefilename=None):
         """Used by object_dir and executable_dir.
-        defaultdir must be either self.args.objdir or self.args.bindir
+        defaultdir must be either self.args.cas_objdir or self.args.bindir
         """
         if sourcefilename:
             project_pathname = self._project.pathname(sourcefilename)
@@ -84,12 +84,12 @@ class Namer:
         unconditionally for private and shared caches.
 
         With no ``file_hash`` (the default), returns the bare
-        ``args.objdir`` — the cache-tree root used by ``clean()`` /
+        ``args.cas_objdir`` — the cache-tree root used by ``clean()`` /
         ``realclean()`` and by ``trim_cache`` as its scan root.
         """
         if file_hash is not None:
-            return os.path.join(self.args.objdir, file_hash[:2])
-        return self.args.objdir
+            return os.path.join(self.args.cas_objdir, file_hash[:2])
+        return self.args.cas_objdir
 
     def compute_dep_hash(self, header_list):
         """Compute 14-char hash of header dependencies.

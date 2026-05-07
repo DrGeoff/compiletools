@@ -99,7 +99,7 @@ def SlurmBackendTestContext(graph, **arg_overrides):
     slurm_defaults.update(arg_overrides)
     with TempDirContextNoChange() as tmpdir:
         args = make_backend_args(tmpdir, **slurm_defaults)
-        os.makedirs(args.objdir, exist_ok=True)
+        os.makedirs(args.cas_objdir, exist_ok=True)
         backend = SlurmBackend.__new__(SlurmBackend)
         backend.args = args
         backend._graph = graph
@@ -366,7 +366,7 @@ class TestCAShortCircuit:
         graph.add_rule(make_phony_rule("build", [out]))
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
-            backend.args.objdir = str(tmp_path)
+            backend.args.cas_objdir = str(tmp_path)
             ctx = backend.context
 
             # Write a valid trace so the file is trusted
@@ -428,7 +428,7 @@ class TestTraceVerification:
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             # Point objdir to tmp_path so the trace file is found
-            backend.args.objdir = str(tmp_path)
+            backend.args.cas_objdir = str(tmp_path)
             ctx = backend.context
 
             trace_path = str(tmp_path / ".ct-slurm-traces.json")
@@ -641,7 +641,7 @@ class TestJobFailures:
                     backend.execute("build")
 
             # Trace store on disk must contain real_out but not ghost_out
-            trace_path = os.path.join(backend.args.objdir, ".ct-slurm-traces.json")
+            trace_path = os.path.join(backend.args.cas_objdir, ".ct-slurm-traces.json")
             assert os.path.exists(trace_path), "traces.save() was never called on raise path"
             persisted = TraceStore(trace_path)
             assert persisted.get(real_out) is not None, "completed compile not recorded"
@@ -656,7 +656,7 @@ class TestJobFailures:
 class TestQueryStates:
     def _make_backend(self, tmp_path):
         args = SimpleNamespace(
-            objdir=str(tmp_path),
+            cas_objdir=str(tmp_path),
             slurm_partition=None,
             slurm_time="00:30:00",
             slurm_mem="2G",
@@ -738,7 +738,7 @@ class TestParallelLocalLink:
 
         with SlurmBackendTestContext(graph, parallel=4) as (backend, _tmpdir):
             # Pre-populate compile traces so they're skipped.
-            store = TraceStore(os.path.join(backend.args.objdir, ".ct-slurm-traces.json"))
+            store = TraceStore(os.path.join(backend.args.cas_objdir, ".ct-slurm-traces.json"))
             store.put(obj_a, _make_trace_entry(ra, backend.context))
             store.put(obj_b, _make_trace_entry(rb, backend.context))
             store.save()
@@ -824,7 +824,7 @@ class TestLocalLink:
             # Record a valid trace for the compile output so it is trusted and skipped.
 
             ctx = backend.context
-            store = TraceStore(os.path.join(backend.args.objdir, ".ct-slurm-traces.json"))
+            store = TraceStore(os.path.join(backend.args.cas_objdir, ".ct-slurm-traces.json"))
             store.put(obj, _make_trace_entry(compile_rule, ctx))
             store.save()
 
@@ -866,7 +866,7 @@ class TestLocalLink:
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             ctx = backend.context
-            store = TraceStore(os.path.join(backend.args.objdir, ".ct-slurm-traces.json"))
+            store = TraceStore(os.path.join(backend.args.cas_objdir, ".ct-slurm-traces.json"))
             store.put(obj, _make_trace_entry(compile_rule, ctx))
             store.save()
 
@@ -888,7 +888,7 @@ class TestLocalLink:
 
     def test_generate_before_execute_required(self):
         args = SimpleNamespace(
-            objdir="/tmp",
+            cas_objdir="/tmp",
             slurm_partition=None,
             slurm_time="00:30:00",
             slurm_mem="2G",
@@ -1274,7 +1274,7 @@ class TestOOMRetry:
 
             # Trace store on disk MUST contain ok_out (it succeeded), so the
             # next invocation does not re-submit it.
-            trace_path = os.path.join(backend.args.objdir, ".ct-slurm-traces.json")
+            trace_path = os.path.join(backend.args.cas_objdir, ".ct-slurm-traces.json")
             assert os.path.exists(trace_path)
             persisted = TraceStore(trace_path)
             assert persisted.get(ok_out) is not None, (
@@ -1462,7 +1462,7 @@ class TestInvocationFiles:
             ):
                 backend.execute("build")
 
-            objdir = backend.args.objdir
+            objdir = backend.args.cas_objdir
             leftover = [f for f in os.listdir(objdir) if f.startswith(".ct-slurm-cmds-")]
             assert leftover == []
             leftover_outs = [f for f in os.listdir(objdir) if f.startswith(".ct-slurm-outs-")]
@@ -1478,7 +1478,7 @@ class TestInvocationFiles:
         graph.add_rule(make_phony_rule("build", [r.output]))
 
         with SlurmBackendTestContext(graph) as (backend, _tmp):
-            objdir = backend.args.objdir
+            objdir = backend.args.cas_objdir
             # Pre-create stale temps as if NODE_FAIL killed the wrap script.
             stale_a = os.path.join(objdir, "foo.o.42.0.tmp")
             stale_b = os.path.join(objdir, "bar.o.42.5.tmp")
@@ -1506,7 +1506,7 @@ class TestInvocationFiles:
         graph.add_rule(make_phony_rule("build", [r.output]))
 
         with SlurmBackendTestContext(graph) as (backend, _tmp):
-            objdir = backend.args.objdir
+            objdir = backend.args.cas_objdir
             foreign = os.path.join(objdir, ".ct-slurm-cmds-other-1234-99.txt")
             with open(foreign, "w") as f:
                 f.write("foreign\n")
@@ -1579,7 +1579,7 @@ class TestScancelOnFailure:
 class TestSacctTransientFailures:
     def test_query_states_returns_empty_on_called_process_error(self, tmp_path):
         b = SlurmBackend.__new__(SlurmBackend)
-        b.args = SimpleNamespace(objdir=str(tmp_path))
+        b.args = SimpleNamespace(cas_objdir=str(tmp_path))
         with patch(
             "subprocess.check_output",
             side_effect=subprocess.CalledProcessError(1, ["sacct"], stderr="slurmdbd down"),
@@ -1588,7 +1588,7 @@ class TestSacctTransientFailures:
 
     def test_query_states_returns_empty_on_sacct_missing(self, tmp_path):
         b = SlurmBackend.__new__(SlurmBackend)
-        b.args = SimpleNamespace(objdir=str(tmp_path))
+        b.args = SimpleNamespace(cas_objdir=str(tmp_path))
         with patch("subprocess.check_output", side_effect=FileNotFoundError("sacct")):
             assert b._query_array_task_states("123") == {}
 
@@ -1777,7 +1777,7 @@ def test_quoted_define_with_space_survives_flatten(tmp_path, monkeypatch):
         with patch("subprocess.check_output", return_value="42\n"):
             backend._sbatch_array([rule], chunk_id=0)
         cmds_file = os.path.join(
-            os.path.realpath(backend.args.objdir),
+            os.path.realpath(backend.args.cas_objdir),
             ".ct-slurm-cmds-test-0.txt",
         )
         with open(cmds_file) as f:
@@ -1816,7 +1816,7 @@ class TestAtomicComputeNodeCompile:
             with patch("subprocess.check_output", return_value="1\n"):
                 backend._sbatch_array([rule], chunk_id=0)
             cmds_file = os.path.join(
-                os.path.realpath(backend.args.objdir),
+                os.path.realpath(backend.args.cas_objdir),
                 ".ct-slurm-cmds-atomic-0.txt",
             )
             with open(cmds_file) as f:
@@ -2115,7 +2115,7 @@ class TestTimingPopulatesStartEnd:
         graph.add_rule(make_phony_rule("build", [exe]))
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
-            store = TraceStore(os.path.join(backend.args.objdir, ".ct-slurm-traces.json"))
+            store = TraceStore(os.path.join(backend.args.cas_objdir, ".ct-slurm-traces.json"))
             store.put(obj, _make_trace_entry(compile_rule, backend.context))
             store.save()
 
@@ -2181,7 +2181,7 @@ class TestCopyRuleCAShortcut:
         )
 
         with SlurmBackendTestContext(BuildGraph()) as (backend, _tmpdir):
-            store = TraceStore(os.path.join(backend.args.objdir, ".ct-slurm-traces.json"))
+            store = TraceStore(os.path.join(backend.args.cas_objdir, ".ct-slurm-traces.json"))
             store.put(dst, _make_trace_entry(rule, backend.context))
 
             with patch("compiletools.trace_backend.atomic_link") as mock_link:
@@ -2212,7 +2212,7 @@ class TestTracesAlwaysSaved:
                     backend.execute("build")
 
             # Trace file must exist on disk after the raise
-            trace_path = os.path.join(backend.args.objdir, ".ct-slurm-traces.json")
+            trace_path = os.path.join(backend.args.cas_objdir, ".ct-slurm-traces.json")
             assert os.path.exists(trace_path), "traces.save() never ran on raise path"
 
 
@@ -2252,7 +2252,7 @@ class TestTestRulesAreNotExecutedLocally:
             backend._tracked_jobs = {}
             backend._chunk_id_for_job = {}
             with patch.object(backend, "_run_local") as mock_run_local:
-                traces = TraceStore(os.path.join(backend.args.objdir, "traces.json"))
+                traces = TraceStore(os.path.join(backend.args.cas_objdir, "traces.json"))
                 backend._execute_impl(graph, traces)
 
             mock_run_local.assert_not_called()
@@ -2326,7 +2326,7 @@ class TestSlurmLogsRouteThroughDiagnostics:
         for lineno, line in enumerate(source.splitlines(), start=1):
             if "slurm-ct-" not in line or ".out" not in line:
                 continue
-            if "self.args.objdir" in line or "real_objdir" in line:
+            if "self.args.cas_objdir" in line or "real_objdir" in line:
                 offending.append((lineno, line.strip()))
         assert not offending, (
             "slurm log filenames must be joined with "

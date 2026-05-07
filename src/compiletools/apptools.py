@@ -296,22 +296,22 @@ def add_output_directory_arguments(cap, variant):
     )
     git_root = compiletools.git_utils.find_git_root()
     if git_root:
-        default_objdir = os.path.join(git_root, "shared-objdir", variant)
+        default_cas_objdir = os.path.join(git_root, "cas-objdir", variant)
     else:
-        default_objdir = "".join(["bin/", variant, "/obj"])
+        default_cas_objdir = "".join(["bin/", variant, "/obj"])
     cap.add(
-        "--objdir",
-        help="Output directory for object files",
-        default=default_objdir,
+        "--cas-objdir",
+        help="Output directory for object files (content-addressable store)",
+        default=default_cas_objdir,
     )
     if git_root:
-        default_pchdir = os.path.join(git_root, "shared-pchdir", variant)
+        default_cas_pchdir = os.path.join(git_root, "cas-pchdir", variant)
     else:
-        default_pchdir = os.path.join("bin", variant, "pch")
+        default_cas_pchdir = os.path.join("bin", variant, "pch")
     cap.add(
-        "--pchdir",
-        help="Output directory for precompiled header cache (shared, content-addressable)",
-        default=default_pchdir,
+        "--cas-pchdir",
+        help="Output directory for precompiled header cache (content-addressable store)",
+        default=default_cas_pchdir,
     )
 
 
@@ -1654,23 +1654,23 @@ def _commonsubstitutions(args):
         pass
 
     try:
-        # Same idea as the bindir modification -- use shared-objdir at git root if available
+        # Same idea as the bindir modification -- use cas-objdir at git root if available
         git_root = compiletools.git_utils.find_git_root()
         if git_root:
-            default_objdir = os.path.join(git_root, "shared-objdir", args.variant)
+            default_cas_objdir = os.path.join(git_root, "cas-objdir", args.variant)
         else:
-            default_objdir = os.path.join(args.bindir, "obj")
-        args.objdir = unsupplied_replacement(args.objdir, default_objdir, args.verbose, "objdir")
+            default_cas_objdir = os.path.join(args.bindir, "obj")
+        args.cas_objdir = unsupplied_replacement(args.cas_objdir, default_cas_objdir, args.verbose, "cas-objdir")
     except AttributeError:
         pass
 
     try:
         git_root = compiletools.git_utils.find_git_root()
         if git_root:
-            default_pchdir = os.path.join(git_root, "shared-pchdir", args.variant)
+            default_cas_pchdir = os.path.join(git_root, "cas-pchdir", args.variant)
         else:
-            default_pchdir = os.path.join(args.bindir, "pch")
-        args.pchdir = unsupplied_replacement(args.pchdir, default_pchdir, args.verbose, "pchdir")
+            default_cas_pchdir = os.path.join(args.bindir, "pch")
+        args.cas_pchdir = unsupplied_replacement(args.cas_pchdir, default_cas_pchdir, args.verbose, "cas-pchdir")
     except AttributeError:
         pass
 

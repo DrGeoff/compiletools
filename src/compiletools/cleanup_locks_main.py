@@ -6,7 +6,7 @@ It respects the same configuration settings as the build system (ct.conf, enviro
 variables, command-line arguments).
 
 Usage:
-    ct-cleanup-locks [--objdir=/path/to/objects] [options]
+    ct-cleanup-locks [--cas-objdir=/path/to/objects] [options]
 
 The tool will:
 1. Scan for .lockdir directories in the object directory

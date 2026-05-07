@@ -235,7 +235,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         uth.create_temp_ct_conf(
             tempdir=str(source_dir),
             defaultvariant=os.path.basename(config_name)[:-5],
-            extralines=["file-locking = true", f"objdir = {objdir}"],
+            extralines=["file-locking = true", f"cas-objdir = {objdir}"],
         )
 
         return str(source_dir), config_name
@@ -318,7 +318,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 uth.create_temp_ct_conf(
                     tempdir=str(source_dir),
                     defaultvariant=os.path.basename(config_name)[:-5],
-                    extralines=["file-locking = true", f"objdir = {objdir}"],
+                    extralines=["file-locking = true", f"cas-objdir = {objdir}"],
                 )
                 dirs_and_configs.append((str(source_dir), config_name))
 
@@ -916,7 +916,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             uth.create_temp_ct_conf(
                 tempdir=str(subproject_a_dir),
                 defaultvariant=os.path.basename(config_a)[:-5],
-                extralines=["file-locking = true", f"objdir = {objdir}"],
+                extralines=["file-locking = true", f"cas-objdir = {objdir}"],
             )
 
             # Subproject B: factory sample
@@ -931,7 +931,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             uth.create_temp_ct_conf(
                 tempdir=str(subproject_b_dir),
                 defaultvariant=os.path.basename(config_b)[:-5],
-                extralines=["file-locking = true", f"objdir = {objdir}"],
+                extralines=["file-locking = true", f"cas-objdir = {objdir}"],
             )
 
             # Build both subprojects concurrently
@@ -1100,8 +1100,8 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             defaultvariant=os.path.basename(config_name)[:-5],
             extralines=[
                 "file-locking = true",
-                f"objdir = {objdir}",
-                f"pchdir = {pchdir}",
+                f"cas-objdir = {objdir}",
+                f"cas-pchdir = {pchdir}",
             ],
         )
         return str(source_dir), config_name
