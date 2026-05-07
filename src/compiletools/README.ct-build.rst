@@ -68,7 +68,7 @@ ENVIRONMENT
     ``make`` invocation. Otherwise ``ct-jobs`` uses CPU count and config data.
 
 ``ct.conf``
-    Settings such as include paths, shared object cache directives, and variant
+    Settings such as include paths, object CAS directives, and variant
     defaults influence every stage that ct-build orchestrates.
 
 EXAMPLES

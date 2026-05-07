@@ -1,4 +1,4 @@
-"""Lock cleanup utility for shared object caches.
+"""Lock cleanup utility for the object CAS.
 
 Scans for stale lockdirs in object CAS and removes them.
 Handles both local and remote lock verification via SSH.

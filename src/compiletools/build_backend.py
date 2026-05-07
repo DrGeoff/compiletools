@@ -1133,7 +1133,7 @@ _PCHDIR_WARNED: set[str] = set()
 def _warn_if_pchdir_not_cross_user_safe(pchdir: str, verbose: int) -> None:
     """Emit a one-time warning if pchdir's parent isn't group-writable + SGID.
 
-    The shared PCH cache is intended to be readable across users:
+    The PCH CAS is intended to be readable across users:
     user A creates ``<pchdir>/<cmd_hash>/stdafx.h.gch``, user B should be
     able to consume it. With a default ``umask 0077`` and no SGID on the
     parent, A's directory is mode ``0700`` and B silently re-builds the

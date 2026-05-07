@@ -1,4 +1,4 @@
-"""Measure duplication in shared object and PCH caches.
+"""Measure duplication in the object CAS and PCH CAS.
 
 Walks a ``cas-objdir`` and groups entries by ``(file_hash, dep_hash)``.
 Entries that share that pair but differ in ``macro_state_hash`` are
@@ -529,7 +529,7 @@ def _pch_json_payload(rep: PchReport, top_n: int) -> dict:
 
 
 def _render_cas_objdir_only_json(rep: CacheReport, top_n: int) -> str:
-    """Backward-compatible single-objdir JSON output (flat schema)."""
+    """Single-objdir flat JSON output (vs. the wrapped combined schema)."""
     return json.dumps(_cas_objdir_json_payload(rep, top_n), indent=2) + "\n"
 
 
@@ -539,8 +539,8 @@ def _render_combined_json(
     top_n: int,
 ) -> str:
     payload = {
-        "objdir_report": _cas_objdir_json_payload(obj_rep, top_n) if obj_rep is not None else None,
-        "pch_report": _pch_json_payload(pch_rep_obj, top_n) if pch_rep_obj is not None else None,
+        "cas_objdir_report": _cas_objdir_json_payload(obj_rep, top_n) if obj_rep is not None else None,
+        "cas_pchdir_report": _pch_json_payload(pch_rep_obj, top_n) if pch_rep_obj is not None else None,
     }
     return json.dumps(payload, indent=2) + "\n"
 

@@ -208,7 +208,7 @@ def test_cli_json_includes_both_reports(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     data = json.loads(out)
-    assert "objdir_report" in data
-    assert "pch_report" in data
-    assert data["objdir_report"] is not None
-    assert data["pch_report"] is not None
+    assert "cas_objdir_report" in data
+    assert "cas_pchdir_report" in data
+    assert data["cas_objdir_report"] is not None
+    assert data["cas_pchdir_report"] is not None

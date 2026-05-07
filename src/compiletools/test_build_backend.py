@@ -970,7 +970,7 @@ class TestWarnIfPchdirNotCrossUserSafe:
     def test_warns_for_shared_path(self, tmp_path, capsys):
         from compiletools.build_backend import _warn_if_pchdir_not_cross_user_safe
 
-        shared = tmp_path / "shared_pch"
+        shared = tmp_path / "cas_pchdir"
         shared.mkdir(mode=0o755)  # not group-writable, no SGID
         _warn_if_pchdir_not_cross_user_safe(str(shared), verbose=1)
         captured = capsys.readouterr()

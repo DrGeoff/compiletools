@@ -1,4 +1,4 @@
-"""Cache trimming utility for shared object and PCH caches.
+"""Cache trimming utility for the object CAS and PCH CAS.
 
 Scans cas-objdir and cas-pchdir for stale entries and removes them,
 keeping entries that match the current git state and preserving a configurable
@@ -262,7 +262,7 @@ class CacheTrimmer:
     # ------------------------------------------------------------------
 
     def trim_pchdir(self, pchdir):
-        """Trim stale precompiled header directories from a shared PCH cache.
+        """Trim stale precompiled header directories from the PCH CAS.
 
         Each ``<pchdir>/<cmd_hash>/`` directory is one unique compile
         configuration (compiler + flags + header realpath). The trim

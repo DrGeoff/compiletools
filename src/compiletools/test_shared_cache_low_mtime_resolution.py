@@ -1,4 +1,4 @@
-"""Test for shared object cache with low mtime resolution filesystems.
+"""Test for the object CAS with low mtime resolution filesystems.
 
 This test exposes a bug where header dependency changes are not detected
 when timestamps have coarse granularity (FAT32, some NFS, fast builds).
@@ -47,7 +47,7 @@ def set_mtime_to_second(path, timestamp=None):
 
 @uth.with_group_writable_umask
 class TestSharedCacheLowMtimeResolution(BaseCompileToolsTestCase):
-    """Tests for shared object cache behavior on low mtime resolution filesystems."""
+    """Tests for object CAS behavior on low mtime resolution filesystems."""
 
     def _create_worktree_test_env(self, tmpdir, cas_objdir):
         """Create git worktree test environment with object CAS.

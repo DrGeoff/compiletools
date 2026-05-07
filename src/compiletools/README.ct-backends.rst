@@ -60,7 +60,7 @@ slurm   Y            Y                      Y             Y          Y (local)  
 
 Notes:
 
-* **File-lock** — ``--file-locking`` enables multi-user shared object/PCH
+* **File-lock** — ``--file-locking`` enables multi-user object CAS / PCH CAS
   caches.  CMake/Bazel/Tup manage their own coordination and skip this
   layer (see *FILE LOCKING* below).
 * **--build-only-changed** — restrict the graph to a whitespace-separated

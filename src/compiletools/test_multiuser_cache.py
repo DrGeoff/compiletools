@@ -1,8 +1,8 @@
 """
-Multi-user shared object cache tests.
+Multi-user object CAS tests.
 
 Tests concurrent compilation, locking mechanisms, and permission handling
-for shared object file caches across multiple users/processes.
+for the object CAS across multiple users/processes.
 
 Filesystem Compatibility:
 - Most tests work with any locking strategy (flock, fcntl, lockdir, cifs)
@@ -213,7 +213,7 @@ def continuous_reader(obj_path, stop_event, errors):
 
 @uth.with_group_writable_umask
 class TestMultiUserCache(BaseCompileToolsTestCase):
-    """Tests for multi-user shared object cache functionality."""
+    """Tests for multi-user object CAS functionality."""
 
     def _create_test_source_dir(self, tmpdir, source_name, objdir):
         """
@@ -1114,7 +1114,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         silently rebuild."""
         with tempfile.TemporaryDirectory() as tmpdir:
             objdir = Path(tmpdir) / "cas_objdir"
-            pchdir = Path(tmpdir) / "shared_pch"
+            pchdir = Path(tmpdir) / "cas_pchdir"
             objdir.mkdir(mode=0o2775)
             pchdir.mkdir(mode=0o2775)
 

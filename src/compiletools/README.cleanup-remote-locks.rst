@@ -20,12 +20,12 @@ older deployments can be referenced, but it will be removed in a future release.
 
 SYNOPSIS
 ========
-cleanup-remote-locks.sh SHARED_OBJECT_DIRECTORY
+cleanup-remote-locks.sh CAS_OBJDIR_PATH
 
 DESCRIPTION
 ===========
-The script iterates over ``*.lockdir`` directories beneath the supplied shared
-object cache, inspects their ``pid`` files (format ``hostname:pid``), and
+The script iterates over ``*.lockdir`` directories beneath the supplied object
+CAS, inspects their ``pid`` files (format ``hostname:pid``), and
 decides whether the owning process is still running.
 
 For locks created on the current host, ``kill -0`` is used to check liveness.
@@ -39,8 +39,8 @@ whenever possible.
 
 OPTIONS
 =======
-``SHARED_OBJECT_DIRECTORY``
-    Root of the shared cache (e.g., ``/shared/build/obj``). The script walks
+``CAS_OBJDIR_PATH``
+    Root of the object CAS (e.g., ``/shared/build/obj``). The script walks
     this tree searching for ``*.lockdir`` directories.
 
 ENVIRONMENT

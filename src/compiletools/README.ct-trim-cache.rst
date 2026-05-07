@@ -3,7 +3,7 @@ ct-trim-cache
 ================
 
 -------------------------------------------------------------------------
-Trim stale entries from shared object and PCH caches
+Trim stale entries from the object CAS and PCH CAS
 -------------------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com

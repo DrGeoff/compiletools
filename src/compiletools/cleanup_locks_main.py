@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI tool for cleaning up stale locks in shared object caches.
+"""CLI tool for cleaning up stale locks in the object CAS.
 
 This tool scans an object CAS for stale lockdirs and removes them.
 It respects the same configuration settings as the build system (ct.conf, environment
@@ -69,7 +69,7 @@ def main(argv=None):
     """
     try:
         # Create parser with standard compiletools configuration
-        cap = compiletools.apptools.create_parser("Clean up stale locks in shared object caches", argv=argv)
+        cap = compiletools.apptools.create_parser("Clean up stale locks in the object CAS", argv=argv)
 
         # Add cleanup-specific arguments
         add_arguments(cap)
