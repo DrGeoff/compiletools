@@ -199,7 +199,7 @@ def test_cli_text_output_minimal(tmp_path, capsys):
     rc = cache_report.main([str(tmp_path)])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "Cache report for" in out
+    assert "Object cache report for" in out
     assert "Total entries:" in out
     assert "0" in out
 
