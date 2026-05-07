@@ -814,10 +814,78 @@ def strip_d_u_tokens(tokens: list[str]) -> list[str]:
     return out
 
 
+# Flag-prefix classification: tokens whose presence/value never affects
+# the compiled object bytes. Excluded from cache-key hashing so that
+# changing a warning level doesn't trigger a rebuild.
+#
+# These cover the GCC/Clang diagnostic and verbosity ecosystem:
+# - -W*: warnings (pure diagnostic; -Werror is the one exception, see below)
+# - -fdiagnostics-*, -fmessage-length=, -fno-show-column,
+#   -fno-diagnostics-show-option, -fcaret-diagnostics,
+#   -fno-color-diagnostics, -fcolor-diagnostics: message formatting
+# - -pipe: tells compiler to use pipes for I/O between stages
+# - -v / --verbose: prints the compile invocation
+# - --help / -###: introspection-only
+_HASH_IRRELEVANT_PREFIXES: tuple[str, ...] = (
+    "-W",  # warnings (see _HASH_RELEVANT_W_FLAGS exception below)
+    "-fdiagnostics-",
+    "-fmessage-length=",
+    "-fno-show-column",
+    "-fno-diagnostics-show-option",
+    "-fcaret-diagnostics",
+    "-fno-color-diagnostics",
+    "-fcolor-diagnostics",
+    "-pipe",
+    "-v",
+    "--verbose",
+    "--help",
+    "-###",
+)
+
+# Exception: -Werror promotes warnings to errors, which CAN affect the
+# build outcome (compile fails vs succeeds). Treat -Werror and
+# -Werror=<warning> as hash-relevant.
+_HASH_RELEVANT_W_FLAGS: tuple[str, ...] = (
+    "-Werror",
+    "-Werror=",
+)
+
+
+def filter_hash_irrelevant_tokens(tokens: list[str]) -> list[str]:
+    """Remove tokens that don't affect compiled output from a flag list.
+
+    Used by cache-key hashing to elide diagnostic-only flag changes.
+    ``-W*`` warnings are dropped EXCEPT ``-Werror`` (which can change
+    compile outcome). Returns a NEW list; input is not mutated.
+    """
+    out = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        tok = tokens[i]
+        # -Werror exception: hash-relevant. ``-Werror`` itself, and the
+        # ``-Werror=<warning>`` parametrized form, both promote warnings
+        # to errors and thus can change build outcome.
+        if any(tok == we or tok.startswith(we) for we in _HASH_RELEVANT_W_FLAGS):
+            out.append(tok)
+            i += 1
+            continue
+        # Diagnostic-only prefixes: drop. None of these take a separate
+        # value token in current GCC/Clang (``-fmessage-length=`` is the
+        # attached form), so a single-token skip suffices.
+        if any(tok.startswith(prefix) for prefix in _HASH_IRRELEVANT_PREFIXES):
+            i += 1
+            continue
+        out.append(tok)
+        i += 1
+    return out
+
+
 def tokenize_compile_flags(
     cppflags,
     cflags,
     cxxflags,
+    strip_unhashed: bool = False,
 ) -> tuple[list[str], list[str], list[str]]:
     """Tokenize compile-flag strings into structured lists with -D/-U removed.
 
@@ -835,9 +903,14 @@ def tokenize_compile_flags(
     drops both the flag token and the following value token. All other
     flags (-I, -O, -std, -W, -f...) pass through unchanged.
 
+    When ``strip_unhashed=True``, also remove hash-irrelevant diagnostic
+    tokens (warnings, message formatting, ``-pipe``, ``-v``) from each
+    list via :func:`filter_hash_irrelevant_tokens`. Default ``False``
+    preserves the previous behavior (only -D/-U stripped).
+
     Returns:
         (cppflags_tokens, cflags_tokens, cxxflags_tokens) -- three lists
-        of remaining tokens, in original order, with -D/-U stripped.
+        of remaining tokens, in original order.
     """
 
     def _to_tokens(value):
@@ -852,11 +925,14 @@ def tokenize_compile_flags(
         except ValueError:
             return value.split()
 
-    return (
-        strip_d_u_tokens(_to_tokens(cppflags)),
-        strip_d_u_tokens(_to_tokens(cflags)),
-        strip_d_u_tokens(_to_tokens(cxxflags)),
-    )
+    cpp = strip_d_u_tokens(_to_tokens(cppflags))
+    c = strip_d_u_tokens(_to_tokens(cflags))
+    cxx = strip_d_u_tokens(_to_tokens(cxxflags))
+    if strip_unhashed:
+        cpp = filter_hash_irrelevant_tokens(cpp)
+        c = filter_hash_irrelevant_tokens(c)
+        cxx = filter_hash_irrelevant_tokens(cxx)
+    return (cpp, c, cxx)
 
 
 def clear_cache():

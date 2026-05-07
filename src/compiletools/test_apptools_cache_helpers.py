@@ -139,6 +139,18 @@ class TestTokenizeCompileFlags:
         assert c == ["-O1", "-Wextra"]
         assert cxx == ["-O2", "-Wpedantic"]
 
+    def test_tokenize_strip_unhashed_drops_warnings(self):
+        """``strip_unhashed=True`` drops both ``-D``/``-U`` and
+        diagnostic-only tokens (``-Wall`` etc.) from each slot."""
+        _, _, cxx = tokenize_compile_flags("", "", "-O2 -Wall -DFOO", strip_unhashed=True)
+        assert cxx == ["-O2"]
+
+    def test_tokenize_strip_unhashed_default_false(self):
+        """Default behavior (``strip_unhashed=False``) preserves
+        ``-W`` warnings; only ``-D``/``-U`` are stripped."""
+        _, _, cxx = tokenize_compile_flags("", "", "-O2 -Wall -DFOO")
+        assert cxx == ["-O2", "-Wall"]
+
 
 class TestStripDUTokens:
     """Test the standalone strip_d_u_tokens helper.
