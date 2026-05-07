@@ -858,9 +858,6 @@ def make_backend_args(tmpdir, **overrides):
     (build_backend compile commands, magicflags._parse) thus works
     without re-tokenizing in the test fixtures.
     """
-    import compiletools.utils
-    from compiletools.flags import Flags
-
     defaults = dict(
         filename=[],
         tests=[],
@@ -884,17 +881,21 @@ def make_backend_args(tmpdir, **overrides):
         diagnostics_dir=None,
     )
     defaults.update(overrides)
-    # Populate *_tokens to match the parseargs() contract. Done here so
-    # callers that override CXXFLAGS=... transparently get matching
-    # CXXFLAGS_tokens without having to compute them at every call site.
-    for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS"):
-        token_slot = f"{slot}_tokens"
-        if token_slot not in defaults:
-            defaults[token_slot] = compiletools.utils.split_command_cached(defaults.get(slot, ""))
     args = SimpleNamespace(**defaults)
-    # Match parseargs end: build the structured Flags view alongside.
-    args.flags = Flags.from_args(args)
+    finalize_flag_state(args)
     return args
+
+
+def finalize_flag_state(args) -> None:
+    """Test-side wrapper for ``apptools._finalize_flag_state``.
+
+    Use after ``cap.parse_args`` or after constructing a SimpleNamespace
+    by hand, when the test then drives code that reads
+    ``args.{*}_tokens`` or ``args.flags`` (Hunter, MagicFlags, build
+    backends). Production code never needs this -- ``parseargs``
+    already calls the underlying helper.
+    """
+    compiletools.apptools._finalize_flag_state(args)
 
 
 def add_backend_arguments(cap):

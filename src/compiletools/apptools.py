@@ -11,6 +11,7 @@ import tempfile
 import textwrap
 import threading
 import warnings
+from collections.abc import Sequence
 
 # Only used for the verbose print.
 import configargparse
@@ -434,47 +435,37 @@ def _extend_includes_using_git_root(args):
             )
 
 
-def _existing_include_paths(flags_str: str) -> set[str]:
-    """Extract the set of -I include paths from a flag string.
-
-    Recognizes both attached (-I/path) and detached (-I /path) forms.
-    Other tokens that happen to contain path-like substrings (e.g.,
-    -DFOO=/some/path, -isystem /some/path, -L/some/path) are NOT
-    treated as include paths.
-    """
-    tokens = split_command_cached(flags_str)
-    paths: set[str] = set()
-    i = 0
-    while i < len(tokens):
-        tok = tokens[i]
-        if tok == "-I" and i + 1 < len(tokens):
-            paths.add(tokens[i + 1])
-            i += 2
-        elif tok.startswith("-I") and len(tok) > 2:
-            paths.add(tok[2:])
-            i += 1
-        else:
-            i += 1
-    return paths
-
-
 def _add_include_paths_to_flags(args):
     """Add all the include paths to all three compile flags.
 
-    Dedup is by token-walk (see _existing_include_paths), not raw
-    substring containment, so a path that already appears as another
-    flag's value (-isystem /p, -L /p, -DFOO=/p) still gets the proper
-    -I /p added.
+    Uses Flags.append_include as the dedup oracle: token-walk dedup (so
+    a path already present as ``-isystem /p``, ``-L /p``, or ``-DFOO=/p``
+    still gets the proper ``-I /p`` added). The raw flag string is only
+    *appended* to (never tokenized-and-rejoined), so existing shell-quoted
+    content is preserved verbatim.
     """
+    from compiletools.flags import Flags
+
     new_paths = args.INCLUDE.split()
     if not new_paths:
         return
-    for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS"):
-        existing = _existing_include_paths(getattr(args, slot))
+
+    def _make_flags_for_slot(slot: str, tokens: tuple[str, ...]) -> Flags:
+        if slot == "cpp":
+            return Flags(cpp=tokens)
+        if slot == "c":
+            return Flags(c=tokens)
+        return Flags(cxx=tokens)
+
+    slot_map = (("CPPFLAGS", "cpp"), ("CFLAGS", "c"), ("CXXFLAGS", "cxx"))
+    for raw_attr, flags_slot in slot_map:
+        before_tokens = tuple(split_command_cached(getattr(args, raw_attr)))
+        flags = _make_flags_for_slot(flags_slot, before_tokens)
         for path in new_paths:
-            if path not in existing:
-                setattr(args, slot, getattr(args, slot) + " -I " + path)
-                existing.add(path)
+            flags = flags.append_include(path, slots=(flags_slot,))
+        added = getattr(flags, flags_slot)[len(before_tokens):]
+        if added:
+            setattr(args, raw_attr, getattr(args, raw_attr) + " " + " ".join(added))
 
     if args.verbose >= 6 and len(args.INCLUDE) > 0:
         print("Extra include paths have been appended to the *FLAG variables:")
@@ -780,14 +771,15 @@ def cmdline_d_macro_names(args, flag_sources=None, verbose=0) -> frozenset[sz.St
     return frozenset(sz.Str(name) for name in names)
 
 
-def strip_d_u_tokens(tokens: list[str]) -> list[str]:
+def strip_d_u_tokens(tokens: Sequence[str]) -> list[str]:
     """Strip ``-D`` and ``-U`` entries (in both attached and detached
-    forms) from a pre-tokenized flag list.
+    forms) from a pre-tokenized flag sequence.
 
     This is the strip-only half of :func:`tokenize_compile_flags`,
     extracted so that callers that already hold a pre-tokenized list
-    (e.g. ``magicflags._parse``, ``_pch_command_hash``) don't have to
-    pay the tokenization cost a second time.
+    or tuple (e.g. ``magicflags._parse``, ``_pch_command_hash``,
+    ``Flags.hash_relevant``) don't have to pay the tokenization cost
+    a second time.
 
     Both attached form (``-DFOO``, ``-DFOO=bar``, ``-UFOO``) and
     detached form (``-D FOO``, ``-D FOO=bar``, ``-U FOO``) are
@@ -864,12 +856,13 @@ _HASH_RELEVANT_W_FLAGS: tuple[str, ...] = (
 )
 
 
-def filter_hash_irrelevant_tokens(tokens: list[str]) -> list[str]:
-    """Remove tokens that don't affect compiled output from a flag list.
+def filter_hash_irrelevant_tokens(tokens: Sequence[str]) -> list[str]:
+    """Remove tokens that don't affect compiled output from a flag sequence.
 
     Used by cache-key hashing to elide diagnostic-only flag changes.
-    ``-W*`` warnings are dropped EXCEPT ``-Werror`` (which can change
-    compile outcome). Returns a NEW list; input is not mutated.
+    Accepts either a list or tuple. ``-W*`` warnings are dropped
+    EXCEPT ``-Werror`` and ``-Werror=...`` (which can change compile
+    outcome). Returns a NEW list; input is not mutated.
     """
     out = []
     i = 0
@@ -1848,20 +1841,69 @@ def parseargs(cap, argv, verbose=None, *, context):
     # in this function (substitutions, _add_include_paths_to_flags,
     # project version macros, pkg-config, CPP/CXX unification) and run
     # BEFORE this point.
-    for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS"):
-        if hasattr(args, slot):
-            setattr(args, f"{slot}_tokens", compiletools.utils.split_command_cached(getattr(args, slot)))
-
-    # Construct args.flags as the canonical structured view of compile
-    # flags. Sits alongside args.CPPFLAGS (string) and args.CPPFLAGS_tokens
-    # (list); new code should prefer args.flags. See compiletools.flags.
-    from compiletools.flags import Flags
-
-    args.flags = Flags.from_args(args)
+    _finalize_flag_state(args)
 
     if verbose > 8:
         print("parseargs has completed.  Returning args")
     return args
+
+
+def _finalize_flag_state(args) -> None:
+    """Populate args.{*}_tokens, args.flags, and the drift snapshot.
+
+    Internal post-parseargs plumbing: called once at the end of
+    parseargs. Tests that bypass parseargs (constructing args via
+    cap.parse_args / SimpleNamespace) should go through
+    ``testhelper.finalize_flag_state`` rather than touching this
+    directly. After this returns, all four CPPFLAGS/CFLAGS/CXXFLAGS/
+    LDFLAGS slots exist as raw strings, *_tokens lists, and as
+    args.flags (a Flags dataclass). Any subsequent in-place mutation of
+    the raw strings will be flagged by check_flag_string_drift.
+    """
+    from compiletools.flags import Flags
+
+    for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS"):
+        raw = getattr(args, slot, "") or ""
+        if not hasattr(args, slot):
+            # CAPs without a particular flag argument (e.g. compilation_database
+            # omits LDFLAGS) need the slot materialised so Flags.from_args has
+            # something to read and so check_flag_string_drift can snapshot it.
+            setattr(args, slot, raw)
+        setattr(args, f"{slot}_tokens", compiletools.utils.split_command_cached(raw))
+    args.flags = Flags.from_args(args)
+    args._flag_string_snapshot = tuple(
+        (slot, getattr(args, slot)) for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS")
+    )
+
+
+def check_flag_string_drift(args) -> None:
+    """Verify args.{CPPFLAGS,...} have not been mutated since parseargs end.
+
+    parseargs records a snapshot of the raw flag strings as
+    ``args._flag_string_snapshot`` immediately after populating
+    ``args.{*}_tokens`` and ``args.flags``. If anything later assigns to
+    ``args.CPPFLAGS`` (etc.) the tokens and flags will silently drift
+    out of sync with the raw string. This function compares the current
+    raw strings to the snapshot and raises ``RuntimeError`` if they
+    differ, naming the offending slot.
+
+    Call this from any consumer that wants to assert the invariant
+    holds. Tests in particular should call it before reading
+    ``args.flags`` if they construct ``args`` via a path that may
+    mutate flag strings.
+    """
+    snapshot = getattr(args, "_flag_string_snapshot", None)
+    if snapshot is None:
+        return
+    for slot, expected in snapshot:
+        actual = getattr(args, slot, None)
+        if actual != expected:
+            raise RuntimeError(
+                f"args.{slot} mutated after parseargs end: "
+                f"args.flags and args.{slot}_tokens are now stale. "
+                f"All mutations to compile-flag raw strings must occur "
+                f"BEFORE parseargs returns."
+            )
 
 
 def terminalcolumns():

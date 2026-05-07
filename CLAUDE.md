@@ -86,7 +86,13 @@ PreprocessingCache                    # Two-tier caching
     -> variant cache: content_hash + macro_state_key (files with #if/#ifdef)
 ```
 
-`MacroState` in `preprocessing_cache.py` separates static compiler built-ins (~388 macros, immutable) from dynamic file `#define`s (variable). Cache keys only hash variable macros, giving ~80% reduction in key computation cost. Lazy frozenset computation with incremental updates for pure additions (common case).
+`MacroState` in `preprocessing_cache.py` separates static compiler built-ins (~388 macros, immutable) from dynamic file `#define`s (variable). Cache keys only hash variable macros, giving ~80% reduction in key computation cost. Lazy frozenset computation with incremental updates for pure additions (common case). The build-context portion of the hash also folds in `compiler_identity(args.CXX)` — a `realpath|size|mtime_ns` triple resolved via `apptools.compiler_identity` and exposed on `args.flags.compiler_identity` — so an in-place toolchain swap that leaves `args.CXX` unchanged still invalidates per-TU object cache entries (symmetric with the PCH cache key).
+
+### Compile-Flag State (`args.flags`)
+
+Once `apptools.parseargs` returns, the canonical view of compile flags lives on `args.flags` — a frozen `Flags` dataclass (`flags.py`) with `cpp` / `c` / `cxx` / `ld` slots as `tuple[str, ...]` plus `compiler_identity`. New consumers should read these instead of re-tokenizing `args.CPPFLAGS`. Convenience methods: `hash_relevant(slot)` returns the slot's tokens with `-D`/`-U` and diagnostic-only flags removed (used by cache-key hashing); `existing_include_paths(slot)` and `append_include(path, slots=...)` form the include-path dedup API used by `apptools._add_include_paths_to_flags`. Because `Flags` is frozen and tuple-backed, instances are hashable and consumers cannot mutate the underlying tokens — `append_include` returns a new `Flags` via `dataclasses.replace`.
+
+**Mutation invariant.** `args.{CPPFLAGS,CFLAGS,CXXFLAGS,LDFLAGS}` raw strings, the sibling `args.{*}_tokens` lists, and `args.flags` are populated once at the end of `parseargs` and must not be mutated afterwards — `args.flags` would silently drift from the raw strings. All known mutation sites (`substitutions`, `_add_include_paths_to_flags`, project version macros, pkg-config, CPP/CXX unification) run BEFORE that point. `apptools.check_flag_string_drift(args)` compares the current raw flag strings against the snapshot recorded at parseargs end (`args._flag_string_snapshot`) and raises `RuntimeError` naming the offending slot if anything has changed; call it from any consumer that wants to assert the invariant before reading `args.flags`.
 
 ### Content-Addressable Deduplication
 
@@ -114,6 +120,7 @@ Both invariants must be maintained in every code path that emits compile/link co
 | `cake.py` | Build orchestration (`Cake.process()`) |
 | `configutils.py` | Hierarchical config with variant system |
 | `magicflags.py` | Extract compiler flags from `//#` annotations (factory pattern); handles macro expansion in flag values |
+| `flags.py` | Frozen `Flags` dataclass: structured view of `args.{CPPFLAGS,CFLAGS,CXXFLAGS,LDFLAGS}` as immutable tuples + `compiler_identity`. Centralizes hash-relevance filtering (`hash_relevant`), -I dedup (`existing_include_paths` / `append_include`). Built once per parseargs call as `args.flags`. |
 | `file_analyzer.py` | SIMD-optimized source scanning via StringZilla |
 | `preprocessing_cache.py` | Unified cache with `MacroState` tracking |
 | `simple_preprocessor.py` | C preprocessor for conditional compilation |

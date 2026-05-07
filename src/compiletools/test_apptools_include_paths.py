@@ -1,9 +1,9 @@
 """Tests for apptools include-path dedup helpers.
 
-Covers _existing_include_paths and _add_include_paths_to_flags. These
-support the include-path token-based dedup fix:
+Covers Flags.existing_include_paths (the dedup oracle now used by
+_add_include_paths_to_flags) and _add_include_paths_to_flags itself:
 
-- _existing_include_paths walks tokens and recognizes -I as either
+- Flags.existing_include_paths walks tokens and recognizes -I as either
   attached (-I/path) or detached (-I /path). Other tokens (e.g.,
   -DFOO=/path, -isystem /path, -L/path) are NOT treated as -I paths.
 - _add_include_paths_to_flags appends -I entries from args.INCLUDE
@@ -14,7 +14,18 @@ support the include-path token-based dedup fix:
 
 from types import SimpleNamespace
 
-from compiletools.apptools import _add_include_paths_to_flags, _existing_include_paths
+from compiletools.apptools import _add_include_paths_to_flags
+from compiletools.flags import Flags
+from compiletools.utils import split_command_cached
+
+
+def _existing_include_paths(flags_str: str) -> set[str]:
+    """Test shim: builds a Flags from the raw string and returns its
+    -I dedup set. Mirrors the legacy ``apptools._existing_include_paths``
+    helper that was removed when its production caller migrated to
+    ``Flags.existing_include_paths``.
+    """
+    return Flags(cpp=tuple(split_command_cached(flags_str))).existing_include_paths("cpp")
 
 
 def test_existing_include_paths_attached_form():

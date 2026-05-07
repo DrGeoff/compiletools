@@ -22,6 +22,7 @@ from types import SimpleNamespace
 import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
+import compiletools.testhelper as uth
 from compiletools.build_context import BuildContext
 
 
@@ -61,6 +62,7 @@ def test_hunter_propagates_macros_to_header_dependencies():
         args.CFLAGS = ""
         args.CXXFLAGS = ""
         args.CXX = "g++"
+        uth.finalize_flag_state(args)
 
         # Create components
         ctx = BuildContext()

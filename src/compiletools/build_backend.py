@@ -1047,7 +1047,7 @@ class BuildBackend(abc.ABC):
                     link_cmd.append(f"-l{lib_name}")
                 inputs.append(lib_output)
 
-        if self.args.LDFLAGS:
+        if self.args.flags.ld:
             link_cmd.extend(self.args.flags.ld)
 
         exe_dir = self.namer.executable_dir()

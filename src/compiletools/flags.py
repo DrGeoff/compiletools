@@ -1,6 +1,6 @@
 """Structured representation of compile-flag state.
 
-A Flags instance holds the four flag categories as token lists, plus
+A Flags instance holds the four flag categories as token tuples, plus
 the compiler identity. It centralizes the operations the codebase has
 historically scattered across apptools, build_backend, and magicflags:
 tokenization, -D/-U stripping, hash-relevance filtering, and include-
@@ -9,55 +9,52 @@ path inspection.
 Flags is INSTANTIATED ONCE per build (at parseargs end) and stored on
 args.flags. Existing args.CPPFLAGS / args.CPPFLAGS_tokens etc. are
 kept for backward compat. New code should prefer args.flags.
+
+Flags is frozen and uses tuple slots so it is hashable, equality-safe,
+and immune to in-place mutation by consumers. Mutation-style helpers
+(e.g. append_include) return a NEW Flags via dataclasses.replace.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import compiletools.apptools
 
 
-@dataclass(frozen=False)
+@dataclass(frozen=True)
 class Flags:
-    """Structured compile-flag state.
+    """Structured compile-flag state (immutable).
 
-    Token lists are mutable so include-path injection and pkg-config
-    expansion can extend them in place. After construction, downstream
-    consumers should treat them as read-only -- modifications would
-    invalidate args.CPPFLAGS_tokens etc. that are populated alongside.
+    Token tuples are immutable; mutation-style helpers return a new
+    Flags instance. Equality compares all five fields element-wise and
+    the dataclass is hashable, so Flags can be used as a dict key or
+    set member.
     """
 
-    cpp: list[str] = field(default_factory=list)
-    c: list[str] = field(default_factory=list)
-    cxx: list[str] = field(default_factory=list)
-    ld: list[str] = field(default_factory=list)
+    cpp: tuple[str, ...] = field(default_factory=tuple)
+    c: tuple[str, ...] = field(default_factory=tuple)
+    cxx: tuple[str, ...] = field(default_factory=tuple)
+    ld: tuple[str, ...] = field(default_factory=tuple)
     compiler_identity: str = ""
 
     @classmethod
     def from_args(cls, args) -> Flags:
         """Build a Flags from a parsed args object.
 
-        Reads args.CPPFLAGS_tokens et al. (populated by parseargs).
-        Falls back to splitting args.CPPFLAGS if tokens aren't present
-        (test-fixture compatibility).
+        Requires args.{CPPFLAGS,CFLAGS,CXXFLAGS,LDFLAGS}_tokens to have
+        been populated (parseargs does this; testhelper.create_args
+        mirrors it). Raises AttributeError otherwise -- callers must go
+        through parseargs / create_args, not construct args ad hoc.
         """
-        from compiletools.utils import split_command_cached
-
-        def _slot(name: str) -> list[str]:
-            tokens = getattr(args, f"{name}_tokens", None)
-            if tokens is not None:
-                return list(tokens)
-            raw = getattr(args, name, "")
-            return split_command_cached(raw) if raw else []
-
         cxx_command = getattr(args, "CXX", "") or ""
         return cls(
-            cpp=_slot("CPPFLAGS"),
-            c=_slot("CFLAGS"),
-            cxx=_slot("CXXFLAGS"),
-            ld=_slot("LDFLAGS"),
+            cpp=tuple(args.CPPFLAGS_tokens),
+            c=tuple(args.CFLAGS_tokens),
+            cxx=tuple(args.CXXFLAGS_tokens),
+            ld=tuple(args.LDFLAGS_tokens),
             compiler_identity=compiletools.apptools.compiler_identity(cxx_command),
         )
 
@@ -67,8 +64,7 @@ class Flags:
 
         slot: one of "cpp", "c", "cxx", "ld".
         """
-        tokens = getattr(self, slot)
-        stripped = compiletools.apptools.strip_d_u_tokens(tokens)
+        stripped = compiletools.apptools.strip_d_u_tokens(getattr(self, slot))
         return compiletools.apptools.filter_hash_irrelevant_tokens(stripped)
 
     def existing_include_paths(self, slot: str) -> set[str]:
@@ -77,9 +73,10 @@ class Flags:
         tokens = getattr(self, slot)
         paths: set[str] = set()
         i = 0
-        while i < len(tokens):
+        n = len(tokens)
+        while i < n:
             tok = tokens[i]
-            if tok == "-I" and i + 1 < len(tokens):
+            if tok == "-I" and i + 1 < n:
                 paths.add(tokens[i + 1])
                 i += 2
             elif tok.startswith("-I") and len(tok) > 2:
@@ -89,9 +86,16 @@ class Flags:
                 i += 1
         return paths
 
-    def append_include(self, path: str, slots: Iterable[str] = ("cpp", "c", "cxx")) -> None:
-        """Append `-I path` (detached form) to each named slot, but only
-        if path isn't already present as an -I entry in that slot."""
+    def append_include(self, path: str, slots: Iterable[str] = ("cpp", "c", "cxx")) -> Flags:
+        """Return a new Flags with ``-I path`` (detached form) appended to
+        each named slot, but only for slots where path isn't already
+        present as an -I entry. Slots that already contain the path are
+        left unchanged.
+        """
+        updates: dict[str, tuple[str, ...]] = {}
         for slot in slots:
             if path not in self.existing_include_paths(slot):
-                getattr(self, slot).extend(["-I", path])
+                updates[slot] = getattr(self, slot) + ("-I", path)
+        if not updates:
+            return self
+        return dataclasses.replace(self, **updates)

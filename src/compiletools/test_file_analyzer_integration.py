@@ -46,6 +46,7 @@ class TestHeaderDepsIntegration(tb.BaseCompileToolsTestCase):
         args = cap.parse_args(
             ["--headerdeps=direct", f"--max-file-read-size={max_file_read_size}", f"--include={self.temp_dir}"]
         )
+        uth.finalize_flag_state(args)
 
         ctx = BuildContext()
         return compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
@@ -172,6 +173,7 @@ class TestMagicFlagsIntegration(tb.BaseCompileToolsTestCase):
                 f"--include={self.temp_dir}",
             ]
         )
+        uth.finalize_flag_state(args)
 
         # Create instances using the shared args
         ctx = BuildContext()

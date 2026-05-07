@@ -165,30 +165,17 @@ class MagicFlagsBase:
             verbose=self._args.verbose,
         )
 
-        # Structured tokenization of compile flags with -D/-U stripped.
-        # Hashing tokens (instead of the raw strings) lets the scope filter
-        # actually take effect: the cmdline -D macros are hashed via core,
-        # and stripping them from the token list keeps them from leaking
-        # back into the build-context portion of the hash.
-        #
-        # Reuses args.flags populated once at parseargs end (TOKEN-5);
-        # falls back to a fresh tokenize for the rare cases where args
-        # was constructed without going through parseargs (a handful of
-        # tests).
-        if hasattr(self._args, "flags"):
-            cppflags_tokens = compiletools.apptools.strip_d_u_tokens(self._args.flags.cpp)
-            cflags_tokens = compiletools.apptools.strip_d_u_tokens(self._args.flags.c)
-            cxxflags_tokens = compiletools.apptools.strip_d_u_tokens(self._args.flags.cxx)
-        else:
-            cppflags_tokens, cflags_tokens, cxxflags_tokens = compiletools.apptools.tokenize_compile_flags(
-                self._args.CPPFLAGS, self._args.CFLAGS, self._args.CXXFLAGS
-            )
-
-        # ``compiler_identity`` folds the binary's realpath/size/mtime_ns into
-        # the build-context hash (symmetric with the PCH cache key). Catches
-        # in-place toolchain swaps that don't change ``args.CXX`` (still
-        # ``g++``) but do produce a different compiler binary.
-        compiler_identity = compiletools.apptools.compiler_identity(self._args.CXX)
+        # Hashing tokens (instead of raw strings) lets the scope filter
+        # actually take effect: cmdline -D macros are hashed via core, and
+        # stripping them from the token list keeps them from leaking back
+        # into the build-context portion of the hash. ``compiler_identity``
+        # folds the binary's realpath/size/mtime_ns into the same hash
+        # (symmetric with the PCH cache key) so an in-place toolchain swap
+        # that leaves args.CXX unchanged still invalidates the cache.
+        cppflags_tokens = compiletools.apptools.strip_d_u_tokens(self._args.flags.cpp)
+        cflags_tokens = compiletools.apptools.strip_d_u_tokens(self._args.flags.c)
+        cxxflags_tokens = compiletools.apptools.strip_d_u_tokens(self._args.flags.cxx)
+        compiler_identity = self._args.flags.compiler_identity
 
         # Create MacroState with core macros, empty variable macros
         return MacroState(
@@ -565,17 +552,12 @@ class MagicFlagsBase:
         magic_c_tokens = [str(f) for f in flagsforfilename.get(sz.Str("CFLAGS"), [])]
         magic_cxx_tokens = [str(f) for f in flagsforfilename.get(sz.Str("CXXFLAGS"), [])]
 
-        # Use args.flags when populated by parseargs (TOKEN-5). Falls
-        # back to a fresh tokenize for the rare paths where the args
-        # object is constructed without parseargs (test fixtures).
-        if hasattr(self._args, "flags"):
-            args_cpp_tokens = list(self._args.flags.cpp)
-            args_c_tokens = list(self._args.flags.c)
-            args_cxx_tokens = list(self._args.flags.cxx)
-        else:
-            args_cpp_tokens = compiletools.utils.split_command_cached(self._args.CPPFLAGS)
-            args_c_tokens = compiletools.utils.split_command_cached(self._args.CFLAGS)
-            args_cxx_tokens = compiletools.utils.split_command_cached(self._args.CXXFLAGS)
+        # args.flags is the canonical source (populated by parseargs /
+        # testhelper.finalize_flag_state). list(...) wraps the tuples so
+        # the +-with-magic-tokens concat below stays a list operation.
+        args_cpp_tokens = list(self._args.flags.cpp)
+        args_c_tokens = list(self._args.flags.c)
+        args_cxx_tokens = list(self._args.flags.cxx)
 
         # Strip -D/-U so per-file magic `-D`s don't smuggle themselves into
         # the build-context portion of the hash. Magic-flag macros are

@@ -95,6 +95,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                         self.CXX = compiletools.apptools.get_functional_cxx_compiler() or "g++"
 
                 args = MockArgs()
+                uth.finalize_flag_state(args)
 
                 # Create magicflags parser
                 ctx = BuildContext()
@@ -163,6 +164,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                     self.CXX = compiletools.apptools.get_functional_cxx_compiler() or "g++"
 
             args = MockArgs()
+            uth.finalize_flag_state(args)
 
             # Create magicflags parser
             ctx = BuildContext()
