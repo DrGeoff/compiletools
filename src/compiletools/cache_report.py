@@ -491,7 +491,7 @@ def _render_pch_text(rep: PchReport, top_n: int) -> str:
 def _cas_objdir_json_payload(rep: CacheReport, top_n: int) -> dict:
     top = top_basenames_by_waste(rep, n=top_n)
     return {
-        "objdir": rep.objdir,
+        "cas_objdir": rep.objdir,
         "total_entries": rep.total_entries,
         "total_bytes": rep.total_bytes,
         "unique_src_deps_count": rep.unique_src_deps_count,
@@ -511,7 +511,7 @@ def _cas_objdir_json_payload(rep: CacheReport, top_n: int) -> dict:
 def _pch_json_payload(rep: PchReport, top_n: int) -> dict:
     top = top_pch_headers_by_waste(rep, n=top_n)
     return {
-        "pchdir": rep.pchdir,
+        "cas_pchdir": rep.pchdir,
         "total_entries": rep.total_entries,
         "total_bytes": rep.total_bytes,
         "unique_headers_count": rep.unique_headers_count,

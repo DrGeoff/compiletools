@@ -113,6 +113,8 @@ Both invariants must be maintained in every code path that emits compile/link co
 
 `compiletools` supports content-addressable PCH caching via `--cas-pchdir`. Headers marked with the `//#PCH=` magic flag are compiled into `.gch` files and cached in `{git_root}/cas-pchdir/{variant}` (or custom path via `--cas-pchdir`). The cache key includes compiler, flags, and header path, preventing collisions across builds. PCH files are atomically created and cross-user safe. Enable `--cas-pchdir` in `ct.conf.d/ct.conf` for automatic per-variant caching, or pass `--cas-pchdir=<path>` at the CLI. Each cache entry writes a sidecar `manifest.json` (header realpath + transitive-header content hashes); `ct-trim-cache --cas-pchdir-only` reads those manifests to bucket entries by real header (so cross-variant builds don't evict each other) and to pre-evict entries whose transitive headers have changed (avoiding the slow `cc1` PCH-stamp rejection at consume time). Falls back to legacy `.gch` placement in the object directory if `--cas-pchdir` is unset.
 
+**Naming history.** Prior to this rename, the object CAS was called `shared-objdir/` (default `{git_root}/shared-objdir/{variant}/`) and the PCH CAS was `shared-pchdir/`, with CLI flags `--objdir` / `--pchdir`. The "shared object" overload conflicted with Linux `.so`. There is no backward-compat alias: existing `ct.conf` files setting `objdir` / `pchdir` must rename those keys to `cas-objdir` / `cas-pchdir`, and on-disk `shared-objdir/` directories from earlier builds are no longer consulted (safe to delete).
+
 ### Key Modules
 
 | Module | Role |

@@ -214,7 +214,7 @@ def test_cli_json_output_round_trips(tmp_path, capsys):
     assert rc == 0
 
     data = json.loads(out)
-    assert data["objdir"] == str(tmp_path)
+    assert data["cas_objdir"] == str(tmp_path)
     assert data["total_entries"] == 3
     assert data["total_bytes"] == 400
     assert data["unique_src_deps_count"] == 2
