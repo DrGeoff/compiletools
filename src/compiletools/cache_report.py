@@ -561,13 +561,6 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "objdir_positional",
-        nargs="?",
-        default=None,
-        metavar="OBJDIR",
-        help=("Backward-compat positional arg for --objdir. Treated as --objdir if --objdir is not also given."),
-    )
-    parser.add_argument(
         "--cas-objdir",
         default=None,
         help="Path to the shared-objdir to scan. Optional.",
@@ -595,20 +588,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    # Resolve objdir: --objdir overrides positional; if positional is given
-    # and --objdir is not, treat positional as objdir.
-    objdir = args.cas_objdir if args.cas_objdir is not None else args.objdir_positional
+    objdir = args.cas_objdir
     pchdir = args.cas_pchdir
 
     if objdir is None and pchdir is None:
-        parser.error("at least one of OBJDIR (positional), --objdir, or --pchdir is required")
+        parser.error("at least one of --cas-objdir or --cas-pchdir is required")
 
     obj_rep = report(objdir) if objdir is not None else None
     pch_rep_obj = pch_report(pchdir) if pchdir is not None else None
 
-    # Backward-compat JSON: if the user passed only an objdir (legacy mode),
-    # emit the flat objdir schema. As soon as --pchdir is in play we switch
-    # to the combined schema with both keys.
+    # JSON schema selection: if the user passed only --cas-objdir, emit the
+    # flat objdir schema. As soon as --cas-pchdir is in play we switch to
+    # the combined schema with both keys.
     if args.json:
         if pchdir is None and obj_rep is not None:
             sys.stdout.write(_render_cas_objdir_only_json(obj_rep, args.top))

@@ -196,7 +196,7 @@ def test_format_bytes_units():
 
 
 def test_cli_text_output_minimal(tmp_path, capsys):
-    rc = cache_report.main([str(tmp_path)])
+    rc = cache_report.main([f"--cas-objdir={tmp_path}"])
     out = capsys.readouterr().out
     assert rc == 0
     assert "Object cache report for" in out
@@ -209,7 +209,7 @@ def test_cli_json_output_round_trips(tmp_path, capsys):
     _make_obj(tmp_path, "aaaaaaaaaaaa", "11111111111111", "0000000000000002", basename="A", size=100)
     _make_obj(tmp_path, "bbbbbbbbbbbb", "22222222222222", "0000000000000003", basename="B", size=200)
 
-    rc = cache_report.main([str(tmp_path), "--json"])
+    rc = cache_report.main([f"--cas-objdir={tmp_path}", "--json"])
     out = capsys.readouterr().out
     assert rc == 0
 

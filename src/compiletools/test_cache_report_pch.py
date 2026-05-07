@@ -193,14 +193,6 @@ def test_cli_both_flags(tmp_path, capsys):
     assert "PCH cache report for" in out
 
 
-def test_cli_positional_arg_treats_as_objdir(tmp_path, capsys):
-    rc = cache_report.main([str(tmp_path)])
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert "Object cache report for" in out
-    assert "PCH cache report for" not in out
-
-
 def test_cli_no_args_errors(capsys):
     with pytest.raises(SystemExit) as excinfo:
         cache_report.main([])
