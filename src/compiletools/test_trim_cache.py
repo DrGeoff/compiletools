@@ -487,7 +487,7 @@ class TestMainCLI:
     def test_mutual_exclusion_error(self):
         from compiletools.trim_cache_main import main
 
-        rc = main(["--objdir-only", "--pchdir-only"])
+        rc = main(["--cas-objdir-only", "--cas-pchdir-only"])
         assert rc == 1
 
     def test_dry_run_with_nonexistent_dirs(self):
@@ -496,20 +496,20 @@ class TestMainCLI:
         rc = main(["--dry-run", "--cas-objdir=/nonexistent/obj", "--cas-pchdir=/nonexistent/pch"])
         assert rc == 0
 
-    def test_objdir_only_flag(self, tmp_path):
+    def test_cas_objdir_only_flag(self, tmp_path):
         from compiletools.trim_cache_main import main
 
         objdir = str(tmp_path / "obj")
         os.makedirs(objdir)
-        rc = main(["--dry-run", "--objdir-only", f"--cas-objdir={objdir}"])
+        rc = main(["--dry-run", "--cas-objdir-only", f"--cas-objdir={objdir}"])
         assert rc == 0
 
-    def test_pchdir_only_flag(self, tmp_path):
+    def test_cas_pchdir_only_flag(self, tmp_path):
         from compiletools.trim_cache_main import main
 
         pchdir = str(tmp_path / "pch")
         os.makedirs(pchdir)
-        rc = main(["--dry-run", "--pchdir-only", f"--cas-pchdir={pchdir}"])
+        rc = main(["--dry-run", "--cas-pchdir-only", f"--cas-pchdir={pchdir}"])
         assert rc == 0
 
 

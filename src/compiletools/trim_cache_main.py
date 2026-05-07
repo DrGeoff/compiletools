@@ -49,16 +49,16 @@ def add_arguments(cap):
         help="Keep at least this many non-current files per basename/header (default: 1)",
     )
     cap.add(
-        "--objdir-only",
+        "--cas-objdir-only",
         action="store_true",
         default=False,
-        help="Only trim the shared object directory, skip PCH",
+        help="Only trim the object CAS, skip PCH",
     )
     cap.add(
-        "--pchdir-only",
+        "--cas-pchdir-only",
         action="store_true",
         default=False,
-        help="Only trim the shared PCH directory, skip objects",
+        help="Only trim the PCH CAS, skip objects",
     )
 
 
@@ -80,8 +80,8 @@ def main(argv=None):
         args = cap.parse_args(args=argv)
         args.verbose -= args.quiet
 
-        if args.objdir_only and args.pchdir_only:
-            print("Error: --objdir-only and --pchdir-only are mutually exclusive", file=sys.stderr)
+        if args.cas_objdir_only and args.cas_pchdir_only:
+            print("Error: --cas-objdir-only and --cas-pchdir-only are mutually exclusive", file=sys.stderr)
             return 1
 
         trimmer = compiletools.trim_cache.CacheTrimmer(args)
@@ -89,7 +89,7 @@ def main(argv=None):
         objdir_stats = None
         pchdir_stats = None
 
-        if not args.pchdir_only:
+        if not args.cas_pchdir_only:
             # Load git hashes for current-file detection
             from compiletools.build_context import BuildContext
             from compiletools.global_hash_registry import load_hashes
@@ -103,7 +103,7 @@ def main(argv=None):
                 print(f"Trimming object directory: {args.cas_objdir}")
             objdir_stats = trimmer.trim_objdir(args.cas_objdir, current_hashes)
 
-        if not args.objdir_only:
+        if not args.cas_objdir_only:
             if args.verbose >= 1:
                 print(f"Trimming PCH directory: {args.cas_pchdir}")
             pchdir_stats = trimmer.trim_pchdir(args.cas_pchdir)

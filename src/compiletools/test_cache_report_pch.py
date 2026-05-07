@@ -166,7 +166,7 @@ def test_pch_report_with_duplication_computes_waste(tmp_path):
 
 
 def test_cli_pchdir_only(tmp_path, capsys):
-    rc = cache_report.main([f"--pchdir={tmp_path}"])
+    rc = cache_report.main([f"--cas-pchdir={tmp_path}"])
     out = capsys.readouterr().out
     assert rc == 0
     assert "PCH cache report for" in out
@@ -174,7 +174,7 @@ def test_cli_pchdir_only(tmp_path, capsys):
 
 
 def test_cli_objdir_only(tmp_path, capsys):
-    rc = cache_report.main([f"--objdir={tmp_path}"])
+    rc = cache_report.main([f"--cas-objdir={tmp_path}"])
     out = capsys.readouterr().out
     assert rc == 0
     assert "Object cache report for" in out
@@ -186,7 +186,7 @@ def test_cli_both_flags(tmp_path, capsys):
     pchdir = tmp_path / "pch"
     objdir.mkdir()
     pchdir.mkdir()
-    rc = cache_report.main([f"--objdir={objdir}", f"--pchdir={pchdir}"])
+    rc = cache_report.main([f"--cas-objdir={objdir}", f"--cas-pchdir={pchdir}"])
     out = capsys.readouterr().out
     assert rc == 0
     assert "Object cache report for" in out
@@ -212,7 +212,7 @@ def test_cli_json_includes_both_reports(tmp_path, capsys):
     pchdir = tmp_path / "pch"
     objdir.mkdir()
     pchdir.mkdir()
-    rc = cache_report.main([f"--objdir={objdir}", f"--pchdir={pchdir}", "--json"])
+    rc = cache_report.main([f"--cas-objdir={objdir}", f"--cas-pchdir={pchdir}", "--json"])
     out = capsys.readouterr().out
     assert rc == 0
     data = json.loads(out)

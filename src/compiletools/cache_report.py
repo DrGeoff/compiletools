@@ -414,7 +414,7 @@ def _format_bytes(n: int) -> str:
     return f"{n / (1024 * 1024 * 1024):.2f} GB"
 
 
-def _render_objdir_text(rep: CacheReport, top_n: int) -> str:
+def _render_cas_objdir_text(rep: CacheReport, top_n: int) -> str:
     lines: list[str] = []
     header = f"Object cache report for {rep.objdir}"
     lines.append(header)
@@ -488,7 +488,7 @@ def _render_pch_text(rep: PchReport, top_n: int) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _objdir_json_payload(rep: CacheReport, top_n: int) -> dict:
+def _cas_objdir_json_payload(rep: CacheReport, top_n: int) -> dict:
     top = top_basenames_by_waste(rep, n=top_n)
     return {
         "objdir": rep.objdir,
@@ -528,9 +528,9 @@ def _pch_json_payload(rep: PchReport, top_n: int) -> dict:
     }
 
 
-def _render_objdir_only_json(rep: CacheReport, top_n: int) -> str:
+def _render_cas_objdir_only_json(rep: CacheReport, top_n: int) -> str:
     """Backward-compatible single-objdir JSON output (flat schema)."""
-    return json.dumps(_objdir_json_payload(rep, top_n), indent=2) + "\n"
+    return json.dumps(_cas_objdir_json_payload(rep, top_n), indent=2) + "\n"
 
 
 def _render_combined_json(
@@ -539,7 +539,7 @@ def _render_combined_json(
     top_n: int,
 ) -> str:
     payload = {
-        "objdir_report": _objdir_json_payload(obj_rep, top_n) if obj_rep is not None else None,
+        "objdir_report": _cas_objdir_json_payload(obj_rep, top_n) if obj_rep is not None else None,
         "pch_report": _pch_json_payload(pch_rep_obj, top_n) if pch_rep_obj is not None else None,
     }
     return json.dumps(payload, indent=2) + "\n"
@@ -568,12 +568,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help=("Backward-compat positional arg for --objdir. Treated as --objdir if --objdir is not also given."),
     )
     parser.add_argument(
-        "--objdir",
+        "--cas-objdir",
         default=None,
         help="Path to the shared-objdir to scan. Optional.",
     )
     parser.add_argument(
-        "--pchdir",
+        "--cas-pchdir",
         default=None,
         help="Path to the shared-pchdir to scan. Optional.",
     )
@@ -597,8 +597,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # Resolve objdir: --objdir overrides positional; if positional is given
     # and --objdir is not, treat positional as objdir.
-    objdir = args.objdir if args.objdir is not None else args.objdir_positional
-    pchdir = args.pchdir
+    objdir = args.cas_objdir if args.cas_objdir is not None else args.objdir_positional
+    pchdir = args.cas_pchdir
 
     if objdir is None and pchdir is None:
         parser.error("at least one of OBJDIR (positional), --objdir, or --pchdir is required")
@@ -611,13 +611,13 @@ def main(argv: list[str] | None = None) -> int:
     # to the combined schema with both keys.
     if args.json:
         if pchdir is None and obj_rep is not None:
-            sys.stdout.write(_render_objdir_only_json(obj_rep, args.top))
+            sys.stdout.write(_render_cas_objdir_only_json(obj_rep, args.top))
         else:
             sys.stdout.write(_render_combined_json(obj_rep, pch_rep_obj, args.top))
     else:
         chunks: list[str] = []
         if obj_rep is not None:
-            chunks.append(_render_objdir_text(obj_rep, args.top))
+            chunks.append(_render_cas_objdir_text(obj_rep, args.top))
         if pch_rep_obj is not None:
             chunks.append(_render_pch_text(pch_rep_obj, args.top))
         sys.stdout.write("\n".join(chunks))
