@@ -235,3 +235,66 @@ class TestPchScopeMacroHashEdgeCases:
                 "no_ref.cpp does not reference APP_NAME, so the scope "
                 "filter should be empty and yield the all-zeros sentinel"
             )
+
+
+# --- TOKEN-3: diagnostic-only flag tokens are excluded from PCH cache key ---
+
+
+class _StubArgs:
+    """Stand-in for ``args`` that ``_pch_command_hash`` only reads
+    ``CXX`` from. Avoids spinning up a Hunter for these focused unit
+    tests."""
+
+    def __init__(self, cxx="g++"):
+        self.CXX = cxx
+
+
+def test_pch_cache_key_unchanged_with_w_warning_change():
+    """Two ``_pch_command_hash`` invocations differing only in
+    ``-Wall`` vs ``-Wextra`` inside ``cxxflags_tokens`` must produce
+    the SAME PCH cache key."""
+    from compiletools.build_backend import _pch_command_hash
+
+    args = _StubArgs()
+    h_wall = _pch_command_hash(
+        args,
+        pch_header="/tmp/header.hpp",
+        magic_cpp_flags=[],
+        magic_cxx_flags=[],
+        cxxflags_tokens=["-O2", "-Wall"],
+        scope_macro_hash="0" * 16,
+    )
+    h_wextra = _pch_command_hash(
+        args,
+        pch_header="/tmp/header.hpp",
+        magic_cpp_flags=[],
+        magic_cxx_flags=[],
+        cxxflags_tokens=["-O2", "-Wextra"],
+        scope_macro_hash="0" * 16,
+    )
+    assert h_wall == h_wextra
+
+
+def test_pch_cache_key_unchanged_with_w_warning_in_magic_cxx_flags():
+    """Magic-flag warnings (``//#CXXFLAGS=-Wall``) must also be
+    filtered from the PCH cache key."""
+    from compiletools.build_backend import _pch_command_hash
+
+    args = _StubArgs()
+    h_wall = _pch_command_hash(
+        args,
+        pch_header="/tmp/header.hpp",
+        magic_cpp_flags=[],
+        magic_cxx_flags=["-Wall"],
+        cxxflags_tokens=["-O2"],
+        scope_macro_hash="0" * 16,
+    )
+    h_wextra = _pch_command_hash(
+        args,
+        pch_header="/tmp/header.hpp",
+        magic_cpp_flags=[],
+        magic_cxx_flags=["-Wextra"],
+        cxxflags_tokens=["-O2"],
+        scope_macro_hash="0" * 16,
+    )
+    assert h_wall == h_wextra

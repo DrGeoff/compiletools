@@ -347,3 +347,31 @@ def test_filter_only_includes_names_in_intersection():
 
     assert h_base != h_change_a  # A is in filter -> hashed
     assert h_base == h_change_b  # B is not in filter -> excluded
+
+
+# --- TOKEN-3: diagnostic-only flag tokens are excluded from build-context hash ---
+
+
+def test_macro_state_hash_unchanged_with_w_warning_change():
+    """Flipping ``-Wall`` <-> ``-Wextra`` in cxxflags_tokens must NOT
+    change the MacroState build-context hash (warnings are diagnostic
+    only and don't affect the compiled object bytes)."""
+    s_wall = _make_state(cxxflags_tokens=["-O2", "-Wall"])
+    s_wextra = _make_state(cxxflags_tokens=["-O2", "-Wextra"])
+    assert s_wall.get_hash(include_core=True) == s_wextra.get_hash(include_core=True)
+
+
+def test_macro_state_hash_changes_with_werror_change():
+    """``-Werror`` is the documented exception: it can change build
+    outcome (warning vs error) and so it must remain hash-relevant."""
+    s_with = _make_state(cxxflags_tokens=["-O2", "-Werror"])
+    s_without = _make_state(cxxflags_tokens=["-O2"])
+    assert s_with.get_hash(include_core=True) != s_without.get_hash(include_core=True)
+
+
+def test_macro_state_hash_unchanged_with_pipe_added():
+    """``-pipe`` is purely a driver-side I/O strategy and never affects
+    the compiled bytes; adding it must not change the hash."""
+    s_no_pipe = _make_state(cxxflags_tokens=["-O2"])
+    s_pipe = _make_state(cxxflags_tokens=["-O2", "-pipe"])
+    assert s_no_pipe.get_hash(include_core=True) == s_pipe.get_hash(include_core=True)

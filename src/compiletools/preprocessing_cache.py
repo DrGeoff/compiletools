@@ -390,16 +390,24 @@ class MacroState:
         # instead of the raw flag strings (the tokens have -D/-U stripped, so
         # they don't smuggle filtered cmdline macros back into the hash).
         # Labeled composite avoids XOR cancellation when fields collide.
+        # Diagnostic-only flags (-Wall, -fdiagnostics-color, -pipe, -v...)
+        # are filtered out of the token lists before hashing so warning-level
+        # changes don't invalidate the cache. The stored ``*_tokens`` fields
+        # themselves stay unfiltered -- only the hash sees the filtered view.
+        # Deferred import: apptools transitively pulls in many modules and
+        # preprocessing_cache is imported very early at startup.
+        from compiletools.apptools import filter_hash_irrelevant_tokens
+
         if self.cppflags_tokens is not None:
-            cppflags_part = "CPPFLAGS_TOKENS=" + "\x00".join(self.cppflags_tokens)
+            cppflags_part = "CPPFLAGS_TOKENS=" + "\x00".join(filter_hash_irrelevant_tokens(self.cppflags_tokens))
         else:
             cppflags_part = f"CPPFLAGS={self.cppflags}"
         if self.cflags_tokens is not None:
-            cflags_part = "CFLAGS_TOKENS=" + "\x00".join(self.cflags_tokens)
+            cflags_part = "CFLAGS_TOKENS=" + "\x00".join(filter_hash_irrelevant_tokens(self.cflags_tokens))
         else:
             cflags_part = f"CFLAGS={self.cflags}"
         if self.cxxflags_tokens is not None:
-            cxxflags_part = "CXXFLAGS_TOKENS=" + "\x00".join(self.cxxflags_tokens)
+            cxxflags_part = "CXXFLAGS_TOKENS=" + "\x00".join(filter_hash_irrelevant_tokens(self.cxxflags_tokens))
         else:
             cxxflags_part = f"CXXFLAGS={self.cxxflags}"
 

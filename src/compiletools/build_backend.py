@@ -1244,14 +1244,18 @@ def _pch_command_hash(
     # reads those hashes and pre-evicts entries whose transitive headers
     # have changed, so the slow ``cc1`` PCH-stamp rebuild is avoided in
     # the cross-user-mixed-content case.
+    # Diagnostic-only flags (warnings, message formatting, -pipe, -v...)
+    # never affect the compiled .gch bytes. Filter them out of every
+    # flag-token list so flipping -Wall <-> -Wextra (or annotating a
+    # header with //#CXXFLAGS=-Wall) doesn't pollute the PCH cache key.
     canonical = {
         "compiler_identity": _compiler_identity(args.CXX),
         "cxx_command": args.CXX,
         # Structured tokens with -D/-U stripped; cmdline -D macros are
         # captured by ``scope_macro_hash`` after per-PCH-header scoping.
-        "CXXFLAGS_TOKENS": list(cxxflags_tokens),
-        "magic_cpp_flags": [str(f) for f in magic_cpp_flags],
-        "magic_cxx_flags": [str(f) for f in magic_cxx_flags],
+        "CXXFLAGS_TOKENS": compiletools.apptools.filter_hash_irrelevant_tokens(list(cxxflags_tokens)),
+        "magic_cpp_flags": compiletools.apptools.filter_hash_irrelevant_tokens([str(f) for f in magic_cpp_flags]),
+        "magic_cxx_flags": compiletools.apptools.filter_hash_irrelevant_tokens([str(f) for f in magic_cxx_flags]),
         "header": compiletools.wrappedos.realpath(pch_header),
         "stage": "c++-header",
         "scope_macro_hash": scope_macro_hash,
