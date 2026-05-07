@@ -1182,30 +1182,11 @@ def _warn_if_pchdir_not_cross_user_safe(pchdir: str, verbose: int) -> None:
         )
 
 
-@functools.lru_cache(maxsize=64)
-def _compiler_identity(cxx: str) -> str:
-    """Return a stable identity string for a compiler binary.
-
-    Used as part of the PCH cache key: two users on the same shared
-    filesystem with different ``$PATH``s could otherwise collide on the
-    same key while resolving ``args.CXX`` (e.g. bare ``g++``) to different
-    binaries (different versions, different stdlibs). GCC's PCH stamp
-    catches this at *consume* time — but the slow fallback compile
-    defeats the cache. By including binary realpath + (st_size, st_mtime),
-    we make distinct compilers produce distinct cache entries.
-
-    Falls back to the original string when the binary cannot be stat'd
-    (e.g. user passed a non-path command like ``ccache g++``).
-    """
-    resolved = shutil.which(cxx) or cxx
-    try:
-        st = os.stat(resolved)
-        # Use nanosecond mtime so a sub-second compiler swap (e.g.
-        # ``cp new-g++ /usr/local/bin/g++`` followed immediately by a
-        # build) does not collide on the cache key.
-        return f"{compiletools.wrappedos.realpath(resolved)}|{st.st_size}|{st.st_mtime_ns}"
-    except OSError:
-        return resolved
+# Backward-compat alias: ``compiler_identity`` was promoted to
+# ``compiletools.apptools`` so it can be shared with ``preprocessing_cache``
+# (per-TU object cache key). Keep the original name available so the PCH
+# call sites below remain unchanged.
+_compiler_identity = compiletools.apptools.compiler_identity
 
 
 def _pch_command_hash(

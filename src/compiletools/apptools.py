@@ -4,6 +4,7 @@ import importlib.util
 import logging
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -935,10 +936,42 @@ def tokenize_compile_flags(
     return (cpp, c, cxx)
 
 
+@functools.lru_cache(maxsize=64)
+def compiler_identity(cxx: str) -> str:
+    """Return a stable identity string for a compiler binary.
+
+    Used as part of cache keys (PCH cache key in ``build_backend`` and the
+    per-TU object cache key via ``MacroState.compiler_identity``). Two users
+    on the same shared filesystem with different ``$PATH``s could otherwise
+    collide on the same key while resolving ``args.CXX`` (e.g. bare ``g++``)
+    to different binaries (different versions, different stdlibs). GCC's PCH
+    stamp catches this at *consume* time -- but the slow fallback compile
+    defeats the cache. By including binary realpath + (st_size, st_mtime),
+    we make distinct compilers produce distinct cache entries.
+
+    Falls back to the original string when the binary cannot be stat'd
+    (e.g. user passed a non-path command like ``ccache g++``). Returns
+    ``""`` when ``cxx`` is None / empty so unconfigured ``args.CXX``
+    (some unit-test fixtures) doesn't crash the helper.
+    """
+    if not cxx:
+        return ""
+    resolved = shutil.which(cxx) or cxx
+    try:
+        st = os.stat(resolved)
+        # Use nanosecond mtime so a sub-second compiler swap (e.g.
+        # ``cp new-g++ /usr/local/bin/g++`` followed immediately by a
+        # build) does not collide on the cache key.
+        return f"{compiletools.wrappedos.realpath(resolved)}|{st.st_size}|{st.st_mtime_ns}"
+    except OSError:
+        return resolved
+
+
 def clear_cache():
     """Clear any caches for macro extraction and pkg-config."""
     cached_pkg_config.cache_clear()
     _get_functional_cxx_compiler_cached.cache_clear()
+    compiler_identity.cache_clear()
 
 
 @functools.lru_cache(maxsize=8)
