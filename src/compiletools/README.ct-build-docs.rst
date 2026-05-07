@@ -8,7 +8,7 @@ Build the compiletools documentation site locally.
 
 :Author: drgeoffathome@gmail.com
 :Date:   2026-05-04
-:Version: 8.3.2
+:Version: 9.0.0
 :Manual section: 1
 :Manual group: developers
 

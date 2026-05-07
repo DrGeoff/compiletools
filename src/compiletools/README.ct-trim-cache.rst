@@ -8,7 +8,7 @@ Trim stale entries from the object CAS and PCH CAS
 
 :Author: drgeoffathome@gmail.com
 :Date:   2026-04-21
-:Version: 8.3.2
+:Version: 9.0.0
 :Manual section: 1
 :Manual group: developers
 
