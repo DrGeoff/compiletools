@@ -181,7 +181,7 @@ Base configuration (ct.conf):
     testmarkers = unit_test.hpp
     max_file_read_size = 0                            # 0 = read entire file
     # file-locking = true                              # Enable file locking
-    # objdir = /path/to/cache                         # Object file cache location
+    # cas-objdir = /path/to/cache                         # Object file cache location
 
 Variant configuration (e.g., gcc.debug.conf):
 

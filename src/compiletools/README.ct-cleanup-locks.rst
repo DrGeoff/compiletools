@@ -14,7 +14,7 @@ Clean up stale lock directories from file locking
 
 SYNOPSIS
 ========
-ct-cleanup-locks [--dry-run] [--objdir PATH] [--min-lock-age SECONDS] [-v] [-vv]
+ct-cleanup-locks [--dry-run] [--cas-objdir PATH] [--min-lock-age SECONDS] [-v] [-vv]
 
 DESCRIPTION
 ===========
@@ -44,7 +44,7 @@ USAGE
     ct-cleanup-locks
 
     # Custom object directory
-    ct-cleanup-locks --objdir=/shared/build/cache
+    ct-cleanup-locks --cas-objdir=/shared/build/cache
 
     # Increase verbosity
     ct-cleanup-locks -vv
@@ -65,7 +65,7 @@ Cleanup Options
 ``--dry-run``
     Show what would be removed without actually removing locks
 
-``--objdir PATH``
+``--cas-objdir PATH``
     Override object directory from configuration (default: bin/<variant>/obj)
 
 ``--bindir PATH``
@@ -171,7 +171,7 @@ EXAMPLES
 
 **Cleanup specific directory**::
 
-    ct-cleanup-locks --objdir=/mnt/shared/build/.objects
+    ct-cleanup-locks --cas-objdir=/mnt/shared/build/.objects
 
 LOCK FORMAT
 ===========

@@ -176,7 +176,7 @@ class Cake:
             "--real-clean",
             action="store_true",
             default=False,
-            help="Remove bin/ and selectively clean this build's objects from the shared objdir.",
+            help="Remove bin/ and selectively clean this build's objects from the object CAS.",
         )
 
         cap.add(

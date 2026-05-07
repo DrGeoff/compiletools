@@ -272,7 +272,7 @@ For team environments with shared build directories:
 
 2. Configure compiletools::
 
-    ct-cake --file-locking --objdir=/shared/build/cache
+    ct-cake --file-locking --cas-objdir=/shared/build/cache
 
 **Lock permissions:**
 
@@ -284,8 +284,8 @@ For team environments with shared build directories:
 
 Run periodic cleanup of stale locks::
 
-    ct-cleanup-locks --objdir=/shared/build/cache --dry-run
-    ct-cleanup-locks --objdir=/shared/build/cache
+    ct-cleanup-locks --cas-objdir=/shared/build/cache --dry-run
+    ct-cleanup-locks --cas-objdir=/shared/build/cache
 
 See Also
 --------

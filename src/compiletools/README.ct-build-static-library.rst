@@ -42,7 +42,7 @@ OPTIONS
 
 Remaining options
     Every subsequent flag is forwarded to ``ct-create-makefile``. Commonly used
-    options include ``--variant``, ``--objdir``, ``--bindir``, ``--magic``, and
+    options include ``--variant``, ``--cas-objdir``, ``--bindir``, ``--magic``, and
     the various ``--append-*FLAGS`` switches. See ``ct-create-makefile`` (1) for
     the full option list.
 
@@ -64,7 +64,7 @@ Build ``libmath.a`` from ``library/math.cpp`` using the release variant::
 
 Place intermediate files under ``out/`` while appending custom flags::
 
-    ct-build-static-library src/core.cpp --objdir=out/obj --bindir=out/lib \
+    ct-build-static-library src/core.cpp --cas-objdir=out/obj --bindir=out/lib \
         --append-CXXFLAGS="-fvisibility=hidden"
 
 SEE ALSO

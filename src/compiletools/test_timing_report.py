@@ -27,7 +27,7 @@ class TestFindTimingFile:
         assert _find_timing_file(None) is None
 
     def test_auto_detect_objdir(self, tmp_path, monkeypatch):
-        """Fix 6: users with ``--cas-objdir=shared-objdir/...`` previously got
+        """Fix 6: users with ``--cas-objdir=cas-objdir/...`` previously got
         false 'no timing file found'.  ``_find_timing_file`` must accept
         an ``objdir`` argument and search there too."""
         monkeypatch.chdir(tmp_path)

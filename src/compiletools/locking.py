@@ -38,7 +38,7 @@ class FcntlLock:
 
     Locks a sidecar ``<target>.lock`` file rather than the target itself.
     Locking the target directly is incorrect under concurrent peer ``make``
-    invocations on a shared objdir: ``os.open(target, O_CREAT)`` creates an
+    invocations on an object CAS: ``os.open(target, O_CREAT)`` creates an
     empty target file with mtime=now, which fools a peer make's mtime-based
     dependency check into treating the target as up-to-date. The peer make
     then skips the compile recipe and proceeds to link an empty ``.o``,

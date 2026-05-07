@@ -295,12 +295,12 @@ class BuildBackend(abc.ABC):
             shutil.rmtree(obj_dir)
 
     def realclean(self, graph: BuildGraph) -> None:
-        """Remove bin/ entirely and selectively clean this build's objects from the shared objdir.
+        """Remove bin/ entirely and selectively clean this build's objects from the object CAS.
 
         Unlike clean(), which removes the entire exe_dir and obj_dir trees,
         realclean() only removes individual build products listed in the graph
         from the obj_dir.  This is important when obj_dir is a shared location
-        (e.g. shared-objdir/) used by multiple sub-projects -- we must not
+        (e.g. cas-objdir/) used by multiple sub-projects -- we must not
         destroy other sub-projects' objects.
 
         The exe_dir is still removed entirely since it is per-project.
@@ -312,7 +312,7 @@ class BuildBackend(abc.ABC):
         # Selectively remove only this build's products from the objdir.
         # `compile` covers both .o and PCH .gch outputs (PCH rules are emitted
         # as compile rules in build_graph()). `copy` covers backend-emitted
-        # copy artifacts. .gch files in a shared pchdir cache outside obj_dir
+        # copy artifacts. .gch files in a PCH CAS cache outside obj_dir
         # are intentionally NOT cleaned: that cache is cross-variant and may
         # be in use by peer builds; use ct-trim-cache to age them out.
         # Mirrors makefile_backend._write_clean_rules realclean recipe.
@@ -901,7 +901,7 @@ class BuildBackend(abc.ABC):
         magicflags = self.hunter.magicflags(filename)
 
         # Add PCH .gch dependency if this source uses a precompiled header.
-        # Collect -I flags for the shared pchdir so GCC finds the cached .gch.
+        # Collect -I flags for the PCH CAS so GCC finds the cached .gch.
         pch_include_flags: list[str] = []
         for pch_header in magicflags.get(sz.Str("PCH"), []):
             pch_header_str = str(pch_header)
@@ -1175,7 +1175,7 @@ def _warn_if_pchdir_not_cross_user_safe(pchdir: str, verbose: int) -> None:
     if issues and verbose >= 1:
         joined = "; ".join(issues)
         print(
-            f"WARNING: shared PCH directory {target!r} is {joined}. "
+            f"WARNING: PCH CAS {target!r} is {joined}. "
             "Cross-user PCH cache hits will silently miss. Fix with: "
             f"chmod 2775 {target!r} && chgrp <build-group> {target!r}",
             file=sys.stderr,
@@ -1471,7 +1471,7 @@ def wrap_compile_with_lock(compile_cmd: str, target: str, args, filesystem_type:
     strategy = compiletools.filesystem_utils.get_lock_strategy(filesystem_type)
 
     # Fast path: use native flock binary for flock strategy (avoids Python startup).
-    # Two invariants must hold under concurrent peer makes on a shared objdir:
+    # Two invariants must hold under concurrent peer makes on an object CAS:
     #   1. Lock on a SIDECAR ``<target>.lock`` file, NOT on ``<target>``. flock
     #      opens its lock argument with O_RDWR|O_CREAT, so locking the target
     #      directly would create an empty ``<target>`` with mtime=now BEFORE

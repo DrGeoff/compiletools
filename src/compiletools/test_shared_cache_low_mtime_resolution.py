@@ -50,7 +50,7 @@ class TestSharedCacheLowMtimeResolution(BaseCompileToolsTestCase):
     """Tests for shared object cache behavior on low mtime resolution filesystems."""
 
     def _create_worktree_test_env(self, tmpdir, cas_objdir):
-        """Create git worktree test environment with shared objdir.
+        """Create git worktree test environment with object CAS.
 
         Returns:
             Tuple of (main_repo_dir, worktree_dir, config_name)
@@ -81,7 +81,7 @@ class TestSharedCacheLowMtimeResolution(BaseCompileToolsTestCase):
         )
         assert result.returncode == 0, f"Failed to create worktree: {result.stderr}"
 
-        # Create config with shared objdir and fixed project version
+        # Create config with object CAS and fixed project version
         config_name = uth.create_temp_config(str(main_repo))
         uth.create_temp_ct_conf(
             tempdir=str(main_repo),

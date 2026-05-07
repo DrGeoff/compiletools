@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CLI tool for cleaning up stale locks in shared object caches.
 
-This tool scans a shared object directory for stale lockdirs and removes them.
+This tool scans an object CAS for stale lockdirs and removes them.
 It respects the same configuration settings as the build system (ct.conf, environment
 variables, command-line arguments).
 

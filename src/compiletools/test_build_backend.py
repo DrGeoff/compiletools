@@ -332,7 +332,7 @@ class TestBuildGraphPopulation:
             assert bucket_dir == expected_bucket_dir, (
                 f"order_only_deps[0]={bucket_dir!r} must match the rule output's "
                 f"parent dir {expected_bucket_dir!r} so each compile is gated only "
-                f"on its own bucket's mkdir, not the shared objdir root"
+                f"on its own bucket's mkdir, not the object CAS root"
             )
             assert bucket_dir != objdir, (
                 f"order_only_deps[0]={bucket_dir!r} should be a sharded bucket under "
@@ -1308,7 +1308,7 @@ class TestPchIncrementalHash:
         backend.build_graph()
 
         err = capsys.readouterr().err
-        assert "PCH directory" in err
+        assert "PCH CAS" in err
         assert "group-writable" in err or "SGID" in err
 
 
@@ -1579,7 +1579,7 @@ class TestDefaultRealclean:
 
         assert not our_obj.exists(), "our object should be removed"
         assert other_obj.exists(), "other sub-project's object should be preserved"
-        assert obj_dir.exists(), "shared objdir itself should be preserved"
+        assert obj_dir.exists(), "object CAS itself should be preserved"
 
     def test_realclean_removes_link_outputs(self, tmp_path):
         """realclean() should also remove link outputs from the graph."""
@@ -1627,7 +1627,7 @@ class TestDefaultRealclean:
         backend.realclean(graph)
 
     def test_realclean_removes_pch_gch_from_pchdir(self, tmp_path):
-        """realclean() should remove .gch files from shared pchdir."""
+        """realclean() should remove .gch files from PCH CAS."""
         exe_dir = tmp_path / "exe"
         obj_dir = tmp_path / "obj"
         pch_dir = tmp_path / "pch" / "abc123"

@@ -1,6 +1,6 @@
 """Cache trimming utility for shared object and PCH caches.
 
-Scans shared-objdir and shared-pchdir for stale entries and removes them,
+Scans cas-objdir and cas-pchdir for stale entries and removes them,
 keeping entries that match the current git state and preserving a configurable
 number of recent non-current entries per source file.
 """
@@ -91,7 +91,7 @@ def build_current_hash_set(context):
 
 
 class CacheTrimmer:
-    """Trims stale entries from shared-objdir and shared-pchdir caches."""
+    """Trims stale entries from cas-objdir and cas-pchdir caches."""
 
     def __init__(self, args):
         self.dry_run = getattr(args, "dry_run", False)
@@ -105,7 +105,7 @@ class CacheTrimmer:
     # ------------------------------------------------------------------
 
     def trim_objdir(self, objdir, current_hashes):
-        """Trim stale object files from a shared object directory.
+        """Trim stale object files from an object CAS.
 
         Note on ``max_age``: "aged" means "old since written" (mtime), NOT
         "old since last accessed" (atime). A heavily-used cache entry from
@@ -113,7 +113,7 @@ class CacheTrimmer:
         (most production filesystems mount with ``noatime``).
 
         Args:
-            objdir: Path to the shared object directory.
+            objdir: Path to the object CAS.
             current_hashes: Set of 12-char hex strings representing current
                 file hashes (from build_current_hash_set).
 
@@ -297,7 +297,7 @@ class CacheTrimmer:
         consume time.
 
         Args:
-            pchdir: Path to the shared PCH directory.
+            pchdir: Path to the PCH CAS.
 
         Returns:
             dict with statistics: total_dirs_scanned, headers_found,

@@ -59,7 +59,7 @@ OPTIONS
 --bindir DIR
     Output directory for built binaries. Default: bin/<variant>
 
---objdir DIR
+--cas-objdir DIR
     Output directory for object files. Default: bin/<variant>/obj
 
 --file-locking

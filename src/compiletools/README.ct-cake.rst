@@ -199,21 +199,21 @@ headers for precompilation using the ``//#PCH=`` magic flag in your source files
     #include "stdafx.h"
 
 The build system compiles PCH-marked headers into ``.gch`` files, cached in
-``{git_root}/shared-pchdir/{variant}`` (or a custom path via ``--pchdir``).
+``{git_root}/cas-pchdir/{variant}`` (or a custom path via ``--cas-pchdir``).
 The cache key includes compiler, compiler flags, and header path, preventing
 collisions across different build configurations.
 
 Enable PCH caching by:
 
-* Setting ``pchdir = {git_root}/shared-pchdir`` in your ``ct.conf.d/ct.conf``
+* Setting ``cas-pchdir = {git_root}/cas-pchdir`` in your ``ct.conf.d/ct.conf``
   to enable caching for all builds (default behavior in v8.0+)
-* Passing ``--pchdir=/path/to/cache`` on the command line to override
+* Passing ``--cas-pchdir=/path/to/cache`` on the command line to override
   for a single build
 
 PCH caching is especially effective in multi-developer environments where
-the same headers are precompiled many times. Use ``ct-trim-cache --pchdir-only``
+the same headers are precompiled many times. Use ``ct-trim-cache --cas-pchdir-only``
 to selectively clean aged PCH entries while preserving active builds. Without
-``--pchdir``, PCH files fall back to legacy ``.gch`` placement in the object
+``--cas-pchdir``, PCH files fall back to legacy ``.gch`` placement in the object
 directory.
 
 Selective build and test
@@ -383,10 +383,10 @@ Common Options
 
 **--realclean, --real-clean**
     Remove bin/ entirely and selectively clean this build's objects from
-    the shared objdir. Superset of ``--clean`` -- also removes copied
+    the object CAS. Superset of ``--clean`` -- also removes copied
     executables from the top-level output directory. Unlike ``--clean``,
     only removes object files that belong to the current build, preserving
-    other sub-projects' objects in a shared object directory.
+    other sub-projects' objects in the object CAS.
 
 **-j, --parallel**
     Number of parallel jobs. Defaults to the output of ``ct-jobs``
@@ -414,26 +414,26 @@ Common Options
     ``<bindir>/diagnostics/<invocation-id>/``.  Also settable via the
     ``DIAGNOSTICS_DIR`` environment variable or
     ``diagnostics-dir = <path>`` in any ``ct.conf`` file.  Must NOT be
-    set to ``--objdir``, which is a content-addressable cache:
+    set to ``--cas-objdir``, which is a content-addressable cache:
     diagnostic files have no eviction path there and races with peer
     ct-cake invocations clobber the data.
     Example: ``ct-cake --diagnostics-dir=/scratch/ct-diag``
 
-**--objdir PATH**
-    Use a shared object directory for compiled object files across multiple
-    builds. Enables content-addressable object file caching and cross-user
-    build sharing. Default: ``{git_root}/shared-objdir``. Requires
+**--cas-objdir PATH**
+    Use an object CAS for compiled object files across multiple builds.
+    Enables content-addressable object file caching and cross-user
+    build sharing. Default: ``{git_root}/cas-objdir``. Requires
     ``file-locking = true`` in ``ct.conf.d/ct.conf`` for safe concurrent access.
-    Example: ``ct-cake --objdir=/shared/build/objects``
+    Example: ``ct-cake --cas-objdir=/shared/build/objects``
 
-**--pchdir PATH**
-    Use a shared precompiled header (PCH) cache directory. Headers marked with
+**--cas-pchdir PATH**
+    Use a precompiled header (PCH) CAS. Headers marked with
     the ``//#PCH=`` magic flag are compiled into ``.gch`` files and cached here.
     The cache key includes compiler, flags, and header path, enabling safe reuse
-    across builds and developers. Default: ``{git_root}/shared-pchdir/{variant}``.
+    across builds and developers. Default: ``{git_root}/cas-pchdir/{variant}``.
     Without this flag, PCH files fall back to legacy ``.gch`` placement in the
-    object directory. Use ``ct-trim-cache --pchdir-only`` to clean aged entries.
-    Example: ``ct-cake --pchdir=/shared/build/pch``
+    object directory. Use ``ct-trim-cache --cas-pchdir-only`` to clean aged entries.
+    Example: ``ct-cake --cas-pchdir=/shared/build/pch``
 
 **--prepend-PKG-CONFIG-PATH PATH**
     Prepend PATH to ``PKG_CONFIG_PATH`` before any pkg-config invocation.

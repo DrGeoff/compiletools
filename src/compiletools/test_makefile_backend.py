@@ -1095,7 +1095,7 @@ class TestTimingLogPidNamespace:
 
 
 class TestMakefileConcurrency:
-    """Fix 9: concurrent `make -j` against a shared objdir must produce a
+    """Fix 9: concurrent `make -j` against an object CAS must produce a
     correct build (no half-written .o, no torn link). Recent commit 348c18e1
     wraps link rules with ct-lock-helper for this case."""
 

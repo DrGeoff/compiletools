@@ -1,6 +1,6 @@
 """Lock cleanup utility for shared object caches.
 
-Scans for stale lockdirs in shared object directories and removes them.
+Scans for stale lockdirs in object CAS and removes them.
 Handles both local and remote lock verification via SSH.
 """
 
@@ -13,7 +13,7 @@ import compiletools.lock_utils
 
 
 class LockCleaner:
-    """Scans and cleans up stale locks in shared object directories."""
+    """Scans and cleans up stale locks in object CAS."""
 
     def __init__(self, args):
         """Initialize lock cleaner.

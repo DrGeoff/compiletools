@@ -33,7 +33,7 @@ For other build backends (Ninja, CMake, Bazel, Shake, Tup), use
 
 Because every flag is passed through untouched, you can use the exact same
 options you would normally hand to ``ct-findtargets`` or ``ct-create-makefile``
-(e.g., ``--variant``, ``--magic``, ``--append-CXXFLAGS``, ``--objdir``,
+(e.g., ``--variant``, ``--magic``, ``--append-CXXFLAGS``, ``--cas-objdir``,
 ``--bindir``). The wrapper simply glues those tools together and ensures the
 parallel make step uses the recommended level of concurrency.
 
@@ -55,7 +55,7 @@ examples include:
 ``--makefilename PATH``
     Override the location of the intermediate Makefile.
 
-``--objdir PATH`` / ``--bindir PATH``
+``--cas-objdir PATH`` / ``--bindir PATH``
     Override where objects and binaries are written.
 
 See the manuals for ``ct-findtargets`` and ``ct-create-makefile`` for the
@@ -80,7 +80,7 @@ Build everything in the current tree using the release variant::
 
 Compile with automatic magic flag detection disabled and custom output dirs::
 
-    ct-build --no-auto --objdir=out/obj --bindir=out/bin
+    ct-build --no-auto --cas-objdir=out/obj --bindir=out/bin
 
 SEE ALSO
 ========

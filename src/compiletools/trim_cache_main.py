@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CLI tool for trimming stale entries from shared build caches.
 
-This tool scans shared-objdir and shared-pchdir for content-addressable entries
+This tool scans cas-objdir and cas-pchdir for content-addressable entries
 that no longer match the current git state, and removes the oldest stale entries
 while preserving a configurable safety margin.
 
@@ -10,8 +10,8 @@ Usage:
 
 The tool will:
 1. Load current file hashes from the git repository
-2. Scan shared-objdir for .o files whose file hash no longer matches any tracked source
-3. Scan shared-pchdir for command-hash directories with old precompiled headers
+2. Scan cas-objdir for .o files whose file hash no longer matches any tracked source
+3. Scan cas-pchdir for command-hash directories with old precompiled headers
 4. Remove the oldest non-current entries, keeping at least --keep-count per basename
 """
 

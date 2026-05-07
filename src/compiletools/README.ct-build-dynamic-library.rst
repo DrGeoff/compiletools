@@ -44,7 +44,7 @@ OPTIONS
 
 Remaining options
     Forwarded untouched to ``ct-create-makefile``. Typical examples are
-    ``--variant``, ``--objdir``, ``--bindir``, ``--magic``, and
+    ``--variant``, ``--cas-objdir``, ``--bindir``, ``--magic``, and
     ``--append-LDFLAGS``. Refer to ``ct-create-makefile`` (1) for exhaustive
     documentation.
 
@@ -67,7 +67,7 @@ Build ``libcore.so`` with the release variant::
 Emit the library into ``build/lib`` while keeping objects in ``build/obj``::
 
     ct-build-dynamic-library src/api.cpp \
-        --objdir=build/obj --bindir=build/lib --append-LDFLAGS="-Wl,-rpath,$ORIGIN"
+        --cas-objdir=build/obj --bindir=build/lib --append-LDFLAGS="-Wl,-rpath,$ORIGIN"
 
 SEE ALSO
 ========

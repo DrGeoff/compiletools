@@ -248,7 +248,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         Expected:
         - Both processes succeed
         - No corruption, no partial writes
-        - Both can access shared objdir without permission errors
+        - Both can access object CAS without permission errors
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             objdir = Path(tmpdir) / "cas_objdir"
@@ -270,7 +270,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             for r in results:
                 assert r["returncode"] == 0, f"Worker {r['worker_id']} failed: {r['error']}"
 
-            # Verify object files were created in shared objdir
+            # Verify object files were created in object CAS
             obj_files = list(objdir.glob("**/*.o"))
             assert len(obj_files) >= 1, f"Expected at least 1 object file, found {len(obj_files)}"
 
@@ -288,7 +288,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         Expected:
         - All compilations succeed
         - No permission errors
-        - All can write to shared objdir
+        - All can write to object CAS
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             objdir = Path(tmpdir) / "cas_objdir"
@@ -335,7 +335,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             for r in results:
                 assert r["returncode"] == 0, f"Worker {r['worker_id']} failed: {r['error']}"
 
-            # Should have object files in shared objdir
+            # Should have object files in object CAS
             obj_files = list(objdir.glob("**/*.o"))
             assert len(obj_files) >= len(sources), (
                 f"Expected at least {len(sources)} object files, found {len(obj_files)}"
@@ -888,7 +888,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         Scenario:
         - Same user, two terminal sessions
         - Two different subprojects (numbers and factory samples)
-        - Both using same shared objdir
+        - Both using same object CAS
         - May have shared dependencies
 
         Expected:
@@ -949,7 +949,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             for r in results:
                 assert r["returncode"] == 0, f"Worker {r['worker_id']} failed: {r['error']}"
 
-            # Verify object files were created in shared objdir
+            # Verify object files were created in object CAS
             obj_files = list(objdir.glob("**/*.o"))
             assert len(obj_files) >= 2, f"Expected at least 2 object files, found {len(obj_files)}"
 
@@ -966,7 +966,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         Expected:
         - Both processes succeed
         - Each produces a distinct object file (different macro_state_hash)
-        - No collision or corruption in the shared objdir
+        - No collision or corruption in the object CAS
         - No stale lock directories remain
         """
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1023,7 +1023,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         Expected:
         - User B (optimized, -O2) builds first → creates object B
         - User A (default) builds second → creates object A
-        - Two distinct objects in shared objdir (same as forward order)
+        - Two distinct objects in object CAS (same as forward order)
         - Neither build corrupts or overwrites the other
         """
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1109,7 +1109,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
     @uth.requires_functional_compiler
     def test_concurrent_pch_compilation_shares_cache(self):
         """Regression: two workers concurrently compiling the same
-        PCH must produce a single .gch in the shared pchdir, both succeed,
+        PCH must produce a single .gch in the PCH CAS, both succeed,
         and the .gch must be group-readable so cross-user consumers don't
         silently rebuild."""
         with tempfile.TemporaryDirectory() as tmpdir:

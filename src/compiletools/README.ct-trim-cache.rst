@@ -14,12 +14,12 @@ Trim stale entries from shared object and PCH caches
 
 SYNOPSIS
 ========
-ct-trim-cache [--dry-run] [--objdir PATH] [--pchdir PATH] [--max-age DAYS] [--keep-count N] [-v]
+ct-trim-cache [--dry-run] [--cas-objdir PATH] [--cas-pchdir PATH] [--max-age DAYS] [--keep-count N] [-v]
 
 DESCRIPTION
 ===========
-Trim stale content-addressable entries from ``shared-objdir`` (compiled object
-files) and ``shared-pchdir`` (precompiled headers).  The tool identifies
+Trim stale content-addressable entries from ``cas-objdir`` (compiled object
+files) and ``cas-pchdir`` (precompiled headers).  The tool identifies
 which entries still match the current git working tree and removes the oldest
 non-current entries while preserving a configurable safety margin.
 
@@ -80,13 +80,13 @@ USAGE
     ct-trim-cache --keep-count 3
 
     # Only trim object files, skip PCH
-    ct-trim-cache --objdir-only
+    ct-trim-cache --cas-objdir-only
 
     # Only trim PCH cache, skip objects
-    ct-trim-cache --pchdir-only
+    ct-trim-cache --cas-pchdir-only
 
     # Custom directories
-    ct-trim-cache --objdir=/shared/build/objects --pchdir=/shared/build/pch
+    ct-trim-cache --cas-objdir=/shared/build/objects --cas-pchdir=/shared/build/pch
 
 HOW IT WORKS
 ============
@@ -144,21 +144,21 @@ Trim Options
     Default: 1.  Set to 0 to remove all non-current entries (the safety
     invariant still preserves at least one file per basename).
 
-``--objdir-only``
-    Only trim the shared object directory, skip PCH trimming.
+``--cas-objdir-only``
+    Only trim the object CAS, skip PCH trimming.
 
-``--pchdir-only``
-    Only trim the shared PCH directory, skip object trimming.
+``--cas-pchdir-only``
+    Only trim the PCH CAS, skip object trimming.
 
 Directory Options
 -----------------
-``--objdir PATH``
+``--cas-objdir PATH``
     Override object directory from configuration
-    (default: ``{git_root}/shared-objdir/{variant}``).
+    (default: ``{git_root}/cas-objdir/{variant}``).
 
-``--pchdir PATH``
+``--cas-pchdir PATH``
     Override PCH directory from configuration
-    (default: ``{git_root}/shared-pchdir/{variant}``).
+    (default: ``{git_root}/cas-pchdir/{variant}``).
 
 ``--bindir PATH``
     Output directory for executables (default: ``bin/{variant}``).
@@ -190,7 +190,7 @@ EXIT CODES
     Success -- all targeted files removed (or none to remove).
 1
     Failure -- some files could not be removed (check permissions),
-    or ``--objdir-only`` and ``--pchdir-only`` both specified.
+    or ``--cas-objdir-only`` and ``--cas-pchdir-only`` both specified.
 
 EXAMPLES
 ========
@@ -210,7 +210,7 @@ EXAMPLES
 
 **Trim only object cache on a custom path**::
 
-    ct-trim-cache --objdir-only --objdir=/mnt/shared/build/.objects
+    ct-trim-cache --cas-objdir-only --cas-objdir=/mnt/shared/build/.objects
 
 MULTI-USER SHARED CACHES
 =========================

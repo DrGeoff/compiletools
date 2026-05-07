@@ -66,12 +66,12 @@ Notes:
 * **--build-only-changed** — restrict the graph to a whitespace-separated
   set of source files supplied on the command line.  Implemented in the
   shared base class, so all backends honor it.
-* **--realclean** — selectively remove only this build's products from a
-  shared objdir (and ``.gch`` files from a shared pchdir), instead of
+* **--realclean** — selectively remove only this build's products from an
+  object CAS (and ``.gch`` files from a PCH CAS), instead of
   ``rm -rf`` of the whole tree.  Inherited from the base backend; the
   Make backend additionally generates a ``realclean`` rule in the Makefile.
 * **PCH cache** — content-addressable precompiled header cache via
-  ``--pchdir``; the compile rules carry the per-cmd_hash ``.gch`` paths,
+  ``--cas-pchdir``; the compile rules carry the per-cmd_hash ``.gch`` paths,
   so all backends produce and consume the cache transparently.
 * **Libraries** — static and dynamic library targets via ``--static`` /
   ``--dynamic``.  All backends support both; the Slurm backend

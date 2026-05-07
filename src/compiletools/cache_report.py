@@ -1,11 +1,11 @@
 """Measure duplication in shared object and PCH caches.
 
-Walks a ``shared-objdir`` and groups entries by ``(file_hash, dep_hash)``.
+Walks a ``cas-objdir`` and groups entries by ``(file_hash, dep_hash)``.
 Entries that share that pair but differ in ``macro_state_hash`` are
 bit-identical duplicates spawned by command-line ``-D`` macro pollution
 of the cache key.
 
-Walks a ``shared-pchdir`` and groups ``<cmd_hash>/`` entries by their
+Walks a ``cas-pchdir`` and groups ``<cmd_hash>/`` entries by their
 manifest's ``header_realpath``. Two ``cmd_hash`` dirs that share a
 header but differ in ``cmd_hash`` are PCH-cache duplicates from the
 same kind of pollution.
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ObjectFileEntry:
-    """One parsed entry from a shared object directory."""
+    """One parsed entry from an object CAS."""
 
     path: str
     basename: str
@@ -75,7 +75,7 @@ class BasenameWaste:
 
 @dataclass(frozen=True)
 class CacheReport:
-    """Structured summary of a shared-objdir scan."""
+    """Structured summary of a cas-objdir scan."""
 
     objdir: str
     total_entries: int
@@ -92,7 +92,7 @@ class CacheReport:
 
 @dataclass(frozen=True)
 class PchEntry:
-    """One parsed entry from a shared PCH directory."""
+    """One parsed entry from a PCH CAS."""
 
     cmd_hash_dir: str  # absolute path to <pchdir>/<cmd_hash>
     cmd_hash: str  # 16 hex chars
@@ -110,7 +110,7 @@ class PchDuplicateGroup:
 
 @dataclass(frozen=True)
 class PchReport:
-    """Structured summary of a shared-pchdir scan."""
+    """Structured summary of a cas-pchdir scan."""
 
     pchdir: str
     total_entries: int  # total cmd_hash dirs
@@ -293,7 +293,7 @@ def _dir_size_bytes(path: str) -> int:
 
 
 def scan_pchdir(pchdir: str) -> list[PchEntry]:
-    """Walk a shared-pchdir and return one ``PchEntry`` per ``<cmd_hash>/`` dir.
+    """Walk a cas-pchdir and return one ``PchEntry`` per ``<cmd_hash>/`` dir.
 
     Skips top-level entries whose name doesn't match ``_PCH_COMMAND_HASH_RE``
     (legacy dirs, accidental clutter). Entries whose manifest is missing or
@@ -554,7 +554,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ct-cache-report",
         description=(
-            "Report duplication in shared-objdir and/or shared-pchdir caches. "
+            "Report duplication in cas-objdir and/or cas-pchdir caches. "
             "Two cache entries that share the underlying source/header but "
             "differ in a hash component are bit-identical duplicates spawned "
             "by command-line ``-D`` macro pollution of the cache key."
@@ -563,12 +563,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cas-objdir",
         default=None,
-        help="Path to the shared-objdir to scan. Optional.",
+        help="Path to the cas-objdir to scan. Optional.",
     )
     parser.add_argument(
         "--cas-pchdir",
         default=None,
-        help="Path to the shared-pchdir to scan. Optional.",
+        help="Path to the cas-pchdir to scan. Optional.",
     )
     parser.add_argument(
         "--top",

@@ -46,7 +46,7 @@ No bespoke options are defined. Use the normal ``ct-cake`` flags such as:
 
 ``--magic {direct,cpp}``   Select the magic include processing mode.
 
-``--objdir PATH`` / ``--bindir PATH``   Override output directories.
+``--cas-objdir PATH`` / ``--bindir PATH``   Override output directories.
 
 See ``ct-cake`` (1) for the full CLI reference.
 
@@ -59,7 +59,7 @@ Watch and rebuild continuously using the default variant::
 
 Watch while building with release flags and a custom objdir::
 
-    ct-watch-build --variant=release --objdir=/tmp/ct-obj
+    ct-watch-build --variant=release --cas-objdir=/tmp/ct-obj
 
 SEE ALSO
 ========
