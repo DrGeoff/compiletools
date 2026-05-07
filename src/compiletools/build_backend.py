@@ -471,10 +471,10 @@ class BuildBackend(abc.ABC):
                 # the cache key. Same fix applied to per-TU object
                 # hashing in Hunter.macro_state_hash.
                 #
-                # Reuses args.CXXFLAGS_tokens populated once by parseargs
-                # (TOKEN-2); strip_d_u_tokens is the same filter that
-                # tokenize_compile_flags would apply on the raw string.
-                cxxflags_tokens = compiletools.apptools.strip_d_u_tokens(self.args.CXXFLAGS_tokens)
+                # Uses args.flags.hash_relevant("cxx") which strips -D/-U
+                # AND filters diagnostic-only flags in one pass; _pch_command_hash
+                # trusts its caller to pre-filter the cxxflags_tokens parameter.
+                cxxflags_tokens = self.args.flags.hash_relevant("cxx")
                 scope_macro_hash = _pch_scope_macro_hash(self.hunter, pch_header)
                 cmd_hash = _pch_command_hash(
                     self.args,
@@ -504,7 +504,7 @@ class BuildBackend(abc.ABC):
             pch_deps = [pch_header] + sorted(str(d) for d in self.hunter.header_dependencies(pch_header))
             pch_cmd = (
                 compiletools.utils.split_command_cached(self.args.CXX)
-                + list(self.args.CXXFLAGS_tokens)
+                + list(self.args.flags.cxx)
                 + [str(f) for f in magic_cpp_flags]
                 + [str(f) for f in magic_cxx_flags]
                 + ["-x", "c++-header", pch_header, "-o", gch_path]
@@ -921,7 +921,7 @@ class BuildBackend(abc.ABC):
             magic_c_flags = magicflags.get(sz.Str("CFLAGS"), [])
             compile_cmd = (
                 compiletools.utils.split_command_cached(self.args.CC)
-                + list(self.args.CFLAGS_tokens)
+                + list(self.args.flags.c)
                 + pch_include_flags
                 + [str(flag) for flag in magic_cpp_flags]
                 + [str(flag) for flag in magic_c_flags]
@@ -930,7 +930,7 @@ class BuildBackend(abc.ABC):
             magic_cxx_flags = magicflags.get(sz.Str("CXXFLAGS"), [])
             compile_cmd = (
                 compiletools.utils.split_command_cached(self.args.CXX)
-                + list(self.args.CXXFLAGS_tokens)
+                + list(self.args.flags.cxx)
                 + pch_include_flags
                 + [str(flag) for flag in magic_cpp_flags]
                 + [str(flag) for flag in magic_cxx_flags]
@@ -1048,7 +1048,7 @@ class BuildBackend(abc.ABC):
                 inputs.append(lib_output)
 
         if self.args.LDFLAGS:
-            link_cmd.extend(self.args.LDFLAGS_tokens)
+            link_cmd.extend(self.args.flags.ld)
 
         exe_dir = self.namer.executable_dir()
 
@@ -1103,7 +1103,7 @@ class BuildBackend(abc.ABC):
         )
         lib_cmd.extend(merged_ldflags)
         if self.args.LDFLAGS:
-            lib_cmd.extend(self.args.LDFLAGS_tokens)
+            lib_cmd.extend(self.args.flags.ld)
 
         return BuildRule(
             output=lib_path,
@@ -1207,13 +1207,16 @@ def _pch_command_hash(
     containing literal spaces (``-DFOO="a b"``) cannot collide with
     space-separated flag pairs.
 
-    ``cxxflags_tokens`` is the structured (``-D``/``-U``-stripped) form
-    of ``args.CXXFLAGS`` produced by
-    :func:`compiletools.apptools.tokenize_compile_flags`. The cmdline
-    ``-D`` macros relevant to this PCH header are folded in via
-    ``scope_macro_hash`` (see :func:`_pch_scope_macro_hash`), so two
-    apps that differ only in an irrelevant ``-DAPP_NAME=...`` value
-    share the same PCH cache key.
+    ``cxxflags_tokens`` is the hash-relevant structured form of
+    ``args.CXXFLAGS`` -- the caller is responsible for pre-filtering
+    via ``args.flags.hash_relevant("cxx")`` (which strips ``-D``/``-U``
+    AND drops diagnostic-only flags). This function does NOT re-filter
+    that parameter; only the per-file ``magic_cpp_flags`` /
+    ``magic_cxx_flags`` (which arrive un-filtered from the magic-flag
+    pipeline) are filtered here. The cmdline ``-D`` macros relevant to
+    this PCH header are folded in via ``scope_macro_hash`` (see
+    :func:`_pch_scope_macro_hash`), so two apps that differ only in an
+    irrelevant ``-DAPP_NAME=...`` value share the same PCH cache key.
     """
     # 64 bits (16 hex chars) of SHA-256 — birthday-collision risk at
     # ~4 billion entries, fine in practice. PCH cache validity is also
@@ -1232,9 +1235,11 @@ def _pch_command_hash(
     canonical = {
         "compiler_identity": _compiler_identity(args.CXX),
         "cxx_command": args.CXX,
-        # Structured tokens with -D/-U stripped; cmdline -D macros are
-        # captured by ``scope_macro_hash`` after per-PCH-header scoping.
-        "CXXFLAGS_TOKENS": compiletools.apptools.filter_hash_irrelevant_tokens(list(cxxflags_tokens)),
+        # Structured tokens with -D/-U stripped AND diagnostic-only flags
+        # removed; pre-filtered by caller via args.flags.hash_relevant("cxx").
+        # Cmdline -D macros are captured by ``scope_macro_hash`` after
+        # per-PCH-header scoping.
+        "CXXFLAGS_TOKENS": list(cxxflags_tokens),
         "magic_cpp_flags": compiletools.apptools.filter_hash_irrelevant_tokens([str(f) for f in magic_cpp_flags]),
         "magic_cxx_flags": compiletools.apptools.filter_hash_irrelevant_tokens([str(f) for f in magic_cxx_flags]),
         "header": compiletools.wrappedos.realpath(pch_header),

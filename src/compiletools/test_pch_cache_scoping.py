@@ -252,8 +252,18 @@ class _StubArgs:
 def test_pch_cache_key_unchanged_with_w_warning_change():
     """Two ``_pch_command_hash`` invocations differing only in
     ``-Wall`` vs ``-Wextra`` inside ``cxxflags_tokens`` must produce
-    the SAME PCH cache key."""
+    the SAME PCH cache key.
+
+    TOKEN-5: ``_pch_command_hash`` no longer self-filters its
+    ``cxxflags_tokens`` parameter -- the caller is responsible (and
+    in production calls ``args.flags.hash_relevant("cxx")``). Mirror
+    that contract here by pre-filtering before each invocation.
+    """
+    import compiletools.apptools
     from compiletools.build_backend import _pch_command_hash
+
+    def _hr(tokens):
+        return compiletools.apptools.filter_hash_irrelevant_tokens(compiletools.apptools.strip_d_u_tokens(tokens))
 
     args = _StubArgs()
     h_wall = _pch_command_hash(
@@ -261,7 +271,7 @@ def test_pch_cache_key_unchanged_with_w_warning_change():
         pch_header="/tmp/header.hpp",
         magic_cpp_flags=[],
         magic_cxx_flags=[],
-        cxxflags_tokens=["-O2", "-Wall"],
+        cxxflags_tokens=_hr(["-O2", "-Wall"]),
         scope_macro_hash="0" * 16,
     )
     h_wextra = _pch_command_hash(
@@ -269,7 +279,7 @@ def test_pch_cache_key_unchanged_with_w_warning_change():
         pch_header="/tmp/header.hpp",
         magic_cpp_flags=[],
         magic_cxx_flags=[],
-        cxxflags_tokens=["-O2", "-Wextra"],
+        cxxflags_tokens=_hr(["-O2", "-Wextra"]),
         scope_macro_hash="0" * 16,
     )
     assert h_wall == h_wextra

@@ -171,14 +171,14 @@ class MagicFlagsBase:
         # and stripping them from the token list keeps them from leaking
         # back into the build-context portion of the hash.
         #
-        # Reuses args.*_tokens populated once at parseargs end (TOKEN-2)
-        # when present; falls back to a fresh tokenize for the rare cases
-        # where args was constructed without going through parseargs (a
-        # handful of tests).
-        if hasattr(self._args, "CPPFLAGS_tokens"):
-            cppflags_tokens = compiletools.apptools.strip_d_u_tokens(self._args.CPPFLAGS_tokens)
-            cflags_tokens = compiletools.apptools.strip_d_u_tokens(self._args.CFLAGS_tokens)
-            cxxflags_tokens = compiletools.apptools.strip_d_u_tokens(self._args.CXXFLAGS_tokens)
+        # Reuses args.flags populated once at parseargs end (TOKEN-5);
+        # falls back to a fresh tokenize for the rare cases where args
+        # was constructed without going through parseargs (a handful of
+        # tests).
+        if hasattr(self._args, "flags"):
+            cppflags_tokens = compiletools.apptools.strip_d_u_tokens(self._args.flags.cpp)
+            cflags_tokens = compiletools.apptools.strip_d_u_tokens(self._args.flags.c)
+            cxxflags_tokens = compiletools.apptools.strip_d_u_tokens(self._args.flags.cxx)
         else:
             cppflags_tokens, cflags_tokens, cxxflags_tokens = compiletools.apptools.tokenize_compile_flags(
                 self._args.CPPFLAGS, self._args.CFLAGS, self._args.CXXFLAGS
@@ -565,13 +565,13 @@ class MagicFlagsBase:
         magic_c_tokens = [str(f) for f in flagsforfilename.get(sz.Str("CFLAGS"), [])]
         magic_cxx_tokens = [str(f) for f in flagsforfilename.get(sz.Str("CXXFLAGS"), [])]
 
-        # Use args.*_tokens when populated by parseargs (TOKEN-2). Falls
+        # Use args.flags when populated by parseargs (TOKEN-5). Falls
         # back to a fresh tokenize for the rare paths where the args
         # object is constructed without parseargs (test fixtures).
-        if hasattr(self._args, "CPPFLAGS_tokens"):
-            args_cpp_tokens = list(self._args.CPPFLAGS_tokens)
-            args_c_tokens = list(self._args.CFLAGS_tokens)
-            args_cxx_tokens = list(self._args.CXXFLAGS_tokens)
+        if hasattr(self._args, "flags"):
+            args_cpp_tokens = list(self._args.flags.cpp)
+            args_c_tokens = list(self._args.flags.c)
+            args_cxx_tokens = list(self._args.flags.cxx)
         else:
             args_cpp_tokens = compiletools.utils.split_command_cached(self._args.CPPFLAGS)
             args_c_tokens = compiletools.utils.split_command_cached(self._args.CFLAGS)
