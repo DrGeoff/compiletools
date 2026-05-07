@@ -254,13 +254,13 @@ class TestAddIncludePathsToFlags:
     def test_no_duplicate_include_paths(self):
         args = SimpleNamespace(
             INCLUDE="/tmp/inc",
-            CPPFLAGS="-Wall /tmp/inc",
+            CPPFLAGS="-Wall -I /tmp/inc",
             CFLAGS="-Wall",
             CXXFLAGS="-Wall",
             verbose=0,
         )
         _add_include_paths_to_flags(args)
-        # /tmp/inc already in CPPFLAGS, should not add again
+        # /tmp/inc already a proper -I entry in CPPFLAGS; do not add again.
         assert args.CPPFLAGS.count("/tmp/inc") == 1
 
     def test_verbose_include_print(self):

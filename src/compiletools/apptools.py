@@ -433,15 +433,47 @@ def _extend_includes_using_git_root(args):
             )
 
 
+def _existing_include_paths(flags_str: str) -> set[str]:
+    """Extract the set of -I include paths from a flag string.
+
+    Recognizes both attached (-I/path) and detached (-I /path) forms.
+    Other tokens that happen to contain path-like substrings (e.g.,
+    -DFOO=/some/path, -isystem /some/path, -L/some/path) are NOT
+    treated as include paths.
+    """
+    tokens = split_command_cached(flags_str)
+    paths: set[str] = set()
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok == "-I" and i + 1 < len(tokens):
+            paths.add(tokens[i + 1])
+            i += 2
+        elif tok.startswith("-I") and len(tok) > 2:
+            paths.add(tok[2:])
+            i += 1
+        else:
+            i += 1
+    return paths
+
+
 def _add_include_paths_to_flags(args):
-    """Add all the include paths to all three compile flags"""
-    for path in args.INCLUDE.split():
-        if path not in args.CPPFLAGS.split():
-            args.CPPFLAGS += " -I " + path
-        if path not in args.CFLAGS.split():
-            args.CFLAGS += " -I " + path
-        if path not in args.CXXFLAGS.split():
-            args.CXXFLAGS += " -I " + path
+    """Add all the include paths to all three compile flags.
+
+    Dedup is by token-walk (see _existing_include_paths), not raw
+    substring containment, so a path that already appears as another
+    flag's value (-isystem /p, -L /p, -DFOO=/p) still gets the proper
+    -I /p added.
+    """
+    new_paths = args.INCLUDE.split()
+    if not new_paths:
+        return
+    for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS"):
+        existing = _existing_include_paths(getattr(args, slot))
+        for path in new_paths:
+            if path not in existing:
+                setattr(args, slot, getattr(args, slot) + " -I " + path)
+                existing.add(path)
 
     if args.verbose >= 6 and len(args.INCLUDE) > 0:
         print("Extra include paths have been appended to the *FLAG variables:")
