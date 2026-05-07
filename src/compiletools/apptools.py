@@ -1935,8 +1935,17 @@ def _finalize_flag_state(args) -> None:
     Any subsequent in-place mutation of a registered raw string will be
     flagged by check_flag_string_drift.
     """
-    registered = tuple(slot for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS") if hasattr(args, slot))
-    args._registered_flag_slots = registered
+    # Compute the CAP-registered slot set ONCE and make it sticky.
+    # The materialise step below synthesizes missing slot attributes for
+    # downstream consumers; a second call (e.g. via substitutions() re-run
+    # from cake's two-stage parse) would then see those synthesized attrs
+    # via hasattr and silently expand the registered set, defeating the
+    # "not applicable here" signal. Reading from args preserves the
+    # original CAP-registration view across re-runs.
+    registered = getattr(args, "_registered_flag_slots", None)
+    if registered is None:
+        registered = tuple(slot for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS") if hasattr(args, slot))
+        args._registered_flag_slots = registered
     # Materialise raw strings and *_tokens for ALL four slots so existing
     # consumers (build_backend, magicflags, ...) don't need to handle the
     # absent-slot case. Only registered slots are snapshotted for drift.
