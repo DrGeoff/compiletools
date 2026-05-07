@@ -1821,6 +1821,13 @@ def parseargs(cap, argv, verbose=None, *, context):
         if hasattr(args, slot):
             setattr(args, f"{slot}_tokens", compiletools.utils.split_command_cached(getattr(args, slot)))
 
+    # Construct args.flags as the canonical structured view of compile
+    # flags. Sits alongside args.CPPFLAGS (string) and args.CPPFLAGS_tokens
+    # (list); new code should prefer args.flags. See compiletools.flags.
+    from compiletools.flags import Flags
+
+    args.flags = Flags.from_args(args)
+
     if verbose > 8:
         print("parseargs has completed.  Returning args")
     return args

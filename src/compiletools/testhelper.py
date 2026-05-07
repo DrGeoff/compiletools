@@ -850,14 +850,16 @@ def make_stub_backend_class():
 def make_backend_args(tmpdir, **overrides):
     """Create a SimpleNamespace with standard backend args rooted in tmpdir.
 
-    Mirrors ``apptools.parseargs`` by populating both the raw flag
-    strings (CPPFLAGS / CFLAGS / CXXFLAGS / LDFLAGS) and their
-    pre-tokenized siblings (``*_tokens``). Production code that
-    consumes ``args.CXXFLAGS_tokens`` etc. (build_backend compile
-    commands, magicflags._parse) thus works without re-tokenizing in
-    the test fixtures.
+    Mirrors ``apptools.parseargs`` by populating the raw flag strings
+    (CPPFLAGS / CFLAGS / CXXFLAGS / LDFLAGS), their pre-tokenized
+    siblings (``*_tokens``), and the structured ``args.flags`` view
+    (``Flags`` from ``compiletools.flags``, populated at parseargs end
+    by TOKEN-5). Production code that consumes ``args.flags.cxx`` etc.
+    (build_backend compile commands, magicflags._parse) thus works
+    without re-tokenizing in the test fixtures.
     """
     import compiletools.utils
+    from compiletools.flags import Flags
 
     defaults = dict(
         filename=[],
@@ -889,7 +891,10 @@ def make_backend_args(tmpdir, **overrides):
         token_slot = f"{slot}_tokens"
         if token_slot not in defaults:
             defaults[token_slot] = compiletools.utils.split_command_cached(defaults.get(slot, ""))
-    return SimpleNamespace(**defaults)
+    args = SimpleNamespace(**defaults)
+    # Match parseargs end: build the structured Flags view alongside.
+    args.flags = Flags.from_args(args)
+    return args
 
 
 def add_backend_arguments(cap):
