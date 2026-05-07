@@ -1,0 +1,378 @@
+#!/usr/bin/env bash
+# ct-venv-install-rhel8 -- bootstrap a compiletools dev environment on RHEL 8.
+#
+# Performs the recipe documented in INSTALL section 6 (RHEL 8 / older GCC):
+#   1. install only the dnf pkgs that aren't already satisfied (git and/or
+#      gcc-toolset-13). If both are present, the dnf step is skipped
+#      entirely -- no sudo prompt.
+#   2. discover or enable a modern GCC (12+); the system gcc-8 cannot compile
+#      stringzilla's AVX-512 intrinsics
+#   3. create a uv-managed Python 3.13 venv if missing (system python3 is
+#      3.6, below the >=3.10 floor; RHEL 8 AppStream caps out below 3.13)
+#   4. install stringzilla with CC pointed at the modern GCC and the
+#      -mavx512f/bw/vl/vbmi CFLAGS the INSTALL doc prescribes
+#   5. install compiletools (editable) and the [tui,dev] extras (ruff has
+#      a prebuilt manylinux wheel, so no cargo build is triggered here)
+#
+# Requires `uv` to already be on $PATH -- this script does not install it.
+# Run from anywhere; the script auto-detects the repo root from its own
+# location.
+set -euo pipefail
+
+SCRIPT_NAME=$(basename "$0")
+SCRIPT_DIR=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+
+# Find README: check installed location first, then development location.
+if [[ -f "/usr/share/doc/compiletools/README.${SCRIPT_NAME}.rst" ]]; then
+    README_PATH="/usr/share/doc/compiletools/README.${SCRIPT_NAME}.rst"
+else
+    README_PATH="${REPO_ROOT}/src/compiletools/README.${SCRIPT_NAME}.rst"
+fi
+
+# ---------- options --------------------------------------------------------
+
+SKIP_PKG=0
+SKIP_VENV=0
+DRY_RUN=0
+ASSUME_YES=0
+GCC_OVERRIDE=""
+# uv accepts a bare version (e.g. "3.13"), a binary name ("python3.13"), or
+# a path. With a version, uv will fetch and cache a managed interpreter on
+# demand -- which is how we pull in 3.13 on RHEL 8, where AppStream tops
+# out below it.
+PYTHON_SPEC="3.13"
+
+show_help() {
+    echo "Usage: ${SCRIPT_NAME} [--skip-pkg] [--skip-venv] [--dry-run] [-y|--yes]"
+    echo "                      [--gcc=PATH] [--python=SPEC] [-h|--help]"
+    echo ""
+    if [[ -f "$README_PATH" ]]; then
+        cat "$README_PATH"
+    else
+        echo "No documentation available for ${SCRIPT_NAME}"
+        echo "See: https://github.com/drgeoffathome/compiletools"
+    fi
+    exit 0
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --skip-pkg)    SKIP_PKG=1 ;;
+        --skip-venv)   SKIP_VENV=1 ;;
+        --dry-run)     DRY_RUN=1 ;;
+        -y|--yes)      ASSUME_YES=1 ;;
+        --gcc=*)       GCC_OVERRIDE="${1#--gcc=}" ;;
+        --gcc)         shift; GCC_OVERRIDE="${1:-}" ;;
+        --python=*)    PYTHON_SPEC="${1#--python=}" ;;
+        --python)      shift; PYTHON_SPEC="${1:-}" ;;
+        -h|--help)     show_help ;;
+        *)             echo "Error: unknown option: $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+# ---------- helpers --------------------------------------------------------
+
+if [[ -t 1 ]]; then
+    C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'
+    C_BOLD=$'\033[1m'; C_RESET=$'\033[0m'
+else
+    C_RED=''; C_GREEN=''; C_YELLOW=''; C_BOLD=''; C_RESET=''
+fi
+
+info()  { printf '%s==>%s %s\n' "$C_BOLD" "$C_RESET" "$*"; }
+warn()  { printf '%sWARN:%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
+err()   { printf '%sERROR:%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; }
+ok()    { printf '%sOK%s   %s\n' "$C_GREEN" "$C_RESET" "$*"; }
+
+run() {
+    printf '    %s$%s %s\n' "$C_BOLD" "$C_RESET" "$*"
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+        "$@"
+    fi
+}
+
+confirm() {
+    local prompt=$1 answer
+    if [[ "$ASSUME_YES" -eq 1 ]]; then
+        return 0
+    fi
+    read -rp "$prompt [y/N] " answer
+    [[ "${answer,,}" == y || "${answer,,}" == yes ]]
+}
+
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || {
+        err "required command not found: $1"
+        exit 1
+    }
+}
+
+# Pick `sudo` only when not already root and dnf is the privileged action.
+if [[ "$(id -u)" -eq 0 ]]; then
+    SUDO=()
+else
+    SUDO=(sudo)
+fi
+
+# Return 0 if $1 (a path or a PATH-resolvable command name) is a gcc whose
+# major version is >= $2.
+gcc_at_least() {
+    local cc=$1 want=$2 resolved ver major
+    if [[ "$cc" == */* ]]; then
+        # Caller passed a path; require it to be executable as-is.
+        [[ -x "$cc" ]] || return 1
+        resolved=$cc
+    else
+        # Caller passed a bare command; resolve via PATH.
+        resolved=$(command -v "$cc" 2>/dev/null) || return 1
+    fi
+    ver=$("$resolved" -dumpfullversion -dumpversion 2>/dev/null) || return 1
+    major=${ver%%.*}
+    [[ "$major" =~ ^[0-9]+$ ]] || return 1
+    (( major >= want ))
+}
+
+# ---------- preflight ------------------------------------------------------
+
+# Refuse to run anywhere except the RHEL 8 family. The recipe is
+# RHEL-8-specific (gcc-toolset path layout, python3.11 module name) and
+# would clobber a non-RHEL dev environment.
+if [[ ! -f /etc/os-release ]]; then
+    err "no /etc/os-release; this script only runs on RHEL 8 family hosts"
+    exit 1
+fi
+# shellcheck source=/dev/null
+. /etc/os-release
+case "${ID:-}:${VERSION_ID:-}" in
+    rhel:8|rhel:8.*|centos:8|centos:8.*|rocky:8|rocky:8.*|almalinux:8|almalinux:8.*|ol:8|ol:8.*)
+        ;;
+    *)
+        err "this script targets RHEL 8 / CentOS 8 / Rocky 8 / AlmaLinux 8 / Oracle Linux 8 only."
+        err "detected: ID=${ID:-?} VERSION_ID=${VERSION_ID:-?}"
+        err "for other platforms, see INSTALL."
+        exit 1
+        ;;
+esac
+
+# Confirm we are sitting in a compiletools checkout.
+if [[ ! -f "$REPO_ROOT/pyproject.toml" ]]; then
+    err "cannot find $REPO_ROOT/pyproject.toml -- is this a compiletools checkout?"
+    exit 1
+fi
+if ! grep -q '^name = "compiletools"' "$REPO_ROOT/pyproject.toml"; then
+    err "$REPO_ROOT/pyproject.toml does not look like compiletools"
+    exit 1
+fi
+
+# `uv` is a hard prerequisite -- this script does not install it. Provision
+# it however your environment provides it (vendor binary, distro package,
+# environment module, manual `pip install --user uv`, etc.) before running.
+require_cmd uv
+
+info "compiletools repo root: $REPO_ROOT"
+info "RHEL family:            ${ID} ${VERSION_ID}"
+info "uv:                     $(command -v uv) ($(uv --version 2>&1 | head -1))"
+info "python spec (uv):       $PYTHON_SPEC"
+[[ "$DRY_RUN" -eq 1 ]] && info "DRY RUN -- no commands will be executed"
+
+# ---------- step 1: dnf pkgs (only the ones we lack) -----------------------
+
+# Build DNF_PKGS by inclusion, not exclusion: every entry here is something
+# we proved is missing.
+#
+# Python is intentionally NOT installed via dnf: RHEL 8 AppStream tops out
+# below 3.13, and `uv venv --python 3.13` will fetch a managed interpreter
+# on demand instead.
+#
+# nodejs is intentionally NOT installed: the pip wheel for `pyright` ships
+# its own node-bootstrap that downloads a Node runtime into the venv on
+# first invocation. System nodejs would just shadow it.
+DNF_PKGS=()
+
+# git -- needed by `pip install -e` if the editable install ever has to
+#        resolve a git+https dependency, and for the user's own workflow.
+#        Skip if it's already on $PATH.
+if ! command -v git >/dev/null 2>&1; then
+    DNF_PKGS+=(git)
+fi
+
+# gcc-toolset-13 -- modern GCC (12+) for stringzilla's AVX-512 intrinsics;
+#                   INSTALL prescribes GCC 12+. Skip if a usable modern gcc
+#                   is already discoverable (--gcc override, system gcc 12+,
+#                   or an existing /opt/rh/gcc-toolset-{14,13,12}/enable).
+need_toolset=1
+if [[ -n "$GCC_OVERRIDE" ]]; then
+    need_toolset=0
+elif gcc_at_least gcc 12 2>/dev/null; then
+    need_toolset=0
+else
+    for ts in 14 13 12; do
+        if [[ -f "/opt/rh/gcc-toolset-${ts}/enable" ]]; then
+            need_toolset=0
+            break
+        fi
+    done
+fi
+if [[ "$need_toolset" -eq 1 ]]; then
+    DNF_PKGS+=(gcc-toolset-13)
+fi
+
+if [[ "$SKIP_PKG" -eq 1 ]]; then
+    info "skipping dnf install (--skip-pkg)"
+elif [[ ${#DNF_PKGS[@]} -eq 0 ]]; then
+    info "all RHEL prerequisites already present; skipping dnf install"
+else
+    require_cmd dnf
+    info "installing RHEL prerequisites: ${DNF_PKGS[*]}"
+    # `dnf install` is idempotent; already-installed pkgs are no-ops.
+    run "${SUDO[@]}" dnf install -y "${DNF_PKGS[@]}"
+fi
+
+# ---------- step 2: modern GCC ---------------------------------------------
+
+# Resolve a CC (>=12) that can compile stringzilla's AVX-512 intrinsics.
+# Order: --gcc override, system gcc if already 12+, then gcc-toolset-{14,13,12}.
+MODERN_CC=""
+if [[ -n "$GCC_OVERRIDE" ]]; then
+    if [[ "$DRY_RUN" -eq 0 ]] && ! gcc_at_least "$GCC_OVERRIDE" 12; then
+        err "--gcc=$GCC_OVERRIDE is missing, not executable, or older than 12"
+        exit 1
+    fi
+    MODERN_CC="$GCC_OVERRIDE"
+    info "using --gcc override: $MODERN_CC"
+elif gcc_at_least gcc 12; then
+    MODERN_CC=$(command -v gcc)
+    info "system gcc is already modern: $MODERN_CC ($("$MODERN_CC" -dumpfullversion -dumpversion))"
+else
+    for ts in 14 13 12; do
+        enable="/opt/rh/gcc-toolset-${ts}/enable"
+        if [[ -f "$enable" ]]; then
+            info "enabling gcc-toolset-${ts}"
+            # shellcheck source=/dev/null
+            [[ "$DRY_RUN" -eq 0 ]] && source "$enable"
+            MODERN_CC="/opt/rh/gcc-toolset-${ts}/root/usr/bin/gcc"
+            break
+        fi
+    done
+fi
+
+if [[ "$DRY_RUN" -eq 0 ]]; then
+    if [[ -z "$MODERN_CC" ]] || ! gcc_at_least "$MODERN_CC" 12; then
+        err "no GCC >=12 available. Install gcc-toolset-13 or pass --gcc=PATH."
+        exit 1
+    fi
+    ok "modern gcc: $MODERN_CC ($("$MODERN_CC" -dumpfullversion -dumpversion))"
+fi
+
+# ---------- step 3: venv ---------------------------------------------------
+
+VENV_DIR="$REPO_ROOT/.venv"
+
+if [[ "$SKIP_VENV" -eq 1 ]]; then
+    info "skipping venv creation (--skip-venv)"
+    if [[ "$DRY_RUN" -eq 0 && ! -x "$VENV_DIR/bin/python" ]]; then
+        err "--skip-venv given but $VENV_DIR/bin/python is missing"
+        exit 1
+    fi
+elif [[ -x "$VENV_DIR/bin/python" ]]; then
+    info "reusing existing venv: $VENV_DIR ($("$VENV_DIR/bin/python" --version 2>&1))"
+else
+    info "creating venv at $VENV_DIR (python: $PYTHON_SPEC, fetched by uv)"
+    run uv venv --python "$PYTHON_SPEC" "$VENV_DIR"
+fi
+
+# Activate. The activation script is bash-compatible and only sets a few env
+# vars, so 'set -u' is fine after sourcing.
+# shellcheck source=/dev/null
+[[ "$DRY_RUN" -eq 0 ]] && source "$VENV_DIR/bin/activate"
+
+# ---------- step 4: stringzilla --------------------------------------------
+
+# RHEL 8's system GCC (8.x / 10) cannot compile stringzilla's AVX-512
+# intrinsics. The INSTALL recipe is: point CC at a modern GCC (12+) and
+# pass the AVX-512 enable flags so the compiler will emit code for those
+# intrinsics. Stringzilla still does runtime CPU dispatch, so the wheel
+# works on hosts without AVX-512 -- the flags are a *compile-time*
+# requirement, not a runtime one.
+STRINGZILLA_CFLAGS=(
+    "-mavx512f"
+    "-mavx512bw"
+    "-mavx512vl"
+    "-mavx512vbmi"
+)
+
+if [[ "$DRY_RUN" -eq 0 ]] && python -c 'import stringzilla' 2>/dev/null; then
+    sz_ver=$(python -c 'import stringzilla; print(stringzilla.__version__)')
+    info "stringzilla already installed (${sz_ver}); skipping rebuild"
+else
+    info "installing stringzilla with modern-GCC + AVX-512 CFLAGS"
+    # CC and CFLAGS only need to be live for stringzilla's compile.
+    # Save+restore any pre-existing parent-shell value so we don't clobber
+    # it (`unset` would drop it entirely rather than restoring it).
+    if [[ -v CC ]]; then _saved_cc="$CC"; _had_cc=1; else _had_cc=0; fi
+    if [[ -v CFLAGS ]]; then _saved_cflags="$CFLAGS"; _had_cflags=1; else _had_cflags=0; fi
+    export CC="$MODERN_CC"
+    export CFLAGS="${STRINGZILLA_CFLAGS[*]}"
+    run uv pip install "stringzilla>=4.6.0"
+    if [[ "$_had_cc" -eq 1 ]]; then export CC="$_saved_cc"; else unset CC; fi
+    if [[ "$_had_cflags" -eq 1 ]]; then export CFLAGS="$_saved_cflags"; else unset CFLAGS; fi
+    unset _saved_cc _had_cc _saved_cflags _had_cflags
+fi
+
+# ---------- step 5: compiletools + dev/tui tooling -------------------------
+
+info "installing compiletools (editable) with [tui,dev] extras"
+# Unlike Termux, we *can* use the [dev] extra: ruff has a prebuilt
+# manylinux x86_64 wheel on PyPI, so uv will not fall back to building
+# from sdist via cargo. [tui] adds textual for the timing TUI.
+run uv pip install -e "${REPO_ROOT}[tui,dev]"
+
+# ---------- verify ---------------------------------------------------------
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+    ok "dry run complete"
+    exit 0
+fi
+
+info "verifying install"
+
+verify_failed=0
+verify() {
+    local label=$1
+    shift
+    if "$@" >/dev/null 2>&1; then
+        ok "$label"
+    else
+        err "$label FAILED: $*"
+        verify_failed=1
+    fi
+}
+
+verify "stringzilla import"   python -c 'import stringzilla; assert stringzilla.hash(b"abc") != 0'
+verify "compiletools import"  python -c 'import compiletools'
+verify "textual import"       python -c 'import textual'
+verify "ruff installed"       ruff --version
+verify "pre-commit installed" pre-commit --version
+verify "pytest installed"     pytest --version
+verify "pyright installed"    pyright --version
+
+if [[ "$verify_failed" -ne 0 ]]; then
+    err "one or more verification steps failed; see messages above"
+    exit 1
+fi
+
+cat <<EOF
+
+${C_GREEN}${C_BOLD}RHEL 8 dev install complete.${C_RESET}
+
+  Activate the venv:    source $VENV_DIR/bin/activate
+  Install hooks:        pre-commit install
+  Run tests:            pytest -n auto
+
+Note: the modern-GCC environment ($MODERN_CC) was only needed to compile
+stringzilla. Day-to-day compiletools use does not require it -- the
+gcc-toolset \`enable\` script is sourced once by this installer and is not
+persisted to your shell rc.
+EOF

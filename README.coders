@@ -7,10 +7,10 @@ This file contains notes to coders who want to contribute to the project.
 uv pip install -e ".[dev]"
 
 # On Termux (Android, aarch64), do NOT run the line above as-is. Use:
-scripts/ct-termux-install
+scripts/ct-venv-install-termux
 # It handles the clang 21+ stringzilla CFLAGS and avoids the ruff sdist
 # cargo build (which OOM-kills the device). See INSTALL section 6 or
-# `scripts/ct-termux-install --help` for the manual recipe and options.
+# `scripts/ct-venv-install-termux --help` for the manual recipe and options.
 
 # Install pre-commit hooks (required for all contributors)
 pre-commit install

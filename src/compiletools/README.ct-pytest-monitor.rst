@@ -166,5 +166,5 @@ SEE ALSO
 ========
 The ``Termux (Android, aarch64)`` subsection of the project ``INSTALL``
 file documents the install-time OOM workaround
-(``scripts/ct-termux-install``); ``ct-pytest-monitor`` is the runtime
+(``scripts/ct-venv-install-termux``); ``ct-pytest-monitor`` is the runtime
 counterpart for the test suite.

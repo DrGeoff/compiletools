@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ct-termux-install -- bootstrap a compiletools dev environment on Termux.
+# ct-venv-install-termux -- bootstrap a compiletools dev environment on Termux.
 #
 # Performs the recipe documented in INSTALL section 6:
 #   1. install required Termux pkgs (clang, nodejs, ruff, uv, git, ...)

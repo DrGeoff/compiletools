@@ -103,7 +103,7 @@ The simplest path is to run the bundled bootstrap script:
 
     git clone https://github.com/DrGeoff/compiletools
     cd compiletools
-    scripts/ct-termux-install
+    scripts/ct-venv-install-termux
 
 It performs every step in this section automatically, is idempotent, and
 exits non-zero on any verification failure. Pass `--dry-run` to inspect

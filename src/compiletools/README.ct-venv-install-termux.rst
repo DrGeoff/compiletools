@@ -1,6 +1,6 @@
-==================
-ct-termux-install
-==================
+======================
+ct-venv-install-termux
+======================
 
 ----------------------------------------------------------------------
 One-command compiletools dev bootstrap for Termux (Android, aarch64)
@@ -14,11 +14,11 @@ One-command compiletools dev bootstrap for Termux (Android, aarch64)
 
 SYNOPSIS
 ========
-ct-termux-install [--skip-pkg] [--skip-venv] [--dry-run] [-y|--yes] [-h|--help]
+ct-venv-install-termux [--skip-pkg] [--skip-venv] [--dry-run] [-y|--yes] [-h|--help]
 
 DESCRIPTION
 ===========
-``ct-termux-install`` bootstraps a complete compiletools development
+``ct-venv-install-termux`` bootstraps a complete compiletools development
 environment on Termux. A plain ``uv pip install -e ".[dev]"`` does not work on
 Termux for two independent reasons; this script handles both automatically:
 
@@ -119,19 +119,19 @@ Full bootstrap from a fresh checkout::
 
     git clone https://github.com/DrGeoff/compiletools
     cd compiletools
-    scripts/ct-termux-install
+    scripts/ct-venv-install-termux
 
 Re-run after pulling new commits (everything is idempotent)::
 
-    scripts/ct-termux-install --skip-pkg
+    scripts/ct-venv-install-termux --skip-pkg
 
 Inspect the plan without executing::
 
-    scripts/ct-termux-install --dry-run
+    scripts/ct-venv-install-termux --dry-run
 
 Run unattended (no prompts even on low-memory warning)::
 
-    scripts/ct-termux-install -y
+    scripts/ct-venv-install-termux -y
 
 EXIT STATUS
 ===========
