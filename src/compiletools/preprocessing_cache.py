@@ -99,6 +99,16 @@ class MacroState:
                          raw-string hashing.
         cflags_tokens: Same idea for cflags.
         cxxflags_tokens: Same idea for cxxflags.
+        compiler_identity: Stable identity string for the compiler binary
+                           (realpath|size|mtime_ns) produced by
+                           ``apptools.compiler_identity``. Folded into the
+                           build-context portion of the include_core hash so
+                           an in-place toolchain swap that does not change
+                           the user-visible ``compiler_path`` (e.g. ``g++``)
+                           still invalidates stale objects. Default ``""``
+                           preserves backward compat for tests that don't
+                           set it.  Symmetric with the PCH cache key in
+                           ``build_backend._pch_command_hash``.
     """
 
     core: MacroDict  # Static: compiler + cmdline macros
@@ -111,6 +121,7 @@ class MacroState:
     cppflags_tokens: Optional[list]  # Structured cppflags tokens (-D/-U stripped)
     cflags_tokens: Optional[list]  # Structured cflags tokens (-D/-U stripped)
     cxxflags_tokens: Optional[list]  # Structured cxxflags tokens (-D/-U stripped)
+    compiler_identity: str  # Build context: compiler binary identity (realpath|size|mtime_ns)
     _cache_key: Optional[MacroCacheKey]  # Cached frozenset for cache keys
     _hash: Optional[str]  # Cached hex digest for convergence detection (variable only)
     _hash_full: Optional[str]  # Cached hex digest including core + variable + build context
@@ -127,6 +138,7 @@ class MacroState:
         cppflags_tokens: Optional[list] = None,
         cflags_tokens: Optional[list] = None,
         cxxflags_tokens: Optional[list] = None,
+        compiler_identity: str = "",
     ):
         """Initialize macro state.
 
@@ -143,6 +155,10 @@ class MacroState:
                 None falls back to hashing the raw cppflags string.
             cflags_tokens: Optional tokenized cflags with -D/-U stripped.
             cxxflags_tokens: Optional tokenized cxxflags with -D/-U stripped.
+            compiler_identity: Stable identity for the compiler binary
+                (realpath|size|mtime_ns) from ``apptools.compiler_identity``.
+                Folded into the include_core hash so an in-place toolchain
+                swap invalidates objects. Default ``""`` for backward compat.
         """
         self.core = core
         self.variable = variable if variable is not None else {}
@@ -154,6 +170,7 @@ class MacroState:
         self.cppflags_tokens = cppflags_tokens
         self.cflags_tokens = cflags_tokens
         self.cxxflags_tokens = cxxflags_tokens
+        self.compiler_identity = compiler_identity
         self._cache_key = None  # Lazy-computed cache key
         self._hash = None  # Lazy-computed hash (variable only)
         self._hash_full = None  # Lazy-computed hash (core + variable + build context)
@@ -202,6 +219,7 @@ class MacroState:
             cppflags_tokens=self.cppflags_tokens,
             cflags_tokens=self.cflags_tokens,
             cxxflags_tokens=self.cxxflags_tokens,
+            compiler_identity=self.compiler_identity,
         )
 
         # Optimization: incrementally compute cache key when possible
@@ -233,6 +251,7 @@ class MacroState:
             cppflags_tokens=self.cppflags_tokens,
             cflags_tokens=self.cflags_tokens,
             cxxflags_tokens=self.cxxflags_tokens,
+            compiler_identity=self.compiler_identity,
         )
 
     # Dict-like interface for easy drop-in replacement
@@ -411,7 +430,16 @@ class MacroState:
         else:
             cxxflags_part = f"CXXFLAGS={self.cxxflags}"
 
-        build_context = f"CC={self.compiler_path}\x00{cppflags_part}\x00{cflags_part}\x00{cxxflags_part}"
+        # ``CC=`` keeps the user-visible command (still useful for diagnostic
+        # collision triage). ``COMPILER_IDENTITY=`` is the strict form
+        # (realpath|size|mtime_ns) symmetric with the PCH cache key in
+        # ``build_backend._pch_command_hash`` -- it catches in-place
+        # toolchain swaps that don't change ``CC``.
+        build_context = (
+            f"CC={self.compiler_path}\x00"
+            f"COMPILER_IDENTITY={self.compiler_identity}\x00"
+            f"{cppflags_part}\x00{cflags_part}\x00{cxxflags_part}"
+        )
         combined ^= sz.hash(bytes(build_context, "utf-8"))
         return combined
 
@@ -641,6 +669,7 @@ def get_or_compute_preprocessing(
         cppflags_tokens=input_macros.cppflags_tokens,
         cflags_tokens=input_macros.cflags_tokens,
         cxxflags_tokens=input_macros.cxxflags_tokens,
+        compiler_identity=input_macros.compiler_identity,
     )
 
     # Create result

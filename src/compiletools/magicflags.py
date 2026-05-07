@@ -184,6 +184,12 @@ class MagicFlagsBase:
                 self._args.CPPFLAGS, self._args.CFLAGS, self._args.CXXFLAGS
             )
 
+        # ``compiler_identity`` folds the binary's realpath/size/mtime_ns into
+        # the build-context hash (symmetric with the PCH cache key). Catches
+        # in-place toolchain swaps that don't change ``args.CXX`` (still
+        # ``g++``) but do produce a different compiler binary.
+        compiler_identity = compiletools.apptools.compiler_identity(self._args.CXX)
+
         # Create MacroState with core macros, empty variable macros
         return MacroState(
             core_macros,
@@ -196,6 +202,7 @@ class MagicFlagsBase:
             cppflags_tokens=cppflags_tokens,
             cflags_tokens=cflags_tokens,
             cxxflags_tokens=cxxflags_tokens,
+            compiler_identity=compiler_identity,
         )
 
     def get_final_macro_state_key(self, filename: str):
@@ -598,6 +605,7 @@ class MagicFlagsBase:
             cppflags_tokens=effective_cppflags_tokens,
             cflags_tokens=effective_cflags_tokens,
             cxxflags_tokens=effective_cxxflags_tokens,
+            compiler_identity=old_ms.compiler_identity,
         )
 
         return flagsforfilename
@@ -1209,6 +1217,7 @@ class CppMagicFlags(MagicFlagsBase):
             cppflags_tokens=self._initial_macro_state.cppflags_tokens,
             cflags_tokens=self._initial_macro_state.cflags_tokens,
             cxxflags_tokens=self._initial_macro_state.cxxflags_tokens,
+            compiler_identity=self._initial_macro_state.compiler_identity,
         )
 
     def _readfile(self, filename):
