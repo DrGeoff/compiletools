@@ -1,4 +1,6 @@
 import os
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import compiletools.apptools
 import compiletools.headerdeps
@@ -6,6 +8,9 @@ import compiletools.magicflags
 import compiletools.utils
 import compiletools.wrappedos
 from compiletools.utils import instance_cache
+
+if TYPE_CHECKING:
+    from compiletools.cmdline_macro_index import CmdlineMacroIndex
 
 
 def add_arguments(cap):
@@ -173,6 +178,11 @@ class Hunter:
             del self._hunted_sources
         if hasattr(self, "_test_sources"):
             del self._test_sources
+        # Clear the lazily-built CmdlineMacroIndex so it picks up any
+        # subsequent change to magicparser._initial_macro_state.cmdline_origin
+        # (e.g. when args are reparsed mid-test).
+        if hasattr(self, "_cmdline_macro_index_cached"):
+            del self._cmdline_macro_index_cached
 
     @instance_cache
     def _parse_magic(self, filename):
@@ -194,16 +204,101 @@ class Hunter:
         """
         return self.magicparser.get_final_macro_state_key(filename)
 
-    def macro_state_hash(self, filename):
+    def macro_state_hash(self, filename, dep_hash: str | None = None) -> str:
         """Get full macro state hash (core + variable) for object file naming.
 
         Returns 16-character hex hash including both compiler/cmdline macros
         and file-defined macros. Different compilers or flags produce different hashes.
 
+        When ``dep_hash`` is provided AND the magicparser has a non-empty
+        ``cmdline_origin`` (i.e., there are some cmdline ``-D`` macros in scope),
+        a per-TU scope filter is built via :class:`CmdlineMacroIndex` and forwarded
+        to ``magicflags.get_final_macro_state_hash``. Cmdline ``-D`` macros that
+        are NOT referenced by this TU or any of its transitive headers are
+        excluded from the hash, preventing cache-key pollution.
+
+        When ``dep_hash`` is ``None`` or ``cmdline_origin`` is empty, behaviour
+        is unchanged: every cmdline ``-D`` macro contributes to the hash. This
+        keeps old call sites working without regression.
+
+        Args:
+            filename: The TU file path.
+            dep_hash: Optional content-addressed dep-set hash from ``Namer``.
+                When provided, gates the per-TU scope-filter cache so distinct
+                dep sets don't collide.
+
         Raises:
-            KeyError: If parse() hasn't been called for this file yet
+            KeyError: If parse() hasn't been called for this file yet.
         """
-        return self.magicparser.get_final_macro_state_hash(filename)
+        cmdline_origin = self.magicparser._initial_macro_state.cmdline_origin
+        if dep_hash is None or not cmdline_origin:
+            return self.magicparser.get_final_macro_state_hash(filename)
+
+        from compiletools.global_hash_registry import get_file_hash
+
+        tu_hash = get_file_hash(filename, self.context)
+        transitive = self._transitive_content_hashes(filename)
+        scope_filter = self._get_cmdline_macro_index().tu_referenced_macros(
+            tu_filename=filename,
+            tu_content_hash=tu_hash,
+            dep_hash=dep_hash,
+            transitive_content_hashes=transitive,
+        )
+        return self.magicparser.get_final_macro_state_hash(filename, scope_filter=scope_filter)
+
+    def _bytes_provider(self) -> Callable[[str], bytes]:
+        """Return a callable that maps content_hash -> file bytes.
+
+        Uses :func:`global_hash_registry.get_filepath_by_hash` to find a
+        file path for the hash, then reads the file. Suitable for handing
+        to :class:`CmdlineMacroIndex`, which caches results by content
+        hash so a given file is read at most once.
+        """
+        from compiletools.global_hash_registry import get_filepath_by_hash
+
+        def provider(content_hash: str) -> bytes:
+            try:
+                path = get_filepath_by_hash(content_hash, self.context)
+            except FileNotFoundError:
+                # Stale registry or hash that no longer maps to a tracked
+                # file. Returning empty bytes is safe -- the caller
+                # (CmdlineMacroIndex._scan) treats empty data as "not
+                # referenced", which falls back to the old behaviour
+                # (macro stays in the hash) for that file.
+                return b""
+            try:
+                with open(path, "rb") as f:
+                    return f.read()
+            except OSError:
+                return b""
+
+        return provider
+
+    def _get_cmdline_macro_index(self) -> "CmdlineMacroIndex":
+        """Lazily build the :class:`CmdlineMacroIndex` (one per Hunter)."""
+        if not hasattr(self, "_cmdline_macro_index_cached"):
+            from compiletools.cmdline_macro_index import CmdlineMacroIndex
+
+            cmdline_origin = self.magicparser._initial_macro_state.cmdline_origin
+            self._cmdline_macro_index_cached = CmdlineMacroIndex(
+                cmdline_d_macro_names=cmdline_origin,
+                bytes_provider=self._bytes_provider(),
+            )
+        return self._cmdline_macro_index_cached
+
+    def _transitive_content_hashes(self, filename: str) -> list[str]:
+        """Content hashes of transitive headers for ``filename`` (NOT the TU itself).
+
+        Uses the same dep walk as :meth:`header_dependencies` so the
+        cache-key scope matches what flows into ``namer.compute_dep_hash``.
+        The TU's own content hash is NOT included -- :meth:`macro_state_hash`
+        passes it separately as ``tu_content_hash`` to
+        :meth:`CmdlineMacroIndex.tu_referenced_macros`.
+        """
+        from compiletools.global_hash_registry import get_file_hash
+
+        headers = self.header_dependencies(filename)
+        return [get_file_hash(str(h), self.context) for h in headers]
 
     def header_dependencies(self, source_filename):
         """Get header dependencies for a file with proper macro context.
