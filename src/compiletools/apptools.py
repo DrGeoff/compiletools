@@ -827,6 +827,10 @@ def strip_d_u_tokens(tokens: list[str]) -> list[str]:
 # - -pipe: tells compiler to use pipes for I/O between stages
 # - -v / --verbose: prints the compile invocation
 # - --help / -###: introspection-only
+# Prefix-matched diagnostic flag families: any token starting with one
+# of these strings is hash-irrelevant. -W and -fdiagnostics- are open-
+# ended families (-Wall, -Wextra, -Wno-foo, -fdiagnostics-color, ...),
+# so prefix matching is correct.
 _HASH_IRRELEVANT_PREFIXES: tuple[str, ...] = (
     "-W",  # warnings (see _HASH_RELEVANT_W_FLAGS exception below)
     "-fdiagnostics-",
@@ -836,12 +840,20 @@ _HASH_IRRELEVANT_PREFIXES: tuple[str, ...] = (
     "-fcaret-diagnostics",
     "-fno-color-diagnostics",
     "-fcolor-diagnostics",
+)
+
+# Exact-matched diagnostic flags: single-token flags that should NOT
+# match prefix-style. e.g. ``-v`` must not silently swallow a hypothetical
+# future ``-vN``-style flag, and ``-pipe`` must not match
+# ``-pipefoo``. These are checked with ``tok ==`` rather than
+# ``tok.startswith()`` so the match is precise.
+_HASH_IRRELEVANT_EXACT: frozenset[str] = frozenset({
     "-pipe",
     "-v",
     "--verbose",
     "--help",
     "-###",
-)
+})
 
 # Exception: -Werror promotes warnings to errors, which CAN affect the
 # build outcome (compile fails vs succeeds). Treat -Werror and
@@ -871,9 +883,14 @@ def filter_hash_irrelevant_tokens(tokens: list[str]) -> list[str]:
             out.append(tok)
             i += 1
             continue
-        # Diagnostic-only prefixes: drop. None of these take a separate
-        # value token in current GCC/Clang (``-fmessage-length=`` is the
-        # attached form), so a single-token skip suffices.
+        # Exact-matched diagnostic flags: drop without prefix-eating risk.
+        if tok in _HASH_IRRELEVANT_EXACT:
+            i += 1
+            continue
+        # Prefix-matched diagnostic flag families: drop. None of these
+        # take a separate value token in current GCC/Clang
+        # (``-fmessage-length=`` is the attached form), so a single-
+        # token skip suffices.
         if any(tok.startswith(prefix) for prefix in _HASH_IRRELEVANT_PREFIXES):
             i += 1
             continue
@@ -953,6 +970,12 @@ def compiler_identity(cxx: str) -> str:
     (e.g. user passed a non-path command like ``ccache g++``). Returns
     ``""`` when ``cxx`` is None / empty so unconfigured ``args.CXX``
     (some unit-test fixtures) doesn't crash the helper.
+
+    Side effect: any tool that bumps the compiler binary's mtime (e.g.
+    a no-op ``touch /usr/bin/g++``) will invalidate the cache. This is
+    acceptable because the false positive forces a rebuild -- a slow
+    correct outcome -- whereas a false negative (which this helper is
+    designed to prevent) would silently produce a stale ``.o``.
     """
     if not cxx:
         return ""
@@ -1817,6 +1840,14 @@ def parseargs(cap, argv, verbose=None, *, context):
     # every call. Tokens are populated AFTER all parseargs mutations
     # (env vars, INCLUDE injection, project version macros, pkg-config,
     # CPP/CXX unification) so they reflect the final raw-string state.
+    #
+    # WARNING: do not mutate args.{CPPFLAGS,CFLAGS,CXXFLAGS,LDFLAGS}
+    # after parseargs returns. args.{*}_tokens and args.flags are
+    # populated once here and will silently drift from the raw strings
+    # if those strings are modified later. All known mutation sites are
+    # in this function (substitutions, _add_include_paths_to_flags,
+    # project version macros, pkg-config, CPP/CXX unification) and run
+    # BEFORE this point.
     for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS"):
         if hasattr(args, slot):
             setattr(args, f"{slot}_tokens", compiletools.utils.split_command_cached(getattr(args, slot)))
