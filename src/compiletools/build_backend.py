@@ -26,6 +26,7 @@ import sys
 import time
 from typing import NamedTuple, TypeVar
 
+import compiletools.apptools
 import compiletools.filesystem_utils
 import compiletools.global_hash_registry
 import compiletools.namer
@@ -462,7 +463,24 @@ class BuildBackend(abc.ABC):
             magic_cpp_flags = pch_magicflags.get(sz.Str("CPPFLAGS"), [])
             magic_cxx_flags = pch_magicflags.get(sz.Str("CXXFLAGS"), [])
 
-            cmd_hash = _pch_command_hash(self.args, pch_header, magic_cpp_flags, magic_cxx_flags) if pchdir else None
+            if pchdir:
+                # CXXFLAGS_TOKENS strips -D/-U; cmdline-D macros are
+                # captured per-PCH-header via _pch_scope_macro_hash so
+                # an irrelevant -DAPP_NAME=... change doesn't pollute
+                # the cache key. Same fix applied to per-TU object
+                # hashing in Hunter.macro_state_hash.
+                cxxflags_tokens = compiletools.apptools.tokenize_compile_flags("", "", self.args.CXXFLAGS)[2]
+                scope_macro_hash = _pch_scope_macro_hash(self.hunter, pch_header)
+                cmd_hash = _pch_command_hash(
+                    self.args,
+                    pch_header,
+                    magic_cpp_flags,
+                    magic_cxx_flags,
+                    cxxflags_tokens=cxxflags_tokens,
+                    scope_macro_hash=scope_macro_hash,
+                )
+            else:
+                cmd_hash = None
             gch_path = _gch_path(pch_header, pchdir=pchdir, command_hash=cmd_hash)
             self._pch_gch_paths[pch_header] = gch_path
             if pchdir and cmd_hash:
@@ -1190,6 +1208,8 @@ def _pch_command_hash(
     pch_header: str,
     magic_cpp_flags: list,
     magic_cxx_flags: list,
+    cxxflags_tokens: list[str],
+    scope_macro_hash: str,
 ) -> str:
     """Compute a content-addressable hash for a PCH compile command.
 
@@ -1200,6 +1220,14 @@ def _pch_command_hash(
     .gch file. Uses ``json.dumps`` rather than space-join so flag values
     containing literal spaces (``-DFOO="a b"``) cannot collide with
     space-separated flag pairs.
+
+    ``cxxflags_tokens`` is the structured (``-D``/``-U``-stripped) form
+    of ``args.CXXFLAGS`` produced by
+    :func:`compiletools.apptools.tokenize_compile_flags`. The cmdline
+    ``-D`` macros relevant to this PCH header are folded in via
+    ``scope_macro_hash`` (see :func:`_pch_scope_macro_hash`), so two
+    apps that differ only in an irrelevant ``-DAPP_NAME=...`` value
+    share the same PCH cache key.
     """
     # 64 bits (16 hex chars) of SHA-256 — birthday-collision risk at
     # ~4 billion entries, fine in practice. PCH cache validity is also
@@ -1214,13 +1242,65 @@ def _pch_command_hash(
     canonical = {
         "compiler_identity": _compiler_identity(args.CXX),
         "cxx_command": args.CXX,
-        "CXXFLAGS": args.CXXFLAGS,
+        # Structured tokens with -D/-U stripped; cmdline -D macros are
+        # captured by ``scope_macro_hash`` after per-PCH-header scoping.
+        "CXXFLAGS_TOKENS": list(cxxflags_tokens),
         "magic_cpp_flags": [str(f) for f in magic_cpp_flags],
         "magic_cxx_flags": [str(f) for f in magic_cxx_flags],
         "header": compiletools.wrappedos.realpath(pch_header),
         "stage": "c++-header",
+        "scope_macro_hash": scope_macro_hash,
     }
     return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def _pch_scope_macro_hash(hunter, pch_header: str) -> str:
+    """Hash the cmdline ``-D`` macros relevant to a single PCH header.
+
+    Mirrors the per-TU scope-filter logic in
+    :meth:`compiletools.hunter.Hunter.macro_state_hash`, but for PCH
+    cache keys. Only cmdline-D macros that the PCH header (or any of
+    its transitive headers) references as identifiers are folded in.
+    Compiler builtins are not included -- they're already captured by
+    ``compiler_identity`` in :func:`_pch_command_hash`.
+
+    Returns 16 hex chars of sha256 over a sorted, deterministic
+    (name, value) pair list. Returns ``"0" * 16`` when:
+
+    * ``cmdline_origin`` is empty (no ``--append-*FLAGS=-D...`` at all), or
+    * No cmdline-D macro is referenced by this PCH header.
+
+    The all-zeros sentinel is intentional -- it makes "no scoping
+    applied" visible in the canonical dict rather than masking it as a
+    sha256 of an empty list.
+    """
+    cmdline_origin = hunter.magicparser._initial_macro_state.cmdline_origin
+    if not cmdline_origin:
+        return "0" * 16
+
+    pch_content_hash = compiletools.global_hash_registry.get_file_hash(pch_header, hunter.context)
+    transitive = hunter._transitive_content_hashes(pch_header)
+    # Hunter has no Namer attached, so derive a stable dep_hash from
+    # the sorted transitive content hashes directly. The exact value
+    # doesn't matter -- it only needs to be content-addressed and
+    # stable so CmdlineMacroIndex's per-TU scope cache stays coherent.
+    dep_hash = hashlib.sha256("\n".join(sorted(transitive)).encode()).hexdigest()[:14]
+
+    scope_filter = hunter._get_cmdline_macro_index().tu_referenced_macros(
+        tu_filename=pch_header,
+        tu_content_hash=pch_content_hash,
+        dep_hash=dep_hash,
+        transitive_content_hashes=transitive,
+    )
+
+    if not scope_filter:
+        return "0" * 16
+
+    core = hunter.magicparser._initial_macro_state.core
+    pairs = sorted((str(name), str(core[name])) for name in scope_filter if name in core)
+    if not pairs:
+        return "0" * 16
+    return hashlib.sha256(json.dumps(pairs).encode()).hexdigest()[:16]
 
 
 def _write_pch_manifest(

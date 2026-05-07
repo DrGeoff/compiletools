@@ -921,6 +921,11 @@ def make_mock_hunter(sources=None, headers=None, magicflags_map=None, per_file_m
     from compiletools.build_context import BuildContext
 
     hunter.context = BuildContext()
+    # Real frozenset for cmdline_origin so build_backend's
+    # _pch_scope_macro_hash can early-return without falling into a
+    # MagicMock auto-attribute trap. Tests that need a non-empty
+    # origin set should override this attribute explicitly.
+    hunter.magicparser._initial_macro_state.cmdline_origin = frozenset()
     return hunter
 
 

@@ -363,10 +363,7 @@ class TestBuildGraphPopulation:
         used_buckets = {os.path.dirname(r.output) for r in compile_rules}
         assert used_buckets, "fixture should produce at least one compile rule"
 
-        mkdir_rules = [
-            r for r in graph.rules
-            if r.rule_type == "mkdir" and r.output.startswith(objdir + os.sep)
-        ]
+        mkdir_rules = [r for r in graph.rules if r.rule_type == "mkdir" and r.output.startswith(objdir + os.sep)]
         emitted_bucket_dirs = {r.output for r in mkdir_rules}
 
         assert emitted_bucket_dirs == used_buckets, (
@@ -374,9 +371,7 @@ class TestBuildGraphPopulation:
             f"Used: {sorted(used_buckets)}; emitted: {sorted(emitted_bucket_dirs)}"
         )
         for rule in mkdir_rules:
-            assert "mkdir" in " ".join(rule.command), (
-                f"sharded bucket mkdir rule {rule.output!r} must invoke mkdir"
-            )
+            assert "mkdir" in " ".join(rule.command), f"sharded bucket mkdir rule {rule.output!r} must invoke mkdir"
 
     def test_tests_produce_link_rules(self, tmp_path):
         """build_graph() should create link rules for args.tests."""
@@ -729,9 +724,19 @@ class TestCompilerWrapperSplit:
     with filename='ccache g++'). Every site that builds a command list
     from these args must split via shlex/split_command_cached."""
 
-    def _build(self, tmp_path, *, per_file_magicflags=None, sources=None,
-               filename=None, tests=None, dynamic=None,
-               CC="ccache gcc", CXX="ccache g++", LD="ccache g++"):
+    def _build(
+        self,
+        tmp_path,
+        *,
+        per_file_magicflags=None,
+        sources=None,
+        filename=None,
+        tests=None,
+        dynamic=None,
+        CC="ccache gcc",
+        CXX="ccache g++",
+        LD="ccache g++",
+    ):
         args = make_backend_args(
             tmp_path,
             filename=filename if filename is not None else ["/src/main.cpp"],
@@ -757,10 +762,7 @@ class TestCompilerWrapperSplit:
         backend = self._build(tmp_path)
         graph = backend.build_graph()
 
-        compile_rules = [
-            r for r in graph.rules
-            if r.rule_type == "compile" and r.output.endswith("main.o")
-        ]
+        compile_rules = [r for r in graph.rules if r.rule_type == "compile" and r.output.endswith("main.o")]
         assert len(compile_rules) == 1
         cmd = compile_rules[0].command
         assert cmd[0] == "ccache", f"argv[0] should be 'ccache', got {cmd[0]!r}"
@@ -774,10 +776,7 @@ class TestCompilerWrapperSplit:
         )
         graph = backend.build_graph()
 
-        compile_rules = [
-            r for r in graph.rules
-            if r.rule_type == "compile" and "/src/main.c" in r.inputs
-        ]
+        compile_rules = [r for r in graph.rules if r.rule_type == "compile" and "/src/main.c" in r.inputs]
         assert len(compile_rules) == 1
         cmd = compile_rules[0].command
         assert cmd[0] == "ccache", f"argv[0] should be 'ccache', got {cmd[0]!r}"
@@ -829,10 +828,7 @@ class TestCompilerWrapperSplit:
         backend = self._build(tmp_path, CC="gcc", CXX="g++", LD="g++")
         graph = backend.build_graph()
 
-        compile_rules = [
-            r for r in graph.rules
-            if r.rule_type == "compile" and r.output.endswith("main.o")
-        ]
+        compile_rules = [r for r in graph.rules if r.rule_type == "compile" and r.output.endswith("main.o")]
         assert len(compile_rules) == 1
         assert compile_rules[0].command[0] == "g++"
 
@@ -841,6 +837,7 @@ class TestPchManifest:
     def test_manifest_records_header_realpath_and_compiler_identity(self, tmp_path, monkeypatch):
         from compiletools.build_backend import _write_pch_manifest
         from compiletools.build_context import BuildContext
+
         pchdir = tmp_path / "pch"
         cmd_hash = "a" * 16
         header = tmp_path / "stdafx.h"
@@ -866,6 +863,7 @@ class TestPchManifest:
     def test_manifest_write_is_atomic(self, tmp_path):
         from compiletools.build_backend import _write_pch_manifest
         from compiletools.build_context import BuildContext
+
         pchdir = tmp_path / "pch"
         cmd_hash = "b" * 16
         header = tmp_path / "stdafx.h"
@@ -898,10 +896,14 @@ class TestPchManifest:
         source_path = os.path.realpath(str(tmp_path / "pch_user.cpp"))
         pchdir = str(tmp_path / "pch")
         argv = [
-            "--include", str(tmp_path),
-            "--objdir", str(tmp_path / "obj"),
-            "--bindir", str(tmp_path / "bin"),
-            "--pchdir", pchdir,
+            "--include",
+            str(tmp_path),
+            "--objdir",
+            str(tmp_path / "obj"),
+            "--bindir",
+            str(tmp_path / "bin"),
+            "--pchdir",
+            pchdir,
             source_path,
         ]
 
@@ -937,10 +939,12 @@ class TestWarnIfPchdirNotCrossUserSafe:
 
     def setup_method(self):
         from compiletools.build_backend import _PCHDIR_WARNED
+
         _PCHDIR_WARNED.clear()
 
     def test_warns_for_shared_path(self, tmp_path, capsys):
         from compiletools.build_backend import _warn_if_pchdir_not_cross_user_safe
+
         shared = tmp_path / "shared_pch"
         shared.mkdir(mode=0o755)  # not group-writable, no SGID
         _warn_if_pchdir_not_cross_user_safe(str(shared), verbose=1)
@@ -949,6 +953,7 @@ class TestWarnIfPchdirNotCrossUserSafe:
 
     def test_skips_warning_for_cwd_relative_path(self, tmp_path, capsys, monkeypatch):
         from compiletools.build_backend import _warn_if_pchdir_not_cross_user_safe
+
         monkeypatch.chdir(tmp_path)
         cwd_pch = tmp_path / "bin" / "gcc.debug" / "pch"
         cwd_pch.mkdir(parents=True, mode=0o755)
@@ -958,6 +963,7 @@ class TestWarnIfPchdirNotCrossUserSafe:
 
     def test_skips_warning_for_relative_path(self, tmp_path, capsys, monkeypatch):
         from compiletools.build_backend import _warn_if_pchdir_not_cross_user_safe
+
         monkeypatch.chdir(tmp_path)
         (tmp_path / "bin" / "gcc.debug" / "pch").mkdir(parents=True, mode=0o755)
         _warn_if_pchdir_not_cross_user_safe("bin/gcc.debug/pch", verbose=1)
@@ -966,14 +972,23 @@ class TestWarnIfPchdirNotCrossUserSafe:
 
 
 class TestPchCommandHash:
-    """Test _pch_command_hash() determinism and sensitivity."""
+    """Test _pch_command_hash() determinism and sensitivity.
+
+    Calls pass ``cxxflags_tokens`` and ``scope_macro_hash`` explicitly
+    -- the two new parameters added to capture structured CXXFLAGS
+    (with -D/-U stripped) and the per-PCH-header cmdline-D scope
+    digest. See test_pch_cache_scoping.py for the integration tests
+    that exercise the scope-filter path end-to-end.
+    """
+
+    _SCOPE_ZERO = "0" * 16
 
     def test_deterministic(self):
         from types import SimpleNamespace
 
         args = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
-        h1 = _pch_command_hash(args, "/src/foo.h", [], [])
-        h2 = _pch_command_hash(args, "/src/foo.h", [], [])
+        h1 = _pch_command_hash(args, "/src/foo.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash=self._SCOPE_ZERO)
+        h2 = _pch_command_hash(args, "/src/foo.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash=self._SCOPE_ZERO)
         assert h1 == h2
 
     def test_differs_for_different_flags(self):
@@ -981,8 +996,8 @@ class TestPchCommandHash:
 
         args1 = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
         args2 = SimpleNamespace(CXX="g++", CXXFLAGS="-O3")
-        h1 = _pch_command_hash(args1, "/src/foo.h", [], [])
-        h2 = _pch_command_hash(args2, "/src/foo.h", [], [])
+        h1 = _pch_command_hash(args1, "/src/foo.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash=self._SCOPE_ZERO)
+        h2 = _pch_command_hash(args2, "/src/foo.h", [], [], cxxflags_tokens=["-O3"], scope_macro_hash=self._SCOPE_ZERO)
         assert h1 != h2
 
     def test_differs_for_different_compiler(self):
@@ -990,8 +1005,8 @@ class TestPchCommandHash:
 
         args1 = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
         args2 = SimpleNamespace(CXX="clang++", CXXFLAGS="-O2")
-        h1 = _pch_command_hash(args1, "/src/foo.h", [], [])
-        h2 = _pch_command_hash(args2, "/src/foo.h", [], [])
+        h1 = _pch_command_hash(args1, "/src/foo.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash=self._SCOPE_ZERO)
+        h2 = _pch_command_hash(args2, "/src/foo.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash=self._SCOPE_ZERO)
         assert h1 != h2
 
     def test_includes_magic_flags(self):
@@ -1000,8 +1015,15 @@ class TestPchCommandHash:
         import stringzilla as sz
 
         args = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
-        h1 = _pch_command_hash(args, "/src/foo.h", [sz.Str("-DFOO")], [])
-        h2 = _pch_command_hash(args, "/src/foo.h", [], [])
+        h1 = _pch_command_hash(
+            args,
+            "/src/foo.h",
+            [sz.Str("-DFOO")],
+            [],
+            cxxflags_tokens=["-O2"],
+            scope_macro_hash=self._SCOPE_ZERO,
+        )
+        h2 = _pch_command_hash(args, "/src/foo.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash=self._SCOPE_ZERO)
         assert h1 != h2
 
 
@@ -1174,8 +1196,8 @@ class TestPchIncrementalHash:
         args_a = SimpleNamespace(CXX=str(cxx_a), CXXFLAGS="-O2")
         args_b = SimpleNamespace(CXX=str(cxx_b), CXXFLAGS="-O2")
 
-        hash_a = _pch_command_hash(args_a, "/src/stdafx.h", [], [])
-        hash_b = _pch_command_hash(args_b, "/src/stdafx.h", [], [])
+        hash_a = _pch_command_hash(args_a, "/src/stdafx.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash="0" * 16)
+        hash_b = _pch_command_hash(args_b, "/src/stdafx.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash="0" * 16)
         assert hash_a != hash_b, (
             "Compilers with different binary identity must produce distinct "
             "PCH cache keys to prevent silent cross-user PCH-stamp rejection."
@@ -1225,8 +1247,8 @@ class TestPchIncrementalHash:
         args = SimpleNamespace(CXX="cc", CXXFLAGS="-O2")
         flags_one = [sz.Str('-DFOO="a b"')]
         flags_two = [sz.Str("-DFOO=a"), sz.Str("-Db")]
-        h1 = _pch_command_hash(args, "/src/stdafx.h", [], flags_one)
-        h2 = _pch_command_hash(args, "/src/stdafx.h", [], flags_two)
+        h1 = _pch_command_hash(args, "/src/stdafx.h", [], flags_one, cxxflags_tokens=["-O2"], scope_macro_hash="0" * 16)
+        h2 = _pch_command_hash(args, "/src/stdafx.h", [], flags_two, cxxflags_tokens=["-O2"], scope_macro_hash="0" * 16)
         assert h1 != h2
 
     def test_warns_when_pchdir_not_group_writable(self, tmp_path, capsys):
@@ -1327,7 +1349,9 @@ class TestRunTests:
         # it in a ``test_execution`` phase, but the unit test exercises
         # _run_tests directly), so rules attach to the root.
         rules = [c for c in backend.context.timer._root.children if c.category == "test"]
-        assert len(rules) == 2, f"expected 2 per-test rules; got {len(rules)}: {[(r.target, r.category) for r in rules]}"
+        assert len(rules) == 2, (
+            f"expected 2 per-test rules; got {len(rules)}: {[(r.target, r.category) for r in rules]}"
+        )
         assert {r.target for r in rules} == {f"{tmp_path}/bin/test_a", f"{tmp_path}/bin/test_b"}
         assert all(r.elapsed_s >= 0 for r in rules)
 
