@@ -629,6 +629,10 @@ def get_or_compute_preprocessing(
         cppflags=input_macros.cppflags,
         cflags=input_macros.cflags,
         cxxflags=input_macros.cxxflags,
+        cmdline_origin=input_macros.cmdline_origin,
+        cppflags_tokens=input_macros.cppflags_tokens,
+        cflags_tokens=input_macros.cflags_tokens,
+        cxxflags_tokens=input_macros.cxxflags_tokens,
     )
 
     # Create result

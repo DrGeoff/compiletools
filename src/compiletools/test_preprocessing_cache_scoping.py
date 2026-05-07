@@ -257,6 +257,74 @@ def test_existing_get_cache_key_unaffected():
     assert s_plain.get_cache_key() == s_with_extras.get_cache_key()
 
 
+def test_get_or_compute_preprocessing_propagates_cmdline_origin_and_tokens():
+    """Regression: the updated_macros returned from preprocessing must keep
+    the cmdline_origin and *_tokens fields. Without this, every file walked
+    in a build silently loses the per-TU scoping data that Task D wires up.
+
+    Builds a minimal FileAnalysisResult + BuildContext stub so the cache miss
+    path runs end-to-end and we can read updated_macros off the result.
+    """
+    from compiletools.file_analyzer import FileAnalysisResult
+    from compiletools.preprocessing_cache import get_or_compute_preprocessing
+
+    # Minimal FileAnalysisResult: no conditionals (permanently invariant), no
+    # includes/defines/magic flags. The miss path still runs SimplePreprocessor
+    # to construct updated_macros from the (untouched) input macros.
+    file_result = FileAnalysisResult(
+        line_count=0,
+        line_byte_offsets=[0],
+        include_positions=[],
+        magic_positions=[],
+        directive_positions={},
+        directives=[],
+        directive_by_line={},
+        bytes_analyzed=0,
+        was_truncated=False,
+        content_hash="test_hash_propagate_origin_tokens",
+        conditional_macros=frozenset(),
+    )
+
+    class _StubContext:
+        def __init__(self):
+            self.invariant_preprocessing_cache = {}
+            self.variant_preprocessing_cache = {}
+            self.preprocessing_stats = {
+                "total_calls": 0,
+                "hits": 0,
+                "misses": 0,
+                "invariant_hits": 0,
+                "invariant_misses": 0,
+                "variant_hits": 0,
+                "variant_misses": 0,
+            }
+            # process_structured calls get_filepath_by_hash(content_hash, context)
+            self.reverse_hashes = {"test_hash_propagate_origin_tokens": ["<stub>"]}
+
+    ctx = _StubContext()
+
+    cmdline = frozenset({sz.Str("FOO")})
+    cpp_tokens = ["-O2", "-Wall"]
+    c_tokens = ["-std=c11"]
+    cxx_tokens = ["-std=c++17"]
+
+    input_macros = _make_state(
+        core={sz.Str("FOO"): sz.Str("1")},
+        variable={},
+        cmdline_origin=cmdline,
+        cppflags_tokens=cpp_tokens,
+        cflags_tokens=c_tokens,
+        cxxflags_tokens=cxx_tokens,
+    )
+
+    result = get_or_compute_preprocessing(file_result, input_macros, verbose=0, context=ctx)
+
+    assert result.updated_macros.cmdline_origin == cmdline
+    assert result.updated_macros.cppflags_tokens == cpp_tokens
+    assert result.updated_macros.cflags_tokens == c_tokens
+    assert result.updated_macros.cxxflags_tokens == cxx_tokens
+
+
 def test_filter_only_includes_names_in_intersection():
     """Filter applies to (core ∩ cmdline_origin) ∩ filter; names outside core are irrelevant."""
     s_base = _make_state(
