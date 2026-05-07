@@ -37,6 +37,7 @@ from compiletools.magicflags import _HARD_ORDERINGS_KEY
 
 class ObjInfo(NamedTuple):
     """Per-object compile metadata extracted from a BuildGraph compile rule."""
+
     source: str
     headers: list[str]
     copts: list[str]
@@ -888,8 +889,8 @@ class BuildBackend(abc.ABC):
             if include_dir:
                 pch_include_flags.extend(["-I", include_dir])
 
-        macro_state_hash = self.hunter.macro_state_hash(filename)
         dep_hash = self.namer.compute_dep_hash(deplist)
+        macro_state_hash = self.hunter.macro_state_hash(filename, dep_hash=dep_hash)
         obj_name = self.namer.object_pathname(filename, macro_state_hash, dep_hash)
 
         magic_cpp_flags = magicflags.get(sz.Str("CPPFLAGS"), [])
@@ -982,21 +983,26 @@ class BuildBackend(abc.ABC):
             hard_ordering_sources=hard_ordering_sources or None,
         )
 
+    def _object_pathname_for_source(self, source: str) -> str:
+        """Compute an object-file path for ``source`` using the per-TU
+        cache-key scope filter.
+
+        Centralises the (dep_hash, macro_state_hash) computation so that
+        the dep_hash is always passed into ``hunter.macro_state_hash`` --
+        without it the cmdline ``-D`` scope filter is skipped and the
+        hash falls back to including every cmdline ``-D`` macro (the
+        pre-fix pollution behaviour).
+        """
+        dep_hash = self.namer.compute_dep_hash(self.hunter.header_dependencies(source))
+        macro_state_hash = self.hunter.macro_state_hash(source, dep_hash=dep_hash)
+        return self.namer.object_pathname(source, macro_state_hash, dep_hash)
+
     def _create_link_rule(self, source: str, library_outputs: list[str] | None = None) -> BuildRule:
         """Create a link BuildRule for a source file (executable target)."""
         completesources = self.hunter.required_source_files(source)
         exename = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
 
-        object_names = compiletools.utils.ordered_unique(
-            [
-                self.namer.object_pathname(
-                    s,
-                    self.hunter.macro_state_hash(s),
-                    self.namer.compute_dep_hash(self.hunter.header_dependencies(s)),
-                )
-                for s in completesources
-            ]
-        )
+        object_names = compiletools.utils.ordered_unique([self._object_pathname_for_source(s) for s in completesources])
 
         merged_ldflags = self._merge_ldflags_for_sources(completesources)
         link_cmd = (
@@ -1044,14 +1050,7 @@ class BuildBackend(abc.ABC):
         )
 
         object_names = compiletools.utils.ordered_unique(
-            [
-                self.namer.object_pathname(
-                    s,
-                    self.hunter.macro_state_hash(s),
-                    self.namer.compute_dep_hash(self.hunter.header_dependencies(s)),
-                )
-                for s in all_source_files
-            ]
+            [self._object_pathname_for_source(s) for s in all_source_files]
         )
         return object_names, all_source_files
 
@@ -1077,9 +1076,7 @@ class BuildBackend(abc.ABC):
 
         merged_ldflags = self._merge_ldflags_for_sources(all_source_files)
         lib_cmd = (
-            compiletools.utils.split_command_cached(self.args.LD)
-            + ["-shared", "-o", lib_path]
-            + list(object_names)
+            compiletools.utils.split_command_cached(self.args.LD) + ["-shared", "-o", lib_path] + list(object_names)
         )
         lib_cmd.extend(merged_ldflags)
         if self.args.LDFLAGS:
@@ -1260,9 +1257,7 @@ def _write_pch_manifest(
     for h in transitive_headers:
         h_real = compiletools.wrappedos.realpath(h)
         try:
-            transitive_hashes[h_real] = compiletools.global_hash_registry.get_file_hash(
-                h_real, context=context
-            )
+            transitive_hashes[h_real] = compiletools.global_hash_registry.get_file_hash(h_real, context=context)
         except (OSError, KeyError):
             pass
 
