@@ -1,8 +1,10 @@
+import json
 import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import compiletools.apptools
+import compiletools.diagnostics
 import compiletools.headerdeps
 import compiletools.magicflags
 import compiletools.utils
@@ -31,6 +33,17 @@ def add_arguments(cap):
         default=False,
         help="Set this to true if you want to use the //#SOURCE=foo.cpp magic flag in your "
         "header files. Defaults to false because it is significantly slower.",
+    )
+
+    compiletools.utils.add_flag_argument(
+        parser=cap,
+        name="scope-diagnostics",
+        dest="scope_diagnostics",
+        default=False,
+        help="Write a per-TU JSON sidecar under <diagnostics-dir>/<invocation-id>/scope/ "
+        "listing which cmdline -D macros were included vs excluded from the TU's "
+        "macro_state_hash. Useful for auditing the per-TU cache-key scope filter. "
+        "Silently skipped when no diagnostics dir is resolvable.",
     )
 
 
@@ -244,7 +257,47 @@ class Hunter:
             dep_hash=dep_hash,
             transitive_content_hashes=transitive,
         )
+
+        if getattr(self.args, "scope_diagnostics", False):
+            self._write_scope_diagnostic(filename, cmdline_origin, scope_filter, dep_hash)
+
         return self.magicparser.get_final_macro_state_hash(filename, scope_filter=scope_filter)
+
+    def _write_scope_diagnostic(self, filename, cmdline_origin, scope_filter, dep_hash):
+        """Write per-TU scope diagnostics JSON when --scope-diagnostics is on.
+
+        File path: ``<diagnostics_dir>/scope/<basename>.<dep_hash>.json``
+
+        ``dep_hash`` is part of the filename because the same TU may be processed
+        in multiple variant builds (different macro states across backends or
+        in test loops); ``dep_hash`` discriminates them so sidecars don't collide.
+
+        Silently no-ops when no diagnostics dir is resolvable -- callers without
+        ``--diagnostics-dir`` or ``--bindir`` set must not crash.
+        """
+        try:
+            diagnostics_dir = compiletools.diagnostics.resolve_diagnostics_dir(self.args)
+        except RuntimeError:
+            return  # No diagnostics dir resolvable -- silently skip
+
+        scope_dir = os.path.join(diagnostics_dir, "scope")
+        os.makedirs(scope_dir, exist_ok=True)
+
+        excluded = sorted(str(n) for n in cmdline_origin if n not in scope_filter)
+        included = sorted(str(n) for n in scope_filter if n in cmdline_origin)
+
+        payload = {
+            "tu": filename,
+            "dep_hash": dep_hash,
+            "cmdline_d_macros_total": len(cmdline_origin),
+            "cmdline_d_macros_in_hash": included,
+            "cmdline_d_macros_excluded": excluded,
+        }
+
+        basename = os.path.basename(filename)
+        out_path = os.path.join(scope_dir, f"{basename}.{dep_hash}.json")
+        with open(out_path, "w") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
 
     def _bytes_provider(self) -> Callable[[str], bytes]:
         """Return a callable that maps content_hash -> file bytes.
