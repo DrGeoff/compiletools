@@ -3,7 +3,7 @@ import re
 import sys
 from collections import defaultdict
 from types import SimpleNamespace
-from typing import Union
+from typing import Optional, Union
 
 import stringzilla as sz
 
@@ -156,6 +156,24 @@ class MagicFlagsBase:
         )
         core_macros.update({sz.Str(k): sz.Str(v) for k, v in cmd_macros.items()})
 
+        # Cache-key scoping universe: macros that came from cmdline -D flags
+        # (the rest of `core` is compiler builtins). Used by per-TU
+        # scope_filter to drop irrelevant cmdline macros from the hash.
+        cmdline_origin = compiletools.apptools.cmdline_d_macro_names(
+            self._args,
+            flag_sources=["CPPFLAGS", "CFLAGS", "CXXFLAGS"],
+            verbose=self._args.verbose,
+        )
+
+        # Structured tokenization of compile flags with -D/-U stripped.
+        # Hashing tokens (instead of the raw strings) lets the scope filter
+        # actually take effect: the cmdline -D macros are hashed via core,
+        # and stripping them from the token list keeps them from leaking
+        # back into the build-context portion of the hash.
+        cppflags_tokens, cflags_tokens, cxxflags_tokens = compiletools.apptools.tokenize_compile_flags(
+            self._args.CPPFLAGS, self._args.CFLAGS, self._args.CXXFLAGS
+        )
+
         # Create MacroState with core macros, empty variable macros
         return MacroState(
             core_macros,
@@ -164,6 +182,10 @@ class MagicFlagsBase:
             cppflags=self._args.CPPFLAGS,
             cflags=self._args.CFLAGS,
             cxxflags=self._args.CXXFLAGS,
+            cmdline_origin=cmdline_origin,
+            cppflags_tokens=cppflags_tokens,
+            cflags_tokens=cflags_tokens,
+            cxxflags_tokens=cxxflags_tokens,
         )
 
     def get_final_macro_state_key(self, filename: str):
@@ -187,7 +209,11 @@ class MagicFlagsBase:
             raise KeyError(f"No macro state found for {filename} - file not processed")
         return macro_state.get_cache_key()
 
-    def get_final_macro_state_hash(self, filename: str) -> str:
+    def get_final_macro_state_hash(
+        self,
+        filename: str,
+        scope_filter: Optional[frozenset] = None,
+    ) -> str:
         """Get the full macro state hash (core + variable + build context) for object file naming.
 
         The MacroState carries all compile-relevant state:
@@ -198,6 +224,11 @@ class MagicFlagsBase:
 
         Args:
             filename: The file path to get the full macro state hash for
+            scope_filter: Optional set of cmdline -D macro names to include
+                from `core`. When None (default), behavior is unchanged --
+                every core macro is hashed. When a frozenset, cmdline-origin
+                macros NOT in the set are dropped from the hash, so only
+                cmdline -D macros actually referenced by this TU contribute.
 
         Returns:
             str: 16-character hex hash of full macro state
@@ -210,7 +241,7 @@ class MagicFlagsBase:
         if macro_state is None:
             raise KeyError(f"No macro state found for {filename} - file not processed")
 
-        return macro_state.get_hash(include_core=True)
+        return macro_state.get_hash(include_core=True, scope_filter=scope_filter)
 
     def _get_file_analyzer_result(self, filename: str) -> FileAnalysisResult:
         """Get FileAnalysisResult for a file, using module-level cache.
@@ -516,6 +547,15 @@ class MagicFlagsBase:
         effective_cflags = f"{self._args.CFLAGS} {magic_cflags}".strip()
         effective_cxxflags = f"{self._args.CXXFLAGS} {magic_cxxflags}".strip()
 
+        # Re-tokenize the effective flags and strip -D/-U so per-file magic
+        # `-D`s don't smuggle themselves into the build-context portion of
+        # the hash. Magic-flag macros are file-private; they are NOT
+        # cmdline-origin, so cmdline_origin is propagated unchanged from
+        # the initial state.
+        effective_cppflags_tokens, effective_cflags_tokens, effective_cxxflags_tokens = (
+            compiletools.apptools.tokenize_compile_flags(effective_cppflags, effective_cflags, effective_cxxflags)
+        )
+
         self._final_macro_states[abs_filename] = MacroState(
             old_ms.core,
             old_ms.variable,
@@ -523,6 +563,10 @@ class MagicFlagsBase:
             cppflags=effective_cppflags,
             cflags=effective_cflags,
             cxxflags=effective_cxxflags,
+            cmdline_origin=old_ms.cmdline_origin,
+            cppflags_tokens=effective_cppflags_tokens,
+            cflags_tokens=effective_cflags_tokens,
+            cxxflags_tokens=effective_cxxflags_tokens,
         )
 
         return flagsforfilename
@@ -1119,7 +1163,10 @@ class CppMagicFlags(MagicFlagsBase):
             if macro_name not in self._initial_macro_state.core:
                 variable_macros[macro_name] = macro_value
 
-        # Return MacroState with variable macros (core already initialized)
+        # Return MacroState with variable macros (core already initialized).
+        # Propagate cmdline_origin and structured token lists from the
+        # initial state so the per-TU scope filter and build-context hash
+        # stay consistent across this reconstruction.
         return MacroState(
             core=self._initial_macro_state.core.copy(),
             variable=variable_macros,
@@ -1127,6 +1174,10 @@ class CppMagicFlags(MagicFlagsBase):
             cppflags=self._initial_macro_state.cppflags,
             cflags=self._initial_macro_state.cflags,
             cxxflags=self._initial_macro_state.cxxflags,
+            cmdline_origin=self._initial_macro_state.cmdline_origin,
+            cppflags_tokens=self._initial_macro_state.cppflags_tokens,
+            cflags_tokens=self._initial_macro_state.cflags_tokens,
+            cxxflags_tokens=self._initial_macro_state.cxxflags_tokens,
         )
 
     def _readfile(self, filename):

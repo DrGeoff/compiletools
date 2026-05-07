@@ -220,7 +220,12 @@ class DirectHeaderDeps(HeaderDepsBase):
             # Convert all keys and values to StringZilla.Str and place in core
             self._core_macros = {sz.Str(k): sz.Str(v) for k, v in raw_macros.items()}
 
-        # Set includes and reset macro state (reuse cached core, use provided variable dict)
+        # Set includes and reset macro state (reuse cached core, use provided variable dict).
+        # Deliberate non-propagation of cmdline_origin / *_tokens: this MacroState
+        # only feeds the headerdeps preprocessor walker via get_cache_key() /
+        # get_relevant_key() / get_hash(include_core=False) -- none of which
+        # consult those fields. Object-naming hashes flow through magicflags'
+        # _final_macro_states, not this one, so there's nothing to scope here.
         self.includes = self._includes
         self.defined_macros = MacroState(
             self._core_macros,
