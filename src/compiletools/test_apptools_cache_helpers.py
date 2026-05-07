@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import stringzilla as sz
 
-from compiletools.apptools import cmdline_d_macro_names, tokenize_compile_flags
+from compiletools.apptools import cmdline_d_macro_names, strip_d_u_tokens, tokenize_compile_flags
 
 
 def _make_args(cppflags="", cflags="", cxxflags=""):
@@ -138,3 +138,119 @@ class TestTokenizeCompileFlags:
         assert cpp == ["-O0", "-Wall"]
         assert c == ["-O1", "-Wextra"]
         assert cxx == ["-O2", "-Wpedantic"]
+
+
+class TestStripDUTokens:
+    """Test the standalone strip_d_u_tokens helper.
+
+    This helper is the strip-only half of tokenize_compile_flags;
+    it is invoked separately by call sites that already have a
+    pre-tokenized flag list (e.g. magicflags._parse, _pch_command_hash)
+    and just need the -D/-U entries removed.
+    """
+
+    def test_strip_d_u_tokens_attached(self):
+        assert strip_d_u_tokens(["-O2", "-DFOO", "-Wall"]) == ["-O2", "-Wall"]
+
+    def test_strip_d_u_tokens_attached_with_value(self):
+        assert strip_d_u_tokens(["-O2", "-DFOO=bar", "-Wall"]) == ["-O2", "-Wall"]
+
+    def test_strip_d_u_tokens_detached(self):
+        assert strip_d_u_tokens(["-O2", "-D", "FOO", "-Wall"]) == ["-O2", "-Wall"]
+
+    def test_strip_d_u_tokens_detached_u(self):
+        assert strip_d_u_tokens(["-O2", "-U", "FOO", "-Wall"]) == ["-O2", "-Wall"]
+
+    def test_strip_d_u_tokens_dangling(self):
+        assert strip_d_u_tokens(["-O2", "-D"]) == ["-O2"]
+
+    def test_strip_d_u_tokens_keeps_other_flags(self):
+        assert strip_d_u_tokens(["-O2", "-Iinclude", "-Wall"]) == ["-O2", "-Iinclude", "-Wall"]
+
+    def test_strip_d_u_tokens_empty(self):
+        assert strip_d_u_tokens([]) == []
+
+    def test_strip_d_u_tokens_does_not_strip_capital_i(self):
+        """-I shares a prefix letter with neither -D nor -U; must be preserved."""
+        assert strip_d_u_tokens(["-I/usr/include", "-DFOO"]) == ["-I/usr/include"]
+
+
+class TestArgsTokensAfterParseargs:
+    """args.*_tokens must be populated AFTER parseargs() returns and
+    must reflect the final, post-substitution state of the raw flag
+    strings.
+    """
+
+    def _parse(self, extra_args=None, tempdir=None):
+        """Run parseargs end-to-end against the standard test parser.
+
+        Mirrors create_magic_parser but skips the magicflags surface,
+        which we don't need for these tests.
+        """
+        import configargparse
+
+        import compiletools.apptools
+        import compiletools.configutils
+        import compiletools.testhelper as uth
+        from compiletools.build_context import BuildContext
+
+        extra_args = extra_args or []
+        temp_config_name = uth.create_temp_config(tempdir)
+        argv = ["--config=" + temp_config_name] + extra_args
+        config_files = compiletools.configutils.config_files_from_variant(argv=argv, exedir=uth.cakedir())
+
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            description="TestArgsTokensAfterParseargs",
+            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+            default_config_files=config_files,
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
+        compiletools.apptools.add_common_arguments(cap)
+        compiletools.apptools.add_link_arguments(cap)
+        return compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+
+    def test_args_get_tokens_after_parseargs(self, tmp_path):
+        import compiletools.apptools as apptools
+        import compiletools.testhelper as uth
+        import compiletools.utils as utils
+
+        uth.delete_existing_parsers()
+        apptools.resetcallbacks()
+        try:
+            args = self._parse(tempdir=str(tmp_path))
+        finally:
+            uth.delete_existing_parsers()
+            apptools.resetcallbacks()
+
+        # All four token attributes must exist and be lists.
+        for attr in ("CPPFLAGS_tokens", "CFLAGS_tokens", "CXXFLAGS_tokens", "LDFLAGS_tokens"):
+            assert hasattr(args, attr), f"args missing {attr}"
+            assert isinstance(getattr(args, attr), list), f"{attr} is not a list"
+
+        # Tokens must equal split_command_cached on the FINAL raw string
+        # -- i.e., reflect every post-parseargs mutation
+        # (env var append, INCLUDE injection, project version, pkg-config).
+        assert args.CPPFLAGS_tokens == utils.split_command_cached(args.CPPFLAGS)
+        assert args.CFLAGS_tokens == utils.split_command_cached(args.CFLAGS)
+        assert args.CXXFLAGS_tokens == utils.split_command_cached(args.CXXFLAGS)
+        assert args.LDFLAGS_tokens == utils.split_command_cached(args.LDFLAGS)
+
+    def test_args_tokens_reflect_appended_cppflags(self, tmp_path):
+        """append-CPPFLAGS contributions must appear in the token list."""
+        import compiletools.apptools as apptools
+        import compiletools.testhelper as uth
+
+        uth.delete_existing_parsers()
+        apptools.resetcallbacks()
+        try:
+            args = self._parse(["--append-CPPFLAGS=-DAFTER_TOKENIZE=42"], tempdir=str(tmp_path))
+        finally:
+            uth.delete_existing_parsers()
+            apptools.resetcallbacks()
+
+        assert "-DAFTER_TOKENIZE=42" in args.CPPFLAGS_tokens, (
+            "Appended -D entries must be present in CPPFLAGS_tokens; "
+            "tokens must be populated AFTER all parseargs mutations."
+        )

@@ -779,6 +779,41 @@ def cmdline_d_macro_names(args, flag_sources=None, verbose=0) -> frozenset[sz.St
     return frozenset(sz.Str(name) for name in names)
 
 
+def strip_d_u_tokens(tokens: list[str]) -> list[str]:
+    """Strip ``-D`` and ``-U`` entries (in both attached and detached
+    forms) from a pre-tokenized flag list.
+
+    This is the strip-only half of :func:`tokenize_compile_flags`,
+    extracted so that callers that already hold a pre-tokenized list
+    (e.g. ``magicflags._parse``, ``_pch_command_hash``) don't have to
+    pay the tokenization cost a second time.
+
+    Both attached form (``-DFOO``, ``-DFOO=bar``, ``-UFOO``) and
+    detached form (``-D FOO``, ``-D FOO=bar``, ``-U FOO``) are
+    stripped. Detached form drops both the flag token and the
+    following value token. A dangling ``-D`` / ``-U`` at the end of
+    the list drops just the flag token. All other flags (``-I``,
+    ``-O``, ``-std``, ``-W``, ``-f``...) pass through unchanged.
+    """
+    out = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        tok = tokens[i]
+        if tok == "-D" or tok == "-U":
+            # Detached form: skip flag and the next token (value).
+            # Dangling flag at end of list: skip just the flag.
+            i += 2
+            continue
+        if tok.startswith("-D") or tok.startswith("-U"):
+            # Attached form: skip this single token.
+            i += 1
+            continue
+        out.append(tok)
+        i += 1
+    return out
+
+
 def tokenize_compile_flags(
     cppflags,
     cflags,
@@ -817,29 +852,10 @@ def tokenize_compile_flags(
         except ValueError:
             return value.split()
 
-    def _strip_d_u(tokens):
-        out = []
-        i = 0
-        n = len(tokens)
-        while i < n:
-            tok = tokens[i]
-            if tok == "-D" or tok == "-U":
-                # Detached form: skip flag and the next token (value).
-                # Dangling flag at end of list: skip just the flag.
-                i += 2
-                continue
-            if tok.startswith("-D") or tok.startswith("-U"):
-                # Attached form: skip this single token.
-                i += 1
-                continue
-            out.append(tok)
-            i += 1
-        return out
-
     return (
-        _strip_d_u(_to_tokens(cppflags)),
-        _strip_d_u(_to_tokens(cflags)),
-        _strip_d_u(_to_tokens(cxxflags)),
+        strip_d_u_tokens(_to_tokens(cppflags)),
+        strip_d_u_tokens(_to_tokens(cflags)),
+        strip_d_u_tokens(_to_tokens(cxxflags)),
     )
 
 
@@ -1685,6 +1701,16 @@ def parseargs(cap, argv, verbose=None, *, context):
         print(f"Parsing functioanl compiler has been set. Before substitutions args={args}")
 
     substitutions(args, verbose)
+
+    # Populate tokenized flag lists alongside the raw strings. Consumers
+    # that only need tokens (e.g. build_backend compile commands,
+    # magicflags._parse) can use these directly without re-tokenizing on
+    # every call. Tokens are populated AFTER all parseargs mutations
+    # (env vars, INCLUDE injection, project version macros, pkg-config,
+    # CPP/CXX unification) so they reflect the final raw-string state.
+    for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS"):
+        if hasattr(args, slot):
+            setattr(args, f"{slot}_tokens", compiletools.utils.split_command_cached(getattr(args, slot)))
 
     if verbose > 8:
         print("parseargs has completed.  Returning args")
