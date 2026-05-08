@@ -1106,6 +1106,12 @@ class BuildBackend(abc.ABC):
         file_locking is enabled, the -o and target are stripped and
         ct-lock-helper wraps the remainder. Mirrors ShakeBackend's compile
         path (commit a3c67675).
+
+        Tokens are joined via ``shlex.join`` so shell-active characters
+        (notably the ``<`` / ``>`` in clang header-unit flags like
+        ``-fmodule-file=<vector>=...``) survive /bin/sh parsing. The
+        rule.command tokens themselves stay shell-naive — argv-executing
+        backends rely on that.
         """
         try:
             o_idx = command.index("-o")
@@ -1113,21 +1119,23 @@ class BuildBackend(abc.ABC):
             raise AssertionError(f"compile rule missing -o flag: {command}") from e
 
         if not getattr(self.args, "file_locking", False) or self._filesystem_type is None:
-            return " ".join(command)
+            return shlex.join(command)
 
         compile_part = command[:o_idx] + command[o_idx + 2 :]
         target = command[o_idx + 1]
 
-        return wrap_compile_with_lock(" ".join(compile_part), target, self.args, self._filesystem_type)
+        return wrap_compile_with_lock(shlex.join(compile_part), target, self.args, self._filesystem_type)
 
     def _wrap_link_cmd(self, command: list[str]) -> str:
         """Return the command string for a link rule, lock-wrapped if needed.
 
         Unlike _wrap_compile_cmd, the command is passed through as-is
         (including -o flag) since atomic_link does not manipulate output paths.
+        Same shlex.join contract applies: shell-active tokens survive recipe
+        rendering without poisoning rule.command for argv backends.
         """
         if not getattr(self.args, "file_locking", False) or self._filesystem_type is None:
-            return " ".join(command)
+            return shlex.join(command)
 
         # Extract target from -o flag for locking.
         # build_graph.py always emits -o in link/library commands; if absent,
@@ -1136,9 +1144,9 @@ class BuildBackend(abc.ABC):
             o_idx = command.index("-o")
             target = command[o_idx + 1]
         except (ValueError, IndexError):
-            return " ".join(command)
+            return shlex.join(command)
 
-        return wrap_link_with_lock(" ".join(command), target, self.args, self._filesystem_type)
+        return wrap_link_with_lock(shlex.join(command), target, self.args, self._filesystem_type)
 
     def _all_outputs_current(self, graph: BuildGraph) -> bool:
         """Pre-check: all compile outputs exist and all link sigs match?
@@ -1277,17 +1285,20 @@ class BuildBackend(abc.ABC):
             # `-fmodule-file=<token>=<pcm>` then maps a specific header.
             # The token form (`<vector>` / `"foo.h"`) contains
             # shell-active characters (`<` / `>` look like redirection
-            # to /bin/sh), so we shell-quote the whole flag to keep it
-            # intact when the makefile backend joins tokens with spaces.
+            # to /bin/sh) -- but quoting belongs at the recipe-rendering
+            # layer (_wrap_compile_cmd uses shlex.join), not here.
+            # BuildRule.command is also passed verbatim to subprocess.Popen
+            # by argv-executing backends (Shake, Slurm), which would reject
+            # a pre-shell-quoted token as an unknown flag.
             # Per-TU narrowing (rather than the blanket-all approach
             # used for partitions) is cheap because each TU's
             # header-unit list is short.
             if result.module_header_imports:
                 extras.append("-fmodules")
                 for token in result.module_header_imports:
-                    pcm = self._header_unit_artefact.get(token) if hasattr(self, "_header_unit_artefact") else None
+                    pcm = self._header_unit_artefact.get(token)
                     if pcm is not None:
-                        extras.append(shlex.quote(f"-fmodule-file={token}={pcm}"))
+                        extras.append(f"-fmodule-file={token}={pcm}")
             # `import std;` requires libc++ when the std module is
             # libc++-shipped (clang's only supported source today).
             # Importers, the std-module precompile, and the std .o-from-
@@ -1382,7 +1393,7 @@ class BuildBackend(abc.ABC):
         # Header-unit imports: regardless of compiler, importers must
         # wait for the header-unit precompile to finish (gcc: stamp file
         # whose touch follows .gcm placement; clang: the .pcm itself).
-        if hasattr(self, "_header_unit_artefact") and self._header_unit_artefact:
+        if self._header_unit_artefact:
             for token in file_result.module_header_imports:
                 target = self._header_unit_artefact.get(token)
                 if target is not None and target != rule.output and target not in rule.order_only_deps:
@@ -1464,8 +1475,16 @@ class BuildBackend(abc.ABC):
         update implies a new compiler. We deliberately don't resolve
         ``<vector>`` to its abs path -- that would cost a per-token
         ``clang -E`` subprocess for negligible additional safety.
+
+        ``-stdlib=libc++`` is folded into ``extra_flags`` only when the
+        actual precompile command will inject it (i.e. the build imports
+        std AND CXXFLAGS doesn't already carry it). Mirrors the gating
+        in ``_create_header_unit_precompile_rule`` so the cache key
+        reflects exactly the flag set the compiler will see.
         """
         cxxflags_tokens = self.args.flags.hash_relevant("cxx")
+        cxxflags_has_libcxx = "-stdlib=libc++" in self.args.flags.cxx
+        injects_libcxx = self._build_imports_std() and not cxxflags_has_libcxx
         return _pcm_command_hash(
             self.args,
             source_path=token,
@@ -1473,7 +1492,7 @@ class BuildBackend(abc.ABC):
             cxxflags_tokens=cxxflags_tokens,
             magic_cpp_flags=[],  # header units don't carry per-file magic
             magic_cxx_flags=[],
-            extra_flags=["-stdlib=libc++"] if self._build_imports_std() else [],
+            extra_flags=["-stdlib=libc++"] if injects_libcxx else [],
             stage="clang_header_unit",
         )
 
@@ -1511,7 +1530,20 @@ class BuildBackend(abc.ABC):
         artefact_dir = os.path.dirname(artefact_path)
 
         if kind == "clang":
-            cmd = common_cmd + [
+            # When the build imports std, importers compile with -stdlib=libc++
+            # (injected by _compiler_module_flags_for). The precompile must
+            # match -- otherwise clang's BMI verification rejects on the
+            # stdlib axis. _compute_clang_header_unit_command_hash already
+            # folds -stdlib=libc++ into the cmd_hash under this same gate;
+            # this keeps the actual command consistent with what the cache
+            # key claims.
+            stdlib_extras = (
+                ["-stdlib=libc++"]
+                if self._build_imports_std()
+                and "-stdlib=libc++" not in self.args.flags.cxx
+                else []
+            )
+            cmd = common_cmd + stdlib_extras + [
                 "-xc++-system-header", "--precompile", bare, "-o", artefact_path,
             ]
             self._header_unit_artefact[token] = artefact_path
@@ -1525,22 +1557,63 @@ class BuildBackend(abc.ABC):
         # gcc (and unknown kinds). Two modes:
         # - cache off: stamp output. gcc auto-places .gcm under
         #   gcm.cache/<absolute-resolved-path>.gcm and the stamp is
-        #   touched via success_marker for make's bookkeeping.
-        # - cache on: artefact_path IS the .gcm cache path; the
-        #   `-fmodule-mapper=` flag steers gcc into writing there
-        #   directly (the mapper file maps the resolved abs header path
-        #   to artefact_path). success_marker still touches the .gcm so
-        #   if gcc somehow exited 0 without writing the file (it
-        #   shouldn't, but defence-in-depth) make sees a fresh mtime.
-        # The rule_type is "header_unit" (rather than "compile") in
-        # both modes -- the "compile" path requires -o for lock
-        # wrapping, which gcc silently ignores in -x c++-system-header
-        # mode.
-        cmd = common_cmd + ["-fmodules", "-c", "-x", "c++-system-header", bare]
+        #   touched via success_marker for make's bookkeeping. No
+        #   producer-side rename is needed because gcm.cache is
+        #   per-cwd, not shared across builds.
+        # - cache on: artefact_path IS the .gcm cache path that
+        #   importers read via the global -fmodule-mapper. The
+        #   precompile rule uses a per-rule mini-mapper (one entry
+        #   pointing the resolved header at <artefact>.compiletools.tmp)
+        #   so gcc writes the .gcm to a sibling temp path, which the
+        #   recipe then mv -fs into place. Producer-side temp+rename
+        #   is the same invariant the object CAS upholds (see CLAUDE.md
+        #   "Locking System") -- without it, two concurrent peer
+        #   ct-cake invocations precompiling the same header could let
+        #   an importer mmap-read a half-written .gcm. The global
+        #   mapper still names <artefact> directly, so importers find
+        #   the renamed-into-place .gcm.
+        # The rule_type is "header_unit" (rather than "compile")
+        # because gcc silently ignores `-o` under
+        # `-x c++-system-header`, so we can't lean on
+        # `_wrap_compile_cmd`'s -o-driven lock+temp+rename pipeline.
+        self._header_unit_artefact[token] = artefact_path
         mapper = self._gcc_module_mapper_path
+        abs_path = self._gcc_header_unit_resolved.get(token)
+        if mapper and abs_path:
+            # Suffix mini-mapper and tmp with the build_graph process's PID
+            # so two concurrent peer ct-cake invocations targeting the same
+            # cmd_hash slot don't share a tmp inode (would risk torn-write
+            # interleaving under O_TRUNC) or overwrite each other's
+            # mini-mapper. Each invocation writes its own files; the mv
+            # is atomic on the shared destination, and concurrent mvs
+            # converge on identical bytes (same cmd_hash => same compiler
+            # + same flags => deterministic .gcm).
+            unique = os.getpid()
+            tmp_path = f"{artefact_path}.compiletools.tmp.{unique}"
+            mini_mapper = f"{artefact_path}.precompile-mapper.{unique}.txt"
+            os.makedirs(artefact_dir, exist_ok=True)
+            with open(mini_mapper, "w") as f:
+                f.write(f"{abs_path} {tmp_path}\n")
+            cmd = common_cmd + [
+                "-fmodules", "-c", "-x", "c++-system-header", bare,
+                f"-fmodule-mapper={mini_mapper}",
+            ]
+            pipeline = f"{shlex.join(cmd)} && mv -f {shlex.quote(tmp_path)} {shlex.quote(artefact_path)}"
+            return BuildRule(
+                output=artefact_path,
+                inputs=[],
+                command=["sh", "-c", pipeline],
+                rule_type="header_unit",
+                order_only_deps=[artefact_dir],
+                success_marker=artefact_path,
+            )
+        # Fall through: cache-off OR cache-on without a resolved abs path
+        # (couldn't precompute via -M; the global mapper has no entry for
+        # this token, so gcc lands the .gcm in gcm.cache/<resolved>.gcm
+        # at compile time).
+        cmd = common_cmd + ["-fmodules", "-c", "-x", "c++-system-header", bare]
         if mapper:
             cmd.append(f"-fmodule-mapper={mapper}")
-        self._header_unit_artefact[token] = artefact_path
         return BuildRule(
             output=artefact_path,
             inputs=[],

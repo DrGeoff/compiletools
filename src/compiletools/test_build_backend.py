@@ -858,6 +858,226 @@ class TestCompilerWrapperSplit:
         assert compile_rules[0].command[0] == "g++"
 
 
+class TestModuleFlagsAreShellNaive:
+    """`_compiler_module_flags_for` returns flag tokens that go straight into
+    ``BuildRule.command``. Argv-executing backends (Shake / Slurm) hand that
+    list to ``subprocess.Popen(shell=False)``, so any token must be the
+    literal compiler argument — not pre-shell-quoted text. The makefile and
+    ninja backends are responsible for shell-quoting at the rendering layer
+    (so `<vector>` / `>` etc. survive the recipe), not the flag-emission
+    layer."""
+
+    def _backend_with_clang_header_unit(self, tmp_path):
+        args = make_backend_args(tmp_path, CXX="clang++")
+        hunter = make_mock_hunter(sources=["/src/main.cpp"])
+        StubClass = make_stub_backend_class()
+        backend = StubClass(args=args, hunter=hunter)
+        backend._module_compiler_kind = "clang"
+        backend._header_unit_artefact = {"<vector>": "/cache/abc/vector.pcm"}
+
+        # Stand in for the FileAnalyzer result. Only the module_* fields
+        # are read by _compiler_module_flags_for.
+        from types import SimpleNamespace
+        result = SimpleNamespace(
+            module_exports=(),
+            module_implements=(),
+            module_imports=(),
+            module_header_imports=("<vector>",),
+        )
+        hunter._file_analysis_result = MagicMock(return_value=result)
+        return backend
+
+    def test_clang_header_unit_flag_has_no_embedded_shell_quotes(self, tmp_path):
+        backend = self._backend_with_clang_header_unit(tmp_path)
+        flags = backend._compiler_module_flags_for("/src/main.cpp")
+
+        for token in flags:
+            assert "'" not in token, (
+                f"flag token {token!r} contains a shell-quote artifact; "
+                "argv backends will pass the literal quote to clang"
+            )
+
+    def test_clang_header_unit_flag_has_unquoted_form(self, tmp_path):
+        backend = self._backend_with_clang_header_unit(tmp_path)
+        flags = backend._compiler_module_flags_for("/src/main.cpp")
+
+        assert "-fmodule-file=<vector>=/cache/abc/vector.pcm" in flags
+
+
+class TestMakefileBackendShellQuotesCompileTokens:
+    """The makefile backend is the one responsible for shell-quoting compile
+    tokens that contain shell-active characters (``<``, ``>``, spaces). With
+    the unquoted-emission contract above, the recipe rendering layer must
+    pick up the slack so /bin/sh doesn't redirect ``<vector>`` into a file."""
+
+    def test_compile_recipe_quotes_header_unit_flag(self, tmp_path):
+        args = make_backend_args(tmp_path)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        backend._filesystem_type = None
+        cmd = [
+            "clang++",
+            "-O2",
+            "-fmodules",
+            "-fmodule-file=<vector>=/cache/vec.pcm",
+            "-c",
+            "/src/main.cpp",
+            "-o",
+            "/tmp/test_obj/main.o",
+        ]
+        recipe = backend._wrap_compile_cmd(cmd)
+        assert "'-fmodule-file=<vector>=/cache/vec.pcm'" in recipe, (
+            f"recipe {recipe!r} did not shell-quote the header-unit flag"
+        )
+
+
+class TestGccHeaderUnitProducerSideRename:
+    """gcc cache-mode header-unit precompiles must use producer-side temp+rename.
+    Two concurrent ct-cake invocations would otherwise both write the .gcm at
+    the same cache path; without temp+rename, an importer could mmap a
+    half-written .gcm. CLAUDE.md flags this invariant as universal across
+    every code path that emits compile/link commands."""
+
+    def _make_gcc_cache_backend(self, tmp_path):
+        args = make_backend_args(
+            tmp_path,
+            CXX="g++",
+            cas_pcmdir=str(tmp_path / "cas-pcmdir"),
+            makefilename=str(tmp_path / "Makefile"),
+        )
+        hunter = make_mock_hunter(sources=[])
+        StubClass = make_stub_backend_class()
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        backend._module_compiler_kind = "gcc"
+        backend._module_pcm_cache_root = str(tmp_path / "cas-pcmdir")
+        backend._gcc_module_mapper_path = str(tmp_path / ".module-mapper.txt")
+        return backend
+
+    def test_gcc_cache_mode_header_unit_recipe_has_temp_then_rename(self, tmp_path):
+        from compiletools.build_graph import render_shell_recipe
+
+        backend = self._make_gcc_cache_backend(tmp_path)
+        backend._gcc_header_unit_resolved = {"<vector>": "/usr/include/vector"}
+        artefact_path = str(tmp_path / "cas-pcmdir" / "abc" / "vector.gcm")
+        rule = backend._create_header_unit_precompile_rule("<vector>", artefact_path)
+        recipe = render_shell_recipe(rule)
+        assert "mv -f" in recipe, (
+            f"gcc cache-mode header-unit recipe must rename a tmp into the cache "
+            f"target so concurrent peer builds can't observe a half-written .gcm. "
+            f"Got recipe: {recipe!r}"
+        )
+
+    def test_gcc_cache_mode_tmp_path_includes_pid(self, tmp_path):
+        """The tmp path is suffixed with the build_graph process's PID so two
+        concurrent peer ct-cake invocations don't share an inode under
+        O_TRUNC. Each invocation's gcc writes to its own tmp; the mv into
+        the shared destination converges on identical bytes (deterministic
+        from the cmd_hash inputs)."""
+        backend = self._make_gcc_cache_backend(tmp_path)
+        backend._gcc_header_unit_resolved = {"<vector>": "/usr/include/vector"}
+        artefact_path = str(tmp_path / "cas-pcmdir" / "abc" / "vector.gcm")
+        rule = backend._create_header_unit_precompile_rule("<vector>", artefact_path)
+        # The recipe text mentions the tmp path with a PID suffix, distinct
+        # from the bare "<artefact>.compiletools.tmp" form.
+        pipeline = rule.command[2]  # ["sh", "-c", "<pipeline>"]
+        assert f"{artefact_path}.compiletools.tmp." in pipeline, (
+            f"tmp path should appear in pipeline; got: {pipeline!r}"
+        )
+        # Bare (un-suffixed) form must NOT be the destination — would
+        # collide with a peer ct-cake invocation.
+        assert f"{artefact_path}.compiletools.tmp " not in pipeline, (
+            f"tmp path must be PID-suffixed, not bare; pipeline: {pipeline!r}"
+        )
+
+    def test_gcc_cache_mode_per_rule_mapper_steers_to_tmp(self, tmp_path):
+        """The precompile rule writes a per-rule mini-mapper (suffixed with
+        the build's PID so concurrent peer ct-cake invocations don't share
+        an inode) that points the resolved header at the matching .tmp
+        path. The global mapper still names <artefact> for importers, so
+        reads stay valid."""
+        backend = self._make_gcc_cache_backend(tmp_path)
+        artefact_path = str(tmp_path / "cas-pcmdir" / "abc" / "vector.gcm")
+        backend._gcc_header_unit_resolved = {"<vector>": "/usr/include/vector"}
+        backend._create_header_unit_precompile_rule("<vector>", artefact_path)
+        backend._write_gcc_module_mapper()
+
+        # Per-rule mini-mapper: <artefact>.precompile-mapper.<pid>.txt
+        cmd_dir = tmp_path / "cas-pcmdir" / "abc"
+        mini_files = list(cmd_dir.glob("vector.gcm.precompile-mapper.*.txt"))
+        assert len(mini_files) == 1, (
+            f"expected one PID-suffixed mini-mapper in {cmd_dir}, got: {sorted(cmd_dir.iterdir())}"
+        )
+        mini = mini_files[0]
+        # Same PID suffix on the .tmp the mapper steers gcc to.
+        suffix = mini.name[len("vector.gcm.precompile-mapper."):-len(".txt")]
+        line = mini.read_text().strip()
+        expected_tmp = f"{artefact_path}.compiletools.tmp.{suffix}"
+        assert line == f"/usr/include/vector {expected_tmp}", (
+            f"mini-mapper {line!r} should point gcc at the PID-suffixed .tmp companion"
+        )
+
+        # Global mapper still names the final artefact (importer-facing).
+        global_mapper = (tmp_path / ".module-mapper.txt").read_text()
+        for ln in global_mapper.splitlines():
+            if ln.startswith("/usr/include/vector"):
+                _, dest = ln.split(None, 1)
+                assert dest == artefact_path, (
+                    f"global mapper for importers should name the final {artefact_path!r}, "
+                    f"got {dest!r} -- importers would read from the .tmp."
+                )
+                break
+        else:
+            assert False, f"global mapper missing /usr/include/vector entry:\n{global_mapper}"
+
+
+class TestClangHeaderUnitStdlibSymmetry:
+    """`_compute_clang_header_unit_command_hash` folds ``-stdlib=libc++`` into
+    its hash inputs when the build imports std, so the actual precompile
+    command MUST also carry that flag. Otherwise importers (which DO get
+    ``-stdlib=libc++`` via ``_compiler_module_flags_for``) would mismatch
+    the precompile's BMI on the stdlib axis -- clang's BMI verification
+    would reject the import and force a slow re-precompile or a hard error."""
+
+    def test_clang_header_unit_precompile_carries_stdlib_libcxx_when_imports_std(self, tmp_path):
+        args = make_backend_args(tmp_path, CXX="clang++")
+        hunter = make_mock_hunter(sources=[])
+        StubClass = make_stub_backend_class()
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        backend._module_compiler_kind = "clang"
+        backend._module_pcm_cache_root = str(tmp_path / "cas-pcmdir")
+        backend._module_pcm_dir = str(tmp_path / "cas-objdir" / ".pcm")
+        backend._build_imports_std_cached = True
+
+        artefact_path = str(tmp_path / "cas-pcmdir" / "abc" / "vector.pcm")
+        rule = backend._create_header_unit_precompile_rule("<vector>", artefact_path)
+        assert "-stdlib=libc++" in rule.command, (
+            f"clang header-unit precompile must carry -stdlib=libc++ when build "
+            f"imports std (matches the cmd_hash's extra_flags). Got command: "
+            f"{rule.command!r}"
+        )
+
+    def test_clang_header_unit_precompile_skips_stdlib_libcxx_without_imports_std(self, tmp_path):
+        args = make_backend_args(tmp_path, CXX="clang++")
+        hunter = make_mock_hunter(sources=[])
+        StubClass = make_stub_backend_class()
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        backend._module_compiler_kind = "clang"
+        backend._module_pcm_cache_root = str(tmp_path / "cas-pcmdir")
+        backend._module_pcm_dir = str(tmp_path / "cas-objdir" / ".pcm")
+        backend._build_imports_std_cached = False
+
+        artefact_path = str(tmp_path / "cas-pcmdir" / "abc" / "vector.pcm")
+        rule = backend._create_header_unit_precompile_rule("<vector>", artefact_path)
+        # When the build doesn't import std, we don't inject -stdlib=libc++.
+        # (User's CXXFLAGS may still set it; this test runs without that.)
+        assert "-stdlib=libc++" not in rule.command, (
+            f"-stdlib=libc++ should not appear when build doesn't import std "
+            f"and CXXFLAGS doesn't have it. Got: {rule.command!r}"
+        )
+
+
 class TestPchManifest:
     def test_manifest_records_header_realpath_and_compiler_identity(self, tmp_path, monkeypatch):
         from compiletools.build_backend import _write_pch_manifest

@@ -1162,3 +1162,145 @@ class TestConcurrentCompilationDatabase:
                     "Pre-existing regular compile_commands.json must be replaced by a symlink"
                 )
                 assert os.readlink(stale_path) == "compile_commands.gcc.debug.json"
+
+
+class TestCompilationDatabaseModuleFlags:
+    """C++20 modules: TU-level flags must appear in compile_commands.json
+    so clangd / clang-tidy can resolve `import M;` / `import <h>;` lookups.
+    Without them, IDEs report module imports as undefined."""
+
+    def setup_method(self):
+        uth.reset()
+
+    @uth.requires_functional_compiler
+    def test_gcc_module_importer_gets_fmodules_ts(self):
+        """A TU with `import math;` compiled under gcc must carry -fmodules-ts
+        in its compile_commands.json entry."""
+        import shutil
+
+        with uth.TempDirContext():
+            samplesdir = uth.samplesdir()
+            sample_src = os.path.join(samplesdir, "cxx_modules")
+            workdir = os.getcwd()
+            for name in ("main.cpp", "math.cppm"):
+                shutil.copy(os.path.join(sample_src, name), workdir)
+
+            with uth.TempConfigContext(tempdir=workdir) as temp_config_name:
+                main_path = os.path.join(workdir, "main.cpp")
+                math_path = os.path.join(workdir, "math.cppm")
+                with uth.ParserContext():
+                    compiletools.compilation_database.main(
+                        [
+                            "--config=" + temp_config_name,
+                            "--variant=gcc.debug",
+                            "--CXXFLAGS=-std=c++20",
+                            main_path,
+                            math_path,
+                        ]
+                    )
+
+                cdb_path = os.path.join(workdir, "compile_commands.gcc.debug.json")
+                assert os.path.exists(cdb_path), (
+                    f"expected per-variant CDB at {cdb_path}; "
+                    f"workdir contains: {sorted(os.listdir(workdir))}"
+                )
+                with open(cdb_path) as f:
+                    entries = json.load(f)
+
+                main_entries = [e for e in entries if e["file"].endswith("main.cpp")]
+                assert len(main_entries) == 1, (
+                    f"expected one main.cpp entry, got {len(main_entries)}: "
+                    f"{[e['file'] for e in entries]}"
+                )
+                args = main_entries[0]["arguments"]
+                assert "-fmodules-ts" in args, (
+                    f"gcc CDB entry for main.cpp lacks -fmodules-ts; "
+                    f"clangd will report `import math;` as undefined. "
+                    f"args={args!r}"
+                )
+
+    def test_clang_header_unit_importer_gets_fmodules(self):
+        """A TU with `import <vector>;` compiled under clang must carry -fmodules
+        in its compile_commands.json entry; without it clangd treats the import
+        as an unknown header unit. Unit-level test (no compiler required):
+        constructs a CompilationDatabaseCreator and stubs the file-analysis
+        result for a clang CXX."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
+            compiletools.compilation_database.CompilationDatabaseCreator
+        )
+        creator.args = SimpleNamespace(CXX="clang++")
+        creator.hunter = MagicMock()
+        creator.hunter._file_analysis_result = MagicMock(
+            return_value=SimpleNamespace(
+                module_exports=(),
+                module_implements=(),
+                module_imports=(),
+                module_header_imports=("<vector>",),
+            )
+        )
+
+        flags = creator._module_kind_flags("/src/main.cpp")
+        assert "-fmodules" in flags, (
+            f"clang TU with import <vector>; needs -fmodules, got {flags!r}"
+        )
+
+    def test_clang_import_std_gets_stdlib_libcxx(self):
+        """`import std;` under clang requires -stdlib=libc++; the system std
+        module is libc++-shipped today."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
+            compiletools.compilation_database.CompilationDatabaseCreator
+        )
+        creator.args = SimpleNamespace(CXX="clang++")
+        creator.hunter = MagicMock()
+        creator.hunter._file_analysis_result = MagicMock(
+            return_value=SimpleNamespace(
+                module_exports=(),
+                module_implements=(),
+                module_imports=("std",),
+                module_header_imports=(),
+            )
+        )
+
+        flags = creator._module_kind_flags("/src/main.cpp")
+        assert "-stdlib=libc++" in flags, (
+            f"clang TU with import std; needs -stdlib=libc++, got {flags!r}"
+        )
+
+    @uth.requires_functional_compiler
+    def test_non_module_tu_unchanged(self):
+        """A TU with no module activity must NOT pick up module flags."""
+        with uth.TempDirContext():
+            samplesdir = uth.samplesdir()
+
+            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+                src = os.path.join(samplesdir, "simple/helloworld_cpp.cpp")
+                with uth.ParserContext():
+                    compiletools.compilation_database.main(
+                        [
+                            "--config=" + temp_config_name,
+                            "--variant=gcc.debug",
+                            src,
+                        ]
+                    )
+
+                cdb_path = os.path.join(
+                    os.getcwd(), "compile_commands.gcc.debug.json"
+                )
+                with open(cdb_path) as f:
+                    entries = json.load(f)
+
+                cpp_entries = [
+                    e for e in entries if e["file"].endswith("helloworld_cpp.cpp")
+                ]
+                assert len(cpp_entries) == 1
+                args = cpp_entries[0]["arguments"]
+                for flag in ("-fmodules-ts", "-fmodules", "-stdlib=libc++"):
+                    assert flag not in args, (
+                        f"non-module TU should not have {flag}; args={args!r}"
+                    )

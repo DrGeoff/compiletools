@@ -116,6 +116,15 @@ class CompilationDatabaseCreator:
 
         args.extend(combined_flags)
 
+        # C++20 modules: TUs that participate in the module graph need
+        # the compiler's modules-mode flag in the CDB so clangd /
+        # clang-tidy / IDEs resolve `import M;` and `import <h>;` lookups.
+        # Without this they report module imports as undefined. Per-
+        # partition `.pcm` mappings and gcc's mapper file require the
+        # full backend pre-pass and are intentionally omitted; consumers
+        # that need them should run the build to populate the cache.
+        args.extend(self._module_kind_flags(source_file))
+
         # Add compile-only flag
         args.extend(["-c"])
 
@@ -126,6 +135,44 @@ class CompilationDatabaseCreator:
             args.append(compiletools.wrappedos.realpath(source_file))
 
         return args
+
+    def _module_kind_flags(self, source_file: str) -> list[str]:
+        """Per-TU C++20 modules flags for the detected compiler.
+
+        Mirrors the user-visible slice of
+        ``BuildBackend._compiler_module_flags_for``: just the umbrella
+        flags that make a TU known to the compiler as a module
+        participant. Per-partition ``-fmodule-file=`` mappings and
+        gcc's ``-fmodule-mapper=`` require populating the build's
+        module-interface registry, which is a side effect of the
+        backend pre-pass — outside the CDB's scope. The umbrella
+        flags alone are enough for clangd / clang-tidy to switch on
+        modules-aware indexing.
+        """
+        try:
+            result = self.hunter._file_analysis_result(source_file)
+        except Exception:
+            return []
+        if result is None:
+            return []
+        if not (
+            result.module_exports
+            or result.module_implements
+            or result.module_imports
+            or result.module_header_imports
+        ):
+            return []
+        kind = compiletools.apptools.compiler_kind(self.args.CXX)
+        if kind == "gcc":
+            return ["-fmodules-ts"]
+        if kind == "clang":
+            extras: list[str] = []
+            if result.module_header_imports:
+                extras.append("-fmodules")
+            if "std" in result.module_imports:
+                extras.append("-stdlib=libc++")
+            return extras
+        return []
 
     def _create_command_object(self, source_file: str) -> dict[str, Any]:
         """Create a single command object for the compilation database"""
