@@ -4,10 +4,12 @@ Phase 1: GCC-only (-fmodules-ts), auto-detected via FileAnalyzer.
 See docs/superpowers/specs/2026-05-07-cxx-modules-design.md
 """
 
+import functools
 import os
 import subprocess
 import tempfile
 
+import pytest
 import stringzilla as sz
 
 import compiletools.testhelper as uth
@@ -382,35 +384,88 @@ def _which(name: str) -> str | None:
     return _shutil.which(name)
 
 
-# This worktree's src/ directory. The e2e tests invoke ct-cake / ct-trim-cache
-# as subprocesses; without forcing this src onto the subprocess's PYTHONPATH
-# they'd resolve to whatever installed compiletools the venv's console-script
-# entry points at -- which, for a developer running pytest from this worktree
-# while their venv is editable-installed from the master worktree, is the
-# WRONG compiletools (no C++20 modules support). Putting our src first on
-# PYTHONPATH makes the subprocess always run THIS branch's code.
+# This worktree's src/ directory. Compared against the location the
+# subprocess's ``ct-cake`` would import ``compiletools`` from -- if they
+# differ, the venv's editable install points at a different worktree and
+# every e2e test would silently exercise the WRONG code (the master
+# worktree's compiletools, which doesn't know about C++20 modules).
+# We detect this and skip the affected tests with a clear actionable
+# message rather than trying to paper over the misconfiguration.
 _WORKTREE_SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _subprocess_env(extra: dict | None = None) -> dict:
-    """Return a subprocess env that pins compiletools to this worktree.
+@functools.lru_cache(maxsize=1)
+def _venv_mismatch_reason() -> str | None:
+    """Return ``None`` when the venv's ct-cake matches this worktree, or
+    a human-readable explanation when it doesn't.
 
-    Merges the current process env with a PYTHONPATH that prefixes this
-    worktree's ``src`` ahead of whatever was inherited. Any keys in
-    ``extra`` (typically ``CXX`` / ``CPP`` overrides for compiler-pinned
-    e2e tests) win over the inherited env.
+    Walks ct-cake's shebang to find its Python interpreter, then asks
+    that interpreter where it imports ``compiletools`` from. If the
+    answer points outside this worktree's ``src/``, the venv was
+    editable-installed from a different worktree and the e2e tests
+    would silently exercise the wrong code.
+
+    Cached so the subprocess only runs once per pytest session.
     """
-    env = os.environ.copy()
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        _WORKTREE_SRC + os.pathsep + existing if existing else _WORKTREE_SRC
+    cake = _which("ct-cake")
+    if not cake:
+        return "ct-cake not on PATH (modules tests need a venv with compiletools installed)"
+    try:
+        with open(cake) as f:
+            first = f.readline().strip()
+    except OSError as e:
+        return f"can't read ct-cake script {cake!r}: {e}"
+    if not first.startswith("#!"):
+        return None  # not a shebang script; can't introspect cheaply
+    interpreter = first[2:].split()[0]
+    try:
+        r = subprocess.run(
+            [interpreter, "-c",
+             "import compiletools, os; "
+             "print(os.path.dirname(os.path.dirname(os.path.realpath(compiletools.__file__))))"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return f"can't run ct-cake's Python ({interpreter!r}): {e}"
+    if r.returncode != 0:
+        return f"ct-cake's Python failed to introspect compiletools: {r.stderr.strip()}"
+    actual = r.stdout.strip()
+    expected = os.path.realpath(_WORKTREE_SRC)
+    if os.path.realpath(actual) == expected:
+        return None
+    return (
+        f"venv mismatch: ct-cake imports compiletools from {actual!r}, "
+        f"but the test file lives under {expected!r}. The venv's editable "
+        "install points at a different worktree, so e2e tests would "
+        "exercise the wrong code. Fix with `uv pip install -e .` (or "
+        "`pip install -e .`) from this worktree."
     )
-    if extra:
-        env.update(extra)
-    return env
 
 
-import functools  # noqa: E402
+def _skipif_e2e_unavailable(probe_predicate, feature_reason: str):
+    """Build a ``pytest.mark.skipif`` that fires for either of two reasons:
+
+    1. The venv's installed compiletools doesn't match this worktree
+       (``_venv_mismatch_reason()`` returned non-None). Affected e2e
+       tests would silently exercise the wrong code, so we skip with
+       the actionable "re-install with `uv pip install -e .`" message.
+    2. The compiler can't satisfy the feature being tested
+       (``probe_predicate()`` returned False).
+
+    When BOTH conditions trip, the venv message wins -- it's the more
+    fundamental issue and the user has to fix it before the feature
+    probe even becomes meaningful.
+
+    Centralising the composition here lets each e2e test keep its
+    single ``@requires_X`` decorator without sprouting a second
+    ``@requires_fresh_venv`` everywhere.
+    """
+    venv_reason = _venv_mismatch_reason()
+    if venv_reason is not None:
+        return pytest.mark.skipif(True, reason=venv_reason)
+    return pytest.mark.skipif(not probe_predicate(), reason=feature_reason)
+
+
 
 
 @functools.lru_cache(maxsize=16)
@@ -463,16 +518,15 @@ def _clang_path_for_modules() -> str | None:
     return None
 
 
-import pytest  # noqa: E402
 
-requires_cxx_modules = pytest.mark.skipif(
-    not _detected_gcc_supports_modules(),
-    reason="C++20 modules (-fmodules-ts) not supported by detected g++",
+requires_cxx_modules = _skipif_e2e_unavailable(
+    _detected_gcc_supports_modules,
+    "C++20 modules (-fmodules-ts) not supported by detected g++",
 )
 
-requires_clang_modules = pytest.mark.skipif(
-    _clang_path_for_modules() is None,
-    reason="No clang++ on PATH that supports C++20 modules (--precompile)",
+requires_clang_modules = _skipif_e2e_unavailable(
+    lambda: _clang_path_for_modules() is not None,
+    "No clang++ on PATH that supports C++20 modules (--precompile)",
 )
 
 
@@ -491,7 +545,7 @@ def test_cxx_modules_simple_sample_builds_and_runs(tmp_path, monkeypatch):
     # Run ct-cake --auto via subprocess so we exercise the same CLI users do.
     r = subprocess.run(
         ["ct-cake", "--auto"],
-        capture_output=True, text=True, cwd=workdir, timeout=120, env=_subprocess_env(),
+        capture_output=True, text=True, cwd=workdir, timeout=120,
     )
     assert r.returncode == 0, f"ct-cake --auto failed:\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
 
@@ -519,7 +573,7 @@ def _run_sample_with_compiler(sample_name: str, cxx: str, tmp_path, monkeypatch)
     shutil.copytree(sample_src, workdir)
     monkeypatch.chdir(workdir)
 
-    env = _subprocess_env()
+    env = os.environ.copy()
     env["CXX"] = cxx
     env["CPP"] = cxx
     # CC stays unchanged: the samples are pure C++.
@@ -570,7 +624,7 @@ def _run_partitions_sample_with(cxx: str, tmp_path, monkeypatch):
     shutil.copytree(sample_src, workdir)
     monkeypatch.chdir(workdir)
 
-    env = _subprocess_env()
+    env = os.environ.copy()
     env["CXX"] = cxx
     env["CPP"] = cxx
     r = subprocess.run(
@@ -626,7 +680,7 @@ def _run_import_std_sample_with(cxx: str, tmp_path, monkeypatch):
     shutil.copytree(sample_src, workdir)
     monkeypatch.chdir(workdir)
 
-    env = _subprocess_env()
+    env = os.environ.copy()
     env["CXX"] = cxx
     env["CPP"] = cxx
     r = subprocess.run(
@@ -697,14 +751,14 @@ def _clang_supports_import_std() -> bool:
     return r.returncode == 0
 
 
-requires_gcc_import_std = pytest.mark.skipif(
-    not _gcc_supports_import_std(),
-    reason="`import std;` not supported by detected g++ (no bits/std.cc)",
+requires_gcc_import_std = _skipif_e2e_unavailable(
+    _gcc_supports_import_std,
+    "`import std;` not supported by detected g++ (no bits/std.cc)",
 )
 
-requires_clang_import_std = pytest.mark.skipif(
-    not _clang_supports_import_std(),
-    reason="`import std;` not supported by detected clang++ (no libc++ std.cppm)",
+requires_clang_import_std = _skipif_e2e_unavailable(
+    _clang_supports_import_std,
+    "`import std;` not supported by detected clang++ (no libc++ std.cppm)",
 )
 
 
@@ -765,14 +819,14 @@ def _clang_supports_header_units() -> bool:
     return r.returncode == 0
 
 
-requires_gcc_header_units = pytest.mark.skipif(
-    not _gcc_supports_header_units(),
-    reason="header units (-fmodules + -x c++-system-header) not supported by detected g++",
+requires_gcc_header_units = _skipif_e2e_unavailable(
+    _gcc_supports_header_units,
+    "header units (-fmodules + -x c++-system-header) not supported by detected g++",
 )
 
-requires_clang_header_units = pytest.mark.skipif(
-    not _clang_supports_header_units(),
-    reason="header units (--precompile -xc++-system-header) not supported by detected clang++",
+requires_clang_header_units = _skipif_e2e_unavailable(
+    _clang_supports_header_units,
+    "header units (--precompile -xc++-system-header) not supported by detected clang++",
 )
 
 
@@ -786,7 +840,7 @@ def _run_header_units_sample_with(cxx: str, tmp_path, monkeypatch):
     shutil.copytree(sample_src, workdir)
     monkeypatch.chdir(workdir)
 
-    env = _subprocess_env()
+    env = os.environ.copy()
     env["CXX"] = cxx
     env["CPP"] = cxx
     r = subprocess.run(
@@ -851,7 +905,7 @@ def test_cas_pcmdir_clang_pcm_survives_rebuild(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
     monkeypatch.chdir(workdir)
 
-    env = _subprocess_env()
+    env = os.environ.copy()
     env["CXX"] = cxx
     env["CPP"] = cxx
 
@@ -925,7 +979,7 @@ def test_gcc_mapper_records_partition_names_with_colon(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
     monkeypatch.chdir(workdir)
 
-    env = _subprocess_env()
+    env = os.environ.copy()
     env["CXX"] = cxx
     env["CPP"] = cxx
     r = subprocess.run(
@@ -989,7 +1043,7 @@ def test_cas_pcmdir_gcc_gcm_lands_in_cache(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
     monkeypatch.chdir(workdir)
 
-    env = _subprocess_env()
+    env = os.environ.copy()
     env["CXX"] = cxx
     env["CPP"] = cxx
     r = subprocess.run(
@@ -1047,7 +1101,7 @@ def test_cas_pcmdir_gcc_header_unit_gcm_survives_rebuild(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
     monkeypatch.chdir(workdir)
 
-    env = _subprocess_env()
+    env = os.environ.copy()
     env["CXX"] = cxx
     env["CPP"] = cxx
     r1 = subprocess.run(
@@ -1107,7 +1161,7 @@ def test_ct_trim_cache_evicts_old_pcm_entries(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
     monkeypatch.chdir(workdir)
 
-    env = _subprocess_env()
+    env = os.environ.copy()
     env["CXX"] = cxx
     env["CPP"] = cxx
 
@@ -1185,7 +1239,7 @@ def test_cas_pcmdir_path_layout_is_content_addressed(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
     monkeypatch.chdir(workdir)
 
-    env = _subprocess_env()
+    env = os.environ.copy()
     env["CXX"] = cxx
     env["CPP"] = cxx
     r = subprocess.run(
@@ -1267,7 +1321,7 @@ def test_cxx_modules_split_implementation_unit(tmp_path, monkeypatch):
 
     r = subprocess.run(
         ["ct-cake", "--auto"],
-        capture_output=True, text=True, cwd=workdir, timeout=120, env=_subprocess_env(),
+        capture_output=True, text=True, cwd=workdir, timeout=120,
     )
     assert r.returncode == 0, f"ct-cake --auto failed:\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
 
