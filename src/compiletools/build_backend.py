@@ -1504,7 +1504,7 @@ class BuildBackend(abc.ABC):
         for clang+cache, the flat-dir .pcm for clang without cache, or
         the flat-dir .stamp for gcc.
 
-        - **gcc**: ``g++ -fmodules -c -x c++-system-header <header>``
+        - **gcc**: ``g++ -fmodules-ts -c -x c++-system-header <header>``
           writes the ``.gcm`` to ``gcm.cache/<resolved-abs-path>.gcm``
           (path depends on header-search resolution, so we can't name it
           as the make output). The rule's output is the stamp file
@@ -1595,7 +1595,7 @@ class BuildBackend(abc.ABC):
             with open(mini_mapper, "w") as f:
                 f.write(f"{abs_path} {tmp_path}\n")
             cmd = common_cmd + [
-                "-fmodules", "-c", "-x", "c++-system-header", bare,
+                "-fmodules-ts", "-c", "-x", "c++-system-header", bare,
                 f"-fmodule-mapper={mini_mapper}",
             ]
             pipeline = f"{shlex.join(cmd)} && mv -f {shlex.quote(tmp_path)} {shlex.quote(artefact_path)}"
@@ -1611,7 +1611,7 @@ class BuildBackend(abc.ABC):
         # (couldn't precompute via -M; the global mapper has no entry for
         # this token, so gcc lands the .gcm in gcm.cache/<resolved>.gcm
         # at compile time).
-        cmd = common_cmd + ["-fmodules", "-c", "-x", "c++-system-header", bare]
+        cmd = common_cmd + ["-fmodules-ts", "-c", "-x", "c++-system-header", bare]
         if mapper:
             cmd.append(f"-fmodule-mapper={mapper}")
         return BuildRule(
@@ -1985,7 +1985,24 @@ class BuildBackend(abc.ABC):
         if self.args.dynamic and filename in self._dynamic_sources:
             compile_cmd.append("-fPIC")
 
-        compile_cmd.extend(["-c", filename, "-o", obj_name])
+        # gcc < 14 doesn't recognize the ``.cppm`` extension as C++ source —
+        # without an explicit ``-x c++`` it treats ``math.cppm`` as a linker
+        # input and emits "linker input file unused because linking not
+        # done" under -c, leaving no .o for the producer-side rename to
+        # land. gcc 14+ added native .cppm recognition, so the coercion is
+        # a no-op there. Scope the override to this single source by
+        # placing it immediately before the filename. Only inject for the
+        # gcc CXX path; clang has its own --precompile flow for .cppm
+        # interface units (see _create_clang_module_interface_rules).
+        source_prefix: list[str] = []
+        if (
+            self._module_compiler_kind == "gcc"
+            and not compiletools.utils.is_c_source(filename)
+            and filename.endswith(".cppm")
+        ):
+            source_prefix = ["-x", "c++"]
+
+        compile_cmd.extend(["-c", *source_prefix, filename, "-o", obj_name])
 
         # The bucket dir is the immediate parent of the sharded object path
         # (``<objdir>/<file_hash[:2]>``). Gating only on the per-target

@@ -858,6 +858,69 @@ class TestCompilerWrapperSplit:
         assert compile_rules[0].command[0] == "g++"
 
 
+class TestGccCppmExtensionRecognition:
+    """gcc < 14 does NOT recognize the ``.cppm`` extension as C++ source.
+    Without an explicit ``-x c++`` coercion the driver treats ``math.cppm``
+    as a linker input and emits::
+
+        g++: warning: math.cppm: linker input file unused because linking not done
+
+    leaving no ``.o`` for the producer-side rename to land. gcc 14+ added
+    native ``.cppm`` recognition, so a developer on a recent toolchain
+    sees the test pass without the coercion -- masking the bug for any
+    CI that still runs gcc 13 (e.g. ubuntu-24.04). The probe at
+    ``test_cxx_modules.py:_probe_modules_support`` already passes ``-x c++``
+    when checking gcc support; the build must do the same for the
+    probe-build alignment to hold.
+    """
+
+    def _make_gcc_module_backend(self, tmp_path, source):
+        """Backend wired to compile ``source`` (a ``.cppm``) as a gcc module
+        interface unit. The hunter is mocked to declare that the file
+        ``export module``s a name, which is what triggers the modules
+        flags via ``_compiler_module_flags_for``."""
+        from types import SimpleNamespace
+
+        args = make_backend_args(tmp_path, CXX="g++")
+        hunter = make_mock_hunter(sources=[source])
+        StubClass = make_stub_backend_class()
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        backend._module_compiler_kind = "gcc"
+        # _compiler_module_flags_for keys off this hunter call to decide
+        # whether the TU touches the module graph.
+        result = SimpleNamespace(
+            module_exports=("math",),
+            module_implements=(),
+            module_imports=(),
+            module_header_imports=(),
+        )
+        hunter._file_analysis_result = MagicMock(return_value=result)
+        # No system-modules wiring needed for a user-authored .cppm.
+        hunter.system_modules = MagicMock(return_value={})
+        return backend
+
+    def test_gcc_cppm_compile_passes_x_cxx_before_filename(self, tmp_path):
+        backend = self._make_gcc_module_backend(tmp_path, "/src/math.cppm")
+        rule = backend._create_compile_rule("/src/math.cppm")
+
+        cmd = rule.command
+        assert "/src/math.cppm" in cmd, (
+            f"compile command must reference the .cppm source; got: {cmd!r}"
+        )
+        idx = cmd.index("/src/math.cppm")
+        # `-x c++` must appear as two adjacent tokens immediately preceding
+        # the source path. The "-x ARG" form applies to subsequent inputs
+        # until overridden, so positioning right before the filename is
+        # the safest scope.
+        assert idx >= 2 and cmd[idx - 2] == "-x" and cmd[idx - 1] == "c++", (
+            f"gcc compile of a .cppm source must pass `-x c++` immediately "
+            f"before the filename so gcc < 14 (no native .cppm recognition) "
+            f"treats it as C++ source instead of a linker input. "
+            f"Got command: {cmd!r}"
+        )
+
+
 class TestModuleFlagsAreShellNaive:
     """`_compiler_module_flags_for` returns flag tokens that go straight into
     ``BuildRule.command``. Argv-executing backends (Shake / Slurm) hand that
@@ -1028,6 +1091,52 @@ class TestGccHeaderUnitProducerSideRename:
                 break
         else:
             assert False, f"global mapper missing /usr/include/vector entry:\n{global_mapper}"
+
+    def test_gcc_header_unit_precompile_uses_fmodules_ts(self, tmp_path):
+        """gcc accepts ``-fmodules-ts`` for C++20 modules; ``-fmodules`` is a
+        clang flag that gcc < 14 rejects with::
+
+            g++: error: unrecognized command-line option '-fmodules';
+                       did you mean '-Mmodules'?
+
+        Local gcc 14+ silently accepts both, masking the bug for developers
+        on a recent toolchain. The rest of the gcc path (e.g.
+        ``_compiler_module_flags_for``) already uses ``-fmodules-ts``; the
+        header-unit precompile must match. This test exercises both paths
+        through ``_create_header_unit_precompile_rule`` -- the cache-mode
+        sh-pipeline form and the fallback argv form -- so neither can
+        regress.
+        """
+        backend = self._make_gcc_cache_backend(tmp_path)
+        artefact_path = str(tmp_path / "cas-pcmdir" / "abc" / "vector.gcm")
+
+        # Cache-mode path with resolved abs header => recipe is `sh -c <pipeline>`.
+        backend._gcc_header_unit_resolved = {"<vector>": "/usr/include/vector"}
+        rule = backend._create_header_unit_precompile_rule("<vector>", artefact_path)
+        pipeline = rule.command[2]  # ["sh", "-c", "<pipeline>"]
+        assert "-fmodules-ts" in pipeline, (
+            f"cache-mode gcc header-unit precompile must pass -fmodules-ts; "
+            f"got pipeline: {pipeline!r}"
+        )
+        assert (
+            " -fmodules " not in pipeline
+            and not pipeline.startswith("-fmodules ")
+        ), (
+            f"cache-mode gcc header-unit precompile must not pass -fmodules "
+            f"(clang-only flag, gcc < 14 rejects it); got pipeline: {pipeline!r}"
+        )
+
+        # Fallback path (no resolved abs header) => command is plain argv.
+        backend._gcc_header_unit_resolved = {}
+        rule = backend._create_header_unit_precompile_rule("<vector>", artefact_path)
+        assert "-fmodules-ts" in rule.command, (
+            f"fallback gcc header-unit precompile must pass -fmodules-ts; "
+            f"got command: {rule.command!r}"
+        )
+        assert "-fmodules" not in rule.command, (
+            f"fallback gcc header-unit precompile must not pass -fmodules "
+            f"(clang-only flag, gcc < 14 rejects it); got command: {rule.command!r}"
+        )
 
 
 class TestClangHeaderUnitStdlibSymmetry:
