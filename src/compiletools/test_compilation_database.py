@@ -667,6 +667,8 @@ class TestCompilationDatabase:
 
         import re
 
+        source_token_re = re.compile(r".+\.(?:cpp|c|cc|cxx|C)\Z")
+
         for _line_num, line in enumerate(lines):
             original_line = line
             line = line.strip()
@@ -676,14 +678,18 @@ class TestCompilationDatabase:
                 # Extract compiler command
                 command = original_line[1:].strip()  # Remove tab
                 if any(compiler in command for compiler in ["gcc", "g++", "clang", "clang++"]):
+                    tokens = command.split()
                     # Only process commands that have -c flag (compilation, not linking)
-                    if "-c" in command.split():
-                        # Extract source file from command - it's at the end
-                        # Look for .c or .cpp files in the command
-                        source_match = re.search(r"(\S+\.(?:cpp|c|cc|cxx|C))", command)
-                        if source_match:
-                            source_file = source_match.group(1)
-                            makefile_commands[source_file] = command.split()
+                    if "-c" in tokens:
+                        # Find the source file token: last whole-token ending in a C/C++ extension.
+                        # Whole-token match avoids false positives like `master/.c` from a cwd path
+                        # that contains `/.claude/`.
+                        source_file = next(
+                            (tok for tok in reversed(tokens) if source_token_re.match(tok)),
+                            None,
+                        )
+                        if source_file:
+                            makefile_commands[source_file] = tokens
 
         return makefile_commands
 
