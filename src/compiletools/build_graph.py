@@ -11,7 +11,16 @@ import shlex
 from dataclasses import dataclass, field
 
 VALID_RULE_TYPES = frozenset(
-    {"compile", "link", "test", "phony", "mkdir", "clean", "copy", "static_library", "shared_library"}
+    {
+        "compile", "link", "test", "phony", "mkdir", "clean", "copy",
+        "static_library", "shared_library",
+        # C++20 header-unit precompile that writes its actual artefact to
+        # an under-the-hood location (gcc: gcm.cache/<abs-path>.gcm) and
+        # cannot conform to the "compile" contract of producing the
+        # rule's named output. The named output is a stamp file, touched
+        # via ``success_marker`` to record completion.
+        "header_unit",
+    }
 )
 
 

@@ -691,6 +691,189 @@ class TestPchPerRealpathBucketing:
         assert not os.path.isdir(a)
 
 
+def _make_pcmdir_entry(pcmdir, command_hash, leaves, *, age_seconds=0, size_per_leaf=1024):
+    """Create a fake PCM cache entry: ``<pcmdir>/<command_hash>/<leaves>``.
+
+    Mirrors ``_make_pchdir_entry``. PCM uses a single-command_hash layout
+    (vs the object cache's 3-axis filename) because the compiler verifies
+    BMIs at consume time -- a hash collision causes a slow re-precompile,
+    not a miscompile, so the lower-entropy single key is safe.
+    """
+    d = os.path.join(pcmdir, command_hash)
+    os.makedirs(d, exist_ok=True)
+    for leaf in leaves:
+        path = os.path.join(d, leaf)
+        with open(path, "wb") as f:
+            f.write(b"\0" * size_per_leaf)
+    if age_seconds:
+        mtime = time.time() - age_seconds
+        os.utime(d, (mtime, mtime))
+    return d
+
+
+class TestTrimPcmdir:
+    """Basic ``trim_pcmdir`` policy: keep_count, max_age, missing dir."""
+
+    def test_missing_pcmdir_is_a_no_op(self, tmp_path):
+        trimmer = CacheTrimmer(_make_args())
+        stats = trimmer.trim_pcmdir(str(tmp_path / "nope"))
+        assert stats["total_dirs_scanned"] == 0
+        assert stats["dirs_removed"] == 0
+
+    def test_keep_count_drops_oldest_in_a_legacy_bucket(self, tmp_path):
+        pcmdir = str(tmp_path / "pcm")
+        os.makedirs(pcmdir)
+        a = _make_pcmdir_entry(pcmdir, "a" * 16, ["math.pcm"], age_seconds=3600)
+        b = _make_pcmdir_entry(pcmdir, "b" * 16, ["math.pcm"], age_seconds=60)
+        # No manifests -> __legacy__ bucket -> global keep_count=1.
+        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        trimmer.trim_pcmdir(pcmdir)
+        assert os.path.isdir(b) and not os.path.isdir(a)
+
+    def test_max_age_keeps_recent_even_beyond_keep_count(self, tmp_path):
+        pcmdir = str(tmp_path / "pcm")
+        os.makedirs(pcmdir)
+        # Three entries: keep_count=1 would normally drop two; max_age
+        # rescues the recent ones.
+        old = _make_pcmdir_entry(pcmdir, "a" * 16, ["math.pcm"], age_seconds=86400 * 30)
+        mid = _make_pcmdir_entry(pcmdir, "b" * 16, ["math.pcm"], age_seconds=60)
+        new = _make_pcmdir_entry(pcmdir, "c" * 16, ["math.pcm"], age_seconds=10)
+        trimmer = CacheTrimmer(_make_args(keep_count=1, max_age=1))
+        trimmer.trim_pcmdir(pcmdir)
+        assert os.path.isdir(new) and os.path.isdir(mid) and not os.path.isdir(old)
+
+    def test_dry_run_removes_nothing(self, tmp_path):
+        pcmdir = str(tmp_path / "pcm")
+        os.makedirs(pcmdir)
+        a = _make_pcmdir_entry(pcmdir, "a" * 16, ["math.pcm"], age_seconds=3600)
+        b = _make_pcmdir_entry(pcmdir, "b" * 16, ["math.pcm"], age_seconds=60)
+        trimmer = CacheTrimmer(_make_args(dry_run=True, keep_count=1))
+        stats = trimmer.trim_pcmdir(pcmdir)
+        assert os.path.isdir(a) and os.path.isdir(b)
+        assert stats["dirs_removed"] == 1  # would-be remove count
+
+
+class TestPcmPerBucketKeyBucketing:
+    """``bucket_key`` from the manifest gives independent keep_count buckets."""
+
+    @staticmethod
+    def _write_manifest(pcmdir, cmd_hash, bucket_key, *,
+                        stage="clang_module_interface", transitive=None, age_seconds=0):
+        manifest = {
+            "bucket_key": bucket_key,
+            "stage": stage,
+            "compiler": "clang++",
+            "compiler_identity": "clang++|0|0",
+            "transitive_hashes": transitive or {},
+        }
+        d = os.path.join(pcmdir, cmd_hash)
+        with open(os.path.join(d, "manifest.json"), "w") as f:
+            json.dump(manifest, f)
+        if age_seconds:
+            mtime = time.time() - age_seconds
+            os.utime(d, (mtime, mtime))
+
+    def test_distinct_buckets_get_independent_keep_count(self, tmp_path):
+        pcmdir = str(tmp_path / "pcm")
+        os.makedirs(pcmdir)
+        # Two named modules, each with two cmd_hash variants.
+        a1 = _make_pcmdir_entry(pcmdir, "a" * 16, ["math.pcm"])
+        a2 = _make_pcmdir_entry(pcmdir, "b" * 16, ["math.pcm"])
+        b1 = _make_pcmdir_entry(pcmdir, "c" * 16, ["util.pcm"])
+        b2 = _make_pcmdir_entry(pcmdir, "d" * 16, ["util.pcm"])
+        self._write_manifest(pcmdir, "a" * 16, "/proj/math.cppm", age_seconds=3600)
+        self._write_manifest(pcmdir, "b" * 16, "/proj/math.cppm", age_seconds=60)
+        self._write_manifest(pcmdir, "c" * 16, "/proj/util.cppm", age_seconds=3600)
+        self._write_manifest(pcmdir, "d" * 16, "/proj/util.cppm", age_seconds=60)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        trimmer.trim_pcmdir(pcmdir)
+
+        # keep_count=1 PER bucket -- each newest survives.
+        assert os.path.isdir(a2) and not os.path.isdir(a1)
+        assert os.path.isdir(b2) and not os.path.isdir(b1)
+
+    def test_header_unit_token_is_a_valid_bucket_key(self, tmp_path):
+        """Header units bucket by token (`<vector>`, `"foo.h"`) so the
+        same header in different variants/projects shares a bucket."""
+        pcmdir = str(tmp_path / "pcm")
+        os.makedirs(pcmdir)
+        a1 = _make_pcmdir_entry(pcmdir, "1" * 16, ["vector.pcm"])
+        a2 = _make_pcmdir_entry(pcmdir, "2" * 16, ["vector.pcm"])
+        b1 = _make_pcmdir_entry(pcmdir, "3" * 16, ["cstdio.pcm"])
+        self._write_manifest(pcmdir, "1" * 16, "<vector>", stage="clang_header_unit", age_seconds=3600)
+        self._write_manifest(pcmdir, "2" * 16, "<vector>", stage="clang_header_unit", age_seconds=60)
+        self._write_manifest(pcmdir, "3" * 16, "<cstdio>", stage="clang_header_unit", age_seconds=60)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        trimmer.trim_pcmdir(pcmdir)
+
+        # Newest <vector> survives, older one is dropped; <cstdio>'s only
+        # entry is kept.
+        assert os.path.isdir(a2) and not os.path.isdir(a1)
+        assert os.path.isdir(b1)
+
+
+class TestPcmTransitiveStaleness:
+    """When a transitive header changes, the cached cmd_hash dir is
+    pre-evicted so the user doesn't pay the slow re-precompile after a
+    silent BMI mismatch."""
+
+    @staticmethod
+    def _git_blob_sha1(content: bytes) -> str:
+        import hashlib
+        return hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
+
+    def test_stale_transitive_hash_evicts_entry(self, tmp_path):
+        pcmdir = str(tmp_path / "pcm")
+        os.makedirs(pcmdir)
+        cmd_hash = "a" * 16
+        a = _make_pcmdir_entry(pcmdir, cmd_hash, ["math.pcm"], age_seconds=60)
+
+        config_h = tmp_path / "config.h"
+        config_h.write_text("// new content\n")
+        manifest = {
+            "bucket_key": "/proj/math.cppm",
+            "stage": "clang_module_interface",
+            "compiler": "clang++",
+            "compiler_identity": "clang++|0|0",
+            # Bogus old hash -> mismatch with current content -> evict.
+            "transitive_hashes": {str(config_h): "0" * 40},
+        }
+        with open(os.path.join(pcmdir, cmd_hash, "manifest.json"), "w") as f:
+            json.dump(manifest, f)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=10))  # would otherwise keep
+        trimmer.trim_pcmdir(pcmdir)
+
+        assert not os.path.isdir(a), "stale-transitive cmd_hash should be evicted"
+
+    def test_matching_transitive_hash_keeps_entry(self, tmp_path):
+        pcmdir = str(tmp_path / "pcm")
+        os.makedirs(pcmdir)
+        cmd_hash = "b" * 16
+        a = _make_pcmdir_entry(pcmdir, cmd_hash, ["math.pcm"], age_seconds=60)
+
+        config_h = tmp_path / "config.h"
+        config_h.write_bytes(b"// stable content\n")
+        expected_sha = self._git_blob_sha1(config_h.read_bytes())
+
+        manifest = {
+            "bucket_key": "/proj/math.cppm",
+            "stage": "clang_module_interface",
+            "compiler": "clang++",
+            "compiler_identity": "clang++|0|0",
+            "transitive_hashes": {str(config_h): expected_sha},
+        }
+        with open(os.path.join(pcmdir, cmd_hash, "manifest.json"), "w") as f:
+            json.dump(manifest, f)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=10))
+        trimmer.trim_pcmdir(pcmdir)
+
+        assert os.path.isdir(a)
+
+
 class TestPchTransitiveStaleness:
     """When a transitive header recorded in the manifest no longer matches
     the on-disk content, the cmd_hash dir is pre-evicted so the user never

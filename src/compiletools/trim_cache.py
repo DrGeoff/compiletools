@@ -1,8 +1,9 @@
-"""Cache trimming utility for the object CAS and PCH CAS.
+"""Cache trimming utility for the object CAS, PCH CAS, and PCM CAS.
 
-Scans cas-objdir and cas-pchdir for stale entries and removes them,
-keeping entries that match the current git state and preserving a configurable
-number of recent non-current entries per source file.
+Scans cas-objdir, cas-pchdir, and cas-pcmdir for stale entries and removes
+them, keeping entries that match the current git state and preserving a
+configurable number of recent non-current entries per source file or per
+module/header bucket.
 """
 
 from __future__ import annotations
@@ -35,6 +36,31 @@ _OBJ_BUCKET_RE = re.compile(r"^[0-9a-f]{2}$")
 
 # PCH command hash directories are exactly 16 lowercase hex chars.
 _PCH_COMMAND_HASH_RE = re.compile(r"^[0-9a-f]{16}$")
+
+# PCM command_hash directories use the same shape as PCH: 16 hex chars
+# of sha256 truncation, single hash per cache entry. The PCM cache key
+# folds source content + transitive header content + compiler + flags
+# into one ``command_hash``; safety against accidental collision is
+# provided by the compiler's BMI verification at consume time
+# (see _pcm_command_hash docstring), so the additional entropy of an
+# object-cache-style 3-axis path layout isn't needed here.
+_PCM_COMMAND_HASH_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+def _load_pcm_manifest(cmd_hash_dir: str) -> dict | None:
+    """Read a PCM cmd_hash dir's sidecar manifest.
+
+    Same contract as ``_load_pch_manifest`` -- returns ``None`` for
+    legacy (manifest-less) entries so the trim path keeps working
+    during a manifest-rollout window. Callers must treat ``None`` as
+    "fall back to global ranking".
+    """
+    path = os.path.join(cmd_hash_dir, "manifest.json")
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def _load_pch_manifest(cmd_hash_dir: str) -> dict | None:
@@ -443,10 +469,165 @@ class CacheTrimmer:
         return stats
 
     # ------------------------------------------------------------------
+    # PCM directory trimming
+    # ------------------------------------------------------------------
+
+    def trim_pcmdir(self, pcmdir):
+        """Trim stale precompiled C++20 module artefacts from the PCM CAS.
+
+        Layout: ``<pcmdir>/<command_hash>/<name>.{pcm,gcm}`` plus a
+        sidecar ``manifest.json`` per command_hash directory. Mirrors
+        ``trim_pchdir``: each command_hash dir is one unique compile
+        configuration; the manifest carries ``bucket_key`` (source
+        realpath for named modules, verbatim token for header units),
+        ``stage``, and ``transitive_hashes``.
+
+        The single-hash + manifest design here is **deliberately
+        simpler** than the object cache's 3-hash path -- see
+        ``_pcm_command_hash`` for why PCM doesn't need the object
+        cache's per-axis path isolation. The compiler verifies BMIs
+        at consume time, so the worst case of a hypothetical 64-bit
+        collision is a slow re-precompile, never a miscompile.
+
+        Trim policy:
+
+        - **bucketing** (mirrors pchdir): per-bucket ``keep_count``
+          using ``bucket_key`` from the manifest. Cross-variant builds
+          of the same source coexist at ``keep_count=1``.
+        - **transitive-staleness pre-eviction** (mirrors pchdir): if
+          a recorded transitive header's content hash no longer
+          matches its on-disk content, the entry is pre-evicted.
+        - **max_age**: keeps anything younger than the cutoff
+          regardless of bucket position.
+
+        Args:
+            pcmdir: Path to the PCM CAS.
+
+        Returns:
+            dict with statistics: total_dirs_scanned, buckets_found,
+            dirs_kept, dirs_removed, failed, bytes_freed.
+        """
+        stats = {
+            "total_dirs_scanned": 0,
+            "buckets_found": 0,
+            "dirs_kept": 0,
+            "dirs_removed": 0,
+            "failed": 0,
+            "bytes_freed": 0,
+        }
+
+        if not os.path.isdir(pcmdir):
+            if self.verbose >= 1:
+                print(f"PCM directory does not exist: {pcmdir}")
+            return stats
+
+        # Phase 1: scan command_hash directories.
+        # dir_info: {cmd_hash: (path, mtime, total_size, [leaf_filenames])}
+        dir_info: dict[str, tuple] = {}
+
+        try:
+            entries = list(os.scandir(pcmdir))
+        except OSError as exc:
+            print(f"Error scanning {pcmdir}: {exc}", file=sys.stderr)
+            return stats
+
+        for entry in entries:
+            if not entry.is_dir() or not _PCM_COMMAND_HASH_RE.match(entry.name):
+                continue
+            stats["total_dirs_scanned"] += 1
+            leaves = []
+            total_size = 0
+            try:
+                for leaf in os.scandir(entry.path):
+                    if leaf.name.endswith((".pcm", ".gcm")) and leaf.is_file():
+                        leaves.append(leaf.name)
+                        try:
+                            total_size += leaf.stat().st_size
+                        except OSError:
+                            pass
+            except OSError:
+                continue
+            if not leaves:
+                continue
+            try:
+                dir_mtime = entry.stat().st_mtime
+            except OSError:
+                continue
+            dir_info[entry.name] = (entry.path, dir_mtime, total_size, leaves)
+
+        # Phase 2: bucket by manifest's bucket_key. Header-unit entries
+        # use the token (``<vector>``); named-module entries use the
+        # source realpath. Legacy / manifest-less entries fall into
+        # ``__legacy__`` for global ranking so older builds keep working.
+        buckets: dict[str, list[str]] = {}
+        for cmd_hash, (path, _mtime, _size, _leaves) in dir_info.items():
+            manifest = _load_pcm_manifest(path)
+            bucket_key = (manifest.get("bucket_key") if manifest else None) or "__legacy__"
+            buckets.setdefault(bucket_key, []).append(cmd_hash)
+        stats["buckets_found"] = sum(1 for k in buckets if k != "__legacy__")
+
+        needed_dirs: set[str] = set()
+        for _bucket_key, hashes in buckets.items():
+            sorted_hashes = sorted(hashes, key=lambda ch: dir_info[ch][1], reverse=True)
+            needed_dirs.update(sorted_hashes[: self.keep_count])
+
+        now = time.time()
+        if self.max_age_seconds is not None:
+            cutoff = now - self.max_age_seconds
+            for cmd_hash, (_path, mtime, _size, _leaves) in dir_info.items():
+                if mtime >= cutoff:
+                    needed_dirs.add(cmd_hash)
+
+        # Phase 2b: pre-evict entries whose transitive headers have
+        # changed. Same git-blob SHA1 algorithm as
+        # ``global_hash_registry._compute_external_file_hash``.
+        for cmd_hash in list(needed_dirs):
+            path = dir_info[cmd_hash][0]
+            manifest = _load_pcm_manifest(path)
+            if not manifest:
+                continue
+            for h_realpath, expected_hash in manifest.get("transitive_hashes", {}).items():
+                try:
+                    with open(h_realpath, "rb") as fh:
+                        content = fh.read()
+                except OSError:
+                    continue
+                current = hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
+                if current != expected_hash:
+                    if self.verbose >= 1:
+                        print(f"  Pre-evicting {path} (transitive {h_realpath} changed)")
+                    needed_dirs.discard(cmd_hash)
+                    break
+
+        # Phase 3: remove dirs not in the keep set.
+        for cmd_hash, (path, _mtime, total_size, _leaves) in dir_info.items():
+            if cmd_hash in needed_dirs:
+                stats["dirs_kept"] += 1
+                continue
+
+            if self.verbose >= 1:
+                action = "Would remove" if self.dry_run else "Removing"
+                print(f"  {action}: {path} ({_format_size(total_size)})")
+
+            if not self.dry_run:
+                if _safe_locked_rmtree(path):
+                    stats["dirs_removed"] += 1
+                    stats["bytes_freed"] += total_size
+                else:
+                    stats["failed"] += 1
+                    if self.verbose >= 1:
+                        print(f"  Failed to remove {path}", file=sys.stderr)
+            else:
+                stats["dirs_removed"] += 1
+                stats["bytes_freed"] += total_size
+
+        return stats
+
+    # ------------------------------------------------------------------
     # Summary
     # ------------------------------------------------------------------
 
-    def print_summary(self, objdir_stats=None, pchdir_stats=None):
+    def print_summary(self, objdir_stats=None, pchdir_stats=None, pcmdir_stats=None):
         """Print a formatted summary of trimming results."""
         total_freed = 0
         print()
@@ -480,7 +661,22 @@ class CacheTrimmer:
             if pchdir_stats["failed"]:
                 print(f"    Failed:          {pchdir_stats['failed']}")
 
-        if objdir_stats is not None and pchdir_stats is not None:
+        if pcmdir_stats is not None:
+            total_freed += pcmdir_stats["bytes_freed"]
+            print("  PCM directories:")
+            print(f"    Total scanned:   {pcmdir_stats['total_dirs_scanned']}")
+            print(f"    Buckets found:   {pcmdir_stats['buckets_found']}")
+            print(f"    Kept:            {pcmdir_stats['dirs_kept']}")
+            removed_str = f"    Removed:         {pcmdir_stats['dirs_removed']}"
+            if pcmdir_stats["bytes_freed"]:
+                removed_str += f" ({_format_size(pcmdir_stats['bytes_freed'])} freed)"
+            print(removed_str)
+            if pcmdir_stats["failed"]:
+                print(f"    Failed:          {pcmdir_stats['failed']}")
+
+        # The summary line aggregates whatever was actually scanned.
+        scanned = sum(s is not None for s in (objdir_stats, pchdir_stats, pcmdir_stats))
+        if scanned >= 2:
             print(f"  Total space freed: {_format_size(total_freed)}")
         print("=" * 60)
 

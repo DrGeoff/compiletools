@@ -42,7 +42,7 @@ __all__ = [
 ]
 
 # Module-level constant for C++ source extensions (lowercase)
-CPP_SOURCE_EXTS = frozenset({".cpp", ".cxx", ".cc", ".c++", ".cp", ".mm", ".ixx"})
+CPP_SOURCE_EXTS = frozenset({".cpp", ".cxx", ".cc", ".c++", ".cp", ".mm", ".ixx", ".cppm"})
 
 C_SOURCE_EXTS = frozenset({".c"})
 
@@ -53,7 +53,7 @@ ALL_SOURCE_EXTS = CPP_SOURCE_EXTS | C_SOURCE_EXTS
 HEADER_EXTS = frozenset({".h", ".hpp", ".hxx", ".hh", ".inl"})
 
 # Source extensions with case variations for implied_source function
-SOURCE_EXTS_WITH_CASE = frozenset({".cpp", ".cxx", ".cc", ".c++", ".cp", ".mm", ".ixx", ".c", ".C", ".CC"})
+SOURCE_EXTS_WITH_CASE = frozenset({".cpp", ".cxx", ".cc", ".c++", ".cp", ".mm", ".ixx", ".cppm", ".c", ".C", ".CC"})
 
 # Header extensions with case variations for implied_header function
 HEADER_EXTS_WITH_CASE = frozenset({".h", ".hpp", ".hxx", ".hh", ".inl", ".H", ".HH"})

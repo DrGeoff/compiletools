@@ -315,6 +315,15 @@ def add_output_directory_arguments(cap, variant):
         help="Output directory for precompiled header cache (content-addressable store)",
         default=default_cas_pchdir,
     )
+    if git_root:
+        default_cas_pcmdir = os.path.join(git_root, "cas-pcmdir", variant)
+    else:
+        default_cas_pcmdir = os.path.join("bin", variant, "pcm")
+    cap.add(
+        "--cas-pcmdir",
+        help="Output directory for precompiled C++20 module cache (content-addressable store)",
+        default=default_cas_pcmdir,
+    )
 
 
 def add_target_arguments(cap):
@@ -1013,11 +1022,110 @@ def compiler_identity(cxx: str) -> str:
         return resolved
 
 
+@functools.lru_cache(maxsize=64)
+def find_system_std_module_source(cxx: str | None, kind: str) -> str | None:
+    """Locate the compiler-provided source for the standard library module.
+
+    Returns an absolute filesystem path to the file the build system can
+    feed back into the compiler to materialize the ``std`` module's
+    ``.gcm`` (gcc) or ``.pcm`` (clang). Returns ``None`` when the
+    requested toolchain doesn't ship one (or we can't find it).
+
+    Search strategy:
+
+    - **gcc**: parse ``g++ -print-search-dirs`` for the compiler install
+      root, then look for ``<root>/include/c++/<version>/bits/std.cc``.
+      This is what the GNU toolchain ships starting with gcc 15+ as the
+      canonical std-module source.
+    - **clang**: walk up from the binary path two levels (``bin/`` ->
+      install root) and look for ``share/libc++/v1/std.cppm``. This is
+      what clang ships when built against libc++.
+
+    Both probes are pure filesystem operations -- no compiler invocation
+    -- so they are cheap and safe to call from cache-key paths.
+    """
+    if not cxx or kind not in ("gcc", "clang"):
+        return None
+    resolved = shutil.which(cxx) or cxx
+    if kind == "gcc":
+        # `g++ -print-search-dirs` reports `install: <path-to-bin>/../lib/gcc/<triple>/<ver>/`
+        try:
+            r = subprocess.run(
+                [resolved, "-print-search-dirs"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return None
+        install_dir = None
+        for line in r.stdout.splitlines():
+            if line.startswith("install:"):
+                install_dir = line.split(":", 1)[1].strip()
+                break
+        if not install_dir:
+            return None
+        # install_dir = .../bin/../lib/gcc/<triple>/<version>/
+        # Walk up to <install root> = .../bin/.., then look for include/c++/<ver>/bits/std.cc
+        # The version is the same as the install_dir's last directory.
+        version = os.path.basename(install_dir.rstrip(os.sep))
+        # Normalize the install root (drop the .../lib/gcc/<triple>/<ver>/ tail)
+        # by going up four levels and resolving symlinks/.. in one shot.
+        gcc_root = os.path.realpath(os.path.join(install_dir, "..", "..", "..", ".."))
+        candidate = os.path.join(gcc_root, "include", "c++", version, "bits", "std.cc")
+        return candidate if os.path.isfile(candidate) else None
+    # clang
+    bin_dir = os.path.dirname(os.path.realpath(resolved))
+    install_root = os.path.dirname(bin_dir)  # bin/.. -> install root
+    candidate = os.path.join(install_root, "share", "libc++", "v1", "std.cppm")
+    return candidate if os.path.isfile(candidate) else None
+
+
+@functools.lru_cache(maxsize=64)
+def compiler_kind(cxx: str | None) -> str:
+    """Classify a C++ compiler binary as ``"gcc"`` / ``"clang"`` / ``"unknown"``.
+
+    Used to pick compiler-specific code paths (e.g., the C++20 modules
+    flag set: gcc needs ``-fmodules-ts`` while clang doesn't, and clang
+    uses ``--precompile`` / ``-fprebuilt-module-path=`` for the BMI flow).
+
+    Detection is purely string-based on the resolved binary path's
+    basename. We resolve via ``shutil.which`` first so that a wrapper on
+    PATH (e.g., ``ccache g++``, or a versioned shim like ``cxx``) is
+    pointed at its real target. Falls back to scanning the original
+    string for ``clang`` / ``gcc`` / ``g++`` substrings when the binary
+    can't be located -- callers that hand us a compound string like
+    ``ccache clang++`` should still get the right answer.
+
+    Returns ``"unknown"`` for ``None`` / empty input or when the basename
+    matches neither toolchain. Callers must handle the unknown case
+    rather than guessing.
+    """
+    if not cxx:
+        return "unknown"
+    resolved = shutil.which(cxx) or cxx
+    base = os.path.basename(resolved).lower()
+    # Strip versions/wrappers like ``g++-15`` or ``clang++-22.1.3``.
+    if "clang" in base:
+        return "clang"
+    if "g++" in base or "gcc" in base:
+        return "gcc"
+    # Fall back to scanning the raw string -- handles ``ccache g++`` and
+    # similar wrappers that point at a shim with no toolchain hint in
+    # its name but mention the real compiler in the original argv0.
+    raw = cxx.lower()
+    if "clang" in raw:
+        return "clang"
+    if "g++" in raw or "gcc" in raw:
+        return "gcc"
+    return "unknown"
+
+
 def clear_cache():
     """Clear any caches for macro extraction and pkg-config."""
     cached_pkg_config.cache_clear()
     _get_functional_cxx_compiler_cached.cache_clear()
     compiler_identity.cache_clear()
+    compiler_kind.cache_clear()
+    find_system_std_module_source.cache_clear()
 
 
 @functools.lru_cache(maxsize=8)
@@ -1706,6 +1814,16 @@ def _commonsubstitutions(args):
         else:
             default_cas_pchdir = os.path.join(args.bindir, "pch")
         args.cas_pchdir = unsupplied_replacement(args.cas_pchdir, default_cas_pchdir, args.verbose, "cas-pchdir")
+    except AttributeError:
+        pass
+
+    try:
+        git_root = compiletools.git_utils.find_git_root()
+        if git_root:
+            default_cas_pcmdir = os.path.join(git_root, "cas-pcmdir", args.variant)
+        else:
+            default_cas_pcmdir = os.path.join(args.bindir, "pcm")
+        args.cas_pcmdir = unsupplied_replacement(args.cas_pcmdir, default_cas_pcmdir, args.verbose, "cas-pcmdir")
     except AttributeError:
         pass
 

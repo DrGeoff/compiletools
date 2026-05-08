@@ -45,6 +45,63 @@ class ObjInfo(NamedTuple):
     copts: list[str]
 
 
+# Sentinel string used to escape characters that are unsafe in make
+# targets / filesystem paths (``:`` for module partition separator,
+# ``/`` for header-name path separator). ``^^`` is chosen because:
+#   - underscore (``_``) collides: identifiers and headers commonly
+#     contain it, so escaping ``/`` to ``_`` could make ``<sys/socket.h>``
+#     and a real ``<sys_socket.h>`` map to the same filename;
+#   - hyphen (``-``) is technically allowed in some module-name proposals
+#     and can also appear in real header filenames;
+#   - ``^^`` does not appear in any C identifier, any module-name token
+#     (which is a dotted ``[A-Za-z_][A-Za-z0-9_]*``), or any reasonable
+#     header path, so collisions are vanishingly unlikely;
+#   - ``^`` has no special meaning to make outside the ``$^`` automatic
+#     variable (which requires the ``$``), so doubled ``^^`` is safe.
+_NAME_ESCAPE = "^^"
+
+
+def _module_pcm_filename(module_name: str) -> str:
+    """Return a make-safe ``.pcm`` filename for a possibly-partitioned module.
+
+    ``:`` is illegal in a Makefile target (make parses ``a:b`` as ``a``
+    depends on ``b``), so we map the partition separator to ``^^`` for
+    the on-disk filename. The clang ``-fmodule-file=NAME=PATH`` flag
+    uses the real (colon-bearing) module name on the lookup side, so
+    the filename is purely a storage detail. See ``_NAME_ESCAPE`` for
+    why ``^^`` rather than ``-`` / ``_``.
+    """
+    return module_name.replace(":", _NAME_ESCAPE) + ".pcm"
+
+
+def _header_unit_arg(token: str) -> str:
+    """Strip the surrounding ``<...>`` or ``"..."`` from a header-unit token.
+
+    The bare header name is what gcc's ``-x c++-system-header`` and
+    clang's ``-xc++-system-header`` expect as the source argument.
+    Anything else (callers should validate upstream that the token is a
+    well-formed header reference) passes through unchanged.
+    """
+    if len(token) >= 2 and ((token[0], token[-1]) in (("<", ">"), ('"', '"'))):
+        return token[1:-1]
+    return token
+
+
+def _header_unit_safe_stem(token: str) -> str:
+    """Return a filesystem/make-safe stem for a header-unit token.
+
+    Escape both ``/`` (path separator in nested system headers like
+    ``<sys/socket.h>``) and ``:`` (which a make target parser would
+    misread) to ``^^``. ``<vector>`` -> ``vector``;
+    ``<sys/socket.h>`` -> ``sys^^socket.h``. See ``_NAME_ESCAPE`` for
+    the rationale (we deliberately don't use ``_`` or ``-`` since
+    those characters legitimately appear in real header filenames and
+    would alias different headers to the same on-disk name).
+    """
+    bare = _header_unit_arg(token)
+    return bare.replace("/", _NAME_ESCAPE).replace(":", _NAME_ESCAPE)
+
+
 def _touch(path: str) -> None:
     """Create file (if missing) or bump its mtime (if present).
 
@@ -530,9 +587,214 @@ class BuildBackend(abc.ABC):
                 )
             )
 
+        # C++20 modules pre-pass.
+        #
+        # We compute, per discovered module name, the artefact a downstream
+        # importer needs to wait on:
+        #   - GCC: the interface unit's object file. Compiling it under
+        #     -fmodules-ts also writes gcm.cache/<name>.gcm as a side effect,
+        #     so an order-only dep on that .o gates importers correctly.
+        #   - Clang: the interface unit's pre-compiled module artefact.
+        #     Clang's flow is two stages -- `--precompile` source->.pcm,
+        #     then `-c` .pcm->.o -- and importers read the .pcm directly
+        #     via `-fmodule-file=NAME=PATH`.
+        #
+        # Where the .pcm lives depends on whether the cas-pcmdir cache is
+        # active (the default; mirrors cas-pchdir's content-addressed
+        # store). With the cache, each module's .pcm path includes a
+        # command_hash that summarises everything affecting the BMI
+        # bytes, so identical configurations share a cache entry across
+        # rebuilds. Without the cache, .pcm files land in a flat
+        # per-build dir under cas-objdir.
+        compiler_kind = compiletools.apptools.compiler_kind(self.args.CXX)
+        self._module_compiler_kind = compiler_kind
+        # cas-pcmdir is meaningful for both compilers now: clang stores
+        # its own ``.pcm`` files there; gcc stores its ``.gcm`` files
+        # there via ``-fmodule-mapper`` redirection.
+        self._module_pcm_cache_root = (
+            getattr(self.args, "cas_pcmdir", None)
+            if compiler_kind in ("clang", "gcc")
+            else None
+        )
+        # Per-build mapper file path. Set up-front (rather than lazily
+        # in `_write_gcc_module_mapper`) so per-rule emitters can
+        # reference it before the file is materialised. The file itself
+        # is written at the end of the modules pre-pass once every
+        # mapper entry is known.
+        self._gcc_module_mapper_path = (
+            os.path.join(self.args.cas_objdir, ".module-mapper.txt")
+            if compiler_kind == "gcc" and self._module_pcm_cache_root
+            else None
+        )
+        # The flat fallback dir is still computed even when cache is on
+        # so that header-unit precompile rules (which currently bypass
+        # the cache for simplicity) have somewhere to land. Header-unit
+        # caching can be added later by mirroring the cmd_hash machinery
+        # below.
+        self._module_pcm_dir = (
+            os.path.join(self.args.cas_objdir, ".pcm") if compiler_kind == "clang" else None
+        )
+
+        module_iface_obj: dict[str, str] = {}
+        module_iface_pcm: dict[str, str] = {}  # populated only for clang
+        module_iface_gcm: dict[str, str] = {}  # populated for gcc + cache
+        # Track the set of per-hash directories needing an mkdir rule
+        # (cache mode) plus the flat fallback dir (always when clang
+        # has any interface to precompile).
+        pcm_mkdir_dirs: set[str] = set()
+        gcc_cache_active = compiler_kind == "gcc" and bool(self._module_pcm_cache_root)
+        for filename in all_compile_sources:
+            iface_result = self.hunter._file_analysis_result(filename)
+            if iface_result is None:
+                continue
+            for name in iface_result.module_exports:
+                # Compute this source's object path the same way
+                # _create_compile_rule does, so the order-only dep names
+                # the same target the rule actually produces.
+                deplist = self.hunter.header_dependencies(filename)
+                dep_hash = self.namer.compute_dep_hash(deplist)
+                macro_state_hash = self.hunter.macro_state_hash(filename, dep_hash=dep_hash)
+                module_iface_obj[name] = self.namer.object_pathname(filename, macro_state_hash, dep_hash)
+                if self._module_pcm_dir is not None:
+                    pcm_path, pcm_dir = self._clang_module_pcm_destination(
+                        filename, name
+                    )
+                    module_iface_pcm[name] = pcm_path
+                    pcm_mkdir_dirs.add(pcm_dir)
+                if gcc_cache_active:
+                    gcm_path, gcm_dir = self._gcc_module_gcm_destination(filename, name)
+                    module_iface_gcm[name] = gcm_path
+                    pcm_mkdir_dirs.add(gcm_dir)
+
+        self._module_iface_obj = module_iface_obj
+        self._module_iface_pcm = module_iface_pcm
+        self._module_iface_gcm = module_iface_gcm
+
+        for pcm_dir in sorted(pcm_mkdir_dirs):
+            graph.add_rule(
+                BuildRule(
+                    output=pcm_dir,
+                    inputs=[],
+                    command=["mkdir", "-p", pcm_dir],
+                    rule_type="mkdir",
+                )
+            )
+
+        # Header units pre-pass.
+        #
+        # We aggregate every unique `import <h>;` / `import "h";` token
+        # appearing across the build, then emit one precompile rule per
+        # token (deduplicated). Each header unit's artefact path is
+        # stored in `_header_unit_artefact[token]` so importer rules can
+        # depend on it (order-only) and clang importers can pass
+        # `-fmodule-file=<token>=<path>`.
+        #
+        # gcc puts the .gcm at `gcm.cache/<absolute-resolved-path>.gcm`
+        # which we can't predict (it depends on -I/include resolution).
+        # We give make a stamp file as the rule output and rely on `&&
+        # touch <stamp>` (success_marker) to record success after gcc
+        # writes the .gcm in its own location. The importer's actual
+        # `import <h>;` resolves the .gcm via the same include path, so
+        # the missing predictability is fine -- the stamp only sequences
+        # the work, not the consumption.
+        #
+        # clang produces a real .pcm at a path we choose, so its
+        # artefact IS the .pcm and there's no stamp shenanigan.
+        header_unit_flat_dir = os.path.join(self.args.cas_objdir, ".hu")
+        self._header_unit_artefact: dict[str, str] = {}
+        # Per-token absolute-header-path resolution (gcc only; populated
+        # when gcc + cas-pcmdir are both active so the mapper file can
+        # key entries by resolved path).
+        self._gcc_header_unit_resolved: dict[str, str] = {}
+        all_header_imports: set[str] = set()
+        for filename in all_compile_sources:
+            r = self.hunter._file_analysis_result(filename)
+            if r is None:
+                continue
+            all_header_imports.update(r.module_header_imports)
+        if all_header_imports:
+            # Determine the per-token destination dir up front so the
+            # mkdir set is exactly the dirs we'll actually write into.
+            # gcc routes through cas-pcmdir via the mapper file when the
+            # cache is active; otherwise it falls back to a stamp under
+            # the flat dir. clang routes its .pcm into the cas-pcmdir
+            # cache when active, mirroring named modules.
+            hu_mkdirs: set[str] = set()
+            hu_destinations: dict[str, str] = {}
+            for token in sorted(all_header_imports):
+                dest_path, dest_dir = self._header_unit_destination(
+                    token, header_unit_flat_dir
+                )
+                hu_destinations[token] = dest_path
+                hu_mkdirs.add(dest_dir)
+                if gcc_cache_active:
+                    abs_path = _resolve_system_header_abs_path(self.args.CXX, token)
+                    if abs_path is not None:
+                        self._gcc_header_unit_resolved[token] = abs_path
+            for d in sorted(hu_mkdirs):
+                graph.add_rule(
+                    BuildRule(
+                        output=d,
+                        inputs=[],
+                        command=["mkdir", "-p", d],
+                        rule_type="mkdir",
+                    )
+                )
+            for token in sorted(all_header_imports):
+                rule = self._create_header_unit_precompile_rule(
+                    token, hu_destinations[token]
+                )
+                graph.add_rule(rule)
+                # Importers wait on this artefact path -- the .gcm
+                # cache path for gcc+cache, the stamp for gcc no-cache,
+                # the .pcm for clang.
+
+        # Generate the gcc module-mapper file now that every named
+        # module's .gcm path and every header-unit resolution is known.
+        # No-op when not gcc+cache.
+        self._write_gcc_module_mapper()
+
         compile_bucket_dirs: set[str] = set()
         for filename in all_compile_sources:
+            file_result = self.hunter._file_analysis_result(filename)
+            module_exports = file_result.module_exports if file_result is not None else ()
+
+            # For a clang interface unit we emit two rules: precompile
+            # source -> .pcm, then compile .pcm -> .o. Both are needed:
+            # the .pcm satisfies importers' -fprebuilt-module-path lookup;
+            # the .o supplies the symbols at link time.
+            if (
+                self._module_pcm_dir is not None
+                and module_exports
+                and len(module_exports) == 1
+            ):
+                pcm_rule, obj_rule = self._create_clang_module_interface_rules(
+                    filename, module_exports[0]
+                )
+                # The precompile rule itself needs to wait for any
+                # partitions it imports (`export import :P;` in the
+                # primary, or `import :P;` in another partition). Without
+                # this edge clang fails the precompile with "module file
+                # not found" since the partition .pcm hasn't been built.
+                self._wire_module_order_only_deps(pcm_rule, file_result)
+                graph.add_rule(pcm_rule)
+                self._wire_module_order_only_deps(obj_rule, file_result)
+                graph.add_rule(obj_rule)
+                if obj_rule.order_only_deps:
+                    compile_bucket_dirs.add(obj_rule.order_only_deps[0])
+                continue
+            elif self._module_pcm_dir is not None and len(module_exports) > 1:
+                # A single TU exporting multiple module names is rare and
+                # the build graph above only records the first .pcm path
+                # anyway. Treat this as an error rather than silently
+                # producing a confused build.
+                raise ValueError(
+                    f"{filename}: clang module rule emission expects at most one "
+                    f"`export module NAME;` per TU; saw {list(module_exports)}"
+                )
+
             rule = self._create_compile_rule(filename)
+            self._wire_module_order_only_deps(rule, file_result)
             graph.add_rule(rule)
             if rule.order_only_deps:
                 compile_bucket_dirs.add(rule.order_only_deps[0])
@@ -872,6 +1134,662 @@ class BuildBackend(abc.ABC):
             if rule.rule_type in ("link", "static_library", "shared_library"):
                 _write_link_sig(rule.output, compute_link_signature(rule))
 
+    def _system_module_extra_flags(self, filename: str) -> list[str]:
+        """Compiler-specific extras for system-provided module sources.
+
+        - Clang's libc++ ``std.cppm`` declares ``module std;`` -- a name
+          that's reserved in user code -- and triggers
+          ``-Wreserved-module-identifier`` unless suppressed. The
+          ``-stdlib=libc++`` flag is also required so the precompile
+          finds libc++'s headers (the same flag is auto-injected on
+          importers via ``_compiler_module_flags_for`` below).
+        - GCC's ``bits/std.cc`` ships under the same toolchain whose
+          driver is invoking it, so no extra flags are needed -- the
+          existing ``-fmodules-ts`` plus the standard include path
+          handle it.
+        """
+        system_modules = self.hunter.system_modules() if hasattr(self.hunter, "system_modules") else {}
+        if filename not in set(system_modules.values()):
+            return []
+        kind = getattr(self, "_module_compiler_kind", None)
+        if kind == "clang":
+            return ["-stdlib=libc++", "-Wno-reserved-module-identifier"]
+        return []
+
+    def _build_imports_std(self) -> bool:
+        """Return True when any TU in this build imports the std module.
+
+        Cached on first call. Used by ``_compiler_module_flags_for`` to
+        decide whether clang importers need ``-stdlib=libc++`` injected.
+        """
+        cached = getattr(self, "_build_imports_std_cached", None)
+        if cached is not None:
+            return cached
+        result = False
+        if hasattr(self.hunter, "system_modules"):
+            system_modules = self.hunter.system_modules()
+            result = "std" in system_modules
+        self._build_imports_std_cached = result
+        return result
+
+    def _compiler_module_flags_for(self, filename: str) -> list[str]:
+        """Per-TU C++20 modules flags for the detected compiler.
+
+        Returns the flag tokens that must be appended to the compile
+        command for any TU that touches the module graph (exports,
+        implements, or imports a named module). Empty list when the TU
+        is unrelated to modules or the compiler is unknown.
+
+        - GCC: ``-fmodules-ts``.
+        - Clang: ``-fprebuilt-module-path=<pcm_dir>`` for whole-module
+          ``import M;`` lookups, plus one ``-fmodule-file=M:P=<path>``
+          per known partition. The ``-fprebuilt-module-path`` flag does
+          NOT find partitions (clang requires explicit per-partition
+          mapping), so we blanket-emit every partition's mapping. It's
+          extra noise on the command line but keeps the rule emission
+          per-TU rather than scanning each TU's transitive partition use.
+        """
+        result = self.hunter._file_analysis_result(filename)
+        if result is None:
+            return []
+        touches_modules = bool(
+            result.module_exports
+            or result.module_implements
+            or result.module_imports
+            or result.module_header_imports
+        )
+        if not touches_modules:
+            return []
+        kind = getattr(self, "_module_compiler_kind", None)
+        if kind == "gcc":
+            extras = ["-fmodules-ts"]
+            mapper = getattr(self, "_gcc_module_mapper_path", None)
+            if mapper:
+                # Importers and precompiles BOTH need -fmodule-mapper so
+                # they read/write .gcm files at the cas-pcmdir paths the
+                # mapper specifies; without it gcc would write into its
+                # default `gcm.cache/` and importers would look in the
+                # cache (where the mapper points) for a file that isn't
+                # there.
+                extras.append(f"-fmodule-mapper={mapper}")
+            return extras
+        if kind == "clang":
+            extras: list[str] = []
+            # `-fprebuilt-module-path` is only useful when all .pcm files
+            # live in the same flat directory, which is the non-cache
+            # case. With cas-pcmdir each .pcm is under its own
+            # `<command_hash>/` subdir, so the flat scan would find
+            # nothing -- the per-module `-fmodule-file=` mappings emitted
+            # by `_clang_partition_module_file_flags` carry the lookup
+            # in that mode.
+            if (
+                (result.module_imports or result.module_implements)
+                and self._module_pcm_dir
+                and not getattr(self, "_module_pcm_cache_root", None)
+            ):
+                extras.append("-fprebuilt-module-path=" + self._module_pcm_dir)
+            extras.extend(self._clang_partition_module_file_flags())
+            # Header units: clang's `import <h>;` lookup is gated by
+            # `-fmodules` even when the actual BMI is supplied via
+            # `-fmodule-file=`; without -fmodules the importer rejects
+            # it as "not known to be a header unit". The flag is safe to
+            # add for any clang TU that mentions header units. Each
+            # `-fmodule-file=<token>=<pcm>` then maps a specific header.
+            # The token form (`<vector>` / `"foo.h"`) contains
+            # shell-active characters (`<` / `>` look like redirection
+            # to /bin/sh), so we shell-quote the whole flag to keep it
+            # intact when the makefile backend joins tokens with spaces.
+            # Per-TU narrowing (rather than the blanket-all approach
+            # used for partitions) is cheap because each TU's
+            # header-unit list is short.
+            if result.module_header_imports:
+                extras.append("-fmodules")
+                for token in result.module_header_imports:
+                    pcm = self._header_unit_artefact.get(token) if hasattr(self, "_header_unit_artefact") else None
+                    if pcm is not None:
+                        extras.append(shlex.quote(f"-fmodule-file={token}={pcm}"))
+            # `import std;` requires libc++ when the std module is
+            # libc++-shipped (clang's only supported source today).
+            # Importers, the std-module precompile, and the std .o-from-
+            # .pcm step all need the same -stdlib so headers and ABI
+            # align. The system std source itself also gets libc++ via
+            # _system_module_extra_flags so the two paths agree.
+            if self._build_imports_std() and "std" in result.module_imports:
+                extras.append("-stdlib=libc++")
+            return extras
+        return []
+
+    def _clang_partition_module_file_flags(self) -> list[str]:
+        """Build the per-module ``-fmodule-file=NAME=PATH`` flag list.
+
+        Sorted for determinism so the makefile diff stays stable across
+        runs (the underlying registry is a dict and would otherwise emit
+        in insertion order).
+
+        When cas-pcmdir is on, EVERY known module is emitted (named
+        primaries and partitions alike), since each .pcm sits under its
+        own ``<command_hash>/`` subdir and ``-fprebuilt-module-path``
+        can't find it. When cas-pcmdir is off the flat per-build dir
+        does work with ``-fprebuilt-module-path``, so we limit the
+        per-module flags to partitions (the same Phase 3 behaviour) to
+        keep the command line short. The function is named "partition"
+        for historical reasons; the cache mode generalises it.
+        """
+        if not getattr(self, "_module_iface_pcm", None):
+            return []
+        cache_active = bool(getattr(self, "_module_pcm_cache_root", None))
+        return [
+            f"-fmodule-file={name}={path}"
+            for name, path in sorted(self._module_iface_pcm.items())
+            if cache_active or ":" in name
+        ]
+
+    def _wire_module_order_only_deps(self, rule: BuildRule, file_result) -> None:
+        """Append order-only edges from `rule` to its module dependencies.
+
+        Mutates `rule.order_only_deps` in place. The artefact a downstream
+        TU waits on differs by compiler:
+
+        - GCC: the interface unit's object file. Building it under
+          ``-fmodules-ts`` writes ``gcm.cache/<name>.gcm`` as a side
+          effect, and that's where the importer's ``import M;`` lookup
+          finds the CMI -- so gating on .o is sufficient.
+        - Clang: the interface unit's ``.pcm`` file (the BMI). Importers
+          read it directly via ``-fprebuilt-module-path`` /
+          ``-fmodule-file``; gating on the .pcm rather than the .o lets
+          the .pcm-to-.o conversion run in parallel with importer
+          compiles.
+
+        Partition-relative imports (``import :basic;``) and
+        ``module_implements`` entries are resolved against the file's
+        own primary module name, mirroring Hunter's source-discovery
+        resolver. Without this resolution, ``:basic`` would miss the
+        registry key ``math:basic`` and the importer would race the
+        partition's compile -> ``imports must be built before being
+        imported``.
+
+        For an importer of the primary module ``M``, we also wire edges
+        to every partition of ``M`` -- the partitions' ``.pcm``/``.o``
+        files must exist when the importer compiles, since the primary
+        ``.pcm`` references them.
+        """
+        if file_result is None:
+            return
+        own_module = self.hunter._own_module_name(file_result)
+        kind = getattr(self, "_module_compiler_kind", None)
+        target_map = self._module_iface_pcm if kind == "clang" else self._module_iface_obj
+
+        resolved: list[str] = []
+        for raw in tuple(file_result.module_imports) + tuple(file_result.module_implements):
+            r = self.hunter._resolve_module_import(raw, own_module)
+            if r is None:
+                continue
+            resolved.append(r)
+            # Importer of a primary M depends transitively on M's
+            # partitions; over-includes M's own partition exports too
+            # (which are already in `resolved` if listed) -- the dedup
+            # below handles that.
+            if ":" not in r:
+                for part_name in target_map:
+                    if part_name.startswith(r + ":"):
+                        resolved.append(part_name)
+
+        for name in resolved:
+            target = target_map.get(name)
+            if target is not None and target != rule.output and target not in rule.order_only_deps:
+                rule.order_only_deps.append(target)
+
+        # Header-unit imports: regardless of compiler, importers must
+        # wait for the header-unit precompile to finish (gcc: stamp file
+        # whose touch follows .gcm placement; clang: the .pcm itself).
+        if hasattr(self, "_header_unit_artefact") and self._header_unit_artefact:
+            for token in file_result.module_header_imports:
+                target = self._header_unit_artefact.get(token)
+                if target is not None and target != rule.output and target not in rule.order_only_deps:
+                    rule.order_only_deps.append(target)
+
+    def _header_unit_destination(self, token: str, flat_dir: str) -> tuple[str, str]:
+        """Resolve the per-token artefact path and its parent dir.
+
+        Returns ``(artefact_path, dir_for_mkdir)``.
+
+        - **gcc**: ``flat_dir/<stem>.stamp``. The real ``.gcm`` lands
+          under ``gcm.cache/<abs-path>.gcm`` (compiler-managed, can't be
+          redirected without ``-fmodule-mapper=``); the stamp only
+          sequences make's graph. Phase 7b will replace this with a
+          mapper-driven cache path.
+        - **clang, cache off**: ``flat_dir/<stem>.pcm``.
+        - **clang, cache on**: ``<cas-pcmdir>/<command_hash>/<stem>.pcm``.
+          Hash inputs match the named-module cache (compiler identity,
+          flags, magic flags) plus a stage marker that prevents
+          collisions with same-named modules.
+
+        ``<stem>`` comes from ``_header_unit_safe_stem(token)``.
+        """
+        kind = getattr(self, "_module_compiler_kind", None)
+        stem = _header_unit_safe_stem(token)
+        if kind == "clang":
+            cache_root = getattr(self, "_module_pcm_cache_root", None)
+            if cache_root:
+                cmd_hash = self._compute_clang_header_unit_command_hash(token)
+                pcm_path = _cas_pcm_path(stem + ".pcm", cache_root, cmd_hash)
+                hash_dir = os.path.join(cache_root, cmd_hash)
+                # Header-unit manifests bucket by token (e.g. ``<vector>``)
+                # so the same header in different variants/projects shares
+                # a bucket and keep_count is enforced per token.
+                _write_pcm_manifest(
+                    pcmdir=cache_root,
+                    cmd_hash=cmd_hash,
+                    bucket_key=token,
+                    transitive_headers=[],
+                    cxx_command=self.args.CXX,
+                    stage="clang_header_unit",
+                    context=self.context,
+                )
+                return pcm_path, hash_dir
+            return os.path.join(flat_dir, stem + ".pcm"), flat_dir
+        if kind == "gcc" and getattr(self, "_module_pcm_cache_root", None):
+            # gcc + cache: route the .gcm into cas-pcmdir via the
+            # mapper file. The rule's output IS the .gcm cache path
+            # (gcc writes it directly), not a stamp.
+            dest = self._gcc_header_unit_gcm_destination(token)
+            if dest is not None:
+                cache_root = self._module_pcm_cache_root
+                assert cache_root is not None
+                # Recover the cmd_hash from the dest's parent dir name
+                # rather than re-hashing.
+                cmd_hash = os.path.basename(dest[1])
+                _write_pcm_manifest(
+                    pcmdir=cache_root,
+                    cmd_hash=cmd_hash,
+                    bucket_key=token,
+                    transitive_headers=[],
+                    cxx_command=self.args.CXX,
+                    stage="gcc_header_unit",
+                    context=self.context,
+                )
+                return dest
+        # gcc (and any unknown compiler) without cache stays on the
+        # flat-dir stamp.
+        return os.path.join(flat_dir, stem + ".stamp"), flat_dir
+
+    def _compute_clang_header_unit_command_hash(self, token: str) -> str:
+        """command_hash for a clang header-unit precompile.
+
+        Uses the bare token as the source-identity input (``<vector>``
+        differs from ``<string>``); ``compiler_identity`` -- captured
+        as part of the command_hash -- catches the underlying header's
+        actual content via the toolchain binary's mtime/size, since
+        system headers come from the compiler install and a libc++
+        update implies a new compiler. We deliberately don't resolve
+        ``<vector>`` to its abs path -- that would cost a per-token
+        ``clang -E`` subprocess for negligible additional safety.
+        """
+        cxxflags_tokens = self.args.flags.hash_relevant("cxx")
+        return _pcm_command_hash(
+            self.args,
+            source_path=token,
+            transitive_content_hash="",  # implicit in compiler_identity
+            cxxflags_tokens=cxxflags_tokens,
+            magic_cpp_flags=[],  # header units don't carry per-file magic
+            magic_cxx_flags=[],
+            extra_flags=["-stdlib=libc++"] if self._build_imports_std() else [],
+            stage="clang_header_unit",
+        )
+
+    def _create_header_unit_precompile_rule(self, token: str, artefact_path: str) -> BuildRule:
+        """Emit one precompile rule for a header-unit token.
+
+        ``artefact_path`` is the resolved destination from
+        :meth:`_header_unit_destination` -- the .pcm under cas-pcmdir
+        for clang+cache, the flat-dir .pcm for clang without cache, or
+        the flat-dir .stamp for gcc.
+
+        - **gcc**: ``g++ -fmodules -c -x c++-system-header <header>``
+          writes the ``.gcm`` to ``gcm.cache/<resolved-abs-path>.gcm``
+          (path depends on header-search resolution, so we can't name it
+          as the make output). The rule's output is the stamp file
+          touched via ``success_marker`` after the precompile succeeds;
+          importers depend on that stamp for sequencing. Phase 7b
+          replaces this with a mapper-redirected cache path.
+        - **clang**: ``clang++ --precompile -xc++-system-header
+          <header> -o <pcm>`` produces the .pcm at the path we picked.
+
+        We deliberately drop magic per-TU CPPFLAGS / CXXFLAGS because
+        the header unit is global across the build -- no single user
+        TU's magic flags can apply without risking inconsistent
+        precompiles.
+        """
+        kind = getattr(self, "_module_compiler_kind", None)
+        bare = _header_unit_arg(token)
+
+        common_cmd = (
+            compiletools.utils.split_command_cached(self.args.CXX)
+            + list(self.args.flags.cxx)
+        )
+
+        artefact_dir = os.path.dirname(artefact_path)
+
+        if kind == "clang":
+            cmd = common_cmd + [
+                "-xc++-system-header", "--precompile", bare, "-o", artefact_path,
+            ]
+            self._header_unit_artefact[token] = artefact_path
+            return BuildRule(
+                output=artefact_path,
+                inputs=[],  # source is a system header - filesystem lookup, no graph edge
+                command=cmd,
+                rule_type="compile",
+                order_only_deps=[artefact_dir],
+            )
+        # gcc (and unknown kinds). Two modes:
+        # - cache off: stamp output. gcc auto-places .gcm under
+        #   gcm.cache/<absolute-resolved-path>.gcm and the stamp is
+        #   touched via success_marker for make's bookkeeping.
+        # - cache on: artefact_path IS the .gcm cache path; the
+        #   `-fmodule-mapper=` flag steers gcc into writing there
+        #   directly (the mapper file maps the resolved abs header path
+        #   to artefact_path). success_marker still touches the .gcm so
+        #   if gcc somehow exited 0 without writing the file (it
+        #   shouldn't, but defence-in-depth) make sees a fresh mtime.
+        # The rule_type is "header_unit" (rather than "compile") in
+        # both modes -- the "compile" path requires -o for lock
+        # wrapping, which gcc silently ignores in -x c++-system-header
+        # mode.
+        cmd = common_cmd + ["-fmodules", "-c", "-x", "c++-system-header", bare]
+        mapper = getattr(self, "_gcc_module_mapper_path", None)
+        if mapper:
+            cmd.append(f"-fmodule-mapper={mapper}")
+        self._header_unit_artefact[token] = artefact_path
+        return BuildRule(
+            output=artefact_path,
+            inputs=[],
+            command=cmd,
+            rule_type="header_unit",
+            order_only_deps=[artefact_dir],
+            success_marker=artefact_path,
+        )
+
+    def _gcc_module_gcm_destination(self, source_filename: str, module_name: str) -> tuple[str, str]:
+        """Resolve the .gcm cache path and parent dir for a gcc named module.
+
+        Returns ``(gcm_path, gcm_dir)`` where ``gcm_path`` is
+        ``<cas-pcmdir>/<command_hash>/<filename-stem>.gcm``. The
+        ``-fmodule-mapper`` file maps the module name to this path so
+        gcc writes the .gcm directly into the cache rather than its
+        default ``gcm.cache/<name>.gcm`` per-cwd location.
+
+        Only called when gcc + cas-pcmdir are both active.
+        """
+        cache_root = getattr(self, "_module_pcm_cache_root", None)
+        assert cache_root is not None, "gcc gcm destination requires cas-pcmdir"
+        cmd_hash = self._compute_pcm_command_hash(
+            source_filename, stage="gcc_module_interface", extra_flags=[]
+        )
+        # ``_module_pcm_filename`` returns ``<name>.pcm``; swap the suffix
+        # for ``.gcm`` so the same name-escape rules apply (partition
+        # ``:`` -> ``^^``) and we get a stable on-disk filename.
+        gcm_filename = _module_pcm_filename(module_name)[: -len(".pcm")] + ".gcm"
+        gcm_path = _cas_pcm_path(gcm_filename, cache_root, cmd_hash)
+        per_hash_dir = os.path.join(cache_root, cmd_hash)
+        _write_pcm_manifest(
+            pcmdir=cache_root,
+            cmd_hash=cmd_hash,
+            bucket_key=compiletools.wrappedos.realpath(source_filename),
+            transitive_headers=sorted(
+                str(d) for d in self.hunter.header_dependencies(source_filename)
+            ),
+            cxx_command=self.args.CXX,
+            stage="gcc_module_interface",
+            context=self.context,
+        )
+        return gcm_path, per_hash_dir
+
+    def _gcc_header_unit_gcm_destination(self, token: str) -> tuple[str, str] | None:
+        """Resolve the .gcm cache path and parent dir for a gcc header unit.
+
+        Returns ``(gcm_path, gcm_dir)``. Only called when gcc +
+        cas-pcmdir are both active. Uses the same single-command_hash
+        layout as named modules: ``<cache_root>/<cmd_hash>/<stem>.gcm``.
+        The hash inputs include the bare token as the source identity;
+        ``compiler_identity`` (folded into command_hash) catches actual
+        header content via the toolchain binary's mtime/size.
+        """
+        cache_root = getattr(self, "_module_pcm_cache_root", None)
+        assert cache_root is not None
+        cmd_hash = _pcm_command_hash(
+            self.args,
+            source_path=token,
+            transitive_content_hash="",  # implicit in compiler_identity
+            cxxflags_tokens=self.args.flags.hash_relevant("cxx"),
+            magic_cpp_flags=[],
+            magic_cxx_flags=[],
+            extra_flags=[],
+            stage="gcc_header_unit",
+        )
+        stem = _header_unit_safe_stem(token)
+        gcm_path = _cas_pcm_path(stem + ".gcm", cache_root, cmd_hash)
+        per_hash_dir = os.path.join(cache_root, cmd_hash)
+        return gcm_path, per_hash_dir
+
+    def _write_gcc_module_mapper(self) -> None:
+        """Materialize the -fmodule-mapper file for the current build.
+
+        Called after ``_module_iface_gcm`` and ``_header_unit_artefact``
+        are populated. The mapper file lives at
+        ``<cas-objdir>/.module-mapper.txt`` (per-build, regenerated
+        each ``ct-cake`` invocation). Each line is ``<key> <gcm-path>``
+        where the key is:
+
+        - The module name for named modules (``math``, ``math:basic``).
+        - The absolute resolved header path for header units (gcc looks
+          header units up by their resolved path, not by the angle/quote
+          token in the source).
+
+        Header units that fail to resolve to an absolute path are
+        omitted -- gcc then falls back to its default
+        ``gcm.cache/<abs-path>.gcm`` placement, which is still correct
+        but bypasses the cas cache for those entries.
+        """
+        if self._module_compiler_kind != "gcc" or not self._module_pcm_cache_root:
+            return
+        mapper_path = self._gcc_module_mapper_path
+        assert mapper_path is not None  # invariant: gcc + cache => path was set
+        os.makedirs(os.path.dirname(mapper_path), exist_ok=True)
+        lines: list[str] = []
+        for name in sorted(self._module_iface_gcm):
+            lines.append(f"{name} {self._module_iface_gcm[name]}")
+        for token in sorted(self._gcc_header_unit_resolved):
+            abs_path = self._gcc_header_unit_resolved[token]
+            gcm_path = self._header_unit_artefact.get(token)
+            if abs_path and gcm_path:
+                lines.append(f"{abs_path} {gcm_path}")
+        # Atomic write so concurrent ct-cake invocations don't see a
+        # partial mapper. We don't need a lock here -- worst case two
+        # invocations write the same content and one rename wins.
+        tmp = mapper_path + f".tmp.{os.getpid()}"
+        with open(tmp, "w") as f:
+            f.write("\n".join(lines) + ("\n" if lines else ""))
+        os.replace(tmp, mapper_path)
+
+    def _clang_module_pcm_destination(self, source_filename: str, module_name: str) -> tuple[str, str]:
+        """Resolve the .pcm path and its parent dir for a clang interface unit.
+
+        Returns ``(pcm_path, pcm_dir)``. When the cas-pcmdir cache is
+        active, ``pcm_dir`` is ``<cas_pcmdir>/<command_hash>/`` and
+        ``pcm_path`` is ``<that_dir>/<module-filename>.pcm``. When the
+        cache is off, ``pcm_dir`` is the flat per-build dir and
+        ``pcm_path`` is ``<flat_dir>/<module-filename>.pcm``.
+
+        ``command_hash`` is computed from the same inputs that drive the
+        precompile bytes -- compiler identity, hash-relevant flags,
+        per-file magic flags, and the transitive content reachable from
+        the source -- so identical configurations share a cache entry
+        across rebuilds.
+        """
+        flat_dir = self._module_pcm_dir
+        assert flat_dir is not None  # only called in clang mode
+        pcm_filename = _module_pcm_filename(module_name)
+        cache_root = getattr(self, "_module_pcm_cache_root", None)
+        if not cache_root:
+            return os.path.join(flat_dir, pcm_filename), flat_dir
+        cmd_hash = self._compute_pcm_command_hash(
+            source_filename, stage="clang_module_interface", extra_flags=[]
+        )
+        pcm_path = _cas_pcm_path(pcm_filename, cache_root, cmd_hash)
+        per_hash_dir = os.path.join(cache_root, cmd_hash)
+        # Write the trim-time sidecar manifest now (before the rule even
+        # runs) so trim_cache can reason about cache reachability without
+        # depending on a successful build first. Bucketed by source
+        # realpath so cross-variant builds of the same .cppm coexist
+        # under keep_count=1.
+        _write_pcm_manifest(
+            pcmdir=cache_root,
+            cmd_hash=cmd_hash,
+            bucket_key=compiletools.wrappedos.realpath(source_filename),
+            transitive_headers=sorted(
+                str(d) for d in self.hunter.header_dependencies(source_filename)
+            ),
+            cxx_command=self.args.CXX,
+            stage="clang_module_interface",
+            context=self.context,
+        )
+        return pcm_path, per_hash_dir
+
+    def _compute_pcm_command_hash(
+        self, source_filename: str, stage: str, extra_flags: list[str]
+    ) -> str:
+        """Compute the cas-pcmdir command_hash for a precompile.
+
+        Folds the source's content hash and dep_hash into the command's
+        canonical key so any drift -- in the source, any included
+        header, the compiler, or any flag the compiler reads -- yields
+        a different cache path. PCM relies on the compiler's BMI
+        verification at consume time as the safety net for the rare
+        hash-collision case (see ``_pcm_command_hash`` docstring).
+        """
+        import stringzilla as sz
+
+        deplist = self.hunter.header_dependencies(source_filename)
+        dep_hash = self.namer.compute_dep_hash(deplist)
+        try:
+            source_hash = compiletools.global_hash_registry.get_file_hash(
+                source_filename, self.context
+            )
+        except (FileNotFoundError, OSError):
+            source_hash = ""
+        magicflags = self.hunter.magicflags(source_filename)
+        magic_cpp = magicflags.get(sz.Str("CPPFLAGS"), [])
+        magic_cxx = magicflags.get(sz.Str("CXXFLAGS"), [])
+        cxxflags_tokens = self.args.flags.hash_relevant("cxx")
+        return _pcm_command_hash(
+            self.args,
+            source_path=compiletools.wrappedos.realpath(source_filename),
+            transitive_content_hash=f"{source_hash}:{dep_hash}",
+            cxxflags_tokens=cxxflags_tokens,
+            magic_cpp_flags=magic_cpp,
+            magic_cxx_flags=magic_cxx,
+            extra_flags=extra_flags,
+            stage=stage,
+        )
+
+    def _create_clang_module_interface_rules(
+        self, filename: str, module_name: str
+    ) -> tuple[BuildRule, BuildRule]:
+        """Emit the (precompile, compile) rule pair for one clang interface unit.
+
+        Clang's modules flow is two-stage: first ``--precompile`` turns
+        the source into a ``.pcm`` (the BMI that importers consume), then
+        ``-c`` compiles the ``.pcm`` into a ``.o`` for linking. We emit
+        both rules here:
+
+          1. ``clang++ ... -x c++-module --precompile <filename> -o <pcm>``
+          2. ``clang++ ... -c <pcm> -o <obj>`` -- depends on the .pcm.
+
+        The single pre-existing object-cache key (``obj_name``, derived
+        via ``namer.object_pathname``) is reused so the .o lands at the
+        same path it would for a non-module clang TU; this keeps cache
+        addressing consistent across compiler swaps.
+        """
+        import stringzilla as sz
+
+        deplist = self.hunter.header_dependencies(filename)
+        prerequisites = [filename] + sorted([str(dep) for dep in deplist])
+        magicflags = self.hunter.magicflags(filename)
+        magic_cpp_flags = magicflags.get(sz.Str("CPPFLAGS"), [])
+        magic_cxx_flags = magicflags.get(sz.Str("CXXFLAGS"), [])
+        dep_hash = self.namer.compute_dep_hash(deplist)
+        macro_state_hash = self.hunter.macro_state_hash(filename, dep_hash=dep_hash)
+        obj_name = self.namer.object_pathname(filename, macro_state_hash, dep_hash)
+
+        assert self._module_pcm_dir is not None  # only called in clang mode
+        # Pull the destination from the registry the pre-pass already
+        # populated. When cas-pcmdir is on this is the cached
+        # ``<cas_pcmdir>/<command_hash>/<name>.pcm`` path; when off it's
+        # the flat per-build path. Falling back to the flat layout keeps
+        # the rule emission correct even if the registry lookup misses
+        # for some reason (e.g., a multi-export TU that bypassed the
+        # pre-pass — though we reject those upstream).
+        pcm_path = self._module_iface_pcm.get(
+            module_name,
+            os.path.join(self._module_pcm_dir, _module_pcm_filename(module_name)),
+        )
+        pcm_dir = os.path.dirname(pcm_path)
+
+        common_cmd = (
+            compiletools.utils.split_command_cached(self.args.CXX)
+            + list(self.args.flags.cxx)
+            + [str(flag) for flag in magic_cpp_flags]
+            + [str(flag) for flag in magic_cxx_flags]
+        )
+
+        # System-provided module sources (libc++'s std.cppm) need their
+        # own extras (-stdlib=libc++, -Wno-reserved-module-identifier)
+        # injected into BOTH the precompile and the .pcm-to-.o stage so
+        # the same flags drive every cc1 invocation.
+        common_cmd = common_cmd + self._system_module_extra_flags(filename)
+
+        # The primary interface unit may `export import :P;`, which means
+        # its --precompile invocation needs to find the partition .pcm
+        # files. -fprebuilt-module-path doesn't resolve partition names
+        # in clang, so we hand it the same per-partition mapping that
+        # importers get.
+        partition_flags = self._clang_partition_module_file_flags()
+
+        precompile_cmd = common_cmd + partition_flags + [
+            "-x", "c++-module", "--precompile", filename, "-o", pcm_path,
+        ]
+        # Clang produces the .pcm with its own consumer in mind; pcm_dir
+        # is the order-only mkdir gate.
+        pcm_rule = BuildRule(
+            output=pcm_path,
+            inputs=prerequisites,
+            command=precompile_cmd,
+            rule_type="compile",
+            order_only_deps=[pcm_dir],
+        )
+
+        # Stage 2: compile the .pcm into the linkable .o. The .pcm is the
+        # only real input -- include weight is unchanged from the source
+        # form because the same translation unit's headers were processed
+        # during stage 1.
+        #
+        # The same ``-fmodule-file=NAME=PATH`` flags are required here
+        # too: clang needs to resolve any partition references that were
+        # baked into the .pcm in stage 1 (e.g. a primary that did
+        # ``export import :basic;``). Without them stage 2 fails with
+        # ``failed to find module file for module 'M:P'``.
+        bucket_dir = os.path.dirname(obj_name)
+        obj_cmd = common_cmd + partition_flags + ["-c", pcm_path, "-o", obj_name]
+        obj_rule = BuildRule(
+            output=obj_name,
+            inputs=[pcm_path],
+            command=obj_cmd,
+            rule_type="compile",
+            order_only_deps=[bucket_dir],
+        )
+        return pcm_rule, obj_rule
+
     def _create_compile_rule(self, filename: str) -> BuildRule:
         """Create a compile BuildRule for a single source file."""
         deplist = self.hunter.header_dependencies(filename)
@@ -935,6 +1853,21 @@ class BuildBackend(abc.ABC):
                 + [str(flag) for flag in magic_cpp_flags]
                 + [str(flag) for flag in magic_cxx_flags]
             )
+            # C++20 modules: any TU that participates in the module
+            # graph (exports, implements, or imports a named module) needs
+            # the compiler's modules-mode flag injected. We inject here
+            # rather than in args.flags so non-module TUs in the same
+            # build aren't tagged with -fmodules-ts (which would invalidate
+            # their object cache) and so the user's ct.conf stays compiler-
+            # agnostic at the C++20 level.
+            module_extra = self._compiler_module_flags_for(filename)
+            compile_cmd.extend(module_extra)
+            # System-provided module sources (e.g. libc++'s std.cppm)
+            # need extra flags that the user can't reasonably set in
+            # their ct.conf, since the system source isn't visible to
+            # them. Inject here, AFTER per-TU module flags so any later
+            # extras override.
+            compile_cmd.extend(self._system_module_extra_flags(filename))
 
         if self.args.dynamic and filename in self._dynamic_sources:
             compile_cmd.append("-fPIC")
@@ -1114,6 +2047,143 @@ class BuildBackend(abc.ABC):
         )
 
 
+@functools.lru_cache(maxsize=512)
+def _resolve_system_header_abs_path(cxx: str, token: str) -> str | None:
+    """Resolve a header-unit token to its absolute filesystem path.
+
+    Used by the gcc cas-pcmdir mapper, which keys header-unit cache
+    entries by absolute path (gcc looks the header up via the include
+    search path, then keys the .gcm by the *resolved* path -- not by
+    the angle/quote token in the source).
+
+    Pipes ``#include <token>`` (or quoted equivalent) through
+    ``<cxx> -E -M -x c++ -`` and parses the dep list. The first dep
+    whose basename or trailing path matches the token is returned.
+    Cached per ``(cxx, token)`` since the lookup is the same for every
+    build that mentions the same header.
+
+    Returns ``None`` when the compiler invocation fails or no matching
+    dep can be found -- callers must handle missing entries (for the
+    mapper case, omit them and gcc will fall back to its default
+    gcm.cache placement, which still works correctness-wise just
+    without the cache).
+    """
+    bare = _header_unit_arg(token)
+    delim_open, delim_close = ("<", ">") if (token.startswith("<") and token.endswith(">")) else ('"', '"')
+    snippet = f"#include {delim_open}{bare}{delim_close}\n"
+    try:
+        r = subprocess.run(
+            [cxx, "-std=c++26", "-M", "-x", "c++", "-"],
+            input=snippet, capture_output=True, text=True, timeout=30,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if r.returncode != 0:
+        return None
+    # gcc emits a make-style dep listing: `<obj>: <dep1> <dep2> \\\n  <dep3> ...`
+    # Flatten line continuations, split on whitespace, then find a dep
+    # whose tail matches the bare header path.
+    deps = r.stdout.replace("\\\n", " ").split()
+    # Drop the `<obj>:` prefix (always the first token).
+    if deps and deps[0].endswith(":"):
+        deps = deps[1:]
+    for dep in deps:
+        if dep == "-" or dep.endswith("/stdc-predef.h"):
+            continue
+        if dep.endswith("/" + bare) or os.path.basename(dep) == bare:
+            return dep
+    return None
+
+
+def _cas_pcm_path(filename_stem: str, pcmdir: str, command_hash: str) -> str:
+    """Return the cache path for a clang ``.pcm`` or gcc ``.gcm``.
+
+    Layout: ``<pcmdir>/<command_hash>/<filename_stem>``.
+
+    Mirrors ``cas-pchdir``'s shape: one ``command_hash`` directory per
+    unique compile configuration (compiler + flags + source content +
+    transitive headers), with the artefact and a sidecar
+    ``manifest.json`` inside.
+
+    .. note:: An earlier revision of this file split the ``command_hash``
+       into three independent path components (file_hash + dep_hash +
+       cmd_hash), mirroring the object cache's
+       ``<basename>_<file_hash_12>_<dep_hash_14>_<macro_state_hash_16>.o``
+       filename. That refactor was reverted: the object cache predates
+       sidecar manifests and uses path-axis separation because
+       ``trim_objdir`` reads ``file_hash[:12]`` directly out of the
+       filename to do its "is this source still tracked?" check.
+       PCM (a) ships with a manifest from day one that already carries
+       ``bucket_key`` and ``transitive_hashes``, (b) holds two orders
+       of magnitude fewer entries than the object cache so sharding is
+       overkill, and (c) has header-unit entries that can't fit the
+       (source, deps, env) triple cleanly -- their "source" is a
+       compiler-shipped header with no git identity. Single hash +
+       manifest is the right shape for PCM.
+    """
+    return os.path.join(pcmdir, command_hash, filename_stem)
+
+
+def _pcm_command_hash(
+    args,
+    source_path: str,
+    transitive_content_hash: str,
+    cxxflags_tokens: list[str],
+    magic_cpp_flags: list,
+    magic_cxx_flags: list,
+    extra_flags: list[str],
+    stage: str,
+) -> str:
+    """Single content-addressable hash for a PCM cache entry.
+
+    Folds every input that affects the BMI bytes into one 16-hex-char
+    sha256 truncation: compiler identity, hash-relevant flags, magic
+    flags, source identity (path), transitive header content, and a
+    stage marker. Identical inputs -> identical hash -> shared cache
+    entry. Any drift -> different hash -> different cache path.
+
+    .. note:: 16 hex chars (64 bits) is the right entropy budget for
+       PCM. The object cache uses 168 bits across three path
+       components because a hash collision on ``.o`` files would cause
+       a **silent miscompile** -- the linker doesn't verify object
+       contents against the inputs that produced them. PCM and PCH
+       have **in-band BMI verification at consume time**: GCC's PCH
+       stamp / clang's BMI signature record the compile environment
+       and reject on mismatch. A hypothetical 64-bit collision
+       therefore degrades to a slow re-precompile, never a
+       miscompile. Single-hash + manifest is the right shape; an
+       earlier 3-axis refactor mimicking the object cache was
+       reverted because it added complexity without addressing a
+       safety problem PCM doesn't have.
+
+    ``stage`` (e.g. ``"clang_module_interface"``,
+    ``"clang_header_unit"``, ``"gcc_module_interface"``,
+    ``"gcc_header_unit"``) prevents a same-named module and header
+    unit from colliding under the same flag set.
+
+    ``transitive_content_hash`` is the caller's responsibility to
+    compose -- typically ``f"{source_hash}:{dep_hash}"`` for named
+    modules and the empty string (or a token-derived value) for header
+    units whose transitive deps are implicit in ``compiler_identity``.
+    """
+    canonical = {
+        "stage": stage,
+        "compiler_identity": _compiler_identity(args.CXX),
+        "cxx_command": args.CXX,
+        "CXXFLAGS_TOKENS": list(cxxflags_tokens),
+        "magic_cpp_flags": compiletools.apptools.filter_hash_irrelevant_tokens(
+            [str(f) for f in magic_cpp_flags]
+        ),
+        "magic_cxx_flags": compiletools.apptools.filter_hash_irrelevant_tokens(
+            [str(f) for f in magic_cxx_flags]
+        ),
+        "extra_flags": list(extra_flags),
+        "source": source_path,
+        "transitive_content_hash": transitive_content_hash,
+    }
+    return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()[:16]
+
+
 def _gch_path(header: str, pchdir: str | None = None, command_hash: str | None = None) -> str:
     """Return the precompiled header output path for a header file.
 
@@ -1206,6 +2276,20 @@ def _pch_command_hash(
     .gch file. Uses ``json.dumps`` rather than space-join so flag values
     containing literal spaces (``-DFOO="a b"``) cannot collide with
     space-separated flag pairs.
+
+    .. note:: PCH (and PCM, the C++20 modules cache it inspired)
+       intentionally use a **single** command_hash directory plus
+       sidecar manifest, not the object cache's three path-axis
+       hashes. The 3-axis structure on the object cache exists
+       because ``.o`` files have no in-band verification at link
+       time -- a hash collision would cause a silent miscompile, so
+       the path needs the entropy of multiple independent hashes to
+       make collisions statistically impossible. PCH and PCM have
+       BMI / PCH-stamp verification at consume time: a hypothetical
+       64-bit collision degrades to a slow re-precompile, never a
+       miscompile, so the lower-entropy single-hash key is safe and
+       simpler. (An earlier exploration of refactoring PCM to the
+       3-axis layout was reverted for this exact reason.)
 
     ``cxxflags_tokens`` is the hash-relevant structured form of
     ``args.CXXFLAGS`` -- the caller is responsible for pre-filtering
@@ -1347,6 +2431,60 @@ def _write_pch_scope_diagnostic(
     out_path = os.path.join(scope_dir, f"{basename}.json")
     with open(out_path, "w") as f:
         json.dump(payload, f, indent=2, sort_keys=True)
+
+
+def _write_pcm_manifest(
+    pcmdir: str,
+    cmd_hash: str,
+    bucket_key: str,
+    transitive_headers: list[str],
+    cxx_command: str,
+    stage: str,
+    context,
+) -> None:
+    """Write a sidecar manifest next to a cached ``.pcm`` / ``.gcm`` file.
+
+    Layout matches ``_write_pch_manifest``: the manifest lands at
+    ``<pcmdir>/<cmd_hash>/manifest.json``, alongside the artefact.
+
+    Enables ``trim_cache.trim_pcmdir`` to (a) bucket cmd_hash dirs by
+    ``bucket_key`` so cross-variant builds of the same source/header
+    don't evict each other at ``keep_count=1`` (source realpath for
+    named modules, verbatim token like ``<vector>`` for header units),
+    and (b) pre-evict entries whose transitive header content has
+    shifted since the artefact was built.
+
+    ``stage`` is the same string handed to ``_pcm_command_hash`` so the
+    trim CLI can reason about which compiler-stage produced the entry.
+
+    Atomic via ``os.replace``.
+    """
+    manifest_dir = os.path.join(pcmdir, cmd_hash)
+    os.makedirs(manifest_dir, exist_ok=True)
+
+    transitive_hashes: dict[str, str] = {}
+    for h in transitive_headers:
+        h_real = compiletools.wrappedos.realpath(h)
+        try:
+            transitive_hashes[h_real] = compiletools.global_hash_registry.get_file_hash(
+                h_real, context=context
+            )
+        except (OSError, KeyError):
+            pass
+
+    manifest = {
+        "bucket_key": bucket_key,
+        "stage": stage,
+        "compiler": cxx_command,
+        "compiler_identity": _compiler_identity(cxx_command),
+        "transitive_hashes": transitive_hashes,
+    }
+
+    manifest_path = os.path.join(manifest_dir, "manifest.json")
+    tmp_path = f"{manifest_path}.tmp.{os.getpid()}"
+    with open(tmp_path, "w") as f:
+        json.dump(manifest, f, sort_keys=True)
+    os.replace(tmp_path, manifest_path)
 
 
 def _write_pch_manifest(

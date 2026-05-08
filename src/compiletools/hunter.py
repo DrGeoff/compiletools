@@ -100,7 +100,252 @@ class Hunter:
             implied_headers = tuple(self.headerdeps.process(implied, macro_state_key))
             headers = headers + (implied,) + implied_headers
 
+        # C++20 modules: every `import M;` in this TU pulls the file that
+        # declares `export module M;` into the dependency graph as a source.
+        # The interface unit must compile before this TU; that ordering is
+        # enforced by the backend via order-only edges (see
+        # build_backend._wire_module_order_only_deps).
+        module_iface_sources = self._module_interface_sources_for(realpath)
+        if module_iface_sources:
+            sources = sources + module_iface_sources
+
         return (headers, sources)
+
+    def _module_interface_sources_for(self, realpath: str) -> tuple[str, ...]:
+        """Return module-related source paths for every module this TU imports.
+
+        For each imported module name we pull in:
+          1. The interface unit (the file with ``export module NAME;``), so
+             gcc can produce / read the CMI before this TU is compiled.
+          2. Every implementation unit (``module NAME;`` without ``export``),
+             so the symbols defined in those units end up in the link.
+
+        For partition imports (``import :basic;``) the partition-only form
+        is resolved against the importer's own module name, harvested from
+        the file's own ``export module M[:P];`` or ``module M[:P];``
+        declaration. ``import math:basic;`` (fully-qualified form) is
+        looked up directly.
+
+        Returns an empty tuple when the file imports nothing.
+        """
+        result = self._file_analysis_result(realpath)
+        if result is None or not result.module_imports:
+            return ()
+        own_module = self._own_module_name(result)
+        registry = self._module_interface_registry()
+        impl_registry = self._module_implementation_registry()
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw_name in result.module_imports:
+            resolved = self._resolve_module_import(raw_name, own_module)
+            if resolved is None:
+                continue
+            iface = registry.get(resolved)
+            if iface is not None and iface != realpath and iface not in seen:
+                out.append(iface)
+                seen.add(iface)
+            for impl in impl_registry.get(resolved, ()):
+                if impl != realpath and impl not in seen:
+                    out.append(impl)
+                    seen.add(impl)
+            # When the importer pulls in a primary module M, also pull in
+            # every partition of M -- the primary may not list them
+            # explicitly via `export import :P;` and the link still needs
+            # the partition objects. Cheap to over-include.
+            if ":" not in resolved:
+                for part_name, part_iface in registry.items():
+                    if part_name.startswith(resolved + ":"):
+                        if part_iface != realpath and part_iface not in seen:
+                            out.append(part_iface)
+                            seen.add(part_iface)
+                        for part_impl in impl_registry.get(part_name, ()):
+                            if part_impl != realpath and part_impl not in seen:
+                                out.append(part_impl)
+                                seen.add(part_impl)
+        return tuple(out)
+
+    @staticmethod
+    def _own_module_name(file_result) -> str | None:
+        """Return the *primary* module name (no partition suffix) the TU
+        belongs to, or None if it doesn't belong to any module.
+
+        A TU declares its module via ``export module M[:P];`` or
+        ``module M[:P];`` -- we strip the partition because a partition
+        import like ``import :other;`` resolves to the same primary
+        module, not the same partition.
+        """
+        for spec in tuple(file_result.module_exports) + tuple(file_result.module_implements):
+            base = spec.split(":", 1)[0]
+            if base:
+                return base
+        return None
+
+    @staticmethod
+    def _resolve_module_import(raw_name: str, own_module: str | None) -> str | None:
+        """Resolve a raw import-spec to a full module name suitable for
+        the registry lookup.
+
+        - ``M`` -> ``M``
+        - ``M:P`` -> ``M:P``
+        - ``:P`` -> ``own_module:P`` if the importer belongs to a module,
+          else None (the import is illegal C++; we skip rather than
+          guessing).
+        """
+        if not raw_name:
+            return None
+        if raw_name.startswith(":"):
+            if not own_module:
+                return None
+            return own_module + raw_name
+        return raw_name
+
+    def _file_analysis_result(self, realpath: str):
+        """Return the FileAnalysisResult for `realpath`, or None on error."""
+        import compiletools.file_analyzer
+        from compiletools.global_hash_registry import get_file_hash
+
+        # Module discovery is reachable from arbitrary call sites (Hunter,
+        # build_backend, tests) -- not just from FindTargets which is the
+        # usual init path for analyzer_args. Set it lazily here so the
+        # module path doesn't require a particular caller.
+        if self.context.analyzer_args is None:
+            compiletools.file_analyzer.set_analyzer_args(self.args, self.context)
+        try:
+            content_hash = get_file_hash(realpath, self.context)
+        except FileNotFoundError:
+            return None
+        try:
+            return compiletools.file_analyzer.analyze_file(content_hash, self.context)
+        except (FileNotFoundError, RuntimeError):
+            return None
+
+    def _module_interface_registry(self) -> dict[str, str]:
+        """Lazily build a `module_name -> interface_filepath` map.
+
+        Scans every tracked source file (the global hash registry walks the
+        repo once at startup, so this is cheap) and reads each file's
+        FileAnalysisResult to find ``export module NAME;`` declarations.
+        Two files exporting the same module name is a hard error.
+        """
+        cached = getattr(self, "_module_iface_registry_cached", None)
+        if cached is not None:
+            return cached
+
+        import compiletools.file_analyzer
+        from compiletools.global_hash_registry import get_file_hash, get_tracked_files
+
+        # Same lazy-init rationale as in _file_analysis_result.
+        if self.context.analyzer_args is None:
+            compiletools.file_analyzer.set_analyzer_args(self.args, self.context)
+
+        registry: dict[str, str] = {}
+        # Implementation-unit registry is built in the same scan to avoid a
+        # second pass over the tree.
+        impl_registry: dict[str, list[str]] = {}
+
+        def consider(filepath: str, content_hash: str) -> None:
+            if not compiletools.utils.is_source(filepath):
+                return
+            try:
+                result = compiletools.file_analyzer.analyze_file(content_hash, self.context)
+            except (FileNotFoundError, RuntimeError):
+                return
+            for name in result.module_exports:
+                prior = registry.get(name)
+                if prior is not None and prior != filepath:
+                    raise ValueError(
+                        f"Duplicate `export module {name};` declaration: "
+                        f"both {prior} and {filepath} export module '{name}'. "
+                        f"A module name must have exactly one interface unit."
+                    )
+                registry[name] = filepath
+            for name in result.module_implements:
+                impls = impl_registry.setdefault(name, [])
+                if filepath not in impls:
+                    impls.append(filepath)
+
+        # Always seed from the tracked-files registry (the git-fast-path),
+        # then ALSO walk include dirs to catch source files that haven't yet
+        # been registered. The `tracked` dict grows lazily as files are
+        # analysed, so a `if tracked: skip walk` shortcut is unsafe -- in a
+        # non-git tree, tracked might be {single-file} after one prior
+        # analyse, which would make us miss every other .cppm in the dir.
+        tracked = get_tracked_files(self.context)
+        seen_files: set[str] = set()
+        for filepath, content_hash in tracked.items():
+            consider(filepath, content_hash)
+            seen_files.add(filepath)
+
+        roots: list[str] = []
+        include_dirs = getattr(self.args, "INCLUDE", None) or getattr(self.args, "include", None) or []
+        if isinstance(include_dirs, str):
+            include_dirs = [include_dirs]
+        for inc in include_dirs:
+            if isinstance(inc, str) and os.path.isdir(inc):
+                roots.append(compiletools.wrappedos.realpath(inc))
+        if not roots:
+            roots.append(compiletools.wrappedos.realpath("."))
+        seen_roots: set[str] = set()
+        for root in roots:
+            if root in seen_roots:
+                continue
+            seen_roots.add(root)
+            for dirpath, _dirs, files in os.walk(root):
+                for fname in files:
+                    full = compiletools.wrappedos.realpath(os.path.join(dirpath, fname))
+                    if full in seen_files or not compiletools.utils.is_source(full):
+                        continue
+                    try:
+                        content_hash = get_file_hash(full, self.context)
+                    except FileNotFoundError:
+                        continue
+                    consider(full, content_hash)
+                    seen_files.add(full)
+
+        # System-provided modules: if no user file exports the standard
+        # library module, fall back to the compiler's shipped source so
+        # `import std;` JustWorks(tm). The path is recorded in the main
+        # registry (so dep resolution treats it like any other interface
+        # unit). `system_modules()` exposes the same mapping without
+        # forcing a registry build, so callers that only need to know
+        # whether a system std exists don't trigger a full source scan.
+        for name, path in self.system_modules().items():
+            if name not in registry:
+                registry[name] = path
+
+        self._module_iface_registry_cached = registry
+        # Freeze the impl lists so callers can't mutate the cached map.
+        self._module_impl_registry_cached = {k: tuple(v) for k, v in impl_registry.items()}
+        return registry
+
+    def system_modules(self) -> dict[str, str]:
+        """Return the `module_name -> system_source_path` map.
+
+        Computed independently of the user-file registry so callers that
+        only need to detect whether a system std module is in scope
+        don't pay for a full source-tree scan -- and don't trip
+        cross-project duplicate-exporter errors when the build doesn't
+        actually use the colliding modules.
+        """
+        cached = getattr(self, "_system_modules_cached", None)
+        if cached is not None:
+            return cached
+        kind = compiletools.apptools.compiler_kind(self.args.CXX)
+        std_path = compiletools.apptools.find_system_std_module_source(self.args.CXX, kind)
+        result = {"std": std_path} if std_path else {}
+        self._system_modules_cached = result
+        return result
+
+    def _module_implementation_registry(self) -> dict[str, tuple[str, ...]]:
+        """Return the `module_name -> (impl_filepath, ...)` map.
+
+        Side-builds the map on first access by going through
+        ``_module_interface_registry`` so both registries are populated by
+        the same single tree walk.
+        """
+        if not hasattr(self, "_module_impl_registry_cached"):
+            self._module_interface_registry()
+        return self._module_impl_registry_cached
 
     def _expand_deps_recursive(self, realpath, macro_state_key, processed):
         """Recursively expand dependencies (internal helper).
@@ -197,6 +442,14 @@ class Hunter:
         # (e.g. when args are reparsed mid-test).
         if hasattr(self, "_cmdline_macro_index_cached"):
             del self._cmdline_macro_index_cached
+        # Drop the cached module-name -> interface-file registry so a
+        # subsequent reparse picks up new/removed .cppm files.
+        if hasattr(self, "_module_iface_registry_cached"):
+            del self._module_iface_registry_cached
+        if hasattr(self, "_module_impl_registry_cached"):
+            del self._module_impl_registry_cached
+        if hasattr(self, "_system_modules_cached"):
+            del self._system_modules_cached
 
     @instance_cache
     def _parse_magic(self, filename):

@@ -60,6 +60,12 @@ def add_arguments(cap):
         default=False,
         help="Only trim the PCH CAS, skip objects",
     )
+    cap.add(
+        "--cas-pcmdir-only",
+        action="store_true",
+        default=False,
+        help="Only trim the C++20 module CAS (cas-pcmdir), skip objects and PCH",
+    )
 
 
 def main(argv=None):
@@ -80,17 +86,35 @@ def main(argv=None):
         args = cap.parse_args(args=argv)
         args.verbose -= args.quiet
 
-        if args.cas_objdir_only and args.cas_pchdir_only:
-            print("Error: --cas-objdir-only and --cas-pchdir-only are mutually exclusive", file=sys.stderr)
+        only_flags = sum(
+            bool(getattr(args, name))
+            for name in ("cas_objdir_only", "cas_pchdir_only", "cas_pcmdir_only")
+        )
+        if only_flags > 1:
+            print(
+                "Error: --cas-objdir-only / --cas-pchdir-only / --cas-pcmdir-only "
+                "are mutually exclusive (pick at most one)",
+                file=sys.stderr,
+            )
             return 1
+
+        # ``--cas-X-only`` flags select a single cache; with none set we
+        # trim all three. Translate "only" semantics into a per-cache
+        # boolean for clarity.
+        do_objdir = not (args.cas_pchdir_only or args.cas_pcmdir_only)
+        do_pchdir = not (args.cas_objdir_only or args.cas_pcmdir_only)
+        do_pcmdir = not (args.cas_objdir_only or args.cas_pchdir_only)
 
         trimmer = compiletools.trim_cache.CacheTrimmer(args)
 
         objdir_stats = None
         pchdir_stats = None
+        pcmdir_stats = None
 
-        if not args.cas_pchdir_only:
-            # Load git hashes for current-file detection
+        # Object cache currency check is the only consumer of the
+        # tracked-files set. PCM and PCH use sidecar manifests for
+        # bucketing/transitive checks instead.
+        if do_objdir:
             from compiletools.build_context import BuildContext
             from compiletools.global_hash_registry import load_hashes
 
@@ -103,14 +127,23 @@ def main(argv=None):
                 print(f"Trimming object directory: {args.cas_objdir}")
             objdir_stats = trimmer.trim_objdir(args.cas_objdir, current_hashes)
 
-        if not args.cas_objdir_only:
+        if do_pchdir:
             if args.verbose >= 1:
                 print(f"Trimming PCH directory: {args.cas_pchdir}")
             pchdir_stats = trimmer.trim_pchdir(args.cas_pchdir)
 
-        trimmer.print_summary(objdir_stats, pchdir_stats)
+        if do_pcmdir:
+            if args.verbose >= 1:
+                print(f"Trimming PCM directory: {args.cas_pcmdir}")
+            pcmdir_stats = trimmer.trim_pcmdir(args.cas_pcmdir)
 
-        any_failed = (objdir_stats or {}).get("failed", 0) + (pchdir_stats or {}).get("failed", 0)
+        trimmer.print_summary(objdir_stats, pchdir_stats, pcmdir_stats)
+
+        any_failed = (
+            (objdir_stats or {}).get("failed", 0)
+            + (pchdir_stats or {}).get("failed", 0)
+            + (pcmdir_stats or {}).get("failed", 0)
+        )
         return 1 if any_failed else 0
 
     except OSError as ioe:

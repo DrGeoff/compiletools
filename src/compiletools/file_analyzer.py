@@ -589,6 +589,230 @@ def _extract_magic_flags(
     return magic_flags
 
 
+# C++20 module declarations. Recognized at the start of a logical line
+# (after stripping leading whitespace, ignoring lines inside block
+# comments). Phase 1 of compiletools' modules support handles only the
+# three forms below; partition-internal imports (`import :part;`),
+# header units (`import "h";`, `import <h>;`), and the global module
+# fragment opener (`module;`) are recognized syntactically and skipped.
+def _classify_module_line(rest: "stringzilla.Str"):
+    """Classify a single source line as a C++20 module declaration.
+
+    `rest` is the line content (already a stringzilla.Str) AFTER leading
+    whitespace has been stripped by the caller, AND verified not to be
+    inside a block comment.
+
+    Returns ``(kind, name)`` where ``kind`` is one of
+    ``"export_module"``, ``"module"``, ``"import"`` -- or ``(None, None)``
+    if the line is not a module declaration we want to record.
+
+    Returns ``("header_import", "<vector>")`` or ``("header_import",
+    "\"foo.h\"")`` for header units -- the token form (with brackets or
+    quotes) is preserved so build_backend can re-emit it on the
+    precompile invocation and on the importer's
+    ``-fmodule-file=NAME=PATH`` flag.
+
+    Phase 1 deliberately returned ``(None, None)`` for the global module
+    fragment opener (``module;``), partition imports (``import :p;``),
+    and header units. Phase 3 added partitions; Phase 5 adds header
+    units.
+    """
+    s = str(rest)
+    n = len(s)
+    if n == 0:
+        return None, None
+
+    def is_ident_start(c: str) -> bool:
+        return c.isalpha() or c == "_"
+
+    def is_ident_cont(c: str) -> bool:
+        return c.isalnum() or c == "_"
+
+    def read_ident(j: int):
+        if j >= n or not is_ident_start(s[j]):
+            return None, j
+        k = j + 1
+        while k < n and is_ident_cont(s[k]):
+            k += 1
+        return s[j:k], k
+
+    def read_dotted_ident(j: int):
+        first, j = read_ident(j)
+        if first is None:
+            return None, j
+        parts = [first]
+        while j < n and s[j] == ".":
+            nxt, jj = read_ident(j + 1)
+            if nxt is None:
+                return None, j
+            parts.append(nxt)
+            j = jj
+        return ".".join(parts), j
+
+    def read_module_spec(j: int, allow_partition_only: bool):
+        """Read a module-name spec: ``M[.dotted][:P[.dotted]]`` or ``:P``.
+
+        ``:P`` is only legal when ``allow_partition_only`` is True (the
+        ``import :P;`` form inside a module). The leading ``:`` is
+        preserved in the returned string so the consumer can tell the
+        partition-only form apart from a fully-qualified ``M:P``.
+        """
+        # Partition-only form: leading `:`, not the `::` scope operator.
+        if j < n and s[j] == ":":
+            if not allow_partition_only:
+                return None, j
+            if j + 1 >= n or s[j + 1] == ":":
+                return None, j
+            part, jj = read_dotted_ident(j + 1)
+            if part is None:
+                return None, j
+            return ":" + part, jj
+        # Otherwise: M[.dotted][:P[.dotted]]
+        name, j = read_dotted_ident(j)
+        if name is None:
+            return None, j
+        if j < n and s[j] == ":" and (j + 1 >= n or s[j + 1] != ":"):
+            part, jj = read_dotted_ident(j + 1)
+            if part is not None:
+                return name + ":" + part, jj
+        return name, j
+
+    def skip_ws(j: int) -> int:
+        while j < n and s[j] in " \t":
+            j += 1
+        return j
+
+    word1, i = read_ident(0)
+    if word1 is None:
+        return None, None
+
+    if word1 == "export":
+        i = skip_ws(i)
+        word2, i = read_ident(i)
+        # Allow `export import :P;` / `export import M;` -- common in
+        # primary interface units that re-export a partition or another
+        # module. We only need to classify the underlying token kind, so
+        # treat `export import` as `import` (the export wrapper doesn't
+        # change which other TUs the importer needs).
+        if word2 == "import":
+            i = skip_ws(i)
+            if i >= n:
+                return None, None
+            if s[i] in ("<", '"'):
+                return None, None
+            name, i = read_module_spec(i, allow_partition_only=True)
+            if name is None:
+                return None, None
+            i = skip_ws(i)
+            if i >= n or s[i] != ";":
+                return None, None
+            return "import", name
+        if word2 != "module":
+            return None, None
+        i = skip_ws(i)
+        name, i = read_module_spec(i, allow_partition_only=False)
+        if name is None:
+            return None, None
+        i = skip_ws(i)
+        if i >= n or s[i] != ";":
+            return None, None
+        return "export_module", name
+
+    if word1 == "module":
+        i = skip_ws(i)
+        # `module;` is the global module fragment opener -- not a name
+        # declaration, ignore. `module NAME;` is an implementation unit.
+        if i < n and s[i] == ";":
+            return None, None
+        name, i = read_module_spec(i, allow_partition_only=False)
+        if name is None:
+            return None, None
+        i = skip_ws(i)
+        if i >= n or s[i] != ";":
+            return None, None
+        return "module", name
+
+    if word1 == "import":
+        i = skip_ws(i)
+        if i >= n:
+            return None, None
+        # Header unit: `import <h>;` or `import "h";`. Capture the
+        # token verbatim (including brackets/quotes) so the build
+        # backend can re-emit it as the header-name argument to the
+        # precompile and as the lookup key in clang's
+        # `-fmodule-file=<h>=<path>` flag.
+        if s[i] == "<":
+            close = s.find(">", i + 1)
+            if close == -1:
+                return None, None
+            tok = s[i:close + 1]
+            j = skip_ws(close + 1)
+            if j >= n or s[j] != ";":
+                return None, None
+            return "header_import", tok
+        if s[i] == '"':
+            close = s.find('"', i + 1)
+            if close == -1:
+                return None, None
+            tok = s[i:close + 1]
+            j = skip_ws(close + 1)
+            if j >= n or s[j] != ";":
+                return None, None
+            return "header_import", tok
+        name, i = read_module_spec(i, allow_partition_only=True)
+        if name is None:
+            return None, None
+        i = skip_ws(i)
+        if i >= n or s[i] != ";":
+            return None, None
+        return "import", name
+
+    return None, None
+
+
+def _extract_module_declarations(
+    str_text: "stringzilla.Str",
+    line_byte_offsets: list[int],
+) -> dict[str, list[str]]:
+    """Find every C++20 module declaration in a source.
+
+    Walks lines, ignores lines whose first non-whitespace position is
+    inside a block comment, and delegates per-line classification to
+    ``_classify_module_line``.
+
+    Returns a dict with four keys -- ``"export_module"``, ``"module"``,
+    ``"import"``, ``"header_import"`` -- mapping to lists of names in
+    source order. ``header_import`` entries preserve the token form
+    (with ``<...>`` or ``"..."``) so the build backend can re-emit them.
+    """
+    result: dict[str, list[str]] = {
+        "export_module": [],
+        "module": [],
+        "import": [],
+        "header_import": [],
+    }
+    n = len(str_text)
+    if n == 0 or not line_byte_offsets:
+        return result
+
+    line_count = len(line_byte_offsets)
+    for i in range(line_count):
+        start = line_byte_offsets[i]
+        end = line_byte_offsets[i + 1] if i + 1 < line_count else n
+        line = str_text[start:end]
+        first_nws = line.find_first_not_of(" \t")
+        if first_nws == -1:
+            continue
+        kw_pos = start + first_nws
+        if is_inside_block_comment_simd(str_text, kw_pos):
+            continue
+        rest = line[first_nws:]
+        kind, name = _classify_module_line(rest)
+        if kind is not None and name is not None:
+            result[kind].append(name)
+    return result
+
+
 def _extract_defines(
     define_positions: list[int],
     lines: list["stringzilla.Str"],
@@ -798,6 +1022,10 @@ def analyze_file(content_hash: str, context: "BuildContext") -> "FileAnalysisRes
     # Detect marker type - check for exe, test, or library markers
     marker_type = _detect_marker_type(str_text, exe_markers, test_markers, library_markers)
 
+    # C++20 module declarations (Phase 1: name-only modules; partitions
+    # and header units are skipped at the classifier).
+    module_decls = _extract_module_declarations(str_text, line_byte_offsets)
+
     result = FileAnalysisResult(
         line_count=len(lines),
         line_byte_offsets=line_byte_offsets,
@@ -818,6 +1046,10 @@ def analyze_file(content_hash: str, context: "BuildContext") -> "FileAnalysisRes
         conditional_macros=conditional_macros,
         undef_targets=undef_targets,
         marker_type=marker_type,
+        module_exports=tuple(module_decls["export_module"]),
+        module_implements=tuple(module_decls["module"]),
+        module_imports=tuple(module_decls["import"]),
+        module_header_imports=tuple(module_decls["header_import"]),
     )
 
     context.analyze_file_cache[content_hash] = result
@@ -1104,6 +1336,14 @@ class FileAnalysisResult:
         default_factory=frozenset
     )  # Macro names from all #undef directives (static, input-independent)
     marker_type: MarkerType = MarkerType.NONE  # Type of marker found in file (exe, test, library, or none)
+
+    # C++20 module declarations. See _extract_module_declarations for the
+    # forms recognized in Phase 1; partition imports, header units, and
+    # the global module fragment opener are deliberately not surfaced.
+    module_exports: tuple[str, ...] = ()       # `export module NAME;`
+    module_implements: tuple[str, ...] = ()    # `module NAME;` (impl unit)
+    module_imports: tuple[str, ...] = ()       # `import NAME;`
+    module_header_imports: tuple[str, ...] = ()  # `import <h>;` / `import "h";`
 
     # Helper method for SimplePreprocessor compatibility
     def get_directive_line_numbers(self) -> dict[str, set[int]]:
