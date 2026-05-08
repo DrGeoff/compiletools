@@ -46,7 +46,7 @@ def _macro_state_hash_for_prefix(prefix: str) -> str:
 def _pch_hash_for_prefix(prefix: str) -> str:
     from compiletools.build_backend import _pch_command_hash
 
-    args = SimpleNamespace(CXX="/usr/bin/g++", git_root=prefix)
+    args = SimpleNamespace(CXX="/usr/bin/g++")
     cxxflags_tokens = [f"-I{prefix}/lib/util", "-std=c++20"]
     magic_cpp_flags = [f"-I{prefix}/include/include"]
     magic_cxx_flags = []
@@ -58,13 +58,14 @@ def _pch_hash_for_prefix(prefix: str) -> str:
         magic_cxx_flags=magic_cxx_flags,
         cxxflags_tokens=cxxflags_tokens,
         scope_macro_hash="deadbeef" * 8,
+        anchor_root=prefix,
     )
 
 
 def _pcm_hash_for_prefix(prefix: str) -> str:
     from compiletools.build_backend import _pcm_command_hash
 
-    args = SimpleNamespace(CXX="/usr/bin/g++", git_root=prefix)
+    args = SimpleNamespace(CXX="/usr/bin/g++")
     cxxflags_tokens = [f"-I{prefix}/lib/util", "-std=c++20"]
     source_path = f"{prefix}/lib/util/app.cppm"
     return _pcm_command_hash(
@@ -76,6 +77,7 @@ def _pcm_hash_for_prefix(prefix: str) -> str:
         magic_cxx_flags=[],
         extra_flags=[],
         stage="clang_module_interface",
+        anchor_root=prefix,
     )
 
 

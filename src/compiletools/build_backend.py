@@ -29,6 +29,7 @@ from typing import NamedTuple, TypeVar
 import compiletools.apptools
 import compiletools.diagnostics
 import compiletools.filesystem_utils
+import compiletools.git_utils
 import compiletools.global_hash_registry
 import compiletools.namer
 import compiletools.utils
@@ -626,9 +627,7 @@ class BuildBackend(abc.ABC):
         # its own ``.pcm`` files there; gcc stores its ``.gcm`` files
         # there via ``-fmodule-mapper`` redirection.
         self._module_pcm_cache_root = (
-            getattr(self.args, "cas_pcmdir", None)
-            if compiler_kind in ("clang", "gcc")
-            else None
+            getattr(self.args, "cas_pcmdir", None) if compiler_kind in ("clang", "gcc") else None
         )
         # Per-build mapper file path. Set up-front (rather than lazily
         # in `_write_gcc_module_mapper`) so per-rule emitters can
@@ -662,9 +661,7 @@ class BuildBackend(abc.ABC):
         # the cache for simplicity) have somewhere to land. Header-unit
         # caching can be added later by mirroring the cmd_hash machinery
         # below.
-        self._module_pcm_dir = (
-            os.path.join(self.args.cas_objdir, ".pcm") if compiler_kind == "clang" else None
-        )
+        self._module_pcm_dir = os.path.join(self.args.cas_objdir, ".pcm") if compiler_kind == "clang" else None
 
         module_iface_obj: dict[str, str] = {}
         module_iface_pcm: dict[str, str] = {}  # populated only for clang
@@ -687,9 +684,7 @@ class BuildBackend(abc.ABC):
                 macro_state_hash = self.hunter.macro_state_hash(filename, dep_hash=dep_hash)
                 module_iface_obj[name] = self.namer.object_pathname(filename, macro_state_hash, dep_hash)
                 if self._module_pcm_dir is not None:
-                    pcm_path, pcm_dir = self._clang_module_pcm_destination(
-                        filename, name
-                    )
+                    pcm_path, pcm_dir = self._clang_module_pcm_destination(filename, name)
                     module_iface_pcm[name] = pcm_path
                     pcm_mkdir_dirs.add(pcm_dir)
                 if gcc_cache_active:
@@ -753,9 +748,7 @@ class BuildBackend(abc.ABC):
             hu_mkdirs: set[str] = set()
             hu_destinations: dict[str, str] = {}
             for token in sorted(all_header_imports):
-                dest_path, dest_dir = self._header_unit_destination(
-                    token, header_unit_flat_dir
-                )
+                dest_path, dest_dir = self._header_unit_destination(token, header_unit_flat_dir)
                 hu_destinations[token] = dest_path
                 hu_mkdirs.add(dest_dir)
                 if gcc_cache_active:
@@ -767,9 +760,7 @@ class BuildBackend(abc.ABC):
                         (t for t in self.args.flags.cxx if str(t).startswith("-std=")),
                         "-std=c++20",
                     )
-                    abs_path = _resolve_system_header_abs_path(
-                        self.args.CXX, token, std_flag=str(std_flag)
-                    )
+                    abs_path = _resolve_system_header_abs_path(self.args.CXX, token, std_flag=str(std_flag))
                     if abs_path is not None:
                         self._gcc_header_unit_resolved[token] = abs_path
             for d in sorted(hu_mkdirs):
@@ -782,9 +773,7 @@ class BuildBackend(abc.ABC):
                     )
                 )
             for token in sorted(all_header_imports):
-                rule = self._create_header_unit_precompile_rule(
-                    token, hu_destinations[token]
-                )
+                rule = self._create_header_unit_precompile_rule(token, hu_destinations[token])
                 graph.add_rule(rule)
                 # Importers wait on this artefact path -- the .gcm
                 # cache path for gcc+cache, the stamp for gcc no-cache,
@@ -804,14 +793,8 @@ class BuildBackend(abc.ABC):
             # source -> .pcm, then compile .pcm -> .o. Both are needed:
             # the .pcm satisfies importers' -fprebuilt-module-path lookup;
             # the .o supplies the symbols at link time.
-            if (
-                self._module_pcm_dir is not None
-                and module_exports
-                and len(module_exports) == 1
-            ):
-                pcm_rule, obj_rule = self._create_clang_module_interface_rules(
-                    filename, module_exports[0]
-                )
+            if self._module_pcm_dir is not None and module_exports and len(module_exports) == 1:
+                pcm_rule, obj_rule = self._create_clang_module_interface_rules(filename, module_exports[0])
                 # The precompile rule itself needs to wait for any
                 # partitions it imports (`export import :P;` in the
                 # primary, or `import :P;` in another partition). Without
@@ -1241,10 +1224,7 @@ class BuildBackend(abc.ABC):
         if result is None:
             return []
         touches_modules = bool(
-            result.module_exports
-            or result.module_implements
-            or result.module_imports
-            or result.module_header_imports
+            result.module_exports or result.module_implements or result.module_imports or result.module_header_imports
         )
         if not touches_modules:
             return []
@@ -1522,10 +1502,7 @@ class BuildBackend(abc.ABC):
         kind = self._module_compiler_kind
         bare = _header_unit_arg(token)
 
-        common_cmd = (
-            compiletools.utils.split_command_cached(self.args.CXX)
-            + list(self.args.flags.cxx)
-        )
+        common_cmd = compiletools.utils.split_command_cached(self.args.CXX) + list(self.args.flags.cxx)
 
         artefact_dir = os.path.dirname(artefact_path)
 
@@ -1539,13 +1516,10 @@ class BuildBackend(abc.ABC):
             # key claims.
             stdlib_extras = (
                 ["-stdlib=libc++"]
-                if self._build_imports_std()
-                and "-stdlib=libc++" not in self.args.flags.cxx
+                if self._build_imports_std() and "-stdlib=libc++" not in self.args.flags.cxx
                 else []
             )
-            cmd = common_cmd + stdlib_extras + [
-                "-xc++-system-header", "--precompile", bare, "-o", artefact_path,
-            ]
+            cmd = common_cmd + stdlib_extras + ["-xc++-system-header", "--precompile", bare, "-o", artefact_path]
             self._header_unit_artefact[token] = artefact_path
             return BuildRule(
                 output=artefact_path,
@@ -1636,9 +1610,7 @@ class BuildBackend(abc.ABC):
         """
         cache_root = self._module_pcm_cache_root
         assert cache_root is not None, "gcc gcm destination requires cas-pcmdir"
-        cmd_hash = self._compute_pcm_command_hash(
-            source_filename, stage="gcc_module_interface", extra_flags=[]
-        )
+        cmd_hash = self._compute_pcm_command_hash(source_filename, stage="gcc_module_interface", extra_flags=[])
         # ``_module_pcm_filename`` returns ``<name>.pcm``; swap the suffix
         # for ``.gcm`` so the same name-escape rules apply (partition
         # ``:`` -> ``^^``) and we get a stable on-disk filename.
@@ -1649,9 +1621,7 @@ class BuildBackend(abc.ABC):
             pcmdir=cache_root,
             cmd_hash=cmd_hash,
             bucket_key=compiletools.wrappedos.realpath(source_filename),
-            transitive_headers=sorted(
-                str(d) for d in self.hunter.header_dependencies(source_filename)
-            ),
+            transitive_headers=sorted(str(d) for d in self.hunter.header_dependencies(source_filename)),
             cxx_command=self.args.CXX,
             stage="gcc_module_interface",
             context=self.context,
@@ -1746,9 +1716,7 @@ class BuildBackend(abc.ABC):
         cache_root = self._module_pcm_cache_root
         if not cache_root:
             return os.path.join(flat_dir, pcm_filename), flat_dir
-        cmd_hash = self._compute_pcm_command_hash(
-            source_filename, stage="clang_module_interface", extra_flags=[]
-        )
+        cmd_hash = self._compute_pcm_command_hash(source_filename, stage="clang_module_interface", extra_flags=[])
         pcm_path = _cas_pcm_path(pcm_filename, cache_root, cmd_hash)
         per_hash_dir = os.path.join(cache_root, cmd_hash)
         # Write the trim-time sidecar manifest now (before the rule even
@@ -1760,18 +1728,14 @@ class BuildBackend(abc.ABC):
             pcmdir=cache_root,
             cmd_hash=cmd_hash,
             bucket_key=compiletools.wrappedos.realpath(source_filename),
-            transitive_headers=sorted(
-                str(d) for d in self.hunter.header_dependencies(source_filename)
-            ),
+            transitive_headers=sorted(str(d) for d in self.hunter.header_dependencies(source_filename)),
             cxx_command=self.args.CXX,
             stage="clang_module_interface",
             context=self.context,
         )
         return pcm_path, per_hash_dir
 
-    def _compute_pcm_command_hash(
-        self, source_filename: str, stage: str, extra_flags: list[str]
-    ) -> str:
+    def _compute_pcm_command_hash(self, source_filename: str, stage: str, extra_flags: list[str]) -> str:
         """Compute the cas-pcmdir command_hash for a precompile.
 
         Folds the source's content hash and dep_hash into the command's
@@ -1786,9 +1750,7 @@ class BuildBackend(abc.ABC):
         deplist = self.hunter.header_dependencies(source_filename)
         dep_hash = self.namer.compute_dep_hash(deplist)
         try:
-            source_hash = compiletools.global_hash_registry.get_file_hash(
-                source_filename, self.context
-            )
+            source_hash = compiletools.global_hash_registry.get_file_hash(source_filename, self.context)
         except (FileNotFoundError, OSError):
             source_hash = ""
         magicflags = self.hunter.magicflags(source_filename)
@@ -1806,9 +1768,7 @@ class BuildBackend(abc.ABC):
             stage=stage,
         )
 
-    def _create_clang_module_interface_rules(
-        self, filename: str, module_name: str
-    ) -> tuple[BuildRule, BuildRule]:
+    def _create_clang_module_interface_rules(self, filename: str, module_name: str) -> tuple[BuildRule, BuildRule]:
         """Emit the (precompile, compile) rule pair for one clang interface unit.
 
         Clang's modules flow is two-stage: first ``--precompile`` turns
@@ -1869,9 +1829,18 @@ class BuildBackend(abc.ABC):
         # importers get.
         partition_flags = self._clang_partition_module_file_flags()
 
-        precompile_cmd = common_cmd + partition_flags + [
-            "-x", "c++-module", "--precompile", filename, "-o", pcm_path,
-        ]
+        precompile_cmd = (
+            common_cmd
+            + partition_flags
+            + [
+                "-x",
+                "c++-module",
+                "--precompile",
+                filename,
+                "-o",
+                pcm_path,
+            ]
+        )
         # Clang produces the .pcm with its own consumer in mind; pcm_dir
         # is the order-only mkdir gate.
         pcm_rule = BuildRule(
@@ -2213,7 +2182,10 @@ def _resolve_system_header_abs_path(cxx: str, token: str, std_flag: str = "-std=
     try:
         r = subprocess.run(
             [cxx, std_flag, "-M", "-x", "c++", "-"],
-            input=snippet, capture_output=True, text=True, timeout=30,
+            input=snippet,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None
@@ -2310,12 +2282,8 @@ def _pcm_command_hash(
         "compiler_identity": _compiler_identity(args.CXX),
         "cxx_command": args.CXX,
         "CXXFLAGS_TOKENS": list(cxxflags_tokens),
-        "magic_cpp_flags": compiletools.apptools.filter_hash_irrelevant_tokens(
-            [str(f) for f in magic_cpp_flags]
-        ),
-        "magic_cxx_flags": compiletools.apptools.filter_hash_irrelevant_tokens(
-            [str(f) for f in magic_cxx_flags]
-        ),
+        "magic_cpp_flags": compiletools.apptools.filter_hash_irrelevant_tokens([str(f) for f in magic_cpp_flags]),
+        "magic_cxx_flags": compiletools.apptools.filter_hash_irrelevant_tokens([str(f) for f in magic_cxx_flags]),
         "extra_flags": list(extra_flags),
         "source": source_path,
         "transitive_content_hash": transitive_content_hash,
@@ -2405,6 +2373,7 @@ def _pch_command_hash(
     magic_cxx_flags: list,
     cxxflags_tokens: list[str],
     scope_macro_hash: str,
+    anchor_root: str | None = None,
 ) -> str:
     """Compute a content-addressable hash for a PCH compile command.
 
@@ -2455,6 +2424,16 @@ def _pch_command_hash(
     # never affect the compiled .gch bytes. Filter them out of every
     # flag-token list so flipping -Wall <-> -Wextra (or annotating a
     # header with //#CXXFLAGS=-Wall) doesn't pollute the PCH cache key.
+    #
+    # Path-bearing flag tokens (-I/-isystem/etc.) and the header path
+    # itself are then canonicalized against the gitroot anchor so the
+    # cache key is decoupled from the absolute workspace path -- two
+    # CI runs landing under different attempt directories share the
+    # same PCH cache entries. anchor_root=None falls back to the
+    # cached find_git_root() lookup; an explicit empty string disables
+    # canonicalization (graceful no-op).
+    if anchor_root is None:
+        anchor_root = compiletools.git_utils.find_git_root()
     canonical = {
         "compiler_identity": _compiler_identity(args.CXX),
         "cxx_command": args.CXX,
@@ -2462,10 +2441,18 @@ def _pch_command_hash(
         # removed; pre-filtered by caller via args.flags.hash_relevant("cxx").
         # Cmdline -D macros are captured by ``scope_macro_hash`` after
         # per-PCH-header scoping.
-        "CXXFLAGS_TOKENS": list(cxxflags_tokens),
-        "magic_cpp_flags": compiletools.apptools.filter_hash_irrelevant_tokens([str(f) for f in magic_cpp_flags]),
-        "magic_cxx_flags": compiletools.apptools.filter_hash_irrelevant_tokens([str(f) for f in magic_cxx_flags]),
-        "header": compiletools.wrappedos.realpath(pch_header),
+        "CXXFLAGS_TOKENS": compiletools.apptools.canonicalize_for_cache_key(list(cxxflags_tokens), anchor_root),
+        "magic_cpp_flags": compiletools.apptools.canonicalize_for_cache_key(
+            compiletools.apptools.filter_hash_irrelevant_tokens([str(f) for f in magic_cpp_flags]),
+            anchor_root,
+        ),
+        "magic_cxx_flags": compiletools.apptools.canonicalize_for_cache_key(
+            compiletools.apptools.filter_hash_irrelevant_tokens([str(f) for f in magic_cxx_flags]),
+            anchor_root,
+        ),
+        "header": compiletools.apptools.canonicalize_path_for_cache_key(
+            compiletools.wrappedos.realpath(pch_header), anchor_root
+        ),
         "stage": "c++-header",
         "scope_macro_hash": scope_macro_hash,
     }
@@ -2605,9 +2592,7 @@ def _write_pcm_manifest(
     for h in transitive_headers:
         h_real = compiletools.wrappedos.realpath(h)
         try:
-            transitive_hashes[h_real] = compiletools.global_hash_registry.get_file_hash(
-                h_real, context=context
-            )
+            transitive_hashes[h_real] = compiletools.global_hash_registry.get_file_hash(h_real, context=context)
         except (OSError, KeyError):
             pass
 
