@@ -45,20 +45,33 @@ def venv_mismatch_reason(expected_src_root: str) -> str | None:
         return ("ct-cake not on PATH (e2e checks need a venv with "
                 "compiletools installed)")
     try:
-        with open(cake) as f:
-            first = f.readline().strip()
+        with open(cake, "rb") as f:
+            # Read in binary so a hypothetical native-binary ct-cake (or
+            # a script with CRLF line endings) doesn't trip
+            # UnicodeDecodeError -- which isn't an OSError and would
+            # crash the probe instead of returning a graceful reason.
+            first = f.readline().rstrip(b"\r\n")
     except OSError as e:
         return f"can't read ct-cake script {cake!r}: {e}"
-    if not first.startswith("#!"):
+    if not first.startswith(b"#!"):
         # On Linux, both `pip install -e .` and `uv pip install -e .`
         # always generate shebang scripts for console entry points, so
-        # this branch is only reachable if a future packaging change
-        # ships ct-cake as a native binary (PyInstaller bundle, uv
-        # binary launcher, etc.). If you hit this, return a skip-with-
-        # reason string instead of silently passing the venv check --
-        # otherwise e2e tests would exercise an unverified install.
+        # this branch is only reachable if ct-cake is shipped as a
+        # native binary (PyInstaller bundle, uv binary launcher, etc.).
+        # If you hit this, return a skip-with-reason string instead of
+        # silently passing the venv check -- otherwise e2e tests would
+        # exercise an unverified install.
         return None
-    interpreter = first[2:].split()[0]
+    parts = first[2:].decode("utf-8", errors="replace").split()
+    if not parts:
+        return f"ct-cake script {cake!r} has empty shebang line"
+    interpreter = parts[0]
+    if os.path.basename(interpreter) == "env" and len(parts) > 1:
+        # `#!/usr/bin/env python3` -- env would treat our `-c` as its
+        # own flag, so step past env to the real interpreter. pip / uv
+        # don't generate env-shebangs today but pipx and other shim
+        # installers might.
+        interpreter = parts[1]
     try:
         r = subprocess.run(
             [interpreter, "-c",
@@ -88,9 +101,10 @@ def venv_mismatch_reason(expected_src_root: str) -> str | None:
 def cached_venv_mismatch_reason(expected_src_root: str) -> str | None:
     """Like :func:`venv_mismatch_reason` but caches per src root.
 
-    Pytest collects single-threaded, so a per-root LRU is safe and
-    keeps the introspection subprocess from running once per
-    ``skipif`` marker (six markers in test_cxx_modules.py alone).
+    Each pytest worker is single-threaded (pytest-xdist runs one
+    worker per process), so a per-root LRU is safe and keeps the
+    introspection subprocess from running once per ``skipif`` marker
+    (six markers in test_cxx_modules.py alone).
     """
     return venv_mismatch_reason(expected_src_root)
 
@@ -108,7 +122,7 @@ def main():
     reason = venv_mismatch_reason(expected)
     if reason is None:
         cake = shutil.which("ct-cake") or "ct-cake"
-        print(f"ok: ct-cake ({cake}) and ct-check-venv both resolve "
+        print(f"ok: ct-cake ({cake!r}) and ct-check-venv both resolve "
               f"compiletools to {expected!r}")
         return 0
     print(reason, file=sys.stderr)

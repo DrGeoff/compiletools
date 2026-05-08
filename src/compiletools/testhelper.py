@@ -16,6 +16,7 @@ import configargparse
 import pytest
 
 import compiletools.apptools
+from compiletools.check_venv import cached_venv_mismatch_reason
 
 # The abbreviation "uth" is often used for this "testhelper"
 
@@ -309,7 +310,6 @@ def skipif_e2e_unavailable(probe_predicate, feature_reason: str):
     single ``@requires_X`` decorator without sprouting a parallel
     ``@requires_fresh_venv`` everywhere.
     """
-    from compiletools.check_venv import cached_venv_mismatch_reason
     venv_reason = cached_venv_mismatch_reason(_TESTSUITE_SRC)
     if venv_reason is not None:
         return pytest.mark.skipif(True, reason=venv_reason)

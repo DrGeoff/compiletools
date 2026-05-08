@@ -384,10 +384,10 @@ def _which(name: str) -> str | None:
     return _shutil.which(name)
 
 
-# Compose venv-mismatch detection with a feature probe. See
+# Six requires_* markers below compose ``uth.skipif_e2e_unavailable``
+# (which gates on venv-mismatch first, then the feature probe). See
 # ``compiletools.testhelper.skipif_e2e_unavailable`` and
 # ``compiletools.check_venv`` for the underlying machinery.
-_skipif_e2e_unavailable = uth.skipif_e2e_unavailable
 
 
 
@@ -473,12 +473,12 @@ def _clang_path_for_modules() -> str | None:
 
 
 
-requires_cxx_modules = _skipif_e2e_unavailable(
+requires_cxx_modules = uth.skipif_e2e_unavailable(
     _detected_gcc_supports_modules,
     "C++20 modules (-fmodules-ts) not supported by detected g++",
 )
 
-requires_clang_modules = _skipif_e2e_unavailable(
+requires_clang_modules = uth.skipif_e2e_unavailable(
     lambda: _clang_path_for_modules() is not None,
     "No clang++ on PATH that supports C++20 modules with partitions "
     "(clang 13 accepts --precompile but rejects partitions; need clang >=16)",
@@ -706,12 +706,12 @@ def _clang_supports_import_std() -> bool:
     return r.returncode == 0
 
 
-requires_gcc_import_std = _skipif_e2e_unavailable(
+requires_gcc_import_std = uth.skipif_e2e_unavailable(
     _gcc_supports_import_std,
     "`import std;` not supported by detected g++ (no bits/std.cc)",
 )
 
-requires_clang_import_std = _skipif_e2e_unavailable(
+requires_clang_import_std = uth.skipif_e2e_unavailable(
     _clang_supports_import_std,
     "`import std;` not supported by detected clang++ (no libc++ std.cppm)",
 )
@@ -774,12 +774,12 @@ def _clang_supports_header_units() -> bool:
     return r.returncode == 0
 
 
-requires_gcc_header_units = _skipif_e2e_unavailable(
+requires_gcc_header_units = uth.skipif_e2e_unavailable(
     _gcc_supports_header_units,
     "header units (-fmodules + -x c++-system-header) not supported by detected g++",
 )
 
-requires_clang_header_units = _skipif_e2e_unavailable(
+requires_clang_header_units = uth.skipif_e2e_unavailable(
     _clang_supports_header_units,
     "header units (--precompile -xc++-system-header) not supported by detected clang++",
 )
