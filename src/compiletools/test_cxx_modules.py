@@ -382,6 +382,34 @@ def _which(name: str) -> str | None:
     return _shutil.which(name)
 
 
+# This worktree's src/ directory. The e2e tests invoke ct-cake / ct-trim-cache
+# as subprocesses; without forcing this src onto the subprocess's PYTHONPATH
+# they'd resolve to whatever installed compiletools the venv's console-script
+# entry points at -- which, for a developer running pytest from this worktree
+# while their venv is editable-installed from the master worktree, is the
+# WRONG compiletools (no C++20 modules support). Putting our src first on
+# PYTHONPATH makes the subprocess always run THIS branch's code.
+_WORKTREE_SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _subprocess_env(extra: dict | None = None) -> dict:
+    """Return a subprocess env that pins compiletools to this worktree.
+
+    Merges the current process env with a PYTHONPATH that prefixes this
+    worktree's ``src`` ahead of whatever was inherited. Any keys in
+    ``extra`` (typically ``CXX`` / ``CPP`` overrides for compiler-pinned
+    e2e tests) win over the inherited env.
+    """
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        _WORKTREE_SRC + os.pathsep + existing if existing else _WORKTREE_SRC
+    )
+    if extra:
+        env.update(extra)
+    return env
+
+
 import functools  # noqa: E402
 
 
@@ -463,7 +491,7 @@ def test_cxx_modules_simple_sample_builds_and_runs(tmp_path, monkeypatch):
     # Run ct-cake --auto via subprocess so we exercise the same CLI users do.
     r = subprocess.run(
         ["ct-cake", "--auto"],
-        capture_output=True, text=True, cwd=workdir, timeout=120,
+        capture_output=True, text=True, cwd=workdir, timeout=120, env=_subprocess_env(),
     )
     assert r.returncode == 0, f"ct-cake --auto failed:\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
 
@@ -491,7 +519,7 @@ def _run_sample_with_compiler(sample_name: str, cxx: str, tmp_path, monkeypatch)
     shutil.copytree(sample_src, workdir)
     monkeypatch.chdir(workdir)
 
-    env = os.environ.copy()
+    env = _subprocess_env()
     env["CXX"] = cxx
     env["CPP"] = cxx
     # CC stays unchanged: the samples are pure C++.
@@ -542,7 +570,7 @@ def _run_partitions_sample_with(cxx: str, tmp_path, monkeypatch):
     shutil.copytree(sample_src, workdir)
     monkeypatch.chdir(workdir)
 
-    env = os.environ.copy()
+    env = _subprocess_env()
     env["CXX"] = cxx
     env["CPP"] = cxx
     r = subprocess.run(
@@ -598,7 +626,7 @@ def _run_import_std_sample_with(cxx: str, tmp_path, monkeypatch):
     shutil.copytree(sample_src, workdir)
     monkeypatch.chdir(workdir)
 
-    env = os.environ.copy()
+    env = _subprocess_env()
     env["CXX"] = cxx
     env["CPP"] = cxx
     r = subprocess.run(
@@ -758,7 +786,7 @@ def _run_header_units_sample_with(cxx: str, tmp_path, monkeypatch):
     shutil.copytree(sample_src, workdir)
     monkeypatch.chdir(workdir)
 
-    env = os.environ.copy()
+    env = _subprocess_env()
     env["CXX"] = cxx
     env["CPP"] = cxx
     r = subprocess.run(
@@ -823,7 +851,7 @@ def test_cas_pcmdir_clang_pcm_survives_rebuild(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
     monkeypatch.chdir(workdir)
 
-    env = os.environ.copy()
+    env = _subprocess_env()
     env["CXX"] = cxx
     env["CPP"] = cxx
 
@@ -897,7 +925,7 @@ def test_gcc_mapper_records_partition_names_with_colon(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
     monkeypatch.chdir(workdir)
 
-    env = os.environ.copy()
+    env = _subprocess_env()
     env["CXX"] = cxx
     env["CPP"] = cxx
     r = subprocess.run(
@@ -961,7 +989,7 @@ def test_cas_pcmdir_gcc_gcm_lands_in_cache(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
     monkeypatch.chdir(workdir)
 
-    env = os.environ.copy()
+    env = _subprocess_env()
     env["CXX"] = cxx
     env["CPP"] = cxx
     r = subprocess.run(
@@ -1019,7 +1047,7 @@ def test_cas_pcmdir_gcc_header_unit_gcm_survives_rebuild(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
     monkeypatch.chdir(workdir)
 
-    env = os.environ.copy()
+    env = _subprocess_env()
     env["CXX"] = cxx
     env["CPP"] = cxx
     r1 = subprocess.run(
@@ -1079,7 +1107,7 @@ def test_ct_trim_cache_evicts_old_pcm_entries(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
     monkeypatch.chdir(workdir)
 
-    env = os.environ.copy()
+    env = _subprocess_env()
     env["CXX"] = cxx
     env["CPP"] = cxx
 
@@ -1157,7 +1185,7 @@ def test_cas_pcmdir_path_layout_is_content_addressed(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
     monkeypatch.chdir(workdir)
 
-    env = os.environ.copy()
+    env = _subprocess_env()
     env["CXX"] = cxx
     env["CPP"] = cxx
     r = subprocess.run(
@@ -1239,7 +1267,7 @@ def test_cxx_modules_split_implementation_unit(tmp_path, monkeypatch):
 
     r = subprocess.run(
         ["ct-cake", "--auto"],
-        capture_output=True, text=True, cwd=workdir, timeout=120,
+        capture_output=True, text=True, cwd=workdir, timeout=120, env=_subprocess_env(),
     )
     assert r.returncode == 0, f"ct-cake --auto failed:\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
 
