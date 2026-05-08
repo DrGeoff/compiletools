@@ -416,7 +416,14 @@ def _venv_mismatch_reason() -> str | None:
     except OSError as e:
         return f"can't read ct-cake script {cake!r}: {e}"
     if not first.startswith("#!"):
-        return None  # not a shebang script; can't introspect cheaply
+        # On Linux, both `pip install -e .` and `uv pip install -e .` always
+        # generate shebang scripts for console entry points, so this branch is
+        # only reachable if a future packaging change ships ct-cake as a native
+        # binary (PyInstaller bundle, uv binary launcher, etc.). If you hit
+        # this, return a skip-with-reason string instead of silently passing
+        # the venv check -- otherwise the e2e tests would exercise an
+        # unverified install.
+        return None
     interpreter = first[2:].split()[0]
     try:
         r = subprocess.run(
@@ -467,7 +474,6 @@ def _skipif_e2e_unavailable(probe_predicate, feature_reason: str):
 
 
 
-
 @functools.lru_cache(maxsize=16)
 def _probe_modules_support(cxx: str | None, kind: str) -> bool:
     """Probe whether ``cxx`` accepts the right C++20 module flags for ``kind``.
@@ -514,7 +520,7 @@ def _probe_modules_support(cxx: str | None, kind: str) -> bool:
                 rp = subprocess.run(
                     [cxx, "-std=c++20", "-x", "c++-module", "--precompile",
                      part_src, "-o", os.path.join(td, "probe-part.pcm")],
-                    capture_output=True, cwd=td, timeout=30,
+                    capture_output=True, text=True, cwd=td, timeout=30,
                 )
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 return False
@@ -557,7 +563,8 @@ requires_cxx_modules = _skipif_e2e_unavailable(
 
 requires_clang_modules = _skipif_e2e_unavailable(
     lambda: _clang_path_for_modules() is not None,
-    "No clang++ on PATH that supports C++20 modules (--precompile)",
+    "No clang++ on PATH that supports C++20 modules with partitions "
+    "(clang 13 accepts --precompile but rejects partitions; need clang >=16)",
 )
 
 
