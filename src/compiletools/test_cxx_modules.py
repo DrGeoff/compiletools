@@ -490,8 +490,39 @@ def _probe_modules_support(cxx: str | None, kind: str) -> bool:
             cmd = [cxx, "-std=c++20", "-fmodules-ts", "-x", "c++", "-c", src,
                    "-o", os.path.join(td, "probe.o")]
         elif kind == "clang":
-            cmd = [cxx, "-std=c++20", "-x", "c++-module", "--precompile", src,
-                   "-o", os.path.join(td, "probe.pcm")]
+            # Probe partition support too: clang 13's --precompile accepts the
+            # trivial primary-interface case but explicitly refuses partitions
+            # ("sorry, module partitions are not yet supported"), and likewise
+            # mishandles the impl-unit form used by the cxx_modules_split sample.
+            # Falsely advertising clang 13 here makes the partition / split
+            # tests fail rather than skip. Combine both into one TU so a single
+            # invocation rules out clang versions that can't drive any of the
+            # samples in this suite.
+            with open(src, "w") as f:
+                f.write(
+                    "export module probe;\n"
+                    "export import :part;\n"
+                    "export int answer();\n"
+                )
+            part_src = os.path.join(td, "probe-part.cppm")
+            with open(part_src, "w") as f:
+                f.write(
+                    "export module probe:part;\n"
+                    "export int answer() { return 42; }\n"
+                )
+            try:
+                rp = subprocess.run(
+                    [cxx, "-std=c++20", "-x", "c++-module", "--precompile",
+                     part_src, "-o", os.path.join(td, "probe-part.pcm")],
+                    capture_output=True, cwd=td, timeout=30,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                return False
+            if rp.returncode != 0:
+                return False
+            cmd = [cxx, "-std=c++20", "-x", "c++-module", "--precompile",
+                   "-fmodule-file=probe:part=" + os.path.join(td, "probe-part.pcm"),
+                   src, "-o", os.path.join(td, "probe.pcm")]
         else:
             raise ValueError(f"unknown probe kind: {kind!r}")
         try:
