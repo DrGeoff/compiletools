@@ -931,6 +931,128 @@ def filter_hash_irrelevant_tokens(tokens: Sequence[str]) -> list[str]:
     return out
 
 
+# Path-bearing flag families recognized by the cache-key canonicalizer.
+# Both attached form (``-Ipath``) and detached form (``-I path``, two
+# tokens) are handled. Order is significance-aware: longer prefixes must
+# come before shorter prefixes that would otherwise eat them
+# (``-include-pch`` before ``-include``, ``-isystem`` before ``-I``).
+_PATH_BEARING_FLAGS: tuple[str, ...] = (
+    "-include-pch",
+    "-isystem",
+    "-idirafter",
+    "-iquote",
+    "-include",
+    "-I",
+    "-F",
+    "-B",
+)
+
+# Sentinel that replaces the workspace root in canonicalized hash inputs.
+# Idempotent by construction: once present in a token, the rewriter
+# leaves it alone (anchor paths never start with ``<``).
+_GITROOT_SENTINEL = "<GITROOT>"
+
+
+def _canonicalize_one_path(path: str, anchor_prefix: str) -> str:
+    """Replace anchor_prefix with _GITROOT_SENTINEL if `path` is anchor-rooted.
+
+    `anchor_prefix` is the anchor with a trailing slash already attached.
+    The exact-match case (path == anchor without slash) is handled by the
+    caller. Idempotent: paths already containing _GITROOT_SENTINEL pass
+    through unchanged.
+    """
+    if _GITROOT_SENTINEL in path:
+        return path
+    if path.startswith(anchor_prefix):
+        return _GITROOT_SENTINEL + "/" + path[len(anchor_prefix) :]
+    return path
+
+
+def canonicalize_path_for_cache_key(path: str, anchor_root: str) -> str:
+    """Rewrite `path` to be anchor-relative for stable cache-key hashing.
+
+    If `path` is exactly `anchor_root` or lives under it, the
+    anchor portion is replaced with the literal `<GITROOT>` sentinel.
+    Anything outside the anchor (system headers, sibling repos) and
+    anything already containing the sentinel passes through unchanged.
+
+    `anchor_root="" ` (or any falsy anchor) is the identity function —
+    graceful no-op when gitroot can't be resolved.
+
+    Hash-input only: callers must NOT pass canonicalized paths to the
+    actual compile command. The compiler still needs the real path.
+    """
+    if not anchor_root:
+        return path
+    anchor = anchor_root.rstrip("/")
+    if path == anchor:
+        return _GITROOT_SENTINEL
+    return _canonicalize_one_path(path, anchor + "/")
+
+
+def canonicalize_for_cache_key(tokens: Sequence[str], anchor_root: str) -> list[str]:
+    """Rewrite path-bearing flag tokens to be anchor-relative.
+
+    For each token, if it parses as a path-bearing flag whose path
+    argument is an absolute path under `anchor_root`, replace the path
+    portion with the literal token `<GITROOT>/<relpath>`. Both attached
+    form (``-I/path``) and detached form (``-I /path``, two tokens)
+    are handled.
+
+    Path-bearing flag families recognized: -I -isystem -iquote
+    -idirafter -F -B -include -include-pch.
+
+    Anything else passes through unchanged: paths outside `anchor_root`,
+    non-path flags (``-O2``, ``-std=c++20``, ``-DFOO``), already-relative
+    paths, and tokens already containing the `<GITROOT>` sentinel
+    (idempotent — applying twice is a no-op).
+
+    `anchor_root="" ` (or any falsy anchor) is the identity function —
+    graceful no-op when gitroot can't be resolved.
+
+    Returns a NEW list; input is not mutated.
+    """
+    if not anchor_root:
+        return list(tokens)
+    anchor = anchor_root.rstrip("/")
+    anchor_prefix = anchor + "/"
+
+    out: list[str] = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        tok = tokens[i]
+        # Detached form: token is exactly a path-bearing flag, the next
+        # token is the path. Consume both.
+        if tok in _PATH_BEARING_FLAGS and i + 1 < n:
+            out.append(tok)
+            path_tok = tokens[i + 1]
+            if path_tok == anchor:
+                out.append(_GITROOT_SENTINEL)
+            else:
+                out.append(_canonicalize_one_path(path_tok, anchor_prefix))
+            i += 2
+            continue
+        # Attached form: token starts with a path-bearing flag and the
+        # remainder is the path. Match longest-prefix first
+        # (_PATH_BEARING_FLAGS is ordered).
+        rewritten = None
+        for flag in _PATH_BEARING_FLAGS:
+            if tok.startswith(flag) and len(tok) > len(flag):
+                path_part = tok[len(flag) :]
+                if path_part == anchor:
+                    rewritten = flag + _GITROOT_SENTINEL
+                else:
+                    rewritten = flag + _canonicalize_one_path(path_part, anchor_prefix)
+                break
+        if rewritten is not None:
+            out.append(rewritten)
+        else:
+            out.append(tok)
+        i += 1
+    return out
+
+
 def tokenize_compile_flags(
     cppflags,
     cflags,
@@ -1052,7 +1174,9 @@ def find_system_std_module_source(cxx: str | None, kind: str) -> str | None:
         try:
             r = subprocess.run(
                 [resolved, "-print-search-dirs"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             return None
