@@ -10,6 +10,8 @@ compiletools is a Python package providing C/C++ build tools that require minima
 
 This repository uses git worktrees for development. The `master` worktree lives at `compiletools/master/`. Feature branches are checked out as sibling worktrees under `compiletools/` (e.g., `git worktree add ../my-feature my-feature`).
 
+**Per-worktree venvs are mandatory.** Each worktree needs its own venv with `uv pip install -e .` (or `pip install -e .`) run from inside that worktree. An editable install records the *path it was installed from* — so a venv created in `master/` will keep importing `compiletools` from `master/src/` even when you `cd` into `my-feature/` and run `pytest`. Subprocess-driven tools like `ct-cake` and the e2e test suites would silently exercise the wrong code. Run `ct-check-venv` from the worktree to verify (`compiletools/check_venv.py` — exits 0 when the `ct-cake` on PATH and the local `compiletools` resolve to the same install root, 1 with an actionable diagnostic when they don't). The pytest helper `compiletools.testhelper.skipif_e2e_unavailable` enforces this for every e2e marker so tests skip with a clear message instead of failing mysteriously.
+
 ## Build and Test Commands
 
 ```bash

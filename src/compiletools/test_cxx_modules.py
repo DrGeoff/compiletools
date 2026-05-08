@@ -384,93 +384,10 @@ def _which(name: str) -> str | None:
     return _shutil.which(name)
 
 
-# This worktree's src/ directory. Compared against the location the
-# subprocess's ``ct-cake`` would import ``compiletools`` from -- if they
-# differ, the venv's editable install points at a different worktree and
-# every e2e test would silently exercise the WRONG code (the master
-# worktree's compiletools, which doesn't know about C++20 modules).
-# We detect this and skip the affected tests with a clear actionable
-# message rather than trying to paper over the misconfiguration.
-_WORKTREE_SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-@functools.lru_cache(maxsize=1)
-def _venv_mismatch_reason() -> str | None:
-    """Return ``None`` when the venv's ct-cake matches this worktree, or
-    a human-readable explanation when it doesn't.
-
-    Walks ct-cake's shebang to find its Python interpreter, then asks
-    that interpreter where it imports ``compiletools`` from. If the
-    answer points outside this worktree's ``src/``, the venv was
-    editable-installed from a different worktree and the e2e tests
-    would silently exercise the wrong code.
-
-    Cached so the subprocess only runs once per pytest session.
-    """
-    cake = _which("ct-cake")
-    if not cake:
-        return "ct-cake not on PATH (modules tests need a venv with compiletools installed)"
-    try:
-        with open(cake) as f:
-            first = f.readline().strip()
-    except OSError as e:
-        return f"can't read ct-cake script {cake!r}: {e}"
-    if not first.startswith("#!"):
-        # On Linux, both `pip install -e .` and `uv pip install -e .` always
-        # generate shebang scripts for console entry points, so this branch is
-        # only reachable if a future packaging change ships ct-cake as a native
-        # binary (PyInstaller bundle, uv binary launcher, etc.). If you hit
-        # this, return a skip-with-reason string instead of silently passing
-        # the venv check -- otherwise the e2e tests would exercise an
-        # unverified install.
-        return None
-    interpreter = first[2:].split()[0]
-    try:
-        r = subprocess.run(
-            [interpreter, "-c",
-             "import compiletools, os; "
-             "print(os.path.dirname(os.path.dirname(os.path.realpath(compiletools.__file__))))"],
-            capture_output=True, text=True, timeout=10,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        return f"can't run ct-cake's Python ({interpreter!r}): {e}"
-    if r.returncode != 0:
-        return f"ct-cake's Python failed to introspect compiletools: {r.stderr.strip()}"
-    actual = r.stdout.strip()
-    expected = os.path.realpath(_WORKTREE_SRC)
-    if os.path.realpath(actual) == expected:
-        return None
-    return (
-        f"venv mismatch: ct-cake imports compiletools from {actual!r}, "
-        f"but the test file lives under {expected!r}. The venv's editable "
-        "install points at a different worktree, so e2e tests would "
-        "exercise the wrong code. Fix with `uv pip install -e .` (or "
-        "`pip install -e .`) from this worktree."
-    )
-
-
-def _skipif_e2e_unavailable(probe_predicate, feature_reason: str):
-    """Build a ``pytest.mark.skipif`` that fires for either of two reasons:
-
-    1. The venv's installed compiletools doesn't match this worktree
-       (``_venv_mismatch_reason()`` returned non-None). Affected e2e
-       tests would silently exercise the wrong code, so we skip with
-       the actionable "re-install with `uv pip install -e .`" message.
-    2. The compiler can't satisfy the feature being tested
-       (``probe_predicate()`` returned False).
-
-    When BOTH conditions trip, the venv message wins -- it's the more
-    fundamental issue and the user has to fix it before the feature
-    probe even becomes meaningful.
-
-    Centralising the composition here lets each e2e test keep its
-    single ``@requires_X`` decorator without sprouting a second
-    ``@requires_fresh_venv`` everywhere.
-    """
-    venv_reason = _venv_mismatch_reason()
-    if venv_reason is not None:
-        return pytest.mark.skipif(True, reason=venv_reason)
-    return pytest.mark.skipif(not probe_predicate(), reason=feature_reason)
+# Compose venv-mismatch detection with a feature probe. See
+# ``compiletools.testhelper.skipif_e2e_unavailable`` and
+# ``compiletools.check_venv`` for the underlying machinery.
+_skipif_e2e_unavailable = uth.skipif_e2e_unavailable
 
 
 

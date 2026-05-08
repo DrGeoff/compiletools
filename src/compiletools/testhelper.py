@@ -284,6 +284,38 @@ def ctconfdir():
     return os.path.realpath(os.path.join(ctdir(), "ct.conf.d"))
 
 
+# Root of the compiletools src tree containing this testhelper module.
+# All test files in this repo live under ``src/compiletools/``, so they
+# all share the same expected install root: this directory's parent.
+_TESTSUITE_SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def skipif_e2e_unavailable(probe_predicate, feature_reason: str):
+    """Build a ``pytest.mark.skipif`` that fires for either of two reasons:
+
+    1. The venv's installed compiletools doesn't match this worktree
+       (``check_venv.cached_venv_mismatch_reason()`` returned non-None).
+       Affected e2e tests would silently exercise the wrong code, so
+       skip with the actionable "re-install with `uv pip install -e .`"
+       message instead of letting the test fail mysteriously.
+    2. The compiler can't satisfy the feature being tested
+       (``probe_predicate()`` returned False).
+
+    When BOTH conditions trip, the venv message wins -- it's the more
+    fundamental issue and the user has to fix it before the feature
+    probe even becomes meaningful.
+
+    Centralising the composition here lets every e2e test keep its
+    single ``@requires_X`` decorator without sprouting a parallel
+    ``@requires_fresh_venv`` everywhere.
+    """
+    from compiletools.check_venv import cached_venv_mismatch_reason
+    venv_reason = cached_venv_mismatch_reason(_TESTSUITE_SRC)
+    if venv_reason is not None:
+        return pytest.mark.skipif(True, reason=venv_reason)
+    return pytest.mark.skipif(not probe_predicate(), reason=feature_reason)
+
+
 def create_temp_config(tempdir=None, filename=None, extralines=None):
     """Create a temporary config file with detected functional compilers.
 
