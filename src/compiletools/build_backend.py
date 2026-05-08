@@ -2244,6 +2244,7 @@ def _pcm_command_hash(
     magic_cxx_flags: list,
     extra_flags: list[str],
     stage: str,
+    anchor_root: str | None = None,
 ) -> str:
     """Single content-addressable hash for a PCM cache entry.
 
@@ -2277,15 +2278,29 @@ def _pcm_command_hash(
     modules and the empty string (or a token-derived value) for header
     units whose transitive deps are implicit in ``compiler_identity``.
     """
+    # Canonicalize path-bearing flag tokens and the source path against
+    # the gitroot anchor so the cache key is decoupled from the absolute
+    # workspace path -- two CI runs landing under different attempt
+    # directories share the same PCM cache entries. anchor_root=None
+    # falls back to the cached find_git_root() lookup; an explicit empty
+    # string disables canonicalization (graceful no-op).
+    if anchor_root is None:
+        anchor_root = compiletools.git_utils.find_git_root()
     canonical = {
         "stage": stage,
         "compiler_identity": _compiler_identity(args.CXX),
         "cxx_command": args.CXX,
-        "CXXFLAGS_TOKENS": list(cxxflags_tokens),
-        "magic_cpp_flags": compiletools.apptools.filter_hash_irrelevant_tokens([str(f) for f in magic_cpp_flags]),
-        "magic_cxx_flags": compiletools.apptools.filter_hash_irrelevant_tokens([str(f) for f in magic_cxx_flags]),
-        "extra_flags": list(extra_flags),
-        "source": source_path,
+        "CXXFLAGS_TOKENS": compiletools.apptools.canonicalize_for_cache_key(list(cxxflags_tokens), anchor_root),
+        "magic_cpp_flags": compiletools.apptools.canonicalize_for_cache_key(
+            compiletools.apptools.filter_hash_irrelevant_tokens([str(f) for f in magic_cpp_flags]),
+            anchor_root,
+        ),
+        "magic_cxx_flags": compiletools.apptools.canonicalize_for_cache_key(
+            compiletools.apptools.filter_hash_irrelevant_tokens([str(f) for f in magic_cxx_flags]),
+            anchor_root,
+        ),
+        "extra_flags": compiletools.apptools.canonicalize_for_cache_key(list(extra_flags), anchor_root),
+        "source": compiletools.apptools.canonicalize_path_for_cache_key(source_path, anchor_root),
         "transitive_content_hash": transitive_content_hash,
     }
     return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()[:16]
