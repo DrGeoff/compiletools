@@ -177,7 +177,10 @@ class MagicFlagsBase:
         cxxflags_tokens = compiletools.apptools.strip_d_u_tokens(self._args.flags.cxx)
         compiler_identity = self._args.flags.compiler_identity
 
-        # Create MacroState with core macros, empty variable macros
+        # Create MacroState with core macros, empty variable macros.
+        # anchor_root is the gitroot used to canonicalize -I/etc. tokens
+        # in the cache-key hash (decouples cache from absolute workspace
+        # path so identical TUs in /run-1/... and /run-2/... share entries).
         return MacroState(
             core_macros,
             {},
@@ -190,6 +193,7 @@ class MagicFlagsBase:
             cflags_tokens=cflags_tokens,
             cxxflags_tokens=cxxflags_tokens,
             compiler_identity=compiler_identity,
+            anchor_root=compiletools.git_utils.find_git_root(),
         )
 
     def get_final_macro_state_key(self, filename: str):
@@ -588,6 +592,7 @@ class MagicFlagsBase:
             cflags_tokens=effective_cflags_tokens,
             cxxflags_tokens=effective_cxxflags_tokens,
             compiler_identity=old_ms.compiler_identity,
+            anchor_root=old_ms.anchor_root,
         )
 
         return flagsforfilename
@@ -1200,6 +1205,7 @@ class CppMagicFlags(MagicFlagsBase):
             cflags_tokens=self._initial_macro_state.cflags_tokens,
             cxxflags_tokens=self._initial_macro_state.cxxflags_tokens,
             compiler_identity=self._initial_macro_state.compiler_identity,
+            anchor_root=self._initial_macro_state.anchor_root,
         )
 
     def _readfile(self, filename):

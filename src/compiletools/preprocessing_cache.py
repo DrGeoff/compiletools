@@ -122,6 +122,7 @@ class MacroState:
     cflags_tokens: Optional[list]  # Structured cflags tokens (-D/-U stripped)
     cxxflags_tokens: Optional[list]  # Structured cxxflags tokens (-D/-U stripped)
     compiler_identity: str  # Build context: compiler binary identity (realpath|size|mtime_ns)
+    anchor_root: str  # Build context: gitroot used to canonicalize -I paths in the hash
     _cache_key: Optional[MacroCacheKey]  # Cached frozenset for cache keys
     _hash: Optional[str]  # Cached hex digest for convergence detection (variable only)
     _hash_full: Optional[str]  # Cached hex digest including core + variable + build context
@@ -139,6 +140,7 @@ class MacroState:
         cflags_tokens: Optional[list] = None,
         cxxflags_tokens: Optional[list] = None,
         compiler_identity: str = "",
+        anchor_root: str = "",
     ):
         """Initialize macro state.
 
@@ -171,6 +173,7 @@ class MacroState:
         self.cflags_tokens = cflags_tokens
         self.cxxflags_tokens = cxxflags_tokens
         self.compiler_identity = compiler_identity
+        self.anchor_root = anchor_root
         self._cache_key = None  # Lazy-computed cache key
         self._hash = None  # Lazy-computed hash (variable only)
         self._hash_full = None  # Lazy-computed hash (core + variable + build context)
@@ -220,6 +223,7 @@ class MacroState:
             cflags_tokens=self.cflags_tokens,
             cxxflags_tokens=self.cxxflags_tokens,
             compiler_identity=self.compiler_identity,
+            anchor_root=self.anchor_root,
         )
 
         # Optimization: incrementally compute cache key when possible
@@ -252,6 +256,7 @@ class MacroState:
             cflags_tokens=self.cflags_tokens,
             cxxflags_tokens=self.cxxflags_tokens,
             compiler_identity=self.compiler_identity,
+            anchor_root=self.anchor_root,
         )
 
     # Dict-like interface for easy drop-in replacement
@@ -415,18 +420,28 @@ class MacroState:
         # themselves stay unfiltered -- only the hash sees the filtered view.
         # Deferred import: apptools transitively pulls in many modules and
         # preprocessing_cache is imported very early at startup.
-        from compiletools.apptools import filter_hash_irrelevant_tokens
+        from compiletools.apptools import (
+            canonicalize_for_cache_key,
+            filter_hash_irrelevant_tokens,
+        )
+
+        # Canonicalize path-bearing -I/-isystem/etc. tokens against the
+        # gitroot anchor before hashing. Decouples the cache key from the
+        # absolute workspace path so identical TUs in /run-1/... and
+        # /run-2/... share cache entries. Empty anchor is identity.
+        def _canon(toks):
+            return canonicalize_for_cache_key(filter_hash_irrelevant_tokens(toks), self.anchor_root)
 
         if self.cppflags_tokens is not None:
-            cppflags_part = "CPPFLAGS_TOKENS=" + "\x00".join(filter_hash_irrelevant_tokens(self.cppflags_tokens))
+            cppflags_part = "CPPFLAGS_TOKENS=" + "\x00".join(_canon(self.cppflags_tokens))
         else:
             cppflags_part = f"CPPFLAGS={self.cppflags}"
         if self.cflags_tokens is not None:
-            cflags_part = "CFLAGS_TOKENS=" + "\x00".join(filter_hash_irrelevant_tokens(self.cflags_tokens))
+            cflags_part = "CFLAGS_TOKENS=" + "\x00".join(_canon(self.cflags_tokens))
         else:
             cflags_part = f"CFLAGS={self.cflags}"
         if self.cxxflags_tokens is not None:
-            cxxflags_part = "CXXFLAGS_TOKENS=" + "\x00".join(filter_hash_irrelevant_tokens(self.cxxflags_tokens))
+            cxxflags_part = "CXXFLAGS_TOKENS=" + "\x00".join(_canon(self.cxxflags_tokens))
         else:
             cxxflags_part = f"CXXFLAGS={self.cxxflags}"
 
@@ -670,6 +685,7 @@ def get_or_compute_preprocessing(
         cflags_tokens=input_macros.cflags_tokens,
         cxxflags_tokens=input_macros.cxxflags_tokens,
         compiler_identity=input_macros.compiler_identity,
+        anchor_root=input_macros.anchor_root,
     )
 
     # Create result

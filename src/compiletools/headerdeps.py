@@ -9,6 +9,7 @@ import stringzilla as sz
 import compiletools.apptools
 import compiletools.compiler_macros
 import compiletools.file_analyzer
+import compiletools.git_utils
 import compiletools.preprocessor
 import compiletools.tree as tree
 import compiletools.utils
@@ -220,6 +221,11 @@ class DirectHeaderDeps(HeaderDepsBase):
             # Convert all keys and values to StringZilla.Str and place in core
             self._core_macros = {sz.Str(k): sz.Str(v) for k, v in raw_macros.items()}
 
+            # Cache gitroot once for the lifetime of this instance. Used as
+            # the anchor for canonicalizing -I paths in the cache-key hash
+            # so identical TUs share entries across workspace moves.
+            self._anchor_root = compiletools.git_utils.find_git_root()
+
         # Set includes and reset macro state (reuse cached core, use provided variable dict).
         # Deliberate non-propagation of cmdline_origin / *_tokens / compiler_identity:
         # this MacroState only feeds the headerdeps preprocessor walker via
@@ -236,6 +242,7 @@ class DirectHeaderDeps(HeaderDepsBase):
             compiler_path=getattr(self.args, "CXX", ""),
             cppflags=getattr(self.args, "CPPFLAGS", ""),
             compiler_identity="",
+            anchor_root=self._anchor_root,
         )
 
     @instance_cache
