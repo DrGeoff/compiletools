@@ -272,7 +272,14 @@ class Namer:
         )
 
     def compilation_database_pathname(self):
-        """Return the path for the compilation database, defaulting to git root"""
+        """Return the path for the compilation database.
+
+        If --compilation-database-output is set, honor it verbatim. Otherwise
+        write to <gitroot>/compile_commands.<variant>.json so different variants
+        keep their own DBs side-by-side; compilation_database_symlink_pathname()
+        names the bare <gitroot>/compile_commands.json that downstream tools
+        (clangd, clang-tidy, IDEs) actually open.
+        """
         if hasattr(self.args, "compilation_database_output") and self.args.compilation_database_output:
             # If user provided a path, use it (could be relative or absolute)
             if os.path.isabs(self.args.compilation_database_output):
@@ -281,9 +288,22 @@ class Namer:
                 # Relative path - resolve from current directory
                 return compiletools.wrappedos.realpath(self.args.compilation_database_output)
         else:
-            # Default to git root
             gitroot = compiletools.git_utils.find_git_root()
-            return os.path.join(gitroot, "compile_commands.json")
+            variant = getattr(self.args, "variant", None) or "unknown"
+            return os.path.join(gitroot, f"compile_commands.{variant}.json")
+
+    def compilation_database_symlink_pathname(self):
+        """Return the bare compile_commands.json path that should symlink to the
+        per-variant database, or None if the user overrode the output path.
+
+        Returning None signals the writer to skip symlink maintenance — the user
+        asked for an explicit literal path and we shouldn't surprise them by
+        also rewriting compile_commands.json under their feet.
+        """
+        if hasattr(self.args, "compilation_database_output") and self.args.compilation_database_output:
+            return None
+        gitroot = compiletools.git_utils.find_git_root()
+        return os.path.join(gitroot, "compile_commands.json")
 
     def all_executable_pathnames(self):
         """Use the filenames from the command line to determine the

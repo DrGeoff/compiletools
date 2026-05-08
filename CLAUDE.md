@@ -109,6 +109,10 @@ Once `apptools.parseargs` returns, the canonical view of compile flags lives on 
 
 Both invariants must be maintained in every code path that emits compile/link commands: the native-`flock` fastpaths in `wrap_compile_with_lock`/`wrap_link_with_lock` (used by Make and Ninja makefiles), and the in-Python `atomic_compile`/`atomic_link` callers (used by the Shake/Slurm backends via `trace_backend.py`). `trim_cache._safe_locked_rmtree` filters `*.lock`/`*.lock.excl` from both the lock list and its TOCTOU re-scan — sidecars created by its own lock acquisitions would otherwise be misread as peer build activity.
 
+### Variant-Aware Compilation Database
+
+`ct-cake` and `ct-compilation-database` write per-variant databases as `<gitroot>/compile_commands.<variant>.json` (e.g. `compile_commands.gcc.debug.json`) and atomically retarget a sibling `compile_commands.json` symlink at whichever variant most recently completed. The bare name is what clangd / clang-tidy / VSCode actually open — the [JSON CDB spec](https://clang.llvm.org/docs/JSONCompilationDatabase.html) allows multiple entries per source file, but consumers (clangd in particular) pick one and ignore the rest, so multi-variant must live in separate files plus a switcher. Symlink targets are written as a relative basename so the tree is portable across renames/copies. If the user passes `--compilation-database-output=<path>` the literal path is honored verbatim and no symlink is touched (preserves backward-compat for scripts that pin a specific filename). To switch the active variant for tooling, run a build with `--variant=<other>` (or `VARIANT=<other>`); the symlink follows the most recent build.
+
 ### Precompiled Header (PCH) Caching
 
 `compiletools` supports content-addressable PCH caching via `--cas-pchdir`. Headers marked with the `//#PCH=` magic flag are compiled into `.gch` files and cached in `{git_root}/cas-pchdir/{variant}` (or custom path via `--cas-pchdir`). The cache key includes compiler, flags, and header path, preventing collisions across builds. PCH files are atomically created and cross-user safe. Enable `--cas-pchdir` in `ct.conf.d/ct.conf` for automatic per-variant caching, or pass `--cas-pchdir=<path>` at the CLI. Each cache entry writes a sidecar `manifest.json` (header realpath + transitive-header content hashes); `ct-trim-cache --cas-pchdir-only` reads those manifests to bucket entries by real header (so cross-variant builds don't evict each other) and to pre-evict entries whose transitive headers have changed (avoiding the slow `cc1` PCH-stamp rejection at consume time). Falls back to legacy `.gch` placement in the object directory if `--cas-pchdir` is unset.
@@ -140,7 +144,7 @@ Both invariants must be maintained in every code path that emits compile/link co
 | `cmake_backend.py` | CMake backend |
 | `trace_backend.py` | Shake + Slurm backends (self-executing, verifying traces; both classes here) |
 | `tup_backend.py` | Tup backend |
-| `compilation_database.py` | `compile_commands.json` generation |
+| `compilation_database.py` | `compile_commands.<variant>.json` generation + `compile_commands.json` symlink |
 | `locking.py` | Cross-platform atomic file locking |
 | `stringzilla_utils.py` | SIMD text operation helpers |
 | `global_hash_registry.py` | Content-addressable file hashing |

@@ -196,6 +196,58 @@ class CompilationDatabaseCreator:
         with FileLock(output_file, self.args):
             self._write_database_impl(output_file, new_commands)
 
+        # After a successful per-variant write, retarget the bare
+        # compile_commands.json symlink that clangd / clang-tidy / IDEs open.
+        # Skipped when the user pinned an explicit --compilation-database-output.
+        symlink_path = self.namer.compilation_database_symlink_pathname()
+        if symlink_path is not None and symlink_path != output_file:
+            self._update_symlink(symlink_path, output_file)
+
+    def _update_symlink(self, symlink_path: str, target_path: str):
+        """Atomically point symlink_path at target_path using a relative target.
+
+        Relative targets keep the link valid if the tree is moved or rsync'd.
+        os.replace handles the symlink->symlink swap atomically; if a regular
+        file (or directory) is sitting at symlink_path from a pre-upgrade
+        install, we replace it — the file is regenerated on every build, so
+        no user data is lost.
+        """
+        link_dir = compiletools.wrappedos.dirname(symlink_path)
+        try:
+            relative_target = os.path.relpath(target_path, link_dir)
+        except ValueError:
+            # Different drives on Windows — fall back to absolute target.
+            relative_target = target_path
+
+        # Build a unique tmp name in the same directory so os.replace is atomic.
+        tmp_path = f"{symlink_path}.tmp.{os.getpid()}"
+        try:
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+            os.symlink(relative_target, tmp_path)
+            try:
+                os.replace(tmp_path, symlink_path)
+            except IsADirectoryError:
+                # symlink_path is a real directory we shouldn't clobber.
+                os.unlink(tmp_path)
+                if self.args.verbose:
+                    print(
+                        f"Warning: {symlink_path} is a directory; refusing to replace with symlink"
+                    )
+                return
+            if self.args.verbose:
+                print(f"Updated symlink {symlink_path} -> {relative_target}")
+        except OSError as e:
+            # Best-effort: filesystems without symlink support shouldn't break the build.
+            if self.args.verbose:
+                print(f"Warning: could not update symlink {symlink_path}: {e}")
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+
     def _write_database_impl(self, output_file: str, new_commands: list[dict[str, Any]]):
         """Implementation of database write (extracted for locking)
 

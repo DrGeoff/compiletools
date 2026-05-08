@@ -1038,3 +1038,127 @@ class TestConcurrentCompilationDatabase:
 
                 finally:
                     os.chdir(old_cwd)
+
+    @uth.requires_functional_compiler
+    def test_default_pathname_is_variant_qualified(self):
+        """Without --compilation-database-output, the file is compile_commands.<variant>.json
+        and a sibling compile_commands.json symlink points at it."""
+
+        with uth.TempDirContext():
+            samplesdir = uth.samplesdir()
+
+            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+                src = os.path.join(samplesdir, "simple/helloworld_cpp.cpp")
+
+                with uth.ParserContext():
+                    compiletools.compilation_database.main(
+                        ["--config=" + temp_config_name, "--variant=gcc.debug", src]
+                    )
+
+                cwd = os.getcwd()
+                variant_path = os.path.join(cwd, "compile_commands.gcc.debug.json")
+                symlink_path = os.path.join(cwd, "compile_commands.json")
+
+                assert os.path.exists(variant_path), (
+                    f"Expected variant-qualified DB at {variant_path}; "
+                    f"directory contains: {sorted(os.listdir(cwd))}"
+                )
+                assert os.path.islink(symlink_path), (
+                    f"Expected {symlink_path} to be a symlink"
+                )
+                # Symlink target must be relative for portability
+                target = os.readlink(symlink_path)
+                assert target == "compile_commands.gcc.debug.json", (
+                    f"Symlink target should be relative basename, got {target!r}"
+                )
+                # And it must point at a real file
+                assert os.path.realpath(symlink_path) == os.path.realpath(variant_path)
+
+    @uth.requires_functional_compiler
+    def test_symlink_repoints_on_subsequent_variant_build(self):
+        """Building variant A then variant B leaves the symlink pointing at B,
+        with both per-variant files preserved."""
+
+        with uth.TempDirContext():
+            samplesdir = uth.samplesdir()
+
+            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+                src = os.path.join(samplesdir, "simple/helloworld_cpp.cpp")
+
+                with uth.ParserContext():
+                    compiletools.compilation_database.main(
+                        ["--config=" + temp_config_name, "--variant=gcc.debug", src]
+                    )
+                with uth.ParserContext():
+                    compiletools.compilation_database.main(
+                        ["--config=" + temp_config_name, "--variant=clang.release", src]
+                    )
+
+                cwd = os.getcwd()
+                debug_path = os.path.join(cwd, "compile_commands.gcc.debug.json")
+                release_path = os.path.join(cwd, "compile_commands.clang.release.json")
+                symlink_path = os.path.join(cwd, "compile_commands.json")
+
+                # Both per-variant files survive
+                assert os.path.exists(debug_path)
+                assert os.path.exists(release_path)
+                # Symlink follows the most recent build
+                assert os.path.islink(symlink_path)
+                assert os.readlink(symlink_path) == "compile_commands.clang.release.json"
+
+    @uth.requires_functional_compiler
+    def test_explicit_output_path_skips_symlink(self):
+        """When the user supplies --compilation-database-output, no per-variant
+        renaming and no symlink update happens — the literal path is honored."""
+
+        with uth.TempDirContext():
+            samplesdir = uth.samplesdir()
+
+            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+                src = os.path.join(samplesdir, "simple/helloworld_cpp.cpp")
+                explicit = "explicit_output.json"
+
+                with uth.ParserContext():
+                    compiletools.compilation_database.main(
+                        [
+                            "--config=" + temp_config_name,
+                            "--variant=gcc.debug",
+                            "--compilation-database-output=" + explicit,
+                            src,
+                        ]
+                    )
+
+                cwd = os.getcwd()
+                # Explicit path got the data
+                assert os.path.exists(os.path.join(cwd, explicit))
+                # No variant-qualified file or symlink was created
+                assert not os.path.exists(os.path.join(cwd, "compile_commands.json"))
+                assert not os.path.exists(os.path.join(cwd, "compile_commands.gcc.debug.json"))
+
+    @uth.requires_functional_compiler
+    def test_symlink_replaces_pre_existing_regular_file(self):
+        """If compile_commands.json already exists as a regular file (e.g. from a
+        pre-upgrade install), we replace it with a symlink rather than appending
+        to it as if it were our merge target."""
+
+        with uth.TempDirContext():
+            samplesdir = uth.samplesdir()
+
+            cwd = os.getcwd()
+            stale_path = os.path.join(cwd, "compile_commands.json")
+            # Pre-existing regular file with garbage content
+            with open(stale_path, "w") as f:
+                f.write("[]")
+            assert not os.path.islink(stale_path)
+
+            with uth.TempConfigContext(tempdir=cwd) as temp_config_name:
+                src = os.path.join(samplesdir, "simple/helloworld_cpp.cpp")
+                with uth.ParserContext():
+                    compiletools.compilation_database.main(
+                        ["--config=" + temp_config_name, "--variant=gcc.debug", src]
+                    )
+
+                assert os.path.islink(stale_path), (
+                    "Pre-existing regular compile_commands.json must be replaced by a symlink"
+                )
+                assert os.readlink(stale_path) == "compile_commands.gcc.debug.json"
