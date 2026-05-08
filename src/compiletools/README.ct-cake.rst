@@ -216,6 +216,66 @@ to selectively clean aged PCH entries while preserving active builds. Without
 ``--cas-pchdir``, PCH files fall back to legacy ``.gch`` placement in the object
 directory.
 
+C++20 Modules Caching
+---------------------
+
+ct-cake supports content-addressable caching of C++20 module BMI artefacts
+(clang ``.pcm``, gcc ``.gcm``) at ``{git_root}/cas-pcmdir/{variant}/``. The
+layout mirrors ``cas-pchdir`` exactly: one ``{command_hash}/`` directory per
+unique compile configuration, holding the BMI plus a sidecar
+``manifest.json``. Caching is automatic when ct-cake detects ``import`` /
+``export module`` in your sources -- no opt-in flag required beyond
+``--cas-pcmdir`` (which defaults to the per-variant location above).
+
+Enable or override the cache location:
+
+* Default (no action needed): ``{git_root}/cas-pcmdir/{variant}/`` per
+  worktree.
+* Override per-build: ``--cas-pcmdir=/path/to/cache``.
+* Override in config: ``cas-pcmdir = ...`` in ``ct.conf.d/ct.conf``.
+
+Use ``ct-trim-cache --cas-pcmdir-only`` to clean aged module-cache
+entries; it understands the same bucket / max-age / transitive-staleness
+policy as the PCH trim path.
+
+Why single ``command_hash``, not the object cache's three-component path?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Object files use a three-component filename
+(``{basename}_{file_hash_12}_{dep_hash_14}_{macro_state_hash_16}.o``)
+because there is **no in-band verification of object content at link
+time**. The linker links whatever bytes the cache returns, so a hash
+collision could cause a silent miscompile. Three independent
+hashes -- 168 bits of entropy total -- make collisions statistically
+impossible.
+
+PCM and PCH BMIs are handled differently by the compiler. Both GCC and
+clang record the compile environment (compiler version, language
+standard, ABI flags, target triple, etc.) inside the BMI itself. At
+consume time, the compiler verifies the recorded environment against
+the consumer's environment and rejects on mismatch. This in-band
+verification means a hypothetical 64-bit ``command_hash`` collision
+degrades to a slow re-precompile (the compiler rejects the cached BMI,
+ct-cake's build re-runs the precompile rule), **never a miscompile**.
+PCH has used the single-``command_hash`` + manifest design from day
+one for this reason; PCM follows the same pattern.
+
+Per-compiler placement details
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* **clang** writes ``.pcm`` files directly to the cache path via
+  ``--precompile -o <pcm_path>``. Importers reference the cached path
+  via ``-fmodule-file=<name>=<pcm_path>``.
+* **gcc** is steered by a per-makefile mapper file
+  (``{dirname(makefilename)}/.module-mapper.txt``) generated each
+  build. Each line maps a module name -- or, for header units, the
+  resolved absolute system-header path -- to its cache path. gcc's
+  ``-fmodule-mapper`` flag is automatically injected into every gcc
+  compile command in the build. The per-makefile placement avoids a
+  race that ``{cas-objdir}/.module-mapper.txt`` would have when two
+  parallel ``ct-cake`` invocations target the same variant with
+  different module sets.
+
 Selective build and test
 ========================
 
@@ -434,6 +494,20 @@ Common Options
     Without this flag, PCH files fall back to legacy ``.gch`` placement in the
     object directory. Use ``ct-trim-cache --cas-pchdir-only`` to clean aged entries.
     Example: ``ct-cake --cas-pchdir=/shared/build/pch``
+
+**--cas-pcmdir PATH**
+    Use a content-addressable cache for C++20 module BMI artefacts
+    (clang ``.pcm``, gcc ``.gcm``). Auto-populated when ct-cake detects
+    ``import`` / ``export module`` in your sources. The cache key
+    bundles compiler identity, hash-relevant flags, source content,
+    and transitive header content into one ``command_hash``. Safety
+    against the rare hash-collision case is provided by the
+    compiler's BMI verification at consume time -- a collision would
+    cause a slow re-precompile, never a miscompile (see the "C++20
+    Modules Caching" section above for the full design rationale).
+    Default: ``{git_root}/cas-pcmdir/{variant}``. Use
+    ``ct-trim-cache --cas-pcmdir-only`` to clean aged entries.
+    Example: ``ct-cake --cas-pcmdir=/shared/build/pcm``
 
 **--prepend-PKG-CONFIG-PATH PATH**
     Prepend PATH to ``PKG_CONFIG_PATH`` before any pkg-config invocation.

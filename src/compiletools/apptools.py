@@ -1067,8 +1067,15 @@ def find_system_std_module_source(cxx: str | None, kind: str) -> str | None:
         # Walk up to <install root> = .../bin/.., then look for include/c++/<ver>/bits/std.cc
         # The version is the same as the install_dir's last directory.
         version = os.path.basename(install_dir.rstrip(os.sep))
-        # Normalize the install root (drop the .../lib/gcc/<triple>/<ver>/ tail)
-        # by going up four levels and resolving symlinks/.. in one shot.
+        # Normalize the install root (drop the .../lib/gcc/<triple>/<ver>/
+        # tail) by going up four levels and resolving symlinks/.. in
+        # one shot. The four-level count assumes the canonical
+        # ``<root>/lib/gcc/<triple>/<version>/`` layout reported by
+        # ``-print-search-dirs``; if a distro symlinks ``bin/g++``
+        # somewhere unconventional and ``-print-search-dirs`` returns
+        # a non-canonical install path, the candidate file won't exist
+        # and we return None (graceful: caller falls back to no-cache
+        # behaviour).
         gcc_root = os.path.realpath(os.path.join(install_dir, "..", "..", "..", ".."))
         candidate = os.path.join(gcc_root, "include", "c++", version, "bits", "std.cc")
         return candidate if os.path.isfile(candidate) else None

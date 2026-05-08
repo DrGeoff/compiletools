@@ -3,25 +3,26 @@ ct-trim-cache
 ================
 
 -------------------------------------------------------------------------
-Trim stale entries from the object CAS and PCH CAS
+Trim stale entries from the object, PCH, and PCM CAS directories
 -------------------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
-:Date:   2026-04-21
+:Date:   2026-05-08
 :Version: 9.0.0
 :Manual section: 1
 :Manual group: developers
 
 SYNOPSIS
 ========
-ct-trim-cache [--dry-run] [--cas-objdir PATH] [--cas-pchdir PATH] [--max-age DAYS] [--keep-count N] [-v]
+ct-trim-cache [--dry-run] [--cas-objdir PATH] [--cas-pchdir PATH] [--cas-pcmdir PATH] [--max-age DAYS] [--keep-count N] [-v]
 
 DESCRIPTION
 ===========
-Trim stale content-addressable entries from ``cas-objdir`` (compiled object
-files) and ``cas-pchdir`` (precompiled headers).  The tool identifies
-which entries still match the current git working tree and removes the oldest
-non-current entries while preserving a configurable safety margin.
+Trim stale content-addressable entries from ``cas-objdir`` (compiled
+object files), ``cas-pchdir`` (precompiled headers), and ``cas-pcmdir``
+(C++20 module BMIs). The tool identifies which entries still match the
+current git working tree and removes the oldest non-current entries
+while preserving a configurable safety margin.
 
 Object files use the naming scheme
 ``{basename}_{file_hash}_{dep_hash}_{macro_state_hash}.o``.  The embedded
@@ -42,10 +43,34 @@ header.  The trim policy uses the manifest to:
   ``.gch`` was built, so users do not pay the slow ``cc1`` PCH-stamp
   rejection at consume time.
 
+PCM directories use the same shape as PCH:
+``{command_hash}/{name}.{pcm,gcm}`` plus a sidecar ``manifest.json``.
+Each ``{command_hash}/`` is one unique compile configuration. The
+manifest records ``bucket_key`` (the source realpath for named modules,
+or the verbatim ``<vector>`` / ``"foo.h"`` token for header units),
+``stage`` (``clang_module_interface`` / ``gcc_module_interface`` /
+``clang_header_unit`` / ``gcc_header_unit``), and ``transitive_hashes``
+for the same staleness pre-eviction the PCH path uses. Bucketing by
+``bucket_key`` ensures cross-variant or cross-project builds with the
+same module name (or the same imported system header) don't evict each
+other.
+
 Legacy entries without a manifest fall back to the previous global
 ranking by mtime, keeping the rollout backwards-compatible.  If
 ``--max-age`` is set, anything within the cutoff is kept regardless of
 bucket.
+
+Why does PCM use a single ``command_hash`` like PCH instead of the
+object cache's three-component path? **In-band BMI verification.** Both
+GCC and clang record the compile environment inside the BMI itself and
+verify it at consume time, rejecting any mismatch. A hypothetical 64-bit
+``command_hash`` collision therefore causes a slow re-precompile, not a
+silent miscompile. Object files have no such safety net (the linker
+links whatever bytes it gets), so they need the additional path entropy
+of three independent hashes (168 bits total) to make collisions
+statistically impossible. PCH and PCM rely on the compiler's
+verification and use the simpler single-hash + manifest design. See the
+"C++20 Modules Caching" section of ``ct-cake`` for the full rationale.
 
 Concurrent builds
 -----------------
@@ -85,8 +110,12 @@ USAGE
     # Only trim PCH cache, skip objects
     ct-trim-cache --cas-pchdir-only
 
+    # Only trim PCM (C++20 module BMI) cache, skip objects and PCH
+    ct-trim-cache --cas-pcmdir-only
+
     # Custom directories
-    ct-trim-cache --cas-objdir=/shared/build/objects --cas-pchdir=/shared/build/pch
+    ct-trim-cache --cas-objdir=/shared/build/objects --cas-pchdir=/shared/build/pch \
+                  --cas-pcmdir=/shared/build/pcm
 
 HOW IT WORKS
 ============
@@ -127,6 +156,27 @@ PCH directory trimming
 5. Removes (or reports in ``--dry-run`` mode) every cmd_hash directory
    not in the kept set.
 
+PCM directory trimming
+----------------------
+Identical algorithm to PCH trimming, with one bucketing twist:
+
+1. Scans ``cas-pcmdir`` for subdirectories matching the 16-character
+   hex command-hash pattern. Each directory holds a ``.pcm`` (clang) or
+   ``.gcm`` (gcc) file plus a sidecar ``manifest.json``.
+2. Reads each manifest and groups directories by ``bucket_key``: the
+   source realpath for named-module entries, the verbatim ``<vector>``
+   or ``"foo.h"`` token for header-unit entries. Stage marker
+   (``clang_module_interface`` / ``gcc_module_interface`` /
+   ``clang_header_unit`` / ``gcc_header_unit``) prevents same-named
+   modules and header units from sharing a bucket.
+3. Within each bucket, applies the same ``--keep-count`` /
+   ``--max-age`` policy as the PCH path.
+4. **Pre-evicts** entries whose recorded transitive header content no
+   longer matches the on-disk content. Same git-blob-SHA1 algorithm as
+   the PCH check.
+5. Removes (or reports in ``--dry-run`` mode) every cmd_hash directory
+   not in the kept set.
+
 OPTIONS
 =======
 
@@ -145,10 +195,13 @@ Trim Options
     invariant still preserves at least one file per basename).
 
 ``--cas-objdir-only``
-    Only trim the object CAS, skip PCH trimming.
+    Only trim the object CAS, skip PCH and PCM trimming.
 
 ``--cas-pchdir-only``
-    Only trim the PCH CAS, skip object trimming.
+    Only trim the PCH CAS, skip object and PCM trimming.
+
+``--cas-pcmdir-only``
+    Only trim the PCM CAS, skip object and PCH trimming.
 
 Directory Options
 -----------------
@@ -159,6 +212,10 @@ Directory Options
 ``--cas-pchdir PATH``
     Override PCH directory from configuration
     (default: ``{git_root}/cas-pchdir/{variant}``).
+
+``--cas-pcmdir PATH``
+    Override PCM directory from configuration
+    (default: ``{git_root}/cas-pcmdir/{variant}``).
 
 ``--bindir PATH``
     Output directory for executables (default: ``bin/{variant}``).
@@ -190,7 +247,9 @@ EXIT CODES
     Success -- all targeted files removed (or none to remove).
 1
     Failure -- some files could not be removed (check permissions),
-    or ``--cas-objdir-only`` and ``--cas-pchdir-only`` both specified.
+    or more than one of ``--cas-objdir-only`` / ``--cas-pchdir-only``
+    / ``--cas-pcmdir-only`` was specified (they are mutually
+    exclusive).
 
 EXAMPLES
 ========

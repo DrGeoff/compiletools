@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -134,12 +135,29 @@ class Hunter:
         own_module = self._own_module_name(result)
         registry = self._module_interface_registry()
         impl_registry = self._module_implementation_registry()
+        # Multiple files exporting the same module name is tolerated at
+        # registry-build time (warning only, see docstring on
+        # ``_module_interface_registry``). Hard-fail HERE -- when an
+        # importer actually depends on a name with multiple exporters --
+        # so the diagnostic carries the importer's path and the user
+        # gets actionable context. Without this gate a stale duplicate
+        # in an unrelated subtree could silently be picked up.
+        conflicts = getattr(self, "_module_export_conflicts", {})
         out: list[str] = []
         seen: set[str] = set()
         for raw_name in result.module_imports:
             resolved = self._resolve_module_import(raw_name, own_module)
             if resolved is None:
                 continue
+            if resolved in conflicts:
+                paths = conflicts[resolved]
+                raise ValueError(
+                    f"Duplicate `export module {resolved};` declaration "
+                    f"reached by `import {raw_name};` in {realpath}: "
+                    f"candidates are {', '.join(repr(p) for p in paths)}. "
+                    "A module name must have exactly one interface unit "
+                    "in any single build's source set."
+                )
             iface = registry.get(resolved)
             if iface is not None and iface != realpath and iface not in seen:
                 out.append(iface)
@@ -243,6 +261,18 @@ class Hunter:
         # second pass over the tree.
         impl_registry: dict[str, list[str]] = {}
 
+        # All exporters per module name. The registry exposed below
+        # picks one (lexicographically-first path) but we keep the
+        # full list for the duplicate-detection warning below. Two
+        # unrelated subtrees in a monorepo can legitimately both
+        # export ``module math`` -- the duplicate matters only when
+        # both are pulled into the SAME build's source set, and at
+        # that point the lookup-time disambiguation in
+        # ``_module_interface_sources_for`` will surface the issue
+        # against an importer we can name. Failing eagerly here would
+        # break otherwise-fine builds in monorepos with sample trees.
+        all_exporters: dict[str, list[str]] = {}
+
         def consider(filepath: str, content_hash: str) -> None:
             if not compiletools.utils.is_source(filepath):
                 return
@@ -251,25 +281,24 @@ class Hunter:
             except (FileNotFoundError, RuntimeError):
                 return
             for name in result.module_exports:
-                prior = registry.get(name)
-                if prior is not None and prior != filepath:
-                    raise ValueError(
-                        f"Duplicate `export module {name};` declaration: "
-                        f"both {prior} and {filepath} export module '{name}'. "
-                        f"A module name must have exactly one interface unit."
-                    )
-                registry[name] = filepath
+                exporters = all_exporters.setdefault(name, [])
+                if filepath not in exporters:
+                    exporters.append(filepath)
             for name in result.module_implements:
                 impls = impl_registry.setdefault(name, [])
                 if filepath not in impls:
                     impls.append(filepath)
 
-        # Always seed from the tracked-files registry (the git-fast-path),
-        # then ALSO walk include dirs to catch source files that haven't yet
-        # been registered. The `tracked` dict grows lazily as files are
-        # analysed, so a `if tracked: skip walk` shortcut is unsafe -- in a
-        # non-git tree, tracked might be {single-file} after one prior
-        # analyse, which would make us miss every other .cppm in the dir.
+        # Seed from the tracked-files registry (git-fast-path), then
+        # walk any user-specified ``--include`` directories to pick up
+        # sources outside the registry. The cwd fallback (walking ``.``
+        # when no include dirs are set) is gated on ``tracked`` being
+        # empty: in a git tree we trust the registry; in a non-git tree
+        # (the test-fixture case) we fall back to walking cwd so a build
+        # without ``--include`` can still discover module sources.
+        # Include dirs are walked unconditionally because they may point
+        # outside the git tree (e.g., a tmp_path test fixture, or an
+        # external code drop).
         tracked = get_tracked_files(self.context)
         seen_files: set[str] = set()
         for filepath, content_hash in tracked.items():
@@ -283,7 +312,12 @@ class Hunter:
         for inc in include_dirs:
             if isinstance(inc, str) and os.path.isdir(inc):
                 roots.append(compiletools.wrappedos.realpath(inc))
-        if not roots:
+        # ``.`` is the last-resort fallback for non-git builds with no
+        # ``--include``. Skip it when the git registry already has
+        # something to say -- avoids walking the entire cwd subtree
+        # (which can be a monorepo) for a module discovery that the
+        # registry already covers.
+        if not roots and not tracked:
             roots.append(compiletools.wrappedos.realpath("."))
         seen_roots: set[str] = set()
         for root in roots:
@@ -301,6 +335,34 @@ class Hunter:
                         continue
                     consider(full, content_hash)
                     seen_files.add(full)
+
+        # Collapse the multi-exporter map to a single registered path
+        # per name, picking the lexicographically-first path for
+        # determinism. Warn on collisions at verbose >= 1 -- a real
+        # build-time conflict is surfaced by the importer compile
+        # failing against an ambiguously-resolved module, which gives
+        # the user actionable file-line context that an eager error
+        # here couldn't.
+        verbose = getattr(self.args, "verbose", 0)
+        for name, paths in all_exporters.items():
+            paths.sort()
+            registry[name] = paths[0]
+            if len(paths) > 1 and verbose >= 1:
+                others = ", ".join(paths[1:])
+                print(
+                    f"WARNING: module '{name}' is exported by multiple files; "
+                    f"using {paths[0]!r} (also seen at: {others}). "
+                    "Disambiguate by giving each module a distinct name or "
+                    "ensure only one of these files is in your build's "
+                    "source set.",
+                    file=sys.stderr,
+                )
+        # Stash the full multi-exporter map so a build that actually
+        # ends up needing a duplicated name can raise with full
+        # context (see ``_check_module_conflicts_for``).
+        self._module_export_conflicts: dict[str, list[str]] = {
+            name: paths for name, paths in all_exporters.items() if len(paths) > 1
+        }
 
         # System-provided modules: if no user file exports the standard
         # library module, fall back to the compiler's shipped source so
@@ -440,16 +502,18 @@ class Hunter:
         # Clear the lazily-built CmdlineMacroIndex so it picks up any
         # subsequent change to magicparser._initial_macro_state.cmdline_origin
         # (e.g. when args are reparsed mid-test).
-        if hasattr(self, "_cmdline_macro_index_cached"):
-            del self._cmdline_macro_index_cached
-        # Drop the cached module-name -> interface-file registry so a
-        # subsequent reparse picks up new/removed .cppm files.
-        if hasattr(self, "_module_iface_registry_cached"):
-            del self._module_iface_registry_cached
-        if hasattr(self, "_module_impl_registry_cached"):
-            del self._module_impl_registry_cached
-        if hasattr(self, "_system_modules_cached"):
-            del self._system_modules_cached
+        # Drop dynamically-set caches with ``__dict__.pop`` so the
+        # call-site is one line each and absent-key isn't an error.
+        for attr in (
+            "_cmdline_macro_index_cached",
+            # Modules state -- dropped so a subsequent reparse picks up
+            # new/removed .cppm files and re-evaluates conflicts.
+            "_module_iface_registry_cached",
+            "_module_impl_registry_cached",
+            "_system_modules_cached",
+            "_module_export_conflicts",
+        ):
+            self.__dict__.pop(attr, None)
 
     @instance_cache
     def _parse_magic(self, filename):

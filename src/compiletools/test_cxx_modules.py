@@ -21,7 +21,8 @@ import compiletools.testhelper as uth
 class TestExtractModuleDeclarations:
     """Test _extract_module_declarations on hand-crafted source strings."""
 
-    def _run(self, source: str):
+    def _classify(self, source: str):
+        """Run ``_extract_module_declarations`` on a source-text snippet."""
         from compiletools.file_analyzer import (
             _compute_line_byte_offsets,
             _extract_module_declarations,
@@ -33,60 +34,60 @@ class TestExtractModuleDeclarations:
 
     def test_export_module_declares_interface(self):
         source = "export module math;\nexport int add(int, int);\n"
-        result = self._run(source)
+        result = self._classify(source)
         assert result["export_module"] == ["math"]
         assert result["module"] == []
         assert result["import"] == []
 
     def test_module_declares_implementation_unit(self):
         source = "module math;\nint add(int a, int b) { return a + b; }\n"
-        result = self._run(source)
+        result = self._classify(source)
         assert result["export_module"] == []
         assert result["module"] == ["math"]
         assert result["import"] == []
 
     def test_import_collected(self):
         source = "import math;\nimport util;\nint main() { return 0; }\n"
-        result = self._run(source)
+        result = self._classify(source)
         assert result["export_module"] == []
         assert result["module"] == []
         assert result["import"] == ["math", "util"]
 
     def test_dotted_module_name(self):
         source = "export module my.lib.math;\n"
-        result = self._run(source)
+        result = self._classify(source)
         assert result["export_module"] == ["my.lib.math"]
 
     def test_global_module_fragment_opener_ignored(self):
         # `module;` with no name opens a global module fragment - it is NOT a
         # module-name declaration and must not be reported as one.
         source = "module;\n#include <vector>\nexport module m;\n"
-        result = self._run(source)
+        result = self._classify(source)
         assert result["module"] == []
         assert result["export_module"] == ["m"]
 
     def test_line_comments_ignored(self):
         source = "// export module fake;\n// import bogus;\nexport module real;\n"
-        result = self._run(source)
+        result = self._classify(source)
         assert result["export_module"] == ["real"]
         assert result["import"] == []
 
     def test_block_comments_ignored(self):
         source = "/* export module fake;\n   import bogus; */\nexport module real;\n"
-        result = self._run(source)
+        result = self._classify(source)
         assert result["export_module"] == ["real"]
         assert result["import"] == []
 
     def test_string_literal_ignored(self):
         source = 'const char* s = "export module fake;";\nimport real;\n'
-        result = self._run(source)
+        result = self._classify(source)
         assert result["export_module"] == []
         assert result["import"] == ["real"]
 
     def test_partition_export_recorded(self):
         # Phase 3: `export module M:P;` is an interface partition unit.
         source = "export module math:basic;\nexport int add(int,int);\n"
-        result = self._run(source)
+        result = self._classify(source)
         assert result["export_module"] == ["math:basic"]
         assert result["module"] == []
         assert result["import"] == []
@@ -94,7 +95,7 @@ class TestExtractModuleDeclarations:
     def test_partition_implementation_recorded(self):
         # `module M:P;` is a partition implementation unit.
         source = "module math:basic;\nint add(int a, int b) { return a + b; }\n"
-        result = self._run(source)
+        result = self._classify(source)
         assert result["module"] == ["math:basic"]
         assert result["export_module"] == []
 
@@ -104,14 +105,14 @@ class TestExtractModuleDeclarations:
         # consumer (Hunter) is responsible for resolving it against the
         # importer's own module.
         source = "export module math;\nimport :basic;\nimport :advanced;\n"
-        result = self._run(source)
+        result = self._classify(source)
         assert result["export_module"] == ["math"]
         assert result["import"] == [":basic", ":advanced"]
 
     def test_partition_qualified_import_recorded(self):
         # `import M:P;` is the fully-qualified form, also legal.
         source = "module math;\nimport math:basic;\n"
-        result = self._run(source)
+        result = self._classify(source)
         assert result["module"] == ["math"]
         assert result["import"] == ["math:basic"]
 
@@ -119,7 +120,7 @@ class TestExtractModuleDeclarations:
         # Primary interface units commonly do `export import :P;` so
         # downstream `import math;` sees the partition's exports too.
         source = "export module math;\nexport import :basic;\n"
-        result = self._run(source)
+        result = self._classify(source)
         assert result["export_module"] == ["math"]
         assert result["import"] == [":basic"]
 
@@ -129,7 +130,7 @@ class TestExtractModuleDeclarations:
         # can re-emit it on the precompile / -fmodule-file= flags. They
         # are stored separately from named-module imports.
         source = 'import <vector>;\nimport "x.h";\nimport math;\n'
-        result = self._run(source)
+        result = self._classify(source)
         assert result["import"] == ["math"]
         assert result["header_import"] == ["<vector>", '"x.h"']
 
@@ -293,8 +294,17 @@ class TestHunterModuleGraph:
         names = {os.path.basename(s) for s in sources}
         assert "math-basic.cppm" in names, f"partition not pulled in: {sources}"
 
-    def test_duplicate_module_exporters_raises(self, tmp_path, monkeypatch):
-        """Two files exporting the same module name is a hard error."""
+    def test_duplicate_module_exporters_when_imported_raises(self, tmp_path, monkeypatch):
+        """Two files exporting the same module name raises at LOOKUP time
+        (when an importer actually depends on that name).
+
+        Registry-build-time tolerance lets a monorepo with multiple
+        unrelated subtrees coexist (e.g. compiletools' own samples
+        directory). A real conflict is surfaced when an importer
+        references the ambiguous name -- the diagnostic carries the
+        importer's path and the candidate sources, which is more
+        useful than an eager error at registry build.
+        """
         (tmp_path / "math.cppm").write_text("export module math;\nexport int x();\n")
         (tmp_path / "math2.cppm").write_text("export module math;\nexport int y();\n")
         (tmp_path / "main.cpp").write_text(
@@ -303,8 +313,61 @@ class TestHunterModuleGraph:
         monkeypatch.chdir(tmp_path)
 
         hunter, _ = self._make_hunter(tmp_path)
-        with pytest.raises(Exception, match=r"(?i)duplicate.*module|module.*math.*exported"):
+        with pytest.raises(Exception, match=r"(?i)duplicate.*module"):
             hunter.required_source_files(str(tmp_path / "main.cpp"))
+
+    def test_repo_samples_with_shared_module_names_do_not_conflict(self, tmp_path, monkeypatch):
+        """compiletools' own samples have THREE files exporting `module
+        math` (cxx_modules/, cxx_modules_split/, cxx_modules_partitions/).
+        The registry must tolerate this -- only an actual importer
+        whose dep walk reaches multiple exporters should raise.
+
+        This guards against the registry-build-time strictness regression
+        that earlier development hit when ``trim_pchdir``-style scans
+        unconditionally raised on any duplicate.
+        """
+        # Build a Hunter pointed at the real repo's samples dir.
+        samples = uth.samplesdir()
+        # Use a TU under cxx_modules/ that imports `math` -- this forces
+        # the lookup. The bundled sample's math.cppm IS the unique
+        # exporter reachable from this importer's project subtree, but
+        # the registry will see all three sample dirs' math.cppm. The
+        # current implementation picks the lex-first path; functionally,
+        # the test demonstrates the registry build itself does not
+        # raise, which is the regression we're guarding against.
+        hunter, _ = self._make_hunter(samples)
+        # Force registry build to verify no exception.
+        hunter._module_interface_registry()
+        # The full multi-exporter map should record `math` as
+        # multiply-defined, available for a downstream importer's
+        # use-time check.
+        conflicts = getattr(hunter, "_module_export_conflicts", {})
+        assert "math" in conflicts, (
+            f"expected 'math' in _module_export_conflicts (samples have "
+            f"three math.cppm files); got {list(conflicts)}"
+        )
+        assert len(conflicts["math"]) >= 3, (
+            f"expected at least 3 exporters of 'math' in samples; "
+            f"got {conflicts['math']}"
+        )
+
+    def test_duplicate_module_exporters_when_unimported_is_tolerated(self, tmp_path, monkeypatch):
+        """Two files exporting the same module name DON'T raise when no
+        importer references that name. Lets unrelated subtrees in a
+        monorepo coexist (e.g. test sample directories that all happen
+        to define `module math`)."""
+        (tmp_path / "math.cppm").write_text("export module math;\nexport int x();\n")
+        (tmp_path / "math2.cppm").write_text("export module math;\nexport int y();\n")
+        # main.cpp does NOT import math.
+        (tmp_path / "main.cpp").write_text(
+            "// ct-exemarker\nint main(){return 0;}\n"
+        )
+        monkeypatch.chdir(tmp_path)
+
+        hunter, _ = self._make_hunter(tmp_path)
+        # Should succeed without raising.
+        sources = hunter.required_source_files(str(tmp_path / "main.cpp"))
+        assert "main.cpp" in os.path.basename(sources[0])
 
 
 # ---------------------------------------------------------------------------
@@ -313,29 +376,29 @@ class TestHunterModuleGraph:
 # ---------------------------------------------------------------------------
 
 
-# Per-compiler module-support probe cache. Key is (compiler_path, kind).
-_modules_probe_cache: dict[tuple[str, str], bool] = {}
-
-
 def _which(name: str) -> str | None:
     """Locate `name` on PATH, or return None if not present."""
     import shutil as _shutil
     return _shutil.which(name)
 
 
+import functools  # noqa: E402
+
+
+@functools.lru_cache(maxsize=16)
 def _probe_modules_support(cxx: str | None, kind: str) -> bool:
     """Probe whether ``cxx`` accepts the right C++20 module flags for ``kind``.
 
     ``kind`` is one of ``"gcc"`` or ``"clang"`` and selects the flag set
-    handed to the probe compiler. Returns False (and caches False) when
-    ``cxx`` is missing or rejects the probe TU.
+    handed to the probe compiler. Returns False when ``cxx`` is missing
+    or rejects the probe TU. ``lru_cache`` is keyed on the pair so the
+    same compiler is only probed once per session; passing
+    ``functools.lru_cache`` rather than a module-level dict makes the
+    "this is a cache" intent explicit and gives the standard
+    ``cache_clear()`` escape hatch should a test need to force a re-probe.
     """
     if not cxx:
         return False
-    key = (cxx, kind)
-    cached = _modules_probe_cache.get(key)
-    if cached is not None:
-        return cached
     with tempfile.TemporaryDirectory() as td:
         src = os.path.join(td, "probe.cppm")
         with open(src, "w") as f:
@@ -351,10 +414,8 @@ def _probe_modules_support(cxx: str | None, kind: str) -> bool:
         try:
             r = subprocess.run(cmd, capture_output=True, cwd=td, timeout=30)
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            _modules_probe_cache[key] = False
             return False
-    _modules_probe_cache[key] = (r.returncode == 0)
-    return _modules_probe_cache[key]
+    return r.returncode == 0
 
 
 def _detected_gcc_supports_modules() -> bool:
@@ -573,8 +634,12 @@ def _gcc_supports_import_std() -> bool:
         return False
     with tempfile.TemporaryDirectory() as td:
         try:
+            # Match the sample's standard (-std=c++23 -- the floor for
+            # std::println, which the sample uses). A compiler that
+            # accepts the standard module source under c++23 will also
+            # accept the sample, so probe and sample stay aligned.
             r = subprocess.run(
-                [cxx, "-std=c++26", "-fmodules", "-c", src, "-o", os.path.join(td, "std.o")],
+                [cxx, "-std=c++23", "-fmodules", "-c", src, "-o", os.path.join(td, "std.o")],
                 capture_output=True, cwd=td, timeout=120,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -594,7 +659,7 @@ def _clang_supports_import_std() -> bool:
     with tempfile.TemporaryDirectory() as td:
         try:
             r = subprocess.run(
-                [cxx, "-std=c++26", "-stdlib=libc++",
+                [cxx, "-std=c++23", "-stdlib=libc++",
                  "-Wno-reserved-module-identifier",
                  "--precompile", src, "-o", os.path.join(td, "std.pcm")],
                 capture_output=True, cwd=td, timeout=120,
@@ -644,8 +709,10 @@ def _gcc_supports_header_units() -> bool:
         return False
     with tempfile.TemporaryDirectory() as td:
         try:
+            # Match the sample standard (header units are a C++20
+            # feature; the sample's ct.conf pins -std=c++20).
             r = subprocess.run(
-                [cxx, "-std=c++26", "-fmodules", "-c", "-x", "c++-system-header", "vector"],
+                [cxx, "-std=c++20", "-fmodules", "-c", "-x", "c++-system-header", "vector"],
                 capture_output=True, cwd=td, timeout=60,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -661,7 +728,7 @@ def _clang_supports_header_units() -> bool:
     with tempfile.TemporaryDirectory() as td:
         try:
             r = subprocess.run(
-                [cxx, "-std=c++26", "-stdlib=libc++", "-xc++-system-header",
+                [cxx, "-std=c++20", "-stdlib=libc++", "-xc++-system-header",
                  "--precompile", "vector", "-o", os.path.join(td, "vector.pcm")],
                 capture_output=True, cwd=td, timeout=60,
             )
@@ -804,6 +871,68 @@ def test_cas_pcmdir_clang_pcm_survives_rebuild(tmp_path, monkeypatch):
     assert exe.exists()
     run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
     assert "add(2,3)=5" in run.stdout
+
+
+@requires_cxx_modules
+def test_gcc_mapper_records_partition_names_with_colon(tmp_path, monkeypatch):
+    """The gcc -fmodule-mapper file maps module names verbatim, so
+    partition names containing ``:`` (e.g. ``math:basic``) must appear
+    unescaped in the mapper file -- gcc keys the lookup off the literal
+    name. The .gcm filename on disk uses the ``^^`` escape (make-target
+    safety) but the mapper key does NOT.
+
+    Regression: an earlier draft applied the ``^^`` escape on both
+    sides, which broke gcc's lookup for partitions.
+    """
+    import shutil
+
+    import compiletools.apptools
+    cxx = compiletools.apptools.get_functional_cxx_compiler()
+    if not cxx or "g++" not in os.path.basename(cxx):
+        pytest.skip("no g++ on PATH")
+
+    sample_src = os.path.join(uth.samplesdir(), "cxx_modules_partitions")
+    workdir = tmp_path / "cxx_modules_partitions"
+    shutil.copytree(sample_src, workdir)
+    subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
+    monkeypatch.chdir(workdir)
+
+    env = os.environ.copy()
+    env["CXX"] = cxx
+    env["CPP"] = cxx
+    r = subprocess.run(
+        ["ct-cake", "--auto"],
+        capture_output=True, text=True, cwd=workdir, timeout=180, env=env,
+    )
+    assert r.returncode == 0, f"build failed:\n{r.stdout}\n{r.stderr}"
+
+    # The mapper now lives next to the makefile (was cas-objdir before
+    # Phase 9 race fix). Find it under bin/<variant>/.
+    mapper_candidates = list(workdir.glob("bin/*/.module-mapper.txt"))
+    assert mapper_candidates, (
+        f"no .module-mapper.txt under bin/; "
+        f"contents: {sorted(workdir.rglob('.module-mapper.txt'))}"
+    )
+    mapper = mapper_candidates[0]
+    content = mapper.read_text()
+    # Each line is "<module-name> <gcm-path>". Partition names use ':'.
+    partition_lines = [ln for ln in content.splitlines() if "math:" in ln]
+    assert partition_lines, (
+        f"no partition entries (math:basic / math:advanced) in mapper:\n{content}"
+    )
+    for line in partition_lines:
+        name = line.split()[0]
+        assert ":" in name, (
+            f"partition name in mapper key lost its colon: {line!r}"
+        )
+        # The on-disk .gcm path uses the ^^ escape.
+        path = line.split(None, 1)[1]
+        if "math:" in name:
+            stem = name.replace(":", "^^")
+            assert stem in path, (
+                f"path {path!r} should reference escaped stem {stem!r} "
+                f"for mapper line {line!r}"
+            )
 
 
 @requires_cxx_modules

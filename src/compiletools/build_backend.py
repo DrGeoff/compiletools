@@ -293,6 +293,20 @@ class BuildBackend(abc.ABC):
         self.namer = compiletools.namer.Namer(args, context=self.context)
         self._graph: BuildGraph | None = None
         self._dynamic_sources: set[str] = set()
+        # C++20 modules state. Set here so every read site can use
+        # plain attribute access; ``_create_compile_rules`` populates
+        # them with their final values per build. Defensive ``getattr``
+        # at read sites is no longer needed.
+        self._module_compiler_kind: str | None = None
+        self._module_pcm_cache_root: str | None = None
+        self._module_pcm_dir: str | None = None
+        self._module_iface_obj: dict[str, str] = {}
+        self._module_iface_pcm: dict[str, str] = {}
+        self._module_iface_gcm: dict[str, str] = {}
+        self._header_unit_artefact: dict[str, str] = {}
+        self._gcc_module_mapper_path: str | None = None
+        self._gcc_header_unit_resolved: dict[str, str] = {}
+        self._build_imports_std_cached: bool | None = None
 
     @property
     def _timer(self):
@@ -621,11 +635,28 @@ class BuildBackend(abc.ABC):
         # reference it before the file is materialised. The file itself
         # is written at the end of the modules pre-pass once every
         # mapper entry is known.
-        self._gcc_module_mapper_path = (
-            os.path.join(self.args.cas_objdir, ".module-mapper.txt")
-            if compiler_kind == "gcc" and self._module_pcm_cache_root
-            else None
-        )
+        # Place the mapper next to the makefile rather than under
+        # cas-objdir. cas-objdir is shared across every build that
+        # targets the same variant; two parallel `ct-cake` invocations
+        # writing to ``<cas-objdir>/.module-mapper.txt`` would race
+        # (last-rename-wins, but a gcc subprocess from invocation A
+        # could see invocation B's overwrite). The makefile path
+        # (``args.makefilename``) is per-invocation-unique by build
+        # config, so co-locating the mapper with it pins one mapper
+        # per generated makefile and avoids the race entirely.
+        # Fall back to cas-objdir when ``makefilename`` is unset OR is
+        # a bare basename with no dirname component (some non-make
+        # backends and a few integration-test fixtures).
+        if compiler_kind == "gcc" and self._module_pcm_cache_root:
+            mapper_dir = self.args.cas_objdir
+            mf = getattr(self.args, "makefilename", None)
+            if mf:
+                d = os.path.dirname(mf)
+                if d:
+                    mapper_dir = d
+            self._gcc_module_mapper_path = os.path.join(mapper_dir, ".module-mapper.txt")
+        else:
+            self._gcc_module_mapper_path = None
         # The flat fallback dir is still computed even when cache is on
         # so that header-unit precompile rules (which currently bypass
         # the cache for simplicity) have somewhere to land. Header-unit
@@ -728,7 +759,17 @@ class BuildBackend(abc.ABC):
                 hu_destinations[token] = dest_path
                 hu_mkdirs.add(dest_dir)
                 if gcc_cache_active:
-                    abs_path = _resolve_system_header_abs_path(self.args.CXX, token)
+                    # Pass the user's -std= so the dep walk speaks the
+                    # same language the actual precompile will. Otherwise
+                    # a gcc that rejects (say) -std=c++23 silently drops
+                    # the mapper entry and the cache misses.
+                    std_flag = next(
+                        (t for t in self.args.flags.cxx if str(t).startswith("-std=")),
+                        "-std=c++20",
+                    )
+                    abs_path = _resolve_system_header_abs_path(
+                        self.args.CXX, token, std_flag=str(std_flag)
+                    )
                     if abs_path is not None:
                         self._gcc_header_unit_resolved[token] = abs_path
             for d in sorted(hu_mkdirs):
@@ -1151,7 +1192,7 @@ class BuildBackend(abc.ABC):
         system_modules = self.hunter.system_modules() if hasattr(self.hunter, "system_modules") else {}
         if filename not in set(system_modules.values()):
             return []
-        kind = getattr(self, "_module_compiler_kind", None)
+        kind = self._module_compiler_kind
         if kind == "clang":
             return ["-stdlib=libc++", "-Wno-reserved-module-identifier"]
         return []
@@ -1162,9 +1203,8 @@ class BuildBackend(abc.ABC):
         Cached on first call. Used by ``_compiler_module_flags_for`` to
         decide whether clang importers need ``-stdlib=libc++`` injected.
         """
-        cached = getattr(self, "_build_imports_std_cached", None)
-        if cached is not None:
-            return cached
+        if self._build_imports_std_cached is not None:
+            return self._build_imports_std_cached
         result = False
         if hasattr(self.hunter, "system_modules"):
             system_modules = self.hunter.system_modules()
@@ -1200,10 +1240,10 @@ class BuildBackend(abc.ABC):
         )
         if not touches_modules:
             return []
-        kind = getattr(self, "_module_compiler_kind", None)
+        kind = self._module_compiler_kind
         if kind == "gcc":
             extras = ["-fmodules-ts"]
-            mapper = getattr(self, "_gcc_module_mapper_path", None)
+            mapper = self._gcc_module_mapper_path
             if mapper:
                 # Importers and precompiles BOTH need -fmodule-mapper so
                 # they read/write .gcm files at the cas-pcmdir paths the
@@ -1225,7 +1265,7 @@ class BuildBackend(abc.ABC):
             if (
                 (result.module_imports or result.module_implements)
                 and self._module_pcm_dir
-                and not getattr(self, "_module_pcm_cache_root", None)
+                and not self._module_pcm_cache_root
             ):
                 extras.append("-fprebuilt-module-path=" + self._module_pcm_dir)
             extras.extend(self._clang_partition_module_file_flags())
@@ -1275,9 +1315,9 @@ class BuildBackend(abc.ABC):
         keep the command line short. The function is named "partition"
         for historical reasons; the cache mode generalises it.
         """
-        if not getattr(self, "_module_iface_pcm", None):
+        if not self._module_iface_pcm:
             return []
-        cache_active = bool(getattr(self, "_module_pcm_cache_root", None))
+        cache_active = bool(self._module_pcm_cache_root)
         return [
             f"-fmodule-file={name}={path}"
             for name, path in sorted(self._module_iface_pcm.items())
@@ -1316,7 +1356,7 @@ class BuildBackend(abc.ABC):
         if file_result is None:
             return
         own_module = self.hunter._own_module_name(file_result)
-        kind = getattr(self, "_module_compiler_kind", None)
+        kind = self._module_compiler_kind
         target_map = self._module_iface_pcm if kind == "clang" else self._module_iface_obj
 
         resolved: list[str] = []
@@ -1366,10 +1406,10 @@ class BuildBackend(abc.ABC):
 
         ``<stem>`` comes from ``_header_unit_safe_stem(token)``.
         """
-        kind = getattr(self, "_module_compiler_kind", None)
+        kind = self._module_compiler_kind
         stem = _header_unit_safe_stem(token)
         if kind == "clang":
-            cache_root = getattr(self, "_module_pcm_cache_root", None)
+            cache_root = self._module_pcm_cache_root
             if cache_root:
                 cmd_hash = self._compute_clang_header_unit_command_hash(token)
                 pcm_path = _cas_pcm_path(stem + ".pcm", cache_root, cmd_hash)
@@ -1388,7 +1428,7 @@ class BuildBackend(abc.ABC):
                 )
                 return pcm_path, hash_dir
             return os.path.join(flat_dir, stem + ".pcm"), flat_dir
-        if kind == "gcc" and getattr(self, "_module_pcm_cache_root", None):
+        if kind == "gcc" and self._module_pcm_cache_root:
             # gcc + cache: route the .gcm into cas-pcmdir via the
             # mapper file. The rule's output IS the .gcm cache path
             # (gcc writes it directly), not a stamp.
@@ -1460,7 +1500,7 @@ class BuildBackend(abc.ABC):
         TU's magic flags can apply without risking inconsistent
         precompiles.
         """
-        kind = getattr(self, "_module_compiler_kind", None)
+        kind = self._module_compiler_kind
         bare = _header_unit_arg(token)
 
         common_cmd = (
@@ -1497,7 +1537,7 @@ class BuildBackend(abc.ABC):
         # wrapping, which gcc silently ignores in -x c++-system-header
         # mode.
         cmd = common_cmd + ["-fmodules", "-c", "-x", "c++-system-header", bare]
-        mapper = getattr(self, "_gcc_module_mapper_path", None)
+        mapper = self._gcc_module_mapper_path
         if mapper:
             cmd.append(f"-fmodule-mapper={mapper}")
         self._header_unit_artefact[token] = artefact_path
@@ -1521,7 +1561,7 @@ class BuildBackend(abc.ABC):
 
         Only called when gcc + cas-pcmdir are both active.
         """
-        cache_root = getattr(self, "_module_pcm_cache_root", None)
+        cache_root = self._module_pcm_cache_root
         assert cache_root is not None, "gcc gcm destination requires cas-pcmdir"
         cmd_hash = self._compute_pcm_command_hash(
             source_filename, stage="gcc_module_interface", extra_flags=[]
@@ -1555,7 +1595,7 @@ class BuildBackend(abc.ABC):
         ``compiler_identity`` (folded into command_hash) catches actual
         header content via the toolchain binary's mtime/size.
         """
-        cache_root = getattr(self, "_module_pcm_cache_root", None)
+        cache_root = self._module_pcm_cache_root
         assert cache_root is not None
         cmd_hash = _pcm_command_hash(
             self.args,
@@ -1630,7 +1670,7 @@ class BuildBackend(abc.ABC):
         flat_dir = self._module_pcm_dir
         assert flat_dir is not None  # only called in clang mode
         pcm_filename = _module_pcm_filename(module_name)
-        cache_root = getattr(self, "_module_pcm_cache_root", None)
+        cache_root = self._module_pcm_cache_root
         if not cache_root:
             return os.path.join(flat_dir, pcm_filename), flat_dir
         cmd_hash = self._compute_pcm_command_hash(
@@ -2048,7 +2088,7 @@ class BuildBackend(abc.ABC):
 
 
 @functools.lru_cache(maxsize=512)
-def _resolve_system_header_abs_path(cxx: str, token: str) -> str | None:
+def _resolve_system_header_abs_path(cxx: str, token: str, std_flag: str = "-std=c++20") -> str | None:
     """Resolve a header-unit token to its absolute filesystem path.
 
     Used by the gcc cas-pcmdir mapper, which keys header-unit cache
@@ -2057,10 +2097,19 @@ def _resolve_system_header_abs_path(cxx: str, token: str) -> str | None:
     the angle/quote token in the source).
 
     Pipes ``#include <token>`` (or quoted equivalent) through
-    ``<cxx> -E -M -x c++ -`` and parses the dep list. The first dep
-    whose basename or trailing path matches the token is returned.
-    Cached per ``(cxx, token)`` since the lookup is the same for every
-    build that mentions the same header.
+    ``<cxx> <std_flag> -M -x c++ -`` and parses the dep list. The
+    first dep whose basename or trailing path matches the token is
+    returned. Cached per ``(cxx, token, std_flag)`` since the lookup
+    is the same for every build that mentions the same header under
+    the same standard.
+
+    ``std_flag`` defaults to ``-std=c++20`` (the minimum standard that
+    supports header units). The caller should pass through whatever
+    ``-std=`` the user has set so the dep walk uses the same
+    preprocessor configuration the actual precompile will use --
+    otherwise a compiler that rejects a newer standard the user
+    requested (e.g. ``-std=c++23``) would silently fail the
+    resolution and the cache entry would be omitted from the mapper.
 
     Returns ``None`` when the compiler invocation fails or no matching
     dep can be found -- callers must handle missing entries (for the
@@ -2073,7 +2122,7 @@ def _resolve_system_header_abs_path(cxx: str, token: str) -> str | None:
     snippet = f"#include {delim_open}{bare}{delim_close}\n"
     try:
         r = subprocess.run(
-            [cxx, "-std=c++26", "-M", "-x", "c++", "-"],
+            [cxx, std_flag, "-M", "-x", "c++", "-"],
             input=snippet, capture_output=True, text=True, timeout=30,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):

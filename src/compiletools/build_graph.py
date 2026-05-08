@@ -184,6 +184,18 @@ def render_shell_recipe(rule: BuildRule) -> str:
 
     Used by shell-rendered backends (Make, Ninja) for non-compile/non-link
     rules whose command is intended to run through ``/bin/sh -c``.
+
+    .. note:: ``rule.command`` tokens MUST be shell-naive at this point
+       -- ``shlex.join`` quotes each token as a single shell word,
+       which means a token containing already-shell-quoted content
+       (e.g. ``'\\'-flag=<v>\\''``) would be DOUBLE-quoted on output.
+       Callers that pre-quote tokens for the ``compile`` rule type's
+       ``" ".join`` rendering path (the makefile backend's
+       ``_wrap_compile_cmd``) must NOT pre-quote when emitting via a
+       rule type that flows through this function (``header_unit``,
+       ``test``, etc.). The ``_create_header_unit_precompile_rule``
+       respects this contract -- its bare-header argument
+       (``vector``) has no shell-active characters.
     """
     cmd_str = shlex.join(rule.command)
     if rule.success_marker:
