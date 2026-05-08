@@ -428,23 +428,14 @@ class MacroState:
 
         # Always go through the token + filter + canonicalize pipeline so
         # diagnostic-flag filtering AND path canonicalization apply
-        # uniformly. When *_tokens is None (test fixtures or other
-        # callers that didn't pre-tokenize), lazily tokenize from the
-        # raw flag strings here -- avoids a misleading raw-string
-        # fallback that would silently bypass both transformations.
-        if self.cppflags_tokens is None or self.cflags_tokens is None or self.cxxflags_tokens is None:
-            cpp_tok, c_tok, cxx_tok = tokenize_compile_flags(
-                self.cppflags if self.cppflags_tokens is None else self.cppflags_tokens,
-                self.cflags if self.cflags_tokens is None else self.cflags_tokens,
-                self.cxxflags if self.cxxflags_tokens is None else self.cxxflags_tokens,
-            )
-            cppflags_tokens = cpp_tok if self.cppflags_tokens is None else self.cppflags_tokens
-            cflags_tokens = c_tok if self.cflags_tokens is None else self.cflags_tokens
-            cxxflags_tokens = cxx_tok if self.cxxflags_tokens is None else self.cxxflags_tokens
-        else:
-            cppflags_tokens = self.cppflags_tokens
-            cflags_tokens = self.cflags_tokens
-            cxxflags_tokens = self.cxxflags_tokens
+        # uniformly. tokenize_compile_flags accepts either raw strings
+        # OR pre-tokenized lists (idempotent on the latter -- it strips
+        # -D/-U which upstream callers already stripped), so passing
+        # ``self._or_raw`` works whether or not the caller pre-tokenized.
+        cpp_in = self.cppflags if self.cppflags_tokens is None else self.cppflags_tokens
+        c_in = self.cflags if self.cflags_tokens is None else self.cflags_tokens
+        cxx_in = self.cxxflags if self.cxxflags_tokens is None else self.cxxflags_tokens
+        cppflags_tokens, cflags_tokens, cxxflags_tokens = tokenize_compile_flags(cpp_in, c_in, cxx_in)
 
         # Canonicalize path-bearing -I/-isystem/etc. tokens against the
         # gitroot anchor before hashing. Decouples the cache key from

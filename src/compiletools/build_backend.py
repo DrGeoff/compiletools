@@ -2277,6 +2277,14 @@ def _pcm_command_hash(
     compose -- typically ``f"{source_hash}:{dep_hash}"`` for named
     modules and the empty string (or a token-derived value) for header
     units whose transitive deps are implicit in ``compiler_identity``.
+
+    ``cxxflags_tokens`` is the hash-relevant structured form of
+    ``args.CXXFLAGS`` -- the caller is responsible for pre-filtering
+    via ``args.flags.hash_relevant("cxx")`` (which strips ``-D``/``-U``
+    AND drops diagnostic-only flags). This function does NOT re-filter
+    that parameter; only the per-file ``magic_cpp_flags`` /
+    ``magic_cxx_flags`` (which arrive un-filtered from the magic-flag
+    pipeline) are filtered here. Symmetric with ``_pch_command_hash``.
     """
     # Canonicalize path-bearing flag tokens and the source path against
     # the gitroot anchor so the cache key is decoupled from the absolute

@@ -180,8 +180,12 @@ class DirectHeaderDeps(HeaderDepsBase):
         # Keep track of ancestor paths so that we can do header cycle detection
         self.ancestor_paths = []
 
-        # Cache core macros (computed once, reused for all files)
+        # Cache core macros and gitroot anchor (computed once, reused
+        # for all files). Both are seeded here so their lifecycles are
+        # visibly co-managed -- _initialize_includes_and_macros only
+        # populates them when _core_macros is None.
         self._core_macros = None
+        self._anchor_root: str = ""
         self._includes = None
 
         # Initialize includes and macros
