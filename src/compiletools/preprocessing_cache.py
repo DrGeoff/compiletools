@@ -423,27 +423,39 @@ class MacroState:
         from compiletools.apptools import (
             canonicalize_for_cache_key,
             filter_hash_irrelevant_tokens,
+            tokenize_compile_flags,
         )
 
+        # Always go through the token + filter + canonicalize pipeline so
+        # diagnostic-flag filtering AND path canonicalization apply
+        # uniformly. When *_tokens is None (test fixtures or other
+        # callers that didn't pre-tokenize), lazily tokenize from the
+        # raw flag strings here -- avoids a misleading raw-string
+        # fallback that would silently bypass both transformations.
+        if self.cppflags_tokens is None or self.cflags_tokens is None or self.cxxflags_tokens is None:
+            cpp_tok, c_tok, cxx_tok = tokenize_compile_flags(
+                self.cppflags if self.cppflags_tokens is None else self.cppflags_tokens,
+                self.cflags if self.cflags_tokens is None else self.cflags_tokens,
+                self.cxxflags if self.cxxflags_tokens is None else self.cxxflags_tokens,
+            )
+            cppflags_tokens = cpp_tok if self.cppflags_tokens is None else self.cppflags_tokens
+            cflags_tokens = c_tok if self.cflags_tokens is None else self.cflags_tokens
+            cxxflags_tokens = cxx_tok if self.cxxflags_tokens is None else self.cxxflags_tokens
+        else:
+            cppflags_tokens = self.cppflags_tokens
+            cflags_tokens = self.cflags_tokens
+            cxxflags_tokens = self.cxxflags_tokens
+
         # Canonicalize path-bearing -I/-isystem/etc. tokens against the
-        # gitroot anchor before hashing. Decouples the cache key from the
-        # absolute workspace path so identical TUs in /run-1/... and
+        # gitroot anchor before hashing. Decouples the cache key from
+        # the absolute workspace path so identical TUs in /run-1/... and
         # /run-2/... share cache entries. Empty anchor is identity.
         def _canon(toks):
             return canonicalize_for_cache_key(filter_hash_irrelevant_tokens(toks), self.anchor_root)
 
-        if self.cppflags_tokens is not None:
-            cppflags_part = "CPPFLAGS_TOKENS=" + "\x00".join(_canon(self.cppflags_tokens))
-        else:
-            cppflags_part = f"CPPFLAGS={self.cppflags}"
-        if self.cflags_tokens is not None:
-            cflags_part = "CFLAGS_TOKENS=" + "\x00".join(_canon(self.cflags_tokens))
-        else:
-            cflags_part = f"CFLAGS={self.cflags}"
-        if self.cxxflags_tokens is not None:
-            cxxflags_part = "CXXFLAGS_TOKENS=" + "\x00".join(_canon(self.cxxflags_tokens))
-        else:
-            cxxflags_part = f"CXXFLAGS={self.cxxflags}"
+        cppflags_part = "CPPFLAGS_TOKENS=" + "\x00".join(_canon(cppflags_tokens))
+        cflags_part = "CFLAGS_TOKENS=" + "\x00".join(_canon(cflags_tokens))
+        cxxflags_part = "CXXFLAGS_TOKENS=" + "\x00".join(_canon(cxxflags_tokens))
 
         # ``CC=`` keeps the user-visible command (still useful for diagnostic
         # collision triage). ``COMPILER_IDENTITY=`` is the strict form
