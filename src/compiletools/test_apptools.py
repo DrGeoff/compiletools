@@ -940,3 +940,71 @@ class TestSetupPkgConfigOverrides:
             "Restore must succeed even when a pkg-config subprocess raised"
         )
         assert ctx.pkg_config_overrides_applied is False
+
+
+class TestVariantResolutionRespectsArgv:
+    """Regression tests for the substitutions() variant-from-sys.argv bug.
+
+    Historically _commonsubstitutions called extract_variant() with no argv,
+    so it read sys.argv even when parseargs had been given a custom argv.
+    This caused embedded callers and test harnesses to see args.variant
+    reset to whatever sys.argv implied. Both tests below exercise the
+    parseargs pipeline with argv that does NOT match sys.argv.
+    """
+
+    def setup_method(self):
+        import compiletools.testhelper as uth
+        uth.reset()
+
+    def test_argv_variant_preserved_when_not_aliased(self):
+        """A --variant=<canonical-name> in argv survives substitutions even
+        when sys.argv does not contain that flag."""
+        import compiletools.apptools as apptools
+        import compiletools.compilation_database as cdb
+        import compiletools.hunter
+        import compiletools.testhelper as uth
+
+        with uth.TempDirContext():
+            uth.create_temp_ct_conf(os.getcwd())  # defines dbg/rls aliases
+            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+                argv = [
+                    "--config=" + temp_config_name,
+                    "--variant=gcc.debug",  # not in any alias map
+                    "--no-git-root",
+                ]
+                cap = apptools.create_parser("regression test", argv=argv)
+                cdb.CompilationDatabaseCreator.add_arguments(cap)
+                compiletools.hunter.add_arguments(cap)
+                with uth.ParserContext():
+                    args = apptools.parseargs(cap, argv, context=BuildContext())
+                assert args.variant == "gcc.debug", (
+                    f"Expected --variant=gcc.debug from argv to survive substitutions, "
+                    f"got {args.variant!r}. The pre-fix code re-read sys.argv (which "
+                    f"lacks --variant in pytest) and clobbered the parsed value."
+                )
+
+    def test_argv_variant_alias_is_still_canonicalized(self):
+        """An alias passed via --variant in argv is still resolved to its
+        canonical form — the original purpose of the post-parse step is preserved."""
+        import compiletools.apptools as apptools
+        import compiletools.compilation_database as cdb
+        import compiletools.hunter
+        import compiletools.testhelper as uth
+
+        with uth.TempDirContext():
+            uth.create_temp_ct_conf(os.getcwd())  # dbg -> foo.debug
+            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+                argv = [
+                    "--config=" + temp_config_name,
+                    "--variant=dbg",
+                    "--no-git-root",
+                ]
+                cap = apptools.create_parser("regression test", argv=argv)
+                cdb.CompilationDatabaseCreator.add_arguments(cap)
+                compiletools.hunter.add_arguments(cap)
+                with uth.ParserContext():
+                    args = apptools.parseargs(cap, argv, context=BuildContext())
+                assert args.variant == "foo.debug", (
+                    f"Alias 'dbg' should canonicalize to 'foo.debug' per the "
+                    f"variantaliases mapping in the temp ct.conf; got {args.variant!r}."
+                )

@@ -55,6 +55,51 @@ class TestVariant:
             )
             assert variant == "dbg"
 
+    def test_resolve_variant_aliases_maps_alias(self):
+        """An alias defined in ct.conf should be canonicalized."""
+        with uth.TempDirContext() as _:
+            compiletools.testhelper.create_temp_ct_conf(os.getcwd())
+            # ct.conf in testhelper defines: {'dbg':'foo.debug', 'rls':'foo.release'}
+            assert (
+                compiletools.configutils.resolve_variant_aliases(
+                    "dbg",
+                    user_config_dir="/var",
+                    system_config_dir="/var",
+                    exedir=uth.cakedir(),
+                    gitroot=os.getcwd(),
+                )
+                == "foo.debug"
+            )
+
+    def test_resolve_variant_aliases_passthrough(self):
+        """A variant that isn't an alias key is returned unchanged (idempotent)."""
+        with uth.TempDirContext() as _:
+            compiletools.testhelper.create_temp_ct_conf(os.getcwd())
+            assert (
+                compiletools.configutils.resolve_variant_aliases(
+                    "gcc.debug",
+                    user_config_dir="/var",
+                    system_config_dir="/var",
+                    exedir=uth.cakedir(),
+                    gitroot=os.getcwd(),
+                )
+                == "gcc.debug"
+            )
+
+    def test_resolve_variant_aliases_no_ct_conf(self):
+        """Returns the input verbatim when no ct.conf defines variantaliases."""
+        with uth.TempDirContext() as _:
+            assert (
+                compiletools.configutils.resolve_variant_aliases(
+                    "anything",
+                    user_config_dir="/var",
+                    system_config_dir="/var",
+                    exedir="/var",
+                    gitroot=os.getcwd(),
+                )
+                == "anything"
+            )
+
     def test_extract_variant_from_blank_argv(self):
         # Force to find the temp directory ct.conf
         with uth.TempDirContext() as _:

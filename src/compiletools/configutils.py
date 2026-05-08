@@ -110,6 +110,35 @@ def impliedvariant(argv):
         return None
 
 
+def resolve_variant_aliases(
+    variant, user_config_dir=None, system_config_dir=None, exedir=None, verbose=0, gitroot=None
+):
+    """Apply variantaliases mapping from ct.conf to a variant string.
+
+    The default for argparse's --variant is computed by extract_variant() at
+    parser construction time, with aliases already applied. But if the user
+    supplies --variant=<alias> on the command line, argparse stores the raw
+    alias string, bypassing that resolution. This helper canonicalizes the
+    parsed value the same way extract_variant() would have.
+
+    Idempotent: when variant is already a canonical name (i.e. not itself an
+    alias key), returns it unchanged. Independent of argv / sys.argv, so safe
+    to call from any post-parse code path.
+    """
+    raw = extract_item_from_ct_conf(
+        key="variantaliases",
+        user_config_dir=user_config_dir,
+        system_config_dir=system_config_dir,
+        exedir=exedir,
+        verbose=verbose,
+        gitroot=gitroot,
+    )
+    if raw is None:
+        return variant
+    aliases = ast.literal_eval(raw)
+    return aliases.get(variant, variant)
+
+
 def extract_variant(argv=None, user_config_dir=None, system_config_dir=None, exedir=None, verbose=0, gitroot=None):
     """The variant argument is parsed directly from the command line arguments
     so that it can be used to specify the default config for configargparse.

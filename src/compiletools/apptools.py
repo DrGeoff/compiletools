@@ -1658,9 +1658,14 @@ def _commonsubstitutions(args):
     if args.verbose > 8:
         print("Performing common substitutions")
 
-    # Fix the variant for any variant aliases
-    # Taking the easy way out and just reparsing
-    args.variant = compiletools.configutils.extract_variant()
+    # Apply variantaliases to the parsed args.variant. The default value for
+    # --variant came from extract_variant(argv) at parser construction with
+    # aliases already applied, but an explicit --variant=<alias> in argv
+    # bypasses that — argparse stores the raw alias string. Resolve here so
+    # downstream consumers always see the canonical variant. Operates on
+    # args.variant directly (not argv / sys.argv) so it stays correct in
+    # tests and embedded callers where sys.argv != the parsed argv.
+    args.variant = compiletools.configutils.resolve_variant_aliases(args.variant)
     if args.verbose > 6:
         print(f"Determined variant to be {args.variant}")
 
