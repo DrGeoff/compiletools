@@ -155,8 +155,16 @@ def test_filter_does_not_affect_variable_macros():
     assert s1.get_hash(include_core=True, scope_filter=flt) != s2.get_hash(include_core=True, scope_filter=flt)
 
 
-def test_structured_flag_tokens_replace_raw_string_hashing():
-    """When tokens are provided, hashing uses them instead of the raw strings."""
+def test_raw_strings_and_pretokenized_hash_identically():
+    """Raw flag strings and pre-tokenized lists must produce the same hash.
+
+    Post-a7328d5 invariant: there is no separate raw-string fallback. When
+    *_tokens is None, get_hash() lazily tokenizes the raw string through the
+    same tokenize_compile_flags + filter_hash_irrelevant_tokens +
+    canonicalize_for_cache_key pipeline that pre-tokenized callers go through.
+    A caller that forgets to pre-tokenize must land in the same hash regime as
+    one that does.
+    """
     cmdline = frozenset({sz.Str("FOO")})
     flt = frozenset()
 
@@ -179,7 +187,7 @@ def test_structured_flag_tokens_replace_raw_string_hashing():
     )
     h_raw = state_raw.get_hash(include_core=True, scope_filter=flt)
     h_tokens = state_tokens.get_hash(include_core=True, scope_filter=flt)
-    assert h_raw != h_tokens
+    assert h_raw == h_tokens
 
 
 def test_with_updates_propagates_cmdline_origin():
