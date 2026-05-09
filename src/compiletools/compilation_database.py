@@ -156,10 +156,7 @@ class CompilationDatabaseCreator:
         if result is None:
             return []
         if not (
-            result.module_exports
-            or result.module_implements
-            or result.module_imports
-            or result.module_header_imports
+            result.module_exports or result.module_implements or result.module_imports or result.module_header_imports
         ):
             return []
         kind = compiletools.apptools.compiler_kind(self.args.CXX)
@@ -280,9 +277,7 @@ class CompilationDatabaseCreator:
                 # symlink_path is a real directory we shouldn't clobber.
                 os.unlink(tmp_path)
                 if self.args.verbose:
-                    print(
-                        f"Warning: {symlink_path} is a directory; refusing to replace with symlink"
-                    )
+                    print(f"Warning: {symlink_path} is a directory; refusing to replace with symlink")
                 return
             if self.args.verbose:
                 print(f"Updated symlink {symlink_path} -> {relative_target}")

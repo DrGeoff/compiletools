@@ -42,8 +42,7 @@ def venv_mismatch_reason(expected_src_root: str) -> str | None:
     """
     cake = shutil.which("ct-cake")
     if not cake:
-        return ("ct-cake not on PATH (e2e checks need a venv with "
-                "compiletools installed)")
+        return "ct-cake not on PATH (e2e checks need a venv with compiletools installed)"
     try:
         with open(cake, "rb") as f:
             # Read in binary so a hypothetical native-binary ct-cake (or
@@ -74,10 +73,15 @@ def venv_mismatch_reason(expected_src_root: str) -> str | None:
         interpreter = parts[1]
     try:
         r = subprocess.run(
-            [interpreter, "-c",
-             "import compiletools, os; "
-             "print(os.path.dirname(os.path.dirname(os.path.realpath(compiletools.__file__))))"],
-            capture_output=True, text=True, timeout=10,
+            [
+                interpreter,
+                "-c",
+                "import compiletools, os; "
+                "print(os.path.dirname(os.path.dirname(os.path.realpath(compiletools.__file__))))",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return f"can't run ct-cake's Python ({interpreter!r}): {e}"
@@ -118,12 +122,12 @@ def main():
     1 when they don't.
     """
     import compiletools
+
     expected = os.path.dirname(os.path.dirname(os.path.realpath(compiletools.__file__)))
     reason = venv_mismatch_reason(expected)
     if reason is None:
         cake = shutil.which("ct-cake") or "ct-cake"
-        print(f"ok: ct-cake ({cake!r}) and ct-check-venv both resolve "
-              f"compiletools to {expected!r}")
+        print(f"ok: ct-cake ({cake!r}) and ct-check-venv both resolve compiletools to {expected!r}")
         return 0
     print(reason, file=sys.stderr)
     return 1

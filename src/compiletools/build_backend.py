@@ -1515,9 +1515,7 @@ class BuildBackend(abc.ABC):
             # this keeps the actual command consistent with what the cache
             # key claims.
             stdlib_extras = (
-                ["-stdlib=libc++"]
-                if self._build_imports_std() and "-stdlib=libc++" not in self.args.flags.cxx
-                else []
+                ["-stdlib=libc++"] if self._build_imports_std() and "-stdlib=libc++" not in self.args.flags.cxx else []
             )
             cmd = common_cmd + stdlib_extras + ["-xc++-system-header", "--precompile", bare, "-o", artefact_path]
             self._header_unit_artefact[token] = artefact_path
@@ -1569,7 +1567,11 @@ class BuildBackend(abc.ABC):
             with open(mini_mapper, "w") as f:
                 f.write(f"{abs_path} {tmp_path}\n")
             cmd = common_cmd + [
-                "-fmodules-ts", "-c", "-x", "c++-system-header", bare,
+                "-fmodules-ts",
+                "-c",
+                "-x",
+                "c++-system-header",
+                bare,
                 f"-fmodule-mapper={mini_mapper}",
             ]
             pipeline = f"{shlex.join(cmd)} && mv -f {shlex.quote(tmp_path)} {shlex.quote(artefact_path)}"

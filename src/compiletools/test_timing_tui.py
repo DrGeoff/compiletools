@@ -62,9 +62,7 @@ def _timer_with_overlap() -> BuildTimer:
     phase.children.append(
         TimingEvent(name="b", category="compile", start_s=1.0, end_s=3.0, target="b.o", source="b.cpp")
     )
-    phase.children.append(
-        TimingEvent(name="app", category="link", start_s=3.0, end_s=4.0, target="app")
-    )
+    phase.children.append(TimingEvent(name="app", category="link", start_s=3.0, end_s=4.0, target="app"))
     timer._root.children.append(phase)
     timer._root.end_s = 4.0
     return timer
@@ -103,15 +101,10 @@ def test_tree_aggregation_numbers_match_summary():
     labels = _flatten_labels(_populate_stub(timer))
 
     for cat, wall, cpu, parallelism, _ in rows:
-        cat_label = next(
-            line for line in labels
-            if cat.replace("_", " ").title() in line and "CPU" in line
-        )
+        cat_label = next(line for line in labels if cat.replace("_", " ").title() in line and "CPU" in line)
         assert f"{wall:.2f}s" in cat_label, f"Wall mismatch in {cat_label!r}"
         assert f"{cpu:.2f}s" in cat_label, f"CPU mismatch in {cat_label!r}"
-        assert f"{parallelism:.1f}×" in cat_label, (
-            f"parallelism mismatch in {cat_label!r}"
-        )
+        assert f"{parallelism:.1f}×" in cat_label, f"parallelism mismatch in {cat_label!r}"
 
 
 def test_individual_rules_still_appear_under_categories():

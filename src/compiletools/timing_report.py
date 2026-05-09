@@ -106,6 +106,7 @@ def _newest_invocation_timing(diagnostics_dir: str) -> str | None:
     ]
     if not invocations:
         return None
+
     # Sort by (timestamp_str, int(pid)): within the same wall-clock second,
     # lex sort orders '-1000' before '-999' because '1' < '9'. PID must be
     # compared numerically. INVOCATION_ID_RE guarantees one '-' separator.

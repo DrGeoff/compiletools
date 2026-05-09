@@ -905,9 +905,7 @@ class TestGccCppmExtensionRecognition:
         rule = backend._create_compile_rule("/src/math.cppm")
 
         cmd = rule.command
-        assert "/src/math.cppm" in cmd, (
-            f"compile command must reference the .cppm source; got: {cmd!r}"
-        )
+        assert "/src/math.cppm" in cmd, f"compile command must reference the .cppm source; got: {cmd!r}"
         idx = cmd.index("/src/math.cppm")
         # `-x c++` must appear as two adjacent tokens immediately preceding
         # the source path. The "-x ARG" form applies to subsequent inputs
@@ -941,6 +939,7 @@ class TestModuleFlagsAreShellNaive:
         # Stand in for the FileAnalyzer result. Only the module_* fields
         # are read by _compiler_module_flags_for.
         from types import SimpleNamespace
+
         result = SimpleNamespace(
             module_exports=(),
             module_implements=(),
@@ -1072,7 +1071,7 @@ class TestGccHeaderUnitProducerSideRename:
         )
         mini = mini_files[0]
         # Same PID suffix on the .tmp the mapper steers gcc to.
-        suffix = mini.name[len("vector.gcm.precompile-mapper."):-len(".txt")]
+        suffix = mini.name[len("vector.gcm.precompile-mapper.") : -len(".txt")]
         line = mini.read_text().strip()
         expected_tmp = f"{artefact_path}.compiletools.tmp.{suffix}"
         assert line == f"/usr/include/vector {expected_tmp}", (
@@ -1115,13 +1114,9 @@ class TestGccHeaderUnitProducerSideRename:
         rule = backend._create_header_unit_precompile_rule("<vector>", artefact_path)
         pipeline = rule.command[2]  # ["sh", "-c", "<pipeline>"]
         assert "-fmodules-ts" in pipeline, (
-            f"cache-mode gcc header-unit precompile must pass -fmodules-ts; "
-            f"got pipeline: {pipeline!r}"
+            f"cache-mode gcc header-unit precompile must pass -fmodules-ts; got pipeline: {pipeline!r}"
         )
-        assert (
-            " -fmodules " not in pipeline
-            and not pipeline.startswith("-fmodules ")
-        ), (
+        assert " -fmodules " not in pipeline and not pipeline.startswith("-fmodules "), (
             f"cache-mode gcc header-unit precompile must not pass -fmodules "
             f"(clang-only flag, gcc < 14 rejects it); got pipeline: {pipeline!r}"
         )
@@ -1130,8 +1125,7 @@ class TestGccHeaderUnitProducerSideRename:
         backend._gcc_header_unit_resolved = {}
         rule = backend._create_header_unit_precompile_rule("<vector>", artefact_path)
         assert "-fmodules-ts" in rule.command, (
-            f"fallback gcc header-unit precompile must pass -fmodules-ts; "
-            f"got command: {rule.command!r}"
+            f"fallback gcc header-unit precompile must pass -fmodules-ts; got command: {rule.command!r}"
         )
         assert "-fmodules" not in rule.command, (
             f"fallback gcc header-unit precompile must not pass -fmodules "

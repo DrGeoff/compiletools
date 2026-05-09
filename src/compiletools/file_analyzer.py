@@ -745,7 +745,7 @@ def _classify_module_line(rest: "stringzilla.Str"):
             close = s.find(">", i + 1)
             if close == -1:
                 return None, None
-            tok = s[i:close + 1]
+            tok = s[i : close + 1]
             j = skip_ws(close + 1)
             if j >= n or s[j] != ";":
                 return None, None
@@ -754,7 +754,7 @@ def _classify_module_line(rest: "stringzilla.Str"):
             close = s.find('"', i + 1)
             if close == -1:
                 return None, None
-            tok = s[i:close + 1]
+            tok = s[i : close + 1]
             j = skip_ws(close + 1)
             if j >= n or s[j] != ";":
                 return None, None
@@ -1340,9 +1340,9 @@ class FileAnalysisResult:
     # C++20 module declarations. See _extract_module_declarations for the
     # forms recognized in Phase 1; partition imports, header units, and
     # the global module fragment opener are deliberately not surfaced.
-    module_exports: tuple[str, ...] = ()       # `export module NAME;`
-    module_implements: tuple[str, ...] = ()    # `module NAME;` (impl unit)
-    module_imports: tuple[str, ...] = ()       # `import NAME;`
+    module_exports: tuple[str, ...] = ()  # `export module NAME;`
+    module_implements: tuple[str, ...] = ()  # `module NAME;` (impl unit)
+    module_imports: tuple[str, ...] = ()  # `import NAME;`
     module_header_imports: tuple[str, ...] = ()  # `import <h>;` / `import "h";`
 
     # Helper method for SimplePreprocessor compatibility

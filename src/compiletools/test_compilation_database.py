@@ -1057,21 +1057,16 @@ class TestConcurrentCompilationDatabase:
                 src = os.path.join(samplesdir, "simple/helloworld_cpp.cpp")
 
                 with uth.ParserContext():
-                    compiletools.compilation_database.main(
-                        ["--config=" + temp_config_name, "--variant=gcc.debug", src]
-                    )
+                    compiletools.compilation_database.main(["--config=" + temp_config_name, "--variant=gcc.debug", src])
 
                 cwd = os.getcwd()
                 variant_path = os.path.join(cwd, "compile_commands.gcc.debug.json")
                 symlink_path = os.path.join(cwd, "compile_commands.json")
 
                 assert os.path.exists(variant_path), (
-                    f"Expected variant-qualified DB at {variant_path}; "
-                    f"directory contains: {sorted(os.listdir(cwd))}"
+                    f"Expected variant-qualified DB at {variant_path}; directory contains: {sorted(os.listdir(cwd))}"
                 )
-                assert os.path.islink(symlink_path), (
-                    f"Expected {symlink_path} to be a symlink"
-                )
+                assert os.path.islink(symlink_path), f"Expected {symlink_path} to be a symlink"
                 # Symlink target must be relative for portability
                 target = os.readlink(symlink_path)
                 assert target == "compile_commands.gcc.debug.json", (
@@ -1092,9 +1087,7 @@ class TestConcurrentCompilationDatabase:
                 src = os.path.join(samplesdir, "simple/helloworld_cpp.cpp")
 
                 with uth.ParserContext():
-                    compiletools.compilation_database.main(
-                        ["--config=" + temp_config_name, "--variant=gcc.debug", src]
-                    )
+                    compiletools.compilation_database.main(["--config=" + temp_config_name, "--variant=gcc.debug", src])
                 with uth.ParserContext():
                     compiletools.compilation_database.main(
                         ["--config=" + temp_config_name, "--variant=clang.release", src]
@@ -1160,9 +1153,7 @@ class TestConcurrentCompilationDatabase:
             with uth.TempConfigContext(tempdir=cwd) as temp_config_name:
                 src = os.path.join(samplesdir, "simple/helloworld_cpp.cpp")
                 with uth.ParserContext():
-                    compiletools.compilation_database.main(
-                        ["--config=" + temp_config_name, "--variant=gcc.debug", src]
-                    )
+                    compiletools.compilation_database.main(["--config=" + temp_config_name, "--variant=gcc.debug", src])
 
                 assert os.path.islink(stale_path), (
                     "Pre-existing regular compile_commands.json must be replaced by a symlink"
@@ -1207,16 +1198,14 @@ class TestCompilationDatabaseModuleFlags:
 
                 cdb_path = os.path.join(workdir, "compile_commands.gcc.debug.json")
                 assert os.path.exists(cdb_path), (
-                    f"expected per-variant CDB at {cdb_path}; "
-                    f"workdir contains: {sorted(os.listdir(workdir))}"
+                    f"expected per-variant CDB at {cdb_path}; workdir contains: {sorted(os.listdir(workdir))}"
                 )
                 with open(cdb_path) as f:
                     entries = json.load(f)
 
                 main_entries = [e for e in entries if e["file"].endswith("main.cpp")]
                 assert len(main_entries) == 1, (
-                    f"expected one main.cpp entry, got {len(main_entries)}: "
-                    f"{[e['file'] for e in entries]}"
+                    f"expected one main.cpp entry, got {len(main_entries)}: {[e['file'] for e in entries]}"
                 )
                 args = main_entries[0]["arguments"]
                 assert "-fmodules-ts" in args, (
@@ -1249,9 +1238,7 @@ class TestCompilationDatabaseModuleFlags:
         )
 
         flags = creator._module_kind_flags("/src/main.cpp")
-        assert "-fmodules" in flags, (
-            f"clang TU with import <vector>; needs -fmodules, got {flags!r}"
-        )
+        assert "-fmodules" in flags, f"clang TU with import <vector>; needs -fmodules, got {flags!r}"
 
     def test_clang_import_std_gets_stdlib_libcxx(self):
         """`import std;` under clang requires -stdlib=libc++; the system std
@@ -1274,9 +1261,7 @@ class TestCompilationDatabaseModuleFlags:
         )
 
         flags = creator._module_kind_flags("/src/main.cpp")
-        assert "-stdlib=libc++" in flags, (
-            f"clang TU with import std; needs -stdlib=libc++, got {flags!r}"
-        )
+        assert "-stdlib=libc++" in flags, f"clang TU with import std; needs -stdlib=libc++, got {flags!r}"
 
     @uth.requires_functional_compiler
     def test_non_module_tu_unchanged(self):
@@ -1295,18 +1280,12 @@ class TestCompilationDatabaseModuleFlags:
                         ]
                     )
 
-                cdb_path = os.path.join(
-                    os.getcwd(), "compile_commands.gcc.debug.json"
-                )
+                cdb_path = os.path.join(os.getcwd(), "compile_commands.gcc.debug.json")
                 with open(cdb_path) as f:
                     entries = json.load(f)
 
-                cpp_entries = [
-                    e for e in entries if e["file"].endswith("helloworld_cpp.cpp")
-                ]
+                cpp_entries = [e for e in entries if e["file"].endswith("helloworld_cpp.cpp")]
                 assert len(cpp_entries) == 1
                 args = cpp_entries[0]["arguments"]
                 for flag in ("-fmodules-ts", "-fmodules", "-stdlib=libc++"):
-                    assert flag not in args, (
-                        f"non-module TU should not have {flag}; args={args!r}"
-                    )
+                    assert flag not in args, f"non-module TU should not have {flag}; args={args!r}"

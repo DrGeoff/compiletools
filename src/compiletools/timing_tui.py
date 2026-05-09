@@ -44,9 +44,7 @@ def _label(event: TimingEvent, total: float) -> str:
     return f"{_format_time(event.elapsed_s):>9s}  {pct:5.1f}%  {bar}  {name}"
 
 
-def _category_label(
-    cat: str, wall: float, cpu: float, parallelism: float, total: float
-) -> str:
+def _category_label(cat: str, wall: float, cpu: float, parallelism: float, total: float) -> str:
     """Format a per-rule-type aggregation node.
 
     Shows the same numbers as the static summary table's indented rows:
@@ -57,11 +55,7 @@ def _category_label(
     """
     bar = _bar(wall / total if total > 0 else 0)
     name = cat.replace("_", " ").title()
-    return (
-        f"{_format_time(wall):>9s}  "
-        f"CPU {_format_time(cpu):>9s}  "
-        f"{parallelism:5.1f}×  {bar}  {name}"
-    )
+    return f"{_format_time(wall):>9s}  CPU {_format_time(cpu):>9s}  {parallelism:5.1f}×  {bar}  {name}"
 
 
 # ----------------------------------------------------------- sort modes
@@ -136,11 +130,7 @@ class TimingReportApp(App):
 
         for event in sorted_events:
             lbl = _label(event, total)
-            cat_rows = (
-                self._timer.aggregate_by_category(event)
-                if event.category == "phase"
-                else []
-            )
+            cat_rows = self._timer.aggregate_by_category(event) if event.category == "phase" else []
             if cat_rows:
                 phase_node = parent.add(lbl, expand=True)
                 for cat, wall, cpu, parallelism, cat_events in cat_rows:
@@ -171,8 +161,7 @@ class TimingReportApp(App):
 
     def action_help(self) -> None:
         self.notify(
-            "Navigation: arrows/j/k  Expand: Enter/Right  Collapse: Left\n"
-            "Sort: [s]  Timeline: [v]  Quit: [q]",
+            "Navigation: arrows/j/k  Expand: Enter/Right  Collapse: Left\nSort: [s]  Timeline: [v]  Quit: [q]",
             title="Help",
             timeout=8,
         )

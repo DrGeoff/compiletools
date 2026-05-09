@@ -1356,8 +1356,6 @@ class TestShakeTestRulesNotExecutedDuringBuild:
             traces = TraceStore(str(tmp_path / ".ct-traces.json"))
             with mock.patch.object(backend, "_execute_rule") as mock_exec:
                 memo: dict[str, asyncio.Task[bool]] = {}
-                changed = asyncio.run(
-                    backend._build_async(result_path, graph, traces, memo, asyncio.Semaphore(1))
-                )
+                changed = asyncio.run(backend._build_async(result_path, graph, traces, memo, asyncio.Semaphore(1)))
             mock_exec.assert_not_called()
             assert changed is False

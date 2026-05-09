@@ -169,9 +169,27 @@ def pack_lanes(events: list[TimingEvent]) -> list[int]:
 
 # Nice tick intervals: at most ~target_ticks visible across the viewport.
 _NICE_INTERVALS = (
-    0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5,
-    1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0, 300.0,
-    600.0, 1800.0, 3600.0,
+    0.001,
+    0.002,
+    0.005,
+    0.01,
+    0.02,
+    0.05,
+    0.1,
+    0.2,
+    0.5,
+    1.0,
+    2.0,
+    5.0,
+    10.0,
+    20.0,
+    30.0,
+    60.0,
+    120.0,
+    300.0,
+    600.0,
+    1800.0,
+    3600.0,
 )
 
 
@@ -588,9 +606,7 @@ class TimelineCanvas(Widget, can_focus=True):
 
     def _render_phase_band(self) -> Strip:
         avail = self._avail()
-        cells: list[tuple[Style, str]] = [
-            (Style(bgcolor=DEFAULT_BG), " ") for _ in range(avail)
-        ]
+        cells: list[tuple[Style, str]] = [(Style(bgcolor=DEFAULT_BG), " ") for _ in range(avail)]
         for phase in self.timer.phases:
             if phase.end_s is None:
                 continue
@@ -614,15 +630,11 @@ class TimelineCanvas(Widget, can_focus=True):
         return Strip([gutter] + _coalesce(cells))
 
     def _render_separator(self, width: int) -> Strip:
-        return Strip(
-            [Segment("─" * width, Style(color=GRID_FG, bgcolor=DEFAULT_BG))]
-        )
+        return Strip([Segment("─" * width, Style(color=GRID_FG, bgcolor=DEFAULT_BG))])
 
     def _render_lane(self, lane_idx: int) -> Strip:
         avail = self._avail()
-        cells: list[tuple[Style, str]] = [
-            (Style(bgcolor=DEFAULT_BG), " ") for _ in range(avail)
-        ]
+        cells: list[tuple[Style, str]] = [(Style(bgcolor=DEFAULT_BG), " ") for _ in range(avail)]
         for i, e in enumerate(self.events):
             if self.lanes[i] != lane_idx:
                 continue

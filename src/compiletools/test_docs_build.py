@@ -1,4 +1,5 @@
 """End-to-end check that the Sphinx docs site builds without warnings."""
+
 import subprocess
 import sys
 from pathlib import Path
@@ -22,7 +23,6 @@ def test_docs_build_clean(tmp_path):
         text=True,
     )
     assert result.returncode == 0, (
-        f"sphinx-build failed:\n--- stdout ---\n{result.stdout}"
-        f"\n--- stderr ---\n{result.stderr}"
+        f"sphinx-build failed:\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
     )
     assert (tmp_path / "index.html").is_file(), "rendered index.html missing"

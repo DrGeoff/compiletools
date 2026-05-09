@@ -87,8 +87,7 @@ def main(argv=None):
         args.verbose -= args.quiet
 
         only_flags = sum(
-            bool(getattr(args, name))
-            for name in ("cas_objdir_only", "cas_pchdir_only", "cas_pcmdir_only")
+            bool(getattr(args, name)) for name in ("cas_objdir_only", "cas_pchdir_only", "cas_pcmdir_only")
         )
         if only_flags > 1:
             print(

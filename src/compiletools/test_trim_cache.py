@@ -757,8 +757,9 @@ class TestPcmPerBucketKeyBucketing:
     """``bucket_key`` from the manifest gives independent keep_count buckets."""
 
     @staticmethod
-    def _write_manifest(pcmdir, cmd_hash, bucket_key, *,
-                        stage="clang_module_interface", transitive=None, age_seconds=0):
+    def _write_manifest(
+        pcmdir, cmd_hash, bucket_key, *, stage="clang_module_interface", transitive=None, age_seconds=0
+    ):
         manifest = {
             "bucket_key": bucket_key,
             "stage": stage,
@@ -822,6 +823,7 @@ class TestPcmTransitiveStaleness:
     @staticmethod
     def _git_blob_sha1(content: bytes) -> str:
         import hashlib
+
         return hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
 
     def test_stale_transitive_hash_evicts_entry(self, tmp_path):

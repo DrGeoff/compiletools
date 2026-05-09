@@ -334,10 +334,12 @@ class TestCMakeExecute:
         def fake_check_call(cmd, **kwargs):
             captured.append(cmd)
 
-        with patch("shutil.which", return_value="/usr/bin/cmake"), \
-             patch("subprocess.check_call", side_effect=fake_check_call), \
-             patch.object(backend, "_copy_built_executables"), \
-             patch.object(backend, "build_filename", return_value=str(tmp_path / "CMakeLists.txt")):
+        with (
+            patch("shutil.which", return_value="/usr/bin/cmake"),
+            patch("subprocess.check_call", side_effect=fake_check_call),
+            patch.object(backend, "_copy_built_executables"),
+            patch.object(backend, "build_filename", return_value=str(tmp_path / "CMakeLists.txt")),
+        ):
             (tmp_path / "CMakeLists.txt").write_text("")
             backend._execute_build("build")
 
@@ -360,18 +362,12 @@ class TestCMakeExecute:
         CMake expects a single executable path."""
         cmd = self._capture_configure(CXX="ccache g++", CC="ccache gcc", tmp_path=tmp_path)
 
-        assert "-DCMAKE_CXX_COMPILER=g++" in cmd, (
-            f"Expected bare compiler in CMAKE_CXX_COMPILER; got {cmd}"
-        )
-        assert "-DCMAKE_C_COMPILER=gcc" in cmd, (
-            f"Expected bare compiler in CMAKE_C_COMPILER; got {cmd}"
-        )
+        assert "-DCMAKE_CXX_COMPILER=g++" in cmd, f"Expected bare compiler in CMAKE_CXX_COMPILER; got {cmd}"
+        assert "-DCMAKE_C_COMPILER=gcc" in cmd, f"Expected bare compiler in CMAKE_C_COMPILER; got {cmd}"
         assert "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache" in cmd, (
             f"Expected wrapper in CMAKE_CXX_COMPILER_LAUNCHER; got {cmd}"
         )
-        assert "-DCMAKE_C_COMPILER_LAUNCHER=ccache" in cmd, (
-            f"Expected wrapper in CMAKE_C_COMPILER_LAUNCHER; got {cmd}"
-        )
+        assert "-DCMAKE_C_COMPILER_LAUNCHER=ccache" in cmd, f"Expected wrapper in CMAKE_C_COMPILER_LAUNCHER; got {cmd}"
         # The literal "ccache g++" must never appear as an argument value
         assert not any("ccache g++" in a for a in cmd), (
             f"CMake compiler argument still contains the literal wrapped string: {cmd}"

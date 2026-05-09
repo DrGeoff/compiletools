@@ -768,7 +768,9 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Overhead should be < 50% for single-threaded case
         """
         if os.environ.get("CI"):
-            pytest.skip("Timing-sensitive; sub-second builds on shared CI runners are too noisy for a 50% overhead threshold")
+            pytest.skip(
+                "Timing-sensitive; sub-second builds on shared CI runners are too noisy for a 50% overhead threshold"
+            )
         with tempfile.TemporaryDirectory() as tmpdir:
             # Build without file-locking (no locking)
             objdir_no_lock = Path(tmpdir) / "obj_no_lock"

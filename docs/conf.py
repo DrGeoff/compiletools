@@ -4,6 +4,7 @@ Project metadata is pulled from pyproject.toml so the version is never
 duplicated. A small build-time hook generates per-tool stub .rst files
 into docs/_generated/ before the build runs (see Task 5).
 """
+
 from datetime import date
 from pathlib import Path
 
@@ -22,7 +23,7 @@ project = _pyproject["project"]["name"]
 release = _pyproject["project"]["version"]
 version = release
 author = ", ".join(a["name"] for a in _pyproject["project"]["authors"])
-copyright = f"{date.today().year}, {author}"  # noqa: A001
+copyright = f"{date.today().year}, {author}"
 
 extensions = [
     "sphinx.ext.autosectionlabel",
@@ -58,7 +59,7 @@ def _generate_tool_stubs():
 
     for readme in sorted(src_dir.glob("README.ct-*.rst")):
         # README.ct-cake.rst -> ct-cake
-        tool_name = readme.stem[len("README."):]
+        tool_name = readme.stem[len("README.") :]
         stub = out_dir / f"{tool_name}.rst"
         rel = Path("..") / ".." / "src" / "compiletools" / readme.name
         # No synthetic title: the README's own heading is the document title.

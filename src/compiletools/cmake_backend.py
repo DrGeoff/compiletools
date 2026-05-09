@@ -217,16 +217,12 @@ class CMakeBackend(BuildBackend):
             cxx_parts = compiletools.utils.split_command_cached(self.args.CXX)
             configure_cmd.append(f"-DCMAKE_CXX_COMPILER={cxx_parts[-1]}")
             if len(cxx_parts) > 1:
-                configure_cmd.append(
-                    "-DCMAKE_CXX_COMPILER_LAUNCHER=" + ";".join(cxx_parts[:-1])
-                )
+                configure_cmd.append("-DCMAKE_CXX_COMPILER_LAUNCHER=" + ";".join(cxx_parts[:-1]))
         if hasattr(self.args, "CC") and self.args.CC:
             cc_parts = compiletools.utils.split_command_cached(self.args.CC)
             configure_cmd.append(f"-DCMAKE_C_COMPILER={cc_parts[-1]}")
             if len(cc_parts) > 1:
-                configure_cmd.append(
-                    "-DCMAKE_C_COMPILER_LAUNCHER=" + ";".join(cc_parts[:-1])
-                )
+                configure_cmd.append("-DCMAKE_C_COMPILER_LAUNCHER=" + ";".join(cc_parts[:-1]))
         subprocess.check_call(configure_cmd, text=True)
 
         # Build

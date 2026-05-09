@@ -415,9 +415,7 @@ class TestMakeTimingParsing:
         timer = BuildTimer(enabled=True)
         wall_ns = int(time.time() * 1_000_000_000)
         log = tmp_path / ".ct-make-timing.jsonl"
-        log.write_text(
-            f'{{"target":"obj/foo.o","start_ns":{wall_ns},"end_ns":{wall_ns + 100_000_000}}}\n'
-        )
+        log.write_text(f'{{"target":"obj/foo.o","start_ns":{wall_ns},"end_ns":{wall_ns + 100_000_000}}}\n')
         with timer.phase("build_execution"):
             timer.record_rules_from_make_timing(str(log))
             now = time.monotonic()
@@ -667,12 +665,8 @@ class TestSummaryTableCPUTimeColumn:
         headers = [c.header for c in table.columns]
         # Wall and CPU are presented as separate columns; sub-rows fill
         # CPU with the per-rule duration sum (which can exceed Wall).
-        assert any("Wall" in h for h in headers), (
-            f"Expected a Wall column, got: {headers}"
-        )
-        assert any("CPU" in h for h in headers), (
-            f"Expected a CPU column distinct from Wall, got: {headers}"
-        )
+        assert any("Wall" in h for h in headers), f"Expected a Wall column, got: {headers}"
+        assert any("CPU" in h for h in headers), f"Expected a CPU column distinct from Wall, got: {headers}"
 
     def test_summed_children_may_exceed_phase_wall_clock(self):
         # Build a phase whose two child rules ran in parallel for 2s each
@@ -746,9 +740,7 @@ class TestAggregateByCategory:
         phase.children.append(
             TimingEvent(name="b", category="compile", start_s=1.0, end_s=3.0, target="b.o", source="b.cpp")
         )
-        phase.children.append(
-            TimingEvent(name="app", category="link", start_s=3.0, end_s=4.0, target="app")
-        )
+        phase.children.append(TimingEvent(name="app", category="link", start_s=3.0, end_s=4.0, target="app"))
         timer._root.children.append(phase)
         timer._root.end_s = 4.0
         return timer
@@ -760,7 +752,7 @@ class TestAggregateByCategory:
         compile_row = next(r for r in rows if r[0] == "compile")
         _cat, wall, cpu, parallelism, _ = compile_row
         assert wall == pytest.approx(3.0)  # union [0,3]
-        assert cpu == pytest.approx(4.0)   # 2 + 2
+        assert cpu == pytest.approx(4.0)  # 2 + 2
         assert parallelism == pytest.approx(4.0 / 3.0)
 
     def test_sorted_by_cpu_descending(self):
@@ -772,9 +764,7 @@ class TestAggregateByCategory:
     def test_non_aggregating_phase_returns_empty(self):
         timer = BuildTimer(enabled=True)
         phase = TimingEvent(name="build_graph", category="phase", start_s=0.0, end_s=1.0)
-        phase.children.append(
-            TimingEvent(name="x", category="compile", start_s=0.0, end_s=1.0, target="x.o")
-        )
+        phase.children.append(TimingEvent(name="x", category="compile", start_s=0.0, end_s=1.0, target="x.o"))
         timer._root.children.append(phase)
         assert timer.aggregate_by_category(phase) == []
 

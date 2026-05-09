@@ -28,26 +28,21 @@ class TestFlattenEvents:
     def test_single_phase_with_rules(self):
         rule_a = TimingEvent(name="a.o", category="compile", start_s=1.0, end_s=2.0)
         rule_b = TimingEvent(name="b.o", category="compile", start_s=2.0, end_s=3.0)
-        phase = TimingEvent(name="build", category="phase", start_s=0.0, end_s=4.0,
-                            children=[rule_a, rule_b])
+        phase = TimingEvent(name="build", category="phase", start_s=0.0, end_s=4.0, children=[rule_a, rule_b])
         result = flatten_events([phase])
         assert result == [rule_a, rule_b]
 
     def test_nested_phases(self):
         rule = TimingEvent(name="x", category="compile", start_s=0.0, end_s=1.0)
-        inner = TimingEvent(name="inner", category="phase", start_s=0.0, end_s=1.0,
-                            children=[rule])
-        outer = TimingEvent(name="outer", category="phase", start_s=0.0, end_s=1.0,
-                            children=[inner])
+        inner = TimingEvent(name="inner", category="phase", start_s=0.0, end_s=1.0, children=[rule])
+        outer = TimingEvent(name="outer", category="phase", start_s=0.0, end_s=1.0, children=[inner])
         assert flatten_events([outer]) == [rule]
 
     def test_skips_phase_keeps_rules_with_children(self):
         # Rare: a rule with sub-rule children — both should be flattened.
         leaf = TimingEvent(name="leaf", category="compile", start_s=0.5, end_s=0.8)
-        rule = TimingEvent(name="parent", category="link", start_s=0.0, end_s=1.0,
-                           children=[leaf])
-        phase = TimingEvent(name="p", category="phase", start_s=0.0, end_s=1.0,
-                            children=[rule])
+        rule = TimingEvent(name="parent", category="link", start_s=0.0, end_s=1.0, children=[leaf])
+        phase = TimingEvent(name="p", category="phase", start_s=0.0, end_s=1.0, children=[rule])
         assert flatten_events([phase]) == [rule, leaf]
 
 
@@ -173,6 +168,7 @@ class TestCoalesce:
 
     def test_merges_identical_styles(self):
         from rich.style import Style
+
         s = Style(color="red")
         cells = [(s, "a"), (s, "b"), (s, "c")]
         result = _coalesce(cells)
@@ -181,6 +177,7 @@ class TestCoalesce:
 
     def test_splits_on_style_change(self):
         from rich.style import Style
+
         s1 = Style(color="red")
         s2 = Style(color="blue")
         cells = [(s1, "a"), (s2, "b"), (s2, "c"), (s1, "d")]
@@ -203,14 +200,10 @@ def _make_timer() -> BuildTimer:
     # without the with-block's monotonic anchoring (which would conflict
     # with our test-supplied start_s values).
     with timer.phase("build_execution"):
-        timer.record_rule("compile", "a.o", "a.cpp", elapsed_s=1.0,
-                          start_s=0.0, end_s=1.0)
-        timer.record_rule("compile", "b.o", "b.cpp", elapsed_s=1.0,
-                          start_s=0.0, end_s=1.0)  # parallel with a
-        timer.record_rule("compile", "c.o", "c.cpp", elapsed_s=0.5,
-                          start_s=1.0, end_s=1.5)  # sequential after a
-        timer.record_rule("link", "app", "", elapsed_s=0.2,
-                          start_s=1.5, end_s=1.7)
+        timer.record_rule("compile", "a.o", "a.cpp", elapsed_s=1.0, start_s=0.0, end_s=1.0)
+        timer.record_rule("compile", "b.o", "b.cpp", elapsed_s=1.0, start_s=0.0, end_s=1.0)  # parallel with a
+        timer.record_rule("compile", "c.o", "c.cpp", elapsed_s=0.5, start_s=1.0, end_s=1.5)  # sequential after a
+        timer.record_rule("link", "app", "", elapsed_s=0.2, start_s=1.5, end_s=1.7)
     timer.finish()
     return timer
 

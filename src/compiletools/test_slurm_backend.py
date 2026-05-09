@@ -968,9 +968,7 @@ class TestMemoryEstimation:
         custom = [(1, "500M"), (4, "1G")]
         assert self._make_backend(tiers=custom)._estimate_memory(rule) == "500M"
 
-    @pytest.mark.parametrize(
-        "rule_type", ["link", "static_library", "shared_library"]
-    )
+    @pytest.mark.parametrize("rule_type", ["link", "static_library", "shared_library"])
     @pytest.mark.parametrize(
         "n_inputs,expected",
         [(1, "1G"), (2, "2G"), (4, "4G"), (8, "8G"), (16, "16G")],

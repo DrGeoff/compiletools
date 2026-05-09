@@ -96,9 +96,7 @@ def _union_span(events: list[TimingEvent]) -> float:
     Merges overlapping [start_s, end_s) intervals.  Events still in
     flight (end_s is None) are skipped.
     """
-    intervals = sorted(
-        (e.start_s, e.end_s) for e in events if e.end_s is not None
-    )
+    intervals = sorted((e.start_s, e.end_s) for e in events if e.end_s is not None)
     if not intervals:
         return 0.0
     total = 0.0
@@ -472,13 +470,9 @@ class BuildTimer:
 
     # ----------------------------------------------- per-category aggregation
 
-    AGGREGATING_PHASES: ClassVar[frozenset[str]] = frozenset(
-        {"build_execution", "test_execution"}
-    )
+    AGGREGATING_PHASES: ClassVar[frozenset[str]] = frozenset({"build_execution", "test_execution"})
 
-    def aggregate_by_category(
-        self, phase: TimingEvent
-    ) -> list[tuple[str, float, float, float, list[TimingEvent]]]:
+    def aggregate_by_category(self, phase: TimingEvent) -> list[tuple[str, float, float, float, list[TimingEvent]]]:
         """Group a phase's child rules by category and aggregate them.
 
         Returns ``(category, wall, cpu, parallelism, events)`` tuples

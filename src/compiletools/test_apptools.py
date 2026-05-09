@@ -954,6 +954,7 @@ class TestVariantResolutionRespectsArgv:
 
     def setup_method(self):
         import compiletools.testhelper as uth
+
         uth.reset()
 
     def test_argv_variant_preserved_when_not_aliased(self):

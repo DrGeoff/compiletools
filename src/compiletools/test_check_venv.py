@@ -26,10 +26,14 @@ def _reset_lru(monkeypatch):
     check_venv.cached_venv_mismatch_reason.cache_clear()
 
 
-def _make_fake_ct_cake(tmp_path, *, shebang_target: str | None,
-                       interpreter_prints: str | None = None,
-                       interpreter_exit: int = 0,
-                       interpreter_stderr: str = "") -> str:
+def _make_fake_ct_cake(
+    tmp_path,
+    *,
+    shebang_target: str | None,
+    interpreter_prints: str | None = None,
+    interpreter_exit: int = 0,
+    interpreter_stderr: str = "",
+) -> str:
     """Build a fake ``ct-cake`` script in ``tmp_path/bin``.
 
     ``shebang_target`` -- the program named after ``#!``. If ``None``,
@@ -51,13 +55,15 @@ def _make_fake_ct_cake(tmp_path, *, shebang_target: str | None,
         actual_target = shebang_target
         if interpreter_prints is not None:
             stub = bin_dir / "fake_python"
-            stub.write_text(textwrap.dedent(f"""\
+            stub.write_text(
+                textwrap.dedent(f"""\
                 #!/bin/bash
                 # Ignore the -c "..." invocation; just emit what the test wants.
                 printf '%s\\n' {interpreter_prints!r}
                 {f"echo {interpreter_stderr!r} >&2" if interpreter_stderr else ""}
                 exit {interpreter_exit}
-                """))
+                """)
+            )
             stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
             actual_target = str(stub)
         cake.write_text(f"#!{actual_target}\n# fake ct-cake\n")
@@ -188,10 +194,12 @@ def test_handles_env_style_shebang(monkeypatch, tmp_path):
     bin_dir.mkdir()
     # Real interpreter that just prints what we want.
     fake_python = bin_dir / "fake_python"
-    fake_python.write_text(textwrap.dedent("""\
+    fake_python.write_text(
+        textwrap.dedent("""\
         #!/bin/bash
         printf '%s\\n' "/expected/src"
-        """))
+        """)
+    )
     fake_python.chmod(fake_python.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     cake = bin_dir / "ct-cake"
     # env shebang pointing at fake_python on PATH.
@@ -261,6 +269,7 @@ def test_cli_main_returns_zero_on_match(capsys):
     """``ct-check-venv`` exits 0 when ct-cake's compiletools matches the
     one running ``ct-check-venv`` itself."""
     import compiletools
+
     expected = os.path.dirname(os.path.dirname(os.path.realpath(compiletools.__file__)))
     # Use a real ct-cake (the venv's) by leaving PATH alone; the test only
     # makes sense in a venv where they actually do match (which they
@@ -296,9 +305,9 @@ def test_module_runnable_via_python_dash_m():
     invocation form (used in CI before any venv is configured)."""
     r = subprocess.run(
         [sys.executable, "-m", "compiletools.check_venv"],
-        capture_output=True, text=True, timeout=15,
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
     # Either ok (exit 0) or mismatch (exit 1), but never a crash.
-    assert r.returncode in (0, 1), (
-        f"check_venv crashed: rc={r.returncode}\nstdout:{r.stdout}\nstderr:{r.stderr}"
-    )
+    assert r.returncode in (0, 1), f"check_venv crashed: rc={r.returncode}\nstdout:{r.stdout}\nstderr:{r.stderr}"
