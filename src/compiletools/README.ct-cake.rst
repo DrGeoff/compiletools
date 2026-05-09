@@ -7,7 +7,7 @@ Swiss army knife for building a C/C++ project
 ---------------------------------------------
 
 :Author: drgeoffathome@gmail.com
-:Date:   2018-02-06
+:Date:   2026-05-09
 :Copyright: Copyright (C) 2011-2016 Zomojo Pty Ltd
 :Version: 9.0.0
 :Manual section: 1
@@ -275,6 +275,24 @@ Per-compiler placement details
   race that ``{cas-objdir}/.module-mapper.txt`` would have when two
   parallel ``ct-cake`` invocations target the same variant with
   different module sets.
+
+Cache keys are workspace-path-independent
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+All three CAS keys (per-TU object, PCH, PCM) hash *gitroot-relative*
+paths instead of absolute paths. An identical translation unit built
+in ``/scratch/run-1/repo/`` and ``/scratch/run-2/repo/`` therefore
+produces the same cache key, and the second build hits the cache
+instead of recompiling. Cloning a repo to a new path, renaming a
+worktree, or relocating a shared cache directory between hosts no
+longer invalidates object, PCH, or PCM entries.
+
+The canonicalizer applies to path-bearing flag tokens (``-I``,
+``-isystem``, ``-iquote``, ``-idirafter``, ``-F``, ``-B``,
+``-include``, ``-include-pch``) and to the source path. System
+headers, sibling repos, and already-relative paths pass through
+unchanged. The compiler still receives the real absolute paths --
+canonicalization only affects what the cache hashes.
 
 Selective build and test
 ========================
