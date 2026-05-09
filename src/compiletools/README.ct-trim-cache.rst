@@ -8,7 +8,7 @@ Trim stale entries from the object, PCH, and PCM CAS directories
 
 :Author: drgeoffathome@gmail.com
 :Date:   2026-05-08
-:Version: 9.0.0
+:Version: 9.1.0
 :Manual section: 1
 :Manual group: developers
 
