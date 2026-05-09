@@ -14,7 +14,7 @@ C/C++ build tools that requires almost no configuration.
        are the same canonical document.
 
 :Author: drgeoffathome@gmail.com
-:Date:   2025-12-17
+:Date:   2026-05-09
 :Version: 9.0.0
 :Manual section: 1
 :Manual group: developers
@@ -87,6 +87,24 @@ KEY FEATURES
     Shake backend.  Distribute compilation across an HPC cluster with the
     Slurm backend.  Use ``--backend=<name>`` to select.  See ct-backends(7).
 
+**Content-Addressable Caching**
+    Objects, precompiled headers, and C++20 module BMIs are cached in
+    per-variant content-addressable directories (``cas-objdir``,
+    ``cas-pchdir``, ``cas-pcmdir``). Cache keys are anchored to the git
+    root, so identical translation units share entries even when the
+    workspace is moved or cloned to a new path. Trim with
+    ``ct-trim-cache``.
+
+**C++20 Modules**
+    First-class support for clang ``.pcm`` and gcc ``.gcm`` BMI artefacts
+    -- including named modules, partitions, header units, and ``import std``
+    -- with automatic discovery from ``import`` / ``export module`` in
+    your sources. See the C++20 Modules Caching section in ct-cake(1).
+
+**Precompiled Headers**
+    Mark headers with ``//#PCH=`` and ct-cake builds them once and shares
+    them across the project via ``cas-pchdir``.
+
 **File Locking**
     Multi-user/multi-host object file caching with filesystem-aware locking
     for faster builds in team environments. Enable with ``file-locking = true``.
@@ -120,8 +138,21 @@ CORE TOOLS
     Analyze build timing data from ``ct-cake --timing``.  Interactive TUI,
     static summary, run comparison, and Chrome Trace export.
 
+**ct-trim-cache**
+    Trim aged entries from the object, PCH, and PCM content-addressable
+    caches with configurable retention.
+
+**ct-cache-report**
+    Summarize content-addressable cache occupancy.
+
 **ct-cleanup-locks**
     Clean stale locks from file locking.
+
+**ct-check-venv**
+    Verify that the ``ct-cake`` on PATH imports the same ``compiletools``
+    as the active venv. Run after ``git worktree add`` and a fresh
+    ``uv pip install -e .`` to confirm subprocess-driven tools see the
+    expected source tree.
 
 **ct-list-backends**
     List available build backends (make, ninja, cmake, bazel, shake, tup).
