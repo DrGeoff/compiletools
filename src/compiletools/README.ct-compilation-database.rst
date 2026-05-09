@@ -7,7 +7,7 @@ Generate compile_commands.json for clang tooling and IDE integration
 --------------------------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
-:Date:   2025-10-08
+:Date:   2026-05-09
 :Version: 9.0.0
 :Manual section: 1
 :Manual group: developers
@@ -57,11 +57,37 @@ specification. Each entry contains:
       "file": "main.cpp"
     }
 
+PER-VARIANT DATABASES AND THE compile_commands.json SYMLINK
+============================================================
+By default ct-compilation-database writes one database per variant at
+``<gitroot>/compile_commands.<variant>.json`` (e.g.
+``compile_commands.gcc.debug.json``, ``compile_commands.clang.release.json``)
+and atomically retargets a sibling ``<gitroot>/compile_commands.json``
+symlink at whichever variant ran most recently. The bare
+``compile_commands.json`` is what clangd, clang-tidy, and VSCode actually
+open — the JSON Compilation Database spec allows multiple entries per
+source file, but consumers (clangd in particular) pick one and ignore the
+rest, so multi-variant DBs must live in separate files plus a switcher.
+
+The symlink target is written as a relative basename so the tree is
+portable across renames and copies.
+
+To switch the active variant for tooling, run a build (or a
+ct-compilation-database invocation) with ``--variant=<other>`` (or
+``VARIANT=<other>``); the symlink follows the most recent run.
+
+If you pass ``--compilation-database-output=<path>``, the literal path is
+honored verbatim and **no symlink is touched** — preserves backward
+compatibility for scripts that pin a specific filename.
+
 OPTIONS
 =======
 --compilation-database-output OUTPUT
-    Output filename for compilation database.
-    Default: <gitroot>/compile_commands.json
+    Output filename for compilation database. Honored verbatim; setting
+    this also disables the ``compile_commands.json`` symlink update so
+    scripts that pin a specific path aren't surprised by a sibling rewrite.
+    Default (when unset): ``<gitroot>/compile_commands.<variant>.json``
+    plus a ``<gitroot>/compile_commands.json`` symlink pointing at it.
 
 --relative-paths
     Use relative paths instead of absolute paths in the database.
