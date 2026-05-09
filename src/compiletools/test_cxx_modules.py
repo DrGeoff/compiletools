@@ -147,38 +147,46 @@ class TestCompilerKindClassification:
 
     def test_bare_gpp(self):
         from compiletools.apptools import compiler_kind
+
         # Even if g++ doesn't resolve, fallback should still recognize the name.
         assert compiler_kind("g++") == "gcc"
 
     def test_bare_gcc(self):
         from compiletools.apptools import compiler_kind
+
         assert compiler_kind("gcc") == "gcc"
 
     def test_versioned_clangpp(self):
         from compiletools.apptools import compiler_kind
+
         assert compiler_kind("/opt/llvm/bin/clang++-22.1.3") == "clang"
 
     def test_versioned_gpp(self):
         from compiletools.apptools import compiler_kind
+
         assert compiler_kind("/usr/bin/g++-15") == "gcc"
 
     def test_ccache_wrapper_gcc(self):
         from compiletools.apptools import compiler_kind
+
         # Pre-resolution string has the toolchain hint; the helper should
         # see it via the raw-string fallback.
         assert compiler_kind("ccache g++") == "gcc"
 
     def test_ccache_wrapper_clang(self):
         from compiletools.apptools import compiler_kind
+
         assert compiler_kind("ccache clang++") == "clang"
 
     def test_empty_or_none(self):
         from compiletools.apptools import compiler_kind
+
         assert compiler_kind(None) == "unknown"
         assert compiler_kind("") == "unknown"
 
     def test_unknown_basename(self):
         from compiletools.apptools import compiler_kind
+
         assert compiler_kind("/usr/bin/some-shim") == "unknown"
 
 
@@ -241,34 +249,23 @@ class TestHunterModuleGraph:
     def test_module_interface_pulled_in_as_source_dep(self, tmp_path, monkeypatch):
         """An importer's `import math;` must add math.cppm to required sources."""
         # Lay down a minimal sample.
-        (tmp_path / "math.cppm").write_text(
-            "export module math;\nexport int add(int,int);\n"
-        )
-        (tmp_path / "main.cpp").write_text(
-            "// ct-exemarker\nimport math;\nint main(){return add(1,2);}\n"
-        )
+        (tmp_path / "math.cppm").write_text("export module math;\nexport int add(int,int);\n")
+        (tmp_path / "main.cpp").write_text("// ct-exemarker\nimport math;\nint main(){return add(1,2);}\n")
         monkeypatch.chdir(tmp_path)
 
         hunter, _ = self._make_hunter(tmp_path)
         sources = hunter.required_source_files(str(tmp_path / "main.cpp"))
         sources_basenames = {os.path.basename(s) for s in sources}
         assert "math.cppm" in sources_basenames, (
-            f"main.cpp imports `math` but math.cppm wasn't pulled in. "
-            f"required_source_files returned: {sources}"
+            f"main.cpp imports `math` but math.cppm wasn't pulled in. required_source_files returned: {sources}"
         )
 
     def test_partition_imports_resolved_against_own_module(self, tmp_path, monkeypatch):
         """`import :basic;` inside the primary `export module math;` must
         pull math-basic.cppm into the dependency set."""
-        (tmp_path / "math-basic.cppm").write_text(
-            "export module math:basic;\nexport int add(int,int) { return 0; }\n"
-        )
-        (tmp_path / "math.cppm").write_text(
-            "export module math;\nexport import :basic;\n"
-        )
-        (tmp_path / "main.cpp").write_text(
-            "// ct-exemarker\nimport math;\nint main(){return add(1,2);}\n"
-        )
+        (tmp_path / "math-basic.cppm").write_text("export module math:basic;\nexport int add(int,int) { return 0; }\n")
+        (tmp_path / "math.cppm").write_text("export module math;\nexport import :basic;\n")
+        (tmp_path / "main.cpp").write_text("// ct-exemarker\nimport math;\nint main(){return add(1,2);}\n")
         monkeypatch.chdir(tmp_path)
 
         hunter, _ = self._make_hunter(tmp_path)
@@ -280,15 +277,9 @@ class TestHunterModuleGraph:
     def test_qualified_partition_import_resolved(self, tmp_path, monkeypatch):
         """`import math:basic;` (fully qualified) must pull the partition in
         even from a TU that doesn't itself belong to the math module."""
-        (tmp_path / "math-basic.cppm").write_text(
-            "export module math:basic;\nexport int add(int,int) { return 0; }\n"
-        )
-        (tmp_path / "math.cppm").write_text(
-            "export module math;\nexport import :basic;\n"
-        )
-        (tmp_path / "main.cpp").write_text(
-            "// ct-exemarker\nimport math:basic;\nint main(){return add(1,2);}\n"
-        )
+        (tmp_path / "math-basic.cppm").write_text("export module math:basic;\nexport int add(int,int) { return 0; }\n")
+        (tmp_path / "math.cppm").write_text("export module math;\nexport import :basic;\n")
+        (tmp_path / "main.cpp").write_text("// ct-exemarker\nimport math:basic;\nint main(){return add(1,2);}\n")
         monkeypatch.chdir(tmp_path)
 
         hunter, _ = self._make_hunter(tmp_path)
@@ -309,9 +300,7 @@ class TestHunterModuleGraph:
         """
         (tmp_path / "math.cppm").write_text("export module math;\nexport int x();\n")
         (tmp_path / "math2.cppm").write_text("export module math;\nexport int y();\n")
-        (tmp_path / "main.cpp").write_text(
-            "// ct-exemarker\nimport math;\nint main(){return 0;}\n"
-        )
+        (tmp_path / "main.cpp").write_text("// ct-exemarker\nimport math;\nint main(){return 0;}\n")
         monkeypatch.chdir(tmp_path)
 
         hunter, _ = self._make_hunter(tmp_path)
@@ -345,12 +334,10 @@ class TestHunterModuleGraph:
         # use-time check.
         conflicts = getattr(hunter, "_module_export_conflicts", {})
         assert "math" in conflicts, (
-            f"expected 'math' in _module_export_conflicts (samples have "
-            f"three math.cppm files); got {list(conflicts)}"
+            f"expected 'math' in _module_export_conflicts (samples have three math.cppm files); got {list(conflicts)}"
         )
         assert len(conflicts["math"]) >= 3, (
-            f"expected at least 3 exporters of 'math' in samples; "
-            f"got {conflicts['math']}"
+            f"expected at least 3 exporters of 'math' in samples; got {conflicts['math']}"
         )
 
     def test_duplicate_module_exporters_when_unimported_is_tolerated(self, tmp_path, monkeypatch):
@@ -361,9 +348,7 @@ class TestHunterModuleGraph:
         (tmp_path / "math.cppm").write_text("export module math;\nexport int x();\n")
         (tmp_path / "math2.cppm").write_text("export module math;\nexport int y();\n")
         # main.cpp does NOT import math.
-        (tmp_path / "main.cpp").write_text(
-            "// ct-exemarker\nint main(){return 0;}\n"
-        )
+        (tmp_path / "main.cpp").write_text("// ct-exemarker\nint main(){return 0;}\n")
         monkeypatch.chdir(tmp_path)
 
         hunter, _ = self._make_hunter(tmp_path)
@@ -381,6 +366,7 @@ class TestHunterModuleGraph:
 def _which(name: str) -> str | None:
     """Locate `name` on PATH, or return None if not present."""
     import shutil as _shutil
+
     return _shutil.which(name)
 
 
@@ -388,7 +374,6 @@ def _which(name: str) -> str | None:
 # (which gates on venv-mismatch first, then the feature probe). See
 # ``compiletools.testhelper.skipif_e2e_unavailable`` and
 # ``compiletools.check_venv`` for the underlying machinery.
-
 
 
 @functools.lru_cache(maxsize=16)
@@ -410,8 +395,7 @@ def _probe_modules_support(cxx: str | None, kind: str) -> bool:
         with open(src, "w") as f:
             f.write("export module probe;\nexport int answer() { return 42; }\n")
         if kind == "gcc":
-            cmd = [cxx, "-std=c++20", "-fmodules-ts", "-x", "c++", "-c", src,
-                   "-o", os.path.join(td, "probe.o")]
+            cmd = [cxx, "-std=c++20", "-fmodules-ts", "-x", "c++", "-c", src, "-o", os.path.join(td, "probe.o")]
         elif kind == "clang":
             # Probe partition support too: clang 13's --precompile accepts the
             # trivial primary-interface case but explicitly refuses partitions
@@ -422,30 +406,42 @@ def _probe_modules_support(cxx: str | None, kind: str) -> bool:
             # invocation rules out clang versions that can't drive any of the
             # samples in this suite.
             with open(src, "w") as f:
-                f.write(
-                    "export module probe;\n"
-                    "export import :part;\n"
-                    "export int answer();\n"
-                )
+                f.write("export module probe;\nexport import :part;\nexport int answer();\n")
             part_src = os.path.join(td, "probe-part.cppm")
             with open(part_src, "w") as f:
-                f.write(
-                    "export module probe:part;\n"
-                    "export int answer() { return 42; }\n"
-                )
+                f.write("export module probe:part;\nexport int answer() { return 42; }\n")
             try:
                 rp = subprocess.run(
-                    [cxx, "-std=c++20", "-x", "c++-module", "--precompile",
-                     part_src, "-o", os.path.join(td, "probe-part.pcm")],
-                    capture_output=True, text=True, cwd=td, timeout=30,
+                    [
+                        cxx,
+                        "-std=c++20",
+                        "-x",
+                        "c++-module",
+                        "--precompile",
+                        part_src,
+                        "-o",
+                        os.path.join(td, "probe-part.pcm"),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    cwd=td,
+                    timeout=30,
                 )
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 return False
             if rp.returncode != 0:
                 return False
-            cmd = [cxx, "-std=c++20", "-x", "c++-module", "--precompile",
-                   "-fmodule-file=probe:part=" + os.path.join(td, "probe-part.pcm"),
-                   src, "-o", os.path.join(td, "probe.pcm")]
+            cmd = [
+                cxx,
+                "-std=c++20",
+                "-x",
+                "c++-module",
+                "--precompile",
+                "-fmodule-file=probe:part=" + os.path.join(td, "probe-part.pcm"),
+                src,
+                "-o",
+                os.path.join(td, "probe.pcm"),
+            ]
         else:
             raise ValueError(f"unknown probe kind: {kind!r}")
         try:
@@ -458,6 +454,7 @@ def _probe_modules_support(cxx: str | None, kind: str) -> bool:
 def _detected_gcc_supports_modules() -> bool:
     """Probe modules support against the auto-detected functional g++."""
     import compiletools.apptools
+
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     if not cxx or "g++" not in os.path.basename(cxx):
         return False
@@ -470,7 +467,6 @@ def _clang_path_for_modules() -> str | None:
     if cand and _probe_modules_support(cand, "clang"):
         return cand
     return None
-
 
 
 requires_cxx_modules = uth.skipif_e2e_unavailable(
@@ -493,6 +489,7 @@ def test_cxx_modules_simple_sample_builds_and_runs(tmp_path, monkeypatch):
 
     # Copy sample into tmp_path so the build artifacts don't pollute the source.
     import shutil
+
     workdir = tmp_path / "cxx_modules"
     shutil.copytree(sample_src, workdir)
     monkeypatch.chdir(workdir)
@@ -500,7 +497,10 @@ def test_cxx_modules_simple_sample_builds_and_runs(tmp_path, monkeypatch):
     # Run ct-cake --auto via subprocess so we exercise the same CLI users do.
     r = subprocess.run(
         ["ct-cake", "--auto"],
-        capture_output=True, text=True, cwd=workdir, timeout=120,
+        capture_output=True,
+        text=True,
+        cwd=workdir,
+        timeout=120,
     )
     assert r.returncode == 0, f"ct-cake --auto failed:\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
 
@@ -522,6 +522,7 @@ def _run_sample_with_compiler(sample_name: str, cxx: str, tmp_path, monkeypatch)
     a config that pins the compiler.
     """
     import shutil
+
     sample_src = os.path.join(uth.samplesdir(), sample_name)
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
     workdir = tmp_path / sample_name
@@ -534,22 +535,17 @@ def _run_sample_with_compiler(sample_name: str, cxx: str, tmp_path, monkeypatch)
     # CC stays unchanged: the samples are pure C++.
     r = subprocess.run(
         ["ct-cake", "--auto"],
-        capture_output=True, text=True, cwd=workdir, timeout=120, env=env,
+        capture_output=True,
+        text=True,
+        cwd=workdir,
+        timeout=120,
+        env=env,
     )
-    assert r.returncode == 0, (
-        f"ct-cake --auto (CXX={cxx}) failed:\n"
-        f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
-    )
+    assert r.returncode == 0, f"ct-cake --auto (CXX={cxx}) failed:\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
     exe = workdir / "bin" / "main"
-    assert exe.exists(), (
-        f"executable not produced (CXX={cxx}):\n"
-        f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
-    )
+    assert exe.exists(), f"executable not produced (CXX={cxx}):\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
     run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
-    assert run.returncode == 0, (
-        f"executable returned {run.returncode} (CXX={cxx}):\n"
-        f"{run.stdout}\n{run.stderr}"
-    )
+    assert run.returncode == 0, f"executable returned {run.returncode} (CXX={cxx}):\n{run.stdout}\n{run.stderr}"
     assert "add(2,3)=5" in run.stdout, f"unexpected output: {run.stdout!r}"
 
 
@@ -573,6 +569,7 @@ def _run_partitions_sample_with(cxx: str, tmp_path, monkeypatch):
     """Build the cxx_modules_partitions sample and assert
     ``add(2,3)=5 mul(2,3)=6`` on stdout."""
     import shutil
+
     sample_src = os.path.join(uth.samplesdir(), "cxx_modules_partitions")
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
     workdir = tmp_path / "cxx_modules_partitions"
@@ -584,17 +581,15 @@ def _run_partitions_sample_with(cxx: str, tmp_path, monkeypatch):
     env["CPP"] = cxx
     r = subprocess.run(
         ["ct-cake", "--auto"],
-        capture_output=True, text=True, cwd=workdir, timeout=120, env=env,
+        capture_output=True,
+        text=True,
+        cwd=workdir,
+        timeout=120,
+        env=env,
     )
-    assert r.returncode == 0, (
-        f"ct-cake --auto (CXX={cxx}) failed:\n"
-        f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
-    )
+    assert r.returncode == 0, f"ct-cake --auto (CXX={cxx}) failed:\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
     exe = workdir / "bin" / "main"
-    assert exe.exists(), (
-        f"executable not produced (CXX={cxx}):\n"
-        f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
-    )
+    assert exe.exists(), f"executable not produced (CXX={cxx}):\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
     run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
     assert run.returncode == 0, f"{run.stdout}\n{run.stderr}"
     # The partition sample exercises both interface partitions; assert each
@@ -608,6 +603,7 @@ def _run_partitions_sample_with(cxx: str, tmp_path, monkeypatch):
 def test_cxx_modules_partitions_sample_builds_with_gcc(tmp_path, monkeypatch):
     """End-to-end build of the partitions sample under gcc."""
     import compiletools.apptools
+
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     _run_partitions_sample_with(cxx, tmp_path, monkeypatch)
 
@@ -629,6 +625,7 @@ def _run_import_std_sample_with(cxx: str, tmp_path, monkeypatch):
     """Build the cxx_modules_import_std sample and assert the program
     prints `add(2,3)=5`. Exercises the system-provided std module path."""
     import shutil
+
     sample_src = os.path.join(uth.samplesdir(), "cxx_modules_import_std")
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
     workdir = tmp_path / "cxx_modules_import_std"
@@ -640,17 +637,15 @@ def _run_import_std_sample_with(cxx: str, tmp_path, monkeypatch):
     env["CPP"] = cxx
     r = subprocess.run(
         ["ct-cake", "--auto"],
-        capture_output=True, text=True, cwd=workdir, timeout=180, env=env,
+        capture_output=True,
+        text=True,
+        cwd=workdir,
+        timeout=180,
+        env=env,
     )
-    assert r.returncode == 0, (
-        f"ct-cake --auto (CXX={cxx}) failed:\n"
-        f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
-    )
+    assert r.returncode == 0, f"ct-cake --auto (CXX={cxx}) failed:\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
     exe = workdir / "bin" / "main"
-    assert exe.exists(), (
-        f"executable not produced (CXX={cxx}):\n"
-        f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
-    )
+    assert exe.exists(), f"executable not produced (CXX={cxx}):\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
     run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
     assert run.returncode == 0, f"{run.stdout}\n{run.stderr}"
     assert "add(2,3)=5" in run.stdout, f"unexpected output: {run.stdout!r}"
@@ -663,6 +658,7 @@ def _gcc_supports_import_std() -> bool:
     True only when both the source exists and the compile succeeds.
     """
     import compiletools.apptools
+
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     if not cxx or "g++" not in os.path.basename(cxx):
         return False
@@ -677,7 +673,9 @@ def _gcc_supports_import_std() -> bool:
             # accept the sample, so probe and sample stay aligned.
             r = subprocess.run(
                 [cxx, "-std=c++23", "-fmodules", "-c", src, "-o", os.path.join(td, "std.o")],
-                capture_output=True, cwd=td, timeout=120,
+                capture_output=True,
+                cwd=td,
+                timeout=120,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
@@ -687,6 +685,7 @@ def _gcc_supports_import_std() -> bool:
 def _clang_supports_import_std() -> bool:
     """Probe the clang++ on PATH for `import std;` capability via libc++."""
     import compiletools.apptools
+
     cxx = _which("clang++")
     if not cxx:
         return False
@@ -696,10 +695,19 @@ def _clang_supports_import_std() -> bool:
     with tempfile.TemporaryDirectory() as td:
         try:
             r = subprocess.run(
-                [cxx, "-std=c++23", "-stdlib=libc++",
-                 "-Wno-reserved-module-identifier",
-                 "--precompile", src, "-o", os.path.join(td, "std.pcm")],
-                capture_output=True, cwd=td, timeout=120,
+                [
+                    cxx,
+                    "-std=c++23",
+                    "-stdlib=libc++",
+                    "-Wno-reserved-module-identifier",
+                    "--precompile",
+                    src,
+                    "-o",
+                    os.path.join(td, "std.pcm"),
+                ],
+                capture_output=True,
+                cwd=td,
+                timeout=120,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
@@ -721,6 +729,7 @@ requires_clang_import_std = uth.skipif_e2e_unavailable(
 def test_cxx_modules_import_std_builds_with_gcc(tmp_path, monkeypatch):
     """End-to-end `import std;` build with gcc."""
     import compiletools.apptools
+
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     _run_import_std_sample_with(cxx, tmp_path, monkeypatch)
 
@@ -741,6 +750,7 @@ def test_cxx_modules_import_std_builds_with_clang(tmp_path, monkeypatch):
 def _gcc_supports_header_units() -> bool:
     """Probe the auto-detected g++ for header-unit precompile support."""
     import compiletools.apptools
+
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     if not cxx or "g++" not in os.path.basename(cxx):
         return False
@@ -750,7 +760,9 @@ def _gcc_supports_header_units() -> bool:
             # feature; the sample's ct.conf pins -std=c++20).
             r = subprocess.run(
                 [cxx, "-std=c++20", "-fmodules", "-c", "-x", "c++-system-header", "vector"],
-                capture_output=True, cwd=td, timeout=60,
+                capture_output=True,
+                cwd=td,
+                timeout=60,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
@@ -765,9 +777,19 @@ def _clang_supports_header_units() -> bool:
     with tempfile.TemporaryDirectory() as td:
         try:
             r = subprocess.run(
-                [cxx, "-std=c++20", "-stdlib=libc++", "-xc++-system-header",
-                 "--precompile", "vector", "-o", os.path.join(td, "vector.pcm")],
-                capture_output=True, cwd=td, timeout=60,
+                [
+                    cxx,
+                    "-std=c++20",
+                    "-stdlib=libc++",
+                    "-xc++-system-header",
+                    "--precompile",
+                    "vector",
+                    "-o",
+                    os.path.join(td, "vector.pcm"),
+                ],
+                capture_output=True,
+                cwd=td,
+                timeout=60,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
@@ -789,6 +811,7 @@ def _run_header_units_sample_with(cxx: str, tmp_path, monkeypatch):
     """Build the cxx_modules_header_units sample and assert it prints
     `vec_size=5 front=2`."""
     import shutil
+
     sample_src = os.path.join(uth.samplesdir(), "cxx_modules_header_units")
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
     workdir = tmp_path / "cxx_modules_header_units"
@@ -800,17 +823,15 @@ def _run_header_units_sample_with(cxx: str, tmp_path, monkeypatch):
     env["CPP"] = cxx
     r = subprocess.run(
         ["ct-cake", "--auto"],
-        capture_output=True, text=True, cwd=workdir, timeout=180, env=env,
+        capture_output=True,
+        text=True,
+        cwd=workdir,
+        timeout=180,
+        env=env,
     )
-    assert r.returncode == 0, (
-        f"ct-cake --auto (CXX={cxx}) failed:\n"
-        f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
-    )
+    assert r.returncode == 0, f"ct-cake --auto (CXX={cxx}) failed:\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
     exe = workdir / "bin" / "main"
-    assert exe.exists(), (
-        f"executable not produced (CXX={cxx}):\n"
-        f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
-    )
+    assert exe.exists(), f"executable not produced (CXX={cxx}):\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
     run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
     assert run.returncode == 0, f"{run.stdout}\n{run.stderr}"
     assert "vec_size=5" in run.stdout, f"vector size missing/wrong: {run.stdout!r}"
@@ -821,6 +842,7 @@ def _run_header_units_sample_with(cxx: str, tmp_path, monkeypatch):
 def test_cxx_modules_header_units_builds_with_gcc(tmp_path, monkeypatch):
     """End-to-end header-unit build with gcc."""
     import compiletools.apptools
+
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     _run_header_units_sample_with(cxx, tmp_path, monkeypatch)
 
@@ -848,6 +870,7 @@ def test_cas_pcmdir_clang_pcm_survives_rebuild(tmp_path, monkeypatch):
     and make's mtime check then skips the precompile.
     """
     import shutil
+
     cxx = _which("clang++")
     assert cxx, "requires_clang_modules guard should have skipped"
 
@@ -867,13 +890,16 @@ def test_cas_pcmdir_clang_pcm_survives_rebuild(tmp_path, monkeypatch):
     # First build.
     r1 = subprocess.run(
         ["ct-cake", "--auto"],
-        capture_output=True, text=True, cwd=workdir, timeout=180, env=env,
+        capture_output=True,
+        text=True,
+        cwd=workdir,
+        timeout=180,
+        env=env,
     )
     assert r1.returncode == 0, f"first build failed:\n{r1.stdout}\n{r1.stderr}"
     pcm_files = list((workdir / "cas-pcmdir").rglob("*.pcm"))
     assert pcm_files, (
-        f"first build produced no .pcm under cas-pcmdir: "
-        f"contents={list((workdir / 'cas-pcmdir').rglob('*'))}"
+        f"first build produced no .pcm under cas-pcmdir: contents={list((workdir / 'cas-pcmdir').rglob('*'))}"
     )
     # Capture the mtime of every cached .pcm so we can prove none of
     # them got rewritten.
@@ -888,7 +914,11 @@ def test_cas_pcmdir_clang_pcm_survives_rebuild(tmp_path, monkeypatch):
     # Second build.
     r2 = subprocess.run(
         ["ct-cake", "--auto"],
-        capture_output=True, text=True, cwd=workdir, timeout=180, env=env,
+        capture_output=True,
+        text=True,
+        cwd=workdir,
+        timeout=180,
+        env=env,
     )
     assert r2.returncode == 0, f"second build failed:\n{r2.stdout}\n{r2.stderr}"
 
@@ -924,6 +954,7 @@ def test_gcc_mapper_records_partition_names_with_colon(tmp_path, monkeypatch):
     import shutil
 
     import compiletools.apptools
+
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     if not cxx or "g++" not in os.path.basename(cxx):
         pytest.skip("no g++ on PATH")
@@ -939,7 +970,11 @@ def test_gcc_mapper_records_partition_names_with_colon(tmp_path, monkeypatch):
     env["CPP"] = cxx
     r = subprocess.run(
         ["ct-cake", "--auto"],
-        capture_output=True, text=True, cwd=workdir, timeout=180, env=env,
+        capture_output=True,
+        text=True,
+        cwd=workdir,
+        timeout=180,
+        env=env,
     )
     assert r.returncode == 0, f"build failed:\n{r.stdout}\n{r.stderr}"
 
@@ -947,29 +982,21 @@ def test_gcc_mapper_records_partition_names_with_colon(tmp_path, monkeypatch):
     # Phase 9 race fix). Find it under bin/<variant>/.
     mapper_candidates = list(workdir.glob("bin/*/.module-mapper.txt"))
     assert mapper_candidates, (
-        f"no .module-mapper.txt under bin/; "
-        f"contents: {sorted(workdir.rglob('.module-mapper.txt'))}"
+        f"no .module-mapper.txt under bin/; contents: {sorted(workdir.rglob('.module-mapper.txt'))}"
     )
     mapper = mapper_candidates[0]
     content = mapper.read_text()
     # Each line is "<module-name> <gcm-path>". Partition names use ':'.
     partition_lines = [ln for ln in content.splitlines() if "math:" in ln]
-    assert partition_lines, (
-        f"no partition entries (math:basic / math:advanced) in mapper:\n{content}"
-    )
+    assert partition_lines, f"no partition entries (math:basic / math:advanced) in mapper:\n{content}"
     for line in partition_lines:
         name = line.split()[0]
-        assert ":" in name, (
-            f"partition name in mapper key lost its colon: {line!r}"
-        )
+        assert ":" in name, f"partition name in mapper key lost its colon: {line!r}"
         # The on-disk .gcm path uses the ^^ escape.
         path = line.split(None, 1)[1]
         if "math:" in name:
             stem = name.replace(":", "^^")
-            assert stem in path, (
-                f"path {path!r} should reference escaped stem {stem!r} "
-                f"for mapper line {line!r}"
-            )
+            assert stem in path, f"path {path!r} should reference escaped stem {stem!r} for mapper line {line!r}"
 
 
 @requires_cxx_modules
@@ -988,6 +1015,7 @@ def test_cas_pcmdir_gcc_gcm_lands_in_cache(tmp_path, monkeypatch):
     import shutil
 
     import compiletools.apptools
+
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     if not cxx or "g++" not in os.path.basename(cxx):
         pytest.skip("no g++ on PATH")
@@ -1003,7 +1031,11 @@ def test_cas_pcmdir_gcc_gcm_lands_in_cache(tmp_path, monkeypatch):
     env["CPP"] = cxx
     r = subprocess.run(
         ["ct-cake", "--auto"],
-        capture_output=True, text=True, cwd=workdir, timeout=180, env=env,
+        capture_output=True,
+        text=True,
+        cwd=workdir,
+        timeout=180,
+        env=env,
     )
     assert r.returncode == 0, f"build failed:\n{r.stdout}\n{r.stderr}"
 
@@ -1011,8 +1043,7 @@ def test_cas_pcmdir_gcc_gcm_lands_in_cache(tmp_path, monkeypatch):
     # it away from gcc's default `gcm.cache/`).
     gcm_files = list((workdir / "cas-pcmdir").rglob("*.gcm"))
     assert gcm_files, (
-        f"first build produced no .gcm under cas-pcmdir: "
-        f"contents={list((workdir / 'cas-pcmdir').rglob('*'))}"
+        f"first build produced no .gcm under cas-pcmdir: contents={list((workdir / 'cas-pcmdir').rglob('*'))}"
     )
 
     # And gcc's default gcm.cache/ should NOT have been used for the
@@ -1046,6 +1077,7 @@ def test_cas_pcmdir_gcc_header_unit_gcm_survives_rebuild(tmp_path, monkeypatch):
     import shutil
 
     import compiletools.apptools
+
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     if not cxx or "g++" not in os.path.basename(cxx):
         pytest.skip("no g++ on PATH")
@@ -1061,7 +1093,11 @@ def test_cas_pcmdir_gcc_header_unit_gcm_survives_rebuild(tmp_path, monkeypatch):
     env["CPP"] = cxx
     r1 = subprocess.run(
         ["ct-cake", "--auto"],
-        capture_output=True, text=True, cwd=workdir, timeout=180, env=env,
+        capture_output=True,
+        text=True,
+        cwd=workdir,
+        timeout=180,
+        env=env,
     )
     assert r1.returncode == 0, f"first build failed:\n{r1.stdout}\n{r1.stderr}"
     gcm_files = list((workdir / "cas-pcmdir").rglob("*.gcm"))
@@ -1077,7 +1113,11 @@ def test_cas_pcmdir_gcc_header_unit_gcm_survives_rebuild(tmp_path, monkeypatch):
 
     r2 = subprocess.run(
         ["ct-cake", "--auto"],
-        capture_output=True, text=True, cwd=workdir, timeout=180, env=env,
+        capture_output=True,
+        text=True,
+        cwd=workdir,
+        timeout=180,
+        env=env,
     )
     assert r2.returncode == 0, f"second build failed:\n{r2.stdout}\n{r2.stderr}"
 
@@ -1107,6 +1147,7 @@ def test_ct_trim_cache_evicts_old_pcm_entries(tmp_path, monkeypatch):
     touching the current build's cache.
     """
     import shutil
+
     cxx = _which("clang++")
     assert cxx, "requires_clang_modules guard should have skipped"
 
@@ -1124,7 +1165,11 @@ def test_ct_trim_cache_evicts_old_pcm_entries(tmp_path, monkeypatch):
     # with a manifest.
     r = subprocess.run(
         ["ct-cake", "--auto"],
-        capture_output=True, text=True, cwd=workdir, timeout=180, env=env,
+        capture_output=True,
+        text=True,
+        cwd=workdir,
+        timeout=180,
+        env=env,
     )
     assert r.returncode == 0, f"build failed:\n{r.stdout}\n{r.stderr}"
     pcmdir_root = workdir / "cas-pcmdir" / "blank"
@@ -1135,6 +1180,7 @@ def test_ct_trim_cache_evicts_old_pcm_entries(tmp_path, monkeypatch):
     # Plant a fake stale cmd_hash dir, same bucket via manifest, aged
     # so the keep_count=1 policy retains the real entry over the fake.
     import time
+
     fake = pcmdir_root / ("0" * 16)
     fake.mkdir()
     (fake / "math.pcm").write_bytes(b"\x00" * 100)
@@ -1146,25 +1192,25 @@ def test_ct_trim_cache_evicts_old_pcm_entries(tmp_path, monkeypatch):
         "transitive_hashes": {},
     }
     import json
+
     (fake / "manifest.json").write_text(json.dumps(fake_manifest))
     old_mtime = time.time() - 86400  # one day old
     os.utime(fake, (old_mtime, old_mtime))
 
     r = subprocess.run(
-        ["ct-trim-cache", "--cas-pcmdir-only", "--keep-count", "1",
-         "--cas-pcmdir", str(pcmdir_root)],
-        capture_output=True, text=True, cwd=workdir, timeout=30, env=env,
+        ["ct-trim-cache", "--cas-pcmdir-only", "--keep-count", "1", "--cas-pcmdir", str(pcmdir_root)],
+        capture_output=True,
+        text=True,
+        cwd=workdir,
+        timeout=30,
+        env=env,
     )
     assert r.returncode == 0, f"trim failed:\n{r.stdout}\n{r.stderr}"
 
     # Real (current) dir survives; fake (older, same bucket) was evicted.
-    assert real_dir.exists(), (
-        f"current build's cmd_hash dir was evicted: {real_dir}\n"
-        f"trim output:\n{r.stdout}"
-    )
+    assert real_dir.exists(), f"current build's cmd_hash dir was evicted: {real_dir}\ntrim output:\n{r.stdout}"
     assert not fake.exists(), (
-        f"older cmd_hash dir in same bucket should have been evicted: {fake}\n"
-        f"trim output:\n{r.stdout}"
+        f"older cmd_hash dir in same bucket should have been evicted: {fake}\ntrim output:\n{r.stdout}"
     )
 
 
@@ -1199,7 +1245,11 @@ def test_cas_pcmdir_path_layout_is_content_addressed(tmp_path, monkeypatch):
     env["CPP"] = cxx
     r = subprocess.run(
         ["ct-cake", "--auto"],
-        capture_output=True, text=True, cwd=workdir, timeout=180, env=env,
+        capture_output=True,
+        text=True,
+        cwd=workdir,
+        timeout=180,
+        env=env,
     )
     assert r.returncode == 0, f"build failed:\n{r.stdout}\n{r.stderr}"
 
@@ -1215,9 +1265,7 @@ def test_cas_pcmdir_path_layout_is_content_addressed(tmp_path, monkeypatch):
             f"expected <variant>/<command_hash>/<name>.pcm"
         )
         _variant, cmd_hash, _name = parts
-        assert cmd_hash_re.match(cmd_hash), (
-            f"command_hash component {cmd_hash!r} for {p} isn't 16 hex chars"
-        )
+        assert cmd_hash_re.match(cmd_hash), f"command_hash component {cmd_hash!r} for {p} isn't 16 hex chars"
 
 
 class TestFindSystemStdModuleSource:
@@ -1226,6 +1274,7 @@ class TestFindSystemStdModuleSource:
     def test_gcc_finds_bits_std_cc(self):
         """If a g++ is available and ships bits/std.cc, the helper finds it."""
         import compiletools.apptools
+
         cxx = compiletools.apptools.get_functional_cxx_compiler()
         if not cxx or "g++" not in os.path.basename(cxx):
             pytest.skip("no g++ on PATH")
@@ -1246,6 +1295,7 @@ class TestFindSystemStdModuleSource:
         if not cxx:
             pytest.skip("no clang++ on PATH")
         import compiletools.apptools
+
         path = compiletools.apptools.find_system_std_module_source(cxx, "clang")
         if path is None:
             pytest.skip("clang doesn't ship libc++ std.cppm on this host")
@@ -1259,6 +1309,7 @@ class TestFindSystemStdModuleSource:
 
     def test_returns_none_for_unknown_kind(self):
         import compiletools.apptools
+
         assert compiletools.apptools.find_system_std_module_source("/bin/false", "msvc") is None
         assert compiletools.apptools.find_system_std_module_source(None, "gcc") is None
 
@@ -1270,13 +1321,17 @@ def test_cxx_modules_split_implementation_unit(tmp_path, monkeypatch):
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
 
     import shutil
+
     workdir = tmp_path / "cxx_modules_split"
     shutil.copytree(sample_src, workdir)
     monkeypatch.chdir(workdir)
 
     r = subprocess.run(
         ["ct-cake", "--auto"],
-        capture_output=True, text=True, cwd=workdir, timeout=120,
+        capture_output=True,
+        text=True,
+        cwd=workdir,
+        timeout=120,
     )
     assert r.returncode == 0, f"ct-cake --auto failed:\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
 
