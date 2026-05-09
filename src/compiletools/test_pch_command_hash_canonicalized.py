@@ -21,7 +21,7 @@ def _hash(prefix: str, *, header_name: str = "pch.h", extra_cxx: str = "") -> st
     args = SimpleNamespace(CXX="/usr/bin/g++")
     cxx_extra = [extra_cxx] if extra_cxx else []
     cxxflags_tokens = [f"-I{prefix}/lib/util", "-std=c++20", *cxx_extra]
-    magic_cpp_flags = [f"-I{prefix}/include/include"]
+    magic_cpp_flags = [f"-I{prefix}/vendor/include"]
     magic_cxx_flags = []
     pch_header = f"{prefix}/lib/util/{header_name}"
     return _pch_command_hash(

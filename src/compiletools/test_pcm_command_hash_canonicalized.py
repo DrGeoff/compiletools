@@ -42,7 +42,7 @@ def test_pcm_hash_stable_across_workspace_moves():
 def test_pcm_hash_distinguishes_different_sources():
     """Two different module sources under the same workspace hash differently."""
     a = _hash("/some/workspace", source_name="app.cppm")
-    b = _hash("/some/workspace", source_name="kadapp.cppm")
+    b = _hash("/some/workspace", source_name="widget.cppm")
     assert a != b, "Canonicalizer over-stripped: distinct module sources must yield distinct hashes"
 
 

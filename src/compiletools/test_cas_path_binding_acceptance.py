@@ -23,7 +23,7 @@ def _macro_state_hash_for_prefix(prefix: str) -> str:
     """Build a MacroState whose flag tokens reference paths under `prefix`,
     then return its full include_core hash. Inputs are byte-identical
     across calls except for `prefix`."""
-    cppflags_tokens = [f"-I{prefix}/lib/util", f"-I{prefix}/include/include", "-DAPP=app"]
+    cppflags_tokens = [f"-I{prefix}/lib/util", f"-I{prefix}/vendor/include", "-DAPP=app"]
     cflags_tokens = ["-O2"]
     cxxflags_tokens = [f"-I{prefix}/lib/util", "-std=c++20"]
     state = MacroState(
@@ -48,7 +48,7 @@ def _pch_hash_for_prefix(prefix: str) -> str:
 
     args = SimpleNamespace(CXX="/usr/bin/g++")
     cxxflags_tokens = [f"-I{prefix}/lib/util", "-std=c++20"]
-    magic_cpp_flags = [f"-I{prefix}/include/include"]
+    magic_cpp_flags = [f"-I{prefix}/vendor/include"]
     magic_cxx_flags = []
     pch_header = f"{prefix}/lib/util/pch.h"
     return _pch_command_hash(
