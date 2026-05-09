@@ -49,7 +49,10 @@ def test_object_cache_filenames_match_across_workspace_paths(tmp_path):
         # between the two builds. PATH is preserved so ct-cake and the
         # compiler resolve normally.
         env = {"PATH": os.environ.get("PATH", "")}
-        for k in ("CXX", "CC", "CPP", "VARIANT", "HOME", "LD_LIBRARY_PATH"):
+        # LD_PRELOAD preserved for Termux: libtermux-exec.so is required to
+        # exec binaries on Android; without it the compiler subprocess fails
+        # with EACCES. Harmless on other platforms (typically unset).
+        for k in ("CXX", "CC", "CPP", "VARIANT", "HOME", "LD_LIBRARY_PATH", "LD_PRELOAD", "TMPDIR"):
             if k in os.environ:
                 env[k] = os.environ[k]
         result = subprocess.run(

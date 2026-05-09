@@ -770,11 +770,19 @@ def _gcc_supports_header_units() -> bool:
 
 
 def _clang_supports_header_units() -> bool:
-    """Probe clang++ on PATH for header-unit precompile support."""
+    """Probe clang++ on PATH for header-unit precompile *and consume* support.
+
+    Just precompiling ``vector`` is not enough: on some libc++ builds (e.g.
+    Termux) the precompile succeeds but consuming ``import <vector>;`` fails
+    when clang internally tries to build module ``'std'`` against a libc++
+    whose headers aren't module-clean. Probe the full round-trip so the
+    decorator skips on broken stdlibs instead of failing the test.
+    """
     cxx = _which("clang++")
     if not cxx:
         return False
     with tempfile.TemporaryDirectory() as td:
+        pcm_path = os.path.join(td, "vector.pcm")
         try:
             r = subprocess.run(
                 [
@@ -785,7 +793,36 @@ def _clang_supports_header_units() -> bool:
                     "--precompile",
                     "vector",
                     "-o",
-                    os.path.join(td, "vector.pcm"),
+                    pcm_path,
+                ],
+                capture_output=True,
+                cwd=td,
+                timeout=60,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+        if r.returncode != 0:
+            return False
+        src_path = os.path.join(td, "probe.cpp")
+        with open(src_path, "w") as f:
+            f.write("import <vector>;\nint main(){std::vector<int> v{1};return v.empty();}\n")
+        try:
+            # `-fmodules` matches what build_backend.py:_clang_module_extras()
+            # injects for any TU that mentions header units; it is what
+            # turns the libc++ Clang module-map's top-level ``std`` module
+            # into a build dependency on some libc++ installs (e.g. Termux),
+            # so the probe must include it to detect the failure.
+            r = subprocess.run(
+                [
+                    cxx,
+                    "-std=c++20",
+                    "-stdlib=libc++",
+                    "-fmodules",
+                    "-fmodule-file=<vector>=" + pcm_path,
+                    "-c",
+                    src_path,
+                    "-o",
+                    os.path.join(td, "probe.o"),
                 ],
                 capture_output=True,
                 cwd=td,
