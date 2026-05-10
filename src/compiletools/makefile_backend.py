@@ -20,6 +20,7 @@ import compiletools.utils
 import compiletools.wrappedos
 from compiletools.build_backend import (
     BuildBackend,
+    ordering_inputs_for_compile,
     register_backend,
 )
 from compiletools.build_graph import BuildGraph, render_shell_recipe
@@ -78,6 +79,9 @@ class MakefileBackend(BuildBackend):
             "filenames in this space-delimited list.",
         )
         compiletools.apptools.add_locking_arguments(cap)
+        # M2: --use-mtime is now registered centrally via
+        # add_output_directory_arguments so all backends accept it.
+        # The redundant per-backend call has been removed.
         compiletools.utils.add_flag_argument(
             parser=cap,
             name="serialise-tests",
@@ -233,13 +237,41 @@ class MakefileBackend(BuildBackend):
         # Ensure "all" comes first among phony rules
         phony_rules.sort(key=lambda r: (0 if r.output == "all" else 1, r.output))
 
+        cas_only = not getattr(self.args, "use_mtime", False)
         for rule in phony_rules + non_phony_rules:
             if rule.rule_type == "phony":
                 f.write(f".PHONY: {rule.output}\n")
 
-            line = f"{rule.output}: {' '.join(rule.inputs)}"
-            if rule.order_only_deps:
-                line += f" | {' '.join(rule.order_only_deps)}"
+            if rule.rule_type == "compile" and cas_only:
+                # CAS-only mode: the cached object's name encodes
+                # file_h+dep_h+macro_h, so existence on disk is the sole
+                # rebuild signal. Sources/headers are dropped from
+                # prerequisites entirely; PCH/BMI artefacts are lifted
+                # to order-only so make still builds them ahead of the
+                # compile recipe but never re-runs the recipe on their
+                # mtime change.
+                ordering = list(rule.order_only_deps) + ordering_inputs_for_compile(rule.inputs)
+                line = f"{rule.output}:"
+                if ordering:
+                    line += f" | {' '.join(ordering)}"
+            elif rule.rule_type in ("link", "static_library", "shared_library") and cas_only:
+                # CAS-only mode: the producer rule writes to a CAS path
+                # (cas-exedir/<shard>/<name>_<key>.<ext>) whose name
+                # encodes the relevant link key (linker identity +
+                # ldflags + sorted canonical objects + libs, or the
+                # ar-argv + objects equivalent). All inputs are lifted
+                # to order-only so make builds them first but does not
+                # retrigger the producer on their mtime change. The
+                # publish-as-symlink rule materialises the user-facing
+                # bin/<name> from this CAS entry.
+                ordering = list(rule.order_only_deps) + list(rule.inputs)
+                line = f"{rule.output}:"
+                if ordering:
+                    line += f" | {' '.join(ordering)}"
+            else:
+                line = f"{rule.output}: {' '.join(rule.inputs)}"
+                if rule.order_only_deps:
+                    line += f" | {' '.join(rule.order_only_deps)}"
             f.write(line + "\n")
 
             if rule.command:

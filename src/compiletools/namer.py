@@ -232,6 +232,95 @@ class Namer:
         )
 
     @functools.cache
+    def cas_exe_dir(self, link_key_hash=None):
+        """Return the directory in which a content-addressable linker
+        artefact (executable, static library, or shared library) lives.
+
+        With ``link_key_hash`` provided, returns the 2-hex shard bucket
+        ``<cas-exedir>/<link_key_hash[:2]>``. Sharding mirrors the object
+        cache: 256 dirs split rename-contention across separate inodes,
+        which matters once the cache grows past the per-directory sweet
+        spot of the underlying filesystem.
+
+        With no ``link_key_hash``, returns the bare ``args.cas_exedir`` —
+        the cache root used by ``trim_cache``-style scans.
+
+        The directory is shared across artefact kinds (``.exe``, ``.a``,
+        ``.so``); the per-entry filename suffix (set by the typed
+        helpers below) is the only discriminator. Cache trimming buckets
+        by basename rather than suffix, so distinct executables and
+        libraries with the same basename remain isolated.
+        """
+        if link_key_hash is not None:
+            return os.path.join(self.args.cas_exedir, link_key_hash[:2])
+        return self.args.cas_exedir
+
+    @functools.cache
+    def _cas_artefact_pathname(self, basename, link_key_hash, suffix):
+        """Compose ``<cas-exedir>/<link_key_hash[:2]>/<basename>_<link_key_hash><suffix>``.
+
+        Shared assembly point for ``cas_exe_pathname``,
+        ``cas_staticlibrary_pathname``, and ``cas_dynamiclibrary_pathname``.
+        Caller supplies the suffix verbatim (``.exe`` / ``.a`` / ``.so``);
+        no further mangling.
+        """
+        return "".join(
+            [
+                self.cas_exe_dir(link_key_hash),
+                os.sep,
+                basename,
+                "_",
+                link_key_hash,
+                suffix,
+            ]
+        )
+
+    @functools.cache
+    def cas_exe_pathname(self, sourcefilename, link_key_hash):
+        """Return the full content-addressable executable path.
+
+        Layout: ``<cas-exedir>/<link_key_hash[:2]>/<basename>_<link_key_hash>.exe``.
+
+        ``link_key_hash`` is computed by build_backend from the link
+        command's content-relevant inputs (sorted canonicalized object
+        paths + canonicalized LDFLAGS + linker identity). Two link
+        invocations with identical content-relevant inputs produce the
+        same path; two with any differing input produce different paths.
+
+        The ``.exe`` suffix is purely a discriminator for the user
+        scanning the cache directory; on POSIX the kernel cares only
+        about the executable bit.
+        """
+        return self._cas_artefact_pathname(self.executable_name(sourcefilename), link_key_hash, ".exe")
+
+    @functools.cache
+    def cas_staticlibrary_pathname(self, sourcefilename, lib_key_hash):
+        """Return the full content-addressable static-library path.
+
+        Layout: ``<cas-exedir>/<lib_key_hash[:2]>/lib<name>_<lib_key_hash>.a``.
+
+        ``lib_key_hash`` is computed by build_backend from the ``ar``
+        command's content-relevant inputs (sorted canonicalized object
+        paths + ar argv). Same publish-symlink semantics as the
+        executable cache: the user-facing ``bin/<variant>/lib<name>.a``
+        is a hard link (with symlink fallback) to this path.
+        """
+        return self._cas_artefact_pathname(self.staticlibrary_name(sourcefilename), lib_key_hash, ".a")
+
+    @functools.cache
+    def cas_dynamiclibrary_pathname(self, sourcefilename, lib_key_hash):
+        """Return the full content-addressable shared-library path.
+
+        Layout: ``<cas-exedir>/<lib_key_hash[:2]>/lib<name>_<lib_key_hash>.so``.
+
+        ``lib_key_hash`` is computed by build_backend from the link
+        command's content-relevant inputs (linker identity + sorted
+        canonicalized objects + LDFLAGS), symmetric with the executable
+        link key.
+        """
+        return self._cas_artefact_pathname(self.dynamiclibrary_name(sourcefilename), lib_key_hash, ".so")
+
+    @functools.cache
     def staticlibrary_name(self, sourcefilename=None):
         if sourcefilename is None and self.args.static:
             sourcefilename = self.args.static[0]

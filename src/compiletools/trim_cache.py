@@ -1,9 +1,10 @@
-"""Cache trimming utility for the object CAS, PCH CAS, and PCM CAS.
+"""Cache trimming utility for the object CAS, PCH CAS, PCM CAS, and the
+linker-artefact CAS (cas-exedir).
 
-Scans cas-objdir, cas-pchdir, and cas-pcmdir for stale entries and removes
-them, keeping entries that match the current git state and preserving a
-configurable number of recent non-current entries per source file or per
-module/header bucket.
+Scans cas-objdir, cas-pchdir, cas-pcmdir, and cas-exedir for stale entries
+and removes them, keeping entries that match the current git state and
+preserving a configurable number of recent non-current entries per source
+file or per module/header/linker-artefact bucket.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import re
 import shutil
 import sys
 import time
+from typing import ClassVar
 
 # Object filename format: {basename}_{file_hash_12}_{dep_hash_14}_{macro_state_hash_16}.o
 # Anchored from the END (the three hash fields have fixed widths) so the
@@ -624,10 +626,185 @@ class CacheTrimmer:
         return stats
 
     # ------------------------------------------------------------------
+    # Executable cache (cas-exedir) trimming
+    # ------------------------------------------------------------------
+
+    # Suffixes recognised inside cas-exedir buckets. Keep in lockstep with
+    # ``namer.cas_*_pathname`` and ``build_backend._build_publish_rule``.
+    # Anything not on this list (e.g. ``.lock`` sidecars, ``.lock.excl``)
+    # is silently skipped, which is what we want — peer-build lock files
+    # must never be enumerated as trim candidates.
+    _CAS_EXE_SUFFIXES: ClassVar[tuple[str, ...]] = (".exe", ".a", ".so")
+
+    def trim_exedir(self, exedir):
+        """Trim stale entries from the content-addressable linker-artefact
+        cache (executables, static libraries, shared libraries — all
+        share the cas-exedir root).
+
+        Layout: ``<exedir>/<key[:2]>/<basename>_<key>.<ext>`` with
+        ``<ext>`` ∈ ``{.exe, .a, .so}``. Flatter than the PCH/PCM
+        caches (no per-entry sidecar manifest; the key itself is the
+        cache identity).
+
+        Trim policy:
+
+        * **Bucket** by ``(basename, suffix)`` (the part of the
+          filename before ``_<key>``, plus its suffix). One
+          executable's distinct link configurations live in the same
+          bucket — and ``libfoo.a`` and ``libfoo.so`` bucket
+          separately because the suffix differs. The newest
+          ``keep_count`` per bucket survive bucket-rank eviction.
+        * **max_age**: anything younger than the cutoff is kept
+          regardless of bucket position (mirrors objdir / pchdir /
+          pcmdir).
+        * **Hard-link safety**: skip files with ``st_nlink > 1``.
+          The ``symlink`` rule publishes ``bin/<variant>/<name>`` as a
+          hard link to the cas entry; a second reference means a
+          user-facing artefact is still pointing at this inode and
+          deleting it would force a relink on the next build for no
+          actual savings (the inode would survive anyway via the
+          remaining link). Symlinked-fallback bin paths show
+          ``st_nlink == 1`` on the cas entry and are NOT protected — the
+          user can rebuild if a symlink dangles.
+        * **Lock-aware delete**: ``_safe_locked_unlink`` acquires
+          ``<path>.lock`` via the same ``FileLock`` strategy used by
+          the link/ar wrapper, so a trim that lands mid-link blocks
+          until the link releases the lock instead of clobbering a
+          partially-renamed artefact.
+
+        Sidecar lock files (``*.lock`` / ``*.lock.excl``) are filtered
+        at the suffix-match step — they don't end in any of the
+        ``_CAS_EXE_SUFFIXES`` so they never become candidates.
+
+        Args:
+            exedir: Path to the linker-artefact CAS.
+
+        Returns:
+            dict with statistics: total_scanned, basenames_found,
+            kept, removed, failed, bytes_freed.
+        """
+        stats = {
+            "total_scanned": 0,
+            "basenames_found": 0,
+            "kept": 0,
+            "removed": 0,
+            "failed": 0,
+            "bytes_freed": 0,
+        }
+
+        if not os.path.isdir(exedir):
+            if self.verbose >= 1:
+                print(f"Executable directory does not exist: {exedir}")
+            return stats
+
+        # entry_info: {full_path: (bucket_key, mtime, size, st_nlink)}
+        # bucket_key prefers ``(source_realpath, suffix)`` from the
+        # sidecar manifest written at link time (C4 — disambiguates
+        # distinct executables that happen to share a basename like
+        # ``main``). Falls back to ``(basename, suffix)`` for legacy
+        # entries that pre-date the sidecar contract (existing caches
+        # don't suddenly behave differently after upgrading).
+        entry_info: dict[str, tuple] = {}
+        for bucket_entry in os.scandir(exedir):
+            if not bucket_entry.is_dir():
+                continue
+            try:
+                inner = list(os.scandir(bucket_entry.path))
+            except OSError:
+                continue
+            for leaf in inner:
+                if not leaf.is_file():
+                    continue
+                matched_suffix = next(
+                    (s for s in self._CAS_EXE_SUFFIXES if leaf.name.endswith(s)),
+                    None,
+                )
+                if matched_suffix is None:
+                    continue
+                # ``<basename>_<key><suffix>``: split on the LAST underscore
+                # so basenames containing underscores stay intact.
+                stem = leaf.name[: -len(matched_suffix)]
+                sep = stem.rfind("_")
+                if sep <= 0:
+                    continue
+                basename = stem[:sep]
+                try:
+                    st = leaf.stat()
+                except OSError:
+                    continue
+                # Prefer source_realpath from sidecar; fall back to basename.
+                bucket_id: str = basename
+                manifest_path = leaf.path + ".manifest"
+                try:
+                    with open(manifest_path) as mf:
+                        manifest = json.load(mf)
+                    src = manifest.get("source_realpath")
+                    if isinstance(src, str) and src:
+                        bucket_id = src
+                except (OSError, ValueError):
+                    pass  # legacy entry — keep basename bucket_id
+                entry_info[leaf.path] = ((bucket_id, matched_suffix), st.st_mtime, st.st_size, st.st_nlink)
+                stats["total_scanned"] += 1
+
+        if not entry_info:
+            return stats
+
+        # Bucket by executable basename, then sort each bucket newest-first
+        # and keep the top keep_count.
+        buckets: dict[str, list[str]] = {}
+        for path, (basename, _mtime, _size, _nlink) in entry_info.items():
+            buckets.setdefault(basename, []).append(path)
+        stats["basenames_found"] = len(buckets)
+
+        keep_paths: set[str] = set()
+        for paths in buckets.values():
+            paths.sort(key=lambda p: entry_info[p][1], reverse=True)
+            keep_paths.update(paths[: self.keep_count])
+
+        # max-age: keep anything younger than the cutoff regardless of rank.
+        now = time.time()
+        if self.max_age_seconds is not None:
+            cutoff = now - self.max_age_seconds
+            for path, (_basename, mtime, _size, _nlink) in entry_info.items():
+                if mtime >= cutoff:
+                    keep_paths.add(path)
+
+        # Hard-link safety: anything with another reference is in use.
+        for path, (_basename, _mtime, _size, nlink) in entry_info.items():
+            if nlink > 1:
+                keep_paths.add(path)
+
+        for path, (_basename, _mtime, size, _nlink) in entry_info.items():
+            if path in keep_paths:
+                stats["kept"] += 1
+                continue
+            if self.dry_run:
+                if self.verbose >= 1:
+                    print(f"  Would remove: {path}")
+                stats["removed"] += 1
+                stats["bytes_freed"] += size
+                continue
+            # I4: re-stat under the lock and skip if a peer publish
+            # elevated nlink between the initial scan and this unlink.
+            if _safe_locked_unlink(path, skip_if_nlink_above=1):
+                stats["removed"] += 1
+                stats["bytes_freed"] += size
+                # Sidecar manifest is best-effort cleanup — don't count
+                # towards bytes_freed (small, ignore failure).
+                try:
+                    os.remove(path + ".manifest")
+                except OSError:
+                    pass
+            else:
+                stats["failed"] += 1
+
+        return stats
+
+    # ------------------------------------------------------------------
     # Summary
     # ------------------------------------------------------------------
 
-    def print_summary(self, objdir_stats=None, pchdir_stats=None, pcmdir_stats=None):
+    def print_summary(self, objdir_stats=None, pchdir_stats=None, pcmdir_stats=None, exedir_stats=None):
         """Print a formatted summary of trimming results."""
         total_freed = 0
         print()
@@ -674,14 +851,27 @@ class CacheTrimmer:
             if pcmdir_stats["failed"]:
                 print(f"    Failed:          {pcmdir_stats['failed']}")
 
+        if exedir_stats is not None:
+            total_freed += exedir_stats["bytes_freed"]
+            print("  Executable cache:")
+            print(f"    Total scanned:   {exedir_stats['total_scanned']}")
+            print(f"    Basenames found: {exedir_stats['basenames_found']}")
+            print(f"    Kept:            {exedir_stats['kept']}")
+            removed_str = f"    Removed:         {exedir_stats['removed']}"
+            if exedir_stats["bytes_freed"]:
+                removed_str += f" ({_format_size(exedir_stats['bytes_freed'])} freed)"
+            print(removed_str)
+            if exedir_stats["failed"]:
+                print(f"    Failed:          {exedir_stats['failed']}")
+
         # The summary line aggregates whatever was actually scanned.
-        scanned = sum(s is not None for s in (objdir_stats, pchdir_stats, pcmdir_stats))
+        scanned = sum(s is not None for s in (objdir_stats, pchdir_stats, pcmdir_stats, exedir_stats))
         if scanned >= 2:
             print(f"  Total space freed: {_format_size(total_freed)}")
         print("=" * 60)
 
 
-def _safe_locked_unlink(path):
+def _safe_locked_unlink(path, *, skip_if_nlink_above=None):
     """Unlink path after acquiring the build lock for it.
 
     Used by ct-trim-cache to avoid deleting an .o file that a concurrent
@@ -693,6 +883,15 @@ def _safe_locked_unlink(path):
     and could clobber an in-flight write from a peer build. The caller
     sees False and reports the file as failed; a future trim run can
     retry once the underlying lock issue is resolved.
+
+    ``skip_if_nlink_above`` (I4): if not None, re-stat the path under
+    the lock and skip the unlink if ``st_nlink`` exceeds the threshold.
+    Closes a TOCTOU window where a peer publish-as-hardlink lands
+    between the trim's initial scan (nlink read=1) and this per-entry
+    unlink (nlink would now be 2, but the in-memory snapshot is stale).
+    Without this re-check, we'd evict an entry that just gained a
+    published reference and force a relink on the next build. Returns
+    False (entry still considered live) when the threshold trips.
     """
     from types import SimpleNamespace
 
@@ -710,6 +909,17 @@ def _safe_locked_unlink(path):
     )
     try:
         with FileLock(path, lock_args):
+            if skip_if_nlink_above is not None:
+                try:
+                    st = os.stat(path)
+                except FileNotFoundError:
+                    return True  # peer already removed
+                except OSError:
+                    return False
+                if st.st_nlink > skip_if_nlink_above:
+                    # I4: peer publish elevated nlink mid-trim. Treat as
+                    # still-in-use; do not unlink.
+                    return False
             try:
                 os.remove(path)
                 return True

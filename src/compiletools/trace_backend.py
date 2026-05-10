@@ -66,6 +66,7 @@ from typing import ClassVar
 import compiletools.apptools
 import compiletools.diagnostics
 import compiletools.filesystem_utils
+import compiletools.git_utils
 import compiletools.wrappedos
 from compiletools.build_backend import (
     BuildBackend,
@@ -138,12 +139,34 @@ class TraceStore:
             json.dump(data, f, indent=2, sort_keys=True)
 
 
+def _canonicalize_cmd_for_hash(cmd: list[str], anchor_root: str) -> list[str]:
+    """Anchor-relative every path token in *cmd* for stable cross-workspace hashing.
+
+    Two passes are needed because path-bearing flags appear in two forms:
+    attached (``-I/abs/path``) and bare-positional (``-c /abs/path/foo.cpp``,
+    ``/abs/path/foo.o``). ``canonicalize_for_cache_key`` handles the
+    flag-attached forms (recognises ``-I``/``-isystem``/``-iquote``/``-include``
+    /``-include-pch``/``-F``/``-B``/``-idirafter``); the second pass then
+    rewrites any remaining bare absolute-path tokens that live under
+    *anchor_root*. Tokens outside *anchor_root* and non-path tokens pass
+    through unchanged in both passes.
+    """
+    if not anchor_root:
+        return list(cmd)
+    flag_canonicalized = compiletools.apptools.canonicalize_for_cache_key(list(cmd), anchor_root)
+    return [compiletools.apptools.canonicalize_path_for_cache_key(tok, anchor_root) for tok in flag_canonicalized]
+
+
 def hash_command(cmd: list[str], compiler_identity: str | None = None) -> str:
     """Compute a stable hash of a shell command list.
 
     *compiler_identity* folds in the resolved binary's realpath + size + mtime
     for the tool that runs the command, so an in-place compiler upgrade
     invalidates traces even when the argv is byte-identical.
+
+    Callers wanting cross-workspace stability must pre-canonicalize *cmd*
+    via ``_canonicalize_cmd_for_hash`` so absolute paths embedded in the
+    argv (-c <src>, -o <out>, -I/abs/path, ...) become anchor-relative.
     """
     payload = [compiler_identity, cmd] if compiler_identity is not None else cmd
     return hashlib.sha256(json.dumps(payload, sort_keys=False).encode()).hexdigest()
@@ -205,17 +228,25 @@ def _make_trace_entry(rule: BuildRule, context, output_hash: str | None = None) 
             f"semantics (e.g., a test rule whose success_marker was never touched) "
             f"and should not be in the trace-execution path."
         )
+    # Anchor the input keys to gitroot so a trace written under workspace A
+    # verifies under workspace B (cross-CI-runner CAS reuse). Mirrors the
+    # 9.1.0 path-canonical CAS-key fix for per-TU object / PCH / PCM caches;
+    # without it, _verify's set-equality check on input_hashes keys rejects
+    # every cross-workspace hit even when the cached output is byte-identical.
+    anchor_root = compiletools.git_utils.find_git_root()
     input_hashes = {}
     for p in rule.inputs:
         if os.path.isfile(p):
-            input_hashes[compiletools.wrappedos.realpath(p)] = get_file_hash(p, context)
+            key = compiletools.apptools.canonicalize_path_for_cache_key(compiletools.wrappedos.realpath(p), anchor_root)
+            input_hashes[key] = get_file_hash(p, context)
         else:
             logger.debug("_make_trace_entry: skipping non-file input %s for %s", p, rule.output)
     identity = _compiler_identity(rule.command[0]) if rule.command else None
+    canonical_cmd = _canonicalize_cmd_for_hash(rule.command, anchor_root)
     return TraceEntry(
         output_hash=output_hash if output_hash is not None else get_file_hash(rule.output, context),
         input_hashes=input_hashes,
-        command_hash=hash_command(rule.command, compiler_identity=identity),
+        command_hash=hash_command(canonical_cmd, compiler_identity=identity),
     )
 
 
@@ -348,10 +379,20 @@ class ShakeBackend(BuildBackend):
 
         # CONTENT-ADDRESSABLE SHORT-CIRCUIT
         if _is_build_artifact(rule):
-            if rule.rule_type == "compile":
+            if rule.rule_type in ("compile", "link"):
+                # Both compile and link rule outputs are content-addressable
+                # by construction: object names encode file_h+dep_h+macro_h;
+                # cas-exe paths encode the link key (linker identity + sorted
+                # canonical objects + ldflags). Existence is sufficient.
+                # The publish-as-symlink rule (separate, downstream) exposes
+                # link outputs at user-facing bin/<name>.
                 if os.path.exists(target):
                     return False
             else:
+                # static_library / shared_library still use the legacy
+                # in-place CA layout (output adjacent CA file then copy).
+                # When/if those move into a cas-libdir, this branch can
+                # collapse into the existence-only fast path above.
                 ca = self._ca_target(rule)
                 if os.path.exists(ca):
                     _atomic_copy(ca, target)
@@ -405,6 +446,14 @@ class ShakeBackend(BuildBackend):
             cmd_without_output = flat_cmd[:o_idx] + flat_cmd[o_idx + 2 :]
             lock_impl = FileLock(target, self.args).lock
             atomic_compile(lock_impl, target, cmd_without_output)
+        elif rule.rule_type == "link":
+            # Link output IS the cas-exe path. Atomic-link directly to
+            # it; the publish-as-symlink rule downstream will materialise
+            # the user-facing bin/<name>. No per-rule CA-then-copy step
+            # — that pattern only fits static_library / shared_library
+            # which still output to non-CAS paths.
+            lock_impl = FileLock(target, self.args).lock
+            atomic_link(lock_impl, target, flat_cmd)
         elif _is_build_artifact(rule):
             ca = self._ca_target(rule)
             ca_cmd = [ca if a == target else a for a in flat_cmd]
@@ -438,17 +487,29 @@ class ShakeBackend(BuildBackend):
         except (FileNotFoundError, OSError):
             return False
 
+        # Symmetric with _make_trace_entry: anchor on the current workspace's
+        # gitroot so cross-workspace traces still verify (the trace's keys
+        # and command_hash were canonicalized at write time).
+        anchor_root = compiletools.git_utils.find_git_root()
         identity = _compiler_identity(rule.command[0]) if rule.command else None
-        if hash_command(rule.command, compiler_identity=identity) != trace.command_hash:
+        canonical_cmd = _canonicalize_cmd_for_hash(rule.command, anchor_root)
+        if hash_command(canonical_cmd, compiler_identity=identity) != trace.command_hash:
+            return False
+        # Map each canonical key to a real on-disk path for the current
+        # workspace so we can read the file hash. Since _make_trace_entry
+        # canonicalizes (realpath -> <GITROOT>/relpath), the reverse here is
+        # taking each rule input, realpath'ing it, then canonicalizing —
+        # producing the same canonical key.
+        canonical_to_real = {
+            compiletools.apptools.canonicalize_path_for_cache_key(compiletools.wrappedos.realpath(p), anchor_root): p
+            for p in rule.inputs
+        }
+        if set(canonical_to_real.keys()) != set(trace.input_hashes.keys()):
             return False
 
-        canonical_inputs = {compiletools.wrappedos.realpath(p) for p in rule.inputs}
-        if canonical_inputs != set(trace.input_hashes.keys()):
-            return False
-
-        for inp, stored_hash in trace.input_hashes.items():
+        for canonical_key, stored_hash in trace.input_hashes.items():
             try:
-                current_hash = get_file_hash(inp, self.context)
+                current_hash = get_file_hash(canonical_to_real[canonical_key], self.context)
             except (FileNotFoundError, OSError):
                 return False
             if current_hash != stored_hash:

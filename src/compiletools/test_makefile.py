@@ -698,9 +698,17 @@ class TestMakefile:
             actual_exes = set()
             for root, _dirs, files in os.walk(tempdir):
                 for ff in files:
-                    if compiletools.utils.is_executable(os.path.join(root, ff)):
-                        actual_exes.add(ff)
-                        print(root + " " + ff)
+                    if not compiletools.utils.is_executable(os.path.join(root, ff)):
+                        continue
+                    # Ignore the content-addressable executable cache; the
+                    # user-facing publish (hard link / symlink) is what these
+                    # tests care about.
+                    if "cas-exedir" in os.path.normpath(root).split(os.sep):
+                        continue
+                    if ff.endswith(".exe"):
+                        continue
+                    actual_exes.add(ff)
+                    print(root + " " + ff)
 
             expected_exes = {os.path.splitext(os.path.split(filename)[1])[0] for filename in relativepaths}
             assert expected_exes == actual_exes

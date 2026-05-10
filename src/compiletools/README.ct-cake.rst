@@ -279,13 +279,14 @@ Per-compiler placement details
 Cache keys are workspace-path-independent
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-All three CAS keys (per-TU object, PCH, PCM) hash *gitroot-relative*
-paths instead of absolute paths. An identical translation unit built
-in ``/scratch/run-1/repo/`` and ``/scratch/run-2/repo/`` therefore
-produces the same cache key, and the second build hits the cache
-instead of recompiling. Cloning a repo to a new path, renaming a
-worktree, or relocating a shared cache directory between hosts no
-longer invalidates object, PCH, or PCM entries.
+All four CAS keys (per-TU object, PCH, PCM, linker-artefact) hash
+*gitroot-relative* paths instead of absolute paths. An identical
+translation unit built in ``/scratch/run-1/repo/`` and
+``/scratch/run-2/repo/`` therefore produces the same cache key, and
+the second build hits the cache instead of recompiling. Cloning a
+repo to a new path, renaming a worktree, or relocating a shared
+cache directory between hosts no longer invalidates object, PCH,
+PCM, or linker-artefact entries.
 
 The canonicalizer applies to path-bearing flag tokens (``-I``,
 ``-isystem``, ``-iquote``, ``-idirafter``, ``-F``, ``-B``,
@@ -293,6 +294,108 @@ The canonicalizer applies to path-bearing flag tokens (``-I``,
 headers, sibling repos, and already-relative paths pass through
 unchanged. The compiler still receives the real absolute paths --
 canonicalization only affects what the cache hashes.
+
+Linker-artefact caching (cas-exedir)
+------------------------------------
+
+ct-cake also caches the *output* of the link step at
+``{git_root}/cas-exedir/{variant}/`` (or a custom path via
+``--cas-exedir``). The same content-addressable layout houses
+all three linker-artefact kinds under a single directory:
+
+* ``<cas-exedir>/<linkkey[:2]>/<exename>_<linkkey>.exe`` for executables
+* ``<cas-exedir>/<libkey[:2]>/lib<name>_<libkey>.a`` for static libraries
+* ``<cas-exedir>/<libkey[:2]>/lib<name>_<libkey>.so`` for shared libraries
+
+The producer rule (link / ar / link-shared) writes directly to its
+CAS path; a downstream ``symlink`` rule then publishes the user-facing
+``bin/<variant>/<name>`` (or ``bin/<variant>/lib<name>.{a,so}``) as a
+hard link to the cached artefact, with a symlink fallback for
+cross-filesystem cases. The hash inputs are the linker identity,
+canonicalized LDFLAGS, sorted gitroot-canonical object paths, and
+(for executables) the bindir basename — a defensive guard against
+RPATH/$ORIGIN linker scripts whose embedded paths could otherwise
+silently miscache across bindir choices. The ``ar`` key is simpler:
+just the ``ar`` argv prefix and the canonical object set.
+
+The ``--use-mtime`` flag controls whether classical mtime semantics
+apply on top of the CAS layer. The default ``--no-use-mtime``
+(equivalently ``--use-mtime=False``) is the recommended mode for
+shared CI caches: compile, link, ar, and link-shared rules drop their
+sources/objects from prerequisites entirely (PCH/BMI artefacts stay as
+order-only deps so build ordering is preserved). Existence of the CAS
+artefact on disk is the sole rebuild signal, which means a fresh
+``git checkout`` (where every source has ``mtime = now``) hits the
+cache instead of re-running the producer. ``--use-mtime`` restores
+the legacy mtime-based behavior for interactive workflows where
+re-touching a source should force a rebuild even when the producer
+key would not change.
+
+Caveats of ``--use-mtime=False`` mode
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Because the CAS-mode rebuild signal is "does the cached artefact
+exist", a few classical Make/Ninja workflows behave differently:
+
+* **Generated headers must exist before headerdeps runs.** Headers
+  that are produced by an earlier build step but absent at headerdep
+  analysis time get treated as unresolved (``_find_include`` returns
+  ``None``) and are NOT included in the ``dep_hash``. Their first
+  appearance does change the dep_list and force a recompile (the
+  second build picks up the new include resolution). But pipelines
+  where the same header is regenerated with different content between
+  ct-cake invocations should ensure the header exists at headerdeps
+  time (e.g., generate it as a separate ``Makefile`` step that runs
+  before ``ct-cake``).
+
+* **Do not use ``make -t`` against a CAS-mode build.** GNU make's
+  touch flag creates an empty file at the target path when the
+  recipe has no real prerequisites (which CAS-mode rules don't —
+  inputs are lifted to order-only). This corrupts cached binaries.
+  ``ninja -t restat`` is similarly inappropriate. If you genuinely
+  need to mark a build as up-to-date without running it, prefer
+  ``--use-mtime=True`` or run ``ct-cake`` directly.
+
+* **System / ``/usr/include`` headers are not in the cache key.**
+  A glibc upgrade between CI runs will silently reuse cached objects
+  built against the prior glibc. This matches the ccache / sccache
+  contract but surprises users coming from full-rebuild CI. If you
+  need glibc-version sensitivity in the cache key, fold it into the
+  ``compiler_identity`` triple (in practice, an in-place compiler
+  swap usually changes ``compiler_identity`` and invalidates the
+  cache implicitly).
+
+* **Linker-time environment variables ARE in the link key.**
+  ``SOURCE_DATE_EPOCH``, ``LD_LIBRARY_PATH``, ``LIBRARY_PATH``, and
+  ``LD_PRELOAD`` participate in the cas-exe payload so two CI runs
+  with different values do not share a cached binary that bakes the
+  wrong build-id or resolves -lfoo to the wrong libfoo.so.
+
+Migrating from ``--use-mtime=True`` (legacy) to ``--use-mtime=False``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The default flipped to ``--use-mtime=False`` in this release. Pre-existing
+scripts that rely on "touch source.cpp; make" producing a rebuild now
+see a no-op (the source content didn't change → CAS key is unchanged
+→ cached object reused). To audit, run ``ct-trim-cache --dry-run`` and
+verify the kept-vs-removed split matches expectations. To restore the
+legacy behavior, pass ``--use-mtime=True`` or set ``use_mtime=True``
+in the relevant ``ct.conf``.
+
+Cache trimming for cas-exedir uses the shared ``ct-trim-cache`` tool:
+
+* Default: trim all four caches (objdir, pchdir, pcmdir, exedir).
+* Selective: ``ct-trim-cache --cas-exedir-only`` for the
+  linker-artefact cache only.
+* Hard-link safety: any cas entry with ``st_nlink > 1`` is preserved
+  on the assumption that a published ``bin/<variant>/<name>`` (or
+  ``bin/<variant>/lib<name>.{a,so}``) is still pointing at it.
+  Symlinked-fallback bin paths show ``st_nlink == 1`` on the cas
+  entry and are NOT protected.
+* Lock-aware delete: trim acquires the same ``<path>.lock`` sidecar
+  the producer rule uses, so a trim that lands mid-link blocks until
+  the link releases the lock instead of clobbering an in-flight
+  rename.
 
 Selective build and test
 ========================

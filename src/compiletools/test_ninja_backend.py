@@ -88,9 +88,13 @@ class TestNinjaGenerate:
         backend.generate(graph, output=buf)
         content = buf.getvalue()
 
-        # Ninja uses "build <output>: <rule> <inputs>" syntax
-        assert "build obj/foo.o: compile_cmd foo.cpp" in content
-        assert "build bin/foo: link_cmd obj/foo.o" in content
+        # Default policy is CAS-only (use_mtime=False): both compile and
+        # link rules drop primary/implicit deps because their outputs
+        # are content-addressable. See ``TestUseMtime`` below for the
+        # exhaustive matrix.
+        assert "build obj/foo.o: compile_cmd ||" in content
+        # Link rule's primary input (obj/foo.o) is also lifted to order-only.
+        assert "build bin/foo: link_cmd ||" in content
         # Ninja uses "build <alias>: phony <deps>" for phony targets
         assert "build build: phony bin/foo" in content
         # Order-only deps use || in Ninja
@@ -510,3 +514,115 @@ class TestNinjaFileLocking:
             pytest.raises(RuntimeError),
         ):
             backend.generate(_compile_graph())
+
+
+class TestUseMtime:
+    """``args.use_mtime`` controls whether compile rules emit input deps.
+
+    Default (False): compile rules emit ``build <out>: rule || <order_only>``
+    — no primary, no implicit. The CAS object name encodes everything that
+    would justify a rebuild, and ninja skips a rule whose output exists and
+    has no inputs.
+
+    Opt-in (True): preserves classical input-driven rebuild detection.
+    """
+
+    def _make_args(self, **overrides):
+        defaults = dict(
+            verbose=0,
+            cas_objdir="/tmp/obj",
+            bindir="/tmp/bin",
+            git_root="",
+            file_locking=False,
+            filename=[],
+            tests=[],
+            static=[],
+            dynamic=[],
+            CC="gcc",
+            CXX="g++",
+            CFLAGS="-O2",
+            CXXFLAGS="-O2",
+            LD="g++",
+            LDFLAGS="",
+            serialisetests=False,
+            build_only_changed=None,
+            sleep_interval_lockdir=None,
+            sleep_interval_cifs=0.1,
+            sleep_interval_flock_fallback=0.1,
+            lock_warn_interval=30,
+            lock_cross_host_timeout=600,
+            use_mtime=False,
+        )
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    def _generate(self, args, graph):
+        hunter = MagicMock()
+        hunter.huntsource = MagicMock()
+        hunter.getsources = MagicMock(return_value=[])
+        backend = NinjaBackend(args=args, hunter=hunter)
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        return buf.getvalue()
+
+    def _compile_graph(self):
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="/tmp/obj/aa/foo_aabbccdd.o",
+                inputs=["/work/foo.cpp", "/work/foo.h", "/work/bar.h"],
+                command=["g++", "-c", "/work/foo.cpp", "-o", "/tmp/obj/aa/foo_aabbccdd.o"],
+                rule_type="compile",
+                order_only_deps=["/tmp/obj/aa"],
+            )
+        )
+        return graph
+
+    def _compile_build_line(self, content: str) -> str:
+        for line in content.splitlines():
+            if line.startswith("build /tmp/obj/aa/foo_aabbccdd.o:"):
+                return line
+        raise AssertionError(f"no compile build line found in:\n{content}")
+
+    def test_compile_rule_drops_inputs_when_no_use_mtime(self):
+        args = self._make_args(use_mtime=False)
+        content = self._generate(args, self._compile_graph())
+        line = self._compile_build_line(content)
+        assert "/work/foo.cpp" not in line
+        assert "/work/foo.h" not in line
+        assert "/work/bar.h" not in line
+        # Order-only deps still appear after ``||``
+        assert "|| /tmp/obj/aa" in line
+
+    def test_compile_rule_keeps_inputs_when_use_mtime(self):
+        args = self._make_args(use_mtime=True)
+        content = self._generate(args, self._compile_graph())
+        line = self._compile_build_line(content)
+        # Primary input present
+        assert "compile_cmd /work/foo.cpp" in line
+        # Implicit deps (after ``|``) present
+        assert "/work/foo.h" in line
+        assert "/work/bar.h" in line
+        assert "|| /tmp/obj/aa" in line
+
+    def test_pch_dependency_lifts_to_order_only_when_no_use_mtime(self):
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="/tmp/obj/aa/foo_aabbccdd.o",
+                inputs=["/work/foo.cpp", "/tmp/pch/aa/std_xxx.gch"],
+                command=["g++", "-c", "/work/foo.cpp", "-o", "/tmp/obj/aa/foo_aabbccdd.o"],
+                rule_type="compile",
+                order_only_deps=["/tmp/obj/aa"],
+            )
+        )
+        args = self._make_args(use_mtime=False)
+        content = self._generate(args, graph)
+        line = self._compile_build_line(content)
+        # PCH must still appear in the build line so ninja orders it,
+        # but only on the order-only side of ``||``.
+        assert "/tmp/pch/aa/std_xxx.gch" in line
+        # Strip the part between ``:`` and ``||`` and check PCH not there.
+        before_ordering, _, _ = line.partition("||")
+        assert "/tmp/pch/aa/std_xxx.gch" not in before_ordering
+        assert "/work/foo.cpp" not in before_ordering

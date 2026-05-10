@@ -60,6 +60,7 @@ Download = "https://github.com/DrGeoff/compiletools/archive/v{version}.tar.gz"
 # Python-based scripts (entry points to Python modules)
 ct-cache-report = "compiletools.cache_report:main"
 ct-cake = "compiletools.cake:main"
+ct-cas-publish = "compiletools.cas_publish:main"
 ct-check-venv = "compiletools.check_venv:main"
 ct-config = "compiletools.config:main"
 ct-cppdeps = "compiletools.cppdeps:main"

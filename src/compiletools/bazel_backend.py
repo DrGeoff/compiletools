@@ -33,6 +33,13 @@ class BazelBackend(BuildBackend):
     with its internal coordination.
     """
 
+    def _has_native_cas_exe(self) -> bool:
+        # Bazel has its own content-addressable action cache and emits
+        # its own cc_binary outputs from BUILD.bazel. Threading
+        # compiletools' cas-exedir layer through would conflict with
+        # bazel's output naming. Use legacy single-rule shape.
+        return True
+
     @staticmethod
     def name() -> str:
         return "bazel"

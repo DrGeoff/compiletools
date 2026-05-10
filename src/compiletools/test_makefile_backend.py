@@ -92,10 +92,14 @@ class TestMakefileGenerate:
         content = buf.getvalue()
 
         assert ".DELETE_ON_ERROR:" in content
-        assert "obj/foo.o: foo.cpp foo.h" in content
-        assert "| /tmp/obj" in content
+        # Default policy is CAS-only (use_mtime=False): compile and link
+        # rules both emit no normal prerequisites because their outputs
+        # are content-addressable. See ``TestUseMtime`` below for the
+        # exhaustive matrix.
+        assert "obj/foo.o: | /tmp/obj" in content
         assert "g++ -c foo.cpp -o obj/foo.o" in content
-        assert "bin/foo: obj/foo.o" in content
+        # Link line drops obj/foo.o as a normal prereq (lifted to order-only).
+        assert "bin/foo:" in content
         assert ".PHONY: build" in content
 
     def test_generate_phony_no_recipe(self):
@@ -1184,3 +1188,137 @@ class TestMakefileConcurrency:
                 for exe in exes:
                     rc = subprocess.run([exe], capture_output=True).returncode
                     assert rc in range(256), f"iter {iteration}: {exe} did not run cleanly"
+
+
+class TestUseMtime:
+    """``args.use_mtime`` controls whether compile rules emit prerequisites.
+
+    Default (False): the cached object's CAS path encodes file_h+dep_h+macro_h,
+    so existence is sufficient. Make sees no normal prerequisites and runs the
+    recipe iff the target is missing — defeating fresh-checkout mtime
+    invalidation that re-runs byte-identical compiles.
+
+    Opt-in (True): preserves classical mtime-driven prerequisite emission.
+    """
+
+    def _make_args(self, **overrides):
+        defaults = dict(
+            verbose=0,
+            cas_objdir="/tmp/obj",
+            bindir="/tmp/bin",
+            git_root="",
+            file_locking=False,
+            makefilename="Makefile",
+            filename=[],
+            tests=[],
+            static=[],
+            dynamic=[],
+            CC="gcc",
+            CXX="g++",
+            CFLAGS="-O2",
+            CXXFLAGS="-O2",
+            LD="g++",
+            LDFLAGS="",
+            serialisetests=False,
+            build_only_changed=None,
+            use_mtime=False,
+        )
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    def _generate(self, args, graph):
+        hunter = MagicMock()
+        hunter.huntsource = MagicMock()
+        hunter.getsources = MagicMock(return_value=[])
+        backend = MakefileBackend(args=args, hunter=hunter)
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        return buf.getvalue()
+
+    def _compile_graph(self):
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="/tmp/obj/aa/foo_aabbccdd.o",
+                inputs=["/work/foo.cpp", "/work/foo.h", "/work/bar.h"],
+                command=["g++", "-c", "/work/foo.cpp", "-o", "/tmp/obj/aa/foo_aabbccdd.o"],
+                rule_type="compile",
+                order_only_deps=["/tmp/obj/aa"],
+            )
+        )
+        return graph
+
+    def _compile_line(self, content: str) -> str:
+        for line in content.splitlines():
+            if line.startswith("/tmp/obj/aa/foo_aabbccdd.o:"):
+                return line
+        raise AssertionError(f"no compile rule line found in:\n{content}")
+
+    def test_compile_rule_drops_prereqs_when_no_use_mtime(self):
+        args = self._make_args(use_mtime=False)
+        content = self._generate(args, self._compile_graph())
+        line = self._compile_line(content)
+        # ``<target>: | <order_only>`` — nothing between ``:`` and ``|``
+        assert "/tmp/obj/aa/foo_aabbccdd.o: | /tmp/obj/aa" in line, line
+        # Sources/headers MUST NOT appear as normal prereqs.
+        assert "/work/foo.cpp" not in line
+        assert "/work/foo.h" not in line
+        assert "/work/bar.h" not in line
+
+    def test_compile_rule_keeps_prereqs_when_use_mtime(self):
+        args = self._make_args(use_mtime=True)
+        content = self._generate(args, self._compile_graph())
+        line = self._compile_line(content)
+        assert "/work/foo.cpp" in line
+        assert "/work/foo.h" in line
+        assert "/work/bar.h" in line
+        assert "| /tmp/obj/aa" in line
+
+    def test_pch_dependency_lifts_to_order_only_when_no_use_mtime(self):
+        """A PCH .gch file in inputs[] would still trigger a prereq-mtime
+        recompile under classical make. Move it to order-only when the
+        CAS-only policy is in effect, preserving build ordering without
+        triggering rebuilds on PCH mtime."""
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="/tmp/obj/aa/foo_aabbccdd.o",
+                inputs=["/work/foo.cpp", "/tmp/pch/aa/std_xxx.gch"],
+                command=["g++", "-c", "/work/foo.cpp", "-o", "/tmp/obj/aa/foo_aabbccdd.o"],
+                rule_type="compile",
+                order_only_deps=["/tmp/obj/aa"],
+            )
+        )
+        args = self._make_args(use_mtime=False)
+        content = self._generate(args, graph)
+        line = self._compile_line(content)
+        # PCH must still be referenced (so it's built before this rule),
+        # but only on the order-only side of ``|``.
+        assert "/tmp/pch/aa/std_xxx.gch" in line
+        # Specifically: the PCH appears AFTER the ``|`` separator.
+        target_part, _, ordering = line.partition("|")
+        assert "/tmp/pch/aa/std_xxx.gch" in ordering
+        assert "/tmp/pch/aa/std_xxx.gch" not in target_part
+        # And the source/header path is dropped entirely.
+        assert "/work/foo.cpp" not in target_part
+
+    def test_link_rule_unchanged_when_no_use_mtime(self):
+        """Only compile rules drop prereqs. Link rules legitimately depend
+        on object-file mtime (relink when an .o changes)."""
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="/tmp/bin/foo",
+                inputs=["/tmp/obj/aa/foo_aabbccdd.o", "/tmp/obj/bb/bar_eeffgghh.o"],
+                command=["g++", "-o", "/tmp/bin/foo", "/tmp/obj/aa/foo_aabbccdd.o", "/tmp/obj/bb/bar_eeffgghh.o"],
+                rule_type="link",
+            )
+        )
+        args = self._make_args(use_mtime=False)
+        content = self._generate(args, graph)
+        for line in content.splitlines():
+            if line.startswith("/tmp/bin/foo:"):
+                assert "/tmp/obj/aa/foo_aabbccdd.o" in line
+                assert "/tmp/obj/bb/bar_eeffgghh.o" in line
+                return
+        raise AssertionError(f"no link rule line found in:\n{content}")

@@ -897,6 +897,7 @@ def make_backend_args(tmpdir, **overrides):
         dynamic=[],
         verbose=0,
         cas_objdir=os.path.join(tmpdir, "obj"),
+        cas_exedir=os.path.join(tmpdir, "cas-exe"),
         bindir=os.path.join(tmpdir, "bin"),
         git_root="",
         CC="gcc",
@@ -1014,11 +1015,43 @@ def make_mock_namer(args):
             return f"{objdir}/{file_hash[:2]}"
         return objdir
 
+    cas_exedir = getattr(args, "cas_exedir", f"{bindir}/exe")
+
+    def _cas_exe_dir(link_key_hash=None):
+        if link_key_hash is not None:
+            return f"{cas_exedir}/{link_key_hash[:2]}"
+        return cas_exedir
+
+    def _cas_exe_pathname(filename, link_key_hash):
+        basename = filename.split("/")[-1].replace(".cpp", "")
+        return f"{cas_exedir}/{link_key_hash[:2]}/{basename}_{link_key_hash}.exe"
+
+    def _staticlib_basename(filename):
+        # Mirror namer.staticlibrary_name: lib<stem>.a
+        return "lib" + filename.split("/")[-1].rsplit(".", 1)[0] + ".a"
+
+    def _dynamiclib_basename(filename):
+        return "lib" + filename.split("/")[-1].rsplit(".", 1)[0] + ".so"
+
+    def _cas_staticlibrary_pathname(filename, lib_key_hash):
+        return f"{cas_exedir}/{lib_key_hash[:2]}/{_staticlib_basename(filename)[:-2]}_{lib_key_hash}.a"
+
+    def _cas_dynamiclibrary_pathname(filename, lib_key_hash):
+        return f"{cas_exedir}/{lib_key_hash[:2]}/{_dynamiclib_basename(filename)[:-3]}_{lib_key_hash}.so"
+
     namer.object_pathname = MagicMock(side_effect=_object_pathname)
     namer.object_dir = MagicMock(side_effect=_object_dir)
     namer.executable_pathname = MagicMock(side_effect=lambda f: f"{bindir}/{f.split('/')[-1].replace('.cpp', '')}")
-    namer.staticlibrary_pathname = MagicMock(return_value=f"{bindir}/libmylib.a")
-    namer.dynamiclibrary_pathname = MagicMock(return_value=f"{bindir}/libmylib.so")
+    namer.cas_exe_dir = MagicMock(side_effect=_cas_exe_dir)
+    namer.cas_exe_pathname = MagicMock(side_effect=_cas_exe_pathname)
+    # Production ``staticlibrary_pathname`` / ``dynamiclibrary_pathname`` take
+    # an optional ``sourcefilename`` arg and derive the basename from it; the
+    # mocks accept and ignore the arg so callers from build_backend.py work
+    # without per-test wiring.
+    namer.staticlibrary_pathname = MagicMock(side_effect=lambda f=None: f"{bindir}/libmylib.a")
+    namer.dynamiclibrary_pathname = MagicMock(side_effect=lambda f=None: f"{bindir}/libmylib.so")
+    namer.cas_staticlibrary_pathname = MagicMock(side_effect=_cas_staticlibrary_pathname)
+    namer.cas_dynamiclibrary_pathname = MagicMock(side_effect=_cas_dynamiclibrary_pathname)
     namer.compute_dep_hash = MagicMock(return_value="dep_hash_12345")
     namer.executable_dir = MagicMock(return_value=bindir)
     return namer

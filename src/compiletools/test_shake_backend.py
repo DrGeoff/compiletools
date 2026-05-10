@@ -227,15 +227,16 @@ class TestTraceVerification:
                 mock_run.assert_not_called()
 
     def test_verify_fails_on_input_hash_change(self, monkeypatch):
-        """If an input file changed, rebuild (uses link rule to test trace verification,
-        since compile rules bypass traces via content-addressable short-circuit)."""
+        """If an input file changed, rebuild (uses copy rule to test trace
+        verification, since compile and link rules both bypass traces via
+        content-addressable short-circuit on output existence)."""
         graph = BuildGraph()
         graph.add_rule(
             BuildRule(
                 output="foo.o",
                 inputs=["foo.cpp"],
-                command=["g++", "-c", "foo.cpp", "-o", "foo.o"],
-                rule_type="link",
+                command=["cp", "foo.cpp", "foo.o"],
+                rule_type="copy",
                 order_only_deps=["obj"],
             )
         )
@@ -248,7 +249,7 @@ class TestTraceVerification:
             (td / "foo.o").write_bytes(b"\x7fELF fake object")
             os.makedirs(td / "obj", exist_ok=True)
 
-            cmd = ["g++", "-c", "foo.cpp", "-o", "foo.o"]
+            cmd = ["cp", "foo.cpp", "foo.o"]
 
             # Pre-populate trace with OLD source hash
             trace_path = str(td / ".ct-traces.json")
@@ -263,7 +264,7 @@ class TestTraceVerification:
             )
             store.save()
 
-            # Link rule routes through atomic_link → _run_with_signal_forwarding
+            # Copy rule routes through atomic_link → _run_with_signal_forwarding
             with mock.patch(
                 "compiletools.locking._run_with_signal_forwarding",
                 side_effect=_swf_writer(b"\x7fELF rebuilt"),
@@ -377,11 +378,14 @@ class TestTraceVerification:
 class TestEarlyCutoff:
     def test_identical_output_skips_dependent(self, monkeypatch):
         """Content-addressable short-circuit: foo.o exists → compile skipped.
-        CA link target exists → link also skipped. No subprocess calls."""
+        Link rule's output (a cas-exe path under the new design) exists →
+        link also skipped. No subprocess calls."""
+        # Link rule's output is the cas-exe path — that's what production
+        # _create_link_rule returns now (Namer.cas_exe_pathname-derived).
         link_rule = BuildRule(
-            output="foo",
+            output="cas-exe/aa/foo_abc.exe",
             inputs=["foo.o"],
-            command=["g++", "-o", "foo", "foo.o"],
+            command=["g++", "-o", "cas-exe/aa/foo_abc.exe", "foo.o"],
             rule_type="link",
         )
         graph = BuildGraph()
@@ -395,7 +399,14 @@ class TestEarlyCutoff:
             )
         )
         graph.add_rule(link_rule)
-        graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
+        graph.add_rule(
+            BuildRule(
+                output="build",
+                inputs=["cas-exe/aa/foo_abc.exe"],
+                command=None,
+                rule_type="phony",
+            )
+        )
 
         with ShakeBackendTestContext(graph) as (backend, tmpdir):
             td = Path(tmpdir)
@@ -404,15 +415,15 @@ class TestEarlyCutoff:
             (td / "foo.o").write_bytes(b"\x7fELF fake object")
             os.makedirs(td / "obj", exist_ok=True)
 
-            # Pre-create the CA link target so the short-circuit fires
-            ca = backend._ca_target(link_rule)
-            with open(ca, "wb") as f:
-                f.write(b"\x7fELF cached executable")
+            # Pre-create the cas-exe path so the existence-only short-circuit
+            # fires for the link rule (matches production behavior — the link
+            # output IS the cas-exe path).
+            os.makedirs(td / "cas-exe" / "aa", exist_ok=True)
+            (td / "cas-exe" / "aa" / "foo_abc.exe").write_bytes(b"\x7fELF cached executable")
 
             with mock.patch("compiletools.trace_backend.subprocess.run") as mock_run:
                 backend.execute("build")
-                # Compile skipped (content-addressable, foo.o exists),
-                # link skipped (CA target exists, copied to human target)
+                # Compile skipped (foo.o exists), link skipped (cas-exe exists).
                 assert mock_run.call_count == 0
 
     def test_different_output_rebuilds_dependent(self, monkeypatch):
@@ -814,64 +825,74 @@ class TestContentAddressableShortCircuit:
                 assert changed is True
                 assert mock_swf.call_count == 1
 
-    def test_link_skipped_when_ca_target_exists(self, monkeypatch):
-        """Link uses CA short-circuit: if the CA-named file exists, the link
-        is skipped and the CA file is copied to the human-readable target."""
+    def test_link_skipped_when_cas_exe_exists(self, monkeypatch):
+        """Link rule's output is the cas-exe path. If it already exists,
+        the existence-only short-circuit fires (matches the compile rule
+        path). The publish-as-symlink rule is responsible for materialising
+        the user-facing bin/<name> from this cached file; in this minimal
+        graph there is no symlink rule, so the test verifies only that
+        the link itself is skipped."""
         link_rule = BuildRule(
-            output="foo",
+            output="cas-exe/aa/foo_abc.exe",
             inputs=["foo.o"],
-            command=["g++", "-o", "foo", "foo.o"],
+            command=["g++", "-o", "cas-exe/aa/foo_abc.exe", "foo.o"],
             rule_type="link",
         )
         graph = BuildGraph()
         graph.add_rule(link_rule)
-        graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
+        graph.add_rule(
+            BuildRule(
+                output="build",
+                inputs=["cas-exe/aa/foo_abc.exe"],
+                command=None,
+                rule_type="phony",
+            )
+        )
 
         with ShakeBackendTestContext(graph) as (backend, tmpdir):
             td = Path(tmpdir)
             monkeypatch.chdir(tmpdir)
             (td / "foo.o").write_bytes(b"\x7fELF fake object")
 
-            # Pre-create the CA target so the short-circuit fires
-            ca = backend._ca_target(link_rule)
-            with open(ca, "wb") as f:
-                f.write(b"\x7fELF cached executable")
+            # Pre-create the cas-exe path so the existence short-circuit fires.
+            os.makedirs(td / "cas-exe" / "aa", exist_ok=True)
+            (td / "cas-exe" / "aa" / "foo_abc.exe").write_bytes(b"\x7fELF cached executable")
 
             with mock.patch("compiletools.trace_backend.subprocess.run") as mock_run:
                 backend.execute("build")
                 mock_run.assert_not_called()
 
-            # Human-readable target should be a copy of the CA file
-            assert (td / "foo").read_bytes() == b"\x7fELF cached executable"
+            # Cas-exe path remains untouched.
+            assert (td / "cas-exe" / "aa" / "foo_abc.exe").read_bytes() == b"\x7fELF cached executable"
 
-    def test_link_rebuilds_when_ca_target_missing(self, monkeypatch):
-        """No CA target → link executes, builds to CA target, copies to human target."""
+    def test_link_rebuilds_when_cas_exe_missing(self, monkeypatch):
+        """Cas-exe path missing → link executes, atomic_link writes to a
+        temp path next to the cas-exe and renames into place. No
+        intermediate CA layer (cas-exe IS the CA layer)."""
+        cas_exe = "cas-exe/aa/foo_abc.exe"
         link_rule = BuildRule(
-            output="foo",
+            output=cas_exe,
             inputs=["foo.o"],
-            command=["g++", "-o", "foo", "foo.o"],
+            command=["g++", "-o", cas_exe, "foo.o"],
             rule_type="link",
         )
         graph = BuildGraph()
         graph.add_rule(link_rule)
-        graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
+        graph.add_rule(BuildRule(output="build", inputs=[cas_exe], command=None, rule_type="phony"))
 
         with ShakeBackendTestContext(graph) as (backend, tmpdir):
             td = Path(tmpdir)
             monkeypatch.chdir(tmpdir)
             (td / "foo.o").write_bytes(b"\x7fELF fake object")
-
-            ca = backend._ca_target(link_rule)
+            os.makedirs(td / "cas-exe" / "aa", exist_ok=True)
 
             def fake_swf(cmd):
-                # atomic_link rewrites -o from `ca` to a temp path; the
-                # original `ca` should NOT appear in the command (the
-                # tempfile takes its place).  Verify the temp path is in
-                # the same directory and ends with .tmp.
+                # atomic_link rewrites -o from rule.output to a temp path
+                # next to it; verify the temp path is sibling to cas_exe.
                 assert "-o" in cmd
                 out = cmd[cmd.index("-o") + 1]
-                assert out != ca
-                assert out.startswith(ca + ".") and out.endswith(".tmp")
+                assert out != cas_exe
+                assert out.startswith(cas_exe + ".") and out.endswith(".tmp")
                 with open(out, "wb") as f:
                     f.write(b"\x7fELF new executable")
                 return subprocess.CompletedProcess(cmd, 0, None, None)
@@ -883,9 +904,8 @@ class TestContentAddressableShortCircuit:
                 backend.execute("build")
                 assert mock_swf.call_count == 1
 
-            # Both CA and human-readable targets should exist
-            assert os.path.exists(ca)
-            assert (td / "foo").read_bytes() == b"\x7fELF new executable"
+            # Cas-exe path now exists with the new content.
+            assert (td / cas_exe).read_bytes() == b"\x7fELF new executable"
 
 
 # ---------------------------------------------------------------------------
@@ -1142,28 +1162,34 @@ class TestAtomicLinkRouting:
     """
 
     def test_link_rule_routes_through_atomic_link(self, monkeypatch):
+        """Link rules atomic_link directly to rule.output (the cas-exe path).
+        No `_ca_target` indirection — that pattern is reserved for
+        static_library/shared_library which still write to non-CAS outputs."""
+        cas_exe = "cas-exe/aa/foo_abc.exe"
         link_rule = BuildRule(
-            output="foo",
+            output=cas_exe,
             inputs=["foo.o"],
-            command=["g++", "-o", "foo", "foo.o"],
+            command=["g++", "-o", cas_exe, "foo.o"],
             rule_type="link",
         )
         graph = BuildGraph()
         graph.add_rule(link_rule)
-        graph.add_rule(BuildRule(output="build", inputs=["foo"], command=None, rule_type="phony"))
+        graph.add_rule(BuildRule(output="build", inputs=[cas_exe], command=None, rule_type="phony"))
 
         with ShakeBackendTestContext(graph) as (backend, tmpdir):
             td = Path(tmpdir)
             monkeypatch.chdir(tmpdir)
             (td / "foo.o").write_bytes(b"\x7fELF fake object")
+            os.makedirs(td / "cas-exe" / "aa", exist_ok=True)
 
             with mock.patch("compiletools.trace_backend.atomic_link") as mock_link:
                 mock_link.side_effect = lambda lock, target, cmd: open(target, "wb").close() or 0
                 backend.execute("build")
                 assert mock_link.call_count == 1
                 call_args = mock_link.call_args
-                # atomic_link(lock, target=ca, cmd=ca_cmd)
-                assert call_args.args[1] == backend._ca_target(link_rule)
+                # atomic_link(lock, target=rule.output, cmd=rule.command)
+                # — direct link to the cas-exe path, no in-place CA copy.
+                assert call_args.args[1] == cas_exe
 
     def test_copy_rule_routes_through_atomic_link(self, monkeypatch):
         """Non-build-artifact rule types (e.g. 'copy') must also go through
@@ -1359,3 +1385,100 @@ class TestShakeTestRulesNotExecutedDuringBuild:
                 changed = asyncio.run(backend._build_async(result_path, graph, traces, memo, asyncio.Semaphore(1)))
             mock_exec.assert_not_called()
             assert changed is False
+
+
+class TestTraceInputCanonicalization:
+    """``_make_trace_entry`` must store input_hashes keys as gitroot-relative
+    paths so that a trace written under workspace A verifies under workspace B
+    (the cas-objdir surviving across CI checkouts at differing paths is the
+    primary motivating use case — see
+    docs/superpowers/specs/2026-05-09-cas-mtime-block-design.md).
+
+    Mirrors the path-canonical CAS-key fix shipped in 9.1.0 for the per-TU
+    object / PCH / PCM caches; this lifts the same property to the trace
+    layer so non-compile rules (link, library) also become workspace-portable
+    on a shared CAS.
+    """
+
+    def test_make_trace_entry_canonicalizes_input_keys(self, tmp_path, monkeypatch):
+        from compiletools.apptools import _GITROOT_SENTINEL
+
+        monkeypatch.chdir(tmp_path)
+        src = tmp_path / "foo.cpp"
+        obj = tmp_path / "foo.o"
+        src.write_text("int main() {}")
+        obj.write_bytes(b"\x7fELF")
+
+        backend = ShakeBackend.__new__(ShakeBackend)
+        backend.args = mock.MagicMock()
+        backend.args.cas_objdir = str(tmp_path)
+        backend.context = BuildContext()
+
+        rule = BuildRule(
+            output=str(obj),
+            inputs=[str(src)],
+            command=["cp", str(src), str(obj)],
+            rule_type="copy",
+        )
+
+        # Patch find_git_root so the trace's anchor is *tmp_path*. Otherwise the
+        # tmp_path lies outside the real surrounding gitroot and pass-through
+        # kicks in (see canonicalize_path_for_cache_key's "outside the anchor"
+        # branch).
+        with mock.patch("compiletools.git_utils.find_git_root", return_value=str(tmp_path)):
+            entry = _make_trace_entry(rule, backend.context)
+
+        # Every key must contain the sentinel — not the raw absolute prefix.
+        assert entry.input_hashes, "entry should record at least one input"
+        for key in entry.input_hashes:
+            assert _GITROOT_SENTINEL in key, (
+                f"input_hashes key {key!r} not canonicalized; should contain <GITROOT> sentinel"
+            )
+            assert str(tmp_path) not in key, f"input_hashes key {key!r} still carries absolute workspace prefix"
+
+    def test_verify_succeeds_across_workspace_paths(self, tmp_path, monkeypatch):
+        """Two workspaces with the same content but different absolute paths
+        must produce traces that mutually verify. This is the cross-CI-runner
+        cache-reuse property the bug report demands."""
+        # Workspace A
+        ws_a = tmp_path / "run-1" / "repo"
+        ws_a.mkdir(parents=True)
+        (ws_a / "foo.cpp").write_text("int main() {}\n")
+        (ws_a / "foo.o").write_bytes(b"\x7fELF identical-bytes")
+
+        # Workspace B (different absolute path, identical contents)
+        ws_b = tmp_path / "run-2" / "repo"
+        ws_b.mkdir(parents=True)
+        (ws_b / "foo.cpp").write_text("int main() {}\n")
+        (ws_b / "foo.o").write_bytes(b"\x7fELF identical-bytes")
+
+        backend = ShakeBackend.__new__(ShakeBackend)
+        backend.args = mock.MagicMock()
+        backend.args.cas_objdir = str(tmp_path / "cas")
+        backend.context = BuildContext()
+
+        # Build the trace under workspace A.
+        rule_a = BuildRule(
+            output=str(ws_a / "foo.o"),
+            inputs=[str(ws_a / "foo.cpp")],
+            command=["cp", str(ws_a / "foo.cpp"), str(ws_a / "foo.o")],
+            rule_type="copy",
+        )
+        with mock.patch("compiletools.git_utils.find_git_root", return_value=str(ws_a)):
+            entry = _make_trace_entry(rule_a, backend.context)
+
+        # Verify the same content under workspace B with a different absolute prefix.
+        rule_b = BuildRule(
+            output=str(ws_b / "foo.o"),
+            inputs=[str(ws_b / "foo.cpp")],
+            command=["cp", str(ws_b / "foo.cpp"), str(ws_b / "foo.o")],
+            rule_type="copy",
+        )
+        # Verify needs to read the workspace-B output, so the rule's output
+        # path must point at ws_b. The trace output_hash was computed from
+        # workspace A, but content is identical, so output hashes match.
+        with mock.patch("compiletools.git_utils.find_git_root", return_value=str(ws_b)):
+            assert backend._verify(rule_b, entry) is True, (
+                "Trace written at workspace A must verify at workspace B "
+                "when contents are identical (cross-workspace CAS portability)."
+            )

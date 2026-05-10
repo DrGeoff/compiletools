@@ -1015,3 +1015,219 @@ class TestNoncurrentKeptAccounting:
 
         assert stats["noncurrent_kept"] == 1
         assert stats["removed"] == 0
+
+
+def _touch_exe(exedir, basename, link_key, *, age_seconds=0, size=1024):
+    """Create a fake cas-exe file at ``<exedir>/<linkkey[:2]>/<basename>_<linkkey>.exe``."""
+    name = f"{basename}_{link_key}.exe"
+    bucket_dir = os.path.join(exedir, link_key[:2])
+    os.makedirs(bucket_dir, exist_ok=True)
+    path = os.path.join(bucket_dir, name)
+    with open(path, "wb") as f:
+        f.write(b"\0" * size)
+    if age_seconds:
+        mtime = time.time() - age_seconds
+        os.utime(path, (mtime, mtime))
+    return path
+
+
+class TestTrimExedir:
+    """``CacheTrimmer.trim_exedir`` deletes stale ``.exe`` files from the
+    content-addressable executable cache while honouring keep_count,
+    max_age, and hard-link refcount safety."""
+
+    def test_returns_zero_stats_when_dir_missing(self, tmp_path):
+        trimmer = CacheTrimmer(_make_args())
+        stats = trimmer.trim_exedir(str(tmp_path / "does-not-exist"))
+        assert stats["total_scanned"] == 0
+        assert stats["removed"] == 0
+
+    def test_keeps_newest_per_basename_evicts_rest(self, tmp_path):
+        exedir = str(tmp_path / "cas-exe")
+        # Same basename "main", three different link keys, three ages.
+        new = _touch_exe(exedir, "main", "aa11" * 16, age_seconds=0)
+        mid = _touch_exe(exedir, "main", "bb22" * 16, age_seconds=86400)
+        old = _touch_exe(exedir, "main", "cc33" * 16, age_seconds=30 * 86400)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        stats = trimmer.trim_exedir(exedir)
+
+        assert stats["total_scanned"] == 3
+        assert stats["basenames_found"] == 1
+        assert stats["kept"] == 1
+        assert stats["removed"] == 2
+        assert os.path.exists(new), "newest entry must survive keep_count=1"
+        assert not os.path.exists(mid)
+        assert not os.path.exists(old)
+
+    def test_max_age_keeps_recent_regardless_of_rank(self, tmp_path):
+        exedir = str(tmp_path / "cas-exe")
+        # Three entries spanning days; max_age=2 days keeps anything <2d.
+        a = _touch_exe(exedir, "main", "aa11" * 16, age_seconds=0)
+        b = _touch_exe(exedir, "main", "bb22" * 16, age_seconds=86400)  # 1 day
+        c = _touch_exe(exedir, "main", "cc33" * 16, age_seconds=10 * 86400)  # 10 days
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1, max_age=2))
+        stats = trimmer.trim_exedir(exedir)
+
+        # keep_count=1 picks `a` (newest); max_age=2d additionally protects `b`.
+        assert os.path.exists(a)
+        assert os.path.exists(b)
+        assert not os.path.exists(c)
+        assert stats["removed"] == 1
+
+    def test_hard_link_protects_entry_from_eviction(self, tmp_path):
+        """``bin/<name>`` is published as a hard link to the cas-exe.
+        While that hard link exists (st_nlink > 1), trim must skip the
+        cas-exe entry — otherwise the next build's existence-only
+        short-circuit would still see ``bin/<name>`` (the hard-linked
+        twin) but with no cas-exe target to confirm against, breaking
+        the user-visible build artefact's content guarantee."""
+        exedir = str(tmp_path / "cas-exe")
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+
+        # Old entry that would normally be reaped under keep_count=1 + a
+        # newer rival, but is hard-linked from bindir.
+        live = _touch_exe(exedir, "main", "aa11" * 16, age_seconds=30 * 86400)
+        rival = _touch_exe(exedir, "main", "bb22" * 16, age_seconds=0)
+        os.link(live, str(bindir / "main"))
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        stats = trimmer.trim_exedir(exedir)
+
+        assert os.path.exists(live), "hard-linked cas-exe must survive trim"
+        assert os.path.exists(rival), "newest rival must also survive (keep_count=1)"
+        assert stats["removed"] == 0
+
+    def test_dry_run_does_not_unlink(self, tmp_path):
+        exedir = str(tmp_path / "cas-exe")
+        old = _touch_exe(exedir, "main", "aa11" * 16, age_seconds=30 * 86400)
+        _touch_exe(exedir, "main", "bb22" * 16, age_seconds=0)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1, dry_run=True))
+        stats = trimmer.trim_exedir(exedir)
+
+        assert os.path.exists(old), "dry-run must not unlink"
+        assert stats["removed"] == 1, "stats should still reflect what would be removed"
+
+    def test_basename_with_underscores_split_correctly(self, tmp_path):
+        """The link-key separator is the LAST underscore. A basename
+        like ``my_app`` must remain its own bucket and not collapse
+        with ``my`` (whose basename happens to be a substring)."""
+        exedir = str(tmp_path / "cas-exe")
+        _touch_exe(exedir, "my_app", "aa11" * 16, age_seconds=0)
+        _touch_exe(exedir, "my", "bb22" * 16, age_seconds=0)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        stats = trimmer.trim_exedir(exedir)
+
+        # Two separate basenames, each with a single survivor.
+        assert stats["basenames_found"] == 2
+        assert stats["removed"] == 0
+
+    def test_distinct_sources_with_same_basename_do_not_co_evict(self, tmp_path):
+        """C4: two distinct executables both named ``main`` (e.g.
+        ``tests/main.cpp`` and ``tools/main.cpp``) with several cached
+        link variants each must NOT bucket together via shared
+        basename — they would prematurely evict each other.
+
+        With keep_count=1 and 2 variants from each source, the trim
+        must keep at least one variant FROM EACH SOURCE (2 total),
+        not 1 from the bucket-of-merged-sources.
+        """
+        exedir = str(tmp_path / "cas-exe")
+
+        # Source A: tests/main.cpp → 2 variants, both relatively new.
+        a1 = _touch_exe(exedir, "main", "aaaa" * 16, age_seconds=0)
+        a2 = _touch_exe(exedir, "main", "aabb" * 16, age_seconds=86400)
+        # Source B: tools/main.cpp → 2 variants, both older than A.
+        b1 = _touch_exe(exedir, "main", "bbaa" * 16, age_seconds=2 * 86400)
+        b2 = _touch_exe(exedir, "main", "bbbb" * 16, age_seconds=3 * 86400)
+
+        # Sidecar manifest pins source_realpath for the new bucketing
+        # contract. trim_exedir reads these and buckets by
+        # (source_realpath, suffix) instead of (basename, suffix).
+        for path, src in (
+            (a1, "/repo/tests/main.cpp"),
+            (a2, "/repo/tests/main.cpp"),
+            (b1, "/repo/tools/main.cpp"),
+            (b2, "/repo/tools/main.cpp"),
+        ):
+            with open(path + ".manifest", "w") as f:
+                f.write('{"source_realpath": "' + src + '"}\n')
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        stats = trimmer.trim_exedir(exedir)
+
+        assert stats["basenames_found"] == 2, "C4: distinct sources with same basename must form 2 buckets via sidecar"
+        # keep_count=1 → newest A (a1) and newest B (b1) survive.
+        assert os.path.exists(a1), "newest variant of source A must survive"
+        assert os.path.exists(b1), "newest variant of source B must survive"
+        assert not os.path.exists(a2), "older variant of source A must be evicted"
+        assert not os.path.exists(b2), "older variant of source B must be evicted"
+
+    def test_legacy_entries_without_sidecar_use_basename_bucketing(self, tmp_path):
+        """C4 backwards-compat: entries that pre-date the sidecar contract
+        (no .manifest sidecar on disk) continue to be bucketed by
+        ``(basename, suffix)`` so existing caches don't suddenly behave
+        differently after upgrading.
+        """
+        exedir = str(tmp_path / "cas-exe")
+        # Two same-basename entries with NO sidecar — legacy.
+        _touch_exe(exedir, "main", "aaaa" * 16, age_seconds=0)
+        old = _touch_exe(exedir, "main", "bbbb" * 16, age_seconds=86400)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        stats = trimmer.trim_exedir(exedir)
+
+        # Single legacy bucket → keep_count=1 → only newest survives.
+        assert stats["basenames_found"] == 1
+        assert not os.path.exists(old)
+
+    def test_publish_between_scan_and_unlink_protects_entry(self, tmp_path, monkeypatch):
+        """I4 TOCTOU: scan sees nlink=1; before the per-entry unlink
+        runs under the lock, a peer publish creates a hard-linked
+        bin/<name>, elevating nlink to 2. The unlink must re-stat
+        under the lock and bail — otherwise we'd delete an entry that
+        just gained a published reference and force a relink on the
+        next build.
+        """
+        from compiletools import trim_cache as tc
+
+        exedir = str(tmp_path / "cas-exe")
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+
+        # Two old entries that would normally be reaped under keep_count=1
+        # plus a newer rival. Pre-trim nlink=1 on both old entries.
+        old_a = _touch_exe(exedir, "main", "aaaa" * 16, age_seconds=10 * 86400)
+        old_b = _touch_exe(exedir, "main", "bbbb" * 16, age_seconds=10 * 86400)
+        _touch_exe(exedir, "main", "cccc" * 16, age_seconds=0)
+
+        # Inject a publish race INSIDE _safe_locked_unlink: when called
+        # for old_a, hardlink it into bindir before the (post-lock)
+        # nlink re-check. Without the I4 fix, old_a is unlinked and the
+        # bindir hardlink dangles.
+        original = tc._safe_locked_unlink
+
+        def racing_unlink(path, *, skip_if_nlink_above=None):
+            if path == old_a:
+                # Simulate concurrent publish-as-hardlink elevating nlink.
+                # Hardlink BEFORE the lock is acquired so the in-lock
+                # re-stat in the production code observes nlink=2.
+                os.link(path, str(bindir / "main"))
+            return original(path, skip_if_nlink_above=skip_if_nlink_above)
+
+        monkeypatch.setattr(tc, "_safe_locked_unlink", racing_unlink)
+
+        trimmer = CacheTrimmer(_make_args(keep_count=1))
+        trimmer.trim_exedir(exedir)
+
+        # I4: old_a must survive — it gained a hardlinked reference
+        # mid-trim. old_b had no such race; it's removed normally.
+        assert os.path.exists(old_a), (
+            "I4: trim must re-stat nlink under the lock and skip entries that "
+            "gained a hardlinked publish reference between scan and unlink"
+        )
+        assert not os.path.exists(old_b)

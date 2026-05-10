@@ -47,13 +47,27 @@ class BaseCompileToolsTestCase:
         self._clear_all_caches()  # Clear after teardown
 
     def _verify_one_exe_per_main(self, relativepaths, search_dir=None):
-        """Common executable verification logic"""
+        """Common executable verification logic.
+
+        Each source must produce a user-facing executable (a hard link or
+        symlink in bindir pointing to the cas-exe). The cas-exe path itself
+        is also executable (`<cas-exedir>/<shard>/<name>_<linkkey>.exe`)
+        and must be IGNORED here — counting both would double-count.
+        """
         search_directory = search_dir or self._tmpdir
         actual_exes = set()
         for root, _dirs, files in os.walk(search_directory):
             for ff in files:
-                if compiletools.utils.is_executable(os.path.join(root, ff)):
-                    actual_exes.add(ff)
+                if not compiletools.utils.is_executable(os.path.join(root, ff)):
+                    continue
+                # Skip the content-addressable executable cache; the
+                # user-facing publish (hard link / symlink) is what this
+                # test cares about.
+                if "cas-exedir" in os.path.normpath(root).split(os.sep):
+                    continue
+                if ff.endswith(".exe"):
+                    continue
+                actual_exes.add(ff)
 
         expected_exes = {
             os.path.splitext(os.path.split(filename)[1])[0]

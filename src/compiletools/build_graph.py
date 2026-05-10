@@ -13,20 +13,39 @@ from dataclasses import dataclass, field
 VALID_RULE_TYPES = frozenset(
     {
         "compile",
+        # Three CAS-aware producer rule types. In ``--use-mtime=False``
+        # mode (default), each writes to a content-addressable
+        # ``<cas-exedir>/<shard>/<name>_<key>.<ext>`` and is paired
+        # with a downstream ``symlink`` rule that publishes the
+        # user-facing path. Make/Ninja backends lift their inputs to
+        # order-only so existence-on-disk is the sole rebuild signal.
+        # In ``--use-mtime=True`` mode (legacy), producers write
+        # directly to the user-facing path with normal mtime semantics.
         "link",
+        "static_library",
+        "shared_library",
         "test",
         "phony",
         "mkdir",
         "clean",
         "copy",
-        "static_library",
-        "shared_library",
         # C++20 header-unit precompile that writes its actual artefact to
         # an under-the-hood location (gcc: gcm.cache/<abs-path>.gcm) and
         # cannot conform to the "compile" contract of producing the
         # rule's named output. The named output is a stamp file, touched
         # via ``success_marker`` to record completion.
         "header_unit",
+        # Idempotent hard-link/symlink publish step that exposes a
+        # content-addressable artefact at a stable, user-facing path.
+        # Used by the cas-exedir layer: producer rule (link /
+        # static_library / shared_library) writes to
+        # <cas-exedir>/<shard>/<name>_<key>.<ext>, then a `symlink`
+        # rule materializes bin/<variant>/<name> as a hard link to it
+        # (with symlink fallback for cross-filesystem cases). Recipe is
+        # cheap and deterministic; can run on every invocation without
+        # cost. Single input (the cas artefact path), single output
+        # (the user-facing path).
+        "symlink",
     }
 )
 

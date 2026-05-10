@@ -186,3 +186,68 @@ def test_path_idempotent():
     once = canonicalize_path_for_cache_key(f"{ANCHOR}/foo.h", ANCHOR)
     twice = canonicalize_path_for_cache_key(once, ANCHOR)
     assert once == twice
+
+
+# ---------------------------------------------------------------------------
+# I3: -Wl,opt,/abs/path and -Xlinker /abs/path canonicalization
+# ---------------------------------------------------------------------------
+
+
+def test_Wl_comma_path_canonicalized():
+    """``-Wl,-rpath,/abs/path/lib`` — split on comma, canonicalise each
+    path-shaped segment. Without this, trace_backend's command_hash
+    differs between workspaces under different gitroots even when the
+    rpath is logically the same.
+    """
+    assert canonicalize_for_cache_key([f"-Wl,-rpath,{ANCHOR}/lib"], ANCHOR) == ["-Wl,-rpath,<GITROOT>/lib"]
+
+
+def test_Wl_equals_path_canonicalized():
+    """``-Wl,--version-script=/abs/path/script.ld`` — split on comma,
+    then on ``=`` for value-bearing options.
+    """
+    assert canonicalize_for_cache_key([f"-Wl,--version-script={ANCHOR}/script.ld"], ANCHOR) == [
+        "-Wl,--version-script=<GITROOT>/script.ld"
+    ]
+
+
+def test_Wl_multiple_paths_in_one_token_all_canonicalized():
+    """``-Wl,-rpath,/abs/a,-rpath,/abs/b`` — both paths get canonicalised."""
+    assert canonicalize_for_cache_key([f"-Wl,-rpath,{ANCHOR}/a,-rpath,{ANCHOR}/b"], ANCHOR) == [
+        "-Wl,-rpath,<GITROOT>/a,-rpath,<GITROOT>/b"
+    ]
+
+
+def test_Wl_outside_anchor_unchanged():
+    assert canonicalize_for_cache_key(["-Wl,-rpath,/usr/lib"], ANCHOR) == ["-Wl,-rpath,/usr/lib"]
+
+
+def test_Wl_no_path_segment_unchanged():
+    """``-Wl,--as-needed`` (no path) passes through unchanged."""
+    assert canonicalize_for_cache_key(["-Wl,--as-needed"], ANCHOR) == ["-Wl,--as-needed"]
+
+
+def test_Xlinker_two_token_path_canonicalized():
+    """``-Xlinker -rpath -Xlinker /abs/path`` — the SECOND ``-Xlinker``
+    is followed by an rpath; canonicalize it. The first ``-Xlinker``'s
+    next token is ``-rpath`` (not a path), pass through.
+    """
+    out = canonicalize_for_cache_key(
+        ["-Xlinker", "-rpath", "-Xlinker", f"{ANCHOR}/lib"],
+        ANCHOR,
+    )
+    assert out == ["-Xlinker", "-rpath", "-Xlinker", "<GITROOT>/lib"]
+
+
+def test_Xlinker_outside_anchor_unchanged():
+    out = canonicalize_for_cache_key(
+        ["-Xlinker", "-rpath", "-Xlinker", "/usr/lib"],
+        ANCHOR,
+    )
+    assert out == ["-Xlinker", "-rpath", "-Xlinker", "/usr/lib"]
+
+
+def test_Wl_idempotent():
+    once = canonicalize_for_cache_key([f"-Wl,-rpath,{ANCHOR}/lib"], ANCHOR)
+    twice = canonicalize_for_cache_key(once, ANCHOR)
+    assert once == twice

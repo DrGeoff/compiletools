@@ -265,6 +265,31 @@ def add_locking_arguments(cap):
     )
 
 
+def add_cas_arguments(cap):
+    """Add CAS rebuild-policy arguments.
+
+    Safe to call more than once on the same parser.
+    """
+    if _parser_has_option(cap, "--use-mtime"):
+        return
+    compiletools.utils.add_boolean_argument(
+        parser=cap,
+        name="use-mtime",
+        dest="use_mtime",
+        default=False,
+        help=(
+            "Use file mtime as a rebuild signal in compile rules. Default "
+            "(False): rely solely on the content-addressable object name "
+            "(cas-objdir/<basename>_<file_h>_<dep_h>_<macro_h>.o) and skip "
+            "compilation when the cached object exists. Set True to restore "
+            "classical Make/Ninja prerequisite-mtime semantics, which forces "
+            "recompilation when sources are newer than the cached object — "
+            "defeating CAS reuse on fresh-checkout CI where every source has "
+            "mtime=now."
+        ),
+    )
+
+
 def add_link_arguments(cap):
     """Insert the link arguments into the parser.
 
@@ -324,6 +349,28 @@ def add_output_directory_arguments(cap, variant):
         help="Output directory for precompiled C++20 module cache (content-addressable store)",
         default=default_cas_pcmdir,
     )
+    if git_root:
+        default_cas_exedir = os.path.join(git_root, "cas-exedir", variant)
+    else:
+        default_cas_exedir = os.path.join("bin", variant, "exe")
+    cap.add(
+        "--cas-exedir",
+        help=(
+            "Output directory for the content-addressable executable cache. "
+            "The link rule writes to <cas-exedir>/<shard>/<name>_<linkkey>.exe; "
+            "the user-facing bin/<variant>/<name> is a hard link (with symlink "
+            "fallback for cross-filesystem cases) to that file. Sharing this "
+            "directory across CI runners makes link rules reusable across "
+            "fresh checkouts."
+        ),
+        default=default_cas_exedir,
+    )
+    # M2: register --use-mtime here so every backend that calls
+    # add_output_directory_arguments picks it up. Previously only
+    # makefile_backend registered it, so ``ct-cake --backend=ninja
+    # --use-mtime`` was rejected by argparse even though
+    # ninja_backend reads ``args.use_mtime``.
+    add_cas_arguments(cap)
 
 
 def add_target_arguments(cap):
@@ -1022,6 +1069,49 @@ def canonicalize_for_cache_key(tokens: Sequence[str], anchor_root: str) -> list[
     n = len(tokens)
     while i < n:
         tok = tokens[i]
+        # ``-Wl,opt[=value][,opt2,/abs/path,...]`` — passes args to the
+        # linker. Split on comma, canonicalise each path-shaped segment.
+        # Without this, an rpath or version-script absolute path leaks
+        # the workspace prefix into the link command_hash and trace
+        # verify fails across workspaces (I3).
+        if tok.startswith("-Wl,") and len(tok) > 4:
+            parts = tok.split(",")
+            # parts[0] is "-Wl"; parts[1:] are linker options/values.
+            rewritten_parts = [parts[0]]
+            for p in parts[1:]:
+                if "=" in p:
+                    opt, _, val = p.partition("=")
+                    if val == anchor:
+                        rewritten_parts.append(f"{opt}={_GITROOT_SENTINEL}")
+                    elif val.startswith("/"):
+                        rewritten_parts.append(f"{opt}={_canonicalize_one_path(val, anchor_prefix)}")
+                    else:
+                        rewritten_parts.append(p)
+                elif p == anchor:
+                    rewritten_parts.append(_GITROOT_SENTINEL)
+                elif p.startswith("/"):
+                    rewritten_parts.append(_canonicalize_one_path(p, anchor_prefix))
+                else:
+                    rewritten_parts.append(p)
+            out.append(",".join(rewritten_parts))
+            i += 1
+            continue
+        # ``-Xlinker /abs/path`` (two-token form). Pass through ``-Xlinker``
+        # and canonicalise the next token if it looks like a path. The
+        # next token may be a non-path option like ``-rpath`` (which is
+        # then itself followed by another ``-Xlinker /path``); pass that
+        # through and let the loop catch the next ``-Xlinker /path`` pair.
+        if tok == "-Xlinker" and i + 1 < n:
+            out.append(tok)
+            nxt = tokens[i + 1]
+            if nxt == anchor:
+                out.append(_GITROOT_SENTINEL)
+            elif nxt.startswith("/"):
+                out.append(_canonicalize_one_path(nxt, anchor_prefix))
+            else:
+                out.append(nxt)
+            i += 2
+            continue
         # Detached form: token is exactly a path-bearing flag, the next
         # token is the path. Consume both.
         if tok in _PATH_BEARING_FLAGS and i + 1 < n:
@@ -1955,6 +2045,28 @@ def _commonsubstitutions(args):
         else:
             default_cas_pcmdir = os.path.join(args.bindir, "pcm")
         args.cas_pcmdir = unsupplied_replacement(args.cas_pcmdir, default_cas_pcmdir, args.verbose, "cas-pcmdir")
+    except AttributeError:
+        pass
+
+    try:
+        git_root = compiletools.git_utils.find_git_root()
+        if git_root:
+            default_cas_exedir = os.path.join(git_root, "cas-exedir", args.variant)
+        else:
+            default_cas_exedir = os.path.join(args.bindir, "exe")
+            # M1: when no gitroot is detected, the cas-exedir lands
+            # inside the working tree but isn't necessarily gitignored.
+            # Surface this so users can `.gitignore` the dir themselves
+            # before they accidentally commit cache entries.
+            if args.verbose >= 1:
+                import sys
+
+                print(
+                    f"WARN: cas-exedir defaulted to {default_cas_exedir!r} (no gitroot detected). "
+                    f"Add to .gitignore manually if this directory lives inside a VCS-tracked tree.",
+                    file=sys.stderr,
+                )
+        args.cas_exedir = unsupplied_replacement(args.cas_exedir, default_cas_exedir, args.verbose, "cas-exedir")
     except AttributeError:
         pass
 

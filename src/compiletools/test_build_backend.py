@@ -1990,6 +1990,12 @@ class TestAllOutputsCurrent:
     def _make_backend(self):
         StubClass = make_stub_backend_class()
         args = MagicMock()
+        # Pin ``use_mtime`` to False so the CAS-only short-circuit path is
+        # exercised — without this the bare MagicMock returns a truthy
+        # sentinel for ``args.use_mtime`` and ``_all_outputs_current``
+        # bails out unconditionally (the legacy mtime-driven mode where
+        # make/ninja decides currency for itself).
+        args.use_mtime = False
         hunter = MagicMock()
         return StubClass(args=args, hunter=hunter)
 
@@ -2070,6 +2076,34 @@ class TestAllOutputsCurrent:
         backend = self._make_backend()
         graph = BuildGraph()
         graph.add_rule(BuildRule(output="build", inputs=[], command=None, rule_type="phony"))
+        assert backend._all_outputs_current(graph) is False
+
+    def test_returns_false_on_dangling_publish_symlink(self, tmp_path):
+        """C1 regression: a publish symlink whose CAS target was trimmed
+        away must force a rebuild. Documents that ``os.path.exists``
+        follows symlinks and returns False on a dangling one — which is
+        the correct answer here, since the publish recipe needs to
+        re-run to either re-link or re-build the CAS target. Using
+        ``os.path.lexists`` here would be WRONG (would treat dangling
+        symlink as 'present' and skip the rebuild that repairs it).
+        """
+        backend = self._make_backend()
+        cas_target = tmp_path / "cas" / "ab" / "main_KEY.exe"
+        bin_path = tmp_path / "bin" / "main"
+        bin_path.parent.mkdir(parents=True)
+        bin_path.symlink_to(cas_target)  # cas_target deliberately absent
+        assert bin_path.is_symlink()
+        assert not bin_path.exists()  # dangling
+
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output=str(bin_path),
+                inputs=[str(cas_target)],
+                command=["sh", "-c", "ln -f " + str(cas_target) + " " + str(bin_path)],
+                rule_type="symlink",
+            )
+        )
         assert backend._all_outputs_current(graph) is False
 
 

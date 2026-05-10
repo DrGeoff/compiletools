@@ -554,6 +554,19 @@ class TestAddArguments:
         assert "gcc.debug" in args.bindir
         assert "obj" in args.cas_objdir
 
+    def test_add_output_directory_arguments_registers_use_mtime(self):
+        """M2: --use-mtime must be registered for every backend that
+        calls add_output_directory_arguments — without this, ``ct-cake
+        --backend=ninja --use-mtime`` is rejected by argparse even
+        though ninja_backend.py reads ``args.use_mtime``.
+        """
+        cap = configargparse.ArgParser(default_config_files=[])
+        add_output_directory_arguments(cap, variant="gcc.debug")
+        args = cap.parse_args(["--use-mtime"])
+        assert args.use_mtime is True
+        args = cap.parse_args(["--no-use-mtime"])
+        assert args.use_mtime is False
+
     def test_add_target_arguments(self):
         cap = configargparse.ArgParser(default_config_files=[])
         add_target_arguments(cap)

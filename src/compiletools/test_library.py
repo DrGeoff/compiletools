@@ -129,11 +129,18 @@ class TestBuildGraphStaticLibrary:
         ) as (backend, args, _tmpdir):
             graph = backend.build_graph()
 
+            # In CAS-aware mode the producer rule outputs to the cas-exedir
+            # path; a sibling ``symlink`` rule publishes the user-facing
+            # ``bindir/libmylib.a``. Verify both halves.
             static_rules = graph.rules_by_type("static_library")
             assert len(static_rules) == 1
-            rule = static_rules[0]
-            assert rule.output == f"{args.bindir}/libmylib.a"
-            assert "ar" in rule.command[0]
+            producer = static_rules[0]
+            assert "cas-exe" in producer.output and producer.output.endswith(".a")
+            assert producer.command and producer.command[0] == "ar"
+            symlinks = graph.rules_by_type("symlink")
+            publish = next((r for r in symlinks if r.output == f"{args.bindir}/libmylib.a"), None)
+            assert publish is not None, f"no publish-symlink rule produces {args.bindir}/libmylib.a"
+            assert publish.inputs == [producer.output]
 
     def test_build_graph_shared_library_rule(self):
         with _library_backend_context(
@@ -144,9 +151,13 @@ class TestBuildGraphStaticLibrary:
 
             shared_rules = graph.rules_by_type("shared_library")
             assert len(shared_rules) == 1
-            rule = shared_rules[0]
-            assert rule.output == f"{args.bindir}/libmylib.so"
-            assert "-shared" in rule.command
+            producer = shared_rules[0]
+            assert "cas-exe" in producer.output and producer.output.endswith(".so")
+            assert "-shared" in producer.command
+            symlinks = graph.rules_by_type("symlink")
+            publish = next((r for r in symlinks if r.output == f"{args.bindir}/libmylib.so"), None)
+            assert publish is not None, f"no publish-symlink rule produces {args.bindir}/libmylib.so"
+            assert publish.inputs == [producer.output]
 
     def test_build_graph_library_in_build_phony(self):
         with _library_backend_context(
@@ -157,6 +168,9 @@ class TestBuildGraphStaticLibrary:
 
             build_rule = graph.get_rule("build")
             assert build_rule is not None
+            # ``build`` depends on the user-facing publish path so downstream
+            # consumers reach the artefact via the stable name; the cas-exe
+            # path is reached transitively through the publish-symlink rule.
             assert f"{args.bindir}/libmylib.a" in build_rule.inputs
 
     def test_build_graph_library_with_exe_adds_link_flags(self):
@@ -175,7 +189,10 @@ class TestBuildGraphStaticLibrary:
             link_cmd = " ".join(link_rule.command)
             assert "-L" in link_cmd
             assert "-l" in link_cmd
-            # Library output should be a dependency of the link rule
+            # The library publish path (bindir/libmylib.a) is the dep edge
+            # between the link rule and the static-library publish rule;
+            # downstream consumers always reference the stable user-facing
+            # path, never the cas-exedir entry.
             assert f"{args.bindir}/libmylib.a" in link_rule.inputs
 
     def test_build_graph_library_only_no_link_rules(self):
@@ -435,8 +452,16 @@ class TestLibrary:
             actual_exes = set()
             for root, _dirs, files in os.walk(tmpdir):
                 for ff in files:
-                    if compiletools.utils.is_executable(os.path.join(root, ff)):
-                        actual_exes.add(ff)
+                    if not compiletools.utils.is_executable(os.path.join(root, ff)):
+                        continue
+                    # Ignore the content-addressable executable cache; the
+                    # user-facing publish (hard link / symlink) is what these
+                    # tests care about.
+                    if "cas-exedir" in os.path.normpath(root).split(os.sep):
+                        continue
+                    if ff.endswith(".exe"):
+                        continue
+                    actual_exes.add(ff)
 
             expected_exes = {os.path.splitext(os.path.split(filename)[1])[0] for filename in relativepaths}
             assert expected_exes <= actual_exes, (

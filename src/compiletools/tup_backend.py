@@ -20,6 +20,13 @@ class TupBackend(BuildBackend):
     conflict with its internal coordination.
     """
 
+    def _has_native_cas_exe(self) -> bool:
+        # Tup tracks file content via FUSE and runs its own dependency
+        # graph (its own CAS-equivalent layer). Routing through
+        # compiletools' cas-exedir would compete with tup's path-based
+        # bookkeeping. Use legacy single-rule shape.
+        return True
+
     @staticmethod
     def name() -> str:
         return "tup"

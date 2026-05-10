@@ -9,6 +9,7 @@ import time
 import compiletools.filesystem_utils
 from compiletools.build_backend import (
     BuildBackend,
+    ordering_inputs_for_compile,
     register_backend,
 )
 from compiletools.build_graph import BuildGraph, render_shell_recipe
@@ -75,19 +76,44 @@ class NinjaBackend(BuildBackend):
                 f.write("\n")
                 rule_types_seen.add(rule.rule_type)
 
+        cas_only = not getattr(self.args, "use_mtime", False)
         for rule in graph.rules:
             if rule.rule_type == "phony":
                 f.write(f"build {rule.output}: phony {' '.join(rule.inputs)}\n")
             elif rule.command:
                 ninja_rule = f"{rule.rule_type}_cmd"
-                # First input is the primary source, rest are implicit deps
-                primary = rule.inputs[0] if rule.inputs else ""
-                implicit = rule.inputs[1:] if len(rule.inputs) > 1 else []
-                line = f"build {rule.output}: {ninja_rule} {primary}"
-                if implicit:
-                    line += f" | {' '.join(implicit)}"
-                if rule.order_only_deps:
-                    line += f" || {' '.join(rule.order_only_deps)}"
+                if rule.rule_type == "compile" and cas_only:
+                    # CAS-only mode: drop sources/headers (the cached
+                    # object's name encodes file_h+dep_h+macro_h, so
+                    # existence is the rebuild signal). Lift PCH/BMI
+                    # artefacts to order-only so ninja still builds them
+                    # ahead of this rule but does not retrigger it on
+                    # their mtime changes.
+                    line = f"build {rule.output}: {ninja_rule}"
+                    ordering = list(rule.order_only_deps) + ordering_inputs_for_compile(rule.inputs)
+                    if ordering:
+                        line += f" || {' '.join(ordering)}"
+                elif rule.rule_type in ("link", "static_library", "shared_library") and cas_only:
+                    # CAS-only mode: producer rule writes to a CAS path
+                    # whose name encodes the link/ar key. Inputs
+                    # (objects + libs) become order-only so ninja
+                    # builds them first but does not retrigger the
+                    # producer on their mtime change. The
+                    # publish-as-symlink rule downstream exposes the
+                    # user-facing bin/<name> from the cached artefact.
+                    line = f"build {rule.output}: {ninja_rule}"
+                    ordering = list(rule.order_only_deps) + list(rule.inputs)
+                    if ordering:
+                        line += f" || {' '.join(ordering)}"
+                else:
+                    # First input is the primary source, rest are implicit deps
+                    primary = rule.inputs[0] if rule.inputs else ""
+                    implicit = rule.inputs[1:] if len(rule.inputs) > 1 else []
+                    line = f"build {rule.output}: {ninja_rule} {primary}"
+                    if implicit:
+                        line += f" | {' '.join(implicit)}"
+                    if rule.order_only_deps:
+                        line += f" || {' '.join(rule.order_only_deps)}"
                 f.write(line + "\n")
 
                 if rule.rule_type == "compile":

@@ -457,3 +457,378 @@ def test_different_cppflags_produce_different_object_names():
 
     finally:
         uth.reset()
+
+
+def test_cas_exe_pathname_is_sharded_by_link_key_hash():
+    """``cas_exe_pathname`` returns ``<cas-exedir>/<linkkey[:2]>/<basename>_<linkkey>.exe``.
+
+    Mirrors ``object_pathname``'s sharding rationale (256 buckets to keep
+    per-directory inode counts manageable when the cache is shared across
+    many builds) but keys on the *linkkey* — a hash of the link
+    command's content-relevant inputs.
+    """
+    uth.reset()
+
+    try:
+        config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
+        config_files = [os.path.join(config_dir, "gcc.debug.conf")]
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            description="TestCasExe",
+            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+            default_config_files=config_files,
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
+        argv = ["--no-git-root"]
+        compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
+        compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
+        ctx = BuildContext()
+        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
+        namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=ctx)
+
+        link_key = "abcd1234ef567890abcd1234ef567890"
+        exe_path = namer.cas_exe_pathname("/some/where/foo.cpp", link_key)
+
+        # Bucket dir is the leading 2 chars of the link key.
+        bucket = os.path.basename(os.path.dirname(exe_path))
+        assert bucket == link_key[:2], f"expected bucket {link_key[:2]!r}, got {bucket!r} from {exe_path}"
+
+        # Filename is ``<basename>_<linkkey>.exe``.
+        assert os.path.basename(exe_path) == f"foo_{link_key}.exe"
+
+        # Bucket lives directly under args.cas_exedir.
+        cas_exedir_root = os.path.dirname(os.path.dirname(exe_path))
+        assert cas_exedir_root == args.cas_exedir, (
+            f"bucket should sit directly under args.cas_exedir={args.cas_exedir!r}; got grandparent={cas_exedir_root!r}"
+        )
+
+        # cas_exe_dir() with no key returns the bare cache root (used by
+        # trim-cache or rmtree of the whole tree).
+        assert namer.cas_exe_dir() == args.cas_exedir
+        assert namer.cas_exe_dir(link_key) == os.path.join(args.cas_exedir, link_key[:2])
+    finally:
+        uth.reset()
+
+
+def test_cas_exedir_default_path_includes_variant():
+    """The default --cas-exedir lives at <git_root>/cas-exedir/<variant> so
+    parallel-variant builds don't trample each other's caches."""
+    uth.reset()
+
+    try:
+        config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
+        config_files = [os.path.join(config_dir, "gcc.debug.conf")]
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            description="TestCasExeDirDefault",
+            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+            default_config_files=config_files,
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
+        argv = ["--no-git-root"]
+        compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
+        compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
+        ctx = BuildContext()
+        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
+
+        # Default path must end in <variant>; matches the sibling cache dirs
+        # (--cas-objdir / --cas-pchdir / --cas-pcmdir) which all variant-suffix.
+        assert args.cas_exedir.endswith(os.path.join("cas-exedir", "gcc.debug")), (
+            f"unexpected default cas_exedir: {args.cas_exedir!r}"
+        )
+    finally:
+        uth.reset()
+
+
+def test_create_link_rule_returns_cas_link_plus_publish_pair():
+    """Production link path emits two rules: cas-link to <cas-exedir>/...exe
+    and a `symlink` rule that materialises bin/<name> via hard link
+    (with symlink fallback). Downstream rules continue to reference
+    bin/<name> via Namer.executable_pathname; the symlink rule's output
+    IS that path so test/build deps resolve correctly."""
+    import tempfile
+
+    import compiletools.testhelper as uth
+    from compiletools.build_backend import BuildBackend
+
+    class _ConcreteBackend(BuildBackend):
+        @staticmethod
+        def name():
+            return "test-concrete"
+
+        @staticmethod
+        def build_filename():
+            return "Concretefile"
+
+        def generate(self, graph, output=None):
+            raise NotImplementedError
+
+        def _execute_build(self, target):
+            raise NotImplementedError
+
+    uth.reset()
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = uth.make_backend_args(tmpdir, filename=["/src/main.cpp"])
+            hunter = uth.make_mock_hunter(
+                sources=["/src/main.cpp"],
+                per_file_magicflags={"/src/main.cpp": {}},
+            )
+            backend = _ConcreteBackend.__new__(_ConcreteBackend)
+            backend.args = args
+            backend.hunter = hunter
+            backend.namer = uth.make_mock_namer(args)
+            backend.context = BuildContext()
+
+            rules = backend._create_link_rule("/src/main.cpp")
+            assert len(rules) == 2, f"expected [link, symlink], got {[r.rule_type for r in rules]}"
+
+            link_rule, symlink_rule = rules
+            assert link_rule.rule_type == "link"
+            assert link_rule.output.startswith(args.cas_exedir), (
+                f"link output should live under cas-exedir, got {link_rule.output}"
+            )
+            assert link_rule.output.endswith(".exe")
+
+            assert symlink_rule.rule_type == "symlink"
+            # Output is the user-facing exename (what downstream test/build
+            # rules reference).
+            assert symlink_rule.output == backend.namer.executable_pathname("/src/main.cpp")
+            # Symlink rule consumes the cas-exe as its only input.
+            assert symlink_rule.inputs == [link_rule.output]
+            # Publish recipe is now ``ct-cas-publish`` (I1/I2): a Python
+            # helper that does atomic link+rename, falls back to symlink
+            # ONLY on EXDEV, surfaces other errors visibly, and writes
+            # the C4 sidecar manifest.
+            cmd = symlink_rule.command
+            assert cmd[0] == "ct-cas-publish", f"expected publish via ct-cas-publish, got: {cmd}"
+            # Required flags: --cas-path / --user-path. Optional --source-realpath.
+            assert "--cas-path" in cmd
+            assert "--user-path" in cmd
+            assert link_rule.output in cmd  # the cas path
+            assert symlink_rule.output in cmd  # the user-facing path
+            # Source realpath sidecar is included for trim-bucketing.
+            assert "--source-realpath" in cmd
+    finally:
+        uth.reset()
+
+
+def test_create_link_rule_legacy_shape_when_backend_has_native_cas():
+    """Backends that already have their own CAS layer (cmake/bazel/tup)
+    override ``_has_native_cas_exe`` to return True; ``_create_link_rule``
+    then emits a single classical link rule whose output IS the
+    user-facing bin/<name> path (no compiletools-side cas-exedir wrapping)."""
+    import tempfile
+
+    import compiletools.testhelper as uth
+    from compiletools.build_backend import BuildBackend
+
+    uth.reset()
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = uth.make_backend_args(tmpdir, filename=["/src/main.cpp"])
+            hunter = uth.make_mock_hunter(
+                sources=["/src/main.cpp"],
+                per_file_magicflags={"/src/main.cpp": {}},
+            )
+
+            class _LegacyBackend(BuildBackend):
+                def _has_native_cas_exe(self):
+                    return True
+
+                @staticmethod
+                def name():
+                    return "test-legacy"
+
+                @staticmethod
+                def build_filename():
+                    return "Legacyfile"
+
+                def generate(self, graph, output=None):
+                    raise NotImplementedError
+
+                def _execute_build(self, target):
+                    raise NotImplementedError
+
+            backend = _LegacyBackend.__new__(_LegacyBackend)
+            backend.args = args
+            backend.hunter = hunter
+            backend.namer = uth.make_mock_namer(args)
+            backend.context = BuildContext()
+
+            rules = backend._create_link_rule("/src/main.cpp")
+            assert len(rules) == 1, f"legacy shape should be a single rule, got {len(rules)}"
+            (rule,) = rules
+            assert rule.rule_type == "link"
+            # Output is the user-facing path; no cas-exedir routing.
+            assert rule.output == backend.namer.executable_pathname("/src/main.cpp")
+            assert args.cas_exedir not in rule.output
+    finally:
+        uth.reset()
+
+
+def _make_minimal_link_backend(tmpdir, *, sources=None, env=None):
+    """Build a minimal _ConcreteBackend wired to call _create_link_rule
+    so the link-key payload contents can be exercised in isolation.
+    Used by C3 / C5 tests.
+    """
+    import compiletools.testhelper as uth
+    from compiletools.build_backend import BuildBackend
+
+    sources = sources or ["/src/main.cpp"]
+
+    class _ConcreteBackend(BuildBackend):
+        @staticmethod
+        def name():
+            return "test-c3"
+
+        @staticmethod
+        def build_filename():
+            return "Concretefile"
+
+        def generate(self, graph, output=None):
+            raise NotImplementedError
+
+        def _execute_build(self, target):
+            raise NotImplementedError
+
+    args = uth.make_backend_args(tmpdir, filename=sources)
+    hunter = uth.make_mock_hunter(
+        sources=sources,
+        per_file_magicflags={s: {} for s in sources},
+    )
+    backend = _ConcreteBackend.__new__(_ConcreteBackend)
+    backend.args = args
+    backend.hunter = hunter
+    backend.namer = uth.make_mock_namer(args)
+    backend.context = BuildContext()
+    return backend
+
+
+def test_link_key_changes_with_source_date_epoch(monkeypatch):
+    """C3: SOURCE_DATE_EPOCH affects build-id baked into the binary.
+    Two builds at different epochs MUST produce different cas-exe
+    paths so the cache doesn't bake a stale build-id.
+    """
+    import tempfile
+
+    import compiletools.testhelper as uth
+
+    uth.reset()
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backend = _make_minimal_link_backend(tmpdir)
+
+            monkeypatch.setenv("SOURCE_DATE_EPOCH", "1")
+            rules1 = backend._create_link_rule("/src/main.cpp")
+
+            monkeypatch.setenv("SOURCE_DATE_EPOCH", "2")
+            rules2 = backend._create_link_rule("/src/main.cpp")
+
+            assert rules1[0].output != rules2[0].output, (
+                "SOURCE_DATE_EPOCH must participate in the link-key payload — "
+                "otherwise the cached binary bakes the wrong build-id"
+            )
+    finally:
+        uth.reset()
+
+
+def test_link_key_changes_with_library_path(monkeypatch):
+    """C3: LIBRARY_PATH (and LD_LIBRARY_PATH) at link time changes
+    which libfoo.so the linker resolves -lfoo against. Different
+    resolution → different binary content → must differ in cache key.
+    """
+    import tempfile
+
+    import compiletools.testhelper as uth
+
+    uth.reset()
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backend = _make_minimal_link_backend(tmpdir)
+
+            monkeypatch.delenv("SOURCE_DATE_EPOCH", raising=False)
+            monkeypatch.setenv("LIBRARY_PATH", "/opt/v1/lib")
+            rules1 = backend._create_link_rule("/src/main.cpp")
+
+            monkeypatch.setenv("LIBRARY_PATH", "/opt/v2/lib")
+            rules2 = backend._create_link_rule("/src/main.cpp")
+
+            assert rules1[0].output != rules2[0].output, "LIBRARY_PATH must participate in the link-key payload"
+    finally:
+        uth.reset()
+
+
+def test_link_key_differs_for_same_basename_different_bindir(monkeypatch):
+    """C5: two ct-cake invocations in the same gitroot but with
+    different bindirs (e.g. ``bin/blank`` vs ``out/blank`` — or any
+    case where ``$ORIGIN``-relative RPATH semantics would change)
+    must produce different cache keys. The ``bindir_basename`` defence
+    is too weak — both ``bin/blank`` and ``out/blank`` share basename
+    ``blank``. The new payload field is ``canonical_bindir``: the full
+    canonicalised bindir, which differs between the two cases.
+    """
+    import tempfile
+
+    import compiletools.testhelper as uth
+
+    uth.reset()
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backend1 = _make_minimal_link_backend(tmpdir)
+            # Force the bindir on backend1 to e.g. <tmp>/bin/blank
+            backend1.namer.executable_dir = lambda: os.path.join(tmpdir, "bin", "blank")  # type: ignore[method-assign]
+            rules1 = backend1._create_link_rule("/src/main.cpp")
+
+            backend2 = _make_minimal_link_backend(tmpdir)
+            # bindir is a SIBLING with the SAME BASENAME — exactly the
+            # collision case bindir_basename was supposed to defend.
+            backend2.namer.executable_dir = lambda: os.path.join(tmpdir, "out", "blank")  # type: ignore[method-assign]
+            rules2 = backend2._create_link_rule("/src/main.cpp")
+
+            assert rules1[0].output != rules2[0].output, (
+                "C5: distinct bindirs sharing the same basename must hash differently. "
+                "bindir_basename was a useless defence; the real defence is canonical_bindir."
+            )
+    finally:
+        uth.reset()
+
+
+def test_static_lib_key_changes_with_ar_identity(monkeypatch, tmp_path):
+    """C3: binutils 2.30 vs 2.40 ``ar`` produce different archive
+    formats (BSD vs SysV symbol tables, compressed debug sections).
+    A cache shared across runners with different binutils must not
+    silently mix formats.
+    """
+    import tempfile
+
+    import compiletools.testhelper as uth
+
+    uth.reset()
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Two distinct stub `ar` binaries with different mtime/size.
+            ar1 = tmp_path / "ar_v1"
+            ar1.write_text("#!/bin/sh\nexit 0\n" + "x" * 100)
+            ar1.chmod(0o755)
+            ar2 = tmp_path / "ar_v2"
+            ar2.write_text("#!/bin/sh\nexit 0\n" + "y" * 200)
+            ar2.chmod(0o755)
+
+            backend = _make_minimal_link_backend(tmpdir, sources=["/src/lib.cpp"])
+            backend.args.static = ["/src/lib.cpp"]
+
+            monkeypatch.setattr(backend.args, "AR", str(ar1), raising=False)
+            rules1 = backend._create_static_library_rule()
+
+            monkeypatch.setattr(backend.args, "AR", str(ar2), raising=False)
+            rules2 = backend._create_static_library_rule()
+
+            assert rules1[0].output != rules2[0].output, (
+                "AR identity must participate in the static-library cache key — "
+                "binutils version determines archive format"
+            )
+    finally:
+        uth.reset()

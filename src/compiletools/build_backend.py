@@ -62,6 +62,60 @@ class ObjInfo(NamedTuple):
 _NAME_ESCAPE = "^^"
 
 
+# File extensions of build artefacts that compile rules consume but
+# whose mtime must not invalidate the cached object. PCH (.gch) and
+# C++20 module BMIs (.pcm/.gcm) are produced by sibling rules; the
+# consumer compile rule needs them to *exist* before it runs (build
+# ordering), but their mtime is irrelevant — content changes are
+# captured via the consumer's own dep_hash, which is encoded in the
+# CAS object name. In CAS-only mode (``not args.use_mtime``), make
+# and ninja backends lift these from normal prerequisites to
+# order-only deps so build ordering is preserved without triggering
+# spurious rebuilds.
+_COMPILE_ORDERING_INPUT_EXTS = (".gch", ".pcm", ".gcm")
+
+
+def ordering_inputs_for_compile(inputs: list[str]) -> list[str]:
+    """Return inputs that must remain as ordering deps in CAS-only mode.
+
+    See ``_COMPILE_ORDERING_INPUT_EXTS`` for the complete list of artefact
+    types that need build-ordering preservation. Ordinary sources/headers
+    are dropped (their content participates in the CAS object name).
+    """
+    return [inp for inp in inputs if inp.endswith(_COMPILE_ORDERING_INPUT_EXTS)]
+
+
+# Environment variables the linker reads (or that flow through to the
+# binary bytes). Folded into linker-artefact CAS keys so two runs with
+# different values don't share a cache entry that bakes the wrong byte
+# pattern. Keep this list narrow — adding rarely-used vars dilutes hit
+# rate without buying real safety. Justifications:
+#   * SOURCE_DATE_EPOCH: bakes into .note.gnu.build-id and __DATE__/__TIME__;
+#     reproducible-builds standard.
+#   * LD_LIBRARY_PATH / LIBRARY_PATH: linker library search paths;
+#     different values can resolve -lfoo to different libfoo.so.
+#   * LD_PRELOAD: pathological wrapper case (dlopen-injecting linker shim).
+_LINK_ENVIRONMENT_VARS = (
+    "SOURCE_DATE_EPOCH",
+    "LD_LIBRARY_PATH",
+    "LIBRARY_PATH",
+    "LD_PRELOAD",
+)
+
+
+def _link_environment_snapshot() -> dict[str, str]:
+    """Snapshot of link-relevant env vars at call time.
+
+    Stable across invocations within a single ct-cake run (the env
+    doesn't change mid-run). Two CI runs with different values produce
+    different snapshots → different cache keys. Empty/unset vars
+    explicitly contribute the empty string so 'absent' and 'set to ""'
+    hash identically — one less attack surface for cache-poisoning via
+    env trickery.
+    """
+    return {var: os.environ.get(var, "") for var in _LINK_ENVIRONMENT_VARS}
+
+
 def _module_pcm_filename(module_name: str) -> str:
     """Return a make-safe ``.pcm`` filename for a possibly-partitioned module.
 
@@ -840,25 +894,64 @@ class BuildBackend(abc.ABC):
                 )
             )
 
-        library_outputs = []
+        # All three artefact-producing helpers (link / static_library /
+        # shared_library) now return list[BuildRule]: in CAS-only mode
+        # the list is [producer-rule, publish-symlink-rule]; in
+        # native-CAS-backend mode it's a single legacy rule. The
+        # ``library_outputs`` set tracks the user-facing publish path
+        # (symlink rule output, or the legacy direct output) so the
+        # link rule can build ``-l<name>`` references that downstream
+        # consumers can resolve via ``-L<exe_dir>``.
+        library_outputs: list[str] = []
+        cas_exe_bucket_dirs: set[str] = set()
+
+        def _add_artefact_rules(rules: list[BuildRule], producer_types: tuple[str, ...]) -> str:
+            """Add *rules* to the graph and return the user-facing output
+            path (the symlink rule's output if present, else the lone
+            producer rule's output). Producer-rule order_only_deps are
+            harvested into ``cas_exe_bucket_dirs`` for the cas-exedir
+            mkdir loop below.
+            """
+            user_facing_output: str | None = None
+            for r in rules:
+                graph.add_rule(r)
+                if r.rule_type in producer_types:
+                    cas_exe_bucket_dirs.update(r.order_only_deps)
+                if r.rule_type == "symlink":
+                    user_facing_output = r.output
+            if user_facing_output is None:
+                user_facing_output = rules[-1].output
+            return user_facing_output
+
         if self.args.static:
-            rule = self._create_static_library_rule()
-            graph.add_rule(rule)
-            library_outputs.append(rule.output)
+            library_outputs.append(_add_artefact_rules(self._create_static_library_rule(), ("static_library",)))
         if self.args.dynamic:
-            rule = self._create_shared_library_rule()
-            graph.add_rule(rule)
-            library_outputs.append(rule.output)
+            library_outputs.append(_add_artefact_rules(self._create_shared_library_rule(), ("shared_library",)))
 
         if self.args.filename:
             for source in self.args.filename:
-                rule = self._create_link_rule(source, library_outputs=library_outputs)
-                graph.add_rule(rule)
+                _add_artefact_rules(self._create_link_rule(source, library_outputs=library_outputs), ("link",))
 
         if self.args.tests:
             for source in self.args.tests:
-                rule = self._create_link_rule(source, library_outputs=library_outputs)
-                graph.add_rule(rule)
+                _add_artefact_rules(self._create_link_rule(source, library_outputs=library_outputs), ("link",))
+
+        # Per-bucket mkdir for the cas-exedir tree, mirroring the per-bucket
+        # mkdir loop above for cas-objdir. Only emit for buckets actually
+        # used by producer rules (small set: usually one bucket per artefact).
+        # Skip the bare ``cas_exedir`` root — covered by the user/CI's
+        # general directory-create dance, not by per-rule mkdir.
+        for bucket_dir in sorted(cas_exe_bucket_dirs):
+            if not bucket_dir:
+                continue
+            graph.add_rule(
+                BuildRule(
+                    output=bucket_dir,
+                    inputs=[],
+                    command=["mkdir", "-p", bucket_dir],
+                    rule_type="mkdir",
+                )
+            )
 
         build_deps = []
         if self.args.filename:
@@ -1146,7 +1239,16 @@ class BuildBackend(abc.ABC):
 
         Returns False when the graph has no compile/link rules, since the
         graph may not capture all build steps (e.g. library builds).
+
+        Honours ``args.use_mtime``: when the user opts into legacy
+        mtime semantics, this short-circuit must NOT preempt make/ninja
+        — otherwise touching a source would never trigger a rebuild
+        (cached artefacts always exist by construction). Return False
+        unconditionally and let the native build tool do its own
+        prereq-mtime comparison.
         """
+        if getattr(self.args, "use_mtime", False):
+            return False
         has_build_rules = False
         for rule in graph.rules:
             if rule.rule_type == "compile":
@@ -1159,11 +1261,53 @@ class BuildBackend(abc.ABC):
                     return False
                 if _read_link_sig(rule.output) != compute_link_signature(rule):
                     return False
+            elif rule.rule_type == "symlink":
+                # Publish-as-hardlink rules are part of the build's
+                # observable contract — bin/<name> must exist for the
+                # build to count as "current". Without this check, an
+                # interactive ``rm -rf bin/`` followed by ``make``
+                # would short-circuit (cas-exe still exists) and never
+                # repopulate bin/.
+                has_build_rules = True
+                if not os.path.exists(rule.output):
+                    return False
         return has_build_rules
 
     def _record_link_signatures(self, graph: BuildGraph) -> None:
+        """Persist a content-addressable signature for every link/library
+        rule whose output exists on disk.
+
+        Backends with a native CAS layer (cmake/bazel/tup — see
+        ``_has_native_cas_exe``) write their actual binaries to a tool-
+        managed location (``cmake-build/``, ``bazel-bin/``, FUSE-tracked
+        path) rather than the graph-declared ``rule.output``. For those,
+        a missing ``rule.output`` is expected and benign — silently
+        skip.
+
+        For backends without a native CAS layer (the make/ninja/shake/
+        slurm common case), a missing ``rule.output`` after the build
+        completed is a SYMPTOM, not normal: either the link command
+        silently failed without a non-zero exit, or some downstream
+        publish stage moved the file. Either way the next build's
+        ``_all_outputs_current`` check then fails (no linksig present
+        → False) and the link recipe re-fires — diagnostic, not silent.
+        Log at ``verbose>=1`` so operators can spot it instead of
+        chasing a "build keeps relinking" mystery (I5).
+        """
+        native_cas = self._has_native_cas_exe()
         for rule in graph.rules:
             if rule.rule_type in ("link", "static_library", "shared_library"):
+                if not os.path.exists(rule.output):
+                    if not native_cas and getattr(self.args, "verbose", 0) >= 1:
+                        # I5: surface the unexpected case where a non-
+                        # native-CAS backend's link rule has no on-disk
+                        # output at sig-recording time.
+                        print(
+                            f"  WARN: link rule output missing at signature time: {rule.output} "
+                            f"(rule_type={rule.rule_type}). Next build will re-link.",
+                            file=sys.stderr,
+                        )
+                    continue
                 _write_link_sig(rule.output, compute_link_signature(rule))
 
     def _system_module_extra_flags(self, filename: str) -> list[str]:
@@ -2054,45 +2198,214 @@ class BuildBackend(abc.ABC):
         macro_state_hash = self.hunter.macro_state_hash(source, dep_hash=dep_hash)
         return self.namer.object_pathname(source, macro_state_hash, dep_hash)
 
-    def _create_link_rule(self, source: str, library_outputs: list[str] | None = None) -> BuildRule:
-        """Create a link BuildRule for a source file (executable target)."""
+    def _has_native_cas_exe(self) -> bool:
+        """Whether this backend already has its own content-addressable
+        cache for linker artefacts (executables, static libraries,
+        shared libraries) and so should NOT be wrapped in compiletools'
+        cas-exedir layer.
+
+        False (default) — backend has no native CAS for linker
+        artefacts; compiletools' cas-exedir layer applies. The producer
+        rule (link / static_library / shared_library) writes to a
+        content-addressable ``<cas-exedir>/<shard>/<name>_<key>.<ext>``
+        with ``<ext>`` ∈ ``{.exe, .a, .so}``, paired with a downstream
+        ``symlink`` rule that publishes the user-facing ``bin/<variant>/<name>``
+        as a hard link (with symlink fallback) to the cached artefact.
+        This is the case for Make/Ninja/Shake/Slurm.
+
+        True — backend already maintains a CAS-equivalent layer
+        (cmake's out-of-source tree, bazel's action cache, tup's
+        FUSE content tracking). All three rule types write directly to
+        their user-facing paths (legacy single-rule shape) so the
+        graph IR doesn't impose a competing cache layout on top of the
+        backend's own.
+        """
+        return False
+
+    def _compute_artefact_key_hash(self, payload: dict) -> str:
+        """Hash a CAS-key payload deterministically. Centralised so the
+        executable / static-library / shared-library key formats stay
+        in lockstep. Use ``sort_keys=True`` on encode so the final
+        digest is independent of insertion order in *payload*.
+        """
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+    def _build_publish_rule(
+        self,
+        cas_path: str,
+        user_path: str,
+        *,
+        source_realpath: str | None = None,
+    ) -> BuildRule:
+        """Construct the ``symlink`` rule that publishes a CAS artefact
+        at its user-facing path.
+
+        Recipe: ``ct-cas-publish --cas-path X --user-path Y [--source-realpath S]``.
+        See ``compiletools/cas_publish.py`` for the full contract; in
+        short, it does ``link(X, tmp); rename(tmp, Y)`` (POSIX-atomic,
+        no missing-Y window for concurrent readers — fixes I1) and
+        falls back to ``symlink(X, tmp); rename(tmp, Y)`` ONLY on
+        ``EXDEV`` (other ``OSError``s surface visibly — fixes I2).
+
+        ``source_realpath`` (when provided) is written into a sidecar
+        manifest at ``<cas_path>.manifest`` and consumed by
+        ``trim_cache.trim_exedir`` to bucket entries by source identity
+        instead of by basename — fixes the C4 collision where two
+        executables both named ``main`` would prematurely evict each
+        other.
+
+        Race semantics: two peer ``ct-cake`` invocations publishing the
+        SAME ``user_path`` from DIFFERENT ``cas_path``s race on the
+        rename. POSIX ``rename(tmp, user_path)`` is atomic; the final
+        winner is unspecified but both targets are byte-equivalent when
+        their CAS keys collide so any winner is correct. Processes
+        holding ``user_path`` open during a re-publish keep the prior
+        inode (open file descriptors pin the inode); next exec picks
+        up the new inode.
+        """
+        publish_cmd = [
+            "ct-cas-publish",
+            "--cas-path",
+            cas_path,
+            "--user-path",
+            user_path,
+        ]
+        if source_realpath:
+            publish_cmd += ["--source-realpath", source_realpath]
+        return BuildRule(
+            output=user_path,
+            inputs=[cas_path],
+            command=publish_cmd,
+            rule_type="symlink",
+            order_only_deps=[self.namer.executable_dir()],
+        )
+
+    def _create_link_rule(self, source: str, library_outputs: list[str] | None = None) -> list[BuildRule]:
+        """Build the link rule(s) for an executable target.
+
+        When ``_has_native_cas_exe()`` returns False (the default for
+        Make/Ninja/Shake/Slurm), returns a two-element list:
+          [0] The link rule whose output is the content-addressable
+              ``<cas-exedir>/<shard>/<name>_<linkkey>.exe``. ``linkkey``
+              hashes the canonicalized link command and the linker
+              identity, so two link invocations with identical
+              content-relevant inputs share the cache entry across
+              workspaces.
+          [1] A ``symlink`` rule whose output is the user-facing
+              ``bin/<variant>/<name>`` (the path users have always run).
+              See ``_build_publish_rule`` for the publish recipe and
+              its race semantics.
+
+        When ``_has_native_cas_exe()`` returns True (cmake/bazel/tup),
+        returns a single-element list with the legacy ``bin/<name>``
+        link rule.
+
+        .. note:: Signature change from earlier compiletools versions:
+           previously returned a single ``BuildRule``. The two-element
+           shape is required so the cas-exedir layer can distinguish
+           the producer rule (cas-exe) from the publish step
+           (bin/<name>). Out-of-tree backend subclasses overriding
+           ``_create_link_rule`` must update accordingly.
+
+        Callers iterate the returned list and add each rule to the
+        graph (callers also continue to reference the user-facing
+        ``executable_pathname`` for downstream test/build deps; the
+        symlink rule's output IS that path).
+        """
         completesources = self.hunter.required_source_files(source)
-        exename = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
+        real_source = compiletools.wrappedos.realpath(source)
+        exename = self.namer.executable_pathname(real_source)
 
         object_names = compiletools.utils.ordered_unique([self._object_pathname_for_source(s) for s in completesources])
 
         merged_ldflags = self._merge_ldflags_for_sources(completesources)
-        link_cmd = (
-            compiletools.utils.split_command_cached(self.args.LD)
-            + ["-o", exename]
-            + list(object_names)
-            + merged_ldflags
-        )
+        ld_argv = compiletools.utils.split_command_cached(self.args.LD)
 
-        inputs = list(object_names)
+        extra_link_argv: list[str] = []
+        link_inputs_for_graph = list(object_names)
         if library_outputs:
             exe_dir = self.namer.executable_dir()
-            link_cmd.append(f"-L{exe_dir}")
+            extra_link_argv.append(f"-L{exe_dir}")
             for lib_output in library_outputs:
                 lib_basename = os.path.basename(lib_output)
                 if lib_basename.startswith("lib"):
                     lib_name = lib_basename[3:]  # strip "lib" prefix
                     lib_name = os.path.splitext(lib_name)[0]  # strip extension
-                    link_cmd.append(f"-l{lib_name}")
-                inputs.append(lib_output)
+                    extra_link_argv.append(f"-l{lib_name}")
+                link_inputs_for_graph.append(lib_output)
 
-        if self.args.flags.ld:
-            link_cmd.extend(self.args.flags.ld)
+        ld_extra = list(self.args.flags.ld) if self.args.flags.ld else []
 
-        exe_dir = self.namer.executable_dir()
+        if self._has_native_cas_exe():
+            # Backend already has its own CAS layer — emit the legacy
+            # single-rule shape that writes directly to bin/<name>.
+            link_cmd = ld_argv + ["-o", exename] + list(object_names) + merged_ldflags + extra_link_argv + ld_extra
+            return [
+                BuildRule(
+                    output=exename,
+                    inputs=link_inputs_for_graph,
+                    command=link_cmd,
+                    rule_type="link",
+                    order_only_deps=[self.namer.executable_dir()],
+                )
+            ]
 
-        return BuildRule(
-            output=exename,
-            inputs=inputs,
+        # link_key_hash inputs: linker identity + LDFLAGS + objects +
+        # libs + ld extras + bindir basename (defence against
+        # rpath/$ORIGIN linker scripts that bake bindir into the binary
+        # — a cross-bindir collision would otherwise silently produce a
+        # cache hit with the wrong embedded RPATH) + link_environment
+        # (env vars the linker reads or that flow through to the binary
+        # bytes: SOURCE_DATE_EPOCH bakes into .note.gnu.build-id, the
+        # *_LIBRARY_PATH families control which libfoo.so resolves -lfoo).
+        # Source path is NOT in the hash — different sources naturally
+        # hash to different link keys via their object names, and
+        # including the source path would defeat workspace-portability.
+        anchor_root = compiletools.git_utils.find_git_root() or ""
+        link_key_payload = {
+            "linker_identity": _compiler_identity(ld_argv[0]) if ld_argv else "",
+            "ld_argv": ld_argv,
+            "objects": sorted(
+                compiletools.apptools.canonicalize_path_for_cache_key(o, anchor_root) for o in object_names
+            ),
+            "merged_ldflags": compiletools.apptools.canonicalize_for_cache_key(list(merged_ldflags), anchor_root),
+            "extra_link_argv": extra_link_argv,
+            "library_outputs": sorted(
+                compiletools.apptools.canonicalize_path_for_cache_key(lib, anchor_root)
+                for lib in (library_outputs or [])
+            ),
+            "ld_extra": ld_extra,
+            # canonical_bindir: full anchor-relative bindir, not just the
+            # basename. The original ``bindir_basename`` defence (C5) was
+            # wrong-headed in two ways: (1) ``$ORIGIN``-relative RPATH is
+            # resolved at runtime by ld.so against wherever the binary
+            # lives, so identical RPATH text behaves identically across
+            # bindirs of the same shape — basename gives no extra
+            # discrimination; (2) two SIBLING bindirs ``bin/blank`` and
+            # ``out/blank`` shared basename and silently collided. The
+            # canonicalised full bindir disambiguates without breaking
+            # workspace-portability (gitroot-A/bin/blank and
+            # gitroot-B/bin/blank canonicalise to the same string).
+            "canonical_bindir": compiletools.apptools.canonicalize_path_for_cache_key(
+                self.namer.executable_dir(), anchor_root
+            ),
+            "link_environment": _link_environment_snapshot(),
+        }
+        link_key_hash = self._compute_artefact_key_hash(link_key_payload)
+
+        cas_exe_path = self.namer.cas_exe_pathname(real_source, link_key_hash)
+        cas_exe_bucket = os.path.dirname(cas_exe_path)
+
+        link_cmd = ld_argv + ["-o", cas_exe_path] + list(object_names) + merged_ldflags + extra_link_argv + ld_extra
+
+        link_rule = BuildRule(
+            output=cas_exe_path,
+            inputs=link_inputs_for_graph,
             command=link_cmd,
             rule_type="link",
-            order_only_deps=[exe_dir],
+            order_only_deps=[cas_exe_bucket],
         )
+        return [link_rule, self._build_publish_rule(cas_exe_path, exename, source_realpath=real_source)]
 
     def _get_library_object_names(self, sources: list[str]) -> tuple[list[str], list[str]]:
         """Get object file names and source files for library targets.
@@ -2111,41 +2424,132 @@ class BuildBackend(abc.ABC):
         )
         return object_names, all_source_files
 
-    def _create_static_library_rule(self) -> BuildRule:
-        """Create a static library BuildRule from args.static sources."""
+    def _create_static_library_rule(self) -> list[BuildRule]:
+        """Build the static-library rule(s) for ``args.static``.
+
+        When ``_has_native_cas_exe()`` returns False (the default for
+        Make/Ninja/Shake/Slurm), returns a two-element list:
+          [0] The ``ar`` rule whose output is the content-addressable
+              ``<cas-exedir>/<shard>/lib<name>_<libkey>.a``. ``libkey``
+              hashes the canonicalized object set + ar argv, so two
+              ``ar`` invocations with identical content-relevant
+              inputs share the cache entry across workspaces.
+          [1] A ``symlink`` rule publishing the user-facing
+              ``bin/<variant>/lib<name>.a`` as a hard link (with
+              symlink fallback) to the cas-static-library entry.
+
+        When ``_has_native_cas_exe()`` returns True, returns a
+        single-element list with the legacy direct-output shape.
+
+        Same lift-to-order-only treatment in make/ninja backends as
+        the link rule when ``--use-mtime=False`` (default).
+        """
+        sourcefilename = compiletools.wrappedos.realpath(self.args.static[0])
         object_names, _ = self._get_library_object_names(self.args.static)
-        lib_path = self.namer.staticlibrary_pathname()
+        lib_path = self.namer.staticlibrary_pathname(sourcefilename)
 
-        lib_cmd = ["ar", "-src", lib_path] + list(object_names)
+        if self._has_native_cas_exe():
+            lib_cmd = ["ar", "-src", lib_path] + list(object_names)
+            return [
+                BuildRule(
+                    output=lib_path,
+                    inputs=list(object_names),
+                    command=lib_cmd,
+                    rule_type="static_library",
+                    order_only_deps=[self.namer.executable_dir()],
+                )
+            ]
 
-        return BuildRule(
-            output=lib_path,
+        anchor_root = compiletools.git_utils.find_git_root() or ""
+        # ar_binary: honour args.AR if provided; otherwise the literal
+        # "ar" gets resolved against PATH at exec time. The identity
+        # captures the binary the user actually runs (binutils version
+        # determines BSD vs SysV archive format, compressed-debug
+        # encoding, deterministic-mode default — all observable in the
+        # output bytes and therefore part of the cache key contract).
+        ar_binary = getattr(self.args, "AR", None) or "ar"
+        ar_argv_prefix = [ar_binary, "-src"]
+        lib_key_payload = {
+            "ar_argv_prefix": ar_argv_prefix,
+            "ar_identity": _compiler_identity(ar_binary),
+            "objects": sorted(
+                compiletools.apptools.canonicalize_path_for_cache_key(o, anchor_root) for o in object_names
+            ),
+        }
+        lib_key_hash = self._compute_artefact_key_hash(lib_key_payload)
+        cas_lib_path = self.namer.cas_staticlibrary_pathname(sourcefilename, lib_key_hash)
+        cas_lib_bucket = os.path.dirname(cas_lib_path)
+
+        lib_cmd = ar_argv_prefix + [cas_lib_path] + list(object_names)
+        lib_rule = BuildRule(
+            output=cas_lib_path,
             inputs=list(object_names),
             command=lib_cmd,
             rule_type="static_library",
-            order_only_deps=[self.namer.executable_dir()],
+            order_only_deps=[cas_lib_bucket],
         )
+        return [lib_rule, self._build_publish_rule(cas_lib_path, lib_path, source_realpath=sourcefilename)]
 
-    def _create_shared_library_rule(self) -> BuildRule:
-        """Create a shared library BuildRule from args.dynamic sources."""
+    def _create_shared_library_rule(self) -> list[BuildRule]:
+        """Build the shared-library rule(s) for ``args.dynamic``.
+
+        Symmetric with ``_create_link_rule`` — see that docstring for
+        the ``_has_native_cas_exe`` decision and the publish-symlink
+        contract. The CAS path is
+        ``<cas-exedir>/<shard>/lib<name>_<libkey>.so``; ``libkey`` is
+        derived from the same payload as the executable link key
+        (linker identity + LDFLAGS + objects), so two shared libraries
+        with identical content-relevant link inputs share a cache
+        entry.
+        """
+        sourcefilename = compiletools.wrappedos.realpath(self.args.dynamic[0])
         object_names, all_source_files = self._get_library_object_names(self.args.dynamic)
-        lib_path = self.namer.dynamiclibrary_pathname()
+        lib_path = self.namer.dynamiclibrary_pathname(sourcefilename)
 
         merged_ldflags = self._merge_ldflags_for_sources(all_source_files)
-        lib_cmd = (
-            compiletools.utils.split_command_cached(self.args.LD) + ["-shared", "-o", lib_path] + list(object_names)
-        )
-        lib_cmd.extend(merged_ldflags)
-        if self.args.LDFLAGS:
-            lib_cmd.extend(self.args.flags.ld)
+        ld_argv = compiletools.utils.split_command_cached(self.args.LD)
+        ld_extra = list(self.args.flags.ld) if (self.args.LDFLAGS and self.args.flags.ld) else []
 
-        return BuildRule(
-            output=lib_path,
+        if self._has_native_cas_exe():
+            lib_cmd = ld_argv + ["-shared", "-o", lib_path] + list(object_names) + merged_ldflags + ld_extra
+            return [
+                BuildRule(
+                    output=lib_path,
+                    inputs=list(object_names),
+                    command=lib_cmd,
+                    rule_type="shared_library",
+                    order_only_deps=[self.namer.executable_dir()],
+                )
+            ]
+
+        anchor_root = compiletools.git_utils.find_git_root() or ""
+        lib_key_payload = {
+            "linker_identity": _compiler_identity(ld_argv[0]) if ld_argv else "",
+            "ld_argv": ld_argv,
+            "shared": True,
+            "objects": sorted(
+                compiletools.apptools.canonicalize_path_for_cache_key(o, anchor_root) for o in object_names
+            ),
+            "merged_ldflags": compiletools.apptools.canonicalize_for_cache_key(list(merged_ldflags), anchor_root),
+            "ld_extra": ld_extra,
+            "canonical_bindir": compiletools.apptools.canonicalize_path_for_cache_key(
+                self.namer.executable_dir(), anchor_root
+            ),
+            "link_environment": _link_environment_snapshot(),
+        }
+        lib_key_hash = self._compute_artefact_key_hash(lib_key_payload)
+        cas_lib_path = self.namer.cas_dynamiclibrary_pathname(sourcefilename, lib_key_hash)
+        cas_lib_bucket = os.path.dirname(cas_lib_path)
+
+        lib_cmd = ld_argv + ["-shared", "-o", cas_lib_path] + list(object_names) + merged_ldflags + ld_extra
+        lib_rule = BuildRule(
+            output=cas_lib_path,
             inputs=list(object_names),
             command=lib_cmd,
             rule_type="shared_library",
-            order_only_deps=[self.namer.executable_dir()],
+            order_only_deps=[cas_lib_bucket],
         )
+        return [lib_rule, self._build_publish_rule(cas_lib_path, lib_path, source_realpath=sourcefilename)]
 
 
 @functools.lru_cache(maxsize=512)
