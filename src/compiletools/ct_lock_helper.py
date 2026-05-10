@@ -7,7 +7,6 @@ Reuses tested locking.py implementation with identical algorithms.
 
 import argparse
 import os
-import signal
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -187,27 +186,26 @@ def main(argv=None):
         parser.print_help()
         return 1
 
-    # Install signal handlers AFTER parse_args so --help / --version (which
-    # raise SystemExit before reaching here) don't leak GracefulExit.cleanup
-    # as the caller's SIGINT/SIGTERM handler. Matters for any in-process
-    # invocation (e.g. the entry-point lint test).
-    exit_handler = GracefulExit()
-    signal.signal(signal.SIGINT, exit_handler.cleanup)
-    signal.signal(signal.SIGTERM, exit_handler.cleanup)
+    # Forward Ctrl-C / kill to the locked subprocess via apptools.graceful_shutdown.
+    # The context manager guarantees restoration of the caller's prior handlers,
+    # which matters for in-process invocations (e.g. the entry-point lint test)
+    # where leaked handlers would contaminate pytest's own signal handling.
+    import compiletools.apptools
 
-    # Execute command
-    try:
-        if args.command == "compile":
-            cmd_compile(args, exit_handler)
-        elif args.command == "link":
-            cmd_link(args, exit_handler)
-        return 0
-    except subprocess.CalledProcessError as e:
-        # Compilation failed, return compiler's exit code
-        return e.returncode
-    except Exception as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return 125  # Helper internal error (matches bash)
+    exit_handler = GracefulExit()
+    with compiletools.apptools.graceful_shutdown(exit_handler.cleanup):
+        try:
+            if args.command == "compile":
+                cmd_compile(args, exit_handler)
+            elif args.command == "link":
+                cmd_link(args, exit_handler)
+            return 0
+        except subprocess.CalledProcessError as e:
+            # Compilation failed, return compiler's exit code
+            return e.returncode
+        except Exception as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 125  # Helper internal error (matches bash)
 
 
 if __name__ == "__main__":

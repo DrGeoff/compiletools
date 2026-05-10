@@ -500,53 +500,51 @@ def main(argv=None):
         print("Nothing for cake to do.  Did you mean cake --auto? Use cake --help for help.")
         return 0
 
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGPIPE, signal_handler)
-
-    try:
-        cake = Cake(args, context=context)
-        cake.process()
-        # For testing purposes, clear out the memcaches for the times when main is called more than once.
-        cake.clear_cache()
-    except subprocess.CalledProcessError as cpe:
-        if args.verbose < 2:
-            cmd = cpe.cmd
-            if isinstance(cmd, (list, tuple)):
-                cmd_str = shlex.join(cmd)
+    with compiletools.apptools.graceful_shutdown(signal_handler, signal.SIGINT, signal.SIGPIPE):
+        try:
+            cake = Cake(args, context=context)
+            cake.process()
+            # For testing purposes, clear out the memcaches for the times when main is called more than once.
+            cake.clear_cache()
+        except subprocess.CalledProcessError as cpe:
+            if args.verbose < 2:
+                cmd = cpe.cmd
+                if isinstance(cmd, (list, tuple)):
+                    cmd_str = shlex.join(cmd)
+                else:
+                    cmd_str = str(cmd)
+                print(f"Command failed (exit {cpe.returncode}): {cmd_str}", file=sys.stderr)
+                if cpe.stderr:
+                    stderr = cpe.stderr.decode() if isinstance(cpe.stderr, bytes) else cpe.stderr
+                    print(stderr, file=sys.stderr)
+                elif cpe.output:
+                    output = cpe.output.decode() if isinstance(cpe.output, bytes) else cpe.output
+                    print(output, file=sys.stderr)
+                return 1
             else:
-                cmd_str = str(cmd)
-            print(f"Command failed (exit {cpe.returncode}): {cmd_str}", file=sys.stderr)
-            if cpe.stderr:
-                stderr = cpe.stderr.decode() if isinstance(cpe.stderr, bytes) else cpe.stderr
-                print(stderr, file=sys.stderr)
-            elif cpe.output:
-                output = cpe.output.decode() if isinstance(cpe.output, bytes) else cpe.output
-                print(output, file=sys.stderr)
-            return 1
-        else:
-            raise
-    except OSError as ioe:
-        if args.verbose < 2:
-            if ioe.filename:
-                print(f"Error processing {ioe.filename}: {ioe.strerror}", file=sys.stderr)
+                raise
+        except OSError as ioe:
+            if args.verbose < 2:
+                if ioe.filename:
+                    print(f"Error processing {ioe.filename}: {ioe.strerror}", file=sys.stderr)
+                else:
+                    print(f"Error: {ioe.strerror or ioe}", file=sys.stderr)
+                return 1
             else:
-                print(f"Error: {ioe.strerror or ioe}", file=sys.stderr)
-            return 1
-        else:
-            raise
-    except compiletools.utils.LDFLAGSCycleError as ve:
-        # Catch ONLY the cycle error so unrelated ValueErrors
-        # don't get rendered through the Rich cycle-error formatter
-        # (which would confuse the user with a panel that doesn't apply).
-        if args.verbose < 2:
-            _print_rich_error(ve)
-            return 1
-        else:
-            raise
-    except Exception as err:
-        if args.verbose < 2:
-            print(err)
-            return 1
-        else:
-            raise
+                raise
+        except compiletools.utils.LDFLAGSCycleError as ve:
+            # Catch ONLY the cycle error so unrelated ValueErrors
+            # don't get rendered through the Rich cycle-error formatter
+            # (which would confuse the user with a panel that doesn't apply).
+            if args.verbose < 2:
+                _print_rich_error(ve)
+                return 1
+            else:
+                raise
+        except Exception as err:
+            if args.verbose < 2:
+                print(err)
+                return 1
+            else:
+                raise
     return 0

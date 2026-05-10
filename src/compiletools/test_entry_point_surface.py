@@ -18,6 +18,7 @@ explicit allowlist entry will fail this test on the first CI run.
 from __future__ import annotations
 
 import importlib
+import signal
 import sys
 from pathlib import Path
 
@@ -82,17 +83,43 @@ def test_entry_point_help_surface(
     # Set sys.argv as a fallback so they still see ``--help``.
     monkeypatch.setattr(sys, "argv", [script_name, "--help"])
 
-    with pytest.raises(SystemExit) as exc:
-        try:
-            main(["--help"])
-        except TypeError:
-            # main() doesn't take argv — already covered by sys.argv above.
-            main()
+    # Snapshot SIGINT/SIGTERM handlers — installing them BEFORE parse_args
+    # leaks the entry point's handler into the caller's process for
+    # --help/--version (both of which raise SystemExit before the caller
+    # would normally restore them). Caught ct_lock_helper doing exactly
+    # this; the assertion below keeps the regression from coming back.
+    saved_sigint = signal.getsignal(signal.SIGINT)
+    saved_sigterm = signal.getsignal(signal.SIGTERM)
+    try:
+        with pytest.raises(SystemExit) as exc:
+            try:
+                main(["--help"])
+            except TypeError:
+                # main() doesn't take argv — already covered by sys.argv above.
+                main()
+    finally:
+        # Always restore so a regression in one parametrized case doesn't
+        # cascade into the next.
+        signal.signal(signal.SIGINT, saved_sigint)
+        signal.signal(signal.SIGTERM, saved_sigterm)
 
     assert exc.value.code == 0, (
         f"{script_name} --help exited {exc.value.code}; expected 0. "
         "If the tool fails to build its parser, fix that before adding "
         "it to PINNED_CLI_TOOLS."
+    )
+
+    new_sigint = signal.getsignal(signal.SIGINT)
+    new_sigterm = signal.getsignal(signal.SIGTERM)
+    assert new_sigint is saved_sigint and new_sigterm is saved_sigterm, (
+        f"{script_name} --help mutated the caller's signal handlers "
+        f"(SIGINT: {saved_sigint!r} → {new_sigint!r}, SIGTERM: "
+        f"{saved_sigterm!r} → {new_sigterm!r}). Fix: install signal "
+        f"handlers AFTER parse_args (so --help / --version, which raise "
+        f"SystemExit, never reach the install site), or use a "
+        f"save/restore pattern in a try/finally (see "
+        f"locking.py:atomic_compile / trace_backend.py for the canonical "
+        f"shape)."
     )
 
     captured = capsys.readouterr()

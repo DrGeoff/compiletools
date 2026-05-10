@@ -758,40 +758,25 @@ class SlurmBackend(ShakeBackend):
         # Index from job_id -> chunk_id, so log lookups don't have to glob.
         self._chunk_id_for_job: dict[str, int] = {}
 
-        prev_sigint = signal.getsignal(signal.SIGINT)
-        prev_sigterm = signal.getsignal(signal.SIGTERM)
-
         def _on_signal(signum, _frame):  # pragma: no cover - exercised via thread test
             self._scancel_pending()
-            # Restore default handler and re-raise so normal interrupt semantics apply
+            # Restore default handler and re-raise so normal interrupt semantics apply.
+            # graceful_shutdown's restoration won't run until the with block exits, but
+            # os.kill below re-delivers immediately and sys.exit unwinds through it.
             signal.signal(signum, signal.SIG_DFL)
             os.kill(os.getpid(), signum)
 
-        # Only install handlers on the main thread; otherwise signal.signal raises.
-        installed_handlers = False
-        try:
-            signal.signal(signal.SIGINT, _on_signal)
-            signal.signal(signal.SIGTERM, _on_signal)
-            installed_handlers = True
-        except (ValueError, OSError):
-            pass
-
-        try:
-            self._execute_impl(graph, traces)
-        finally:
+        with compiletools.apptools.graceful_shutdown(_on_signal, signal.SIGINT, signal.SIGTERM):
             try:
-                self._scancel_pending()
+                self._execute_impl(graph, traces)
             finally:
                 try:
-                    self._cleanup_invocation_files()
+                    self._scancel_pending()
                 finally:
                     try:
-                        traces.save()
+                        self._cleanup_invocation_files()
                     finally:
-                        if installed_handlers:
-                            with contextlib.suppress(Exception):
-                                signal.signal(signal.SIGINT, prev_sigint)
-                                signal.signal(signal.SIGTERM, prev_sigterm)
+                        traces.save()
 
     def _execute_impl(self, graph: BuildGraph, traces: TraceStore) -> None:
         # Ensure output directories exist (order-only deps on compile rules)

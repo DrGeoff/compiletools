@@ -12,7 +12,6 @@ import signal
 import socket
 import subprocess
 import sys
-import threading
 import time
 
 import compiletools.filesystem_utils
@@ -706,9 +705,9 @@ def _run_with_signal_forwarding(cmd: list[str]) -> subprocess.CompletedProcess:
     original handlers are restored and the child is hard-killed if still
     running.
     """
-    proc = subprocess.Popen(cmd, start_new_session=True)
+    import compiletools.apptools
 
-    saved_handlers = []  # list of (signum, previous_handler) pairs
+    proc = subprocess.Popen(cmd, start_new_session=True)
 
     def _forward(signum, frame):
         try:
@@ -716,24 +715,11 @@ def _run_with_signal_forwarding(cmd: list[str]) -> subprocess.CompletedProcess:
         except (OSError, ProcessLookupError):
             pass
 
-    only_main_thread = threading.current_thread() is threading.main_thread()
-    if only_main_thread:
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
-                saved_handlers.append((sig, signal.signal(sig, _forward)))
-            except (ValueError, OSError):
-                pass
-
     try:
-        proc.wait()
+        with compiletools.apptools.graceful_shutdown(_forward, signal.SIGINT, signal.SIGTERM):
+            proc.wait()
         return subprocess.CompletedProcess(cmd, proc.returncode, None, None)
     finally:
-        if only_main_thread:
-            for sig, handler in saved_handlers:
-                try:
-                    signal.signal(sig, handler)
-                except (ValueError, OSError, TypeError):
-                    pass
         if proc.poll() is None:
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)

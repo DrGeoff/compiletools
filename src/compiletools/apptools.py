@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import functools
 import importlib.util
 import logging
@@ -6,13 +7,14 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import textwrap
 import threading
 import warnings
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
 
 # Only used for the verbose print.
 import configargparse
@@ -2235,6 +2237,82 @@ def create_parser(description, argv=None, include_config=True, include_write_con
         cap = configargparse.ArgumentParser(description=description, conflict_handler="resolve")
         add_base_arguments(cap, argv=argv)
         return cap
+
+
+@contextlib.contextmanager
+def graceful_shutdown(handler, *signums) -> Generator[None, None, None]:
+    """Install *handler* for *signums*, restoring the previous handlers on exit.
+
+    The canonical place for any ct-* tool (or library helper) to wire up
+    interrupt handling. Use it like::
+
+        with apptools.graceful_shutdown(my_handler):
+            do_work()
+
+    Why a context manager rather than bare ``signal.signal()`` calls:
+
+    * **Restoration is automatic.** Forgetting the ``signal.signal(sig,
+      prev_handler)`` line leaks the entry point's handler into the
+      caller for the rest of the process. The lint test in
+      ``test_entry_point_surface`` enforces this for ``--help``, but the
+      context manager makes the bug structurally impossible.
+    * **--help / --version safety.** ``argparse``'s ``--help`` action
+      raises ``SystemExit`` *before* anything inside the ``with`` block
+      runs, so a user typing ``ct-X --help`` never installs the handler.
+      A bare ``signal.signal()`` line above ``parse_args`` would
+      contaminate the caller (caught ``ct_lock_helper`` doing exactly
+      this).
+    * **Thread-aware.** ``signal.signal()`` raises ``ValueError`` off
+      the main thread; this helper silently no-ops there, matching the
+      pattern in ``locking.atomic_compile``.
+    * **Robust to weird signums.** Platform-conditional signals
+      (``SIGPIPE`` on Windows, ``SIGCHLD`` reservations under uvloop)
+      that fail at install time are silently skipped rather than
+      crashing the caller.
+
+    Args:
+        handler: A callable matching the ``signal.signal`` contract
+            (``handler(signum, frame)``). Use the sentinels
+            ``signal.SIG_DFL`` / ``signal.SIG_IGN`` if you want to
+            *suppress* a signal during the block rather than handle it.
+        *signums: Which signals to take over. Defaults to
+            ``(SIGINT, SIGTERM)`` -- the standard "user pressed Ctrl-C
+            or the process manager is asking us to stop" pair.
+
+    Yields:
+        ``None``. The body of the ``with`` block runs with the new
+        handlers active.
+
+    Restored handlers come back even if the body raises. Errors during
+    restoration (mismatched handler shapes, signal already gone) are
+    suppressed -- the caller's original handler may already be invalid
+    if the process is in shutdown, and propagating would mask the body's
+    real exception.
+    """
+    if not signums:
+        signums = (signal.SIGINT, signal.SIGTERM)
+
+    saved = []  # list of (signum, previous_handler); previous_handler matches signal.Handlers
+
+    # ``signal.signal`` raises ``ValueError`` outside the main thread.
+    # Skip the install entirely there -- mirrors ``locking.atomic_compile``
+    # and ``trace_backend``'s behaviour.
+    if threading.current_thread() is threading.main_thread():
+        for sig in signums:
+            try:
+                saved.append((sig, signal.signal(sig, handler)))
+            except (ValueError, OSError):
+                # ValueError: signum not in the platform's valid set.
+                # OSError: kernel-level rejection (rare, but seen with
+                # SIGCHLD under some sandbox runners).
+                pass
+
+    try:
+        yield
+    finally:
+        for sig, prev in saved:
+            with contextlib.suppress(ValueError, OSError, TypeError):
+                signal.signal(sig, prev)
 
 
 def parseargs(cap, argv, verbose=None, *, context):
