@@ -372,7 +372,7 @@ exist", a few classical Make/Ninja workflows behave differently:
   wrong build-id or resolves -lfoo to the wrong libfoo.so.
 
 Migrating from ``--use-mtime=True`` (legacy) to ``--use-mtime=False``
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The default flipped to ``--use-mtime=False`` in this release. Pre-existing
 scripts that rely on "touch source.cpp; make" producing a rebuild now
