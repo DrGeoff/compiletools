@@ -290,6 +290,78 @@ def test_link_artefact_reused_across_workspaces(tmp_path):
     )
 
 
+@uth.requires_functional_compiler
+def test_pch_artefact_reused_across_workspaces(tmp_path):
+    """Cas-pchdir regression guard for the bug-report scenario where a
+    persistent shared ``--cas-pchdir`` accumulates one duplicate
+    ``cmd_hash`` directory per CI working-directory prefix because the
+    PCH cache key embedded the absolute header path.
+
+    Reproducer mirrors the report's `cp -a workspace1 workspace2`
+    sketch: build the PCH-using ``samples/pch`` project in ws1 and ws2
+    (distinct absolute paths) against a single shared ``cas-pchdir``;
+    after the second build the shared dir must hold exactly one
+    ``cmd_hash`` directory (not two), and the same .gch inode must be
+    reused (proving the second build hit the cache rather than
+    re-precompiling and racing for the same path).
+    """
+    sample_src = os.path.join(uth.samplesdir(), "pch")
+    assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
+
+    ws1 = tmp_path / "ws1" / "pch"
+    ws2 = tmp_path / "ws2" / "pch"
+    shutil.copytree(sample_src, ws1)
+    shutil.copytree(sample_src, ws2)
+    shared_cas_pchdir = tmp_path / "shared-cas-pchdir"
+
+    def _build(workdir):
+        _assert_build_ok(_run_ct_cake(workdir, f"--cas-pchdir={shared_cas_pchdir}"), workdir)
+
+    def _gch_stats() -> dict[str, tuple[int, float]]:
+        return {p.name: (p.stat().st_ino, p.stat().st_mtime) for p in shared_cas_pchdir.rglob("*.gch") if p.is_file()}
+
+    def _cmd_hash_dirs() -> set[str]:
+        # Layout: cas-pchdir/[<variant>/]<cmd_hash>/<header>.gch
+        # Walk to the .gch and take its parent dir's name as the cmd_hash.
+        return {p.parent.name for p in shared_cas_pchdir.rglob("*.gch") if p.is_file()}
+
+    _build(ws1)
+    after_first_gch = _gch_stats()
+    after_first_dirs = _cmd_hash_dirs()
+    assert after_first_gch, f"first build produced no .gch in {shared_cas_pchdir}"
+    assert len(after_first_dirs) == 1, f"first build produced unexpected cmd_hash count: {sorted(after_first_dirs)}"
+
+    _build(ws2)
+    after_second_gch = _gch_stats()
+    after_second_dirs = _cmd_hash_dirs()
+
+    # Single cmd_hash dir after both workspaces have built — the core
+    # symptom from the bug report. Pre-fix this would be 2 dirs (one per
+    # workspace path) holding bit-identical .gch content.
+    extra_dirs = after_second_dirs - after_first_dirs
+    assert not extra_dirs and after_second_dirs == after_first_dirs, (
+        "second workspace produced a NEW PCH cmd_hash directory — cache key is path-bound:\n"
+        f"  after ws1: {sorted(after_first_dirs)}\n"
+        f"  after ws2: {sorted(after_second_dirs)}\n"
+        f"  extra dirs introduced by ws2 build: {sorted(extra_dirs)}"
+    )
+
+    # Inode equality on the cached .gch proves ws2 reused the file
+    # rather than re-precompiling and atomic-rename'ing into the slot
+    # (which would produce a fresh inode at the same path).
+    only_first = set(after_first_gch) - set(after_second_gch)
+    only_second = set(after_second_gch) - set(after_first_gch)
+    assert not only_first and not only_second, (
+        "PCH .gch filenames differ across workspaces — header path leaked into key:\n"
+        f"  only in ws1: {sorted(only_first)}\n  only in ws2: {sorted(only_second)}"
+    )
+    swapped_inode = {n for n in after_first_gch if after_second_gch[n][0] != after_first_gch[n][0]}
+    assert not swapped_inode, (
+        f"second build re-precompiled {len(swapped_inode)} cached PCH file(s) "
+        f"(inode swap proves the producer rule re-fired): {sorted(swapped_inode)}"
+    )
+
+
 def _build_static_lib_sample(workdir, lib_source_name: str) -> None:
     """Create a 2-file sample workspace that asks ct-cake to produce a
     static library: a header, a body that defines a single function,
