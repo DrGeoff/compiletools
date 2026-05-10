@@ -313,14 +313,23 @@ def add_link_arguments(cap):
     )
 
 
-def add_output_directory_arguments(cap, variant):
-    if _parser_has_option(cap, "--bindir"):
+def add_cas_directory_arguments(cap, variant):
+    """Register the four ``--cas-{obj,pch,pcm,exe}dir`` flags on *cap*.
+
+    Variant-aware defaults: when invoked inside a git working tree,
+    each CAS lives at ``<git_root>/cas-<kind>dir/<variant>``. Outside
+    a git tree the defaults land under ``bin/<variant>/<kind>``,
+    matching what the build backends would otherwise compute.
+
+    Sliced out of ``add_output_directory_arguments`` so read-only tools
+    (e.g. ``ct-cache-report``) can register exactly the four CAS flags
+    without inheriting unrelated build-only knobs (``--bindir``,
+    ``--use-mtime``).
+
+    Safe to call more than once on the same parser.
+    """
+    if _parser_has_option(cap, "--cas-objdir"):
         return
-    cap.add(
-        "--bindir",
-        help="Output directory for executables",
-        default="".join(["bin/", variant]),
-    )
     git_root = compiletools.git_utils.find_git_root()
     if git_root:
         default_cas_objdir = os.path.join(git_root, "cas-objdir", variant)
@@ -365,6 +374,17 @@ def add_output_directory_arguments(cap, variant):
         ),
         default=default_cas_exedir,
     )
+
+
+def add_output_directory_arguments(cap, variant):
+    if _parser_has_option(cap, "--bindir"):
+        return
+    cap.add(
+        "--bindir",
+        help="Output directory for executables",
+        default="".join(["bin/", variant]),
+    )
+    add_cas_directory_arguments(cap, variant)
     # M2: register --use-mtime here so every backend that calls
     # add_output_directory_arguments picks it up. Previously only
     # makefile_backend registered it, so ``ct-cake --backend=ninja

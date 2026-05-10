@@ -35,6 +35,7 @@ def main(argv=None) -> int:
     # an orchestrator that already exports DIAGNOSTICS_DIR for ct-cake gets
     # auto-discovery here for free.
     variant = compiletools.configutils.extract_variant(argv=argv)
+    compiletools.apptools.add_base_arguments(parser, argv=argv, variant=variant)
     compiletools.apptools.add_output_directory_arguments(parser, variant=variant)
     parser.add(
         "--diagnostics-dir",

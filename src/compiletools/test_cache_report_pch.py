@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 import pathlib
 
-import pytest
-
 from compiletools import cache_report
 
 # ---------------------------------------------------------------------------
@@ -195,10 +193,20 @@ def test_cli_both_flags(tmp_path, capsys):
     assert "PCH cache report for" in out
 
 
-def test_cli_no_args_errors(capsys):
-    with pytest.raises(SystemExit) as excinfo:
-        cache_report.main([])
-    assert excinfo.value.code != 0
+def test_cli_no_args_scans_variant_defaults(monkeypatch, tmp_path, capsys):
+    """Post-apptools migration: a no-args invocation no longer errors.
+
+    Instead it scans whichever variant-default CAS dirs exist on disk
+    (peer behaviour with ct-trim-cache). Run the test from an empty
+    tmp_path so the variant-default paths resolve to non-existent
+    directories — the report should run cleanly and produce no output.
+    """
+    monkeypatch.chdir(tmp_path)
+    rc = cache_report.main([])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # Empty variant defaults -> nothing to scan -> empty text output.
+    assert out == ""
 
 
 def test_cli_json_includes_both_reports(tmp_path, capsys):

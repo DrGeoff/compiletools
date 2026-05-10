@@ -154,9 +154,12 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, exit_handler.cleanup)
 
     # Parse arguments
+    from compiletools.version import __version__
+
     parser = argparse.ArgumentParser(
         prog="ct-lock-helper", description="File locking helper for concurrent builds (Python implementation)"
     )
+    parser.add_argument("--version", action="version", version=__version__)
 
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")
 

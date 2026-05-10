@@ -30,7 +30,6 @@ dependencies, so it stays cheap to import and easy to test.
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import os
@@ -38,6 +37,8 @@ import sys
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
+import compiletools.apptools
+import compiletools.configutils
 from compiletools.trim_cache import (
     _CAS_EXE_SUFFIXES,
     _OBJ_BUCKET_RE,
@@ -1041,77 +1042,83 @@ def _render_combined_json(
 # ---------------------------------------------------------------------------
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="ct-cache-report",
-        description=(
-            "Report duplication in cas-objdir, cas-pchdir, cas-pcmdir, and/or "
-            "cas-exedir caches. Two cache entries that share the underlying "
-            "source/header/module but differ in a hash component are bit-identical "
-            "duplicates spawned by command-line ``-D`` macro pollution of the "
-            "cache key (objdir, pchdir, pcmdir) or LDFLAGS/environment-variable "
-            "pollution of the link key (exedir)."
-        ),
+_CAS_DIR_FLAGS = ("--cas-objdir", "--cas-pchdir", "--cas-pcmdir", "--cas-exedir")
+
+
+def _explicit_cas_flags(argv: list[str] | None) -> set[str]:
+    """Return which of the four ``--cas-*dir`` flags appear literally in *argv*.
+
+    Used to distinguish "user asked for a specific cache" from "fall back to
+    variant-default paths". Detection is by argv inspection rather than
+    configargparse's source tracking because the latter is private API and
+    would also conflate config-file values with CLI-supplied ones — we
+    specifically want CLI-supplied here so that a project ct.conf with a
+    custom ``cas-objdir`` setting still triggers default-scan semantics.
+    """
+    if argv is None:
+        argv = sys.argv[1:]
+    explicit: set[str] = set()
+    for tok in argv:
+        head = tok.split("=", 1)[0]
+        if head in _CAS_DIR_FLAGS:
+            explicit.add(head)
+    return explicit
+
+
+def main(argv: list[str] | None = None) -> int:
+    description = (
+        "Report duplication in cas-objdir, cas-pchdir, cas-pcmdir, and/or "
+        "cas-exedir caches. Two cache entries that share the underlying "
+        "source/header/module but differ in a hash component are bit-identical "
+        "duplicates spawned by command-line ``-D`` macro pollution of the "
+        "cache key (objdir, pchdir, pcmdir) or LDFLAGS/environment-variable "
+        "pollution of the link key (exedir)."
     )
-    parser.add_argument(
-        "--cas-objdir",
-        default=None,
-        help="Path to the cas-objdir to scan. Optional.",
-    )
-    parser.add_argument(
-        "--cas-pchdir",
-        default=None,
-        help="Path to the cas-pchdir to scan. Optional.",
-    )
-    parser.add_argument(
-        "--cas-pcmdir",
-        default=None,
-        help="Path to the cas-pcmdir (C++20 modules cache) to scan. Optional.",
-    )
-    parser.add_argument(
-        "--cas-exedir",
-        default=None,
-        help="Path to the cas-exedir (linker-artefact cache) to scan. Optional.",
-    )
-    parser.add_argument(
+    cap = compiletools.apptools.create_parser(description, argv=argv)
+
+    variant = compiletools.configutils.extract_variant(argv=argv)
+    compiletools.apptools.add_base_arguments(cap, argv=argv, variant=variant)
+    compiletools.apptools.add_cas_directory_arguments(cap, variant=variant)
+
+    cap.add(
         "--top",
         type=int,
         default=10,
         help="Show the N most-duplicated entries per cache (default: 10).",
     )
-    parser.add_argument(
+    cap.add(
         "--json",
         action="store_true",
         help="Emit JSON instead of human-readable text.",
     )
-    return parser
 
+    args = cap.parse_args(args=argv)
+    args.verbose -= args.quiet
 
-def main(argv: list[str] | None = None) -> int:
-    parser = _build_parser()
-    args = parser.parse_args(argv)
+    # Scope decision: if the user named one or more --cas-*dir flags
+    # explicitly on the CLI, scan only those (preserves the
+    # explicit-only ergonomics from the pre-apptools cache_report).
+    # Otherwise scan every variant-default path that actually exists on
+    # disk — peer behaviour with ct-trim-cache, where a no-args
+    # invocation operates on the variant-default CASes.
+    explicit = _explicit_cas_flags(argv)
 
-    objdir = args.cas_objdir
-    pchdir = args.cas_pchdir
-    pcmdir = args.cas_pcmdir
-    exedir = args.cas_exedir
+    def _should_scan(flag: str, path: str) -> bool:
+        if explicit:
+            return flag in explicit
+        return os.path.isdir(path)
 
-    if objdir is None and pchdir is None and pcmdir is None and exedir is None:
-        parser.error(
-            "at least one of --cas-objdir, --cas-pchdir, --cas-pcmdir, or --cas-exedir is required"
-        )
-
-    obj_rep = report(objdir) if objdir is not None else None
-    pch_rep_obj = pch_report(pchdir) if pchdir is not None else None
-    pcm_rep_obj = pcm_report(pcmdir) if pcmdir is not None else None
-    exe_rep_obj = exe_report(exedir) if exedir is not None else None
+    obj_rep = report(args.cas_objdir) if _should_scan("--cas-objdir", args.cas_objdir) else None
+    pch_rep_obj = pch_report(args.cas_pchdir) if _should_scan("--cas-pchdir", args.cas_pchdir) else None
+    pcm_rep_obj = pcm_report(args.cas_pcmdir) if _should_scan("--cas-pcmdir", args.cas_pcmdir) else None
+    exe_rep_obj = exe_report(args.cas_exedir) if _should_scan("--cas-exedir", args.cas_exedir) else None
 
     # JSON schema selection: preserve the legacy flat objdir-only schema
-    # when ONLY --cas-objdir was supplied (back-compat for existing
-    # tooling that consumes that shape). Any combination involving any
-    # other cache uses the combined schema.
+    # when ONLY --cas-objdir was supplied on the CLI (back-compat for
+    # tooling that consumes that shape). Any other combination — and
+    # the no-args default-scan case — uses the combined schema.
     if args.json:
-        if pchdir is None and pcmdir is None and exedir is None and obj_rep is not None:
+        if explicit == {"--cas-objdir"} and obj_rep is not None:
             sys.stdout.write(_render_cas_objdir_only_json(obj_rep, args.top))
         else:
             sys.stdout.write(

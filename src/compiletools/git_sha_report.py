@@ -259,18 +259,31 @@ def get_complete_working_directory_hashes(context) -> dict[Path, str]:
     return {**tracked_hashes, **untracked_hashes}
 
 
-def main():
+def main(argv=None):
     """Main entry point for ct-git-sha-report command."""
-    import sys
-
+    import compiletools.apptools
     from compiletools.build_context import BuildContext
+
+    description = (
+        "Print git blob SHA1s for the current working tree. By default lists "
+        "tracked files only; pass --all (or --untracked) to also include "
+        "untracked files via a synthetic hash-object pass."
+    )
+    cap = compiletools.apptools.create_parser(description, argv=argv, include_config=False)
+    cap.add(
+        "--all",
+        "--untracked",
+        dest="include_untracked",
+        action="store_true",
+        default=False,
+        help="Include untracked files in the report.",
+    )
+    args = cap.parse_args(args=argv)
+    args.verbose -= args.quiet
 
     context = BuildContext()
 
-    # Check for command line arguments
-    include_untracked = "--all" in sys.argv or "--untracked" in sys.argv
-
-    if include_untracked:
+    if args.include_untracked:
         print("# Complete working directory fingerprint (tracked + untracked files)")
         blob_map = get_complete_working_directory_hashes(context)
     else:

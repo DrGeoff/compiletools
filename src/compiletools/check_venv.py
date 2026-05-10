@@ -113,7 +113,7 @@ def cached_venv_mismatch_reason(expected_src_root: str) -> str | None:
     return venv_mismatch_reason(expected_src_root)
 
 
-def main():
+def main(argv=None):
     """``ct-check-venv`` entry point.
 
     Compares the ct-cake on PATH against the compiletools that THIS
@@ -122,6 +122,16 @@ def main():
     1 when they don't.
     """
     import compiletools
+    import compiletools.apptools
+
+    description = (
+        "Verify that the ``ct-cake`` on PATH and this ``ct-check-venv`` "
+        "invocation resolve to the same compiletools source root. "
+        "Exits 0 on match, 1 on mismatch with an actionable diagnostic."
+    )
+    cap = compiletools.apptools.create_parser(description, argv=argv, include_config=False)
+    args = cap.parse_args(args=argv)
+    args.verbose -= args.quiet
 
     expected = os.path.dirname(os.path.dirname(os.path.realpath(compiletools.__file__)))
     reason = venv_mismatch_reason(expected)

@@ -103,10 +103,13 @@ def publish(cas_path: str, user_path: str, source_realpath: str | None = None) -
 
 
 def main(argv: list[str] | None = None) -> int:
+    from compiletools.version import __version__
+
     parser = argparse.ArgumentParser(
         prog="ct-cas-publish",
         description="Atomically publish a CAS artefact at a stable user-facing path.",
     )
+    parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("--cas-path", required=True, help="Source path inside the CAS.")
     parser.add_argument("--user-path", required=True, help="Destination user-facing path.")
     parser.add_argument(
