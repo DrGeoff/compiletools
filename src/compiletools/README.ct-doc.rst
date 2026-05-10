@@ -147,7 +147,8 @@ CORE TOOLS
     content-addressable caches with configurable retention.
 
 **ct-cache-report**
-    Summarize content-addressable cache occupancy.
+    Summarize content-addressable cache occupancy and flag duplication
+    in the object, PCH, PCM, and linker-artefact caches.
 
 **ct-cas-publish**
     Helper invoked from generated build recipes: atomically publish a

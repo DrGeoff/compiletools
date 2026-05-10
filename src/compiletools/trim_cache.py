@@ -16,7 +16,6 @@ import re
 import shutil
 import sys
 import time
-from typing import ClassVar
 
 # Object filename format: {basename}_{file_hash_12}_{dep_hash_14}_{macro_state_hash_16}.o
 # Anchored from the END (the three hash fields have fixed widths) so the
@@ -47,6 +46,28 @@ _PCH_COMMAND_HASH_RE = re.compile(r"^[0-9a-f]{16}$")
 # (see _pcm_command_hash docstring), so the additional entropy of an
 # object-cache-style 3-axis path layout isn't needed here.
 _PCM_COMMAND_HASH_RE = re.compile(r"^[0-9a-f]{16}$")
+
+# Suffixes recognised inside cas-exedir buckets. Keep in lockstep with
+# ``namer.cas_*_pathname`` and ``build_backend._build_publish_rule``.
+# Anything not on this list (e.g. ``.lock`` sidecars, ``.lock.excl``)
+# is silently skipped, which is what we want — peer-build lock files
+# must never be enumerated as trim or report candidates.
+_CAS_EXE_SUFFIXES: tuple[str, ...] = (".exe", ".a", ".so")
+
+
+def _load_exe_manifest(cas_path: str) -> dict | None:
+    """Read a cas-exedir entry's sidecar manifest at ``<cas_path>.manifest``.
+
+    Returns ``None`` for legacy entries (no manifest), unreadable, or
+    corrupt files. Callers must treat ``None`` as "fall back to
+    basename bucketing" so reporting/trimming keep working during the
+    manifest-rollout window.
+    """
+    try:
+        with open(cas_path + ".manifest") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def _load_pcm_manifest(cmd_hash_dir: str) -> dict | None:
@@ -629,13 +650,6 @@ class CacheTrimmer:
     # Executable cache (cas-exedir) trimming
     # ------------------------------------------------------------------
 
-    # Suffixes recognised inside cas-exedir buckets. Keep in lockstep with
-    # ``namer.cas_*_pathname`` and ``build_backend._build_publish_rule``.
-    # Anything not on this list (e.g. ``.lock`` sidecars, ``.lock.excl``)
-    # is silently skipped, which is what we want — peer-build lock files
-    # must never be enumerated as trim candidates.
-    _CAS_EXE_SUFFIXES: ClassVar[tuple[str, ...]] = (".exe", ".a", ".so")
-
     def trim_exedir(self, exedir):
         """Trim stale entries from the content-addressable linker-artefact
         cache (executables, static libraries, shared libraries — all
@@ -716,7 +730,7 @@ class CacheTrimmer:
                 if not leaf.is_file():
                     continue
                 matched_suffix = next(
-                    (s for s in self._CAS_EXE_SUFFIXES if leaf.name.endswith(s)),
+                    (s for s in _CAS_EXE_SUFFIXES if leaf.name.endswith(s)),
                     None,
                 )
                 if matched_suffix is None:
@@ -734,15 +748,11 @@ class CacheTrimmer:
                     continue
                 # Prefer source_realpath from sidecar; fall back to basename.
                 bucket_id: str = basename
-                manifest_path = leaf.path + ".manifest"
-                try:
-                    with open(manifest_path) as mf:
-                        manifest = json.load(mf)
+                manifest = _load_exe_manifest(leaf.path)
+                if manifest is not None:
                     src = manifest.get("source_realpath")
                     if isinstance(src, str) and src:
                         bucket_id = src
-                except (OSError, ValueError):
-                    pass  # legacy entry — keep basename bucket_id
                 entry_info[leaf.path] = ((bucket_id, matched_suffix), st.st_mtime, st.st_size, st.st_nlink)
                 stats["total_scanned"] += 1
 
