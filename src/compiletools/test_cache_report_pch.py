@@ -199,14 +199,17 @@ def test_cli_no_args_scans_variant_defaults(monkeypatch, tmp_path, capsys):
     Instead it scans whichever variant-default CAS dirs exist on disk
     (peer behaviour with ct-trim-cache). Run the test from an empty
     tmp_path so the variant-default paths resolve to non-existent
-    directories — the report should run cleanly and produce no output.
+    directories — the report exits 0 cleanly and emits a friendly
+    stderr hint pointing the user at the explicit-flag form.
     """
     monkeypatch.chdir(tmp_path)
     rc = cache_report.main([])
     assert rc == 0
-    out = capsys.readouterr().out
-    # Empty variant defaults -> nothing to scan -> empty text output.
-    assert out == ""
+    captured = capsys.readouterr()
+    # Stdout stays empty when nothing exists.
+    assert captured.out == ""
+    # Stderr explains why and how to override.
+    assert "no CAS directories found at the variant defaults" in captured.err
 
 
 def test_cli_json_includes_both_reports(tmp_path, capsys):

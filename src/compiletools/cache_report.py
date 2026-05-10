@@ -1056,6 +1056,8 @@ def _explicit_cas_flags(argv: list[str] | None) -> set[str]:
     custom ``cas-objdir`` setting still triggers default-scan semantics.
     """
     if argv is None:
+        # Match what cap.parse_args(args=None) sees, so the explicit-flag
+        # detection stays consistent with whatever configargparse parses.
         argv = sys.argv[1:]
     explicit: set[str] = set()
     for tok in argv:
@@ -1112,6 +1114,26 @@ def main(argv: list[str] | None = None) -> int:
     pch_rep_obj = pch_report(args.cas_pchdir) if _should_scan("--cas-pchdir", args.cas_pchdir) else None
     pcm_rep_obj = pcm_report(args.cas_pcmdir) if _should_scan("--cas-pcmdir", args.cas_pcmdir) else None
     exe_rep_obj = exe_report(args.cas_exedir) if _should_scan("--cas-exedir", args.cas_exedir) else None
+
+    # No-args invocation that found nothing on disk would otherwise
+    # exit 0 with zero-byte stdout — confusing for an interactive user
+    # who's just learning the tool. JSON mode emits four explicit
+    # ``null``s so it's already self-explanatory; the hint is text-only.
+    if (
+        not args.json
+        and not explicit
+        and obj_rep is None
+        and pch_rep_obj is None
+        and pcm_rep_obj is None
+        and exe_rep_obj is None
+    ):
+        print(
+            "ct-cache-report: no CAS directories found at the variant defaults "
+            f"(variant={args.variant!r}). Pass --cas-objdir / --cas-pchdir / "
+            "--cas-pcmdir / --cas-exedir explicitly to scan a custom path, or "
+            "run a build first to populate them.",
+            file=sys.stderr,
+        )
 
     # JSON schema selection: preserve the legacy flat objdir-only schema
     # when ONLY --cas-objdir was supplied on the CLI (back-compat for

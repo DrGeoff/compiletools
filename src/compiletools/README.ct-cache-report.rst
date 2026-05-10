@@ -20,8 +20,14 @@ DESCRIPTION
 ===========
 ``ct-cache-report`` walks one or more content-addressable cache
 directories and reports their occupancy plus any duplication caused by
-cache-key pollution. At least one of ``--cas-objdir``, ``--cas-pchdir``,
-``--cas-pcmdir``, or ``--cas-exedir`` is required.
+cache-key pollution.
+
+Scope follows the rule used by ``ct-trim-cache``: a no-args invocation
+operates on the four variant-default CAS directories
+(``{git_root}/cas-{obj,pch,pcm,exe}dir/{variant}``), reporting on
+whichever ones exist on disk. Naming any of ``--cas-objdir``,
+``--cas-pchdir``, ``--cas-pcmdir``, ``--cas-exedir`` explicitly scopes
+the scan to just those caches.
 
 The tool is read-only: it never deletes, renames, or rewrites cache
 entries. Pair it with ``ct-trim-cache`` when you actually want to
@@ -102,17 +108,20 @@ LDFLAGS or environment-variable pollution of the link key.
 OPTIONS
 =======
 ``--cas-objdir PATH``
-    Path to the cas-objdir to scan. Optional; pass at least one of
-    the four CAS flags.
+    Path to the cas-objdir to scan (default: the variant's cas-objdir
+    under the git root). Naming any explicit ``--cas-*dir`` flag scopes
+    the scan to just the named caches.
 
 ``--cas-pchdir PATH``
-    Path to the cas-pchdir to scan. Optional.
+    Path to the cas-pchdir to scan (default: the variant's cas-pchdir).
 
 ``--cas-pcmdir PATH``
-    Path to the cas-pcmdir (C++20 modules cache) to scan. Optional.
+    Path to the cas-pcmdir (C++20 modules cache) to scan (default: the
+    variant's cas-pcmdir).
 
 ``--cas-exedir PATH``
-    Path to the cas-exedir (linker-artefact cache) to scan. Optional.
+    Path to the cas-exedir (linker-artefact cache) to scan (default:
+    the variant's cas-exedir).
 
 ``--top N``
     Show the top N most-duplicated entries per cache. Default: 10.
@@ -155,24 +164,28 @@ flag triggers the combined schema above.
 EXIT CODES
 ==========
 0
-    Success.
+    Success (including the no-args case where no cache directories
+    exist on disk -- the report is empty but the run is well-formed).
 2
-    Argument-parsing failure (e.g. no cache flag was supplied).
+    Argument-parsing failure (e.g. an unknown flag).
 
 EXAMPLES
 ========
-**Quick objdir scan in the default location**::
+**Report on every variant-default CAS that exists**::
+
+    ct-cache-report
+
+**Scan a single specific cache**::
 
     ct-cache-report --cas-objdir=$(git rev-parse --show-toplevel)/cas-objdir/blank
 
+**Switch variant**::
+
+    ct-cache-report --variant=gcc.release
+
 **All four caches, JSON for downstream tooling**::
 
-    ct-cache-report \
-        --cas-objdir=$(git rev-parse --show-toplevel)/cas-objdir/blank \
-        --cas-pchdir=$(git rev-parse --show-toplevel)/cas-pchdir/blank \
-        --cas-pcmdir=$(git rev-parse --show-toplevel)/cas-pcmdir/blank \
-        --cas-exedir=$(git rev-parse --show-toplevel)/cas-exedir/blank \
-        --json | jq '.["cas-objdir-report"]."wasted-bytes"'
+    ct-cache-report --json | jq '.["cas-objdir-report"]."wasted-bytes"'
 
 **Show only the top-3 worst offenders**::
 

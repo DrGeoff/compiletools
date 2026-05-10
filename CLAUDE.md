@@ -182,6 +182,7 @@ The `--use-mtime` boolean (registered in `apptools.add_cas_arguments`, called fr
 | `stringzilla_utils.py` | SIMD text operation helpers |
 | `global_hash_registry.py` | Content-addressable file hashing |
 | `trim_cache.py` | Cache trimming utility for object, PCH, PCM, and linker-artefact (cas-exedir) directories with configurable retention; `trim_exedir` honours hard-link protection and re-stats `nlink` under the lock to close the scan-to-unlink TOCTOU |
+| `cache_report.py` | `ct-cache-report` entry point: read-only diagnostic that walks the four CAS layers (`cas-objdir` / `cas-pchdir` / `cas-pcmdir` / `cas-exedir`) and reports occupancy plus duplication caused by cache-key pollution; shares the on-disk format helpers (`_load_*_manifest`, `_OBJ_BUCKET_RE`, `_PCH/PCM_COMMAND_HASH_RE`, `_CAS_EXE_SUFFIXES`) with `trim_cache.py` so format drift is impossible |
 
 ### Configuration Files
 

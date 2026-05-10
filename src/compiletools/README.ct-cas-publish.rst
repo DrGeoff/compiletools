@@ -142,5 +142,8 @@ SEE ALSO
 ``ct-trim-cache`` (1) -- reads the sidecar manifests this helper writes;
 documents the bucketing and hard-link-protection invariants
 
+``ct-cache-report`` (1) -- consumes the same ``.manifest`` sidecars to
+group exedir entries by ``source_realpath`` when reporting duplication
+
 ``ct-backends`` (7) -- "MTIME VS CAS REBUILD MODE" and the linker-
 artefact discussion in CONTENT-ADDRESSABLE OUTPUTS

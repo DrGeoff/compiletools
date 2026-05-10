@@ -342,4 +342,4 @@ For lock cleanup, use ``ct-cleanup-locks``.
 
 SEE ALSO
 ========
-``ct-cleanup-locks`` (1), ``ct-cake`` (1), ``ct-cas-publish`` (1), ``ct-config`` (1)
+``ct-cache-report`` (1), ``ct-cleanup-locks`` (1), ``ct-cake`` (1), ``ct-cas-publish`` (1), ``ct-config`` (1)

@@ -148,11 +148,6 @@ def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
 
-    # Set up signal handling
-    exit_handler = GracefulExit()
-    signal.signal(signal.SIGINT, exit_handler.cleanup)
-    signal.signal(signal.SIGTERM, exit_handler.cleanup)
-
     # Parse arguments
     from compiletools.version import __version__
 
@@ -191,6 +186,14 @@ def main(argv=None):
     if not args.command:
         parser.print_help()
         return 1
+
+    # Install signal handlers AFTER parse_args so --help / --version (which
+    # raise SystemExit before reaching here) don't leak GracefulExit.cleanup
+    # as the caller's SIGINT/SIGTERM handler. Matters for any in-process
+    # invocation (e.g. the entry-point lint test).
+    exit_handler = GracefulExit()
+    signal.signal(signal.SIGINT, exit_handler.cleanup)
+    signal.signal(signal.SIGTERM, exit_handler.cleanup)
 
     # Execute command
     try:
