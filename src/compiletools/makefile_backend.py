@@ -48,6 +48,9 @@ class MakefileBackend(BuildBackend):
     BuildGraph as Makefile syntax.
     """
 
+    def _honors_use_mtime(self) -> bool:
+        return True
+
     @staticmethod
     def name() -> str:
         return "make"

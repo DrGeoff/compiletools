@@ -363,6 +363,21 @@ class BuildBackend(abc.ABC):
         self._gcc_header_unit_resolved: dict[str, str] = {}
         self._build_imports_std_cached: bool | None = None
 
+        # Warn if the user explicitly opted into legacy mtime semantics
+        # but this backend can't deliver them. The flag is a make/ninja
+        # implementation detail; other backends fall back to their
+        # native (content-hash or self-managed) rebuild logic.
+        # ``is True`` (not truthy) so a MagicMock attribute on a stub
+        # backend in tests doesn't trip the warning.
+        if getattr(args, "use_mtime", False) is True and not self._honors_use_mtime():
+            print(
+                f"WARNING: --use-mtime=True is set but the {self.name()!r} backend does not "
+                "honor mtime-based rebuilds; the flag will be ignored. Only the 'make' and "
+                "'ninja' backends honor --use-mtime — others use content-hash-based "
+                "(bazel, tup, shake, slurm) or self-managed (cmake) change detection.",
+                file=sys.stderr,
+            )
+
     @property
     def _timer(self):
         """Return the enabled BuildTimer from context, or None."""
@@ -2219,6 +2234,37 @@ class BuildBackend(abc.ABC):
         their user-facing paths (legacy single-rule shape) so the
         graph IR doesn't impose a competing cache layout on top of the
         backend's own.
+        """
+        return False
+
+    def _honors_use_mtime(self) -> bool:
+        """Whether this backend's emitted rules honor ``args.use_mtime``.
+
+        ``--use-mtime`` controls how compile/link prerequisites are
+        emitted: in CAS-only mode (``False``, the default) sources are
+        dropped from prereqs and CAS-artefact existence is the rebuild
+        signal; in legacy mode (``True``) classical mtime semantics
+        apply so touching a source triggers a rebuild. Only the rule
+        emitters in ``makefile_backend`` and ``ninja_backend`` actually
+        switch on this flag — Make and Ninja are the two backends that
+        consume the prereq list as a literal mtime comparison.
+
+        Other backends ignore the flag because their underlying
+        change-detection isn't mtime-based:
+
+        * **CMake** delegates to its own out-of-source incremental
+          tracking (cmake-build/) and copies built artefacts to
+          ``topbindir`` post-build.
+        * **Bazel** uses its content-addressable action cache.
+        * **Tup** uses FUSE content tracking.
+        * **Shake / Slurm** use verifying traces (content hashes).
+
+        For all four, ``--use-mtime=True`` cannot deliver "touch the
+        source to force a rebuild" semantics — a touch without a
+        content change is invisible to a content-hash-based rebuild
+        check. Backends in this group leave this method at the False
+        default; ``BuildBackend.__init__`` then warns the user that
+        their explicit opt-in is being silently ignored.
         """
         return False
 

@@ -19,6 +19,9 @@ from compiletools.build_graph import BuildGraph, render_shell_recipe
 class NinjaBackend(BuildBackend):
     """Generate and execute Ninja build files."""
 
+    def _honors_use_mtime(self) -> bool:
+        return True
+
     @staticmethod
     def name() -> str:
         return "ninja"

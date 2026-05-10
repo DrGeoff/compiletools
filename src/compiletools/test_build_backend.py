@@ -220,6 +220,117 @@ class TestBackendRegistry:
         assert isinstance(result, list)
 
 
+class TestUseMtimeFlagPlumbing:
+    """Verify ``--use-mtime`` is honored only by Make/Ninja and warns elsewhere.
+
+    Pre-fix, ``--use-mtime=True`` was silently ignored on cmake / bazel /
+    tup / shake / slurm — those backends use content-hash or self-managed
+    change detection, so a touched-but-otherwise-unchanged source can't
+    force a rebuild. CLAUDE.md claimed every backend honored the flag.
+    The fix makes the silent no-op explicit: a stderr warning fires on
+    instantiation when the user opts in but the backend can't deliver.
+    """
+
+    def _make_make_backend(self, tmp_path, **overrides):
+        from compiletools.makefile_backend import MakefileBackend
+
+        args = make_backend_args(tmp_path, **overrides)
+        hunter = make_mock_hunter()
+        return MakefileBackend(args=args, hunter=hunter)
+
+    def _make_ninja_backend(self, tmp_path, **overrides):
+        from compiletools.ninja_backend import NinjaBackend
+
+        args = make_backend_args(tmp_path, **overrides)
+        hunter = make_mock_hunter()
+        return NinjaBackend(args=args, hunter=hunter)
+
+    def _make_stub_backend(self, tmp_path, **overrides):
+        StubClass = make_stub_backend_class()
+        args = make_backend_args(tmp_path, **overrides)
+        hunter = make_mock_hunter()
+        return StubClass(args=args, hunter=hunter)
+
+    def test_makefile_backend_honors_use_mtime(self, tmp_path):
+        backend = self._make_make_backend(tmp_path)
+        assert backend._honors_use_mtime() is True
+
+    def test_ninja_backend_honors_use_mtime(self, tmp_path):
+        backend = self._make_ninja_backend(tmp_path)
+        assert backend._honors_use_mtime() is True
+
+    def test_cmake_backend_does_not_honor_use_mtime(self, tmp_path):
+        from compiletools.cmake_backend import CMakeBackend
+
+        args = make_backend_args(tmp_path)
+        backend = CMakeBackend(args=args, hunter=make_mock_hunter())
+        assert backend._honors_use_mtime() is False
+
+    def test_bazel_backend_does_not_honor_use_mtime(self, tmp_path):
+        from compiletools.bazel_backend import BazelBackend
+
+        args = make_backend_args(tmp_path)
+        backend = BazelBackend(args=args, hunter=make_mock_hunter())
+        assert backend._honors_use_mtime() is False
+
+    def test_tup_backend_does_not_honor_use_mtime(self, tmp_path):
+        from compiletools.tup_backend import TupBackend
+
+        args = make_backend_args(tmp_path)
+        backend = TupBackend(args=args, hunter=make_mock_hunter())
+        assert backend._honors_use_mtime() is False
+
+    def test_shake_backend_does_not_honor_use_mtime(self, tmp_path):
+        from compiletools.trace_backend import ShakeBackend
+
+        args = make_backend_args(tmp_path)
+        backend = ShakeBackend(args=args, hunter=make_mock_hunter())
+        assert backend._honors_use_mtime() is False
+
+    def test_slurm_backend_does_not_honor_use_mtime(self, tmp_path):
+        from compiletools.trace_backend import SlurmBackend
+
+        args = make_backend_args(tmp_path)
+        backend = SlurmBackend(args=args, hunter=make_mock_hunter())
+        assert backend._honors_use_mtime() is False
+
+    def test_warning_emitted_when_use_mtime_true_on_non_honoring_backend(self, tmp_path, capsys):
+        """User opts into legacy mtime semantics on a backend that can't
+        deliver them — must surface as a stderr warning, not a silent no-op."""
+        self._make_stub_backend(tmp_path, use_mtime=True)
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+        assert "--use-mtime" in captured.err
+        assert "stub_test" in captured.err
+
+    def test_no_warning_when_use_mtime_default(self, tmp_path, capsys):
+        """Default ``use_mtime=False`` (CAS-only) — no warning anywhere,
+        regardless of backend."""
+        self._make_stub_backend(tmp_path)
+        captured = capsys.readouterr()
+        assert "use-mtime" not in captured.err
+
+    def test_no_warning_when_make_backend_with_use_mtime_true(self, tmp_path, capsys):
+        """Make honors the flag — no warning when the user opts in."""
+        self._make_make_backend(tmp_path, use_mtime=True)
+        captured = capsys.readouterr()
+        assert "use-mtime" not in captured.err
+
+    def test_no_warning_when_ninja_backend_with_use_mtime_true(self, tmp_path, capsys):
+        """Ninja honors the flag — no warning when the user opts in."""
+        self._make_ninja_backend(tmp_path, use_mtime=True)
+        captured = capsys.readouterr()
+        assert "use-mtime" not in captured.err
+
+    def test_no_warning_when_use_mtime_explicitly_false(self, tmp_path, capsys):
+        """Explicitly setting ``use_mtime=False`` (the default) on a
+        non-honoring backend is fine — the backend's natural behavior
+        already matches CAS-only semantics for content-tracked tools."""
+        self._make_stub_backend(tmp_path, use_mtime=False)
+        captured = capsys.readouterr()
+        assert "use-mtime" not in captured.err
+
+
 class TestBuildGraphPopulation:
     """Test that build_graph() correctly populates a BuildGraph from hunter/namer data."""
 
