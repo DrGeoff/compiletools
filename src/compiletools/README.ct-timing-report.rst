@@ -8,7 +8,7 @@ Analyze and display build timing reports
 
 :Author: drgeoffathome@gmail.com
 :Date:   2026-04-06
-:Version: 9.1.0
+:Version: 9.2.0
 :Manual section: 1
 :Manual group: developers
 
