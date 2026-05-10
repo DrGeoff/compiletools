@@ -309,6 +309,52 @@ and macro state), if the file exists it is guaranteed correct.  This
 eliminates the need for content verification on cache hits and prevents
 stale reuse on low-resolution filesystems.
 
+All backends additionally cache the *output* of the link step in
+``cas-exedir`` (executables, ``.a`` static libraries, ``.so`` shared
+libraries).  The link rule writes directly to
+``<cas-exedir>/<linkkey[:2]>/<basename>_<linkkey>.<ext>``; a downstream
+``symlink`` rule then publishes the user-facing ``bin/<variant>/<name>``
+(or ``bin/<variant>/lib<name>.{a,so}``) as a hard link via
+``ct-cas-publish``, with a symlink fallback only on ``EXDEV``.  The
+linker-artefact key folds in linker identity, canonicalized LDFLAGS,
+sorted gitroot-canonical object paths, the ``ar`` binary identity,
+``SOURCE_DATE_EPOCH`` / ``LD_LIBRARY_PATH`` / ``LIBRARY_PATH`` /
+``LD_PRELOAD``, and (for executables) the canonical bindir path.  See
+the *Linker-artefact caching (cas-exedir)* section in ct-cake(1).
+
+MTIME VS CAS REBUILD MODE
+=========================
+
+The ``--use-mtime`` boolean controls whether the generated build files
+preserve classical Make/Ninja mtime-based prerequisite semantics on top
+of the CAS layer.  Default is ``--no-use-mtime`` (equivalently
+``--use-mtime=False``): compile, link, ar, and link-shared rules drop
+their sources/objects from prerequisites; only PCH/BMI artefacts remain
+as order-only deps so build ordering is preserved.  Existence of the
+CAS artefact on disk is the sole rebuild signal.  This mode is the
+recommended setting for shared CI caches because a fresh ``git
+checkout`` (every source has ``mtime=now``) hits the cache instead of
+re-running the producer.
+
+Pass ``--use-mtime=True`` to restore legacy mtime semantics for
+interactive workflows where re-touching a source should force a
+rebuild even when the producer key would not change.  The flag is
+registered in ``apptools.add_output_directory_arguments`` so all
+backends accept it consistently.
+
+**Caveats of CAS-only mode:**
+
+* Generated headers must exist before ``ct-cake`` runs its headerdep
+  pass; absent headers are dropped from ``dep_hash`` and only force a
+  recompile on the *next* invocation.
+* ``make -t`` and ``ninja -t restat`` are inappropriate — they create
+  empty files at target paths whose recipes have no real prerequisites
+  in CAS-only mode, corrupting the cache.  Use ``--use-mtime=True`` if
+  you need to mark a build up-to-date without running it.
+* System / ``/usr/include`` headers are not in the cache key (matches
+  ccache/sccache contract).  An in-place compiler swap usually changes
+  ``compiler_identity`` and invalidates the cache implicitly.
+
 CHOOSING A BACKEND
 ==================
 

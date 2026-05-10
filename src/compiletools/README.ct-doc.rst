@@ -88,11 +88,15 @@ KEY FEATURES
     Slurm backend.  Use ``--backend=<name>`` to select.  See ct-backends(7).
 
 **Content-Addressable Caching**
-    Objects, precompiled headers, and C++20 module BMIs are cached in
-    per-variant content-addressable directories (``cas-objdir``,
-    ``cas-pchdir``, ``cas-pcmdir``). Cache keys are anchored to the git
-    root, so identical translation units share entries even when the
-    workspace is moved or cloned to a new path. Trim with
+    Objects, precompiled headers, C++20 module BMIs, and the linker
+    artefacts themselves (executables, static libs, shared libs) are
+    cached in per-variant content-addressable directories
+    (``cas-objdir``, ``cas-pchdir``, ``cas-pcmdir``, ``cas-exedir``).
+    Cache keys are anchored to the git root, so identical translation
+    units share entries even when the workspace is moved or cloned to
+    a new path. Combined with the default ``--use-mtime=False``,
+    fresh-checkout CI builds (where every source has ``mtime=now``)
+    hit the cache instead of re-running the producer. Trim with
     ``ct-trim-cache``.
 
 **C++20 Modules**
@@ -139,11 +143,17 @@ CORE TOOLS
     static summary, run comparison, and Chrome Trace export.
 
 **ct-trim-cache**
-    Trim aged entries from the object, PCH, and PCM content-addressable
-    caches with configurable retention.
+    Trim aged entries from the object, PCH, PCM, and linker-artefact
+    content-addressable caches with configurable retention.
 
 **ct-cache-report**
     Summarize content-addressable cache occupancy.
+
+**ct-cas-publish**
+    Helper invoked from generated build recipes: atomically publish a
+    cas-exedir entry to a user-facing ``bin/<variant>/<name>`` path
+    via ``link()`` + ``rename()``, with ``EXDEV``-only symlink
+    fallback. Not normally run by hand.
 
 **ct-cleanup-locks**
     Clean stale locks from file locking.
@@ -206,6 +216,8 @@ SEE ALSO
 * ct-build-dynamic-library
 * ct-build-static-library
 * ct-cake
+* ct-cas-publish
+* ct-check-venv
 * ct-cleanup-locks
 * ct-compilation-database
 * ct-config
@@ -221,6 +233,8 @@ SEE ALSO
 * ct-list-variants
 * ct-lock-helper
 * ct-magicflags
+* ct-pytest-monitor
 * ct-release
 * ct-timing-report
+* ct-trim-cache
 * ct-watch-build

@@ -102,9 +102,9 @@ Once `apptools.parseargs` returns, the canonical view of compile flags lives on 
 
 ### Path-Canonical CAS Keys
 
-All three CAS keys (per-TU object, PCH, PCM) hash *gitroot-relative* paths instead of absolute paths so caches survive moving or cloning the workspace. `apptools.canonicalize_path_for_cache_key(path, anchor_root)` rewrites `<gitroot>/foo/bar.cpp` to `<GITROOT>/foo/bar.cpp` (literal sentinel string) and `apptools.canonicalize_for_cache_key(tokens, anchor_root)` does the same for path-bearing flag tokens (`-I` `-isystem` `-iquote` `-idirafter` `-F` `-B` `-include` `-include-pch`, both attached `-I/path` and detached `-I /path` forms). Anything outside the anchor (system headers, sibling repos), already-relative tokens, and tokens that already contain the sentinel pass through unchanged — the rewrite is idempotent. Empty `anchor_root` is the identity function (graceful no-op when gitroot can't be resolved). The compiler still receives the real absolute paths; canonicalization only touches hash inputs. `MacroState` accepts `anchor_root` at construction (threaded from `headerdeps.py` / `magicflags.py`); the PCH and PCM `_pch_command_hash` / `_pcm_command_hash` builders call the same canonicalizer on `cxxflags_tokens` and the source path before hashing.
+All four CAS keys (per-TU object, PCH, PCM, linker-artefact) hash *gitroot-relative* paths instead of absolute paths so caches survive moving or cloning the workspace. `apptools.canonicalize_path_for_cache_key(path, anchor_root)` rewrites `<gitroot>/foo/bar.cpp` to `<GITROOT>/foo/bar.cpp` (literal sentinel string) and `apptools.canonicalize_for_cache_key(tokens, anchor_root)` does the same for path-bearing flag tokens (`-I` `-isystem` `-iquote` `-idirafter` `-F` `-B` `-include` `-include-pch`, both attached `-I/path` and detached `-I /path` forms — plus `-Wl,opt[=val][,/abs/path,...]` and the `-Xlinker /abs/path` two-token form for linker flags). Anything outside the anchor (system headers, sibling repos), already-relative tokens, and tokens that already contain the sentinel pass through unchanged — the rewrite is idempotent. Empty `anchor_root` is the identity function (graceful no-op when gitroot can't be resolved). The compiler still receives the real absolute paths; canonicalization only touches hash inputs. `MacroState` accepts `anchor_root` at construction (threaded from `headerdeps.py` / `magicflags.py`); the PCH, PCM, and linker `_pch_command_hash` / `_pcm_command_hash` / `_link_key_hash` builders call the same canonicalizer on `cxxflags_tokens` / `ldflags_tokens` and the source path before hashing.
 
-User-visible upshot: an identical TU built in `/scratch/run-1/repo/` and `/scratch/run-2/repo/` produces the same cache key, so the second build hits the cache instead of recompiling. Cloning a repo to a new path or renaming the worktree no longer invalidates the object/PCH/PCM caches.
+User-visible upshot: an identical TU built in `/scratch/run-1/repo/` and `/scratch/run-2/repo/` produces the same cache key, so the second build hits the cache instead of recompiling. Cloning a repo to a new path or renaming the worktree no longer invalidates the object/PCH/PCM/exe caches.
 
 ### Locking System
 
@@ -139,6 +139,18 @@ Both invariants must be maintained in every code path that emits compile/link co
 
 **Filename escapes.** Module partition separators (`:`) and header-unit path separators (`/`) are escaped to `^^` (`_NAME_ESCAPE` in `build_backend.py`) for the on-disk filename — `_` and `-` would collide with characters that legitimately appear in identifiers and header names. The compiler-facing mapper key keeps the original `:` so `-fmodule-mapper` lookups for partitions resolve correctly.
 
+### Linker-artefact Caching (cas-exedir)
+
+`compiletools` caches the *output* of the link step at `{git_root}/cas-exedir/{variant}/<linkkey[:2]>/<basename>_<linkkey>.<ext>` with `<ext>` ∈ `{.exe, .a, .so}`. Producer rules (`link`, `ar`, `link-shared`) write directly to the CAS path; a downstream `symlink` rule then publishes the user-facing `bin/<variant>/<name>` (or `bin/<variant>/lib<name>.{a,so}`) via `ct-cas-publish` (`cas_publish.py`) — `link()` + `rename()` for atomic publish, with a symlink fallback only on `EXDEV`. Other `OSError`s (`ENOSPC`, `EPERM`, `EROFS`) surface visibly instead of silently degrading to a symlink (which would break trim's hard-link protection by leaving `nlink == 1` on the cas entry). The `<cas-path>.manifest` sidecar (`{"source_realpath": ...}`) is written best-effort after the publish so `trim_cache.trim_exedir` can bucket by source identity rather than basename.
+
+**Link-key hash inputs.** Beyond the linker identity, canonicalized LDFLAGS, and gitroot-canonical sorted object paths, the executable link key folds in `SOURCE_DATE_EPOCH`, `LIBRARY_PATH`, `LD_LIBRARY_PATH`, `LD_PRELOAD`, the `ar` binary identity (binutils version determines archive format), and the **canonical bindir** (anchor-relative full bindir path, not just basename — `bin/blank` and `out/blank` collide on basename alone, so the full anchored path is the disambiguator that prevents RPATH/`$ORIGIN` linker scripts from baking the wrong sibling-dir resolution into a cache hit). The static-lib (`ar`) key is simpler: just the `ar` argv prefix and the canonical object set.
+
+### Mtime-vs-CAS Rebuild Mode (`--use-mtime`)
+
+The `--use-mtime` boolean (registered in `apptools.add_cas_arguments`, called from `add_output_directory_arguments` so every backend picks it up) controls whether classical mtime semantics apply on top of the CAS layer. Default `--use-mtime=False` (CAS-only): compile, link, ar, and link-shared rules drop their sources/objects from prerequisites entirely — only PCH/BMI artefacts remain, as order-only deps for build ordering. The CAS artefact's existence on disk is the sole rebuild signal, so a fresh `git checkout` (every source has `mtime=now`) hits the cache instead of re-running the producer. `--use-mtime=True` restores legacy mtime-based behavior for interactive workflows where re-touching a source should force a rebuild.
+
+**Caveats of CAS-only mode.** Generated headers must exist before headerdeps runs (a header produced by an earlier build step but absent at headerdep analysis time is treated as unresolved and excluded from `dep_hash`; first appearance does change `dep_list` so the second build picks up the include). `make -t` and `ninja -t restat` are inappropriate — they create empty files at target paths whose recipes have no real prerequisites in CAS-only mode, corrupting the cache. System headers (`/usr/include`) are not in the cache key, matching ccache/sccache contract; a glibc upgrade between CI runs reuses cached objects (in-place compiler swaps usually change `compiler_identity` and invalidate implicitly).
+
 ### Key Modules
 
 | Module | Role |
@@ -155,7 +167,8 @@ Both invariants must be maintained in every code path that emits compile/link co
 | `findtargets.py` | Executable/test target detection |
 | `namer.py` | File naming, object paths (includes macro state hash) |
 | `build_graph.py` | Backend-agnostic IR (`BuildRule`, `BuildGraph`) |
-| `build_backend.py` | `BuildBackend` ABC, registry, `build_graph()`, `_run_tests()`; PCH handling and hard orderings consolidation |
+| `build_backend.py` | `BuildBackend` ABC, registry, `build_graph()`, `_run_tests()`; PCH handling, hard orderings consolidation, link-key hashing, `_has_native_cas_exe` dispatch |
+| `cas_publish.py` | `ct-cas-publish` entry point: atomic `link()`+`rename()` publish of cas-exedir entries to user-facing bindir paths, with `EXDEV`-only symlink fallback and best-effort `<cas-path>.manifest` sidecar |
 | `build_context.py` | Per-build state and caches; tracks pkg-config overrides and build variants |
 | `build_timer.py` | Build timing instrumentation and reporting |
 | `makefile_backend.py` | Make backend; `MakefileBackend` class plus the `ct-create-makefile` CLI entry point |
@@ -168,7 +181,7 @@ Both invariants must be maintained in every code path that emits compile/link co
 | `locking.py` | Cross-platform atomic file locking |
 | `stringzilla_utils.py` | SIMD text operation helpers |
 | `global_hash_registry.py` | Content-addressable file hashing |
-| `trim_cache.py` | Cache trimming utility for object and PCH directories with configurable retention |
+| `trim_cache.py` | Cache trimming utility for object, PCH, PCM, and linker-artefact (cas-exedir) directories with configurable retention; `trim_exedir` honours hard-link protection and re-stats `nlink` under the lock to close the scan-to-unlink TOCTOU |
 
 ### Configuration Files
 

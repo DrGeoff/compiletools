@@ -695,4 +695,4 @@ The non-recursive Makefile generation was informed by:
 
 SEE ALSO
 ========
-``compiletools`` (1), ``ct-timing-report`` (1), ``ct-list-variants`` (1), ``ct-config`` (1)
+``compiletools`` (1), ``ct-timing-report`` (1), ``ct-list-variants`` (1), ``ct-config`` (1), ``ct-trim-cache`` (1), ``ct-cas-publish`` (1)

@@ -2,27 +2,29 @@
 ct-trim-cache
 ================
 
--------------------------------------------------------------------------
-Trim stale entries from the object, PCH, and PCM CAS directories
--------------------------------------------------------------------------
+----------------------------------------------------------------------------------
+Trim stale entries from the object, PCH, PCM, and linker-artefact CAS directories
+----------------------------------------------------------------------------------
 
 :Author: drgeoffathome@gmail.com
-:Date:   2026-05-08
+:Date:   2026-05-09
 :Version: 9.1.0
 :Manual section: 1
 :Manual group: developers
 
 SYNOPSIS
 ========
-ct-trim-cache [--dry-run] [--cas-objdir PATH] [--cas-pchdir PATH] [--cas-pcmdir PATH] [--max-age DAYS] [--keep-count N] [-v]
+ct-trim-cache [--dry-run] [--cas-objdir PATH] [--cas-pchdir PATH] [--cas-pcmdir PATH] [--cas-exedir PATH] [--max-age DAYS] [--keep-count N] [-v]
 
 DESCRIPTION
 ===========
 Trim stale content-addressable entries from ``cas-objdir`` (compiled
-object files), ``cas-pchdir`` (precompiled headers), and ``cas-pcmdir``
-(C++20 module BMIs). The tool identifies which entries still match the
-current git working tree and removes the oldest non-current entries
-while preserving a configurable safety margin.
+object files), ``cas-pchdir`` (precompiled headers), ``cas-pcmdir``
+(C++20 module BMIs), and ``cas-exedir`` (linker artefacts —
+executables, static libraries, and shared libraries). The tool
+identifies which entries still match the current git working tree
+and removes the oldest non-current entries while preserving a
+configurable safety margin.
 
 Object files use the naming scheme
 ``{basename}_{file_hash}_{dep_hash}_{macro_state_hash}.o``.  The embedded
@@ -59,6 +61,29 @@ Legacy entries without a manifest fall back to the previous global
 ranking by mtime, keeping the rollout backwards-compatible.  If
 ``--max-age`` is set, anything within the cutoff is kept regardless of
 bucket.
+
+The linker-artefact cache ``cas-exedir`` uses a flatter scheme:
+``<cas-exedir>/<key[:2]>/<basename>_<key>.<ext>`` with ``<ext>`` ∈
+``{.exe, .a, .so}``.  No per-entry sidecar manifest is required by
+default — the cache key itself is the identity — but ``ct-cas-publish``
+writes a small ``<cas-path>.manifest`` (``{"source_realpath": ...}``)
+at publish time so trim can bucket by source identity rather than
+basename.  Trim policy:
+
+* **Bucket** by ``(source_realpath, suffix)`` from the manifest, with
+  fall-back to ``(basename, suffix)`` for legacy entries that pre-date
+  the sidecar.  ``libfoo.a`` and ``libfoo.so`` bucket separately
+  because the suffix differs.  The newest ``--keep-count`` per bucket
+  survive bucket-rank eviction.
+* **Hard-link safety:** anything with ``st_nlink > 1`` is preserved,
+  on the assumption that a published ``bin/<variant>/<name>`` (or
+  ``bin/<variant>/lib<name>.{a,so}``) is still pointing at it.
+  Symlinked-fallback bin paths show ``st_nlink == 1`` on the cas
+  entry and are NOT protected.
+* **Lock-aware delete:** trim acquires the same ``<path>.lock`` sidecar
+  the producer rule uses, with a re-stat of ``nlink`` under the lock
+  to close the scan-to-unlink TOCTOU window (a peer publish that
+  elevates ``nlink`` mid-trim aborts the unlink).
 
 Why does PCM use a single ``command_hash`` like PCH instead of the
 object cache's three-component path? **In-band BMI verification.** Both
@@ -113,9 +138,12 @@ USAGE
     # Only trim PCM (C++20 module BMI) cache, skip objects and PCH
     ct-trim-cache --cas-pcmdir-only
 
+    # Only trim the linker-artefact cache (executables, .a, .so)
+    ct-trim-cache --cas-exedir-only
+
     # Custom directories
     ct-trim-cache --cas-objdir=/shared/build/objects --cas-pchdir=/shared/build/pch \
-                  --cas-pcmdir=/shared/build/pcm
+                  --cas-pcmdir=/shared/build/pcm --cas-exedir=/shared/build/exe
 
 HOW IT WORKS
 ============
@@ -156,6 +184,30 @@ PCH directory trimming
 5. Removes (or reports in ``--dry-run`` mode) every cmd_hash directory
    not in the kept set.
 
+Linker-artefact directory trimming
+----------------------------------
+1. Scans ``cas-exedir`` for files matching
+   ``<key[:2]>/<basename>_<key>.{exe,a,so}``.  Anything else (including
+   ``*.lock`` / ``*.lock.excl`` sidecars and orphaned ``.publish.tmp``
+   files) is silently skipped.
+2. For each matched file, reads the optional sidecar
+   ``<path>.manifest`` and groups files into buckets keyed by
+   ``(source_realpath, suffix)``.  Entries without a manifest fall
+   back to ``(basename, suffix)`` bucketing.
+3. Within each bucket, sorts files by modification time and keeps
+   the newest ``--keep-count``.  ``--max-age`` keeps anything younger
+   than the cutoff regardless of bucket position.
+4. **Hard-link protection:** any file with ``st_nlink > 1`` is added
+   to the keep set unconditionally.  This is what couples the cas
+   entry to the user-facing ``bin/<variant>/<name>`` (or
+   ``bin/<variant>/lib<name>.{a,so}``) that ``ct-cas-publish`` linked
+   into place.
+5. Removes (or reports in ``--dry-run`` mode) every cas entry not
+   in the keep set, taking ``<path>.lock`` first and re-stat'ing
+   ``nlink`` under the lock to close the scan-to-unlink TOCTOU.
+   The companion ``<path>.manifest`` is unlinked best-effort
+   alongside the cas entry.
+
 PCM directory trimming
 ----------------------
 Identical algorithm to PCH trimming, with one bucketing twist:
@@ -195,13 +247,17 @@ Trim Options
     invariant still preserves at least one file per basename).
 
 ``--cas-objdir-only``
-    Only trim the object CAS, skip PCH and PCM trimming.
+    Only trim the object CAS, skip PCH, PCM, and linker-artefact trimming.
 
 ``--cas-pchdir-only``
-    Only trim the PCH CAS, skip object and PCM trimming.
+    Only trim the PCH CAS, skip object, PCM, and linker-artefact trimming.
 
 ``--cas-pcmdir-only``
-    Only trim the PCM CAS, skip object and PCH trimming.
+    Only trim the PCM CAS, skip object, PCH, and linker-artefact trimming.
+
+``--cas-exedir-only``
+    Only trim the linker-artefact CAS (executables, static libraries,
+    shared libraries), skip object, PCH, and PCM trimming.
 
 Directory Options
 -----------------
@@ -216,6 +272,10 @@ Directory Options
 ``--cas-pcmdir PATH``
     Override PCM directory from configuration
     (default: ``{git_root}/cas-pcmdir/{variant}``).
+
+``--cas-exedir PATH``
+    Override linker-artefact directory from configuration
+    (default: ``{git_root}/cas-exedir/{variant}``).
 
 ``--bindir PATH``
     Output directory for executables (default: ``bin/{variant}``).
@@ -248,8 +308,8 @@ EXIT CODES
 1
     Failure -- some files could not be removed (check permissions),
     or more than one of ``--cas-objdir-only`` / ``--cas-pchdir-only``
-    / ``--cas-pcmdir-only`` was specified (they are mutually
-    exclusive).
+    / ``--cas-pcmdir-only`` / ``--cas-exedir-only`` was specified
+    (they are mutually exclusive).
 
 EXAMPLES
 ========
@@ -282,4 +342,4 @@ For lock cleanup, use ``ct-cleanup-locks``.
 
 SEE ALSO
 ========
-``ct-cleanup-locks`` (1), ``ct-cake`` (1), ``ct-config`` (1)
+``ct-cleanup-locks`` (1), ``ct-cake`` (1), ``ct-cas-publish`` (1), ``ct-config`` (1)
