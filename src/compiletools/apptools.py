@@ -2292,6 +2292,14 @@ def graceful_shutdown(handler, *signums) -> Generator[None, None, None]:
     if not signums:
         signums = (signal.SIGINT, signal.SIGTERM)
 
+    # Dedupe while preserving order. Without this, a contrived but legal
+    # ``graceful_shutdown(h, SIGINT, SIGINT)`` would record
+    # ``saved=[(SIGINT, original), (SIGINT, h)]`` and the restore loop
+    # would re-install ``h`` last — leaking the body's handler past the
+    # with-block exit. ``dict.fromkeys`` is the standard order-preserving
+    # dedupe in 3.7+.
+    signums = tuple(dict.fromkeys(signums))
+
     saved = []  # list of (signum, previous_handler); previous_handler matches signal.Handlers
 
     # ``signal.signal`` raises ``ValueError`` outside the main thread.
@@ -2311,6 +2319,11 @@ def graceful_shutdown(handler, *signums) -> Generator[None, None, None]:
         yield
     finally:
         for sig, prev in saved:
+            # Restoration is best-effort. ``TypeError`` covers prev being
+            # a non-callable sentinel that signal.signal rejects on the
+            # restore call (rare, but possible on platforms that gave us
+            # back an int constant on the install side); raising here
+            # would mask any genuine exception bubbling out of the body.
             with contextlib.suppress(ValueError, OSError, TypeError):
                 signal.signal(sig, prev)
 

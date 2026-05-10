@@ -11,6 +11,8 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
+import compiletools.apptools
+
 
 class GracefulExit:
     """Handle cleanup on signals."""
@@ -190,8 +192,6 @@ def main(argv=None):
     # The context manager guarantees restoration of the caller's prior handlers,
     # which matters for in-process invocations (e.g. the entry-point lint test)
     # where leaked handlers would contaminate pytest's own signal handling.
-    import compiletools.apptools
-
     exit_handler = GracefulExit()
     with compiletools.apptools.graceful_shutdown(exit_handler.cleanup):
         try:

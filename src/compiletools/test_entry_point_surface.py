@@ -114,12 +114,11 @@ def test_entry_point_help_surface(
     assert new_sigint is saved_sigint and new_sigterm is saved_sigterm, (
         f"{script_name} --help mutated the caller's signal handlers "
         f"(SIGINT: {saved_sigint!r} → {new_sigint!r}, SIGTERM: "
-        f"{saved_sigterm!r} → {new_sigterm!r}). Fix: install signal "
-        f"handlers AFTER parse_args (so --help / --version, which raise "
-        f"SystemExit, never reach the install site), or use a "
-        f"save/restore pattern in a try/finally (see "
-        f"locking.py:atomic_compile / trace_backend.py for the canonical "
-        f"shape)."
+        f"{saved_sigterm!r} → {new_sigterm!r}). Fix: wrap the work in "
+        f"``with apptools.graceful_shutdown(handler, *signums):`` (see "
+        f"apptools.py for the helper, and cake.py / ct_lock_helper.py / "
+        f"locking._run_with_signal_forwarding / trace_backend.execute "
+        f"for the canonical call sites)."
     )
 
     captured = capsys.readouterr()

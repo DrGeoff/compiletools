@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 
+import compiletools.apptools
 import compiletools.filesystem_utils
 import compiletools.lock_utils
 import compiletools.wrappedos
@@ -705,8 +706,6 @@ def _run_with_signal_forwarding(cmd: list[str]) -> subprocess.CompletedProcess:
     original handlers are restored and the child is hard-killed if still
     running.
     """
-    import compiletools.apptools
-
     proc = subprocess.Popen(cmd, start_new_session=True)
 
     def _forward(signum, frame):

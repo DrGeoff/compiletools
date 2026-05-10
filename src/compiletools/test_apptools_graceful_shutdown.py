@@ -157,6 +157,29 @@ def test_nested_blocks_restore_in_reverse_order():
     assert signal.getsignal(signal.SIGINT) is original
 
 
+def test_duplicate_signums_restore_to_original():
+    """Calling ``graceful_shutdown(h, SIGINT, SIGINT)`` (or any user-built
+    list that ends up with duplicates) must still restore the original
+    handler — not leak ``h`` past the with-block.
+
+    Pre-fix this test would FAIL: the second install for SIGINT would
+    capture ``h`` as the "previous" handler, and the restore loop would
+    re-install ``h`` last. The dedupe at the top of graceful_shutdown
+    collapses duplicates so each signum is saved/restored exactly once.
+    """
+    original = signal.getsignal(signal.SIGINT)
+
+    def my_handler(signum, frame):  # pragma: no cover
+        pass
+
+    with apptools.graceful_shutdown(my_handler, signal.SIGINT, signal.SIGINT):
+        assert signal.getsignal(signal.SIGINT) is my_handler
+
+    assert signal.getsignal(signal.SIGINT) is original, (
+        "duplicate signums leaked the body's handler past the with-block exit"
+    )
+
+
 def test_sentinel_handlers_work():
     """``signal.SIG_IGN`` and ``signal.SIG_DFL`` are valid handler
     arguments and the helper must accept them — they're the way to
