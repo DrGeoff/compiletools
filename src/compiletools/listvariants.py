@@ -1,4 +1,4 @@
-import fnmatch
+import glob
 import os
 
 import compiletools.apptools
@@ -29,7 +29,6 @@ def add_arguments(parser):
         help="Shorten from the full path to the config filenames to only the variant name",
     )
 
-    # Style choices come from the explicit registry below.
     parser.add_argument("--style", choices=list(_STYLE_REGISTRY), default="pretty", help="Output formatting style")
 
 
@@ -55,7 +54,7 @@ class FlatStyle:
         self.output = ""
 
     def append_text(self, text):
-        pass
+        del text
 
     def append_variants(self, variants):
         for vv in sorted(variants):
@@ -67,7 +66,7 @@ class FilelistStyle:
         self.output = ""
 
     def append_text(self, text):
-        pass
+        del text
 
     def append_variants(self, variants):
         for vv in sorted(variants):
@@ -84,28 +83,11 @@ _STYLE_REGISTRY = {
 def find_possible_variants(
     user_config_dir=None, system_config_dir=None, exedir=None, args=None, verbose=0, gitroot=None
 ):
-    stylename = "pretty"
-    if args and args.style:
-        stylename = args.style
-    styleclass = _STYLE_REGISTRY[stylename.lower()]
-    style = styleclass()
-
-    shorten = True
-    if args and not args.shorten:
-        shorten = False
-
-    repoonly = False
-    if args:
-        repoonly = args.repoonly
-
-    confext = ""
-    removeconf = ".conf"
-    if args:
-        if args.configname:
-            confext = ".conf"
-            removeconf = ""
-        else:
-            removeconf = ".conf"
+    stylename = getattr(args, "style", None) or "pretty"
+    style = _STYLE_REGISTRY[stylename]()
+    shorten = getattr(args, "shorten", True)
+    repoonly = getattr(args, "repoonly", False)
+    configname = getattr(args, "configname", False)
 
     style.append_text("Variants compose via axis conf files (e.g. --variant=gcc,debug,asan).")
     canonical_order, order_source = compiletools.configutils.get_canonical_order(
@@ -130,26 +112,18 @@ def find_possible_variants(
     )
 
     for cfg_dir in search_directories:
-        found = []
         style.append_text(cfg_dir)
-        try:
-            for cfg_file in os.listdir(cfg_dir):
-                if fnmatch.fnmatch(cfg_file, "*.conf"):
-                    if shorten:
-                        if repoonly:
-                            found.append(
-                                compiletools.git_utils.strip_git_root(
-                                    os.path.join(cfg_dir, cfg_file.replace(removeconf, ""))
-                                )
-                            )
-                        else:
-                            found.append(os.path.splitext(cfg_file)[0] + confext)
-                    else:
-                        found.append(os.path.join(cfg_dir, cfg_file))
-
-        except OSError:
-            pass
-
+        found = []
+        for cfg_path in glob.glob(os.path.join(cfg_dir, "*.conf")):
+            if not shorten:
+                found.append(cfg_path)
+                continue
+            entry = compiletools.configutils.removedotconf(os.path.basename(cfg_path))
+            if configname:
+                entry += ".conf"
+            if repoonly:
+                entry = compiletools.git_utils.strip_git_root(os.path.join(cfg_dir, entry))
+            found.append(entry)
         style.append_variants(found)
 
     return style.output
