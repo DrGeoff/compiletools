@@ -103,7 +103,7 @@ def add_base_arguments(cap, argv=None, variant=None):
     if variant is None:
         variant = compiletools.configutils.extract_variant(argv=argv)
 
-    cap.add(
+    cap.add_argument(
         "--variant",
         help="Specifies which variant of the config should be used. Use the config name without the .conf. "
         "Composite variants compose multiple axis confs: --variant=gcc,debug,asan (or gcc.debug.asan, or "
@@ -120,7 +120,7 @@ def add_base_arguments(cap, argv=None, variant=None):
     #     args.variant_canonical_order post-parse and surfaces the flag
     #     in --help / man pages. Both reads honor the same env var, so
     #     they agree on the value.
-    cap.add(
+    cap.add_argument(
         "--variant-canonical-order",
         env_var="CT_VARIANT_CANONICAL_ORDER",
         help="Override the canonical token ordering used to sort composite "
@@ -135,25 +135,25 @@ def add_base_arguments(cap, argv=None, variant=None):
         "taken responsibility for the flag-layering consequences.",
         default=None,
     )
-    cap.add(
+    cap.add_argument(
         "-v",
         "--verbose",
         help="Output verbosity. Add more v's to make it more verbose",
         action="count",
         default=0,
     )
-    cap.add(
+    cap.add_argument(
         "-q",
         "--quiet",
         help="Decrement verbosity. Useful in apps where the default verbosity > 0.",
         action="count",
         default=0,
     )
-    cap.add("--version", action="version", version=__version__)
-    cap.add("-?", action="help", help="Help")
+    cap.add_argument("--version", action="version", version=__version__)
+    cap.add_argument("-?", action="help", help="Help")
 
     if _rich_rst_available and sys.version_info >= (3, 9):
-        cap.add("--man", "--doc", action=DocumentationAction)
+        cap.add_argument("--man", "--doc", action=DocumentationAction)
 
 
 def _add_xxpend_argument(cap, name, destname=None, extrahelp=None):
@@ -166,7 +166,7 @@ def _add_xxpend_argument(cap, name, destname=None, extrahelp=None):
 
     xxlist = ("prepend", "append")
     for xx in xxlist:
-        cap.add(
+        cap.add_argument(
             "".join(["--", xx, "-", name.upper()]),
             dest="_".join([xx, destname.lower().replace("-", "_")]),
             action="append",
@@ -198,30 +198,30 @@ def add_common_arguments(cap, argv=None, variant=None):
     if _parser_has_option(cap, "--variable-handling-method"):
         return
     add_base_arguments(cap, argv=argv, variant=variant)
-    cap.add(
+    cap.add_argument(
         "--variable-handling-method",
         dest="variable_handling_method",
         help="Does specifying --<someflag> (say CXXFLAGS) mean override existing flags "
         "or append to the existing? Choices are override or append.",
         default="override",
     )
-    cap.add(
+    cap.add_argument(
         "--ID",
         help="Compiler identification string.  The same string as CMake uses.",
         default=None,
     )
-    cap.add("--CPP", help="C preprocessor (override)", default=_UNSUPPLIED_USE_CXX)
-    cap.add("--CC", help="C compiler (override)", default="gcc")
+    cap.add_argument("--CPP", help="C preprocessor (override)", default=_UNSUPPLIED_USE_CXX)
+    cap.add_argument("--CC", help="C compiler (override)", default="gcc")
     # Default will be set later using functional compiler detection
-    cap.add("--CXX", help="C++ compiler (override)", default=None)
-    cap.add(
+    cap.add_argument("--CXX", help="C++ compiler (override)", default=None)
+    cap.add_argument(
         "--CPPFLAGS",
         nargs="+",
         help="C preprocessor flags (override)",
         default=_UNSUPPLIED_USE_CXXFLAGS,
     )
-    cap.add("--CXXFLAGS", nargs="+", help="C++ compiler flags (override)", default="-fPIC -g -Wall")
-    cap.add("--CFLAGS", nargs="+", help="C compiler flags (override)", default="-fPIC -g -Wall")
+    cap.add_argument("--CXXFLAGS", nargs="+", help="C++ compiler flags (override)", default="-fPIC -g -Wall")
+    cap.add_argument("--CFLAGS", nargs="+", help="C compiler flags (override)", default="-fPIC -g -Wall")
     compiletools.utils.add_flag_argument(
         parser=cap,
         name="git-root",
@@ -229,7 +229,7 @@ def add_common_arguments(cap, argv=None, variant=None):
         default=True,
         help="Determine the git root then add it to the include paths.",
     )
-    cap.add(
+    cap.add_argument(
         "--INCLUDE",
         "--include",
         dest="INCLUDE",
@@ -237,7 +237,7 @@ def add_common_arguments(cap, argv=None, variant=None):
         default="",
         help="Extra path(s) to add to the list of include paths (override)",
     )
-    cap.add(
+    cap.add_argument(
         "--pkg-config",
         dest="pkg_config",
         help="Query pkg-config to obtain libs and flags for these packages.",
@@ -275,31 +275,31 @@ def add_locking_arguments(cap):
         default=True,
         help="Enable file locking for concurrent multi-user/multi-host builds",
     )
-    cap.add(
+    cap.add_argument(
         "--lock-cross-host-timeout",
         type=int,
         default=600,
         help="Timeout in seconds for cross-host locks before escalating warnings (default: 600 = 10 min)",
     )
-    cap.add(
+    cap.add_argument(
         "--lock-warn-interval",
         type=int,
         default=60,
         help="Interval in seconds between lock wait warnings (default: 60)",
     )
-    cap.add(
+    cap.add_argument(
         "--sleep-interval-lockdir",
         type=float,
         default=None,
         help="Sleep interval for lockdir polling (NFS/Lustre) (default: auto-detect based on filesystem)",
     )
-    cap.add(
+    cap.add_argument(
         "--sleep-interval-cifs",
         type=float,
         default=0.2,
         help="Sleep interval for CIFS lock polling (default: 0.2)",
     )
-    cap.add(
+    cap.add_argument(
         "--sleep-interval-flock-fallback",
         type=float,
         default=0.1,
@@ -342,8 +342,8 @@ def add_link_arguments(cap):
     """
     if _parser_has_option(cap, "--LD"):
         return
-    cap.add("--LD", help="Linker (override)", default=_UNSUPPLIED_USE_CXX)
-    cap.add(
+    cap.add_argument("--LD", help="Linker (override)", default=_UNSUPPLIED_USE_CXX)
+    cap.add_argument(
         "--LDFLAGS",
         "--LINKFLAGS",
         help="Linker flags (override)",
@@ -380,7 +380,7 @@ def add_cas_directory_arguments(cap, variant):
         default_cas_objdir = os.path.join(git_root, "cas-objdir", variant)
     else:
         default_cas_objdir = "".join(["bin/", variant, "/obj"])
-    cap.add(
+    cap.add_argument(
         "--cas-objdir",
         help="Output directory for object files (content-addressable store)",
         default=default_cas_objdir,
@@ -389,7 +389,7 @@ def add_cas_directory_arguments(cap, variant):
         default_cas_pchdir = os.path.join(git_root, "cas-pchdir", variant)
     else:
         default_cas_pchdir = os.path.join("bin", variant, "pch")
-    cap.add(
+    cap.add_argument(
         "--cas-pchdir",
         help="Output directory for precompiled header cache (content-addressable store)",
         default=default_cas_pchdir,
@@ -398,7 +398,7 @@ def add_cas_directory_arguments(cap, variant):
         default_cas_pcmdir = os.path.join(git_root, "cas-pcmdir", variant)
     else:
         default_cas_pcmdir = os.path.join("bin", variant, "pcm")
-    cap.add(
+    cap.add_argument(
         "--cas-pcmdir",
         help="Output directory for precompiled C++20 module cache (content-addressable store)",
         default=default_cas_pcmdir,
@@ -407,7 +407,7 @@ def add_cas_directory_arguments(cap, variant):
         default_cas_exedir = os.path.join(git_root, "cas-exedir", variant)
     else:
         default_cas_exedir = os.path.join("bin", variant, "exe")
-    cap.add(
+    cap.add_argument(
         "--cas-exedir",
         help=(
             "Output directory for the content-addressable executable cache. "
@@ -424,7 +424,7 @@ def add_cas_directory_arguments(cap, variant):
 def add_output_directory_arguments(cap, variant):
     if _parser_has_option(cap, "--bindir"):
         return
-    cap.add(
+    cap.add_argument(
         "--bindir",
         help="Output directory for executables",
         default="".join(["bin/", variant]),
@@ -445,20 +445,20 @@ def add_target_arguments(cap):
     """
     if _parser_has_option(cap, "--dynamic"):
         return
-    cap.add("filename", nargs="*", help="File(s) to compile to an executable(s)")
-    cap.add(
+    cap.add_argument("filename", nargs="*", help="File(s) to compile to an executable(s)")
+    cap.add_argument(
         "--dynamic",
         "--dynamic-library",
         nargs="*",
         help="File(s) to compile to a dynamic library",
     )
-    cap.add(
+    cap.add_argument(
         "--static",
         "--static-library",
         nargs="*",
         help="File(s) to compile to a static library",
     )
-    cap.add("--tests", nargs="*", help="File(s) to compile to a test and then execute")
+    cap.add_argument("--tests", nargs="*", help="File(s) to compile to a test and then execute")
 
 
 def add_target_arguments_ex(cap):
@@ -470,11 +470,11 @@ def add_target_arguments_ex(cap):
     if _parser_has_option(cap, "--TESTPREFIX"):
         return
     add_target_arguments(cap)
-    cap.add(
+    cap.add_argument(
         "--TESTPREFIX",
         help='Runs tests with the given prefix, eg. "valgrind --quiet --error-exitcode=1"',
     )
-    cap.add(
+    cap.add_argument(
         "--test-xml-dir",
         dest="test_xml_dir",
         default=None,
@@ -486,22 +486,22 @@ def add_target_arguments_ex(cap):
             "(gtest, doctest, Catch2). Default: unset (no XML produced)."
         ),
     )
-    cap.add(
+    cap.add_argument(
         "--project-version",
         dest="projectversion",
         help="Set the CT_PROJECT_VERSION macro to this value",
     )
-    cap.add(
+    cap.add_argument(
         "--project-version-cmd",
         dest="projectversioncmd",
         help="Execute this command to determine the CT_PROJECT_VERSION macro",
     )
-    cap.add(
+    cap.add_argument(
         "--project-name",
         dest="projectname",
         help="Set the CT_PROJECT_NAME macro to this value",
     )
-    cap.add(
+    cap.add_argument(
         "--project-name-cmd",
         dest="projectnamecmd",
         help="Execute this command to determine the CT_PROJECT_NAME macro",

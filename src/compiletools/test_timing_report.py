@@ -386,7 +386,7 @@ class TestResolveAndLoad:
 
         # Inject a fake timing_tui module so _run_tui's import succeeds.
         fake_module = types.ModuleType("compiletools.timing_tui")
-        fake_module.TimingReportApp = FakeApp
+        fake_module.TimingReportApp = FakeApp  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "compiletools.timing_tui", fake_module)
 
         class _Args:

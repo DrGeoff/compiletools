@@ -203,12 +203,12 @@ def main(argv=None):
     cap = compiletools.apptools.create_parser(
         "Create a tree of header dependencies starting at a given C/C++ file", argv=argv
     )
-    cap.add("filename", help="File to start tracing headers from", nargs="+")
+    cap.add_argument("filename", help="File to start tracing headers from", nargs="+")
 
     # Figure out what style classes are available and add them to the command
     # line options
     styles = [st[:-5].lower() for st in dict(globals()) if st.endswith("Style")]
-    cap.add("--style", choices=styles, default="tree", help="Output formatting style")
+    cap.add_argument("--style", choices=styles, default="tree", help="Output formatting style")
 
     compiletools.magicflags.add_arguments(cap)
     compiletools.headerdeps.add_arguments(cap)

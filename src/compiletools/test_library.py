@@ -153,6 +153,7 @@ class TestBuildGraphStaticLibrary:
             assert len(shared_rules) == 1
             producer = shared_rules[0]
             assert "cas-exe" in producer.output and producer.output.endswith(".so")
+            assert producer.command is not None
             assert "-shared" in producer.command
             symlinks = graph.rules_by_type("symlink")
             publish = next((r for r in symlinks if r.output == f"{args.bindir}/libmylib.so"), None)
@@ -186,6 +187,7 @@ class TestBuildGraphStaticLibrary:
             link_rules = graph.rules_by_type("link")
             assert len(link_rules) >= 1
             link_rule = link_rules[0]
+            assert link_rule.command is not None
             link_cmd = " ".join(link_rule.command)
             assert "-L" in link_cmd
             assert "-l" in link_cmd

@@ -40,7 +40,8 @@ class TestSimplePreprocessor:
         """Clean up after each test method."""
         self.patcher.stop()
 
-    def _create_file_analysis_result(self, text):
+    @staticmethod
+    def _create_file_analysis_result(text):
         """Helper to create FileAnalysisResult for testing"""
         lines = text.split("\n")
 
@@ -845,7 +846,7 @@ class TestSimplePreprocessorEdgeCases:
 
     def _create_file_analysis_result(self, text):
         """Reuse helper from TestSimplePreprocessor."""
-        return TestSimplePreprocessor._create_file_analysis_result(None, text)
+        return TestSimplePreprocessor._create_file_analysis_result(text)
 
     def test_unclosed_block_comment(self):
         """Unclosed /* comment should skip the rest of the expression."""

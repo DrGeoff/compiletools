@@ -49,7 +49,7 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
         cap = compiletools.apptools.create_parser("test_headertree", argv=argv)
         compiletools.magicflags.add_arguments(cap)
         compiletools.headerdeps.add_arguments(cap)
-        cap.add("filename", nargs="+")
+        cap.add_argument("filename", nargs="+")
         # Create DirectHeaderDeps and magicflags parser for convergence
         ctx = BuildContext()
         args = compiletools.apptools.parseargs(cap, argv, context=ctx)
@@ -88,7 +88,7 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
         compiletools.headerdeps.add_arguments(cap)
         compiletools.magicflags.add_arguments(cap)
         compiletools.hunter.add_arguments(cap)
-        cap.add("filename", nargs="+")
+        cap.add_argument("filename", nargs="+")
         # Create hunter components
         ctx = BuildContext()
         args = compiletools.apptools.parseargs(cap, argv, context=ctx)

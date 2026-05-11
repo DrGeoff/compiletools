@@ -32,8 +32,9 @@ def test_functional_cxx_compiler_detection():
 
 def test_functional_cxx_compiler_caching():
     """Test that compiler detection result is properly cached."""
-    # Clear cache to ensure clean test
-    compiletools.apptools.get_functional_cxx_compiler.cache_clear()
+    # Clear cache to ensure clean test. cache_clear is functools.cache's helper —
+    # not visible on the FunctionType the type checker sees.
+    compiletools.apptools.get_functional_cxx_compiler.cache_clear()  # type: ignore[attr-defined]
 
     # First call
     compiler1 = compiletools.apptools.get_functional_cxx_compiler()

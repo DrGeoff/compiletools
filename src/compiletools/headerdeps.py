@@ -55,14 +55,14 @@ def add_arguments(cap):
         return
     compiletools.apptools.add_common_arguments(cap)
     alldepscls = [st[:-10].lower() for st in dict(globals()) if st.endswith("HeaderDeps")]
-    cap.add(
+    cap.add_argument(
         "--headerdeps",
         choices=alldepscls,
         default="direct",
         help="Methodology for determining header dependencies",
     )
     if not compiletools.apptools._parser_has_option(cap, "--max-file-read-size"):
-        cap.add(
+        cap.add_argument(
             "--max-file-read-size",
             type=int,
             default=0,
@@ -161,8 +161,6 @@ class HeaderDepsBase:
     @staticmethod
     def clear_cache():
         # print("HeaderDepsBase::clear_cache")
-        import compiletools.apptools
-
         compiletools.apptools.clear_cache()
         # Note: clear_include_list_cache() requires a BuildContext;
         # include list caches live on BuildContext instances and are
@@ -213,9 +211,11 @@ class DirectHeaderDeps(HeaderDepsBase):
                 print("Includes=" + str(self._includes))
 
             # Extract macro definitions from command line flags and compiler
-            # Both are static for the lifetime of this instance (core macros)
-            import compiletools.apptools
-
+            # Both are static for the lifetime of this instance (core macros).
+            # (compiletools.apptools is already module-level imported above; no
+            # local re-import — the local re-import shadows the module-level
+            # ``compiletools`` binding for the type checker, breaking access to
+            # sibling submodules like ``compiletools.git_utils`` below.)
             raw_macros = compiletools.apptools.extract_command_line_macros(
                 self.args,
                 flag_sources=["CPPFLAGS", "CFLAGS", "CXXFLAGS"],
@@ -455,7 +455,9 @@ class DirectHeaderDeps(HeaderDepsBase):
     def clear_instance_cache(self):
         """Clear this instance's per-instance caches."""
         for method in (self._search_project_includes, self._find_include, self._process_impl):
-            self.__dict__.pop(method.cache_attr, None)
+            # See Hunter.clear_instance_cache — cache_attr is on the @instance_cache
+            # wrapper; route through ``__func__`` for the type checker.
+            self.__dict__.pop(method.__func__.cache_attr, None)  # type: ignore[attr-defined]
         if self.args.verbose >= 5:
             print("DirectHeaderDeps::clear_instance_cache completed")
 

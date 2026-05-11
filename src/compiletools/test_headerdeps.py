@@ -519,8 +519,13 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
     def test_clear_caches(self):
         """Test clear_caches resets both caches on BuildContext."""
         ctx = BuildContext()
-        ctx.include_list_cache["dummy"] = "value"
-        ctx.invariant_include_cache["dummy"] = "value"
+        # The caches have strict typed keys/values in production code, but
+        # clear_caches() doesn't inspect either — it just empties the dicts —
+        # so a stub sentinel suffices for this test. Cast away the typing so
+        # the test reads naturally; if clear_caches ever started typechecking
+        # entries the assignments above would correctly fail at runtime.
+        ctx.include_list_cache["dummy"] = "value"  # type: ignore[index,assignment]
+        ctx.invariant_include_cache["dummy"] = "value"  # type: ignore[assignment]
         compiletools.headerdeps.clear_caches(ctx)
         assert ctx.include_list_cache == {}
         assert ctx.invariant_include_cache == {}

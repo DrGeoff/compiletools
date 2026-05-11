@@ -1082,13 +1082,13 @@ def main(argv: list[str] | None = None) -> int:
     compiletools.apptools.add_base_arguments(cap, argv=argv, variant=variant)
     compiletools.apptools.add_cas_directory_arguments(cap, variant=variant)
 
-    cap.add(
+    cap.add_argument(
         "--top",
         type=int,
         default=10,
         help="Show the N most-duplicated entries per cache (default: 10).",
     )
-    cap.add(
+    cap.add_argument(
         "--json",
         action="store_true",
         help="Emit JSON instead of human-readable text.",

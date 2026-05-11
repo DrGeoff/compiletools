@@ -583,7 +583,8 @@ class TestSummaryTable:
             timer.record_rule("link", "app", "", 1.0)
         table = timer.summary_table()
         assert table is not None
-        assert "Build Timing Report" in table.title
+        assert table.title is not None
+        assert "Build Timing Report" in str(table.title)
 
     def test_disabled_timer_summary(self):
         timer = BuildTimer(enabled=False)
@@ -662,7 +663,9 @@ class TestSummaryTableCPUTimeColumn:
             timer.record_rule("compile", "a.o", "a.cpp", 1.0, start_s=0.0, end_s=1.0)
         table = timer.summary_table()
         assert table is not None
-        headers = [c.header for c in table.columns]
+        # rich Column.header is RenderableType (str | ConsoleRenderable | RichCast); stringify
+        # before substring matching so the test is robust across rich versions.
+        headers = [str(c.header) for c in table.columns]
         # Wall and CPU are presented as separate columns; sub-rows fill
         # CPU with the per-rule duration sum (which can exceed Wall).
         assert any("Wall" in h for h in headers), f"Expected a Wall column, got: {headers}"

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import compiletools.apptools
 import compiletools.diagnostics
+import compiletools.file_analyzer
 import compiletools.headerdeps
 import compiletools.magicflags
 import compiletools.utils
@@ -219,7 +220,6 @@ class Hunter:
 
     def _file_analysis_result(self, realpath: str):
         """Return the FileAnalysisResult for `realpath`, or None on error."""
-        import compiletools.file_analyzer
         from compiletools.global_hash_registry import get_file_hash
 
         # Module discovery is reachable from arbitrary call sites (Hunter,
@@ -249,7 +249,6 @@ class Hunter:
         if cached is not None:
             return cached
 
-        import compiletools.file_analyzer
         from compiletools.global_hash_registry import get_file_hash, get_tracked_files
 
         # Same lazy-init rationale as in _file_analysis_result.
@@ -493,7 +492,11 @@ class Hunter:
     def clear_instance_cache(self):
         """Clear this instance's caches."""
         for method in (self._parse_magic, self._get_immediate_deps, self._required_files_impl, self._extractSOURCE):
-            self.__dict__.pop(method.cache_attr, None)
+            # ``cache_attr`` is set on the @instance_cache wrapper function; bound
+            # methods forward attribute access to the underlying function at
+            # runtime. Cast through ``__func__`` so the type checker sees the
+            # function object directly rather than the MethodType wrapper.
+            self.__dict__.pop(method.__func__.cache_attr, None)  # type: ignore[attr-defined]
         # Clear project-level source discovery caches (these are set dynamically)
         if hasattr(self, "_hunted_sources"):
             del self._hunted_sources

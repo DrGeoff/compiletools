@@ -24,13 +24,13 @@ import compiletools.trim_cache
 
 def add_arguments(cap):
     """Add trim-cache specific arguments."""
-    cap.add(
+    cap.add_argument(
         "--dry-run",
         action="store_true",
         default=False,
         help="Show what would be removed without actually removing files",
     )
-    cap.add(
+    cap.add_argument(
         "--max-age",
         type=int,
         default=None,
@@ -42,31 +42,31 @@ def add_arguments(cap):
             "still be evicted."
         ),
     )
-    cap.add(
+    cap.add_argument(
         "--keep-count",
         type=int,
         default=1,
         help="Keep at least this many non-current files per basename/header (default: 1)",
     )
-    cap.add(
+    cap.add_argument(
         "--cas-objdir-only",
         action="store_true",
         default=False,
         help="Only trim the object CAS, skip PCH",
     )
-    cap.add(
+    cap.add_argument(
         "--cas-pchdir-only",
         action="store_true",
         default=False,
         help="Only trim the PCH CAS, skip objects",
     )
-    cap.add(
+    cap.add_argument(
         "--cas-pcmdir-only",
         action="store_true",
         default=False,
         help="Only trim the C++20 module CAS (cas-pcmdir), skip objects and PCH",
     )
-    cap.add(
+    cap.add_argument(
         "--cas-exedir-only",
         action="store_true",
         default=False,

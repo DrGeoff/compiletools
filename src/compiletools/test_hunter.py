@@ -2,11 +2,13 @@ import os
 
 import configargparse
 
+import compiletools.apptools
 import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
 import compiletools.testhelper
 import compiletools.testhelper as uth
+import compiletools.utils
 import compiletools.wrappedos
 from compiletools.build_context import BuildContext
 

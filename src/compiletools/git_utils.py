@@ -98,5 +98,5 @@ class NameAdjuster:
 def main(argv=None):
     cap = compiletools.apptools.create_parser("Find git repository root", argv=argv, include_config=False)
     cap.parse_args(args=argv)
-    print(compiletools.git_utils.find_git_root())
+    print(find_git_root())
     return 0

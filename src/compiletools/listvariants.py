@@ -1,7 +1,9 @@
 import fnmatch
 import os
 
+import compiletools.apptools
 import compiletools.configutils
+import compiletools.git_utils
 import compiletools.utils
 
 
@@ -28,7 +30,7 @@ def add_arguments(parser):
     )
 
     # Style choices come from the explicit registry below.
-    parser.add("--style", choices=list(_STYLE_REGISTRY), default="pretty", help="Output formatting style")
+    parser.add_argument("--style", choices=list(_STYLE_REGISTRY), default="pretty", help="Output formatting style")
 
 
 class PrettyStyle:
@@ -157,5 +159,5 @@ def main(argv=None):
     cap = compiletools.apptools.create_parser("List available build variants", argv=argv, include_config=False)
     add_arguments(cap)
     args = cap.parse_args(args=argv)
-    print(compiletools.listvariants.find_possible_variants(args=args, verbose=args.verbose))
+    print(find_possible_variants(args=args, verbose=args.verbose))
     return 0

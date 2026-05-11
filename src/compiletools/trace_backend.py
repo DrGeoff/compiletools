@@ -632,54 +632,54 @@ class SlurmBackend(ShakeBackend):
     def add_arguments(cap) -> None:
         if compiletools.apptools._parser_has_option(cap, "--slurm-partition"):
             return
-        cap.add(
+        cap.add_argument(
             "--slurm-partition",
             default=None,
             help="Slurm partition (queue) for compile jobs. Omit to use the site default partition.",
         )
-        cap.add(
+        cap.add_argument(
             "--slurm-time",
             default="00:30:00",
             type=_slurm_time_arg,
             help="Wall-clock time limit per compile job (HH:MM:SS or D-HH:MM:SS). Default: 00:30:00",
         )
-        cap.add(
+        cap.add_argument(
             "--slurm-mem",
             default="16G",
             type=_slurm_mem_arg,
             help="Memory ceiling per compile job (e.g. 16G, 8G, 512M). Default: 16G",
         )
-        cap.add(
+        cap.add_argument(
             "--slurm-cpus",
             default=1,
             type=int,
             help="CPUs allocated per compile job. Default: 1",
         )
-        cap.add(
+        cap.add_argument(
             "--slurm-account",
             default=None,
             help="Slurm account/project to charge for compile jobs.",
         )
-        cap.add(
+        cap.add_argument(
             "--slurm-max-array",
             default=1000,
             type=int,
             help="Maximum job-array size per sbatch call. Larger projects are split into "
             "multiple arrays. Default: 1000",
         )
-        cap.add(
+        cap.add_argument(
             "--slurm-poll-interval",
             default=2.0,
             type=float,
             help="Seconds between sacct polls when waiting for compile jobs. Default: 2.0",
         )
-        cap.add(
+        cap.add_argument(
             "--slurm-job-name",
             default="ct-compile",
             help="Name applied to submitted Slurm jobs (visible in squeue/sacct). "
             "Default: ct-compile. Useful for distinguishing concurrent ct-cake invocations.",
         )
-        cap.add(
+        cap.add_argument(
             "--slurm-mem-tiers",
             default=_DEFAULT_MEM_TIERS_STR,
             type=_slurm_mem_tiers_arg,
@@ -688,20 +688,20 @@ class SlurmBackend(ShakeBackend):
             "input-object count for link/library rules). Rules whose weight exceeds the largest "
             "threshold use --slurm-mem. Default: " + _DEFAULT_MEM_TIERS_STR,
         )
-        cap.add(
+        cap.add_argument(
             "--slurm-sacct-failure-threshold",
             default=10,
             type=int,
             help="Consecutive sacct failures tolerated before _wait_for_arrays raises. Default: 10",
         )
-        cap.add(
+        cap.add_argument(
             "--slurm-output-wait-timeout",
             default=30.0,
             type=float,
             help="Seconds to wait for compiled outputs to become visible on the submitter "
             "after sacct reports COMPLETED (network filesystem metadata lag). Default: 30.0",
         )
-        cap.add(
+        cap.add_argument(
             "--slurm-export",
             default=_DEFAULT_SLURM_EXPORT,
             help="Value passed to sbatch --export=. Default propagates a curated allowlist "
@@ -711,13 +711,13 @@ class SlurmBackend(ShakeBackend):
             "'PATH,HOME,USER,LANG,LC_ALL,CC,CXX,CPATH,LD_LIBRARY_PATH,MODULEPATH,LMOD_CMD'). "
             "See README.ct-backends for guidance.",
         )
-        cap.add(
+        cap.add_argument(
             "--slurm-rule-retry-cap",
             default=3,
             type=int,
             help="Maximum OOM retries per rule before that rule is abandoned. Default: 3",
         )
-        cap.add(
+        cap.add_argument(
             "--slurm-max-wait",
             default=7200.0,
             type=_slurm_max_wait_arg,

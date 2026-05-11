@@ -76,7 +76,10 @@ def _populate_stub(timer: BuildTimer) -> StubNode:
     app._timer = timer
     app._sort_mode_idx = 0
     root = StubNode()
-    app._populate(root, timer.phases, timer.total_elapsed_s)
+    # _populate signature wants a Textual TreeNode; StubNode is duck-compatible
+    # for this test's purposes (it implements add_leaf / add) but isn't a
+    # subtype of TreeNode.
+    app._populate(root, timer.phases, timer.total_elapsed_s)  # type: ignore[arg-type]
     return root
 
 

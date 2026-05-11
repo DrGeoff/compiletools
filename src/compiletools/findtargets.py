@@ -19,12 +19,12 @@ def add_arguments(cap):
         return
     compiletools.namer.Namer.add_arguments(cap)
     compiletools.file_analyzer.FileAnalyzer.add_arguments(cap)
-    cap.add(
+    cap.add_argument(
         "--exemarkers",
         action="append",
         help='String that identifies a file as being an executable source.  e.g., "main ("',
     )
-    cap.add(
+    cap.add_argument(
         "--testmarkers",
         action="append",
         help='String that identifies a file as being an test source.  e.g., "unit_test.hpp"',
@@ -56,7 +56,7 @@ def add_arguments(cap):
     )
 
     # Style choices come from the explicit registry below.
-    cap.add("--style", choices=list(_STYLE_REGISTRY), default="indent", help="Output formatting style")
+    cap.add_argument("--style", choices=list(_STYLE_REGISTRY), default="indent", help="Output formatting style")
 
     compiletools.utils.add_flag_argument(
         parser=cap,
@@ -138,7 +138,7 @@ class FindTargets:
             args.tests += testtargets
 
         if args.verbose >= 2:
-            styleobj = compiletools.findtargets.IndentStyle()
+            styleobj = IndentStyle()
             styleobj(executabletargets, testtargets)
 
     def __call__(self, path=None):
@@ -235,7 +235,7 @@ class FindTargets:
 
 def main(argv=None):
     cap = compiletools.apptools.create_parser("Find C/C++ files with main functions and unit tests", argv=argv)
-    compiletools.findtargets.add_arguments(cap)
+    add_arguments(cap)
 
     from compiletools.build_context import BuildContext
 

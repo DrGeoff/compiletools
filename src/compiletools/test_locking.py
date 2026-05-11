@@ -102,6 +102,7 @@ class TestLockdirLock:
                 # /proc starttime is deterministic per (pid, boot) and the
                 # writer/reader both convert via the same SC_CLK_TCK divisor,
                 # so the round-trip should match within fp formatting noise.
+                assert expected is not None, "Linux test environment must expose /proc/[pid]/stat"
                 assert abs(float(start_str) - expected) < 0.001, (
                     f"start_time {start_str} does not match get_process_start_time {expected}"
                 )
@@ -121,6 +122,7 @@ class TestLockdirLock:
             os.mkdir(lock.lockdir)
             os.chmod(lock.lockdir, 0o775)
             real_start = get_process_start_time(os.getpid())
+            assert real_start is not None, "Linux test environment must expose /proc/[pid]/stat"
             fake_start = real_start - 10000.0  # 10000s earlier — clearly different
             with open(lock.pid_file, "w") as f:
                 f.write(f"{lock.hostname}:{os.getpid()}:{fake_start}\n")
@@ -641,6 +643,7 @@ class TestCIFSLock:
                 assert host == (socket.getfqdn() or socket.gethostname())
                 assert int(pid_str) == os.getpid()
                 expected = get_process_start_time(os.getpid())
+                assert expected is not None, "Linux test environment must expose /proc/[pid]/stat"
                 # See LockdirLock equivalent: /proc starttime round-trip is
                 # deterministic; only fp formatting noise should differ.
                 assert abs(float(st_str) - expected) < 0.001
@@ -1324,6 +1327,7 @@ class TestPidReuseTolerance:
         from compiletools.lock_utils import get_process_start_time, is_process_alive_local
 
         recorded_start = get_process_start_time(os.getpid())
+        assert recorded_start is not None, "Linux test environment must expose /proc/[pid]/stat"
         # Pretend the recorded holder started 0.5s before the live process
         # (i.e. live process is a PID-reuse impostor at 0.5s offset).
         impostor_start = recorded_start - 0.5

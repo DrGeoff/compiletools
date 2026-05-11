@@ -19,7 +19,7 @@ def _ensure_backends_registered():
 
 def add_arguments(parser):
     styles = ["pretty", "flat", "filelist"]
-    parser.add("--style", choices=styles, default="pretty", help="Output formatting style")
+    parser.add_argument("--style", choices=styles, default="pretty", help="Output formatting style")
 
     compiletools.utils.add_boolean_argument(
         parser,

@@ -3,6 +3,7 @@
 import os
 import tempfile
 from collections import defaultdict
+from argparse import Namespace
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -17,7 +18,7 @@ class TestHandleInclude:
         """Create a MagicFlagsBase with minimal mocks."""
         from compiletools.magicflags import MagicFlagsBase
 
-        args = SimpleNamespace(verbose=0)
+        args = Namespace(verbose=0)
         # Patch __init__ to avoid full initialization
         with patch.object(MagicFlagsBase, "__init__", lambda self, *a, **kw: None):
             obj = MagicFlagsBase.__new__(MagicFlagsBase)
@@ -41,7 +42,7 @@ class TestHandleSource:
 
         with patch.object(MagicFlagsBase, "__init__", lambda self, *a, **kw: None):
             obj = MagicFlagsBase.__new__(MagicFlagsBase)
-            obj._args = SimpleNamespace(verbose=0)
+            obj._args = Namespace(verbose=0)
             return obj
 
     def test_handle_source_absolute(self):
@@ -84,7 +85,7 @@ class TestExtractMacrosFromMagicFlags:
 
         with patch.object(DirectMagicFlags, "__init__", lambda self, *a, **kw: None):
             obj = DirectMagicFlags.__new__(DirectMagicFlags)
-            obj._args = SimpleNamespace(verbose=0)
+            obj._args = Namespace(verbose=0)
 
             # Create a mock MacroState that supports with_updates
             mock_macro_state = MagicMock()
@@ -106,7 +107,7 @@ class TestGetFinalMacroStateKey:
 
         with patch.object(MagicFlagsBase, "__init__", lambda self, *a, **kw: None):
             obj = MagicFlagsBase.__new__(MagicFlagsBase)
-            obj._args = SimpleNamespace(verbose=0)
+            obj._args = Namespace(verbose=0)
             obj._final_macro_states = {}
             return obj
 
@@ -129,7 +130,7 @@ class TestHandleSourceVerbose:
 
         with patch.object(MagicFlagsBase, "__init__", lambda self, *a, **kw: None):
             obj = MagicFlagsBase.__new__(MagicFlagsBase)
-            obj._args = SimpleNamespace(verbose=9)
+            obj._args = Namespace(verbose=9)
             return obj
 
     def test_handle_source_verbose_with_context(self, capsys):
@@ -170,7 +171,7 @@ class TestHandleIncludeVerbose:
 
         with patch.object(MagicFlagsBase, "__init__", lambda self, *a, **kw: None):
             obj = MagicFlagsBase.__new__(MagicFlagsBase)
-            obj._args = SimpleNamespace(verbose=9)
+            obj._args = Namespace(verbose=9)
             obj._handle_include(sz.Str("/some/path"))
             captured = capsys.readouterr()
             assert "Added -I" in captured.out
@@ -184,7 +185,7 @@ class TestResolveReadmacrosPath:
 
         with patch.object(MagicFlagsBase, "__init__", lambda self, *a, **kw: None):
             obj = MagicFlagsBase.__new__(MagicFlagsBase)
-            obj._args = SimpleNamespace(verbose=0)
+            obj._args = Namespace(verbose=0)
             return obj
 
     def test_resolve_absolute_path(self):
@@ -222,7 +223,7 @@ class TestHandleReadmacros:
 
         with patch.object(MagicFlagsBase, "__init__", lambda self, *a, **kw: None):
             obj = MagicFlagsBase.__new__(MagicFlagsBase)
-            obj._args = SimpleNamespace(verbose=0)
+            obj._args = Namespace(verbose=0)
             obj._explicit_macro_files = set()
             return obj
 
@@ -247,7 +248,7 @@ class TestExtractMacrosFromPreprocessor:
 
         with patch.object(CppMagicFlags, "__init__", lambda self, *a, **kw: None):
             obj = CppMagicFlags.__new__(CppMagicFlags)
-            obj._args = SimpleNamespace(verbose=0)
+            obj._args = Namespace(verbose=0)
             obj._initial_macro_state = MacroState(
                 core={sz.Str("__cplusplus"): sz.Str("201703L")},
                 variable={},
@@ -261,7 +262,9 @@ class TestExtractMacrosFromPreprocessor:
 
     def test_parses_define_lines(self):
         obj = self._make_cpp_magicflags()
-        obj.preprocessor.process.return_value = (
+        # obj.preprocessor was monkey-patched to MagicMock in _make_cpp_magicflags;
+        # the mock-attribute assignments below are invisible to the type checker.
+        obj.preprocessor.process.return_value = (  # type: ignore[attr-defined]
             "#define FOO 42\n"
             "#define BAR baz\n"
             "#define __cplusplus 201703L\n"  # should be skipped (in core)
@@ -277,21 +280,21 @@ class TestExtractMacrosFromPreprocessor:
 
     def test_skips_function_like_macros(self):
         obj = self._make_cpp_magicflags()
-        obj.preprocessor.process.return_value = "#define FUNC(x) (x+1)\n#define SIMPLE 1\n"
+        obj.preprocessor.process.return_value = "#define FUNC(x) (x+1)\n#define SIMPLE 1\n"  # type: ignore[attr-defined]
         result = obj._extract_macros_from_preprocessor("/some/file.cpp")
         assert sz.Str("SIMPLE") in result.variable
         # FUNC should be skipped (function-like)
 
     def test_define_without_value(self):
         obj = self._make_cpp_magicflags()
-        obj.preprocessor.process.return_value = "#define DEFINED_ONLY\n"
+        obj.preprocessor.process.return_value = "#define DEFINED_ONLY\n"  # type: ignore[attr-defined]
         result = obj._extract_macros_from_preprocessor("/some/file.cpp")
         assert sz.Str("DEFINED_ONLY") in result.variable
         assert str(result.variable[sz.Str("DEFINED_ONLY")]) == "1"
 
     def test_empty_output(self):
         obj = self._make_cpp_magicflags()
-        obj.preprocessor.process.return_value = ""
+        obj.preprocessor.process.return_value = ""  # type: ignore[attr-defined]
         result = obj._extract_macros_from_preprocessor("/some/file.cpp")
         assert len(result.variable) == 0
 
@@ -323,7 +326,7 @@ class TestProcessMagicFlag:
 
         with patch.object(MagicFlagsBase, "__init__", lambda self, *a, **kw: None):
             obj = MagicFlagsBase.__new__(MagicFlagsBase)
-            obj._args = SimpleNamespace(verbose=0, separate_flags_CPP_CXX=False)
+            obj._args = Namespace(verbose=0, separate_flags_CPP_CXX=False)
             return obj
 
     def test_readmacros_skipped(self):
@@ -355,7 +358,7 @@ class TestConvergeMacroState:
 
         with patch.object(DirectMagicFlags, "__init__", lambda self, *a, **kw: None):
             obj = DirectMagicFlags.__new__(DirectMagicFlags)
-            obj._args = SimpleNamespace(verbose=0)
+            obj._args = Namespace(verbose=0)
             obj._stored_active_magic_flags = {}
             return obj
 
@@ -376,7 +379,7 @@ class TestCollectExplicitMacroFiles:
 
         with patch.object(DirectMagicFlags, "__init__", lambda self, *a, **kw: None):
             obj = DirectMagicFlags.__new__(DirectMagicFlags)
-            obj._args = SimpleNamespace(verbose=5)
+            obj._args = Namespace(verbose=5)
             return obj
 
     def test_handles_exception_gracefully(self, capsys):

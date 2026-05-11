@@ -275,6 +275,7 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
                 f"{backend_name}: expected a .gch compile rule, got outputs: {[r.output for r in compile_rules]}"
             )
             gch_rule = gch_rules[0]
+            assert gch_rule.command is not None
             assert "-x" in gch_rule.command
             assert "c++-header" in gch_rule.command
 

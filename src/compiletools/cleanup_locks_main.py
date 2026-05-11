@@ -30,19 +30,19 @@ def add_arguments(cap):
     Args:
         cap: ConfigArgParse parser
     """
-    cap.add(
+    cap.add_argument(
         "--dry-run",
         action="store_true",
         default=False,
         help="Show what would be removed without actually removing locks",
     )
-    cap.add(
+    cap.add_argument(
         "--ssh-timeout",
         type=int,
         default=5,
         help="SSH connection timeout in seconds for remote process checks (default: 5)",
     )
-    cap.add(
+    cap.add_argument(
         "--min-lock-age",
         type=int,
         default=None,

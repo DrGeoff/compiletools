@@ -21,7 +21,7 @@ def test_filelist_style():
 
 def test_find_variants_with_configname():
     with uth.TempDirContextWithChange() as tempdir, uth.ParserContext():
-        compiletools.testhelper.create_temp_ct_conf(tempdir)
+        uth.create_temp_ct_conf(tempdir)
         tempdir_real = os.path.realpath(tempdir)
 
         from unittest.mock import Mock
@@ -50,7 +50,7 @@ def test_none_found():
     # This test doesn't need the config file from CompileToolsTestContext,
     # only temp directory and parser reset.
     with uth.TempDirContextWithChange() as tempdir, uth.ParserContext():
-        compiletools.testhelper.create_temp_ct_conf(tempdir)
+        uth.create_temp_ct_conf(tempdir)
 
         tempdir_real = os.path.realpath(tempdir)
 

@@ -270,7 +270,7 @@ def main(argv=None):
         "untracked files via a synthetic hash-object pass."
     )
     cap = compiletools.apptools.create_parser(description, argv=argv, include_config=False)
-    cap.add(
+    cap.add_argument(
         "--all",
         "--untracked",
         dest="include_untracked",

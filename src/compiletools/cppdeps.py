@@ -9,7 +9,7 @@ import compiletools.wrappedos
 
 def main(argv=None):
     cap = compiletools.apptools.create_parser("Show C/C++ header dependencies using cpp -MM", argv=argv)
-    cap.add("filename", help='File to use in "$CPP $CPPFLAGS -MM filename"', nargs="+")
+    cap.add_argument("filename", help='File to use in "$CPP $CPPFLAGS -MM filename"', nargs="+")
 
     # This will add the common arguments as a side effect
     compiletools.headerdeps.add_arguments(cap)

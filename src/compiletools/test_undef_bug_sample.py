@@ -47,7 +47,7 @@ class TestUndefBugSample(BaseCompileToolsTestCase):
         compiletools.headerdeps.add_arguments(cap)
         compiletools.magicflags.add_arguments(cap)
         compiletools.hunter.add_arguments(cap)
-        cap.add("filename", nargs="+")
+        cap.add_argument("filename", nargs="+")
 
         ctx = BuildContext()
         args = compiletools.apptools.parseargs(cap, argv, context=ctx)

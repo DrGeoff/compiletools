@@ -342,14 +342,17 @@ class TestFlockLock:
 
     def test_no_fcntl_raises_runtime_error(self, temp_lock_file, mock_args):
         """Test that FlockLock raises RuntimeError without fcntl (Windows)."""
+        original_fcntl = compiletools.locking.fcntl
         original_has_fcntl = compiletools.locking.HAS_FCNTL
         try:
+            compiletools.locking.fcntl = None
             compiletools.locking.HAS_FCNTL = False
 
             lock = compiletools.locking.FlockLock(temp_lock_file, mock_args)
             with pytest.raises(RuntimeError, match="fcntl module not available"):
                 lock.acquire()
         finally:
+            compiletools.locking.fcntl = original_fcntl
             compiletools.locking.HAS_FCNTL = original_has_fcntl
 
     def test_context_manager(self, temp_lock_file, mock_args):
@@ -420,6 +423,7 @@ class TestFileLock:
 
         with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="lockdir"):
             lock_ctx = compiletools.locking.FileLock(temp_lock_file, mock_args)
+            assert isinstance(lock_ctx.lock, compiletools.locking.LockdirLock)
             assert lock_ctx.lock.cross_host_timeout == 1234
             assert lock_ctx.lock.warn_interval == 567
             assert lock_ctx.lock.sleep_interval == 0.789

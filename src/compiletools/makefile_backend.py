@@ -71,12 +71,12 @@ class MakefileBackend(BuildBackend):
         """
         if compiletools.apptools._parser_has_option(cap, "--makefilename"):
             return
-        cap.add(
+        cap.add_argument(
             "--makefilename",
             default="Makefile",
             help="Output filename for the Makefile",
         )
-        cap.add(
+        cap.add_argument(
             "--build-only-changed",
             help="Only build the binaries depending on the source or header absolute "
             "filenames in this space-delimited list.",

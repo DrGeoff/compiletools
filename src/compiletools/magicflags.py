@@ -13,6 +13,7 @@ import compiletools.configutils
 import compiletools.git_utils
 import compiletools.headerdeps
 import compiletools.namer
+import compiletools.preprocessor
 import compiletools.utils
 import compiletools.wrappedos
 from compiletools.file_analyzer import FileAnalysisResult
@@ -65,14 +66,14 @@ def add_arguments(cap, variant=None):
     compiletools.apptools.add_common_arguments(cap, variant=variant)
     compiletools.preprocessor.PreProcessor.add_arguments(cap)
     alldepscls = [st[:-10].lower() for st in dict(globals()) if st.endswith("MagicFlags")]
-    cap.add(
+    cap.add_argument(
         "--magic",
         choices=alldepscls,
         default="direct",
         help="Methodology for reading file when processing magic flags",
     )
     if not compiletools.apptools._parser_has_option(cap, "--max-file-read-size"):
-        cap.add(
+        cap.add_argument(
             "--max-file-read-size",
             type=int,
             default=0,
@@ -1140,9 +1141,12 @@ class DirectMagicFlags(MagicFlagsBase):
 class CppMagicFlags(MagicFlagsBase):
     def __init__(self, args, headerdeps, context):
         MagicFlagsBase.__init__(self, args, headerdeps, context=context)
-        # Reuse preprocessor from CppHeaderDeps if available to avoid duplicate instances
-        if hasattr(headerdeps, "preprocessor") and headerdeps.__class__.__name__ == "CppHeaderDeps":
-            self.preprocessor = headerdeps.preprocessor
+        # Reuse preprocessor from CppHeaderDeps if available to avoid duplicate instances.
+        # getattr() over hasattr() lets the type checker see the access path narrow on
+        # the not-None branch.
+        shared_pre = getattr(headerdeps, "preprocessor", None)
+        if shared_pre is not None and headerdeps.__class__.__name__ == "CppHeaderDeps":
+            self.preprocessor = shared_pre
         else:
             self.preprocessor = compiletools.preprocessor.PreProcessor(args)
 
@@ -1367,12 +1371,12 @@ def main(argv=None):
     cap = compiletools.apptools.create_parser("Parse a file and show the magicflags it exports", argv=argv)
     compiletools.headerdeps.add_arguments(cap)
     add_arguments(cap)
-    cap.add("filename", help='File/s to extract magicflags from"', nargs="+")
+    cap.add_argument("filename", help='File/s to extract magicflags from"', nargs="+")
 
     # Figure out what style classes are available and add them to the command
     # line options
     styles = [st[:-5].lower() for st in dict(globals()) if st.endswith("Style")]
-    cap.add("--style", choices=styles, default="pretty", help="Output formatting style")
+    cap.add_argument("--style", choices=styles, default="pretty", help="Output formatting style")
 
     from compiletools.build_context import BuildContext
 

@@ -605,6 +605,7 @@ def test_cxx_modules_partitions_sample_builds_with_gcc(tmp_path, monkeypatch):
     import compiletools.apptools
 
     cxx = compiletools.apptools.get_functional_cxx_compiler()
+    assert cxx is not None, "requires_cxx_modules should have skipped without a working compiler"
     _run_partitions_sample_with(cxx, tmp_path, monkeypatch)
 
 
@@ -731,6 +732,7 @@ def test_cxx_modules_import_std_builds_with_gcc(tmp_path, monkeypatch):
     import compiletools.apptools
 
     cxx = compiletools.apptools.get_functional_cxx_compiler()
+    assert cxx is not None, "requires_cxx_modules should have skipped without a working compiler"
     _run_import_std_sample_with(cxx, tmp_path, monkeypatch)
 
 
@@ -881,6 +883,7 @@ def test_cxx_modules_header_units_builds_with_gcc(tmp_path, monkeypatch):
     import compiletools.apptools
 
     cxx = compiletools.apptools.get_functional_cxx_compiler()
+    assert cxx is not None, "requires_gcc_header_units should have skipped without a working compiler"
     _run_header_units_sample_with(cxx, tmp_path, monkeypatch)
 
 

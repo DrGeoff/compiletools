@@ -81,7 +81,7 @@ class TestPkgConfigHeaderDeps(BaseCompileToolsTestCase):
         cap = compiletools.apptools.create_parser("Test PKG-CONFIG", argv=argv)
         compiletools.headerdeps.add_arguments(cap)
         compiletools.magicflags.add_arguments(cap)
-        cap.add("filename", help="File to analyze", nargs="+")
+        cap.add_argument("filename", help="File to analyze", nargs="+")
 
         # Change to test directory
         original_cwd = os.getcwd()
@@ -135,7 +135,7 @@ class TestPkgConfigHeaderDeps(BaseCompileToolsTestCase):
         cap = compiletools.apptools.create_parser("Test cache invalidation", argv=argv)
         compiletools.headerdeps.add_arguments(cap)
         compiletools.magicflags.add_arguments(cap)
-        cap.add("filename", help="File to analyze", nargs="+")
+        cap.add_argument("filename", help="File to analyze", nargs="+")
 
         original_cwd = os.getcwd()
         try:

@@ -60,7 +60,9 @@ class TestCakeBackendDispatch:
                 patch.object(expected_class, "execute"),
             ):
                 cake.process()
-                cake._call_compilation_database.assert_called_once()
+                # _call_compilation_database is monkey-patched to MagicMock by CakeTestContext;
+                # the mock's assert_* helpers aren't visible to the type checker.
+                cake._call_compilation_database.assert_called_once()  # type: ignore[attr-defined]
 
     def test_clean_calls_backend_clean_method(self):
         """--clean should call backend.clean() instead of execute('realclean')."""

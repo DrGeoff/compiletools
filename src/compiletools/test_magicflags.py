@@ -4,6 +4,7 @@ import pytest
 import stringzilla as sz
 
 import compiletools.apptools
+import compiletools.headerdeps
 import compiletools.magicflags
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
@@ -744,8 +745,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         """Verify cache invalidates when header magic flags change."""
         import stringzilla as sz
 
-        import compiletools.headerdeps
-
         # Clear all caches for test isolation
         compiletools.magicflags.MagicFlagsBase.clear_cache()
 
@@ -777,8 +776,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
     def test_cache_invalidates_on_readmacros_change(self):
         """Verify cache invalidates when READMACROS file changes."""
         import stringzilla as sz
-
-        import compiletools.headerdeps
 
         # Clear all caches for test isolation
         compiletools.magicflags.MagicFlagsBase.clear_cache()

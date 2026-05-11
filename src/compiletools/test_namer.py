@@ -5,6 +5,9 @@ import configargparse
 
 import compiletools.apptools
 import compiletools.configutils
+import compiletools.headerdeps
+import compiletools.hunter
+import compiletools.magicflags
 import compiletools.namer
 import compiletools.testhelper as uth
 from compiletools.build_context import BuildContext
@@ -332,10 +335,6 @@ def test_source_magic_produces_different_hash_with_different_flags():
     uth.reset()
 
     try:
-        import compiletools.headerdeps
-        import compiletools.hunter
-        import compiletools.magicflags
-
         with tempfile.TemporaryDirectory() as srcdir:
             src = uth.write_sources(
                 {
@@ -604,6 +603,7 @@ def test_create_link_rule_returns_cas_link_plus_publish_pair():
             # ONLY on EXDEV, surfaces other errors visibly, and writes
             # the C4 sidecar manifest.
             cmd = symlink_rule.command
+            assert cmd is not None
             assert cmd[0] == "ct-cas-publish", f"expected publish via ct-cas-publish, got: {cmd}"
             # Required flags: --cas-path / --user-path. Optional --source-realpath.
             assert "--cas-path" in cmd

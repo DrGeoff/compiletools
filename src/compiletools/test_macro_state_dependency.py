@@ -32,7 +32,7 @@ def test_macro_state_dependency_is_fixed():
         args_for_setting_config_path=["-c", "--config"],
         ignore_unknown_config_file_keys=True,
     )
-    compiletools.headerdeps.add_arguments(cap)
+    headerdeps.add_arguments(cap)
     compiletools.apptools.add_common_arguments(cap)
 
     argv = [f"--CPPFLAGS=-I{sample_dir}", "-q"]
@@ -57,7 +57,7 @@ def test_macro_state_dependency_is_fixed():
         args_for_setting_config_path=["-c", "--config"],
         ignore_unknown_config_file_keys=True,
     )
-    compiletools.headerdeps.add_arguments(cap2)
+    headerdeps.add_arguments(cap2)
     compiletools.apptools.add_common_arguments(cap2)
 
     argv2 = [f"--CPPFLAGS=-I{sample_dir} -DDEBUG", "-q"]
@@ -121,8 +121,8 @@ def test_hunter_respects_macro_state_changes():
             args_for_setting_config_path=["-c", "--config"],
             ignore_unknown_config_file_keys=True,
         )
-        compiletools.headerdeps.add_arguments(cap)
-        compiletools.magicflags.add_arguments(cap)
+        headerdeps.add_arguments(cap)
+        magicflags.add_arguments(cap)
         hunter.add_arguments(cap)
         compiletools.apptools.add_common_arguments(cap)
 

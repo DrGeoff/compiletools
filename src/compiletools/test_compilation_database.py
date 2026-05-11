@@ -1,10 +1,14 @@
 import json
 import os
 
+import compiletools.apptools
 import compiletools.compilation_database
 import compiletools.findtargets
+import compiletools.hunter
 import compiletools.makefile_backend
 import compiletools.testhelper as uth
+import compiletools.utils
+import compiletools.wrappedos
 from compiletools.build_context import BuildContext
 
 

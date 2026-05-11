@@ -10,7 +10,7 @@ def add_to_parser_in_func(recursion_depth=0):
             args_for_setting_config_path=["-c", "--config"],
             ignore_unknown_config_file_keys=True,
         )
-        cap.add(
+        cap.add_argument(
             "-v",
             "--verbose",
             help="Output verbosity. Add more v's to make it more verbose",
@@ -25,7 +25,7 @@ def add_to_parser_in_func(recursion_depth=0):
         # The unit test fails if it is set to True
         # I wanted this knowledge to be written down somewhere
         # hence the reason for this unit tests existence
-        cap.add(
+        cap.add_argument(
             "-c",
             "--cfg",
             is_config_file=False,
@@ -50,7 +50,7 @@ def test_multiple_parse_known_args():
             ignore_unknown_config_file_keys=True,
         )
 
-        cap.add(
+        cap.add_argument(
             "--variant",
             help="Specifies which variant of the config should be used. Use the config name without the .conf",
             default="debug",
@@ -61,7 +61,7 @@ def test_multiple_parse_known_args():
 
         add_to_parser_in_func()
 
-        cap.add(
+        cap.add_argument(
             "-c",
             "--cfg",
             is_config_file=True,

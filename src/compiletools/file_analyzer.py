@@ -533,7 +533,11 @@ def _extract_magic_flags(
 
     for pos in magic_positions:
         line_num = bisect.bisect_right(line_byte_offsets, pos) - 1
-        line = lines[line_num] if line_num < len(lines) else ""
+        # Use Str("") for the OOB fallback — a bare "" literal makes pyright track
+        # ``line`` as ``Str | Literal[""]``, which then propagates LiteralString
+        # through slice/split and breaks attribute resolution on the stringzilla
+        # surface (find_first_not_of et al.) below.
+        line = lines[line_num] if line_num < len(lines) else Str("")
 
         # Parse magic flag using StringZilla operations - ensure line is Str
         if not isinstance(line, Str):

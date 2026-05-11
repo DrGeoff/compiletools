@@ -31,19 +31,32 @@ from compiletools.testhelper import (
 )
 
 
+def _cmd(rule: BuildRule) -> list[str]:
+    """Return ``rule.command`` after asserting it is non-None.
+
+    Concrete rules (compile / link / test / mkdir / ar) always carry a
+    command; only phony rules have ``command=None``. The asserts in this
+    module exercise concrete rules, so the runtime check is structurally
+    always true — it exists to narrow ``list[str] | None`` to
+    ``list[str]`` for the type checker.
+    """
+    assert rule.command is not None, f"rule {rule.output!r} has no command"
+    return rule.command
+
+
 class TestBuildBackendContract:
     """Verify the ABC contract: cannot instantiate, must implement all abstract methods."""
 
     def test_cannot_instantiate_directly(self):
         with pytest.raises(TypeError, match="abstract"):
-            BuildBackend(args=MagicMock(), hunter=MagicMock())
+            BuildBackend(args=MagicMock(), hunter=MagicMock())  # type: ignore[abstract]
 
     def test_concrete_subclass_must_implement_generate(self):
         class Incomplete(BuildBackend):
             pass
 
         with pytest.raises(TypeError, match="abstract"):
-            Incomplete(args=MagicMock(), hunter=MagicMock())
+            Incomplete(args=MagicMock(), hunter=MagicMock())  # type: ignore[abstract]
 
     def test_concrete_subclass_works(self):
         class Minimal(BuildBackend):
@@ -360,7 +373,7 @@ class TestBuildGraphPopulation:
         compile_rules = [r for r in graph.rules if r.rule_type == "compile"]
         assert len(compile_rules) >= 1
         rule = compile_rules[0]
-        assert any("-c" in arg for arg in rule.command)
+        assert any("-c" in arg for arg in _cmd(rule))
         assert rule.inputs[0] == "/src/main.cpp"
 
     def test_link_rule_references_object_outputs(self, tmp_path):
@@ -396,7 +409,7 @@ class TestBuildGraphPopulation:
         assert len(objdir_rules) == 1, (
             f"Expected a rule to create objdir {objdir!r}, got rules for: {[r.output for r in graph.rules]}"
         )
-        assert "mkdir" in " ".join(objdir_rules[0].command), "objdir rule should use mkdir"
+        assert "mkdir" in " ".join(_cmd(objdir_rules[0])), "objdir rule should use mkdir"
 
     def test_no_sources_produces_empty_graph(self, tmp_path):
         args = make_backend_args(tmp_path, filename=[], tests=[], static=[], dynamic=[])
@@ -482,7 +495,7 @@ class TestBuildGraphPopulation:
             f"Used: {sorted(used_buckets)}; emitted: {sorted(emitted_bucket_dirs)}"
         )
         for rule in mkdir_rules:
-            assert "mkdir" in " ".join(rule.command), f"sharded bucket mkdir rule {rule.output!r} must invoke mkdir"
+            assert "mkdir" in " ".join(_cmd(rule)), f"sharded bucket mkdir rule {rule.output!r} must invoke mkdir"
 
     def test_compile_command_uses_tokens_from_args(self, tmp_path):
         """build_graph() compile commands must contain the tokens from
@@ -504,7 +517,7 @@ class TestBuildGraphPopulation:
 
         compile_rules = [r for r in graph.rules if r.rule_type == "compile" and r.output.endswith("main.o")]
         assert len(compile_rules) == 1
-        cmd = compile_rules[0].command
+        cmd = _cmd(compile_rules[0])
         # Each token from CXXFLAGS_tokens must appear in the compile cmd.
         for token in args.CXXFLAGS_tokens:
             assert token in cmd, f"CXXFLAGS token {token!r} missing from compile command {cmd!r}"
@@ -594,8 +607,8 @@ class TestBuildGraphPopulation:
             f"test rule must order on the published exe via order_only_deps; got {rule.order_only_deps}"
         )
         # The recipe must NOT self-delete its own output.
-        assert "rm" not in rule.command
-        assert f"{bindir}/test_foo" in rule.command
+        assert "rm" not in _cmd(rule)
+        assert f"{bindir}/test_foo" in _cmd(rule)
 
     def test_test_result_rule_command_is_pure_argv(self, tmp_path):
         """Test rule command must be argv-only — no shell metacharacters.
@@ -615,9 +628,9 @@ class TestBuildGraphPopulation:
         test_rules = graph.rules_by_type("test")
         assert len(test_rules) == 1
         rule = test_rules[0]
-        assert "&&" not in rule.command
-        assert "touch" not in rule.command
-        assert rule.command == [f"{bindir}/test_foo"]
+        assert "&&" not in _cmd(rule)
+        assert "touch" not in _cmd(rule)
+        assert _cmd(rule) == [f"{bindir}/test_foo"]
 
     def test_test_result_rule_carries_success_marker(self, tmp_path):
         """Test rule must declare its .result file as success_marker.
@@ -652,8 +665,8 @@ class TestBuildGraphPopulation:
 
         test_rules = graph.rules_by_type("test")
         assert len(test_rules) == 1
-        assert "valgrind" in test_rules[0].command
-        assert "--leak-check=full" in test_rules[0].command
+        assert "valgrind" in _cmd(test_rules[0])
+        assert "--leak-check=full" in _cmd(test_rules[0])
 
     def test_runtests_not_created_when_no_tests(self, tmp_path):
         """build_graph() should NOT create 'runtests' phony when no tests."""
@@ -700,12 +713,12 @@ class TestBuildGraphPopulation:
         assert len(gch_rules) == 1, f"Expected one .gch rule, got {[r.output for r in gch_rules]}"
         gch_rule = gch_rules[0]
         assert gch_rule.rule_type == "compile"
-        assert "-x" in gch_rule.command
-        assert "c++-header" in gch_rule.command
-        assert "/src/stdafx.h" in gch_rule.command
+        assert "-x" in _cmd(gch_rule)
+        assert "c++-header" in _cmd(gch_rule)
+        assert "/src/stdafx.h" in _cmd(gch_rule)
 
         # PCH rule should include magic CPPFLAGS from the header
-        assert "-DPCH_ACTIVE" in gch_rule.command
+        assert "-DPCH_ACTIVE" in _cmd(gch_rule)
 
         # Source compile rule should depend on the .gch file
         source_rules = [r for r in graph.rules if r.output.endswith("main.o")]
@@ -784,7 +797,7 @@ class TestBuildGraphPopulation:
 
         source_rules = [r for r in graph.rules if r.output.endswith("main.o")]
         assert len(source_rules) == 1
-        cmd = source_rules[0].command
+        cmd = _cmd(source_rules[0])
         i_idx = cmd.index("-I")
         include_dir = cmd[i_idx + 1]
         assert include_dir.startswith(pchdir + "/")
@@ -862,7 +875,7 @@ class TestBuildGraphPopulation:
 
         source_rules = [r for r in graph.rules if r.output.endswith("main.o")]
         assert len(source_rules) == 1
-        cmd = source_rules[0].command
+        cmd = _cmd(source_rules[0])
         i_indices = [i for i, v in enumerate(cmd) if v == "-I"]
         assert len(i_indices) == 2, f"Expected 2 -I flags, got {len(i_indices)}"
         include_dirs = [cmd[i + 1] for i in i_indices]
@@ -888,7 +901,7 @@ class TestBuildGraphPopulation:
 
         source_rules = [r for r in graph.rules if r.output.endswith("main.o")]
         assert len(source_rules) == 1
-        assert "-I" not in source_rules[0].command
+        assert "-I" not in _cmd(source_rules[0])
 
 
 class TestCompilerWrapperSplit:
@@ -938,7 +951,7 @@ class TestCompilerWrapperSplit:
 
         compile_rules = [r for r in graph.rules if r.rule_type == "compile" and r.output.endswith("main.o")]
         assert len(compile_rules) == 1
-        cmd = compile_rules[0].command
+        cmd = _cmd(compile_rules[0])
         assert cmd[0] == "ccache", f"argv[0] should be 'ccache', got {cmd[0]!r}"
         assert cmd[1] == "g++", f"argv[1] should be 'g++', got {cmd[1]!r}"
 
@@ -952,7 +965,7 @@ class TestCompilerWrapperSplit:
 
         compile_rules = [r for r in graph.rules if r.rule_type == "compile" and "/src/main.c" in r.inputs]
         assert len(compile_rules) == 1
-        cmd = compile_rules[0].command
+        cmd = _cmd(compile_rules[0])
         assert cmd[0] == "ccache", f"argv[0] should be 'ccache', got {cmd[0]!r}"
         assert cmd[1] == "gcc", f"argv[1] should be 'gcc', got {cmd[1]!r}"
 
@@ -968,7 +981,7 @@ class TestCompilerWrapperSplit:
 
         gch_rules = [r for r in graph.rules if r.output.endswith(".gch")]
         assert len(gch_rules) == 1
-        cmd = gch_rules[0].command
+        cmd = _cmd(gch_rules[0])
         assert cmd[0] == "ccache", f"PCH argv[0] should be 'ccache', got {cmd[0]!r}"
         assert cmd[1] == "g++", f"PCH argv[1] should be 'g++', got {cmd[1]!r}"
 
@@ -978,7 +991,7 @@ class TestCompilerWrapperSplit:
 
         link_rules = [r for r in graph.rules if r.rule_type == "link"]
         assert len(link_rules) >= 1
-        cmd = link_rules[0].command
+        cmd = _cmd(link_rules[0])
         assert cmd[0] == "ccache", f"link argv[0] should be 'ccache', got {cmd[0]!r}"
         assert cmd[1] == "g++", f"link argv[1] should be 'g++', got {cmd[1]!r}"
 
@@ -993,7 +1006,7 @@ class TestCompilerWrapperSplit:
 
         lib_rules = [r for r in graph.rules if r.rule_type == "shared_library"]
         assert len(lib_rules) == 1
-        cmd = lib_rules[0].command
+        cmd = _cmd(lib_rules[0])
         assert cmd[0] == "ccache", f"shared-lib argv[0] should be 'ccache', got {cmd[0]!r}"
         assert cmd[1] == "g++", f"shared-lib argv[1] should be 'g++', got {cmd[1]!r}"
 
@@ -1004,7 +1017,7 @@ class TestCompilerWrapperSplit:
 
         compile_rules = [r for r in graph.rules if r.rule_type == "compile" and r.output.endswith("main.o")]
         assert len(compile_rules) == 1
-        assert compile_rules[0].command[0] == "g++"
+        assert _cmd(compile_rules[0])[0] == "g++"
 
 
 class TestGccCppmExtensionRecognition:
@@ -1053,7 +1066,7 @@ class TestGccCppmExtensionRecognition:
         backend = self._make_gcc_module_backend(tmp_path, "/src/math.cppm")
         rule = backend._create_compile_rule("/src/math.cppm")
 
-        cmd = rule.command
+        cmd = _cmd(rule)
         assert "/src/math.cppm" in cmd, f"compile command must reference the .cppm source; got: {cmd!r}"
         idx = cmd.index("/src/math.cppm")
         # `-x c++` must appear as two adjacent tokens immediately preceding
@@ -1190,7 +1203,7 @@ class TestGccHeaderUnitProducerSideRename:
         rule = backend._create_header_unit_precompile_rule("<vector>", artefact_path)
         # The recipe text mentions the tmp path with a PID suffix, distinct
         # from the bare "<artefact>.compiletools.tmp" form.
-        pipeline = rule.command[2]  # ["sh", "-c", "<pipeline>"]
+        pipeline = _cmd(rule)[2]  # ["sh", "-c", "<pipeline>"]
         assert f"{artefact_path}.compiletools.tmp." in pipeline, (
             f"tmp path should appear in pipeline; got: {pipeline!r}"
         )
@@ -1261,7 +1274,7 @@ class TestGccHeaderUnitProducerSideRename:
         # Cache-mode path with resolved abs header => recipe is `sh -c <pipeline>`.
         backend._gcc_header_unit_resolved = {"<vector>": "/usr/include/vector"}
         rule = backend._create_header_unit_precompile_rule("<vector>", artefact_path)
-        pipeline = rule.command[2]  # ["sh", "-c", "<pipeline>"]
+        pipeline = _cmd(rule)[2]  # ["sh", "-c", "<pipeline>"]
         assert "-fmodules-ts" in pipeline, (
             f"cache-mode gcc header-unit precompile must pass -fmodules-ts; got pipeline: {pipeline!r}"
         )
@@ -1273,12 +1286,12 @@ class TestGccHeaderUnitProducerSideRename:
         # Fallback path (no resolved abs header) => command is plain argv.
         backend._gcc_header_unit_resolved = {}
         rule = backend._create_header_unit_precompile_rule("<vector>", artefact_path)
-        assert "-fmodules-ts" in rule.command, (
-            f"fallback gcc header-unit precompile must pass -fmodules-ts; got command: {rule.command!r}"
+        assert "-fmodules-ts" in _cmd(rule), (
+            f"fallback gcc header-unit precompile must pass -fmodules-ts; got command: {_cmd(rule)!r}"
         )
-        assert "-fmodules" not in rule.command, (
+        assert "-fmodules" not in _cmd(rule), (
             f"fallback gcc header-unit precompile must not pass -fmodules "
-            f"(clang-only flag, gcc < 14 rejects it); got command: {rule.command!r}"
+            f"(clang-only flag, gcc < 14 rejects it); got command: {_cmd(rule)!r}"
         )
 
 
@@ -1303,10 +1316,10 @@ class TestClangHeaderUnitStdlibSymmetry:
 
         artefact_path = str(tmp_path / "cas-pcmdir" / "abc" / "vector.pcm")
         rule = backend._create_header_unit_precompile_rule("<vector>", artefact_path)
-        assert "-stdlib=libc++" in rule.command, (
+        assert "-stdlib=libc++" in _cmd(rule), (
             f"clang header-unit precompile must carry -stdlib=libc++ when build "
             f"imports std (matches the cmd_hash's extra_flags). Got command: "
-            f"{rule.command!r}"
+            f"{_cmd(rule)!r}"
         )
 
     def test_clang_header_unit_precompile_skips_stdlib_libcxx_without_imports_std(self, tmp_path):
@@ -1324,9 +1337,9 @@ class TestClangHeaderUnitStdlibSymmetry:
         rule = backend._create_header_unit_precompile_rule("<vector>", artefact_path)
         # When the build doesn't import std, we don't inject -stdlib=libc++.
         # (User's CXXFLAGS may still set it; this test runs without that.)
-        assert "-stdlib=libc++" not in rule.command, (
+        assert "-stdlib=libc++" not in _cmd(rule), (
             f"-stdlib=libc++ should not appear when build doesn't import std "
-            f"and CXXFLAGS doesn't have it. Got: {rule.command!r}"
+            f"and CXXFLAGS doesn't have it. Got: {_cmd(rule)!r}"
         )
 
 
@@ -1588,7 +1601,7 @@ class TestPchFileLocking:
 
         gch_rules = [r for r in graph.rules if r.output.endswith(".gch")]
         assert len(gch_rules) == 1
-        cmd = gch_rules[0].command
+        cmd = _cmd(gch_rules[0])
         o_idx = cmd.index("-o")
         assert cmd[o_idx + 1] == gch_rules[0].output
 
@@ -2741,7 +2754,7 @@ class TestLinkOrderCorrectness:
 
         link_rules = [r for r in graph.rules if r.rule_type == "link"]
         assert len(link_rules) >= 1
-        link_cmd = link_rules[0].command
+        link_cmd = _cmd(link_rules[0])
         l_flags = [f for f in link_cmd if f.startswith("-l")]
         assert "-llibnext" in l_flags, f"Expected -llibnext in link command, got: {link_cmd}"
         assert "-llibbase" in l_flags, f"Expected -llibbase in link command, got: {link_cmd}"
@@ -2767,7 +2780,7 @@ class TestLinkOrderCorrectness:
         graph = backend.build_graph()
 
         link_rules = [r for r in graph.rules if r.rule_type == "link"]
-        link_cmd = link_rules[0].command
+        link_cmd = _cmd(link_rules[0])
         l_flags = [f for f in link_cmd if f.startswith("-llib")]
         assert l_flags.count("-llibbase") == 1, f"Expected -llibbase exactly once, got: {l_flags}"
 
@@ -2805,7 +2818,7 @@ class TestLinkOrderCorrectness:
         graph = backend.build_graph()
 
         link_rules = [r for r in graph.rules if r.rule_type == "link"]
-        link_cmd = link_rules[0].command
+        link_cmd = _cmd(link_rules[0])
         l_positions = {flag: i for i, flag in enumerate(link_cmd) if flag.startswith("-llib")}
         assert "-llibssh2" in l_positions and "-llibbase" in l_positions
         assert l_positions["-llibssh2"] < l_positions["-llibbase"], (

@@ -596,9 +596,11 @@ class TestMacroStateImmutability:
         """Verify that mutation methods are gone."""
         state = MacroState(core={}, variable={})
 
-        # Check that setters raise AttributeError (methods removed)
+        # Check that setters raise AttributeError (methods removed). The
+        # subscripted assignment below is exactly the API we're asserting
+        # *doesn't* exist — pyright correctly flags it, hence the ignore.
         try:
-            state[sz.Str("FOO")] = sz.Str("1")
+            state[sz.Str("FOO")] = sz.Str("1")  # type: ignore[index]
             assert False, "__setitem__ should not exist"
         except TypeError:
             pass  # 'MacroState' object does not support item assignment

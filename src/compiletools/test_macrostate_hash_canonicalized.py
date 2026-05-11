@@ -83,19 +83,25 @@ def test_object_hash_empty_anchor_is_graceful_noop():
     cppflags_tokens = ["-I/foo/bar", "-DAPP=app"]
     cflags_tokens = ["-O2"]
     cxxflags_tokens = ["-I/foo/bar", "-std=c++20"]
-    common_kwargs = dict(
-        core={b"__GNUC__": b"13"},
-        variable={},
-        compiler_path="/usr/bin/g++",
-        cppflags=" ".join(cppflags_tokens),
-        cflags=" ".join(cflags_tokens),
-        cxxflags=" ".join(cxxflags_tokens),
-        cmdline_origin=frozenset(),
-        cppflags_tokens=cppflags_tokens,
-        cflags_tokens=cflags_tokens,
-        cxxflags_tokens=cxxflags_tokens,
-        compiler_identity="/usr/bin/g++|123456|1700000000",
-    )
-    h_explicit_empty = MacroState(anchor_root="", **common_kwargs).get_hash(include_core=True)
-    h_default = MacroState(**common_kwargs).get_hash(include_core=True)
+
+    def _make(anchor_root: str | None = None) -> MacroState:
+        kwargs: dict = dict(
+            core={b"__GNUC__": b"13"},
+            variable={},
+            compiler_path="/usr/bin/g++",
+            cppflags=" ".join(cppflags_tokens),
+            cflags=" ".join(cflags_tokens),
+            cxxflags=" ".join(cxxflags_tokens),
+            cmdline_origin=frozenset(),
+            cppflags_tokens=cppflags_tokens,
+            cflags_tokens=cflags_tokens,
+            cxxflags_tokens=cxxflags_tokens,
+            compiler_identity="/usr/bin/g++|123456|1700000000",
+        )
+        if anchor_root is not None:
+            kwargs["anchor_root"] = anchor_root
+        return MacroState(**kwargs)
+
+    h_explicit_empty = _make(anchor_root="").get_hash(include_core=True)
+    h_default = _make().get_hash(include_core=True)
     assert h_explicit_empty == h_default

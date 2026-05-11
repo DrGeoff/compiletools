@@ -610,6 +610,7 @@ class TestLoadPchManifest:
             '{"header_realpath": "/abs/foo.h", "transitive_hashes": {"/abs/bar.h": "deadbeef"}}'
         )
         manifest = _load_pch_manifest(str(cmd_hash_dir))
+        assert manifest is not None
         assert manifest["header_realpath"] == "/abs/foo.h"
         assert manifest["transitive_hashes"] == {"/abs/bar.h": "deadbeef"}
 

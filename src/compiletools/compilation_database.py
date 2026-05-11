@@ -51,14 +51,14 @@ class CompilationDatabaseCreator:
         # Add standard target arguments that define what sources to process
         compiletools.apptools.add_target_arguments_ex(cap)
 
-        cap.add(
+        cap.add_argument(
             "--compilation-database-output",
             dest="compilation_database_output",
             default=None,
             help="Output filename for compilation database (default: <gitroot>/compile_commands.json)",
         )
 
-        cap.add(
+        cap.add_argument(
             "--relative-paths",
             dest="compilation_database_relative",
             action="store_true",

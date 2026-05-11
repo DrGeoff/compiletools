@@ -444,9 +444,12 @@ class TempDirContext(TempDirectoryContext):
     def __init__(self):
         super().__init__(change_dir=True)
 
-    def __enter__(self):
+    def __enter__(self):  # type: ignore[override]
+        # Deliberate divergence: the base class yields the tmpdir string, but
+        # the legacy ``TempDirContext`` API returns ``self`` so callers can
+        # access ``.tmpdir`` / ``.origdir`` after entering.
         super().__enter__()
-        return self  # Original returned self, not tmpdir
+        return self
 
 
 class TempDirContextNoChange(TempDirectoryContext):
@@ -697,7 +700,10 @@ def headerdeps_result(filename, kind="direct", cppflags=None, include=None, extr
     include = include or samplesdir()
     if extra_args is None:
         extra_args = []
-    import compiletools.headerdeps
+    # ``from ... import name`` so the local binding does not shadow
+    # ``compiletools`` (which would lose ``apptools`` for the rest of the
+    # function scope, breaking the call below).
+    from compiletools import headerdeps as _headerdeps
 
     # Create config with custom CPPFLAGS if needed
     config_extralines = []
@@ -708,7 +714,7 @@ def headerdeps_result(filename, kind="direct", cppflags=None, include=None, extr
 
     with TempConfigContext(extralines=config_extralines) as temp_config_name:
         # Clear all caches for test isolation
-        compiletools.headerdeps.HeaderDepsBase.clear_cache()
+        _headerdeps.HeaderDepsBase.clear_cache()
 
         # Create fresh parser with complete isolation
         with ParserContext():
@@ -718,11 +724,11 @@ def headerdeps_result(filename, kind="direct", cppflags=None, include=None, extr
                 args_for_setting_config_path=["-c", "--config"],
                 ignore_unknown_config_file_keys=False,
             )
-            compiletools.headerdeps.add_arguments(cap)
+            _headerdeps.add_arguments(cap)
             argv = ["--config=" + temp_config_name, f"--headerdeps={kind}", "--include", include] + extra_args
             ctx = BuildContext()
             args = compiletools.apptools.parseargs(cap, argv, context=ctx)
-            h = compiletools.headerdeps.create(args, context=ctx)
+            h = _headerdeps.create(args, context=ctx)
             return set(h.process(filename, frozenset()))
 
 
@@ -949,15 +955,19 @@ def add_backend_arguments(cap):
     from real ``argv``. Backend classes are imported lazily so this helper
     does not pull them into the testhelper import graph.
     """
-    import compiletools.hunter
-    import compiletools.namer
+    # ``from ... import name`` (not ``import compiletools.X``) so the local
+    # binding is on ``hunter``/``namer`` directly, not on ``compiletools`` —
+    # the latter would shadow the module-level ``import compiletools.apptools``
+    # for the rest of the function scope and make pyright lose ``apptools``.
+    from compiletools import hunter as _hunter
+    from compiletools import namer as _namer
     from compiletools.makefile_backend import MakefileBackend
     from compiletools.trace_backend import SlurmBackend
 
     compiletools.apptools.add_target_arguments_ex(cap)
     compiletools.apptools.add_link_arguments(cap)
-    compiletools.namer.Namer.add_arguments(cap)
-    compiletools.hunter.add_arguments(cap)
+    _namer.Namer.add_arguments(cap)
+    _hunter.add_arguments(cap)
     MakefileBackend.add_arguments(cap)
     SlurmBackend.add_arguments(cap)
 

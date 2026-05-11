@@ -3,6 +3,7 @@ import os
 from contextlib import redirect_stdout
 
 import compiletools.cppdeps
+import compiletools.headerdeps
 import compiletools.testhelper as uth
 
 

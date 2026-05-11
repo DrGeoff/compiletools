@@ -19,13 +19,21 @@ import compiletools.filesystem_utils
 import compiletools.lock_utils
 import compiletools.wrappedos
 
-# fcntl only available on Unix (not Windows)
-try:
-    import fcntl
+# fcntl only available on Unix (not Windows). Each user of ``fcntl`` re-asserts
+# non-None at the top of the method body (cheap, lets pyright narrow ``ModuleType
+# | None`` to ``ModuleType`` for the rest of the scope, and the asserted
+# RuntimeError gives the user a clear "this strategy needs fcntl" message rather
+# than an opaque ``AttributeError: 'NoneType' object has no attribute 'lockf'``).
+import types
+from typing import Optional
 
-    HAS_FCNTL = True
+try:
+    import fcntl as _fcntl_real
 except ImportError:
-    HAS_FCNTL = False
+    _fcntl_real = None
+
+fcntl: Optional[types.ModuleType] = _fcntl_real
+HAS_FCNTL = fcntl is not None
 
 
 class FcntlLock:
@@ -62,7 +70,7 @@ class FcntlLock:
         Opens/creates target file, then blocks until the lock is acquired.
         The kernel handles queuing and automatic release on process death.
         """
-        if not HAS_FCNTL:
+        if fcntl is None:
             raise RuntimeError("fcntl module not available (Windows?); cannot use fcntl lock strategy")
 
         # Ensure parent directory exists
@@ -93,6 +101,11 @@ class FcntlLock:
     def release(self):
         """Release fcntl lock and close fd. Does NOT unlink lock file."""
         if self.fd is not None:
+            # ``self.fd is not None`` implies ``acquire`` succeeded — which means
+            # ``fcntl`` was available — so this assert is structurally unreachable.
+            # It exists so the type checker can narrow ``Optional[ModuleType]`` to
+            # ``ModuleType`` for the lockf / LOCK_UN access below.
+            assert fcntl is not None
             try:
                 fcntl.lockf(self.fd, fcntl.LOCK_UN)
             except OSError:
@@ -594,7 +607,7 @@ class FlockLock:
         Opens/creates target file, then blocks until the lock is acquired.
         The kernel handles queuing and automatic release on process death.
         """
-        if not HAS_FCNTL:
+        if fcntl is None:
             raise RuntimeError("fcntl module not available (Windows?); cannot use flock lock strategy")
 
         # Ensure parent directory exists
@@ -617,6 +630,9 @@ class FlockLock:
     def release(self):
         """Release flock and close fd. Does NOT unlink lock file."""
         if self.fd is not None:
+            # See FcntlLock.release — assert lets the type checker narrow
+            # ``Optional[ModuleType]`` to ``ModuleType`` for the flock access below.
+            assert fcntl is not None
             try:
                 fcntl.flock(self.fd, fcntl.LOCK_UN)
             except OSError:

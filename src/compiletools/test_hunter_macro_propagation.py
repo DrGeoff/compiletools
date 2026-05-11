@@ -17,7 +17,7 @@ from pathlib import Path
 # Add compiletools to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from types import SimpleNamespace
+from argparse import Namespace
 
 import compiletools.headerdeps
 import compiletools.hunter
@@ -52,7 +52,7 @@ def test_hunter_propagates_macros_to_header_dependencies():
 
     try:
         # Create args
-        args = SimpleNamespace()
+        args = Namespace()
         args.verbose = 0
         args.headerdeps = "direct"
         args.magic = "direct"

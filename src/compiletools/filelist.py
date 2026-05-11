@@ -76,22 +76,22 @@ class Filelist:
         if compiletools.apptools._parser_has_option(cap, "--extrafile"):
             return
         compiletools.apptools.add_target_arguments(cap)
-        cap.add("--extrafile", help="Extra files to directly add to the filelist", nargs="*")
-        cap.add(
+        cap.add_argument("--extrafile", help="Extra files to directly add to the filelist", nargs="*")
+        cap.add_argument(
             "--extradir",
             help="Extra directories to add all files from to the filelist",
             nargs="*",
         )
-        cap.add(
+        cap.add_argument(
             "--extrafilelist",
             help="Read the given files to find a list of extra files to add to the filelist",
             nargs="*",
         )
 
         # Output style and filter choices come from the explicit registries above.
-        cap.add("--style", choices=list(_STYLE_REGISTRY), default="flat", help="Output formatting style")
+        cap.add_argument("--style", choices=list(_STYLE_REGISTRY), default="flat", help="Output formatting style")
 
-        cap.add(
+        cap.add_argument(
             "--filter",
             choices=list(_FILTER_REGISTRY),
             default="all",

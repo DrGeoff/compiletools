@@ -37,7 +37,7 @@ def main(argv=None) -> int:
     variant = compiletools.configutils.extract_variant(argv=argv)
     compiletools.apptools.add_base_arguments(parser, argv=argv, variant=variant)
     compiletools.apptools.add_output_directory_arguments(parser, variant=variant)
-    parser.add(
+    parser.add_argument(
         "--diagnostics-dir",
         default=None,
         help=(
@@ -49,24 +49,24 @@ def main(argv=None) -> int:
             "ct.conf file."
         ),
     )
-    parser.add(
+    parser.add_argument(
         "timing_file",
         nargs="?",
         default=None,
         help="Path to timing.json (default: auto-detect in cwd / diagnostics-dir / bindir)",
     )
-    parser.add(
+    parser.add_argument(
         "--summary",
         action="store_true",
         help="Print summary table to stdout (non-interactive)",
     )
-    parser.add(
+    parser.add_argument(
         "--compare",
         nargs=2,
         metavar=("BEFORE", "AFTER"),
         help="Compare two timing files and show deltas",
     )
-    parser.add(
+    parser.add_argument(
         "--chrome-trace",
         metavar="OUTPUT",
         help="Export Chrome Trace JSON for Perfetto (https://ui.perfetto.dev/)",

@@ -110,7 +110,7 @@ class Cake:
 
         compiletools.jobs.add_arguments(cap)
 
-        cap.add(
+        cap.add_argument(
             "--file-list",
             "--filelist",
             dest="filelist",
@@ -119,14 +119,14 @@ class Cake:
         )
         compiletools.filelist.Filelist.add_arguments(cap)  # To get the style arguments
 
-        cap.add(
+        cap.add_argument(
             "--begintests",
             dest="tests",
             nargs="*",
             help="Starts a test block. The cpp files following this declaration will generate "
             "executables which are then run. Synonym for --tests",
         )
-        cap.add(
+        cap.add_argument(
             "--endtests",
             action="store_true",
             help="Ignored. For backwards compatibility only.",
@@ -142,14 +142,14 @@ class Cake:
             help="Generate compile_commands.json for clang tooling.",
         )
 
-        cap.add(
+        cap.add_argument(
             "--compilation-database-output",
             dest="compilation_database_output",
             default=None,
             help="Output filename for compilation database (default: <gitroot>/compile_commands.json)",
         )
 
-        cap.add(
+        cap.add_argument(
             "--compilation-database-relative-paths",
             dest="compilation_database_relative",
             action="store_true",
@@ -163,15 +163,15 @@ class Cake:
             help="Set both --magic=cpp and --headerdeps=cpp. Defaults to false because it is slower.",
         )
 
-        cap.add(
+        cap.add_argument(
             "--CT_PREPROCESS",
             dest="preprocess",
             default=False,
             help="Deprecated. Synonym for preprocess",
         )
 
-        cap.add("--clean", action="store_true", help="Aggressively cleanup.")
-        cap.add(
+        cap.add_argument("--clean", action="store_true", help="Aggressively cleanup.")
+        cap.add_argument(
             "--realclean",
             "--real-clean",
             action="store_true",
@@ -179,14 +179,14 @@ class Cake:
             help="Remove bin/ and selectively clean this build's objects from the object CAS.",
         )
 
-        cap.add(
+        cap.add_argument(
             "--backend",
             default="make",
             choices=available_backends(),
             help="Build system backend to use (default: make).",
         )
 
-        cap.add(
+        cap.add_argument(
             "-o",
             "--output",
             help="When there is only a single build product, rename it to this name.",
@@ -202,7 +202,7 @@ class Cake:
             "and prints a summary table after the build.",
         )
 
-        cap.add(
+        cap.add_argument(
             "--diagnostics-dir",
             default=None,
             help=(
