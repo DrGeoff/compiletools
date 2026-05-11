@@ -435,6 +435,18 @@ def add_target_arguments_ex(cap):
         help='Runs tests with the given prefix, eg. "valgrind --quiet --error-exitcode=1"',
     )
     cap.add(
+        "--test-xml-dir",
+        dest="test_xml_dir",
+        default=None,
+        help=(
+            "Directory to write per-test JUnit XML reports. "
+            "Layout: <DIR>/<variant>/<exe_basename>.xml. "
+            "ct-cake auto-selects --gtest_output / --reporters=junit / "
+            "--reporter junit based on each test's transitive headers "
+            "(gtest, doctest, Catch2). Default: unset (no XML produced)."
+        ),
+    )
+    cap.add(
         "--project-version",
         dest="projectversion",
         help="Set the CAKE_PROJECT_VERSION macro to this value",
@@ -2123,6 +2135,18 @@ def _commonsubstitutions(args):
         args.cas_exedir = unsupplied_replacement(args.cas_exedir, default_cas_exedir, args.verbose, "cas-exedir")
     except AttributeError:
         pass
+
+    # Anchor --test-xml-dir to gitroot so the value survives a `cd` into
+    # a subdirectory between parseargs and _run_tests, matching how
+    # cas-objdir / cas-pchdir are anchored. This is a path resolution
+    # only; the directory is created lazily inside _run_tests.
+    test_xml_dir = getattr(args, "test_xml_dir", None)
+    if test_xml_dir and not os.path.isabs(test_xml_dir):
+        git_root = compiletools.git_utils.find_git_root()
+        if git_root:
+            args.test_xml_dir = os.path.join(git_root, test_xml_dir)
+        else:
+            args.test_xml_dir = os.path.abspath(test_xml_dir)
 
 
 # List to store the callback functions for parse args

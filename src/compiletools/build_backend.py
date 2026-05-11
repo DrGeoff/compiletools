@@ -32,10 +32,12 @@ import compiletools.filesystem_utils
 import compiletools.git_utils
 import compiletools.global_hash_registry
 import compiletools.namer
+import compiletools.test_framework
 import compiletools.utils
 import compiletools.wrappedos
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.magicflags import _HARD_ORDERINGS_KEY
+from compiletools.test_framework import TestFramework
 
 
 class ObjInfo(NamedTuple):
@@ -1020,6 +1022,16 @@ class BuildBackend(abc.ABC):
 
         return graph
 
+    def _xml_path_for(self, exe_path: str) -> str:
+        """Per-test JUnit XML path under ``--test-xml-dir``.
+
+        Layout: ``<test-xml-dir>/<variant>/<exe_basename>.xml``. Caller
+        is responsible for ensuring ``--test-xml-dir`` is set.
+        """
+        xml_dir = self.args.test_xml_dir
+        variant = getattr(self.args, "variant", "") or ""
+        return os.path.join(xml_dir, variant, os.path.basename(exe_path) + ".xml")
+
     def _run_tests(self) -> None:
         """Run test executables built from args.tests.
 
@@ -1030,24 +1042,67 @@ class BuildBackend(abc.ABC):
         - Serialisation: when args.serialisetests is set, forces sequential execution.
         - TESTPREFIX: honours args.TESTPREFIX (e.g., valgrind) by prepending to
           the test command.
+        - JUnit XML: when ``--test-xml-dir`` is set, detects each test's
+          framework (gtest / doctest / Catch2) from its transitive headers
+          and appends the framework-specific XML-emit argv after exe_path.
+          A test whose .result marker is current but whose XML file is
+          missing is re-run to regenerate the XML; tests with no detected
+          framework keep the legacy skip behaviour.
         """
         if not self.args.tests:
             return
 
-        exe_paths = [
-            self.namer.executable_pathname(compiletools.wrappedos.realpath(source)) for source in self.args.tests
+        test_pairs = [
+            (source, self.namer.executable_pathname(compiletools.wrappedos.realpath(source)))
+            for source in self.args.tests
         ]
 
-        # Filter out tests whose .result marker is up-to-date
+        xml_dir = getattr(self.args, "test_xml_dir", None)
+
+        # Detect framework once per test (only when --test-xml-dir is set).
+        # Cached on self._test_frameworks so _run_single_test can look up
+        # the same TestFramework without re-running detection inside the
+        # parallel worker.
+        self._test_frameworks: dict[str, TestFramework | None] = {}
+        if xml_dir:
+            for source, exe_path in test_pairs:
+                headers = [str(h) for h in self.hunter.header_dependencies(source)]
+                framework = compiletools.test_framework.detect_framework(headers, source)
+                self._test_frameworks[exe_path] = framework
+                if framework is None and self.args.verbose >= 1:
+                    print(
+                        f"{source}: no known unit-test framework detected; skipping XML output",
+                        file=sys.stderr,
+                    )
+
+            # Pre-create the variant subdirectory so parallel workers don't
+            # race in os.makedirs. Lazy: nothing is created when xml_dir is
+            # unset, and nothing happens here when args.tests is empty
+            # (early return above).
+            variant = getattr(self.args, "variant", "") or ""
+            os.makedirs(os.path.join(xml_dir, variant), exist_ok=True)
+
+        # Filter out tests whose .result marker is up-to-date.
+        # When --test-xml-dir is set, also require the expected XML file
+        # to exist (unless this test has no detected framework -- such
+        # tests would never produce XML, so don't loop on regeneration).
         tests_to_run = []
-        for exe_path in exe_paths:
+        for _source, exe_path in test_pairs:
             result_file = exe_path + ".result"
-            if os.path.exists(result_file) and os.path.exists(exe_path):
-                if os.path.getmtime(result_file) >= os.path.getmtime(exe_path):
-                    if self.args.verbose >= 2:
-                        print(f"Skipping up-to-date test: {exe_path}", file=sys.stderr)
+            result_current = (
+                os.path.exists(result_file)
+                and os.path.exists(exe_path)
+                and os.path.getmtime(result_file) >= os.path.getmtime(exe_path)
+            )
+            if not result_current:
+                tests_to_run.append(exe_path)
+                continue
+            if xml_dir and self._test_frameworks.get(exe_path) is not None:
+                if not os.path.exists(self._xml_path_for(exe_path)):
+                    tests_to_run.append(exe_path)
                     continue
-            tests_to_run.append(exe_path)
+            if self.args.verbose >= 2:
+                print(f"Skipping up-to-date test: {exe_path}", file=sys.stderr)
 
         if not tests_to_run:
             if self.args.verbose >= 1:
@@ -1073,11 +1128,21 @@ class BuildBackend(abc.ABC):
         to individual test wall-clock times.  Recording happens inside the
         worker (which may be a thread under parallel execution); the
         timer's lock makes ``record_rule`` thread-safe.
+
+        When ``--test-xml-dir`` is set and the test's framework was
+        detected, appends the framework-specific XML-emit argv *after*
+        ``exe_path`` so prefix tools like valgrind / strace -f / taskset
+        forward the trailing argv to the child process correctly.
         """
         cmd = []
         if testprefix:
             cmd.extend(testprefix.split())
         cmd.append(exe_path)
+
+        if getattr(self.args, "test_xml_dir", None):
+            framework = self._test_frameworks.get(exe_path)
+            if framework is not None:
+                cmd.extend(framework.xml_argv(self._xml_path_for(exe_path)))
 
         timer = self._timer
         start = time.monotonic() if timer else 0.0
@@ -2425,9 +2490,7 @@ class BuildBackend(abc.ABC):
         link_key_payload = {
             "linker_identity": _compiler_identity(ld_argv[0], anchor_root=anchor_root) if ld_argv else "",
             "ld_argv": compiletools.apptools.canonicalize_paths_for_cache_key(ld_argv, anchor_root),
-            "objects": sorted(
-                compiletools.apptools.canonicalize_paths_for_cache_key(object_names, anchor_root)
-            ),
+            "objects": sorted(compiletools.apptools.canonicalize_paths_for_cache_key(object_names, anchor_root)),
             "merged_ldflags": compiletools.apptools.canonicalize_for_cache_key(list(merged_ldflags), anchor_root),
             "extra_link_argv": extra_link_argv,
             "library_outputs": sorted(
@@ -2531,9 +2594,7 @@ class BuildBackend(abc.ABC):
         lib_key_payload = {
             "ar_argv_prefix": compiletools.apptools.canonicalize_paths_for_cache_key(ar_argv_prefix, anchor_root),
             "ar_identity": _compiler_identity(ar_binary, anchor_root=anchor_root),
-            "objects": sorted(
-                compiletools.apptools.canonicalize_paths_for_cache_key(object_names, anchor_root)
-            ),
+            "objects": sorted(compiletools.apptools.canonicalize_paths_for_cache_key(object_names, anchor_root)),
         }
         lib_key_hash = self._compute_artefact_key_hash(lib_key_payload)
         cas_lib_path = self.namer.cas_staticlibrary_pathname(sourcefilename, lib_key_hash)
@@ -2586,9 +2647,7 @@ class BuildBackend(abc.ABC):
             "linker_identity": _compiler_identity(ld_argv[0], anchor_root=anchor_root) if ld_argv else "",
             "ld_argv": compiletools.apptools.canonicalize_paths_for_cache_key(ld_argv, anchor_root),
             "shared": True,
-            "objects": sorted(
-                compiletools.apptools.canonicalize_paths_for_cache_key(object_names, anchor_root)
-            ),
+            "objects": sorted(compiletools.apptools.canonicalize_paths_for_cache_key(object_names, anchor_root)),
             "merged_ldflags": compiletools.apptools.canonicalize_for_cache_key(list(merged_ldflags), anchor_root),
             "ld_extra": ld_extra,
             "canonical_bindir": compiletools.apptools.canonicalize_path_for_cache_key(
