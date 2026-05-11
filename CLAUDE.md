@@ -19,15 +19,14 @@ This repository uses git worktrees for development. The `master` worktree lives 
 # uv venv && source .venv/bin/activate
 
 # Install in development mode with dev dependencies (pulls in ruff,
-# pyright, prek, pre-commit, pytest-xdist, …).
+# pyright, prek, pytest-xdist, …).
 uv pip install -e ".[dev]"
 
-# Install the git hooks (one-time, per checkout).
-# prek is preferred (Rust binary, ~10× faster startup than pre-commit);
-# both tools share .pre-commit-config.yaml, so pre-commit is a drop-in
-# fallback if prek isn't on PATH yet.
-prek install               # preferred
-# pre-commit install       # equivalent fallback
+# Install the git hooks (one-time, per checkout). prek consumes the
+# same .pre-commit-config.yaml as `pre-commit` and is what the project
+# standardises on; the reference pre-commit binary is not in [dev] but
+# works against the same config if installed ad-hoc.
+prek install
 
 # Run all tests
 pytest
@@ -52,7 +51,7 @@ pyright src/compiletools/
 
 # Run all hooks against the entire codebase (handy after a big rebase or
 # before pushing).
-prek run --all-files       # or: pre-commit run --all-files
+prek run --all-files
 ```
 
 pytest configuration is in `pyproject.toml` (`[tool.pytest.ini_options]`): tests live in `src/compiletools/`, matching `test_*.py`, verbose by default.

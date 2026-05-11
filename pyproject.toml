@@ -40,11 +40,11 @@ dev = [
     "pyright>=1.1",
     # ``prek`` is the Rust drop-in replacement for ``pre-commit``: same
     # ``.pre-commit-config.yaml``, ~10× faster hook startup, single static
-    # binary distributed on PyPI. ``pre-commit`` is kept alongside it so
-    # developers who already have it installed (or who want the reference
-    # implementation for debugging hook behaviour) aren't forced to switch.
+    # binary distributed on PyPI. We standardise on prek here; a dev who
+    # specifically wants the reference ``pre-commit`` implementation can
+    # still install it ad-hoc (``uv tool install pre-commit``) since the
+    # config file is portable.
     "prek>=0.3.13",
-    "pre-commit>=4.0",
     "pytest-cov>=6.0",
     "textual>=0.40.0",
     "tomli; python_version < '3.11'",
