@@ -1132,6 +1132,7 @@ class TestResolvedCompilerAvailable:
 
     def test_missing_binary_raises_with_variant_hint(self):
         from types import SimpleNamespace
+
         import compiletools.apptools as apptools
 
         args = SimpleNamespace(
@@ -1147,8 +1148,9 @@ class TestResolvedCompilerAvailable:
         assert "gcc.debug" in msg  # variant must appear in the diagnostic
 
     def test_existing_binary_passes_silently(self):
-        from types import SimpleNamespace
         import shutil
+        from types import SimpleNamespace
+
         import compiletools.apptools as apptools
 
         real_cxx = shutil.which("g++") or shutil.which("clang++") or shutil.which("sh")
@@ -1161,8 +1163,9 @@ class TestResolvedCompilerAvailable:
         # The "unsupplied_implies_use_CXX" sentinel means a downstream
         # substitution replaces this with a real CXX value — the check
         # must not flag it as a missing binary.
-        from types import SimpleNamespace
         import shutil
+        from types import SimpleNamespace
+
         import compiletools.apptools as apptools
 
         real_cxx = shutil.which("g++") or shutil.which("clang++") or shutil.which("sh")
@@ -1182,6 +1185,7 @@ class TestCompilerSupportsRequestedStandard:
 
     def test_too_old_for_requested_std_raises(self, monkeypatch):
         from types import SimpleNamespace
+
         import compiletools.apptools as apptools
 
         monkeypatch.setattr(
@@ -1202,6 +1206,7 @@ class TestCompilerSupportsRequestedStandard:
 
     def test_recent_compiler_passes(self, monkeypatch):
         from types import SimpleNamespace
+
         import compiletools.apptools as apptools
 
         monkeypatch.setattr(
@@ -1219,6 +1224,7 @@ class TestCompilerSupportsRequestedStandard:
 
     def test_unknown_driver_skips_silently(self, monkeypatch):
         from types import SimpleNamespace
+
         import compiletools.apptools as apptools
 
         monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: None)
@@ -1234,6 +1240,7 @@ class TestCompilerSupportsRequestedStandard:
 
     def test_no_std_flag_skips_silently(self, monkeypatch):
         from types import SimpleNamespace
+
         import compiletools.apptools as apptools
 
         monkeypatch.setattr(
@@ -1253,6 +1260,7 @@ class TestCompilerSupportsRequestedStandard:
         # gcc <14 / clang <18 spelled C++26 as -std=c++2c. The check should
         # normalise that to c++26 for the version lookup.
         from types import SimpleNamespace
+
         import compiletools.apptools as apptools
 
         monkeypatch.setattr(

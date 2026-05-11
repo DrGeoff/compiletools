@@ -2409,8 +2409,8 @@ def _compiler_major_version(compiler_path: str) -> tuple[str, int] | None:
     pass-through ``--version`` and parse just like the real binary, so
     this is intentionally permissive.
     """
-    import subprocess
     import re as _re
+    import subprocess
 
     try:
         proc = subprocess.run(
@@ -2427,7 +2427,11 @@ def _compiler_major_version(compiler_path: str) -> tuple[str, int] | None:
     m = _re.search(r"clang version (\d+)", out)
     if m:
         return ("clang", int(m.group(1)))
-    m = _re.search(r"\(GCC\)\s+(\d+)", out) or _re.search(r"\bg\+\+ \(.*?\) (\d+)\.", out) or _re.search(r"\bgcc\b.*?(\d+)\.\d+", out)
+    m = (
+        _re.search(r"\(GCC\)\s+(\d+)", out)
+        or _re.search(r"\bg\+\+ \(.*?\) (\d+)\.", out)
+        or _re.search(r"\bgcc\b.*?(\d+)\.\d+", out)
+    )
     if m:
         return ("gcc", int(m.group(1)))
     return None
@@ -2452,7 +2456,7 @@ def _check_resolved_compiler_available(args) -> None:
     variant = getattr(args, "variant", "<unknown>")
     for slot in ("CC", "CXX", "LD"):
         value = getattr(args, slot, None)
-        if not value or value == _UNSUPPLIED_USE_CXX or value == _UNSUPPLIED_USE_CXXFLAGS:
+        if not value or value in (_UNSUPPLIED_USE_CXX, _UNSUPPLIED_USE_CXXFLAGS):
             # The "unsupplied" sentinel means a later step substitutes a
             # real value (typically CXX itself); skip these.
             continue

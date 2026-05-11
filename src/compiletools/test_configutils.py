@@ -732,7 +732,7 @@ class TestVariant:
         )
 
         violations = []
-        for name, path, extends in composite_confs:
+        for name, _path, extends in composite_confs:
             # Every parent must be a known canonical token.
             unknown = [p for p in extends if p not in position]
             if unknown:
