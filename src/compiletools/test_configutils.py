@@ -46,7 +46,7 @@ class TestVariant:
                 exedir=uth.cakedir(),
                 gitroot=os.getcwd(),
             )
-            assert variant == "gcc.debug"
+            assert variant == "gcc.cxx17.debug"
 
     def test_extract_variant_from_blank_argv(self):
         # Force to find the temp directory ct.conf
@@ -60,7 +60,7 @@ class TestVariant:
                 verbose=0,
                 gitroot=os.getcwd(),
             )
-            assert variant == "gcc.debug"
+            assert variant == "gcc.cxx17.debug"
 
     def test_canonicalize_variant_input_with_default_order(self):
         # No project ct.conf — falls back to builtin canonical order.
@@ -230,6 +230,61 @@ class TestVariant:
             # Atoms still contribute — composite tunes on top, doesn't replace.
             axis_names = [a.name for a in resolution.axes]
             assert axis_names == ["gcc", "debug"]
+
+    def test_bundle_dev_pulls_in_all_extends(self):
+        # The `dev` bundle's extends declaration chains the full sanitizer-
+        # driven dev iteration setup. Verify each named atom shows up in the
+        # resolved axis list (in extends order, deduped, with dev itself last).
+        with uth.TempDirContextNoChange() as repo_root:
+            uth.create_temp_ct_conf(repo_root, defaultvariant="dev")
+            with uth.DirectoryContext(repo_root):
+                resolution = compiletools.configutils.resolve_variant(
+                    variant="dev",
+                    argv=[],
+                    user_config_dir="/var",
+                    system_config_dir=None,
+                    exedir=uth.cakedir(),
+                    gitroot=repo_root,
+                )
+            axis_names = [a.name for a in resolution.axes]
+            # dev.conf: extends = gcc, cxx17, debug, asan, ubsan, werror
+            assert axis_names == ["gcc", "cxx17", "debug", "asan", "ubsan", "werror", "dev"]
+
+    def test_bundle_production_full_chain(self):
+        # production = gcc, cxx17, release, lto, hardened, pie, strip
+        with uth.TempDirContextNoChange() as repo_root:
+            uth.create_temp_ct_conf(repo_root, defaultvariant="production")
+            with uth.DirectoryContext(repo_root):
+                resolution = compiletools.configutils.resolve_variant(
+                    variant="production",
+                    argv=[],
+                    user_config_dir="/var",
+                    system_config_dir=None,
+                    exedir=uth.cakedir(),
+                    gitroot=repo_root,
+                )
+            axis_names = [a.name for a in resolution.axes]
+            assert axis_names == [
+                "gcc", "cxx17", "release", "lto", "hardened", "pie", "strip", "production",
+            ]
+
+    def test_bundle_safety_uses_clang(self):
+        # safety bundle picks clang explicitly because its sanitizer libs
+        # are more comprehensive than gcc's.
+        with uth.TempDirContextNoChange() as repo_root:
+            uth.create_temp_ct_conf(repo_root, defaultvariant="safety")
+            with uth.DirectoryContext(repo_root):
+                resolution = compiletools.configutils.resolve_variant(
+                    variant="safety",
+                    argv=[],
+                    user_config_dir="/var",
+                    system_config_dir=None,
+                    exedir=uth.cakedir(),
+                    gitroot=repo_root,
+                )
+            axis_names = [a.name for a in resolution.axes]
+            assert axis_names[0] == "clang", f"safety must start with clang; got {axis_names}"
+            assert "asan" in axis_names and "ubsan" in axis_names
 
     def test_linker_axis_composes_with_toolchain_opt_instrumentation(self):
         # The bundled linker axes (ld/gold/mold/wild) sit between toolchain

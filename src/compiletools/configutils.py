@@ -33,23 +33,63 @@ _DEFAULT_CANONICAL_ORDER = (
     "clang",
     "icc",
     "msvc",
+    # language standard (C)
+    "c99",
+    "c11",
+    "c17",
+    "c23",
+    # language standard (C++)
+    "cxx11",
+    "cxx14",
+    "cxx17",
+    "cxx20",
+    "cxx23",
     # linker (mutually exclusive — choose one; -fuse-ld=<name> on LDFLAGS)
     "ld",
     "gold",
     "mold",
     "wild",
+    # ABI / architecture
+    "m32",
+    "m64",
+    "native",
     # optimization
     "debug",
     "release",
     "releasewithdebinfo",
-    # instrumentation
+    # sanitizers (mutually exclusive in practice — pick one)
     "asan",
     "ubsan",
     "tsan",
     "msan",
+    # profiling / codegen
     "coverage",
     "lto",
-    "pgo",
+    "pgo-gen",
+    "pgo-use",
+    # hardening / codegen flags
+    "hardened",
+    "pie",
+    "static",
+    "splitdebug",
+    "strip",
+    # codegen knobs
+    "noexceptions",
+    "nortti",
+    "fastmath",
+    "werror",
+    "libcxx",
+    # advanced / specialized
+    "cfi",
+    "shadow-call-stack",
+    "time-trace",
+    # opinionated bundles (composites of the above)
+    "dev",
+    "ci",
+    "production",
+    "safety",
+    "perf",
+    "secure",
 )
 
 

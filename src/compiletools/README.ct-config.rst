@@ -61,33 +61,48 @@ VARIANT COMPOSITION
 ===================
 
 A variant is a composition of *axis* conf files — one per orthogonal
-concern: toolchain (``gcc``, ``clang``, ``icc``, ``msvc``), linker
-(``ld``, ``gold``, ``mold``, ``wild``), optimization (``debug``,
-``release``, ``releasewithdebinfo``), instrumentation (``asan``,
-``ubsan``, ``tsan``, ``msan``, ``coverage``, ``lto``, ``pgo``). To build
-with gcc, mold as the linker, the release optimization level, and
-AddressSanitizer you ask for::
+concern. The bundled axes (run ``ct-list-variants`` to see them all):
 
-    ct-cake --variant=gcc,mold,release,asan      # comma-separated
-    ct-cake --variant=gcc.mold.release.asan      # dot-separated (equivalent)
-    ct-cake --variant=gcc mold release asan      # whitespace-separated (also equivalent)
+- **Toolchain:** ``gcc``, ``clang``, ``icc``, ``msvc``
+- **C standard:** ``c99``, ``c11``, ``c17``, ``c23``
+- **C++ standard:** ``cxx11``, ``cxx14``, ``cxx17``, ``cxx20``, ``cxx23``
+- **Linker:** ``ld`` (default), ``gold``, ``mold``, ``wild``
+- **ABI / arch:** ``m32``, ``m64``, ``native``
+  (note: ``native`` defeats cross-machine cache reuse)
+- **Optimization:** ``debug``, ``release``, ``releasewithdebinfo``
+- **Sanitizers (mutually exclusive — pick one):** ``asan``, ``ubsan``,
+  ``tsan``, ``msan``
+- **Profiling / codegen:** ``coverage``, ``lto``, ``pgo-gen`` / ``pgo-use``
+- **Hardening / codegen flags:** ``hardened``, ``pie``, ``static``,
+  ``splitdebug``, ``strip``
+- **Codegen knobs:** ``noexceptions``, ``nortti``, ``fastmath``,
+  ``werror``, ``libcxx``
+- **Specialized:** ``cfi`` (clang CFI), ``shadow-call-stack`` (aarch64),
+  ``time-trace`` (clang compile profiling)
 
-All three forms canonicalize to ``gcc.mold.release.asan`` (the canonical
-order is read from ``variant-canonical-order`` in ct.conf — see above).
-The canonical name appears in ``cas-objdir/<variant>/``,
+To build with gcc, mold as the linker, C++20, the release optimization
+level, and AddressSanitizer you ask for::
+
+    ct-cake --variant=gcc,mold,cxx20,release,asan   # comma-separated
+    ct-cake --variant=gcc.mold.cxx20.release.asan   # dot-separated (equivalent)
+    ct-cake --variant=gcc mold cxx20 release asan   # whitespace-separated (also equivalent)
+
+All three forms canonicalize to ``gcc.cxx20.mold.release.asan`` (the
+canonical order is read from ``variant-canonical-order`` in ct.conf —
+see above). The canonical name appears in ``cas-objdir/<variant>/``,
 ``cas-pchdir/<variant>/``, ``compile_commands.<variant>.json``, and
 ``bin/<variant>/``, so two typings of the same set share caches and outputs.
 
 You do *not* need to write a conf file per combination.
-``gcc.mold.release.asan`` is synthesized at resolution time from
-``gcc.conf``, ``mold.conf``, ``release.conf``, and ``asan.conf`` — four
-files, not one per (toolchain × linker × opt × instrument) combination. To *tune* a specific composition, drop a literal
-``gcc.debug.asan.conf`` anywhere in the hierarchy; it layers on top of the
-synthesized atoms (the composite is semantically equivalent to a conf
-with ``extends = gcc, debug, asan``, picking up the atoms automatically).
-To pick different parents than the canonical tokens — or to replace the
-composition entirely with a curated parent set — write ``extends = ...``
-explicitly in the composite::
+``gcc.cxx20.mold.release.asan`` is synthesized at resolution time from
+the five axis conf files, not one per (toolchain × std × linker × opt ×
+instrument) combination. To *tune* a specific composition, drop a literal
+``<canonical_name>.conf`` anywhere in the hierarchy; it layers on top of
+the synthesized atoms (the composite is semantically equivalent to a conf
+with ``extends = <each canonical token>``, picking up the atoms
+automatically). To pick different parents than the canonical tokens — or
+to replace the composition entirely with a curated parent set — write
+``extends = ...`` explicitly in the composite::
 
     # myrelease.conf
     extends = gcc, release, lto
@@ -106,6 +121,57 @@ each other. The bundled ``gcc.conf`` and ``asan.conf`` ship this way.
 The ``blank.conf`` file is intentionally empty. ``--variant=blank``
 inherits all settings from the environment or parent configs, useful for
 shell-driven builds that pass ``CC``/``CXX``/``CFLAGS`` directly.
+
+OPINIONATED BUNDLES
+===================
+
+The bundled axes can be composed by hand for every build, but most
+projects converge on a handful of recurring combinations. ct-* ships six
+opinionated bundles (each is a tiny ``.conf`` file using ``extends = ...``)
+covering common workflows:
+
+============= ==================================== =========================
+Bundle        Composition                          When to use
+============= ==================================== =========================
+``dev``       gcc, cxx17, debug, asan, ubsan,      Daily development —
+              werror                                fast feedback,
+                                                    sanitizers catch most
+                                                    C++ bugs early.
+``ci``        gcc, cxx17, release, hardened,       Continuous integration
+              werror                                — production-like
+                                                    with strict warnings.
+``production`` gcc, cxx17, release, lto, hardened, Shipped binary —
+              pie, strip                            optimized, secured,
+                                                    minimal.
+``safety``    clang, cxx17, debug, asan, ubsan     Intensive sanitizer
+                                                    debugging (clang's
+                                                    sanitizer libs are
+                                                    most comprehensive).
+``perf``      gcc, cxx17, release, lto             Performance work.
+                                                    Deliberately NOT
+                                                    ``native`` — preserves
+                                                    cross-host cache
+                                                    reuse.
+``secure``    clang, cxx17, release, hardened,     Maximum hardening
+              pie, cfi                              including Control-Flow
+                                                    Integrity. Heavyweight
+                                                    (LTO required, ~5-15%
+                                                    runtime cost).
+============= ==================================== =========================
+
+Invoke a bundle the same way as any other variant::
+
+    ct-cake --variant=dev          # daily iteration
+    ct-cake --variant=production   # shipped binary
+    ct-cake --variant=safety       # sanitizer-driven debug
+
+To customize a bundle, write a project-level conf that extends it::
+
+    # myproject/ct.conf.d/myproduction.conf
+    extends = production
+    append-CXXFLAGS = -DMYPROJ_RELEASE_BUILD=1
+
+Then build with ``ct-cake --variant=myproduction``.
 
 UPGRADING FROM VARIANTALIASES
 =============================
