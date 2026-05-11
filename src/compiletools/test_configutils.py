@@ -46,7 +46,7 @@ class TestVariant:
                 exedir=uth.cakedir(),
                 gitroot=os.getcwd(),
             )
-            assert variant == "gcc.cxx17.debug"
+            assert variant == "gcc.cxx26.debug"
 
     def test_extract_variant_from_blank_argv(self):
         # Force to find the temp directory ct.conf
@@ -60,7 +60,7 @@ class TestVariant:
                 verbose=0,
                 gitroot=os.getcwd(),
             )
-            assert variant == "gcc.cxx17.debug"
+            assert variant == "gcc.cxx26.debug"
 
     def test_canonicalize_variant_input_with_default_order(self):
         # No project ct.conf — falls back to builtin canonical order.
@@ -247,11 +247,11 @@ class TestVariant:
                     gitroot=repo_root,
                 )
             axis_names = [a.name for a in resolution.axes]
-            # dev.conf: extends = gcc, cxx17, debug, asan, ubsan, werror
-            assert axis_names == ["gcc", "cxx17", "debug", "asan", "ubsan", "werror", "dev"]
+            # dev.conf: extends = gcc, cxx26, debug, asan, ubsan, werror
+            assert axis_names == ["gcc", "cxx26", "debug", "asan", "ubsan", "werror", "dev"]
 
     def test_bundle_production_full_chain(self):
-        # production = gcc, cxx17, release, lto, hardened, pie, strip
+        # production = gcc, cxx26, release, lto, hardened, pie, strip
         with uth.TempDirContextNoChange() as repo_root:
             uth.create_temp_ct_conf(repo_root, defaultvariant="production")
             with uth.DirectoryContext(repo_root):
@@ -265,7 +265,7 @@ class TestVariant:
                 )
             axis_names = [a.name for a in resolution.axes]
             assert axis_names == [
-                "gcc", "cxx17", "release", "lto", "hardened", "pie", "strip", "production",
+                "gcc", "cxx26", "release", "lto", "hardened", "pie", "strip", "production",
             ]
 
     def test_bundle_safety_uses_clang(self):

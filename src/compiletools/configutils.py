@@ -44,6 +44,7 @@ _DEFAULT_CANONICAL_ORDER = (
     "cxx17",
     "cxx20",
     "cxx23",
+    "cxx26",
     # linker (mutually exclusive — choose one; -fuse-ld=<name> on LDFLAGS)
     "ld",
     "gold",

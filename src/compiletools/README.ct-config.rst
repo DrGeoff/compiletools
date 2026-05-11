@@ -65,7 +65,7 @@ concern. The bundled axes (run ``ct-list-variants`` to see them all):
 
 - **Toolchain:** ``gcc``, ``clang``, ``icc``, ``msvc``
 - **C standard:** ``c99``, ``c11``, ``c17``, ``c23``
-- **C++ standard:** ``cxx11``, ``cxx14``, ``cxx17``, ``cxx20``, ``cxx23``
+- **C++ standard:** ``cxx11``, ``cxx14``, ``cxx17``, ``cxx20``, ``cxx23``, ``cxx26``
 - **Linker:** ``ld`` (default), ``gold``, ``mold``, ``wild``
 - **ABI / arch:** ``m32``, ``m64``, ``native``
   (note: ``native`` defeats cross-machine cache reuse)
@@ -133,26 +133,26 @@ covering common workflows:
 ============= ==================================== =========================
 Bundle        Composition                          When to use
 ============= ==================================== =========================
-``dev``       gcc, cxx17, debug, asan, ubsan,      Daily development —
+``dev``       gcc, cxx26, debug, asan, ubsan,      Daily development —
               werror                                fast feedback,
                                                     sanitizers catch most
                                                     C++ bugs early.
-``ci``        gcc, cxx17, release, hardened,       Continuous integration
+``ci``        gcc, cxx26, release, hardened,       Continuous integration
               werror                                — production-like
                                                     with strict warnings.
-``production`` gcc, cxx17, release, lto, hardened, Shipped binary —
+``production`` gcc, cxx26, release, lto, hardened, Shipped binary —
               pie, strip                            optimized, secured,
                                                     minimal.
-``safety``    clang, cxx17, debug, asan, ubsan     Intensive sanitizer
+``safety``    clang, cxx26, debug, asan, ubsan     Intensive sanitizer
                                                     debugging (clang's
                                                     sanitizer libs are
                                                     most comprehensive).
-``perf``      gcc, cxx17, release, lto             Performance work.
+``perf``      gcc, cxx26, release, lto             Performance work.
                                                     Deliberately NOT
                                                     ``native`` — preserves
                                                     cross-host cache
                                                     reuse.
-``secure``    clang, cxx17, release, hardened,     Maximum hardening
+``secure``    clang, cxx26, release, hardened,     Maximum hardening
               pie, cfi                              including Control-Flow
                                                     Integrity. Heavyweight
                                                     (LTO required, ~5-15%
