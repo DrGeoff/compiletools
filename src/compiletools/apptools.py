@@ -61,6 +61,15 @@ if _rich_rst_available and sys.version_info >= (3, 9):
                 sys.exit(0)
 
 
+# Sentinel default values used by --CPP, --LD, --CPPFLAGS, --LDFLAGS to mean
+# "if the user didn't supply this, fall back to CXX / CXXFLAGS". Kept as
+# constants so a rename can't silently break _check_resolved_compiler_available
+# (which compares against these strings to skip the existence check on slots
+# that haven't been substituted yet).
+_UNSUPPLIED_USE_CXX = "unsupplied_implies_use_CXX"
+_UNSUPPLIED_USE_CXXFLAGS = "unsupplied_implies_use_CXXFLAGS"
+
+
 def parser_has_option(cap, option_string):
     """Check whether *cap* already has an action for *option_string*.
 
@@ -96,6 +105,16 @@ def add_base_arguments(cap, argv=None, variant=None):
         "Composite variants compose multiple axis confs: --variant=gcc,debug,asan (or gcc.debug.asan, or "
         "gcc debug asan — all equivalent).",
         default=variant,
+    )
+    cap.add(
+        "--variant-canonical-order",
+        env_var="CT_VARIANT_CANONICAL_ORDER",
+        help="Override the canonical token ordering used to sort composite "
+        "--variant tokens. Comma/space/dot separated. Precedence: CLI > env "
+        "CT_VARIANT_CANONICAL_ORDER > ct.conf `variant-canonical-order = ...` "
+        "> builtin _DEFAULT_VARIANT_CANONICAL_ORDER. Rarely needed; the "
+        "builtin covers all bundled axes and composite bundles.",
+        default=None,
     )
     cap.add(
         "-v",
@@ -172,7 +191,7 @@ def add_common_arguments(cap, argv=None, variant=None):
         help="Compiler identification string.  The same string as CMake uses.",
         default=None,
     )
-    cap.add("--CPP", help="C preprocessor (override)", default="unsupplied_implies_use_CXX")
+    cap.add("--CPP", help="C preprocessor (override)", default=_UNSUPPLIED_USE_CXX)
     cap.add("--CC", help="C compiler (override)", default="gcc")
     # Default will be set later using functional compiler detection
     cap.add("--CXX", help="C++ compiler (override)", default=None)
@@ -180,7 +199,7 @@ def add_common_arguments(cap, argv=None, variant=None):
         "--CPPFLAGS",
         nargs="+",
         help="C preprocessor flags (override)",
-        default="unsupplied_implies_use_CXXFLAGS",
+        default=_UNSUPPLIED_USE_CXXFLAGS,
     )
     cap.add("--CXXFLAGS", nargs="+", help="C++ compiler flags (override)", default="-fPIC -g -Wall")
     cap.add("--CFLAGS", nargs="+", help="C compiler flags (override)", default="-fPIC -g -Wall")
@@ -304,12 +323,12 @@ def add_link_arguments(cap):
     """
     if _parser_has_option(cap, "--LD"):
         return
-    cap.add("--LD", help="Linker (override)", default="unsupplied_implies_use_CXX")
+    cap.add("--LD", help="Linker (override)", default=_UNSUPPLIED_USE_CXX)
     cap.add(
         "--LDFLAGS",
         "--LINKFLAGS",
         help="Linker flags (override)",
-        default="unsupplied_implies_use_CXXFLAGS",
+        default=_UNSUPPLIED_USE_CXXFLAGS,
     )
     _add_xxpend_argument(cap, "ldflags")
     _add_xxpend_argument(
@@ -2129,21 +2148,20 @@ def _commonsubstitutions(args):
     # in argv bypasses that — argparse stores the raw comma-separated string.
     # Resolve here so downstream consumers (cas-objdir/<variant>/, bindir,
     # compile_commands.<variant>.json) always see the dotted canonical form.
-    args.variant = compiletools.configutils.canonicalize_variant_input(args.variant)
+    args.variant = compiletools.configutils.canonicalize_variant_input(
+        args.variant, argv=getattr(args, "_argv", None)
+    )
     # Re-resolve fresh from the post-argparse variant value rather than
     # caching the create_parser-time resolution. Cheap (just file stats),
     # avoids module-level mutable state, and uses the correct variant when
-    # --variant was explicitly set on the CLI.
-    try:
-        args._variant_resolution = compiletools.configutils.resolve_variant(variant=args.variant)
-    except compiletools.configutils.VariantResolutionError:
-        # If a downstream tool was given an explicit --config=path, the
-        # resolver short-circuits via the explicit-config branch. If the
-        # post-argparse variant value points at a missing axis (unusual —
-        # would only happen if --variant changed to something invalid after
-        # create_parser's resolution succeeded), leave the resolution unset
-        # rather than crashing.
-        args._variant_resolution = None
+    # --variant was explicitly set on the CLI. Pass argv through so the
+    # explicit_config branch fires when --config=path was supplied
+    # (args.variant becomes the implied basename, which isn't a real
+    # axis — the resolver needs argv to know that the basename is from
+    # --config and not a request to look up a missing axis).
+    args._variant_resolution = compiletools.configutils.resolve_variant(
+        variant=args.variant, argv=getattr(args, "_argv", None)
+    )
     if args.verbose > 6:
         print(f"Determined variant to be {args.variant}")
     # Per-axis provenance is short (10-15 lines) and answers "why did I get
@@ -2414,7 +2432,7 @@ def _check_resolved_compiler_available(args) -> None:
     variant = getattr(args, "variant", "<unknown>")
     for slot in ("CC", "CXX", "LD"):
         value = getattr(args, slot, None)
-        if not value or value == "unsupplied_implies_use_CXX" or value == "unsupplied_implies_use_CXXFLAGS":
+        if not value or value == _UNSUPPLIED_USE_CXX or value == _UNSUPPLIED_USE_CXXFLAGS:
             # The "unsupplied" sentinel means a later step substitutes a
             # real value (typically CXX itself); skip these.
             continue
@@ -2669,6 +2687,12 @@ def parseargs(cap, argv, verbose=None, *, context):
     args = cap.parse_args(args=argv)
     args._parser = cap
     args._context = context
+    # Stash the original argv so post-parse code paths (notably the second
+    # resolve_variant call in _commonsubstitutions) can route through the
+    # explicit_config branch when --config=path was supplied. Without it,
+    # the re-resolve would try to look up the implied basename as an axis
+    # and raise VariantResolutionError.
+    args._argv = argv
 
     if "verbose" not in vars(args):
         raise ValueError(

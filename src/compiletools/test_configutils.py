@@ -620,6 +620,74 @@ class TestVariant:
             f"  example head: {example_tokens[:5]}"
         )
 
+    def test_canonical_order_can_be_overridden_via_cli(self):
+        """--variant-canonical-order on the CLI overrides ct.conf and the
+        builtin tuple.
+
+        Mirrors the existing override hierarchy (CLI > env > ct.conf >
+        builtin) for every other ct-* option, so a user can scope a
+        custom order to a single invocation without editing a conf file.
+        """
+        with uth.TempDirContextNoChange() as repo_root:
+            uth.create_temp_ct_conf(repo_root, defaultvariant="blank")
+            with uth.DirectoryContext(repo_root):
+                argv = ["--variant-canonical-order=zzz,gcc,debug,asan"]
+                order, source = compiletools.configutils.get_canonical_order(
+                    argv=argv,
+                    user_config_dir="/var",
+                    system_config_dir="/var",
+                    exedir=uth.cakedir(),
+                    gitroot=repo_root,
+                )
+            assert order == ("zzz", "gcc", "debug", "asan"), order
+            assert source == "argv", source
+
+    def test_canonical_order_can_be_overridden_via_env(self, monkeypatch):
+        """CT_VARIANT_CANONICAL_ORDER env var overrides ct.conf and builtin,
+        but loses to a CLI flag."""
+        monkeypatch.setenv("CT_VARIANT_CANONICAL_ORDER", "blank,gcc,debug")
+        with uth.TempDirContextNoChange() as repo_root:
+            uth.create_temp_ct_conf(repo_root, defaultvariant="blank")
+            with uth.DirectoryContext(repo_root):
+                order, source = compiletools.configutils.get_canonical_order(
+                    argv=[],
+                    user_config_dir="/var",
+                    system_config_dir="/var",
+                    exedir=uth.cakedir(),
+                    gitroot=repo_root,
+                )
+            assert order == ("blank", "gcc", "debug"), order
+            assert source == "env:CT_VARIANT_CANONICAL_ORDER", source
+
+    def test_canonical_order_cli_beats_env_beats_conf(self, monkeypatch):
+        """Full priority hierarchy: CLI > env > ct.conf > builtin."""
+        monkeypatch.setenv("CT_VARIANT_CANONICAL_ORDER", "env,wins,over,conf")
+        with uth.TempDirContextNoChange() as repo_root:
+            uth.create_temp_ct_conf(repo_root, defaultvariant="blank")
+            with open(os.path.join(repo_root, "ct.conf"), "a") as fh:
+                fh.write("variant-canonical-order = conf, only\n")
+            with uth.DirectoryContext(repo_root):
+                # env beats ct.conf
+                order, source = compiletools.configutils.get_canonical_order(
+                    argv=[],
+                    user_config_dir="/var",
+                    system_config_dir="/var",
+                    exedir=uth.cakedir(),
+                    gitroot=repo_root,
+                )
+                assert order == ("env", "wins", "over", "conf"), order
+                assert source.startswith("env:"), source
+                # CLI beats env
+                order, source = compiletools.configutils.get_canonical_order(
+                    argv=["--variant-canonical-order=cli,wins,all"],
+                    user_config_dir="/var",
+                    system_config_dir="/var",
+                    exedir=uth.cakedir(),
+                    gitroot=repo_root,
+                )
+                assert order == ("cli", "wins", "all"), order
+                assert source == "argv", source
+
     def test_bundled_composite_extends_obeys_canonical_order(self):
         """Bundled composite conf files (the ones with ``extends = ...``)
         must list their parents in canonical order, and must themselves be

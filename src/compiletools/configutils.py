@@ -152,42 +152,6 @@ def _parse_conf_file_cached(path):
         return fileparser.parse(cfg)
 
 
-def extract_item_from_ct_conf(
-    key,
-    user_config_dir=None,
-    system_config_dir=None,
-    exedir=None,
-    default=None,
-    verbose=0,
-    gitroot=None,
-):
-    """Extract the value for the given key from the ct.conf files.
-    Return the given default if no key was identified.
-
-    Walks the ct.conf hierarchy from highest to lowest priority and returns
-    the first match (so a project ct.conf overrides the bundled one).
-    """
-    for cfgpath in reversed(
-        get_existing_config_files(
-            filename="ct.conf",
-            user_config_dir=user_config_dir,
-            system_config_dir=system_config_dir,
-            exedir=exedir,
-            gitroot=gitroot,
-        )
-    ):
-        items = _parse_conf_file_cached(cfgpath)
-        try:
-            value = items[key]
-            if verbose >= 2:
-                print(" ".join([cfgpath, "contains", key, "=", str(value)]))
-            return value
-        except KeyError:
-            continue
-
-    return default
-
-
 def extract_item_from_ct_conf_with_source(
     key,
     user_config_dir=None,
@@ -196,11 +160,15 @@ def extract_item_from_ct_conf_with_source(
     verbose=0,
     gitroot=None,
 ):
-    """Like extract_item_from_ct_conf but also returns the path of the
-    ct.conf that defined the value (or None if no ct.conf defines it).
+    """Extract ``key`` from the ct.conf hierarchy. Return ``(value, path)``.
 
-    Used by the provenance renderer to attribute config decisions back to
-    their source file.
+    Walks from highest to lowest priority (project ct.conf overrides the
+    bundled one) and returns the first match plus the path that defined
+    it. Returns ``(None, None)`` if no ct.conf defines the key.
+
+    Used by the provenance renderer to attribute config decisions back
+    to their source file; ``extract_item_from_ct_conf`` is a value-only
+    wrapper over this function.
     """
     for cfgpath in reversed(
         get_existing_config_files(
@@ -217,6 +185,34 @@ def extract_item_from_ct_conf_with_source(
                 print(f"{cfgpath} contains {key} = {items[key]}")
             return items[key], cfgpath
     return None, None
+
+
+def extract_item_from_ct_conf(
+    key,
+    user_config_dir=None,
+    system_config_dir=None,
+    exedir=None,
+    default=None,
+    verbose=0,
+    gitroot=None,
+):
+    """Value-only convenience over ``extract_item_from_ct_conf_with_source``.
+
+    Returns the value from the highest-priority ct.conf that defines
+    ``key``, or ``default`` if no ct.conf defines it. The provenance path
+    is discarded.
+    """
+    value, _ = extract_item_from_ct_conf_with_source(
+        key,
+        user_config_dir=user_config_dir,
+        system_config_dir=system_config_dir,
+        exedir=exedir,
+        verbose=verbose,
+        gitroot=gitroot,
+    )
+    if value is None:
+        return default
+    return value
 
 
 def removedotconf(config):
@@ -263,8 +259,33 @@ def get_canonical_order(
     exedir=None,
     verbose=None,
     gitroot=None,
+    argv=None,
 ):
-    """Return (order_tuple, source_path_or_'builtin')."""
+    """Return (order_tuple, source_string).
+
+    Priority (highest to lowest):
+      1. ``--variant-canonical-order=<tokens>`` on the CLI (when argv supplied)
+      2. ``CT_VARIANT_CANONICAL_ORDER`` env var
+      3. ``variant-canonical-order = ...`` in any ct.conf in the hierarchy
+      4. Builtin ``_DEFAULT_VARIANT_CANONICAL_ORDER``
+
+    `source` describes which path won: ``"argv"``, ``"env:CT_VARIANT_CANONICAL_ORDER"``,
+    the absolute path of the ct.conf that defined it, or ``"builtin"``. Used
+    by ``format_variant_resolution`` to surface provenance in -vv traces.
+    """
+    # Mirror extract_variant: when no argv is supplied, fall back to
+    # sys.argv so the CLI flag is still honored when ct-* entry points
+    # call create_parser(argv=None) and let configargparse resolve
+    # sys.argv internally.
+    scan_argv = argv if argv is not None else sys.argv
+    cli_value = extract_value_from_argv("variant-canonical-order", argv=scan_argv)
+    if cli_value:
+        return split_variant(str(cli_value)), "argv"
+
+    env_value = os.environ.get("CT_VARIANT_CANONICAL_ORDER")
+    if env_value:
+        return split_variant(env_value), "env:CT_VARIANT_CANONICAL_ORDER"
+
     raw, source = extract_item_from_ct_conf_with_source(
         key="variant-canonical-order",
         user_config_dir=user_config_dir,
@@ -305,6 +326,7 @@ def canonicalize_variant_input(
     exedir=None,
     verbose=0,
     gitroot=None,
+    argv=None,
 ):
     """Convert a raw --variant string into its canonical dotted form.
 
@@ -313,7 +335,8 @@ def canonicalize_variant_input(
     token round-trips unchanged.
 
     Called from extract_variant() and from apptools._commonsubstitutions to
-    canonicalize argparse-stored --variant values.
+    canonicalize argparse-stored --variant values. When ``argv`` is supplied
+    it is consulted for ``--variant-canonical-order=...`` (highest priority).
     """
     tokens = split_variant(variant_str)
     if not tokens:
@@ -324,6 +347,7 @@ def canonicalize_variant_input(
         exedir=exedir,
         verbose=verbose,
         gitroot=gitroot,
+        argv=argv,
     )
     canonical_tokens = canonicalize_variant_tokens(tokens, order)
     return ".".join(canonical_tokens)
@@ -743,7 +767,7 @@ def resolve_variant(
         gitroot=gitroot,
     )
 
-    canonical_order, canonical_order_source = get_canonical_order(**search_kwargs)
+    canonical_order, canonical_order_source = get_canonical_order(argv=argv, **search_kwargs)
     tokens = split_variant(variant_str)
     canonical_tokens = canonicalize_variant_tokens(tokens, canonical_order)
     canonical_name = ".".join(canonical_tokens) if canonical_tokens else variant_str
