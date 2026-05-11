@@ -116,6 +116,43 @@ class TestVariant:
                 == "debug.gcc.asan"
             )
 
+    def test_canonical_order_override_with_project_axis(self):
+        # A project can include its own axis tokens in the canonical-order
+        # declaration. Tokens listed in the override sort to their declared
+        # position; tokens NOT listed still trail in user-typed order. This
+        # verifies the override + unknown-token rules compose correctly
+        # (the unknown-token tail rule only kicks in for tokens the override
+        # doesn't cover, not for tokens that fail to match the BUILTIN
+        # order).
+        with uth.TempDirContext():
+            with open("ct.conf", "w") as fh:
+                fh.write("variant = blank\n")
+                # myproj is now KNOWN — its declared position is between gcc and debug.
+                # extralib is left unknown — should still trail in user-typed order.
+                fh.write("variant-canonical-order = gcc, myproj, debug, asan\n")
+            assert (
+                compiletools.configutils.canonicalize_variant_input(
+                    "asan,myproj,debug,gcc",
+                    user_config_dir="/var",
+                    system_config_dir="/var",
+                    exedir="/var",
+                    gitroot=os.getcwd(),
+                )
+                == "gcc.myproj.debug.asan"
+            )
+            # Unknown token mixed in with override-known tokens — known
+            # tokens sort by declared position; unknown trails in input order.
+            assert (
+                compiletools.configutils.canonicalize_variant_input(
+                    "extralib,asan,gcc,myproj",
+                    user_config_dir="/var",
+                    system_config_dir="/var",
+                    exedir="/var",
+                    gitroot=os.getcwd(),
+                )
+                == "gcc.myproj.asan.extralib"
+            )
+
     def test_default_configs(self):
         with uth.TempDirContext() as _:
             uth.create_temp_ct_conf(os.getcwd())
@@ -242,7 +279,7 @@ class TestVariant:
                 ("blank.conf", "# empty floor\n"),
                 ("gcc.conf", "CC = gcc\n"),
                 ("debug.conf", "append-CFLAGS = -g\n"),
-                ("gcc.debug.conf", "extends = blank\nappear-CFLAGS = -DSOLO=1\n"),
+                ("gcc.debug.conf", "extends = blank\nappend-CFLAGS = -DSOLO=1\n"),
             ]:
                 with open(os.path.join(conf_d, name), "w") as fh:
                     fh.write(content)

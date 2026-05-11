@@ -575,12 +575,20 @@ def resolve_variant(
       2. Canonicalize their order using `variant-canonical-order` (or the
          builtin default if no ct.conf defines one).
       3. If a literal conf file matching the canonical dotted name exists
-         anywhere in the hierarchy, use it as a composite override (its
-         flags layer on top of the composed axes; its extends, if present,
-         is ignored — the canonical decomposition is authoritative).
-      4. Recursively resolve each token as an axis. An axis with
-         `extends = ...` pulls in its parents (DFS, first-visit dedup,
-         cycle detection).
+         anywhere in the hierarchy, use it as a composite override:
+           - By default the composite layers on top of the canonical-token
+             atoms (semantically equivalent to a conf with
+             `extends = <each canonical token>`), so a tuned composite
+             "tunes on top of" synthesized atoms.
+           - If the composite specifies `extends = ...` explicitly, that
+             list of parents replaces the implicit canonical-token
+             derivation (use `extends = blank` to opt out of composition).
+           - When several composite files exist in the hierarchy (bundled
+             + project), the highest-priority file's `extends` value wins
+             — same rule as every other scalar key under configargparse.
+      4. Recursively resolve each chain-seed token as an axis. An axis
+         with `extends = ...` pulls in its parents (DFS, first-visit
+         dedup, cycle detection).
       5. Build a flat priority-ordered list of conf paths:
             ct.conf hierarchy < axis_1 (bundled→project) < axis_2 < ... < composite_override < --config
 
@@ -643,7 +651,7 @@ def resolve_variant(
             composite_override=None,
             base_ct_conf_files=base_ct_conf_files,
             canonical_order=tuple(canonical_order),
-            canonical_order_source=canonical_order_source or "builtin",
+            canonical_order_source=canonical_order_source,
             explicit_config=explicit_config,
         )
 
@@ -707,7 +715,7 @@ def resolve_variant(
         composite_override=composite_override,
         base_ct_conf_files=base_ct_conf_files,
         canonical_order=tuple(canonical_order),
-        canonical_order_source=canonical_order_source or "builtin",
+        canonical_order_source=canonical_order_source,
         explicit_config=explicit_config,
     )
 
