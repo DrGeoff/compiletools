@@ -3,8 +3,6 @@ import sys
 
 import compiletools.apptools
 import compiletools.cake
-import compiletools.configutils
-import compiletools.utils
 
 
 def main(argv=None):
@@ -20,19 +18,15 @@ def main(argv=None):
         sys.argv.append("-vvv")
     from compiletools.build_context import BuildContext
 
-    args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+    compiletools.apptools.parseargs(cap, argv, context=BuildContext())
 
     # Note that when the "--write-out-config-file" is in effect that
     # we never get to this print.  configargparse exits before this which is
     # annoying.
     print()
-    # Always emit the per-axis provenance trace from ct-config so users
-    # can see exactly which file contributed which value — that's its
-    # primary purpose. Other tools must opt in via --variant-trace.
-    resolution = getattr(args, "_variant_resolution", None)
-    if isinstance(resolution, compiletools.configutils.VariantResolution):
-        print(compiletools.configutils.format_variant_resolution(resolution))
-        print()
+    # The per-axis provenance trace is emitted unconditionally by
+    # parseargs() / _commonsubstitutions for every ct-* tool, so ct-config
+    # doesn't print it a second time here.
     return 0
 
 

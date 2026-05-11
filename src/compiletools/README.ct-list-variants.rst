@@ -26,29 +26,31 @@ Other ct-* applications use a --variant=<debug/release/clang.debug/etc>
 option to specify the parameters to be used for the build.  ct-list-variants
 is the tool you use to discover what variants are available on your system.
 
-It should be noted that a variant is simply a config file without the .conf.
+A variant is a composition of *axis* conf files — one per orthogonal
+concern (toolchain ``gcc``/``clang``, optimization ``debug``/``release``,
+instrumentation ``asan``/``ubsan``/``coverage``/``lto``/…). ``--variant=gcc,debug,asan``
+(or ``gcc.debug.asan`` or ``gcc debug asan`` — comma, dot, and whitespace
+are all equivalent separators) splits into the canonical-ordered token
+list ``gcc.debug.asan`` and synthesizes the conf-file list from
+``gcc.conf`` + ``debug.conf`` + ``asan.conf`` — no per-combination conf
+file required. A literal ``gcc.debug.asan.conf`` anywhere in the hierarchy
+acts as a *tune-on-top* override: it layers on the synthesized atoms
+unless it declares ``extends = ...`` explicitly to choose its own parents.
+
 Config files for the ct-* applications are programmatically located using
 python-appdirs, which on linux is a wrapper around the XDG specification.
 The default locations are /etc/xdg/ct/ and $HOME/.config/ct/.
 Configuration is implemented using python-configargparse which automatically
 handles environment variables, command line arguments, system configs,
-and user configs.  Also there are two levels of configs.  There is a ct.conf
-that contains the basic variables that apply no matter what variant
-(i.e, debug/release/etc) is being built.  Then there are variant configs that
-contain the details for the debug/release/etc.
-
-ct.conf can specify a variant aliases map so as to reduce the amount of typing
-you need to do for a --variant=some.long.variant.name. As an example,
---variant=debug is actually a variant alias for "gcc.debug".  So the config
-file that gets opened is "gcc.debug.conf".
+and user configs.
 
 If any config value is specified in more than one way then
 
 * command line > environment variables > config file values > defaults
 
-ct-list-variants shows the variant aliases defined on the system, the various
-variant configs available, and the ordering in which the configs will be called
-if there is any duplication in configuration filenames.
+ct-list-variants shows the canonical-order axis declaration, the available
+axis conf files in each priority tier, and which directories the resolver
+will consult.
 
 OPTIONS
 =======
@@ -75,15 +77,23 @@ EXAMPLES
 List all available variants::
 
     $ ct-list-variants
-    Variant aliases are:
-        debug=blank
-        release=blank.release
-    From highest to lowest priority configuration directories, the possible variants are:
+    Variants compose via axis conf files (e.g. --variant=gcc,debug,asan).
+    Canonical token order (/opt/.../src/compiletools/ct.conf.d/ct.conf):
+      blank, gcc, clang, icc, msvc, debug, release, asan, ubsan, tsan, coverage, lto, pgo
+    From highest to lowest priority configuration directories, the available axis confs are:
     /home/user/.config/ct
         None found
-    /etc/xdg/ct
+    /opt/.../src/compiletools/ct.conf.d
+        asan
         blank
-        blank.release
+        clang
+        coverage
+        debug
+        gcc
+        lto
+        release
+        tsan
+        ubsan
 
 Get variants as a simple list::
 

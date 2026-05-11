@@ -97,13 +97,6 @@ def add_base_arguments(cap, argv=None, variant=None):
         "gcc debug asan — all equivalent).",
         default=variant,
     )
-    compiletools.utils.add_flag_argument(
-        parser=cap,
-        name="variant-trace",
-        dest="variant_trace",
-        default=False,
-        help="After parsing, print a per-axis breakdown of which conf files contributed to the resolved variant.",
-    )
     cap.add(
         "-v",
         "--verbose",
@@ -2028,10 +2021,27 @@ def _commonsubstitutions(args):
     # Resolve here so downstream consumers (cas-objdir/<variant>/, bindir,
     # compile_commands.<variant>.json) always see the dotted canonical form.
     args.variant = compiletools.configutils.canonicalize_variant_input(args.variant)
-    args._variant_resolution = _LAST_VARIANT_RESOLUTION.get("resolution")
+    # Re-resolve fresh from the post-argparse variant value rather than
+    # caching the create_parser-time resolution. Cheap (just file stats),
+    # avoids module-level mutable state, and uses the correct variant when
+    # --variant was explicitly set on the CLI.
+    try:
+        args._variant_resolution = compiletools.configutils.resolve_variant(variant=args.variant)
+    except compiletools.configutils.VariantResolutionError:
+        # If a downstream tool was given an explicit --config=path, the
+        # resolver short-circuits via the explicit-config branch. If the
+        # post-argparse variant value points at a missing axis (unusual —
+        # would only happen if --variant changed to something invalid after
+        # create_parser's resolution succeeded), leave the resolution unset
+        # rather than crashing.
+        args._variant_resolution = None
     if args.verbose > 6:
         print(f"Determined variant to be {args.variant}")
-    if getattr(args, "variant_trace", False) and args._variant_resolution is not None:
+    # Per-axis provenance is short (10-15 lines) and answers "why did I get
+    # these flags?" without rebuilding. Emit it at -vv and above; quiet by
+    # default so build-system wrappers around ct-cake aren't surprised by
+    # extra stdout. ct-config auto-bumps verbosity so it always shows.
+    if args.verbose >= 2 and args._variant_resolution is not None:
         print(compiletools.configutils.format_variant_resolution(args._variant_resolution))
 
     _tier_one_modifications(args)
@@ -2169,11 +2179,6 @@ def _fix_variable_handling_method(cap, argv, verbose):
 _LEGACY_CAS_KEY_RE = re.compile(r"^\s*(objdir|pchdir)\s*=", re.MULTILINE)
 _LEGACY_VARIANT_KEY_RE = re.compile(r"^\s*variantaliases\s*=", re.MULTILINE)
 
-# Cache of the most recently resolved VariantResolution, populated by
-# create_parser() and read back by parseargs() so it can attach the
-# structured resolution to args without re-resolving.
-_LAST_VARIANT_RESOLUTION: dict = {}
-
 
 def _check_legacy_variant_config_keys(config_files) -> None:
     """Fail loud on the obsolete ``variantaliases =`` key.
@@ -2277,10 +2282,6 @@ def create_parser(description, argv=None, include_config=True, include_write_con
         config_files = resolution.flat_paths
         _check_legacy_cas_config_keys(config_files)
         _check_legacy_variant_config_keys(config_files)
-        # Stash the resolution where parseargs() can find it without
-        # re-resolving — the per-axis provenance is consumed by ct-config
-        # and any tool that asks for --variant-trace.
-        _LAST_VARIANT_RESOLUTION["resolution"] = resolution
         kwargs = {
             "description": description,
             "formatter_class": configargparse.ArgumentDefaultsHelpFormatter,
