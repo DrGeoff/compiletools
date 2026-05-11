@@ -1209,7 +1209,10 @@ def test_ct_trim_cache_evicts_old_pcm_entries(tmp_path, monkeypatch):
         env=env,
     )
     assert r.returncode == 0, f"build failed:\n{r.stdout}\n{r.stderr}"
-    pcmdir_root = workdir / "cas-pcmdir" / "blank"
+    # Default variant resolves to gcc.debug (the bundled ct.conf default
+    # since the variant-aliases retirement); env CXX still selects clang++
+    # because env > config-file in the resolution hierarchy.
+    pcmdir_root = next((workdir / "cas-pcmdir").iterdir())
     real_dirs = [p for p in pcmdir_root.iterdir() if p.is_dir()]
     assert real_dirs, f"no cmd_hash dirs under {pcmdir_root}"
     real_dir = real_dirs[0]

@@ -104,18 +104,17 @@ def find_possible_variants(
         else:
             removeconf = ".conf"
 
-    style.append_text("Variant aliases are:")
-    style.append_text(
-        compiletools.configutils.extract_item_from_ct_conf(
-            key="variantaliases",
-            user_config_dir=user_config_dir,
-            system_config_dir=system_config_dir,
-            exedir=exedir,
-            verbose=verbose,
-            gitroot=gitroot,
-        )
+    style.append_text("Variants compose via axis conf files (e.g. --variant=gcc,debug,asan).")
+    canonical_order, order_source = compiletools.configutils._get_canonical_order(
+        user_config_dir=user_config_dir,
+        system_config_dir=system_config_dir,
+        exedir=exedir,
+        verbose=verbose,
+        gitroot=gitroot,
     )
-    style.append_text("From highest to lowest priority configuration directories, the possible variants are:")
+    style.append_text(f"Canonical token order ({order_source}):")
+    style.append_text("  " + ", ".join(canonical_order))
+    style.append_text("From highest to lowest priority configuration directories, the available axis confs are:")
 
     search_directories = compiletools.configutils.default_config_directories(
         user_config_dir=user_config_dir,

@@ -92,8 +92,17 @@ def add_base_arguments(cap, argv=None, variant=None):
 
     cap.add(
         "--variant",
-        help="Specifies which variant of the config should be used. Use the config name without the .conf",
+        help="Specifies which variant of the config should be used. Use the config name without the .conf. "
+        "Composite variants compose multiple axis confs: --variant=gcc,debug,asan (or gcc.debug.asan, or "
+        "gcc debug asan — all equivalent).",
         default=variant,
+    )
+    compiletools.utils.add_flag_argument(
+        parser=cap,
+        name="variant-trace",
+        dest="variant_trace",
+        default=False,
+        help="After parsing, print a per-axis breakdown of which conf files contributed to the resolved variant.",
     )
     cap.add(
         "-v",
@@ -2012,16 +2021,18 @@ def _commonsubstitutions(args):
     if args.verbose > 8:
         print("Performing common substitutions")
 
-    # Apply variantaliases to the parsed args.variant. The default value for
-    # --variant came from extract_variant(argv) at parser construction with
-    # aliases already applied, but an explicit --variant=<alias> in argv
-    # bypasses that — argparse stores the raw alias string. Resolve here so
-    # downstream consumers always see the canonical variant. Operates on
-    # args.variant directly (not argv / sys.argv) so it stays correct in
-    # tests and embedded callers where sys.argv != the parsed argv.
-    args.variant = compiletools.configutils.resolve_variant_aliases(args.variant)
+    # Canonicalize the parsed args.variant. The default value for --variant
+    # came from extract_variant(argv) at parser construction with composite
+    # input already canonicalized, but an explicit --variant=gcc,debug,asan
+    # in argv bypasses that — argparse stores the raw comma-separated string.
+    # Resolve here so downstream consumers (cas-objdir/<variant>/, bindir,
+    # compile_commands.<variant>.json) always see the dotted canonical form.
+    args.variant = compiletools.configutils.canonicalize_variant_input(args.variant)
+    args._variant_resolution = _LAST_VARIANT_RESOLUTION.get("resolution")
     if args.verbose > 6:
         print(f"Determined variant to be {args.variant}")
+    if getattr(args, "variant_trace", False) and args._variant_resolution is not None:
+        print(compiletools.configutils.format_variant_resolution(args._variant_resolution))
 
     _tier_one_modifications(args)
     _extend_includes_using_git_root(args)
@@ -2156,6 +2167,46 @@ def _fix_variable_handling_method(cap, argv, verbose):
 
 
 _LEGACY_CAS_KEY_RE = re.compile(r"^\s*(objdir|pchdir)\s*=", re.MULTILINE)
+_LEGACY_VARIANT_KEY_RE = re.compile(r"^\s*variantaliases\s*=", re.MULTILINE)
+
+# Cache of the most recently resolved VariantResolution, populated by
+# create_parser() and read back by parseargs() so it can attach the
+# structured resolution to args without re-resolving.
+_LAST_VARIANT_RESOLUTION: dict = {}
+
+
+def _check_legacy_variant_config_keys(config_files) -> None:
+    """Fail loud on the obsolete ``variantaliases =`` key.
+
+    The alias mechanism was replaced by config-file inheritance + axis
+    composition. configargparse silently ignores unknown keys, so an old
+    ``ct.conf`` with ``variantaliases = {'debug':'gcc.debug'}`` would
+    quietly stop working and the user would build the wrong variant. Raise
+    a pointer at the upgrade guide instead.
+    """
+    offenders = []
+    for path in config_files:
+        try:
+            with open(path) as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        for match in _LEGACY_VARIANT_KEY_RE.finditer(text):
+            line_no = text.count("\n", 0, match.start()) + 1
+            offenders.append((path, line_no))
+    if offenders:
+        details = "\n".join(f"  {p}:{n}: variantaliases" for p, n in offenders)
+        raise RuntimeError(
+            "Legacy 'variantaliases =' config key detected. The variant alias "
+            "mechanism has been replaced by config inheritance + axis composition:\n"
+            f"{details}\n"
+            "Replace the alias dict with either (a) an `extends = ...` directive in "
+            "the named conf file, or (b) the default variant set to the composed name "
+            "(e.g. `variant = gcc.debug` instead of "
+            "`variantaliases = {'debug':'gcc.debug'}`). See "
+            "README.ct-config.rst section 'Upgrading from variantaliases' for the "
+            "migration recipe."
+        )
 
 
 def _check_legacy_cas_config_keys(config_files) -> None:
@@ -2222,8 +2273,14 @@ def create_parser(description, argv=None, include_config=True, include_write_con
     """
     if include_config:
         variant = compiletools.configutils.extract_variant(argv=argv)
-        config_files = compiletools.configutils.config_files_from_variant(variant=variant, argv=argv)
+        resolution = compiletools.configutils.resolve_variant(variant=variant, argv=argv)
+        config_files = resolution.flat_paths
         _check_legacy_cas_config_keys(config_files)
+        _check_legacy_variant_config_keys(config_files)
+        # Stash the resolution where parseargs() can find it without
+        # re-resolving — the per-axis provenance is consumed by ct-config
+        # and any tool that asks for --variant-trace.
+        _LAST_VARIANT_RESOLUTION["resolution"] = resolution
         kwargs = {
             "description": description,
             "formatter_class": configargparse.ArgumentDefaultsHelpFormatter,

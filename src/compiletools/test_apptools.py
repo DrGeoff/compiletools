@@ -997,20 +997,21 @@ class TestVariantResolutionRespectsArgv:
                     f"lacks --variant in pytest) and clobbered the parsed value."
                 )
 
-    def test_argv_variant_alias_is_still_canonicalized(self):
-        """An alias passed via --variant in argv is still resolved to its
-        canonical form — the original purpose of the post-parse step is preserved."""
+    def test_argv_composite_variant_is_canonicalized(self):
+        """A composite --variant on the CLI (comma/space separated) is
+        canonicalized to its dotted form by _commonsubstitutions, so
+        downstream consumers see the canonical name in args.variant."""
         import compiletools.apptools as apptools
         import compiletools.compilation_database as cdb
         import compiletools.hunter
         import compiletools.testhelper as uth
 
         with uth.TempDirContext():
-            uth.create_temp_ct_conf(os.getcwd())  # dbg -> foo.debug
+            uth.create_temp_ct_conf(os.getcwd())
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
                 argv = [
                     "--config=" + temp_config_name,
-                    "--variant=dbg",
+                    "--variant=debug,gcc",
                     "--no-git-root",
                 ]
                 cap = apptools.create_parser("regression test", argv=argv)
@@ -1018,7 +1019,8 @@ class TestVariantResolutionRespectsArgv:
                 compiletools.hunter.add_arguments(cap)
                 with uth.ParserContext():
                     args = apptools.parseargs(cap, argv, context=BuildContext())
-                assert args.variant == "foo.debug", (
-                    f"Alias 'dbg' should canonicalize to 'foo.debug' per the "
-                    f"variantaliases mapping in the temp ct.conf; got {args.variant!r}."
+                assert args.variant == "gcc.debug", (
+                    f"Composite 'debug,gcc' on the CLI should canonicalize to "
+                    f"'gcc.debug' (gcc sorts before debug in the canonical order); "
+                    f"got {args.variant!r}."
                 )

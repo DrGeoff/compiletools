@@ -52,7 +52,7 @@ pytest configuration is in `pyproject.toml` (`[tool.pytest.ini_options]`): tests
 
 The build process in `cake.py` follows this sequence:
 
-1. **Config Resolution** -- `configutils.py` merges config from 7+ priority levels (bundled < system < venv < user < project < cwd < env < CLI). Variant system selects compiler/optimization profiles (e.g., `gcc.debug`, `clang.release`). Variant aliases map `debug` -> `blank`, `release` -> `blank.release`.
+1. **Config Resolution** -- `configutils.py` merges config from 7+ priority levels (bundled < system < venv < user < project < cwd < env < CLI). Variants are *composed* from axis conf files (one per orthogonal concern: toolchain / optimization / instrumentation). `--variant=gcc,debug,asan` (comma, dot, or whitespace separators — all equivalent) splits into atomic tokens, canonicalizes their order via `variant-canonical-order` in `ct.conf` (sorted to the dotted form `gcc.debug.asan` used in all CAS paths), and synthesizes the conf file list from `gcc.conf` + `debug.conf` + `asan.conf`. A literal `<canonical_name>.conf` anywhere in the hierarchy is an authoritative override (its `extends = ...` directive can pull in parents). Axis confs use `append-CFLAGS = ...` form so multiple axes accumulate flags additively across the configargparse layering. The `variantaliases = {...}` dict is gone; `_check_legacy_variant_config_keys` raises if any resolved `ct.conf` still defines it.
 
 2. **Target Discovery** -- `findtargets.py` scans for executables (files containing `main(` and similar markers from `ct.conf`) and tests (files including `unit_test.hpp`). This triggers a two-stage argument reparse -- first parse extracts the variant, discovery modifies the target list, then a second parse produces the final configuration.
 
@@ -188,7 +188,8 @@ The `--use-mtime` boolean (registered in `apptools.add_cas_arguments`, called fr
 
 ### Configuration Files
 
-- `ct.conf.d/ct.conf` -- default variant, variant aliases, exe/test markers, file-locking settings
+- `ct.conf.d/ct.conf` -- default variant, `variant-canonical-order` axis ordering, exe/test markers, file-locking settings
+- `ct.conf.d/{axis}.conf` -- per-axis bundled defaults (`gcc.conf`, `clang.conf`, `debug.conf`, `release.conf`, `asan.conf`, `ubsan.conf`, `tsan.conf`, `coverage.conf`, `lto.conf`). Composition collapses what was previously an N×M×K explosion of `<compiler>.<opt>.<instrument>.conf` files into N + M + K axis files plus on-the-fly synthesis.
 - `ct.conf.d/{variant}.conf` -- compiler-specific flags (e.g., `gcc.debug.conf`, `clang.release.conf`)
 - Config priority: bundled < system (`/etc/xdg/ct`) < venv < user (`~/.config/ct`) < project (`{gitroot}/ct.conf.d/`) < cwd < env < CLI
 
