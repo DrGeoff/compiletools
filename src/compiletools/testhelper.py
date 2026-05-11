@@ -349,13 +349,15 @@ def create_temp_config(tempdir=None, filename=None, extralines=None):
     return filename
 
 
-def create_temp_ct_conf(tempdir, defaultvariant="gcc.debug", extralines=None):
+def create_temp_ct_conf(tempdir, defaultvariant="gcc.cxx17.debug", extralines=None):
     """User is responsible for removing the config file when
     they are finished.
 
-    Default variant is ``gcc.debug`` — canonicalizes to itself under the
-    builtin canonical-order, and the bundled ``gcc.conf`` + ``debug.conf``
-    axis files satisfy the resolver in tests that don't supply their own.
+    Default variant is ``gcc.cxx17.debug`` — matches the bundled ct.conf
+    default after the C++-standard axis was split out of the toolchain
+    confs. Canonicalizes to itself under the builtin canonical-order;
+    the bundled ``gcc.conf`` + ``cxx17.conf`` + ``debug.conf`` axis files
+    satisfy the resolver in tests that don't supply their own.
     """
     if extralines is None:
         extralines = []
