@@ -3485,6 +3485,21 @@ def available_backends() -> list[str]:
     return sorted(_REGISTRY.keys())
 
 
+def ensure_backends_registered() -> None:
+    """Import all built-in backend modules to trigger @register_backend.
+
+    Called lazily by code that enumerates the registry rather than from this
+    module's import time, to keep startup cost low for non-build code paths
+    and to avoid the build_backend ← bazel_backend ← build_backend cycle.
+    """
+    import compiletools.bazel_backend
+    import compiletools.cmake_backend
+    import compiletools.makefile_backend
+    import compiletools.ninja_backend
+    import compiletools.trace_backend
+    import compiletools.tup_backend  # noqa: F401
+
+
 def backend_tool_command(name: str) -> str | None:
     """Return the external tool command for a backend, or None if
     self-executing. Reads ``cls.tool_command()`` from the registered

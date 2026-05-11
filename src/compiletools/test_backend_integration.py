@@ -13,20 +13,16 @@ import subprocess
 import pytest
 
 import compiletools.apptools
-import compiletools.bazel_backend
-import compiletools.cmake_backend
 import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
-import compiletools.makefile_backend
-import compiletools.ninja_backend
 import compiletools.testhelper as uth
-import compiletools.trace_backend
-import compiletools.tup_backend
 import compiletools.utils
-from compiletools.build_backend import available_backends, get_backend_class
+from compiletools.build_backend import available_backends, ensure_backends_registered, get_backend_class
 from compiletools.build_context import BuildContext
 from compiletools.test_base import BaseCompileToolsTestCase
+
+ensure_backends_registered()
 
 
 def _setup_backend_for_source(backend_name, tmp_path, src_file="helloworld_cpp.cpp"):

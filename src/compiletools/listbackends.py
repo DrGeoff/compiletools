@@ -1,20 +1,12 @@
 import compiletools.apptools
 import compiletools.utils
 from compiletools.build_backend import (
-    _REGISTRY,
     available_backends,
     backend_tool_command,
+    ensure_backends_registered,
+    get_backend_class,
     is_backend_available,
 )
-
-
-def _ensure_backends_registered():
-    import compiletools.bazel_backend
-    import compiletools.cmake_backend
-    import compiletools.makefile_backend
-    import compiletools.ninja_backend
-    import compiletools.trace_backend
-    import compiletools.tup_backend  # noqa: F401 -- last import, triggers all registrations
 
 
 def add_arguments(parser):
@@ -31,26 +23,22 @@ def add_arguments(parser):
 
 
 def list_backends(args=None):
-    _ensure_backends_registered()
+    ensure_backends_registered()
 
-    style = "pretty"
-    show_all = False
-    if args:
-        style = args.style or "pretty"
-        show_all = args.show_all
+    style = getattr(args, "style", None) or "pretty"
+    show_all = getattr(args, "show_all", False)
 
     names = available_backends()
     if not show_all:
         names = [n for n in names if is_backend_available(n)]
 
     if style == "pretty":
-        lines = []
-        lines.append(f"{'Backend':<10} {'Build file':<18} {'Tool':<18} {'Available'}")
-        lines.append("-" * 59)
+        header = f"{'Backend':<10} {'Build file':<18} {'Tool':<18} {'Available'}"
+        lines = [header, "-" * len(header)]
         for name in names:
-            cls = _REGISTRY[name]
+            cls = get_backend_class(name)
             tool = backend_tool_command(name) or "(builtin)"
-            available = "yes" if is_backend_available(name) else "no"
+            available = "yes" if (not show_all or is_backend_available(name)) else "no"
             lines.append(f"{name:<10} {cls.build_filename():<18} {tool:<18} {available}")
         return "\n".join(lines) + "\n"
     elif style == "flat":

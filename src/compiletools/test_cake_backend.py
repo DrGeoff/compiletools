@@ -3,14 +3,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import compiletools.apptools
-import compiletools.bazel_backend
-import compiletools.cmake_backend
-import compiletools.makefile_backend
-import compiletools.ninja_backend
-import compiletools.trace_backend
-import compiletools.tup_backend
-from compiletools.build_backend import available_backends, get_backend_class
+from compiletools.build_backend import available_backends, ensure_backends_registered, get_backend_class
 from compiletools.testhelper import CakeTestContext
+
+ensure_backends_registered()
 
 
 class TestBackendCLIArg:

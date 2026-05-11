@@ -20,23 +20,9 @@ import compiletools.magicflags
 import compiletools.namer
 import compiletools.utils
 import compiletools.wrappedos
-from compiletools.build_backend import available_backends, get_backend_class
+from compiletools.build_backend import available_backends, ensure_backends_registered, get_backend_class
 from compiletools.build_context import BuildContext
 from compiletools.version import __version__, get_package_git_sha
-
-
-def _ensure_backends_registered():
-    """Import all backend modules to trigger @register_backend decoration.
-
-    Called lazily on first use (argument parsing or backend dispatch) rather
-    than at module import time, to reduce startup cost for non-build paths.
-    """
-    import compiletools.bazel_backend
-    import compiletools.cmake_backend
-    import compiletools.makefile_backend
-    import compiletools.ninja_backend
-    import compiletools.trace_backend
-    import compiletools.tup_backend  # noqa: F401
 
 
 class Cake:
@@ -91,7 +77,7 @@ class Cake:
 
     @staticmethod
     def add_arguments(cap):
-        _ensure_backends_registered()
+        ensure_backends_registered()
 
         # General arguments needed by all backends
         compiletools.apptools.add_target_arguments_ex(cap)

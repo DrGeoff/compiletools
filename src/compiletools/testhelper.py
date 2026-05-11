@@ -1140,14 +1140,10 @@ def CakeTestContext(backend_name="make", **arg_overrides):
         with CakeTestContext("ninja", tests=["test.cpp"]) as (cake, tmpdir):
             cake.process()
     """
-    # Ensure all backends are registered
-    import compiletools.bazel_backend
-    import compiletools.cmake_backend
-    import compiletools.makefile_backend
-    import compiletools.ninja_backend
-    import compiletools.trace_backend
-    import compiletools.tup_backend  # noqa: F401
+    from compiletools.build_backend import ensure_backends_registered
     from compiletools.cake import Cake
+
+    ensure_backends_registered()
 
     with TempDirContextNoChange() as tmpdir:
         # Cake needs extra fields beyond the basic backend args
