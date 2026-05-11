@@ -263,6 +263,69 @@ or equivalently add an environment variable
 VARIABLE_HANDLING_METHOD=append. Inside conf files, just use the
 ``append-CFLAGS = ...`` form directly — there's no global flag needed.
 
+COMPILER VERSION REQUIREMENTS
+=============================
+
+The default variant ``gcc.cxx26.debug`` and the opinionated bundles
+(``dev``, ``ci``, ``production``, ``perf``) all pin **C++26**, which
+requires:
+
+- **gcc >= 14**, or
+- **clang >= 18**
+
+Older compilers spell C++26 as ``-std=c++2c``; cxx26.conf uses
+``-std=c++26`` for forward compatibility, so an older compiler will
+emit ``unrecognized command line option`` and the build will fail.
+
+Two startup-time guards now catch the common misconfigurations before
+the compile step fails opaquely (``apptools._check_resolved_compiler_available``
+and ``apptools._check_compiler_supports_requested_standard``):
+
+1. **Missing toolchain.** Picking ``--variant=gcc.*`` on a system
+   without gcc installed used to fail later with a generic
+   ``g++: command not found`` and no pointer at *which* variant
+   requested g++. The startup check now raises clearly::
+
+       Resolved CXX='g++' is not on PATH and is not an executable file.
+         variant: gcc.cxx26.debug
+         This usually means the toolchain axis pinned by your --variant
+         isn't installed. Install it, or switch to a different toolchain
+         axis (e.g. --variant=clang,...) that resolves to a binary you have.
+         Run `ct-config --variant=gcc.cxx26.debug -vv` to see which conf
+         file set CXX.
+
+2. **Compiler too old.** Picking ``--variant=...,cxx26`` on gcc 11
+   (Ubuntu 22.04 LTS, e.g.) used to fail with an opaque ``unrecognized
+   command line option '-std=c++26'``. The startup check now raises
+   clearly::
+
+       Resolved CXX='g++' is gcc 11, which does not support -std=c++26
+       (requires gcc >= 14).
+         variant: gcc.cxx26.debug
+         Either upgrade your gcc toolchain, or compose a lower standard
+         axis (e.g. --variant=..,cxx20 in place of ..,cxx26).
+         Run `ct-config --variant=gcc.cxx26.debug -vv` to see which conf
+         file requested -std=c++26.
+
+For older compilers, choose a different language-standard axis from the
+catalog (``cxx20`` is widely supported on gcc 10+ / clang 10+, ``cxx17``
+on gcc 7+ / clang 5+). To switch the default, set ``variant = gcc.cxx20.debug``
+(or similar) in your project's ``ct.conf``::
+
+    # myproject/ct.conf
+    variant = gcc.cxx20.debug
+
+The bundled opinionated composites (``dev``, ``ci``, ``production``,
+``perf``, ``secure``, ``safety``) also pin ``cxx26`` via their
+``extends = ...`` lists; to retarget them to an older standard for your
+project, write a project-level alternative with adjusted extends::
+
+    # myproject/ct.conf.d/dev.conf
+    extends = gcc, cxx20, debug, asan, ubsan, werror
+
+The project-level ``dev.conf`` takes precedence over the bundled one
+under the normal config-priority hierarchy.
+
 PROVENANCE TRACE
 ================
 

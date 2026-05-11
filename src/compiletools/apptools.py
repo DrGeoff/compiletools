@@ -2243,6 +2243,152 @@ def _check_legacy_variant_config_keys(config_files) -> None:
         )
 
 
+# Static (compiler, min-version) table for language-standard support.
+# Source: https://gcc.gnu.org/projects/cxx-status.html
+#         https://clang.llvm.org/cxx_status.html
+# Values are the major version of the compiler that first implemented
+# (substantially complete) support for each standard.  When the user
+# requests `-std=c++NN` via an axis or CLI flag we compare the detected
+# compiler version against this table; an undershoot is a hard error
+# (otherwise the compile fails later with an opaque "unrecognized command
+# line option" diagnostic and no pointer at the variant chain).
+_STD_MIN_COMPILER_VERSION = {
+    # C++ standards
+    "c++11": {"gcc": 4, "clang": 3},
+    "c++14": {"gcc": 6, "clang": 3},
+    "c++17": {"gcc": 7, "clang": 5},
+    "c++20": {"gcc": 10, "clang": 10},
+    "c++23": {"gcc": 13, "clang": 17},
+    "c++26": {"gcc": 14, "clang": 18},
+    # C standards (informational)
+    "c99": {"gcc": 4, "clang": 3},
+    "c11": {"gcc": 4, "clang": 3},
+    "c17": {"gcc": 7, "clang": 7},
+    "c23": {"gcc": 14, "clang": 18},
+}
+
+
+def _compiler_major_version(compiler_path: str) -> tuple[str, int] | None:
+    """Probe a compiler binary for its (family, major version).
+
+    Runs ``<compiler> --version`` (one shot, ~10 ms) and parses gcc/clang
+    output formats. Returns ``("gcc", N)`` / ``("clang", N)`` or ``None``
+    if the binary isn't a recognised compiler driver. Wrapper scripts
+    (coverage/sccache shims) that forward to a real gcc/clang typically
+    pass-through ``--version`` and parse just like the real binary, so
+    this is intentionally permissive.
+    """
+    import subprocess
+    import re as _re
+
+    try:
+        proc = subprocess.run(
+            [compiler_path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    out = (proc.stdout or "") + (proc.stderr or "")
+    # gcc:   "g++ (GCC) 16.1.1 20260501 ..."  or "gcc-13 (Debian 13.2.0-...) 13.2.0"
+    # clang: "clang version 22.1.4 (Fedora 22.1.4-1.fc44)"
+    m = _re.search(r"clang version (\d+)", out)
+    if m:
+        return ("clang", int(m.group(1)))
+    m = _re.search(r"\(GCC\)\s+(\d+)", out) or _re.search(r"\bg\+\+ \(.*?\) (\d+)\.", out) or _re.search(r"\bgcc\b.*?(\d+)\.\d+", out)
+    if m:
+        return ("gcc", int(m.group(1)))
+    return None
+
+
+def _check_resolved_compiler_available(args) -> None:
+    """Fail loud when the resolved compiler binary isn't on PATH.
+
+    The functional-compiler auto-detect (parseargs:~2454) only fires when
+    ``args.CXX`` is None. A toolchain axis like ``gcc.conf`` sets
+    ``CXX=g++`` explicitly, so an explicit ``--variant=gcc.*`` request on
+    a system without gcc bypasses the auto-detect AND fails at the first
+    compile invocation with a generic "g++: command not found" — no
+    pointer at *which* variant requested g++.
+
+    This check runs after substitutions and emits a clear error naming
+    both the missing binary and the resolved variant so the user knows
+    whether to switch variants or install the toolchain.
+    """
+    import shutil
+
+    variant = getattr(args, "variant", "<unknown>")
+    for slot in ("CC", "CXX", "LD"):
+        value = getattr(args, slot, None)
+        if not value or value == "unsupplied_implies_use_CXX" or value == "unsupplied_implies_use_CXXFLAGS":
+            # The "unsupplied" sentinel means a later step substitutes a
+            # real value (typically CXX itself); skip these.
+            continue
+        # shutil.which handles both bare names (PATH lookup) and absolute
+        # / workspace-relative paths (existence + executability check).
+        if shutil.which(value) is None:
+            raise RuntimeError(
+                f"Resolved {slot}={value!r} is not on PATH and is not an executable file.\n"
+                f"  variant: {variant}\n"
+                f"  This usually means the toolchain axis pinned by your --variant "
+                f"isn't installed. Install it, or switch to a different toolchain "
+                f"axis (e.g. --variant=clang,...) that resolves to a binary you have.\n"
+                f"  Run `ct-config --variant={variant} -vv` to see which conf file "
+                f"set {slot}."
+            )
+
+
+def _check_compiler_supports_requested_standard(args) -> None:
+    """Fail loud when the resolved compiler's major version is too old for
+    the language standard requested by the variant.
+
+    Probes ``<args.CXX> --version`` (and ``args.CC --version`` for C
+    code) and compares against _STD_MIN_COMPILER_VERSION. Skips silently
+    when the compiler driver isn't a recognised gcc/clang (so msvc /
+    cross-toolchains / unrecognised wrappers don't trigger spurious
+    failures).
+    """
+    flags_to_check: list[tuple[str, str]] = []  # [(flag-slot-name, attr)]
+    if getattr(args, "CXX", None):
+        flags_to_check.append(("CXX", "CXXFLAGS"))
+    if getattr(args, "CC", None):
+        flags_to_check.append(("CC", "CFLAGS"))
+
+    variant = getattr(args, "variant", "<unknown>")
+    import re as _re
+
+    for compiler_slot, flags_slot in flags_to_check:
+        compiler = getattr(args, compiler_slot, None)
+        flags_str = getattr(args, flags_slot, "")
+        if not compiler or not flags_str:
+            continue
+        m = _re.search(r"-std=(c(?:\+\+)?\w+)", flags_str)
+        if not m:
+            continue
+        std = m.group(1)
+        # Normalise rare alt-spellings to the table keys.
+        std_norm = {"c++2c": "c++26", "c++2b": "c++23", "c++2a": "c++20", "c++1z": "c++17"}.get(std, std)
+        if std_norm not in _STD_MIN_COMPILER_VERSION:
+            continue
+        identity = _compiler_major_version(compiler)
+        if identity is None:
+            continue  # unknown driver; skip silently
+        family, major = identity
+        min_required = _STD_MIN_COMPILER_VERSION[std_norm].get(family)
+        if min_required is None or major >= min_required:
+            continue
+        raise RuntimeError(
+            f"Resolved {compiler_slot}={compiler!r} is {family} {major}, "
+            f"which does not support -std={std} (requires {family} >= {min_required}).\n"
+            f"  variant: {variant}\n"
+            f"  Either upgrade your {family} toolchain, or compose a lower "
+            f"standard axis (e.g. --variant=..,cxx20 in place of ..,{std_norm.replace('c++', 'cxx')}).\n"
+            f"  Run `ct-config --variant={variant} -vv` to see which conf file "
+            f"requested -std={std}."
+        )
+
+
 def _check_legacy_cas_config_keys(config_files) -> None:
     """Fail loud on legacy ``objdir``/``pchdir`` keys in resolved config files.
 
@@ -2465,6 +2611,21 @@ def parseargs(cap, argv, verbose=None, *, context):
         print(f"Parsing functioanl compiler has been set. Before substitutions args={args}")
 
     substitutions(args, verbose)
+
+    # After substitutions canonicalise args.variant and finalise the raw
+    # compile flags, validate that the resolved compiler is actually
+    # usable for what the variant requested. Two checks:
+    #   1. Binary on PATH? — catches "user picked --variant=gcc.* but
+    #      gcc isn't installed" (would otherwise be a generic compile
+    #      failure with no pointer at the variant chain).
+    #   2. Compiler version supports the requested -std=c++NN? — catches
+    #      "user picked cxx26 on a system with gcc 11" (would otherwise
+    #      be an opaque "unrecognized command line option '-std=c++26'"
+    #      from the compiler).
+    # Both checks emit a clear diagnostic naming the variant and
+    # suggesting either a different variant or a toolchain upgrade.
+    _check_resolved_compiler_available(args)
+    _check_compiler_supports_requested_standard(args)
 
     # Populate tokenized flag lists alongside the raw strings. Consumers
     # that only need tokens (e.g. build_backend compile commands,

@@ -430,6 +430,94 @@ def _build_shared_lib_sample(workdir, lib_source_name: str) -> None:
 
 
 @uth.requires_functional_compiler
+def test_bundle_with_workspace_relative_wrapper_reuses_cache(tmp_path):
+    """Integration: bundle variant + workspace-relative compiler wrapper +
+    two workspaces -> identical object filenames in cas-objdir.
+
+    This is the missing integration test the audit flagged: upstream's
+    `test_compiler_identity_acceptance` proves cache-key sites canonicalise
+    given a SimpleNamespace(CXX=...), and `test_configutils` proves the
+    resolver chains bundles correctly. This test stitches both:
+
+      1. A multi-axis bundle resolves correctly through configargparse +
+         _commonsubstitutions.
+      2. The workspace-relative wrapper at --CXX=./tools/wrap.sh in each
+         workspace is canonicalised against that workspace's gitroot.
+      3. Object filenames in `cas-objdir/<variant>/` match across the
+         two workspaces, proving the path-bound leak is closed for the
+         realistic bundle-plus-wrapper case.
+
+    Uses --variant=gcc,cxx17,debug rather than a heavyweight bundle so
+    the test doesn't fail on minor compile-time issues (asan runtime
+    missing, hardened flags requiring fortify-source headers, etc.) —
+    the multi-axis composition path is what matters here, not the
+    specific axes' runtime semantics.
+    """
+    sample_src = os.path.join(uth.samplesdir(), "factory")
+    assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
+
+    ws1 = tmp_path / "ws1" / "factory"
+    ws2 = tmp_path / "ws2" / "factory"
+    shutil.copytree(sample_src, ws1)
+    shutil.copytree(sample_src, ws2)
+
+    # Workspace-relative wrapper script in each. Identical bytes, pinned
+    # mtime so the (size, mtime_ns) segment of compiler_identity matches
+    # — leaving only the path component, which is what compiler_identity
+    # canonicalisation is supposed to neutralise.
+    wrapper_content = "#!/bin/sh\nexec g++ \"$@\"\n"
+    FIXED_TIME = (1700000000, 1700000000)
+    for ws in (ws1, ws2):
+        tools_dir = ws / "tools"
+        tools_dir.mkdir()
+        wrap = tools_dir / "wrap.sh"
+        wrap.write_text(wrapper_content)
+        wrap.chmod(0o755)
+        os.utime(wrap, FIXED_TIME)
+
+    def _run(workdir):
+        return _run_ct_cake(
+            workdir,
+            "--variant=gcc,cxx17,debug",  # multi-axis composition
+            "--CXX=./tools/wrap.sh",  # workspace-relative wrapper
+            "--CC=./tools/wrap.sh",
+            "--LD=./tools/wrap.sh",
+        )
+
+    _assert_build_ok(_run(ws1), ws1)
+    _assert_build_ok(_run(ws2), ws2)
+
+    def _object_filenames(workdir) -> set[str]:
+        cas = workdir / "cas-objdir"
+        assert cas.is_dir(), f"cas-objdir not produced under {workdir}"
+        return {p.name for p in cas.rglob("*.o")}
+
+    objs_ws1 = _object_filenames(ws1)
+    objs_ws2 = _object_filenames(ws2)
+
+    assert objs_ws1, f"no object files produced under {ws1}/cas-objdir"
+    assert objs_ws2, f"no object files produced under {ws2}/cas-objdir"
+
+    only_in_ws1 = objs_ws1 - objs_ws2
+    only_in_ws2 = objs_ws2 - objs_ws1
+    assert not only_in_ws1 and not only_in_ws2, (
+        "object filenames differ across workspaces for bundle+wrapper case "
+        "(cache key leaks the workspace prefix):\n"
+        f"  only in ws1: {sorted(only_in_ws1)}\n"
+        f"  only in ws2: {sorted(only_in_ws2)}"
+    )
+
+    # And confirm the multi-axis variant produced the expected canonical
+    # subdir name (gcc.cxx17.debug) under cas-objdir — not some
+    # un-canonicalised typing of the user's input.
+    for ws in (ws1, ws2):
+        variant_dirs = [p.name for p in (ws / "cas-objdir").iterdir() if p.is_dir()]
+        assert variant_dirs == ["gcc.cxx17.debug"], (
+            f"expected single cas-objdir subdir 'gcc.cxx17.debug' in {ws}, got {variant_dirs}"
+        )
+
+
+@uth.requires_functional_compiler
 def test_shared_library_reused_across_workspaces(tmp_path):
     """Shared-library cache regression guard: same .so built in ws1 and
     ws2 (sharing one cas-exedir) must reuse the cached library.
