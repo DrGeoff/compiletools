@@ -79,9 +79,13 @@ typings of the same set share caches and outputs.
 You do *not* need to write a conf file per combination. ``gcc.debug.asan``
 is synthesized at resolution time from ``gcc.conf``, ``debug.conf``, and
 ``asan.conf`` — three files, not one per (toolchain × opt × instrument)
-combination. To override a specific composition, drop a literal
-``gcc.debug.asan.conf`` anywhere in the hierarchy; it takes precedence over
-the synthesized one. To pull in parents from inside a conf file::
+combination. To *tune* a specific composition, drop a literal
+``gcc.debug.asan.conf`` anywhere in the hierarchy; it layers on top of the
+synthesized atoms (the composite is semantically equivalent to a conf
+with ``extends = gcc, debug, asan``, picking up the atoms automatically).
+To pick different parents than the canonical tokens — or to replace the
+composition entirely with a curated parent set — write ``extends = ...``
+explicitly in the composite::
 
     # myrelease.conf
     extends = gcc, release, lto
@@ -191,15 +195,16 @@ or equivalently add an environment variable
 VARIABLE_HANDLING_METHOD=append. Inside conf files, just use the
 ``append-CFLAGS = ...`` form directly — there's no global flag needed.
 
-PROVENANCE: --variant-trace AND ct-config
-=========================================
+PROVENANCE TRACE
+================
 
-``ct-config`` always prints a per-axis breakdown of which conf files
+Every ct-* tool can emit a per-axis breakdown of which conf files
 contributed to the resolved variant, including the canonical-order
-source, the ``extends`` chain, and any composite override. Other ct-* tools
-emit the same trace on demand via ``--variant-trace``::
+source, the ``extends`` chain, and any composite override. Pass ``-vv``
+(or higher) on any tool to print it. ``ct-config`` auto-bumps verbosity
+to ``-vvv`` and so always shows the trace::
 
-    $ ct-cake --variant=gcc,debug,asan --variant-trace
+    $ ct-cake --variant=gcc,debug,asan -vv
     Variant: 'gcc,debug,asan'  ->  gcc.debug.asan  (canonicalized)
     Canonical order: blank, gcc, clang, ..., asan, ...
       source: /opt/.../src/compiletools/ct.conf.d/ct.conf
@@ -216,8 +221,9 @@ emit the same trace on demand via ``--variant-trace``::
       [asan]
           /opt/.../src/compiletools/ct.conf.d/asan.conf
 
-Use this to answer "why did I get these flags?" without rebuilding under
-``-vvv``.
+Use this to answer "why did I get these flags?" without re-running under
+``-vvv`` and grepping. Quiet by default so build-system wrappers around
+``ct-cake`` aren't surprised by extra stdout.
 
 ct-config can be used to create a new config and write the config to file
 simply by using the ``-w`` flag.

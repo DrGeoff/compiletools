@@ -105,7 +105,7 @@ def find_possible_variants(
             removeconf = ".conf"
 
     style.append_text("Variants compose via axis conf files (e.g. --variant=gcc,debug,asan).")
-    canonical_order, order_source = compiletools.configutils._get_canonical_order(
+    canonical_order, order_source = compiletools.configutils.get_canonical_order(
         user_config_dir=user_config_dir,
         system_config_dir=system_config_dir,
         exedir=exedir,

@@ -163,7 +163,8 @@ class TestVariant:
             assert resolution.composite_override is None  # synthesized, not literal
 
     def test_explicit_composite_file_overrides_synthesis(self):
-        # A literal gcc.debug.conf takes precedence — its flags layer last.
+        # A literal gcc.debug.conf takes precedence — its flags layer last
+        # over the synthesized atoms (gcc + debug), not instead of them.
         with uth.TempDirContextNoChange() as repo_root:
             uth.create_temp_ct_conf(repo_root, defaultvariant="gcc.debug")
             conf_d = os.path.join(repo_root, "ct.conf.d")
@@ -189,6 +190,41 @@ class TestVariant:
             assert resolution.composite_override is not None
             assert resolution.composite_override.endswith("gcc.debug.conf")
             assert resolution.flat_paths[-1] == resolution.composite_override
+            # Atoms still contribute — composite tunes on top, doesn't replace.
+            axis_names = [a.name for a in resolution.axes]
+            assert axis_names == ["gcc", "debug"]
+
+    def test_composite_with_explicit_extends_picks_own_parents(self):
+        # A composite that names its own `extends = ...` overrides the
+        # implicit "extends from each canonical token" rule. Useful for
+        # opting out of the implicit composition (e.g. `extends = blank`).
+        with uth.TempDirContextNoChange() as repo_root:
+            uth.create_temp_ct_conf(repo_root, defaultvariant="gcc.debug")
+            conf_d = os.path.join(repo_root, "ct.conf.d")
+            os.makedirs(conf_d)
+            for name, content in [
+                ("blank.conf", "# empty floor\n"),
+                ("gcc.conf", "CC = gcc\n"),
+                ("debug.conf", "append-CFLAGS = -g\n"),
+                ("gcc.debug.conf", "extends = blank\nappear-CFLAGS = -DSOLO=1\n"),
+            ]:
+                with open(os.path.join(conf_d, name), "w") as fh:
+                    fh.write(content)
+
+            with uth.DirectoryContext(repo_root):
+                resolution = compiletools.configutils.resolve_variant(
+                    variant="gcc.debug",
+                    argv=[],
+                    user_config_dir="/var",
+                    system_config_dir="/var",
+                    exedir=uth.cakedir(),
+                    gitroot=repo_root,
+                )
+
+            assert resolution.composite_override is not None
+            # extends=blank wins over the implicit gcc+debug pull-in.
+            axis_names = [a.name for a in resolution.axes]
+            assert axis_names == ["blank"]
 
     def test_missing_axis_raises_with_full_hierarchy(self):
         # An axis that exists in NO config dir surfaces a clear error
@@ -375,6 +411,13 @@ class TestVariant:
 
             repo_conf_d = os.path.join(repo_root, "ct.conf.d")
             os.makedirs(repo_conf_d)
+            # The composite gcc.debug.conf now implicitly extends from each
+            # canonical token, so both atom files must exist for resolution
+            # to succeed. Provide minimal placeholders so the composite
+            # priority assertion can still be checked.
+            for atom in ("gcc.conf", "debug.conf"):
+                with open(os.path.join(repo_conf_d, atom), "w") as fh:
+                    fh.write("# placeholder atom\n")
             repo_variant = os.path.join(repo_conf_d, "gcc.debug.conf")
             uth.create_temp_config(filename=repo_variant, extralines=["REPO_LEVEL=1"])
 
@@ -394,9 +437,9 @@ class TestVariant:
                     gitroot=repo_root,
                 )
 
-                # Both literal gcc.debug.conf files should appear.
-                # Since this is a literal-file composite, it lands as the
-                # composite_override entry (highest priority — the cwd one).
+                # cwd's gcc.debug.conf wins as the composite_override
+                # (highest priority). The atom files contribute their own
+                # entries earlier in the list.
                 assert any(p.endswith(os.path.join("subproject", "ct.conf.d", "gcc.debug.conf")) for p in configs)
 
     def test_cwd_ct_conf_d_dedup_when_cwd_equals_gitroot(self):

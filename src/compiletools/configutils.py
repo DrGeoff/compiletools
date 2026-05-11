@@ -187,7 +187,7 @@ def split_variant(variant_str):
     return tuple(tok for tok in _VARIANT_SEP_RE.split(variant_str.strip()) if tok)
 
 
-def _get_canonical_order(
+def get_canonical_order(
     user_config_dir=None,
     system_config_dir=None,
     exedir=None,
@@ -248,7 +248,7 @@ def canonicalize_variant_input(
     tokens = split_variant(variant_str)
     if not tokens:
         return variant_str
-    order, _src = _get_canonical_order(
+    order, _src = get_canonical_order(
         user_config_dir=user_config_dir,
         system_config_dir=system_config_dir,
         exedir=exedir,
@@ -436,7 +436,8 @@ class VariantResolution:
 
     `flat_paths` is the list configargparse consumes; `axes`,
     `composite_override`, and `canonical_order_source` are for the
-    `format_variant_resolution` renderer used by ct-config --variant-trace.
+    `format_variant_resolution` renderer used by parseargs() to print
+    the unconditional per-axis provenance trace.
     """
 
     raw_input: str
@@ -467,13 +468,21 @@ class VariantResolutionError(RuntimeError):
     pass
 
 
-def _parse_extends_directive(conf_path):
-    """Return a tuple of parent variant names from `extends = ...`, or ()."""
+def _parse_extends_directive(conf_path, verbose=0):
+    """Return a tuple of parent variant names from `extends = ...`, or ().
+
+    A conf that can't be read (permission denied, transient FS error) is
+    treated as having no `extends`, but the failure is announced at
+    verbose>=1 so a silently-skipped permission-denied conf doesn't
+    masquerade as "no inheritance configured".
+    """
     fileparser = CfgFileParser()
     try:
         with open(conf_path) as cfg:
             items = fileparser.parse(cfg)
-    except OSError:
+    except OSError as exc:
+        if verbose >= 1:
+            print(f"warning: could not read {conf_path}: {exc}; treating as no `extends`")
         return ()
     raw = items.get("extends")
     if raw is None:
@@ -497,7 +506,14 @@ def _resolve_axis(name, search_kwargs, visited, on_path, _axis_cache):
     """DFS resolve one axis. Returns ordered list of AxisResolution.
 
     visited: set of axis names already emitted (for diamond dedup)
-    on_path: set of axis names currently in the recursion stack (cycle detection)
+    on_path: list of axis names currently in the recursion stack (preserves
+        traversal order so cycle diagnostics show the actual path through
+        the graph). Membership check is O(len(on_path)) but the stack is
+        typically tiny (depth ~3).
+
+    Cache semantics: an entry in _axis_cache is only populated AFTER the
+    DFS for that name has completed without raising — so the cached path
+    bypasses the cycle check safely (cycles can never reach a cached node).
     """
     if name in _axis_cache:
         if name in visited:
@@ -516,16 +532,16 @@ def _resolve_axis(name, search_kwargs, visited, on_path, _axis_cache):
     # extends is read from the highest-priority conf that has it.
     extends = ()
     for path in reversed(paths):
-        e = _parse_extends_directive(path)
+        e = _parse_extends_directive(path, verbose=search_kwargs.get("verbose", 0))
         if e:
             extends = e
             break
 
-    on_path.add(name)
+    on_path.append(name)
     out = []
     for parent in extends:
         out.extend(_resolve_axis(parent, search_kwargs, visited, on_path, _axis_cache))
-    on_path.discard(name)
+    on_path.pop()
 
     axis = AxisResolution(name=name, conf_paths=tuple(paths), extends=extends)
     _axis_cache[name] = axis
@@ -582,7 +598,7 @@ def resolve_variant(
         gitroot=gitroot,
     )
 
-    canonical_order, canonical_order_source = _get_canonical_order(**search_kwargs)
+    canonical_order, canonical_order_source = get_canonical_order(**search_kwargs)
     tokens = split_variant(variant_str)
     canonical_tokens = canonicalize_variant_tokens(tokens, canonical_order)
     canonical_name = ".".join(canonical_tokens) if canonical_tokens else variant_str
@@ -590,18 +606,19 @@ def resolve_variant(
     # Base ct.conf files, lowest-priority first
     base_ct_conf_files = tuple(reversed(get_existing_config_files(filename="ct.conf", **search_kwargs)))
 
-    # Composite override file: a literal `<canonical_name>.conf`. If present
-    # anywhere in the hierarchy it is authoritative and the resolver does NOT
-    # synthesize from atoms — the conf author writes `extends = gcc, debug`
-    # explicitly if they want composition (the same machinery that drives a
-    # single-token axis). This matches the rule "a real conf file wins over
-    # synthesis"; projects shipping a tuned composite never need every atom
-    # to also exist on disk.
+    # Composite override file: a literal `<canonical_name>.conf` that the
+    # user (or a project) wrote to *tune* the composition. Layers on top of
+    # the synthesized atoms — semantically equivalent to a conf whose
+    # `extends = <each canonical token>`. Authors who want different
+    # inheritance write `extends = ...` explicitly in the composite, in
+    # which case the explicit declaration wins.
     composite_override = None
+    composite_extends = ()
     if len(canonical_tokens) > 1:
         composite_paths = _find_axis_confs(canonical_name, **search_kwargs)
         if composite_paths:
             composite_override = composite_paths[-1]
+            composite_extends = _parse_extends_directive(composite_override)
 
     # --config=<path> takes highest priority (appended last). When the user
     # supplies one, the path itself is authoritative — we don't also require
@@ -623,31 +640,36 @@ def resolve_variant(
         )
 
     # Resolve each axis. Missing axes are collected so we can report all of
-    # them in one error rather than failing on the first. When a composite
-    # override file exists, the literal file IS the composition — skip atom
-    # synthesis entirely.
+    # them in one error rather than failing on the first.
     visited = set()
-    on_path = set()
+    on_path = []
     axis_cache = {}
     axes_out = []
     missing_axes = []
     if composite_override is None:
-        for tok in canonical_tokens:
-            chain = _resolve_axis(tok, search_kwargs, visited, on_path, axis_cache)
-            for axis in chain:
-                if not axis.conf_paths:
-                    missing_axes.append(axis.name)
-                else:
-                    axes_out.append(axis)
+        # Pure synthesis from canonical tokens.
+        chain_seed = canonical_tokens
+    elif composite_extends:
+        # Composite with explicit `extends = ...` — author picked the parents.
+        chain_seed = composite_extends
     else:
-        # Composite-override case: resolve the composite itself as if it were
-        # an axis so any extends= chain inside it pulls in its parents.
-        chain = _resolve_axis(canonical_name, search_kwargs, visited, on_path, axis_cache)
+        # Composite with no explicit extends — implicitly extends from each
+        # canonical token so the composite "tunes on top" of the synthesized
+        # atoms rather than replacing them.
+        chain_seed = canonical_tokens
+
+    for tok in chain_seed:
+        # When a composite override exists and its extends= references the
+        # composite itself (`extends = gcc.debug.asan` inside
+        # gcc.debug.asan.conf), skip — the composite is already emitted
+        # via composite_override and re-resolving would recurse. For pure
+        # synthesis (no override) a token equal to the canonical name is
+        # legitimate (single-axis variant `myrelease` whose canonical name
+        # is also `myrelease`).
+        if composite_override is not None and tok == canonical_name:
+            continue
+        chain = _resolve_axis(tok, search_kwargs, visited, on_path, axis_cache)
         for axis in chain:
-            if axis.name == canonical_name:
-                # Skip — the composite is emitted as composite_override, not
-                # as an axis (keeps the trace cleaner).
-                continue
             if not axis.conf_paths:
                 missing_axes.append(axis.name)
             else:
@@ -717,7 +739,7 @@ def config_files_from_variant(
 def format_variant_resolution(resolution):
     """Human-readable trace of how a variant was resolved.
 
-    Rendered by ct-config and `--variant-trace` to answer the user's question
+    Rendered unconditionally by parseargs() to answer the user's question
     'why did I get these flags?' — shows the contributing conf file per axis,
     the canonical-order source, the extends graph, and any composite override.
     """

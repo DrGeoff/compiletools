@@ -276,7 +276,10 @@ def test_cli_main_returns_zero_on_match(capsys):
     # should -- this test runs from this worktree's venv).
     if shutil.which("ct-cake") is None:
         pytest.skip("ct-cake not on PATH for this test session")
-    rc = check_venv.main()
+    # Pass an explicit empty argv so the parser doesn't pick up pytest's
+    # own CLI flags from sys.argv (which configargparse rejects as
+    # unrecognized).
+    rc = check_venv.main(argv=[])
     captured = capsys.readouterr()
     if rc == 0:
         assert "ok" in captured.out
@@ -294,7 +297,7 @@ def test_cli_main_returns_one_on_mismatch(monkeypatch, tmp_path, capsys):
         interpreter_prints="/somewhere/else/src",
     )
     monkeypatch.setenv("PATH", bin_dir)
-    rc = check_venv.main()
+    rc = check_venv.main(argv=[])
     captured = capsys.readouterr()
     assert rc == 1
     assert "venv mismatch" in captured.err
