@@ -153,6 +153,60 @@ ct-cake's ``direct`` dependency mode (the default) now resolves computed
 
 Previously this required ``--headerdeps=cpp`` to track correctly.
 
+Macro Scope Filter (Cmdline ``-D`` Macros and Cache Keys)
+---------------------------------------------------------
+
+ct-cake's per-TU cache keys (``macro_state_hash``) include only the subset
+of cmdline ``-D`` macros each TU actually references. The reference check
+is implemented in ``cmdline_macro_index.py`` as a **word-boundary byte
+scan** over the TU and each of its transitive headers. It does NOT
+preprocess the source and it does NOT strip comments or string literals.
+
+This means that if a header documentation comment, a deprecated macro
+name in a string literal, or any other textual occurrence of a cmdline
+``-D`` macro identifier appears in a transitive header, the scope filter
+will include that macro in the includer's ``macro_state_hash``. Cache
+keys remain *correct* (false positives are safe — they can only
+over-include, never under-include), but cache *reuse* is lost: every TU
+that includes such a header gets a per-value cache entry whether or not
+its compiled output actually depends on the macro. ``ct-cache-report``
+surfaces this as inflated duplicate-variant counts.
+
+The trap is most painful for per-app or per-config macros injected via
+``-DAPP_NAME=foo`` / ``-DAPP_NAME=bar`` style cmdline options, where the
+intent is "only the one stub TU that calls ``TOSTRING(APP_NAME)`` should
+fork per app." A friendly comment in the header that *describes* the
+build-time macro is enough to defeat that intent and double the cache
+footprint.
+
+The robust fix is to keep the per-app/per-config value out of the
+cmdline ``-D`` set entirely, by emitting a **per-build generated
+header** that exactly one accessor TU includes. The build script
+writes the value into a generated ``.h`` at a known path, exactly one
+TU ``#include``\ s it, and the cmdline ``-D`` injection is dropped.
+With no needle in the cmdline ``-D`` set, the scope filter has
+nothing to match against and prose mentioning the value's name in
+shared headers cannot regress unrelated TUs' cache keys.
+
+ct-cake provides two opt-in convenience hooks for the most common
+cases:
+
+* ``--project-version`` / ``--project-version-cmd`` →
+  ``-DCT_PROJECT_VERSION="<version>"``
+* ``--project-name`` / ``--project-name-cmd`` →
+  ``-DCT_PROJECT_NAME="<name>"``
+
+These are **opt-in**: if you do not specify any of them on the CLI,
+in ct.conf, or via env, no macro is injected and the cmdline ``-D``
+set stays clean. They are provided as canonical names so consumers
+don't reinvent the per-app/per-version naming wheel and don't
+collide with widely-used identifiers (``APP_NAME``, ``PROJECT``,
+``MAIN``...). Note that when you do opt in, both are still cmdline
+``-D`` injections and so are still subject to the same
+comment-scanning behavior described above — the generated-header
+pattern remains the right shape for the value to actually buy free
+cache reuse on TUs that don't reference it in code.
+
 Performance
 ===========
 
