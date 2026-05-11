@@ -4,6 +4,7 @@ import functools
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import time
@@ -29,8 +30,6 @@ def _backend_tool_available(backend_name):
         return shutil.which("bazelisk") is not None or shutil.which("bazel") is not None
     if backend_name == "cmake":
         return shutil.which("cmake") is not None
-    if backend_name == "tup":
-        return shutil.which("tup") is not None
     tool = {"make": "make", "ninja": "ninja", "slurm": "sbatch"}.get(backend_name)
     if tool is None:
         return False
@@ -377,15 +376,22 @@ def create_temp_ct_conf(tempdir, defaultvariant="gcc.cxx26.debug", extralines=No
             ff.write(f"{line}\n")
 
 
-def _rmtree_onerror(func, path, exc_info):
+def _rmtree_retry(func, path, exc_or_info):
     """Retry handler for shutil.rmtree on distributed filesystems (GPFS/NFS).
 
     On GPFS, rmtree can fail transiently when files are still being flushed
     (e.g., Slurm output files). Retry once after a short delay. If the retry
     also fails, warn instead of raising so test cleanup failures don't mask
     test results.
+
+    Bridges the 3.10/3.11 ``onerror=(func, path, exc_info-tuple)`` and the
+    3.12+ ``onexc=(func, path, exception)`` callback signatures.
     """
-    exc_type, exc_value, _ = exc_info
+    if isinstance(exc_or_info, BaseException):
+        exc_value = exc_or_info
+        exc_type = type(exc_value)
+    else:
+        exc_type, exc_value, _ = exc_or_info
     if exc_type is FileNotFoundError:
         return  # already gone
     time.sleep(0.1)
@@ -396,6 +402,22 @@ def _rmtree_onerror(func, path, exc_info):
             f"Failed to clean up temp path during test teardown: {path} ({exc_value})",
             stacklevel=2,
         )
+
+
+# 3.12 renamed shutil.rmtree's callback kwarg from ``onerror`` (deprecated) to
+# ``onexc``. Define the wrapper twice so each branch holds only the kwarg
+# valid for its Python version.
+if sys.version_info >= (3, 12):
+
+    def _rmtree(path):
+        shutil.rmtree(path, onexc=_rmtree_retry)
+else:
+
+    def _rmtree(path):
+        # pyright is pinned to pythonVersion="3.10" where ``onerror`` is not
+        # deprecated, so the deprecation hint that fires on newer interpreters
+        # is suppressed for this codepath only.
+        shutil.rmtree(path, onerror=_rmtree_retry)  # pyright: ignore[reportDeprecated]
 
 
 class TempDirectoryContext:
@@ -434,7 +456,7 @@ class TempDirectoryContext:
         if self.change_dir and self._origdir:
             os.chdir(self._origdir)
         if self._tmpdir:
-            shutil.rmtree(self._tmpdir, onerror=_rmtree_onerror)
+            _rmtree(self._tmpdir)
 
 
 # Backward compatibility aliases
@@ -444,7 +466,7 @@ class TempDirContext(TempDirectoryContext):
     def __init__(self):
         super().__init__(change_dir=True)
 
-    def __enter__(self):  # type: ignore[override]
+    def __enter__(self):  # type: ignore[override]  # pyright: ignore[reportIncompatibleMethodOverride]
         # Deliberate divergence: the base class yields the tmpdir string, but
         # the legacy ``TempDirContext`` API returns ``self`` so callers can
         # access ``.tmpdir`` / ``.origdir`` after entering.

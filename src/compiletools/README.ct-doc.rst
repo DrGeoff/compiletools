@@ -83,7 +83,7 @@ KEY FEATURES
     Use ``--variant=release`` to select. See ct-config(1).
 
 **Pluggable Build Backends**
-    Choose from Make (default), Ninja, CMake, Bazel, Tup, or the builtin
+    Choose from Make (default), Ninja, CMake, Bazel, or the builtin
     Shake backend.  Distribute compilation across an HPC cluster with the
     Slurm backend.  Use ``--backend=<name>`` to select.  See ct-backends(7).
 
@@ -166,7 +166,7 @@ CORE TOOLS
     expected source tree.
 
 **ct-list-backends**
-    List available build backends (make, ninja, cmake, bazel, shake, tup).
+    List available build backends (make, ninja, cmake, bazel, shake).
 
 **Shell Wrappers**
     Convenience scripts in ``scripts/``: ct-build, ct-build-static-library,

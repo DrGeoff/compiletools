@@ -7,7 +7,6 @@ from pprint import pprint
 import stringzilla as sz
 
 import compiletools.apptools
-import compiletools.compiler_macros
 import compiletools.file_analyzer
 import compiletools.git_utils
 import compiletools.preprocessor

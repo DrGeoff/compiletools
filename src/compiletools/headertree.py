@@ -4,7 +4,6 @@ import sys
 from collections import Counter, defaultdict
 
 import compiletools.apptools
-import compiletools.configutils
 import compiletools.git_utils
 import compiletools.headerdeps
 import compiletools.magicflags

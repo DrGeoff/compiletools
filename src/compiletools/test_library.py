@@ -344,14 +344,6 @@ class TestShakeLibrarySummary:
             assert "static_library" in output
 
 
-class TestTupLibraryOutput:
-    def test_tup_static_library_output(self):
-        from compiletools.tup_backend import TupBackend
-
-        with _layer3_context(TupBackend, _make_library_graph) as (output, _args):
-            assert "ar -src" in output
-
-
 class TestMakefileLibraryOutput:
     def test_makefile_static_library_output(self):
         from compiletools.makefile_backend import MakefileBackend

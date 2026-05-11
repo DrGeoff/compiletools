@@ -3,7 +3,6 @@ import os
 import pytest
 import stringzilla as sz
 
-import compiletools.apptools
 import compiletools.headerdeps
 import compiletools.magicflags
 import compiletools.test_base as tb

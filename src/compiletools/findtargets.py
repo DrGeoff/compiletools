@@ -2,7 +2,6 @@ import os
 import sys
 
 import compiletools.apptools
-import compiletools.configutils
 import compiletools.file_analyzer
 import compiletools.namer
 import compiletools.utils

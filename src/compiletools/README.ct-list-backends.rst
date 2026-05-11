@@ -21,7 +21,7 @@ DESCRIPTION
 
 ct-list-backends lists the build system backends that compiletools supports.
 Each backend generates native build files for a different build system
-(Make, Ninja, CMake, Bazel, Tup, or the builtin Shake backend).
+(Make, Ninja, CMake, Bazel, or the builtin Shake backend).
 
 Other ct-* applications use ``--backend=<name>`` to select which build
 system to use.  ct-list-backends helps you discover which backends are

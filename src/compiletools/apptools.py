@@ -328,7 +328,7 @@ def add_cas_arguments(cap):
             "recompilation when sources are newer than the cached object — "
             "defeating CAS reuse on fresh-checkout CI where every source has "
             "mtime=now. Only honored by --backend=make and --backend=ninja: "
-            "the cmake/bazel/tup/shake/slurm backends use their own "
+            "the cmake/bazel/shake/slurm backends use their own "
             "(content-hash or self-managed) change detection and ignore "
             "this flag with a warning when set to True."
         ),

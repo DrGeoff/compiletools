@@ -4,7 +4,6 @@ import tempfile
 import configargparse
 
 import compiletools.apptools
-import compiletools.configutils
 import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
@@ -617,7 +616,7 @@ def test_create_link_rule_returns_cas_link_plus_publish_pair():
 
 
 def test_create_link_rule_legacy_shape_when_backend_has_native_cas():
-    """Backends that already have their own CAS layer (cmake/bazel/tup)
+    """Backends that already have their own CAS layer (cmake/bazel)
     override ``_has_native_cas_exe`` to return True; ``_create_link_rule``
     then emits a single classical link rule whose output IS the
     user-facing bin/<name> path (no compiletools-side cas-exedir wrapping)."""

@@ -21,13 +21,12 @@ class TestBackendCLIArg:
         assert "shake" in backends
         assert "bazel" in backends
         assert "cmake" in backends
-        assert "tup" in backends
 
 
 class TestCakeBackendDispatch:
     """Verify that cake.process() dispatches to the correct backend."""
 
-    @pytest.mark.parametrize("backend_name", ["make", "ninja", "bazel", "cmake", "tup", "shake"])
+    @pytest.mark.parametrize("backend_name", ["make", "ninja", "bazel", "cmake", "shake"])
     def test_backend_dispatch_instantiates_correct_backend(self, backend_name):
         """--backend=X should instantiate the correct backend class."""
         with CakeTestContext(backend_name) as (cake, _tmpdir):

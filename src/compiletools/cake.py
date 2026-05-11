@@ -89,7 +89,7 @@ class Cake:
         # declares add_arguments(cap) gets its CLI flags wired up. This
         # replaces the v8.0.2 pattern of hardcoding two backends here,
         # which silently dropped any add_arguments() declared on
-        # ninja/cmake/bazel/tup/shake.
+        # ninja/cmake/bazel/shake.
         from compiletools.build_backend import register_backend_cli_arguments
 
         register_backend_cli_arguments(cap)

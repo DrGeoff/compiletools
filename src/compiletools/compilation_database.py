@@ -5,7 +5,6 @@ from typing import Any, Optional
 import stringzilla as sz
 
 import compiletools.apptools
-import compiletools.configutils
 import compiletools.filesystem_utils
 import compiletools.findtargets
 import compiletools.headerdeps

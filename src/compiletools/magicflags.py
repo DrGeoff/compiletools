@@ -9,7 +9,6 @@ import stringzilla as sz
 
 import compiletools.apptools
 import compiletools.compiler_macros
-import compiletools.configutils
 import compiletools.git_utils
 import compiletools.headerdeps
 import compiletools.namer

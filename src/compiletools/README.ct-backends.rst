@@ -36,7 +36,6 @@ make    Makefile                make
 ninja   build.ninja             ninja
 cmake   CMakeLists.txt          cmake
 bazel   BUILD.bazel             bazel
-tup     Tupfile                 tup
 shake   .ct-traces.json         (builtin)
 slurm   .ct-slurm-traces.json   sbatch
 ======  ======================  ===========
@@ -53,7 +52,6 @@ make    D            Y                      Y             Y          Y          
 ninja   Y            Y                      Y             Y          Y          Y             N           Y (restat)
 cmake   N            Y                      Y             Y          Y          Y             N           N
 bazel   N            Y                      Y             Y          Y          Y             N           N
-tup     N            Y                      Y             Y          Y          N (no phony)  N           N
 shake   Y            Y                      Y             Y          Y          Y             Y           Y
 slurm   Y            Y                      Y             Y          Y (local)  Y             Y           Y
 ======  ===========  =====================  ============  =========  =========  ============  ==========  ============
@@ -61,7 +59,7 @@ slurm   Y            Y                      Y             Y          Y (local)  
 Notes:
 
 * **File-lock** — ``--file-locking`` enables multi-user object CAS / PCH CAS
-  caches.  CMake/Bazel/Tup manage their own coordination and skip this
+  caches.  CMake/Bazel manage their own coordination and skip this
   layer (see *FILE LOCKING* below).
 * **--build-only-changed** — restrict the graph to a whitespace-separated
   set of source files supplied on the command line.  Implemented in the
@@ -77,8 +75,6 @@ Notes:
   ``--dynamic``.  All backends support both; the Slurm backend
   distributes compile rules but always links locally.
 * **Test runner** — ``execute("runtests")`` runs test executables.
-  Tup cannot express phony rules, so it has no top-level ``runtests``
-  target — run test binaries by hand or pick a different backend.
 * **CA outputs / Early cutoff** — content-addressable filenames and
   build skipping when an output's bytes are unchanged.  Native to the
   Shake/Slurm builtin engine; Ninja approximates early cutoff via
@@ -174,28 +170,6 @@ or remote execution capabilities.
 
 **Limitations:** File locking is disabled — Bazel manages its own
 sandboxing and caching.
-
-tup
----
-
-Generates a ``Tupfile`` targeting the Tup build system.
-
-**When to use:** Projects where Tup's file-system monitoring provides
-fast incremental rebuilds without explicit dependency declarations.
-
-**Features:**
-
-- Simple rule format: ``: inputs |> command |> outputs``
-- No explicit depfile tracking — Tup monitors the filesystem directly
-- Automatic ``.tup/`` initialisation on first run
-
-**Requires:** Tup (``tup`` in PATH).
-
-**Limitations:**
-
-- File locking is disabled (Tup manages file monitoring internally)
-- No phony target support — top-level ``build`` and ``runtests`` targets
-  are unavailable
 
 shake (builtin)
 ---------------
@@ -367,7 +341,6 @@ Shared multi-user caches           ``shake`` or ``make --file-locking``
 HPC cluster distribution           ``slurm``
 CMake IDE integration              ``cmake``
 Bazel ecosystem integration        ``bazel``
-Filesystem-monitored rebuilds      ``tup``
 Maximum rebuild precision          ``shake``
 =================================  ==================================
 

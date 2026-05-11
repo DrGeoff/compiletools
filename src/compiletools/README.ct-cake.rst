@@ -73,7 +73,7 @@ With ct-cake, you only pull in what is strictly necessary to what you need to
 run right now. Say, you are testing a particular tool in a large project, with
 a large base of 2000 library files for string handling, sockets, etc. There
 is simply no Makefile (by default ct-cake generates one behind the scenes, but
-you can also use ``--backend`` to target Ninja, CMake, Bazel, Shake, or Tup).
+you can also use ``--backend`` to target Ninja, CMake, Bazel, or Shake).
 You might want to create a build.sh for regression testing, but it's not
 essential.
 
@@ -388,14 +388,14 @@ key would not change.
 ``--use-mtime`` is honored only by the Make and Ninja backends:
 their rule emitters consume the prereq list as a literal mtime
 comparison, so they can branch on the flag. The cmake / bazel /
-tup / shake / slurm backends use their own change detection
+shake / slurm backends use their own change detection
 (cmake's out-of-source incremental tracking, bazel's
-content-addressable action cache, tup's FUSE content tracking,
-trace_backend's verifying traces) and a touched-but-otherwise-
-unchanged source is invisible to all of them — they cannot
-deliver "touch to force rebuild" semantics regardless of how the
-flag is set. Passing ``--use-mtime=True`` against one of those
-backends emits a stderr warning and is otherwise ignored.
+content-addressable action cache, trace_backend's verifying
+traces) and a touched-but-otherwise-unchanged source is invisible
+to all of them — they cannot deliver "touch to force rebuild"
+semantics regardless of how the flag is set. Passing
+``--use-mtime=True`` against one of those backends emits a
+stderr warning and is otherwise ignored.
 
 Caveats of ``--use-mtime=False`` mode
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -622,7 +622,7 @@ Common Options
 
 **--backend**
     Build system backend to use. Choices: ``make`` (default), ``ninja``,
-    ``cmake``, ``bazel``, ``shake``, ``tup``.
+    ``cmake``, ``bazel``, ``shake``.
     Example: ``ct-cake --backend=ninja``
 
 **--clean**

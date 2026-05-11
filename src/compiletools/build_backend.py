@@ -382,7 +382,7 @@ class BuildBackend(abc.ABC):
                 f"WARNING: --use-mtime=True is set but the {self.name()!r} backend does not "
                 "honor mtime-based rebuilds; the flag will be ignored. Only the 'make' and "
                 "'ninja' backends honor --use-mtime — others use content-hash-based "
-                "(bazel, tup, shake, slurm) or self-managed (cmake) change detection.",
+                "(bazel, shake, slurm) or self-managed (cmake) change detection.",
                 file=sys.stderr,
             )
 
@@ -1052,11 +1052,11 @@ class BuildBackend(abc.ABC):
         confusion introduced by the hard-link publish.
 
         In legacy mode (``--use-mtime=True``) or for native-CAS backends
-        (cmake/bazel/tup, where ``_has_native_cas_exe()`` is True and there
+        (cmake/bazel, where ``_has_native_cas_exe()`` is True and there
         is no separate publish-symlink rule), falls back to
         ``<exe_path>.result`` — bit-identical to the pre-fix behaviour.
 
-        .. note:: Native-CAS backends (cmake / bazel / tup) currently fall
+        .. note:: Native-CAS backends (cmake / bazel) currently fall
            back to legacy ``<exe_path>.result`` semantics by *omission*,
            not by design intent — they don't emit a separate
            publish-symlink rule that ``_result_marker_path`` could resolve
@@ -1445,7 +1445,7 @@ class BuildBackend(abc.ABC):
         """Persist a content-addressable signature for every link/library
         rule whose output exists on disk.
 
-        Backends with a native CAS layer (cmake/bazel/tup — see
+        Backends with a native CAS layer (cmake/bazel — see
         ``_has_native_cas_exe``) write their actual binaries to a tool-
         managed location (``cmake-build/``, ``bazel-bin/``, FUSE-tracked
         path) rather than the graph-declared ``rule.output``. For those,
@@ -2388,11 +2388,10 @@ class BuildBackend(abc.ABC):
         This is the case for Make/Ninja/Shake/Slurm.
 
         True — backend already maintains a CAS-equivalent layer
-        (cmake's out-of-source tree, bazel's action cache, tup's
-        FUSE content tracking). All three rule types write directly to
-        their user-facing paths (legacy single-rule shape) so the
-        graph IR doesn't impose a competing cache layout on top of the
-        backend's own.
+        (cmake's out-of-source tree, bazel's action cache). All three
+        rule types write directly to their user-facing paths (legacy
+        single-rule shape) so the graph IR doesn't impose a competing
+        cache layout on top of the backend's own.
         """
         return False
 
@@ -2415,10 +2414,9 @@ class BuildBackend(abc.ABC):
           tracking (cmake-build/) and copies built artefacts to
           ``topbindir`` post-build.
         * **Bazel** uses its content-addressable action cache.
-        * **Tup** uses FUSE content tracking.
         * **Shake / Slurm** use verifying traces (content hashes).
 
-        For all four, ``--use-mtime=True`` cannot deliver "touch the
+        For all three, ``--use-mtime=True`` cannot deliver "touch the
         source to force a rebuild" semantics — a touch without a
         content change is invisible to a content-hash-based rebuild
         check. Backends in this group leave this method at the False
@@ -2501,7 +2499,7 @@ class BuildBackend(abc.ABC):
               See ``_build_publish_rule`` for the publish recipe and
               its race semantics.
 
-        When ``_has_native_cas_exe()`` returns True (cmake/bazel/tup),
+        When ``_has_native_cas_exe()`` returns True (cmake/bazel),
         returns a single-element list with the legacy ``bin/<name>``
         link rule.
 
@@ -3492,12 +3490,11 @@ def ensure_backends_registered() -> None:
     module's import time, to keep startup cost low for non-build code paths
     and to avoid the build_backend ← bazel_backend ← build_backend cycle.
     """
-    import compiletools.bazel_backend
-    import compiletools.cmake_backend
-    import compiletools.makefile_backend
-    import compiletools.ninja_backend
-    import compiletools.trace_backend
-    import compiletools.tup_backend  # noqa: F401
+    import compiletools.bazel_backend  # pyright: ignore[reportUnusedImport]
+    import compiletools.cmake_backend  # pyright: ignore[reportUnusedImport]
+    import compiletools.makefile_backend  # pyright: ignore[reportUnusedImport]
+    import compiletools.ninja_backend  # pyright: ignore[reportUnusedImport]
+    import compiletools.trace_backend  # noqa: F401  # pyright: ignore[reportUnusedImport]
 
 
 def backend_tool_command(name: str) -> str | None:
@@ -3553,7 +3550,7 @@ def register_backend_cli_arguments(cap) -> None:
     """Call ``cls.add_arguments(cap)`` on every registered backend that
     declares one. Replaces the v8.0.2 pattern of cake.py
     hardcoding which backends contributed CLI args, which silently
-    dropped any add_arguments() declared on ninja/cmake/bazel/tup/shake.
+    dropped any add_arguments() declared on ninja/cmake/bazel/shake.
     """
     for cls in _REGISTRY.values():
         adder = getattr(cls, "add_arguments", None)
