@@ -308,7 +308,11 @@ class MakefileBackend(BuildBackend):
         elif rule.rule_type == "test":
             cmd_str = render_shell_recipe(rule)
             if self.args.verbose >= 1:
-                exe_name = rule.inputs[0] if rule.inputs else rule.output
+                # ``test_cmd = [*testprefix, exe_path]`` (build_backend._build_graph),
+                # so the exe is always the last command token regardless of
+                # whether the rule shape lives in inputs (legacy mtime mode)
+                # or order_only_deps (CAS-only mode).
+                exe_name = rule.command[-1]
                 recipe = f"@echo ... {exe_name} ; {cmd_str}"
             else:
                 recipe = cmd_str

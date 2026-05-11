@@ -539,7 +539,6 @@ class TestBuildGraphPopulation:
         args = make_backend_args(tmp_path, filename=["/src/main.cpp"], tests=["/src/test_foo.cpp"])
         hunter = make_mock_hunter(sources=["/src/main.cpp", "/src/test_foo.cpp"])
         backend = self._make_backend(tmp_path, args=args, hunter=hunter)
-        bindir = str(tmp_path / "bin")
 
         graph = backend.build_graph()
 
@@ -547,11 +546,25 @@ class TestBuildGraphPopulation:
         runtests_rule = graph.get_rule("runtests")
         assert runtests_rule is not None
         assert runtests_rule.rule_type == "phony"
-        # runtests depends on .result files, not raw executables
-        assert f"{bindir}/test_foo.result" in runtests_rule.inputs
+        # runtests depends on .result files. In CAS-only mode (default) the
+        # .result lives next to the cas-exedir entry; assert via the test
+        # rule's output rather than hard-coding the path.
+        test_rules = graph.rules_by_type("test")
+        assert test_rules, "no test rule emitted"
+        for rule in test_rules:
+            assert rule.output in runtests_rule.inputs
+            assert rule.output.endswith(".result")
 
     def test_test_result_rules_created(self, tmp_path):
-        """build_graph() should create test result rules with execution commands."""
+        """build_graph() should create test result rules with execution commands.
+
+        In CAS-only mode (default), the rule output is keyed at the CAS exe
+        path (``<cas-exedir>/<shard>/<name>_<linkkey>.exe.result``), the
+        published exe ``<bindir>/<name>`` is an order-only dep so make
+        builds it but does NOT consult its mtime, and ``inputs`` is empty
+        so existence of the marker is sufficient to mark the rule
+        up-to-date. The command argv still invokes the user-facing exe.
+        """
         args = make_backend_args(tmp_path, filename=[], tests=["/src/test_foo.cpp"])
         hunter = make_mock_hunter(sources=["/src/test_foo.cpp"])
         backend = self._make_backend(tmp_path, args=args, hunter=hunter)
@@ -562,10 +575,25 @@ class TestBuildGraphPopulation:
         test_rules = graph.rules_by_type("test")
         assert len(test_rules) == 1
         rule = test_rules[0]
-        assert rule.output == f"{bindir}/test_foo.result"
-        assert rule.inputs == [f"{bindir}/test_foo"]
-        # The recipe must NOT self-delete its own output: make's mtime check
-        # skips re-running the test only when .result is fresher than the exe.
+        # Pin the marker path against the publish-symlink rule's CAS input so
+        # the assertion travels with the namer's contract: any rename of the
+        # cas-exedir layout is caught at the namer layer, not by this regex.
+        publish_rule = graph.get_rule(f"{bindir}/test_foo")
+        assert publish_rule is not None and publish_rule.rule_type == "symlink", (
+            f"expected publish-symlink rule for the test exe; got {publish_rule}"
+        )
+        cas_exe_path = publish_rule.inputs[0]
+        assert rule.output == cas_exe_path + ".result", (
+            f"test rule output must be sibling to the cas-exedir entry; got {rule.output}, "
+            f"expected {cas_exe_path}.result"
+        )
+        assert rule.inputs == [], (
+            f"test rule must not declare normal prereqs in CAS mode (the .result is content-keyed); got {rule.inputs}"
+        )
+        assert rule.order_only_deps == [f"{bindir}/test_foo"], (
+            f"test rule must order on the published exe via order_only_deps; got {rule.order_only_deps}"
+        )
+        # The recipe must NOT self-delete its own output.
         assert "rm" not in rule.command
         assert f"{bindir}/test_foo" in rule.command
 
@@ -592,7 +620,12 @@ class TestBuildGraphPopulation:
         assert rule.command == [f"{bindir}/test_foo"]
 
     def test_test_result_rule_carries_success_marker(self, tmp_path):
-        """Test rule must declare its .result file as success_marker."""
+        """Test rule must declare its .result file as success_marker.
+
+        In CAS-only mode the marker is the CAS-side ``<cas_path>.result``
+        (same as ``rule.output``), so the marker is content-keyed and
+        survives across workspaces sharing a cas-exedir.
+        """
         args = make_backend_args(tmp_path, filename=[], tests=["/src/test_foo.cpp"])
         hunter = make_mock_hunter(sources=["/src/test_foo.cpp"])
         backend = self._make_backend(tmp_path, args=args, hunter=hunter)
@@ -601,7 +634,12 @@ class TestBuildGraphPopulation:
         graph = backend.build_graph()
 
         test_rules = graph.rules_by_type("test")
-        assert test_rules[0].success_marker == f"{bindir}/test_foo.result"
+        rule = test_rules[0]
+        publish_rule = graph.get_rule(f"{bindir}/test_foo")
+        assert publish_rule is not None and publish_rule.rule_type == "symlink"
+        cas_exe_path = publish_rule.inputs[0]
+        assert rule.success_marker == rule.output
+        assert rule.success_marker == cas_exe_path + ".result"
 
     def test_test_result_rules_include_testprefix(self, tmp_path):
         """Test result rules should include TESTPREFIX when set."""
@@ -1826,6 +1864,75 @@ class TestRunTests:
         # Default context has no timer; this must not raise.
         backend._run_tests()
         mock_run.assert_called_once()
+
+    @patch("subprocess.run")
+    @patch("compiletools.wrappedos.realpath", side_effect=lambda x: x)
+    def test_run_tests_runs_when_result_is_newer_than_exe(self, mock_realpath, mock_run, tmp_path):
+        """Regression: a republished exe (e.g. cas-exedir hit) carries the
+        original CAS entry's mtime; the success marker for a prior run lives
+        next to that CAS entry, not next to the published user-facing exe.
+        A stale ``<user_exe>.result`` left over from a pre-fix install must
+        no longer suppress re-execution.
+
+        Under the fix, in CAS-only mode the success marker is content-keyed
+        and lives at ``<cas_path>.result``. ``_run_tests`` resolves
+        ``user_exe -> cas_path`` via the publish-symlink rule on the build
+        graph and ignores the legacy ``<user_exe>.result`` entirely.
+        """
+        from compiletools.build_graph import BuildGraph, BuildRule
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        backend = self._make_backend(tmp_path)
+
+        exe_path = backend.namer.executable_pathname("/src/test_foo.cpp")
+        cas_exe_path = str(tmp_path / "cas-exe" / "ab" / "test_foo_deadbeef.exe")
+        os.makedirs(os.path.dirname(exe_path), exist_ok=True)
+        os.makedirs(os.path.dirname(cas_exe_path), exist_ok=True)
+
+        # Real on-disk exe with mtime in the distant past (the cached
+        # CAS entry's creation time, preserved by the hard-link publish).
+        with open(exe_path, "w") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+        long_ago = os.path.getmtime(exe_path) - 1000.0
+        os.utime(exe_path, (long_ago, long_ago))
+
+        # Stale legacy <user_exe>.result from a pre-fix install. The fix
+        # must NOT consult this path; it should look for <cas_path>.result
+        # (which we deliberately do not create).
+        with open(exe_path + ".result", "w") as f:
+            f.write("0\n")
+
+        # Wire up the publish-symlink rule the way ``_build_graph`` would
+        # in production, so ``_result_marker_path`` resolves ``exe_path``
+        # to its CAS sibling.
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output=exe_path,
+                inputs=[cas_exe_path],
+                command=["ct-cas-publish", "--cas-path", cas_exe_path, "--user-path", exe_path],
+                rule_type="symlink",
+            )
+        )
+        backend._graph = graph
+
+        # Reset the mock now: helpers like ``_make_backend`` may incidentally
+        # invoke ``subprocess.run`` (e.g. ``git rev-parse`` for git_root
+        # resolution). Only invocations during ``_run_tests`` are relevant.
+        mock_run.reset_mock()
+
+        backend._run_tests()
+
+        invocations_for_exe = [c for c in mock_run.call_args_list if c.args and exe_path in c.args[0]]
+        assert invocations_for_exe, (
+            f"test was skipped despite no <cas_path>.result marker existing -- "
+            f"the legacy <user_exe>.result must be ignored in CAS mode. "
+            f"All subprocess.run calls during _run_tests: {mock_run.call_args_list}"
+        )
+
+        # And the success-touch must land at the CAS-side path, not the
+        # legacy user-facing path.
+        assert os.path.exists(cas_exe_path + ".result"), "successful test run did not touch the CAS-side success marker"
 
 
 class TestExtractLinkopts:

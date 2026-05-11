@@ -998,16 +998,36 @@ class BuildBackend(abc.ABC):
             if getattr(self.args, "TESTPREFIX", ""):
                 testprefix_parts = self.args.TESTPREFIX.split()
 
+            cas_only_results = not getattr(self.args, "use_mtime", False) and not self._has_native_cas_exe()
             test_result_paths = []
             for exe_path in test_exe_paths:
-                result_path = exe_path + ".result"
+                # In CAS-only mode, place .result next to the CAS exe entry
+                # so success markers are content-addressed: two builds that
+                # produce byte-identical exes share the marker, and the
+                # mtime-vs-published-exe race (the published exe inherits
+                # the cached entry's old mtime via os.link) is sidestepped
+                # entirely.
+                if cas_only_results:
+                    publish_rule = graph.get_rule(exe_path)
+                    if publish_rule and publish_rule.rule_type == "symlink":
+                        cas_exe_path = publish_rule.inputs[0]
+                    else:
+                        cas_exe_path = exe_path
+                    result_path = cas_exe_path + ".result"
+                    rule_inputs: list[str] = []
+                    rule_order_only = [exe_path]
+                else:
+                    result_path = exe_path + ".result"
+                    rule_inputs = [exe_path]
+                    rule_order_only = []
                 test_cmd = testprefix_parts + [exe_path]
                 graph.add_rule(
                     BuildRule(
                         output=result_path,
-                        inputs=[exe_path],
+                        inputs=rule_inputs,
                         command=test_cmd,
                         rule_type="test",
+                        order_only_deps=rule_order_only,
                         success_marker=result_path,
                     )
                 )
@@ -1020,12 +1040,63 @@ class BuildBackend(abc.ABC):
 
         return graph
 
+    def _result_marker_path(self, exe_path: str) -> str:
+        """Return the success-marker path for ``exe_path``.
+
+        In CAS-only mode (``--use-mtime=False``, default) for backends that
+        publish via the cas-exedir layer, the marker lives at
+        ``<cas_path>.result`` — sibling to the content-addressed exe — so
+        the marker is keyed by exe content and survives the inode-mtime
+        confusion introduced by the hard-link publish.
+
+        In legacy mode (``--use-mtime=True``) or for native-CAS backends
+        (cmake/bazel/tup, where ``_has_native_cas_exe()`` is True and there
+        is no separate publish-symlink rule), falls back to
+        ``<exe_path>.result`` — bit-identical to the pre-fix behaviour.
+
+        .. note:: Native-CAS backends (cmake / bazel / tup) currently fall
+           back to legacy ``<exe_path>.result`` semantics by *omission*,
+           not by design intent — they don't emit a separate
+           publish-symlink rule that ``_result_marker_path`` could resolve
+           through. A future change could add an equivalent content-keyed
+           marker for those backends (their own change-detection layers
+           know the artefact identity); the present design just doesn't
+           require it because the bug being fixed (hard-link inode mtime
+           confusion) is specific to the cas-exedir publish path.
+        """
+        if getattr(self.args, "use_mtime", False) or self._has_native_cas_exe():
+            return exe_path + ".result"
+        graph = self._graph
+        if graph is not None:
+            rule = graph.get_rule(exe_path)
+            if rule is not None and rule.rule_type == "symlink" and rule.inputs:
+                return rule.inputs[0] + ".result"
+        # Unexpected fallback: CAS-only mode but no publish-symlink rule
+        # found. In production ``_run_tests`` always runs after
+        # ``build_graph`` populates ``self._graph``, so reaching here means
+        # either the graph wasn't populated (a custom ``execute`` override
+        # in an out-of-tree backend) or the publish rule was filtered out
+        # of the graph. Surface it at verbose>=2 so the silent downgrade
+        # to legacy semantics is at least diagnosable.
+        if getattr(self.args, "verbose", 0) >= 2:
+            print(
+                f"_result_marker_path: no publish-symlink rule for {exe_path}; "
+                f"falling back to legacy <exe>.result (CAS-side marker disabled)",
+                file=sys.stderr,
+            )
+        return exe_path + ".result"
+
     def _run_tests(self) -> None:
         """Run test executables built from args.tests.
 
         Provides a backend-agnostic way to run tests with:
-        - Result-file markers: skips tests whose .result file is newer than
-          the executable (incremental test execution).
+        - Result-file markers: skips tests whose marker is current. In
+          CAS-only mode the marker lives next to the content-addressed
+          exe (existence is sufficient — the path is content-keyed so its
+          presence proves this exact exe content was previously tested).
+          In legacy ``--use-mtime`` mode the marker lives next to the
+          published exe and the existing ``mtime(result) >= mtime(exe)``
+          check applies.
         - Parallel execution: uses ThreadPoolExecutor with args.parallel workers.
         - Serialisation: when args.serialisetests is set, forces sequential execution.
         - TESTPREFIX: honours args.TESTPREFIX (e.g., valgrind) by prepending to
@@ -1038,12 +1109,21 @@ class BuildBackend(abc.ABC):
             self.namer.executable_pathname(compiletools.wrappedos.realpath(source)) for source in self.args.tests
         ]
 
+        legacy_mtime = getattr(self.args, "use_mtime", False) or self._has_native_cas_exe()
+
         # Filter out tests whose .result marker is up-to-date
         tests_to_run = []
         for exe_path in exe_paths:
-            result_file = exe_path + ".result"
-            if os.path.exists(result_file) and os.path.exists(exe_path):
-                if os.path.getmtime(result_file) >= os.path.getmtime(exe_path):
+            result_file = self._result_marker_path(exe_path)
+            if legacy_mtime:
+                if os.path.exists(result_file) and os.path.exists(exe_path):
+                    if os.path.getmtime(result_file) >= os.path.getmtime(exe_path):
+                        if self.args.verbose >= 2:
+                            print(f"Skipping up-to-date test: {exe_path}", file=sys.stderr)
+                        continue
+            else:
+                # CAS-only: marker is content-addressed, presence is sufficient.
+                if os.path.exists(result_file):
                     if self.args.verbose >= 2:
                         print(f"Skipping up-to-date test: {exe_path}", file=sys.stderr)
                     continue
@@ -1109,7 +1189,7 @@ class BuildBackend(abc.ABC):
                 failures.append(exe_path)
             else:
                 # Touch the .result file to mark success
-                _touch(exe_path + ".result")
+                _touch(self._result_marker_path(exe_path))
 
         if failures:
             raise RuntimeError(f"Test failures: {', '.join(failures)}")
@@ -1141,7 +1221,7 @@ class BuildBackend(abc.ABC):
             if rc != 0:
                 failures.append(exe_path)
             else:
-                _touch(exe_path + ".result")
+                _touch(self._result_marker_path(exe_path))
 
         if failures:
             raise RuntimeError(f"Test failures: {', '.join(failures)}")
@@ -2425,9 +2505,7 @@ class BuildBackend(abc.ABC):
         link_key_payload = {
             "linker_identity": _compiler_identity(ld_argv[0], anchor_root=anchor_root) if ld_argv else "",
             "ld_argv": compiletools.apptools.canonicalize_paths_for_cache_key(ld_argv, anchor_root),
-            "objects": sorted(
-                compiletools.apptools.canonicalize_paths_for_cache_key(object_names, anchor_root)
-            ),
+            "objects": sorted(compiletools.apptools.canonicalize_paths_for_cache_key(object_names, anchor_root)),
             "merged_ldflags": compiletools.apptools.canonicalize_for_cache_key(list(merged_ldflags), anchor_root),
             "extra_link_argv": extra_link_argv,
             "library_outputs": sorted(
@@ -2531,9 +2609,7 @@ class BuildBackend(abc.ABC):
         lib_key_payload = {
             "ar_argv_prefix": compiletools.apptools.canonicalize_paths_for_cache_key(ar_argv_prefix, anchor_root),
             "ar_identity": _compiler_identity(ar_binary, anchor_root=anchor_root),
-            "objects": sorted(
-                compiletools.apptools.canonicalize_paths_for_cache_key(object_names, anchor_root)
-            ),
+            "objects": sorted(compiletools.apptools.canonicalize_paths_for_cache_key(object_names, anchor_root)),
         }
         lib_key_hash = self._compute_artefact_key_hash(lib_key_payload)
         cas_lib_path = self.namer.cas_staticlibrary_pathname(sourcefilename, lib_key_hash)
@@ -2586,9 +2662,7 @@ class BuildBackend(abc.ABC):
             "linker_identity": _compiler_identity(ld_argv[0], anchor_root=anchor_root) if ld_argv else "",
             "ld_argv": compiletools.apptools.canonicalize_paths_for_cache_key(ld_argv, anchor_root),
             "shared": True,
-            "objects": sorted(
-                compiletools.apptools.canonicalize_paths_for_cache_key(object_names, anchor_root)
-            ),
+            "objects": sorted(compiletools.apptools.canonicalize_paths_for_cache_key(object_names, anchor_root)),
             "merged_ldflags": compiletools.apptools.canonicalize_for_cache_key(list(merged_ldflags), anchor_root),
             "ld_extra": ld_extra,
             "canonical_bindir": compiletools.apptools.canonicalize_path_for_cache_key(

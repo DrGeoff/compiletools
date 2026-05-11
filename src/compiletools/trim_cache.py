@@ -799,12 +799,15 @@ class CacheTrimmer:
             if _safe_locked_unlink(path, skip_if_nlink_above=1):
                 stats["removed"] += 1
                 stats["bytes_freed"] += size
-                # Sidecar manifest is best-effort cleanup — don't count
-                # towards bytes_freed (small, ignore failure).
-                try:
-                    os.remove(path + ".manifest")
-                except OSError:
-                    pass
+                # Sidecar files are best-effort cleanup — don't count
+                # towards bytes_freed (small, ignore failure). The
+                # ``.result`` sidecar is the per-CAS-entry test-success
+                # marker written by ``_run_tests`` in CAS-only mode.
+                for sidecar_suffix in (".manifest", ".result"):
+                    try:
+                        os.remove(path + sidecar_suffix)
+                    except OSError:
+                        pass
             else:
                 stats["failed"] += 1
 
