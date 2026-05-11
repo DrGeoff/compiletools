@@ -465,7 +465,7 @@ def test_bundle_with_workspace_relative_wrapper_reuses_cache(tmp_path):
     # mtime so the (size, mtime_ns) segment of compiler_identity matches
     # — leaving only the path component, which is what compiler_identity
     # canonicalisation is supposed to neutralise.
-    wrapper_content = "#!/bin/sh\nexec g++ \"$@\"\n"
+    wrapper_content = '#!/bin/sh\nexec g++ "$@"\n'
     FIXED_TIME = (1700000000, 1700000000)
     for ws in (ws1, ws2):
         tools_dir = ws / "tools"

@@ -2168,9 +2168,7 @@ def _commonsubstitutions(args):
     # in argv bypasses that — argparse stores the raw comma-separated string.
     # Resolve here so downstream consumers (cas-objdir/<variant>/, bindir,
     # compile_commands.<variant>.json) always see the dotted canonical form.
-    args.variant = compiletools.configutils.canonicalize_variant_input(
-        args.variant, argv=getattr(args, "_argv", None)
-    )
+    args.variant = compiletools.configutils.canonicalize_variant_input(args.variant, argv=getattr(args, "_argv", None))
     # Re-resolve fresh from the post-argparse variant value rather than
     # caching the create_parser-time resolution. Cheap (just file stats),
     # avoids module-level mutable state, and uses the correct variant when

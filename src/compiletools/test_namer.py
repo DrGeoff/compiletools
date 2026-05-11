@@ -486,7 +486,7 @@ def test_cas_exe_pathname_is_sharded_by_link_key_hash():
         args = compiletools.apptools.parseargs(cap, argv, context=ctx)
         namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=ctx)
 
-        link_key = "abcd1234ef567890abcd1234ef567890"
+        link_key = "abcd1234ef567890abcd1234ef567890"  # pragma: allowlist secret
         exe_path = namer.cas_exe_pathname("/some/where/foo.cpp", link_key)
 
         # Bucket dir is the leading 2 chars of the link key.

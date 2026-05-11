@@ -705,9 +705,7 @@ def _resolve_axis(name, search_kwargs, visited, on_path, _axis_cache, canonical_
     on_path.append(name)
     out = []
     for parent in extends:
-        out.extend(
-            _resolve_axis(parent, search_kwargs, visited, on_path, _axis_cache, canonical_order=canonical_order)
-        )
+        out.extend(_resolve_axis(parent, search_kwargs, visited, on_path, _axis_cache, canonical_order=canonical_order))
     on_path.pop()
 
     axis = AxisResolution(name=name, conf_paths=tuple(paths), extends=extends)

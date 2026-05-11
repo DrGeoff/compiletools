@@ -65,6 +65,7 @@ def test_handlers_restored_when_body_raises():
 
 def test_default_signums_are_sigint_and_sigterm():
     """No-args form covers the common ``Ctrl-C / kill`` pair."""
+
     def my_handler(signum, frame):  # pragma: no cover
         pass
 

@@ -40,7 +40,13 @@ ruff check src/compiletools/
 # Format
 ruff format src/compiletools/
 
+# Type-check (pyright also runs via pre-commit; pyproject.toml pins
+# `[tool.pyright].venvPath = ".", venv = ".venv"` so it sees worktree deps)
+pyright src/compiletools/
+
 # Run all pre-commit hooks against the entire codebase
+# (prek is a drop-in Rust replacement for pre-commit and uses the same
+# .pre-commit-config.yaml — substitute `prek` for `pre-commit` if installed)
 pre-commit run --all-files
 ```
 
@@ -231,4 +237,3 @@ All tools support `--variant=<config>` for build configuration selection and `--
 - Use `monkeypatch.chdir()` instead of `os.chdir()` with try/finally in tests — pytest auto-restores the working directory
 - When removing/renaming methods, search tests for `patch.object(...)` mocks referencing the old name
 - `BuildRule.rule_type` is validated against `VALID_RULE_TYPES` in `build_graph.py` — adding a new rule type requires updating the frozenset
-

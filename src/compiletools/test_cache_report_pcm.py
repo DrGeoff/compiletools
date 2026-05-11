@@ -109,7 +109,7 @@ def test_scan_pcmdir_handles_missing_manifest(tmp_path):
 
 
 def test_scan_pcmdir_handles_corrupt_manifest(tmp_path):
-    cmd_hash = "fedcba9876543210"
+    cmd_hash = "fedcba9876543210"  # pragma: allowlist secret
     d = _make_pcm_entry(tmp_path, cmd_hash, "ignored", pcm_size=40, bad_manifest=True)
 
     entries = cache_report.scan_pcmdir(str(tmp_path))
@@ -169,13 +169,9 @@ def test_pcm_report_with_duplication_computes_waste(tmp_path):
     # ``stage`` and ``transitive_hashes`` in addition to the bucket key.
     pcm_size = 100
     target_dir_bytes = 200
-    a_payload = json.dumps(
-        {"bucket_key": "/m/A.cppm", "stage": "clang_module_interface", "transitive_hashes": []}
-    )
+    a_payload = json.dumps({"bucket_key": "/m/A.cppm", "stage": "clang_module_interface", "transitive_hashes": []})
     a_pad = (target_dir_bytes - pcm_size) - len(a_payload)
-    b_payload = json.dumps(
-        {"bucket_key": "/m/B.cppm", "stage": "clang_module_interface", "transitive_hashes": []}
-    )
+    b_payload = json.dumps({"bucket_key": "/m/B.cppm", "stage": "clang_module_interface", "transitive_hashes": []})
     b_pad = (target_dir_bytes - pcm_size) - len(b_payload)
     assert a_pad >= 0 and b_pad >= 0, "test fixture too small; raise target_dir_bytes"
 

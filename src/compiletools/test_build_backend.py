@@ -2241,9 +2241,7 @@ class TestRunTestsXmlOutput:
 
     @patch("subprocess.run")
     @patch("compiletools.wrappedos.realpath", side_effect=lambda x: x)
-    def test_mixed_frameworks_in_same_build_each_get_own_argv(
-        self, mock_realpath, mock_run, tmp_path
-    ):
+    def test_mixed_frameworks_in_same_build_each_get_own_argv(self, mock_realpath, mock_run, tmp_path):
         """Two tests in the same build, fileA using gtest and fileB using
         Catch2, must each receive their own framework's XML argv. This
         pins the per-exe cache so a future refactor can't collapse it
@@ -2264,9 +2262,7 @@ class TestRunTestsXmlOutput:
         )
         StubClass = make_stub_backend_class()
         hunter = MagicMock()
-        hunter.header_dependencies = MagicMock(
-            side_effect=lambda src: headers_per_source[src]
-        )
+        hunter.header_dependencies = MagicMock(side_effect=lambda src: headers_per_source[src])
         backend = StubClass(args=args, hunter=hunter)
         backend.namer = make_mock_namer(args)
 

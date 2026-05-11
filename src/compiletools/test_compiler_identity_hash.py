@@ -76,15 +76,13 @@ def test_compiler_identity_canonicalises_in_workspace_binary(tmp_path):
     workspace = tmp_path / "workspace"
     (workspace / "tools").mkdir(parents=True)
     binary = workspace / "tools" / "cc-wrap.sh"
-    binary.write_text("#!/bin/sh\nexec g++ \"$@\"\n")
+    binary.write_text('#!/bin/sh\nexec g++ "$@"\n')
     binary.chmod(0o755)
 
     compiler_identity.cache_clear()
     result = compiler_identity(str(binary), anchor_root=str(workspace))
     realpath_part = result.split("|", 1)[0]
-    assert realpath_part == "<GITROOT>/tools/cc-wrap.sh", (
-        f"compiler_identity leaked workspace prefix: {result!r}"
-    )
+    assert realpath_part == "<GITROOT>/tools/cc-wrap.sh", f"compiler_identity leaked workspace prefix: {result!r}"
 
 
 def test_compiler_identity_outside_anchor_unchanged(tmp_path):
@@ -128,9 +126,7 @@ def test_compiler_identity_fallback_string_canonicalised_when_under_anchor(tmp_p
 
     compiler_identity.cache_clear()
     result = compiler_identity(bogus, anchor_root=str(workspace))
-    assert result == "<GITROOT>/tools/does-not-exist", (
-        f"compiler_identity fallback leaked workspace prefix: {result!r}"
-    )
+    assert result == "<GITROOT>/tools/does-not-exist", f"compiler_identity fallback leaked workspace prefix: {result!r}"
 
 
 def test_every_production_caller_passes_anchor_root():
@@ -198,7 +194,7 @@ def test_compiler_identity_two_workspaces_canonicalise_to_same_realpath(tmp_path
     report's wrapper-script reproducer. Distinct from the unit tests
     because it proves the *cross-workspace* equality the leak
     actually broke."""
-    wrapper_content = "#!/bin/sh\nexec g++ \"$@\"\n"
+    wrapper_content = '#!/bin/sh\nexec g++ "$@"\n'
 
     ws_a = tmp_path / "run-A" / "workspace"
     (ws_a / "tools").mkdir(parents=True)
@@ -224,9 +220,7 @@ def test_compiler_identity_two_workspaces_canonicalise_to_same_realpath(tmp_path
     compiler_identity.cache_clear()
     id_b = compiler_identity(str(bin_b), anchor_root=str(ws_b))
     assert id_a == id_b, (
-        "compiler_identity must canonicalise the realpath across workspaces.\n"
-        f"  WS-A: {id_a}\n"
-        f"  WS-B: {id_b}"
+        f"compiler_identity must canonicalise the realpath across workspaces.\n  WS-A: {id_a}\n  WS-B: {id_b}"
     )
 
 

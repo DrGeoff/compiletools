@@ -39,7 +39,7 @@ import pytest
 
 from compiletools.apptools import compiler_identity
 
-WRAPPER_CONTENT = "#!/bin/sh\nexec g++ \"$@\"\n"
+WRAPPER_CONTENT = '#!/bin/sh\nexec g++ "$@"\n'
 FIXED_TIME = (1700000000, 1700000000)
 
 
@@ -99,8 +99,7 @@ def test_pch_hash_stable_with_workspace_relative_compiler(two_workspaces):
     h_b = _hash(ws_b, bin_b)
 
     assert h_a == h_b, (
-        "PCH cache hash leaks workspace path through compiler_identity / "
-        f"cxx_command:\n  WS-A: {h_a}\n  WS-B: {h_b}"
+        f"PCH cache hash leaks workspace path through compiler_identity / cxx_command:\n  WS-A: {h_a}\n  WS-B: {h_b}"
     )
 
 
@@ -134,8 +133,7 @@ def test_pcm_hash_stable_with_workspace_relative_compiler(two_workspaces):
     h_b = _hash(ws_b, bin_b)
 
     assert h_a == h_b, (
-        "PCM cache hash leaks workspace path through compiler_identity / "
-        f"cxx_command:\n  WS-A: {h_a}\n  WS-B: {h_b}"
+        f"PCM cache hash leaks workspace path through compiler_identity / cxx_command:\n  WS-A: {h_a}\n  WS-B: {h_b}"
     )
 
 
@@ -177,8 +175,7 @@ def test_macro_state_hash_stable_with_workspace_relative_compiler_path(two_works
     h_b = _hash(ws_b, bin_b)
 
     assert h_a == h_b, (
-        "Per-TU object cache hash leaks workspace path through "
-        f"MacroState.compiler_path:\n  WS-A: {h_a}\n  WS-B: {h_b}"
+        f"Per-TU object cache hash leaks workspace path through MacroState.compiler_path:\n  WS-A: {h_a}\n  WS-B: {h_b}"
     )
 
 
@@ -192,6 +189,7 @@ def _artefact_key(payload):
     link/ar key tests don't need to instantiate a BuildBackend."""
     import hashlib
     import json
+
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
@@ -221,8 +219,7 @@ def test_link_key_stable_with_workspace_relative_linker(two_workspaces):
     k_b = _key(ws_b, bin_b)
 
     assert k_a == k_b, (
-        "Link cache key leaks workspace path through linker_identity / "
-        f"ld_argv:\n  WS-A: {k_a}\n  WS-B: {k_b}"
+        f"Link cache key leaks workspace path through linker_identity / ld_argv:\n  WS-A: {k_a}\n  WS-B: {k_b}"
     )
 
 
@@ -250,6 +247,5 @@ def test_ar_key_stable_with_workspace_relative_archiver(two_workspaces):
     k_b = _key(ws_b, bin_b)
 
     assert k_a == k_b, (
-        "ar cache key leaks workspace path through ar_identity / "
-        f"ar_argv_prefix:\n  WS-A: {k_a}\n  WS-B: {k_b}"
+        f"ar cache key leaks workspace path through ar_identity / ar_argv_prefix:\n  WS-A: {k_a}\n  WS-B: {k_b}"
     )

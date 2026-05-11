@@ -636,6 +636,7 @@ class TestProjectVersionAndNameOptIn:
 
     def test_no_injection_when_neither_flag_set_version(self):
         from compiletools.apptools import _set_project_version
+
         args = self._make_args()
         _set_project_version(args)
         assert "-DCT_PROJECT_VERSION" not in args.CPPFLAGS
@@ -644,6 +645,7 @@ class TestProjectVersionAndNameOptIn:
 
     def test_no_injection_when_neither_flag_set_name(self):
         from compiletools.apptools import _set_project_name
+
         args = self._make_args()
         _set_project_name(args)
         assert "-DCT_PROJECT_NAME" not in args.CPPFLAGS
@@ -652,43 +654,48 @@ class TestProjectVersionAndNameOptIn:
 
     def test_explicit_version_injects(self):
         from compiletools.apptools import _set_project_version
+
         args = self._make_args(**{"project-version": "1.2.3"})
         _set_project_version(args)
-        assert '-DCT_PROJECT_VERSION=\'"1.2.3"\'' in args.CPPFLAGS
-        assert '-DCT_PROJECT_VERSION=\'"1.2.3"\'' in args.CFLAGS
-        assert '-DCT_PROJECT_VERSION=\'"1.2.3"\'' in args.CXXFLAGS
+        assert "-DCT_PROJECT_VERSION='\"1.2.3\"'" in args.CPPFLAGS
+        assert "-DCT_PROJECT_VERSION='\"1.2.3\"'" in args.CFLAGS
+        assert "-DCT_PROJECT_VERSION='\"1.2.3\"'" in args.CXXFLAGS
 
     def test_explicit_name_injects(self):
         from compiletools.apptools import _set_project_name
+
         args = self._make_args(**{"project-name": "myapp"})
         _set_project_name(args)
-        assert '-DCT_PROJECT_NAME=\'"myapp"\'' in args.CPPFLAGS
-        assert '-DCT_PROJECT_NAME=\'"myapp"\'' in args.CFLAGS
-        assert '-DCT_PROJECT_NAME=\'"myapp"\'' in args.CXXFLAGS
+        assert "-DCT_PROJECT_NAME='\"myapp\"'" in args.CPPFLAGS
+        assert "-DCT_PROJECT_NAME='\"myapp\"'" in args.CFLAGS
+        assert "-DCT_PROJECT_NAME='\"myapp\"'" in args.CXXFLAGS
 
     def test_version_cmd_alone_injects(self):
         from compiletools.apptools import _set_project_version
+
         args = self._make_args(**{"project-version-cmd": "echo from-cmd-1.0"})
         _set_project_version(args)
         # First whitespace token of stdout is taken
-        assert '-DCT_PROJECT_VERSION=\'"from-cmd-1.0"\'' in args.CPPFLAGS
+        assert "-DCT_PROJECT_VERSION='\"from-cmd-1.0\"'" in args.CPPFLAGS
 
     def test_name_cmd_alone_injects(self):
         from compiletools.apptools import _set_project_name
+
         args = self._make_args(**{"project-name-cmd": "echo cmd-named-app"})
         _set_project_name(args)
-        assert '-DCT_PROJECT_NAME=\'"cmd-named-app"\'' in args.CPPFLAGS
+        assert "-DCT_PROJECT_NAME='\"cmd-named-app\"'" in args.CPPFLAGS
 
     def test_explicit_version_takes_precedence_over_cmd(self):
         from compiletools.apptools import _set_project_version
-        args = self._make_args(**{"project-version": "explicit-1.0",
-                                  "project-version-cmd": "echo from-cmd"})
+
+        args = self._make_args(**{"project-version": "explicit-1.0", "project-version-cmd": "echo from-cmd"})
         _set_project_version(args)
-        assert '-DCT_PROJECT_VERSION=\'"explicit-1.0"\'' in args.CPPFLAGS
+        assert "-DCT_PROJECT_VERSION='\"explicit-1.0\"'" in args.CPPFLAGS
         assert "from-cmd" not in args.CPPFLAGS
 
     def test_idempotent_when_macro_already_present(self):
         from compiletools.apptools import _set_project_name
+
         args = self._make_args(**{"project-name": "newvalue"})
         args.CPPFLAGS = '-DCT_PROJECT_NAME="oldvalue"'
         _set_project_name(args)
@@ -1188,9 +1195,7 @@ class TestCompilerSupportsRequestedStandard:
 
         import compiletools.apptools as apptools
 
-        monkeypatch.setattr(
-            apptools, "_compiler_major_version", lambda path: ("gcc", 11)
-        )
+        monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: ("gcc", 11))
         args = SimpleNamespace(
             variant="gcc.cxx26.debug",
             CC="g++",
@@ -1209,9 +1214,7 @@ class TestCompilerSupportsRequestedStandard:
 
         import compiletools.apptools as apptools
 
-        monkeypatch.setattr(
-            apptools, "_compiler_major_version", lambda path: ("gcc", 14)
-        )
+        monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: ("gcc", 14))
         args = SimpleNamespace(
             variant="gcc.cxx26.debug",
             CC="g++",
@@ -1243,9 +1246,7 @@ class TestCompilerSupportsRequestedStandard:
 
         import compiletools.apptools as apptools
 
-        monkeypatch.setattr(
-            apptools, "_compiler_major_version", lambda path: ("gcc", 4)
-        )
+        monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: ("gcc", 4))
         args = SimpleNamespace(
             variant="blank.debug",
             CC="gcc",
@@ -1263,9 +1264,7 @@ class TestCompilerSupportsRequestedStandard:
 
         import compiletools.apptools as apptools
 
-        monkeypatch.setattr(
-            apptools, "_compiler_major_version", lambda path: ("gcc", 11)
-        )
+        monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: ("gcc", 11))
         args = SimpleNamespace(
             variant="x",
             CC="g++",

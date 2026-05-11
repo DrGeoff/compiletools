@@ -1143,9 +1143,7 @@ def main(argv: list[str] | None = None) -> int:
         if explicit == {"--cas-objdir"} and obj_rep is not None:
             sys.stdout.write(_render_cas_objdir_only_json(obj_rep, args.top))
         else:
-            sys.stdout.write(
-                _render_combined_json(obj_rep, pch_rep_obj, pcm_rep_obj, exe_rep_obj, args.top)
-            )
+            sys.stdout.write(_render_combined_json(obj_rep, pch_rep_obj, pcm_rep_obj, exe_rep_obj, args.top))
     else:
         chunks: list[str] = []
         if obj_rep is not None:

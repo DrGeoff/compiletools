@@ -1189,8 +1189,7 @@ class TestConcurrentCompilationDatabase:
                 symlink_path = os.path.join(cwd, "compile_commands.json")
 
                 assert os.path.exists(variant_path), (
-                    f"Expected canonical-name DB at {variant_path}; "
-                    f"directory contains: {sorted(os.listdir(cwd))}"
+                    f"Expected canonical-name DB at {variant_path}; directory contains: {sorted(os.listdir(cwd))}"
                 )
                 assert os.path.islink(symlink_path), f"Expected {symlink_path} to be a symlink"
                 # Symlink target must be the canonical-name relative basename.

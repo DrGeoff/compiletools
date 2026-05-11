@@ -18,6 +18,18 @@ repos:
         args: [--fix]
       - id: ruff-format
 
+  - repo: https://github.com/RobertCraigie/pyright-python
+    rev: v1.1.409
+    hooks:
+      - id: pyright
+        # Pyright must see the project's deps (stringzilla, configargparse,
+        # rich, …) — the hook's isolated env doesn't have them. Pointing
+        # pyright at the worktree's mandatory ``.venv/`` (see CLAUDE.md
+        # "Worktree-Based Development") is cleaner than enumerating runtime
+        # deps via additional_dependencies, and stays in sync with whatever
+        # ``uv pip install -e .[dev]`` resolves.
+        pass_filenames: false
+
   - repo: https://github.com/Yelp/detect-secrets
     rev: v1.5.0
     hooks:

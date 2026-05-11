@@ -24,9 +24,9 @@ from pathlib import Path
 
 import pytest
 
-try:
+if sys.version_info >= (3, 11):
     import tomllib
-except ImportError:  # Python 3.10
+else:
     import tomli as tomllib  # type: ignore[no-redef]
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -36,10 +36,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 # pinned argv shapes. Adding the apptools surface to them would break
 # those recipes — they parse argv with a fixed contract. They DO carry
 # ``--version`` (cheap and useful for diagnostics) but NOT the rest.
-PINNED_CLI_TOOLS: frozenset[str] = frozenset({
-    "ct-cas-publish",
-    "ct-lock-helper",
-})
+PINNED_CLI_TOOLS: frozenset[str] = frozenset(
+    {
+        "ct-cas-publish",
+        "ct-lock-helper",
+    }
+)
 
 # The minimum-help surface every other ct-* tool MUST advertise.
 REQUIRED_HELP_TOKENS: tuple[str, ...] = (

@@ -171,3 +171,14 @@ ignore = [
 "src/compiletools/timing_tui.py" = ["RUF001"]
 "src/compiletools/test_build_timer.py" = ["RUF001"]
 "src/compiletools/test_timing_tui.py" = ["RUF001", "RUF002"]
+
+[tool.pyright]
+# Pre-commit runs pyright in its own isolated env via pyright-python, which
+# would shadow the project deps installed into the worktree venv. Point at the
+# worktree's mandatory ``.venv/`` (see CLAUDE.md "Worktree-Based Development")
+# so the pre-commit run sees the same imports a developer ``pyright`` invocation
+# from inside the activated venv would.
+venvPath = "."
+venv = ".venv"
+include = ["src/compiletools"]
+pythonVersion = "3.10"

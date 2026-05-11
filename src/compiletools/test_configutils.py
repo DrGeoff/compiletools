@@ -266,7 +266,14 @@ class TestVariant:
                 )
             axis_names = [a.name for a in resolution.axes]
             assert axis_names == [
-                "gcc", "cxx26", "release", "lto", "hardened", "pie", "strip", "production",
+                "gcc",
+                "cxx26",
+                "release",
+                "lto",
+                "hardened",
+                "pie",
+                "strip",
+                "production",
             ]
 
     def test_bundle_safety_uses_clang(self):
@@ -708,9 +715,7 @@ class TestVariant:
         bundle, which is semantically nonsensical (bundles are
         composites OF their parents, so they conceptually come "after").
         """
-        bundled_conf_d = os.path.join(
-            os.path.dirname(compiletools.configutils.__file__), "ct.conf.d"
-        )
+        bundled_conf_d = os.path.join(os.path.dirname(compiletools.configutils.__file__), "ct.conf.d")
         canonical = compiletools.configutils._DEFAULT_VARIANT_CANONICAL_ORDER
         position = {tok: i for i, tok in enumerate(canonical)}
 
@@ -737,8 +742,7 @@ class TestVariant:
             unknown = [p for p in extends if p not in position]
             if unknown:
                 violations.append(
-                    f"  {name}.conf extends unknown token(s) "
-                    f"{unknown!r}; add them to _DEFAULT_VARIANT_CANONICAL_ORDER."
+                    f"  {name}.conf extends unknown token(s) {unknown!r}; add them to _DEFAULT_VARIANT_CANONICAL_ORDER."
                 )
                 continue
 
@@ -763,10 +767,7 @@ class TestVariant:
                         f"later in _DEFAULT_VARIANT_CANONICAL_ORDER."
                     )
 
-        assert not violations, (
-            "Composite conf files violate canonical-order invariants:\n"
-            + "\n".join(violations)
-        )
+        assert not violations, "Composite conf files violate canonical-order invariants:\n" + "\n".join(violations)
 
     def test_user_conf_with_out_of_order_extends_emits_warning(self, caplog):
         """Runtime guard: a user-authored conf with ``extends = ...``
@@ -813,8 +814,7 @@ class TestVariant:
             matching = [
                 rec.getMessage()
                 for rec in caplog.records
-                if rec.name == "compiletools.configutils"
-                and "my-bad-order.conf" in rec.getMessage()
+                if rec.name == "compiletools.configutils" and "my-bad-order.conf" in rec.getMessage()
             ]
             assert matching, (
                 "expected a configutils warning naming my-bad-order.conf; "
