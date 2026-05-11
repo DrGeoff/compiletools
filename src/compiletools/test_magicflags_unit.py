@@ -2,8 +2,8 @@
 
 import os
 import tempfile
-from collections import defaultdict
 from argparse import Namespace
+from collections import defaultdict
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 

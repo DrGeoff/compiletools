@@ -14,11 +14,6 @@ import subprocess
 import sys
 import time
 
-import compiletools.apptools
-import compiletools.filesystem_utils
-import compiletools.lock_utils
-import compiletools.wrappedos
-
 # fcntl only available on Unix (not Windows). Each user of ``fcntl`` re-asserts
 # non-None at the top of the method body (cheap, lets pyright narrow ``ModuleType
 # | None`` to ``ModuleType`` for the rest of the scope, and the asserted
@@ -26,6 +21,11 @@ import compiletools.wrappedos
 # than an opaque ``AttributeError: 'NoneType' object has no attribute 'lockf'``).
 import types
 from typing import Optional
+
+import compiletools.apptools
+import compiletools.filesystem_utils
+import compiletools.lock_utils
+import compiletools.wrappedos
 
 try:
     import fcntl as _fcntl_real
