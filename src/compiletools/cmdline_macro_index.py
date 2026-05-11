@@ -3,6 +3,16 @@
 Given the fixed cmdline `-D` macro list and a TU's transitive content hashes,
 returns the subset that the TU actually references via word-boundary identifier
 scan. Caller owns file bytes via callback; this module is pure.
+
+The scan is byte-level: no preprocessing, no comment stripping, no
+string-literal stripping. A macro identifier that appears only in a
+``// ...`` or ``/* ... */`` comment, or only inside a string literal,
+of a transitive header still counts as referenced. This is conservative
+(over-includes are safe — keys are stricter than necessary, never
+weaker), but it can defeat per-app/per-config macro isolation when a
+documentation comment in a shared header mentions the macro by name.
+See the "Macro Scope Filter" section of README.ct-cake.rst for the
+recommended generated-header pattern that sidesteps this entirely.
 """
 
 from collections.abc import Callable, Iterable

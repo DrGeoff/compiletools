@@ -297,7 +297,7 @@ def canonicalize_variant_input(
     tokens = split_variant(variant_str)
     if not tokens:
         return variant_str
-    order, _src = get_canonical_order(
+    order, _ = get_canonical_order(
         user_config_dir=user_config_dir,
         system_config_dir=system_config_dir,
         exedir=exedir,
@@ -493,6 +493,7 @@ class VariantResolution:
     canonical_name: str
     axes: tuple[AxisResolution, ...]
     composite_override: str | None = None
+    composite_paths: tuple[str, ...] = ()
     base_ct_conf_files: tuple[str, ...] = ()
     canonical_order: tuple[str, ...] = field(default_factory=tuple)
     canonical_order_source: str = "builtin"
@@ -500,12 +501,19 @@ class VariantResolution:
 
     @property
     def flat_paths(self):
-        """All conf files in low-to-high priority order, for configargparse."""
+        """All conf files in low-to-high priority order, for configargparse.
+
+        All composite overrides (bundled <name>.conf, project <name>.conf,
+        cwd <name>.conf, ...) are included so multi-level composites compose
+        the same way as multi-level axis confs. ``composite_override`` is
+        kept as a convenience alias for the highest-priority composite path,
+        the one whose ``extends = ...`` directive (if any) steers chain seed
+        selection.
+        """
         result = list(self.base_ct_conf_files)
         for axis in self.axes:
             result.extend(axis.conf_paths)
-        if self.composite_override:
-            result.append(self.composite_override)
+        result.extend(self.composite_paths)
         if self.explicit_config:
             result.append(self.explicit_config)
         return result
@@ -544,11 +552,11 @@ def _parse_extends_directive(conf_path, verbose=0):
 def _find_axis_confs(name, **kwargs):
     """Return conf files for an axis in ascending priority order (low → high).
 
-    `get_existing_config_files` returns highest-priority first, so we reverse
-    to put the bundled defaults at the front.
+    `get_existing_config_files` returns lowest-priority first (bundled
+    before cwd), which is already the order configargparse wants in
+    ``default_config_files`` (later overrides earlier).
     """
-    paths = get_existing_config_files(filename=f"{name}.conf", **kwargs)
-    return list(reversed(paths))
+    return list(get_existing_config_files(filename=f"{name}.conf", **kwargs))
 
 
 def _resolve_axis(name, search_kwargs, visited, on_path, _axis_cache):
@@ -660,8 +668,11 @@ def resolve_variant(
     canonical_tokens = canonicalize_variant_tokens(tokens, canonical_order)
     canonical_name = ".".join(canonical_tokens) if canonical_tokens else variant_str
 
-    # Base ct.conf files, lowest-priority first
-    base_ct_conf_files = tuple(reversed(get_existing_config_files(filename="ct.conf", **search_kwargs)))
+    # Base ct.conf files in lowest-to-highest priority order as
+    # configargparse expects (later entries in default_config_files
+    # override earlier ones). get_existing_config_files already returns
+    # the right order (cwd ct.conf LAST -> overrides bundled).
+    base_ct_conf_files = tuple(get_existing_config_files(filename="ct.conf", **search_kwargs))
 
     # Composite override file: a literal `<canonical_name>.conf` that the
     # user (or a project) wrote to *tune* the composition. Layers on top of
@@ -671,9 +682,11 @@ def resolve_variant(
     # which case the explicit declaration wins.
     composite_override = None
     composite_extends = ()
+    composite_paths_tuple = ()
     if len(canonical_tokens) > 1:
         composite_paths = _find_axis_confs(canonical_name, **search_kwargs)
         if composite_paths:
+            composite_paths_tuple = tuple(composite_paths)
             composite_override = composite_paths[-1]
             composite_extends = _parse_extends_directive(composite_override)
 
@@ -754,6 +767,7 @@ def resolve_variant(
         canonical_name=canonical_name,
         axes=tuple(axes_out),
         composite_override=composite_override,
+        composite_paths=composite_paths_tuple,
         base_ct_conf_files=base_ct_conf_files,
         canonical_order=tuple(canonical_order),
         canonical_order_source=canonical_order_source,

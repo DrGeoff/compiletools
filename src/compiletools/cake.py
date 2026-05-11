@@ -164,7 +164,7 @@ class Cake:
         )
 
         cap.add(
-            "--CAKE_PREPROCESS",
+            "--CT_PREPROCESS",
             dest="preprocess",
             default=False,
             help="Deprecated. Synonym for preprocess",

@@ -153,6 +153,60 @@ ct-cake's ``direct`` dependency mode (the default) now resolves computed
 
 Previously this required ``--headerdeps=cpp`` to track correctly.
 
+Macro Scope Filter (Cmdline ``-D`` Macros and Cache Keys)
+---------------------------------------------------------
+
+ct-cake's per-TU cache keys (``macro_state_hash``) include only the subset
+of cmdline ``-D`` macros each TU actually references. The reference check
+is implemented in ``cmdline_macro_index.py`` as a **word-boundary byte
+scan** over the TU and each of its transitive headers. It does NOT
+preprocess the source and it does NOT strip comments or string literals.
+
+This means that if a header documentation comment, a deprecated macro
+name in a string literal, or any other textual occurrence of a cmdline
+``-D`` macro identifier appears in a transitive header, the scope filter
+will include that macro in the includer's ``macro_state_hash``. Cache
+keys remain *correct* (false positives are safe — they can only
+over-include, never under-include), but cache *reuse* is lost: every TU
+that includes such a header gets a per-value cache entry whether or not
+its compiled output actually depends on the macro. ``ct-cache-report``
+surfaces this as inflated duplicate-variant counts.
+
+The trap is most painful for per-app or per-config macros injected via
+``-DAPP_NAME=foo`` / ``-DAPP_NAME=bar`` style cmdline options, where the
+intent is "only the one stub TU that calls ``TOSTRING(APP_NAME)`` should
+fork per app." A friendly comment in the header that *describes* the
+build-time macro is enough to defeat that intent and double the cache
+footprint.
+
+The robust fix is to keep the per-app/per-config value out of the
+cmdline ``-D`` set entirely, by emitting a **per-build generated
+header** that exactly one accessor TU includes. The build script
+writes the value into a generated ``.h`` at a known path, exactly one
+TU ``#include``\ s it, and the cmdline ``-D`` injection is dropped.
+With no needle in the cmdline ``-D`` set, the scope filter has
+nothing to match against and prose mentioning the value's name in
+shared headers cannot regress unrelated TUs' cache keys.
+
+ct-cake provides two opt-in convenience hooks for the most common
+cases:
+
+* ``--project-version`` / ``--project-version-cmd`` →
+  ``-DCT_PROJECT_VERSION="<version>"``
+* ``--project-name`` / ``--project-name-cmd`` →
+  ``-DCT_PROJECT_NAME="<name>"``
+
+These are **opt-in**: if you do not specify any of them on the CLI,
+in ct.conf, or via env, no macro is injected and the cmdline ``-D``
+set stays clean. They are provided as canonical names so consumers
+don't reinvent the per-app/per-version naming wheel and don't
+collide with widely-used identifiers (``APP_NAME``, ``PROJECT``,
+``MAIN``...). Note that when you do opt in, both are still cmdline
+``-D`` injections and so are still subject to the same
+comment-scanning behavior described above — the generated-header
+pattern remains the right shape for the value to actually buy free
+cache reuse on TUs that don't reference it in code.
+
 Performance
 ===========
 
@@ -330,6 +384,18 @@ cache instead of re-running the producer. ``--use-mtime`` restores
 the legacy mtime-based behavior for interactive workflows where
 re-touching a source should force a rebuild even when the producer
 key would not change.
+
+``--use-mtime`` is honored only by the Make and Ninja backends:
+their rule emitters consume the prereq list as a literal mtime
+comparison, so they can branch on the flag. The cmake / bazel /
+tup / shake / slurm backends use their own change detection
+(cmake's out-of-source incremental tracking, bazel's
+content-addressable action cache, tup's FUSE content tracking,
+trace_backend's verifying traces) and a touched-but-otherwise-
+unchanged source is invisible to all of them — they cannot
+deliver "touch to force rebuild" semantics regardless of how the
+flag is set. Passing ``--use-mtime=True`` against one of those
+backends emits a stderr warning and is otherwise ignored.
 
 Caveats of ``--use-mtime=False`` mode
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -678,6 +744,59 @@ run the build script like this:
 or:
 
     ``$ ./build.sh --variant=release --append-CXXFLAGS=-DSPECIALMODE``
+
+JUnit XML Output
+================
+
+Pass ``--test-xml-dir=DIR`` to emit per-test JUnit XML reports for
+GitHub Actions and other CI systems::
+
+    ct-cake --auto --variant=gcc.debug --test-xml-dir=test-results
+
+Each test executable produces ``test-results/<variant>/<exe>.xml``.
+ct-cake automatically picks the right framework flag based on the
+headers each test transitively includes:
+
+==========  ===================================================
+Framework   XML argv appended after exe_path
+==========  ===================================================
+gtest       ``--gtest_output=xml:PATH``
+doctest     ``--reporters=junit --out=PATH``
+Catch2      ``--reporter junit --out PATH``
+==========  ===================================================
+
+Detection trips on whether ``gtest/gtest.h``, ``doctest/doctest.h``
+(or bare ``doctest.h``), or ``catch2/catch_all.hpp`` /
+``catch2/catch.hpp`` / ``catch.hpp`` appears in each test's
+transitive header set. A test that pulls in two framework headers
+at once is rejected with an error naming both — disambiguate by
+fixing the include paths. A test that matches none runs normally
+and produces no XML; a warning is emitted at ``--verbose=1``.
+
+The XML argv is appended *after* the exe_path so prefix tools like
+``valgrind --quiet`` (passed via ``--TESTPREFIX``) forward the XML
+flag to the child process correctly.
+
+A test whose ``.result`` marker is current but whose XML file has
+been deleted (someone ``rm -rf``'d the output dir, or asked for a
+different one) is re-run to regenerate the XML. ct-cake does NOT
+clean ``DIR/<variant>/`` before running, so stale XML from a removed
+test will linger; run ``rm -rf test-results/<variant>/`` for a clean
+slate. Most CI systems publish from a fresh checkout, so staleness
+doesn't accumulate there in practice.
+
+GitHub Actions usage::
+
+    - run: ct-cake --auto --variant=gcc.debug --test-xml-dir=test-results
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: junit
+        path: test-results/**/*.xml
+    - uses: EnricoMi/publish-unit-test-result-action@v2
+      if: always()
+      with:
+        files: test-results/**/*.xml
 
 References
 ==========

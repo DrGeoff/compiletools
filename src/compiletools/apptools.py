@@ -437,14 +437,36 @@ def add_target_arguments_ex(cap):
         help='Runs tests with the given prefix, eg. "valgrind --quiet --error-exitcode=1"',
     )
     cap.add(
+        "--test-xml-dir",
+        dest="test_xml_dir",
+        default=None,
+        help=(
+            "Directory to write per-test JUnit XML reports. "
+            "Layout: <DIR>/<variant>/<exe_basename>.xml. "
+            "ct-cake auto-selects --gtest_output / --reporters=junit / "
+            "--reporter junit based on each test's transitive headers "
+            "(gtest, doctest, Catch2). Default: unset (no XML produced)."
+        ),
+    )
+    cap.add(
         "--project-version",
         dest="projectversion",
-        help="Set the CAKE_PROJECT_VERSION macro to this value",
+        help="Set the CT_PROJECT_VERSION macro to this value",
     )
     cap.add(
         "--project-version-cmd",
         dest="projectversioncmd",
-        help="Execute this command to determine the CAKE_PROJECT_VERSION macro",
+        help="Execute this command to determine the CT_PROJECT_VERSION macro",
+    )
+    cap.add(
+        "--project-name",
+        dest="projectname",
+        help="Set the CT_PROJECT_NAME macro to this value",
+    )
+    cap.add(
+        "--project-name-cmd",
+        dest="projectnamecmd",
+        help="Execute this command to determine the CT_PROJECT_NAME macro",
     )
 
 
@@ -1828,17 +1850,27 @@ def _batch_pkg_config(packages: list[str], option: str) -> dict[str, str]:
 
 
 def _set_project_version(args):
-    """C/C++ source code can rely on the CAKE_PROJECT_VERSION macro being set.
-    If the user specified a projectversion then use that.
-    Otherwise execute projectversioncmd to determine projectversion.
-    In the completely unspecified case, use the zero version.
+    """Inject ``-DCT_PROJECT_VERSION="<value>"`` into CPPFLAGS/CFLAGS/CXXFLAGS,
+    but only if the user opted in.
+
+    Opt-in is any of:
+      * ``--project-version VALUE`` on CLI / ct.conf / env
+      * ``--project-version-cmd CMD`` on CLI / ct.conf / env
+
+    If neither is set, do nothing — no macro is injected. This keeps
+    cmdline ``-D`` cache-key noise off TUs that don't ask for it (see the
+    "Macro Scope Filter" section of README.ct-cake.rst for why a
+    cmdline ``-D`` macro is sticky once introduced).
     """
-    # Only try to determine version if not already set
-    if not (hasattr(args, "projectversion") and args.projectversion):
+    projectversion = getattr(args, "projectversion", None)
+    projectversioncmd = getattr(args, "projectversioncmd", None)
+
+    if not projectversion and projectversioncmd:
         try:
-            args.projectversion = (
-                subprocess.check_output(args.projectversioncmd.split(), universal_newlines=True).strip("\n").split()[0]
+            projectversion = (
+                subprocess.check_output(projectversioncmd.split(), universal_newlines=True).strip("\n").split()[0]
             )
+            args.projectversion = projectversion
             if args.verbose >= 6:
                 print("Used projectversioncmd to set projectversion")
         except (subprocess.CalledProcessError, OSError) as err:
@@ -1846,7 +1878,7 @@ def _set_project_version(args):
                 " ".join(
                     [
                         "Could not use projectversioncmd =",
-                        args.projectversioncmd,
+                        projectversioncmd,
                         "to set projectversion.\n",
                     ]
                 )
@@ -1856,37 +1888,85 @@ def _set_project_version(args):
                 sys.exit(1)
             else:
                 raise
-        except AttributeError:
+
+    if not projectversion:
+        return
+
+    version_escaped = projectversion.replace("\\", "\\\\").replace('"', '\\"')
+
+    if "-DCT_PROJECT_VERSION" not in args.CPPFLAGS:
+        args.CPPFLAGS += " -DCT_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
+    if "-DCT_PROJECT_VERSION" not in args.CFLAGS:
+        args.CFLAGS += " -DCT_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
+    if "-DCT_PROJECT_VERSION" not in args.CXXFLAGS:
+        args.CXXFLAGS += " -DCT_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
+
+    if args.verbose >= 6:
+        print("*FLAG variables have been modified with the project version:")
+        print("\tCPPFLAGS=" + args.CPPFLAGS)
+        print("\tCFLAGS=" + args.CFLAGS)
+        print("\tCXXFLAGS=" + args.CXXFLAGS)
+
+
+def _set_project_name(args):
+    """Inject ``-DCT_PROJECT_NAME="<value>"`` into CPPFLAGS/CFLAGS/CXXFLAGS,
+    but only if the user opted in.
+
+    Opt-in is any of:
+      * ``--project-name VALUE`` on CLI / ct.conf / env
+      * ``--project-name-cmd CMD`` on CLI / ct.conf / env
+
+    If neither is set, do nothing — no macro is injected. Mirrors
+    _set_project_version. See the "Macro Scope Filter" section of
+    README.ct-cake.rst for why CT_PROJECT_NAME (like any cmdline ``-D``
+    macro) should only be turned on when actually needed: comments in
+    transitive headers that mention the macro by name will pull it
+    into every includer's per-TU cache key.
+    """
+    projectname = getattr(args, "projectname", None)
+    projectnamecmd = getattr(args, "projectnamecmd", None)
+
+    if not projectname and projectnamecmd:
+        try:
+            projectname = (
+                subprocess.check_output(projectnamecmd.split(), universal_newlines=True).strip("\n").split()[0]
+            )
+            args.projectname = projectname
             if args.verbose >= 6:
-                print(
-                    "Could not use projectversioncmd to set projectversion. "
-                    "Will use either existing projectversion or the zero version."
+                print("Used projectnamecmd to set projectname")
+        except (subprocess.CalledProcessError, OSError) as err:
+            sys.stderr.write(
+                " ".join(
+                    [
+                        "Could not use projectnamecmd =",
+                        projectnamecmd,
+                        "to set projectname.\n",
+                    ]
                 )
+            )
+            if args.verbose <= 2:
+                sys.stderr.write(str(err) + "\n")
+                sys.exit(1)
+            else:
+                raise
 
-    try:
-        if not args.projectversion:
-            args.projectversion = "-".join([os.path.basename(os.getcwd()), "0.0.0-0"])
-            if args.verbose >= 5:
-                print("Set projectversion to the zero version")
+    if not projectname:
+        return
 
-        # Escape for C string literal (backslashes and double quotes)
-        version_escaped = args.projectversion.replace("\\", "\\\\").replace('"', '\\"')
+    name_escaped = projectname.replace("\\", "\\\\").replace('"', '\\"')
 
-        if "-DCAKE_PROJECT_VERSION" not in args.CPPFLAGS:
-            args.CPPFLAGS += " -DCAKE_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
-        if "-DCAKE_PROJECT_VERSION" not in args.CFLAGS:
-            args.CFLAGS += " -DCAKE_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
-        if "-DCAKE_PROJECT_VERSION" not in args.CXXFLAGS:
-            args.CXXFLAGS += " -DCAKE_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
+    if "-DCT_PROJECT_NAME" not in args.CPPFLAGS:
+        args.CPPFLAGS += " -DCT_PROJECT_NAME=" + shlex.quote(f'"{name_escaped}"')
+    if "-DCT_PROJECT_NAME" not in args.CFLAGS:
+        args.CFLAGS += " -DCT_PROJECT_NAME=" + shlex.quote(f'"{name_escaped}"')
+    if "-DCT_PROJECT_NAME" not in args.CXXFLAGS:
+        args.CXXFLAGS += " -DCT_PROJECT_NAME=" + shlex.quote(f'"{name_escaped}"')
 
-        if args.verbose >= 6:
-            print("*FLAG variables have been modified with the project version:")
-            print("\tCPPFLAGS=" + args.CPPFLAGS)
-            print("\tCFLAGS=" + args.CFLAGS)
-            print("\tCXXFLAGS=" + args.CXXFLAGS)
-    except AttributeError:
-        if args.verbose >= 3:
-            print("No projectversion specified for the args.")
+    if args.verbose >= 6:
+        print("*FLAG variables have been modified with the project name:")
+        print("\tCPPFLAGS=" + args.CPPFLAGS)
+        print("\tCFLAGS=" + args.CFLAGS)
+        print("\tCXXFLAGS=" + args.CXXFLAGS)
 
 
 def _do_xxpend(args, name):
@@ -2084,6 +2164,7 @@ def _commonsubstitutions(args):
     )
     _add_flags_from_pkg_config(args)
     _set_project_version(args)
+    _set_project_name(args)
     _unify_cpp_cxx_flags(args)
 
     try:
@@ -2144,6 +2225,18 @@ def _commonsubstitutions(args):
         args.cas_exedir = unsupplied_replacement(args.cas_exedir, default_cas_exedir, args.verbose, "cas-exedir")
     except AttributeError:
         pass
+
+    # Anchor --test-xml-dir to gitroot so the value survives a `cd` into
+    # a subdirectory between parseargs and _run_tests, matching how
+    # cas-objdir / cas-pchdir are anchored. This is a path resolution
+    # only; the directory is created lazily inside _run_tests.
+    test_xml_dir = getattr(args, "test_xml_dir", None)
+    if test_xml_dir and not os.path.isabs(test_xml_dir):
+        git_root = compiletools.git_utils.find_git_root()
+        if git_root:
+            args.test_xml_dir = os.path.join(git_root, test_xml_dir)
+        else:
+            args.test_xml_dir = os.path.abspath(test_xml_dir)
 
 
 # List to store the callback functions for parse args

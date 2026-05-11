@@ -579,6 +579,20 @@ class TestAddArguments:
         add_target_arguments_ex(cap)
         args = cap.parse_args([])
         assert hasattr(args, "projectversion")
+        assert hasattr(args, "projectversioncmd")
+        assert hasattr(args, "projectname")
+        assert hasattr(args, "projectnamecmd")
+
+    def test_add_target_arguments_ex_registers_test_xml_dir(self):
+        """The --test-xml-dir flag must be registered next to --TESTPREFIX
+        on every parser that calls add_target_arguments_ex(), so ct-cake
+        and ct-cmakelists both pick it up. Default is None (no XML)."""
+        cap = configargparse.ArgParser(default_config_files=[])
+        add_target_arguments_ex(cap)
+        args = cap.parse_args([])
+        assert args.test_xml_dir is None
+        args = cap.parse_args(["--test-xml-dir", "test-results"])
+        assert args.test_xml_dir == "test-results"
 
     def test_add_xxpend_argument(self):
         cap = configargparse.ArgParser(default_config_files=[])
@@ -599,6 +613,88 @@ class TestAddArguments:
         _add_xxpend_argument(cap, "linkflags", destname="ldflags", extrahelp="Synonym.")
         args = cap.parse_args([])
         assert args.prepend_ldflags == []
+
+
+class TestProjectVersionAndNameOptIn:
+    """--project-{version,name}{,-cmd} are opt-in: no flag specified -> no
+    cmdline -D injection. This keeps the cmdline -D macro set clean for
+    TUs that don't need these macros, so the byte-level scope filter has
+    no needle to scan for in unrelated headers."""
+
+    def _make_args(self, **kwargs):
+        cap = configargparse.ArgParser(default_config_files=[])
+        add_target_arguments_ex(cap)
+        argv = []
+        for key, value in kwargs.items():
+            argv.append(f"--{key}={value}")
+        args = cap.parse_args(argv)
+        args.CPPFLAGS = ""
+        args.CFLAGS = ""
+        args.CXXFLAGS = ""
+        args.verbose = 0
+        return args
+
+    def test_no_injection_when_neither_flag_set_version(self):
+        from compiletools.apptools import _set_project_version
+        args = self._make_args()
+        _set_project_version(args)
+        assert "-DCT_PROJECT_VERSION" not in args.CPPFLAGS
+        assert "-DCT_PROJECT_VERSION" not in args.CFLAGS
+        assert "-DCT_PROJECT_VERSION" not in args.CXXFLAGS
+
+    def test_no_injection_when_neither_flag_set_name(self):
+        from compiletools.apptools import _set_project_name
+        args = self._make_args()
+        _set_project_name(args)
+        assert "-DCT_PROJECT_NAME" not in args.CPPFLAGS
+        assert "-DCT_PROJECT_NAME" not in args.CFLAGS
+        assert "-DCT_PROJECT_NAME" not in args.CXXFLAGS
+
+    def test_explicit_version_injects(self):
+        from compiletools.apptools import _set_project_version
+        args = self._make_args(**{"project-version": "1.2.3"})
+        _set_project_version(args)
+        assert '-DCT_PROJECT_VERSION=\'"1.2.3"\'' in args.CPPFLAGS
+        assert '-DCT_PROJECT_VERSION=\'"1.2.3"\'' in args.CFLAGS
+        assert '-DCT_PROJECT_VERSION=\'"1.2.3"\'' in args.CXXFLAGS
+
+    def test_explicit_name_injects(self):
+        from compiletools.apptools import _set_project_name
+        args = self._make_args(**{"project-name": "myapp"})
+        _set_project_name(args)
+        assert '-DCT_PROJECT_NAME=\'"myapp"\'' in args.CPPFLAGS
+        assert '-DCT_PROJECT_NAME=\'"myapp"\'' in args.CFLAGS
+        assert '-DCT_PROJECT_NAME=\'"myapp"\'' in args.CXXFLAGS
+
+    def test_version_cmd_alone_injects(self):
+        from compiletools.apptools import _set_project_version
+        args = self._make_args(**{"project-version-cmd": "echo from-cmd-1.0"})
+        _set_project_version(args)
+        # First whitespace token of stdout is taken
+        assert '-DCT_PROJECT_VERSION=\'"from-cmd-1.0"\'' in args.CPPFLAGS
+
+    def test_name_cmd_alone_injects(self):
+        from compiletools.apptools import _set_project_name
+        args = self._make_args(**{"project-name-cmd": "echo cmd-named-app"})
+        _set_project_name(args)
+        assert '-DCT_PROJECT_NAME=\'"cmd-named-app"\'' in args.CPPFLAGS
+
+    def test_explicit_version_takes_precedence_over_cmd(self):
+        from compiletools.apptools import _set_project_version
+        args = self._make_args(**{"project-version": "explicit-1.0",
+                                  "project-version-cmd": "echo from-cmd"})
+        _set_project_version(args)
+        assert '-DCT_PROJECT_VERSION=\'"explicit-1.0"\'' in args.CPPFLAGS
+        assert "from-cmd" not in args.CPPFLAGS
+
+    def test_idempotent_when_macro_already_present(self):
+        from compiletools.apptools import _set_project_name
+        args = self._make_args(**{"project-name": "newvalue"})
+        args.CPPFLAGS = '-DCT_PROJECT_NAME="oldvalue"'
+        _set_project_name(args)
+        assert args.CPPFLAGS.count("-DCT_PROJECT_NAME") == 1
+        assert "oldvalue" in args.CPPFLAGS
+        assert "newvalue" not in args.CPPFLAGS
 
 
 class TestFilterPkgConfigCflagsExtended:

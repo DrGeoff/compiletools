@@ -835,6 +835,132 @@ int main() {{
             )
 
 
+class TestMakeRuntestsCasContract:
+    """Regression: ``make runtests`` must use content-addressed success
+    markers in CAS-only mode (default), not mtime-based skip checks.
+
+    Pre-fix the rule was ``bin/<test>.result: bin/<test>`` -- mtime-based.
+    Because the published bin/<test> is a hard-link of its cas-exedir
+    entry, its inode mtime is the original CAS-creation time. A round-trip
+    edit (header v1 -> v2 -> v1) hits the cached v1 cas entry on the
+    third build; the v2 ``.result`` left over from the second run was
+    newer than that ancient inode mtime, so make would happily fire the
+    test recipe AGAIN even though the same v1 bytes had already passed.
+    Under the new contract the marker lives at ``<cas_path>.result`` --
+    sibling to the content-addressed exe -- so the v1 marker from step 1
+    correctly suppresses the redundant re-run on step 3, and a genuine
+    content change (v1 -> v2) still re-runs because the v2 cas-path has
+    no marker yet.
+    """
+
+    def setup_method(self):
+        uth.reset()
+
+    def teardown_method(self):
+        uth.reset()
+
+    @uth.requires_functional_compiler
+    def test_runtests_skips_round_trip_and_runs_on_real_change(self, tmp_path, monkeypatch):
+        """Round-trip a header v1 -> v2 -> v1 with a stable ``--cas-exedir``
+        and assert content-addressed semantics:
+
+        * Step 1 (build v1, run): marker length advances from 0 to L1.
+        * Step 2 (change to v2, build, run): marker length advances to L2 > L1
+          because the v2 exe has different bytes and no cached marker.
+        * Step 3 (revert to v1, build, run): marker length stays at L2
+          because the v1 exe is a cas-exedir hit and ``<cas_v1>.result``
+          from step 1 is still present -- the bytes have been tested.
+        """
+        monkeypatch.chdir(tmp_path)
+        header = tmp_path / "lib.hpp"
+        source = tmp_path / "test_count.cpp"
+        marker = tmp_path / "ran.count"
+        cas_exedir = tmp_path / "shared-cas-exedir"
+
+        header.write_text("#pragma once\ninline int val() { return 1; }\n")
+        source.write_text(f"""
+// ct-testmarker
+#include <fstream>
+#include "lib.hpp"
+int main() {{
+    std::ofstream f("{marker}", std::ios::app);
+    f << "x";
+    // Encode val() in the marker but always exit 0 so make's
+    // ``&& touch <result>`` is reached and the success marker is
+    // actually written.
+    f << val();
+    return 0;
+}}
+""")
+
+        def _build_and_runtests():
+            with uth.TempConfigContext(tempdir=str(tmp_path)) as cfg:
+                with uth.ParserContext():
+                    compiletools.makefile_backend.main(
+                        [
+                            "--config=" + cfg,
+                            "--no-file-locking",
+                            "--cas-exedir=" + str(cas_exedir),
+                            "--tests=" + str(source),
+                        ]
+                    )
+                mfs = [f for f in os.listdir(".") if f.startswith("Makefile")]
+                assert mfs, "Makefile should have been generated"
+                r = subprocess.run(["make", "-f", mfs[0], "runtests"], capture_output=True, text=True)
+                return r
+
+        # Each successful test invocation appends exactly one fixed-length
+        # record to the marker file: 1 byte ``x`` + 1 byte from ``f << val()``
+        # = 2 bytes. The strict equality assertions below catch both
+        # under-execution (skip-when-should-run) AND over-execution
+        # (run-N-times-when-should-run-once) regressions.
+        RECORD_BYTES = 2
+
+        # --- Step 1: build v1, run, capture L1 -----------------------------
+        r1 = _build_and_runtests()
+        assert marker.exists(), f"first run never invoked the test: {r1.stdout}{r1.stderr}"
+        L1 = len(marker.read_text())
+        assert L1 == RECORD_BYTES, (
+            f"first run wrote {L1} bytes; expected exactly {RECORD_BYTES} "
+            f"(one invocation x {RECORD_BYTES} bytes/record). output:\n{r1.stdout}{r1.stderr}"
+        )
+
+        # --- Step 2: edit header to v2, rebuild, run, capture L2 -----------
+        header.write_text("#pragma once\ninline int val() { return 2; }\n")
+        # Force the source mtime to advance so make rebuilds even on FS with
+        # whole-second mtime granularity.
+        future = source.stat().st_mtime + 2
+        os.utime(source, (future, future))
+        os.utime(header, (future, future))
+        r2 = _build_and_runtests()
+        L2 = len(marker.read_text())
+        assert L2 == 2 * RECORD_BYTES, (
+            f"step-2 marker length {L2}; expected {2 * RECORD_BYTES} "
+            f"(L1={L1} + one v2 invocation). A short marker means the test "
+            f"didn't re-run on a genuine content change; a long marker means "
+            f"the test ran multiple times. output:\n{r2.stdout}{r2.stderr}"
+        )
+
+        # --- Step 3: revert header to v1 (byte-identical to step 1) --------
+        # The v1 cas-exedir entry from step 1 is reused (cache hit) and its
+        # sibling ``.result`` marker is still present, so the test should
+        # NOT be re-run. Marker file length must stay at L2.
+        header.write_text("#pragma once\ninline int val() { return 1; }\n")
+        future2 = max(header.stat().st_mtime, source.stat().st_mtime) + 2
+        os.utime(source, (future2, future2))
+        os.utime(header, (future2, future2))
+        r3 = _build_and_runtests()
+        L3 = len(marker.read_text())
+
+        assert L3 == L2, (
+            f"step-3 round-trip re-ran a previously-tested cas-exedir hit: "
+            f"L2={L2} -> L3={L3} (expected L3 == L2). The v1 exe's bytes "
+            f"were tested in step 1 and ``<cas_v1>.result`` should still be "
+            f"present, so make should treat the test as up-to-date.\n"
+            f"build+make output:\n{r3.stdout}{r3.stderr}"
+        )
+
+
 class TestAllOutputsCurrentHeaderEdit:
     """Fix 3: editing a header must trigger a rebuild even though
     `_all_outputs_current` short-circuits before make runs.
