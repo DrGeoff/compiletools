@@ -26,11 +26,14 @@ uniformly across the toolkit.
 OPTIONS
 =======
 --variant VARIANT
-    Specifies which build variant configuration to use. Common variants include
-    ``debug``, ``release``, ``clang.debug``, ``clang.release``, ``gcc.debug``,
-    and ``gcc.release``. Use ``ct-list-variants`` to discover available variants
-    on your system. The variant determines compiler flags, optimization levels,
-    and other build parameters.
+    Specifies which build variant configuration to use. Variants compose from
+    axis conf files: a toolchain (``gcc``, ``clang``), optionally a linker
+    (``ld``, ``gold``, ``mold``, ``wild``), an optimization level (``debug``,
+    ``release``), and any instrumentation axes (``asan``, ``ubsan``, ``tsan``,
+    ``coverage``, ``lto``). Comma, dot, and whitespace are interchangeable
+    separators: ``--variant=gcc,mold,release,asan`` is equivalent to
+    ``--variant=gcc.mold.release.asan``. Use ``ct-list-variants`` to discover
+    available axis confs on your system.
 
 -c CONFIG_FILE, --config CONFIG_FILE
     Specifies an additional configuration file to load. Configuration values

@@ -190,15 +190,22 @@ Configuration hierarchy (lowest to highest priority):
 * Environment variables (capitalized, e.g., VARIANT=release)
 * Command-line arguments
 
-Build variants (debug, release, etc.) are config profiles specifying compiler and
-flags. Common variants include blank (default debug), blank.release, gcc.debug,
-gcc.release, clang.debug, clang.release.
+Build variants are composed from *axis* conf files — one per orthogonal
+concern: toolchain (``gcc``, ``clang``), linker (``ld``, ``gold``, ``mold``,
+``wild``), optimization (``debug``, ``release``), instrumentation
+(``asan``, ``ubsan``, ``tsan``, ``coverage``, ``lto``).
+``--variant=gcc,debug,asan`` (or ``gcc.debug.asan`` or ``gcc debug asan``
+— comma, dot, and whitespace are all equivalent) synthesizes the
+composition from ``gcc.conf`` + ``debug.conf`` + ``asan.conf``. No per-
+combination conf file is required.
 
 Common usage:
 
 .. code-block:: bash
 
-    ct-cake --variant=release
+    ct-cake --variant=gcc,release             # toolchain + opt
+    ct-cake --variant=clang,debug,asan        # toolchain + opt + sanitizer
+    ct-cake --variant=gcc,mold,release,lto    # everything composes
     ct-cake --append-CXXFLAGS="-march=native"
 
 For details on configuration hierarchy, file format, and variant system, see ct-config(1).

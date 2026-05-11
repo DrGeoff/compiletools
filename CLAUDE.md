@@ -189,7 +189,7 @@ The `--use-mtime` boolean (registered in `apptools.add_cas_arguments`, called fr
 ### Configuration Files
 
 - `ct.conf.d/ct.conf` -- default variant, `variant-canonical-order` axis ordering, exe/test markers, file-locking settings
-- `ct.conf.d/{axis}.conf` -- per-axis bundled defaults (`gcc.conf`, `clang.conf`, `debug.conf`, `release.conf`, `asan.conf`, `ubsan.conf`, `tsan.conf`, `coverage.conf`, `lto.conf`). Composition collapses what was previously an N×M×K explosion of `<compiler>.<opt>.<instrument>.conf` files into N + M + K axis files plus on-the-fly synthesis.
+- `ct.conf.d/{axis}.conf` -- per-axis bundled defaults grouped by concern: **toolchain** (`gcc.conf`, `clang.conf`), **linker** (`ld.conf`, `gold.conf`, `mold.conf`, `wild.conf` — each adds `-fuse-ld=<name>` to LDFLAGS), **optimization** (`debug.conf`, `release.conf`), **instrumentation** (`asan.conf`, `ubsan.conf`, `tsan.conf`, `coverage.conf`, `lto.conf`). Composition collapses what was previously an N×M×K explosion of `<compiler>.<opt>.<instrument>.conf` files into N + M + K axis files plus on-the-fly synthesis. Canonical token order in `variant-canonical-order` is toolchain → linker → optimization → instrumentation, so `--variant=asan,release,mold,gcc` canonicalizes to `gcc.mold.release.asan`.
 - `ct.conf.d/{variant}.conf` -- compiler-specific flags (e.g., `gcc.debug.conf`, `clang.release.conf`)
 - Config priority: bundled < system (`/etc/xdg/ct`) < venv < user (`~/.config/ct`) < project (`{gitroot}/ct.conf.d/`) < cwd < env < CLI
 

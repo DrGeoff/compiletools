@@ -194,6 +194,42 @@ class TestVariant:
             axis_names = [a.name for a in resolution.axes]
             assert axis_names == ["gcc", "debug"]
 
+    def test_linker_axis_composes_with_toolchain_opt_instrumentation(self):
+        # The bundled linker axes (ld/gold/mold/wild) sit between toolchain
+        # and optimization in canonical order. --variant=gcc,mold,release,asan
+        # canonicalizes accordingly and synthesizes all four axes — mold's
+        # -fuse-ld=mold lands on append-LDFLAGS so the linker choice flows
+        # through to the link step.
+        with uth.TempDirContext():
+            assert (
+                compiletools.configutils.canonicalize_variant_input(
+                    "asan,release,mold,gcc",
+                    user_config_dir="/var",
+                    system_config_dir="/var",
+                    exedir="/var",
+                    gitroot=os.getcwd(),
+                )
+                == "gcc.mold.release.asan"
+            )
+
+        with uth.TempDirContextNoChange() as repo_root:
+            uth.create_temp_ct_conf(repo_root, defaultvariant="gcc.mold.release.asan")
+            with uth.DirectoryContext(repo_root):
+                resolution = compiletools.configutils.resolve_variant(
+                    variant="gcc,mold,release,asan",
+                    argv=[],
+                    user_config_dir="/var",
+                    system_config_dir=None,  # let the bundled dir be discovered
+                    exedir=uth.cakedir(),
+                    gitroot=repo_root,
+                )
+            axis_names = [a.name for a in resolution.axes]
+            assert axis_names == ["gcc", "mold", "release", "asan"]
+            # The mold axis conf file should be in the resolution's flat path list.
+            assert any(p.endswith("/mold.conf") for p in resolution.flat_paths), (
+                f"mold.conf missing from flat_paths: {resolution.flat_paths}"
+            )
+
     def test_composite_with_explicit_extends_picks_own_parents(self):
         # A composite that names its own `extends = ...` overrides the
         # implicit "extends from each canonical token" rule. Useful for
