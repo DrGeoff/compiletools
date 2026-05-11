@@ -18,11 +18,16 @@ This repository uses git worktrees for development. The `master` worktree lives 
 # Ensure a Python 3.10+ venv is active, or create one with:
 # uv venv && source .venv/bin/activate
 
-# Install in development mode with dev dependencies
+# Install in development mode with dev dependencies (pulls in ruff,
+# pyright, prek, pre-commit, pytest-xdist, …).
 uv pip install -e ".[dev]"
 
-# Install pre-commit hooks
-pre-commit install
+# Install the git hooks (one-time, per checkout).
+# prek is preferred (Rust binary, ~10× faster startup than pre-commit);
+# both tools share .pre-commit-config.yaml, so pre-commit is a drop-in
+# fallback if prek isn't on PATH yet.
+prek install               # preferred
+# pre-commit install       # equivalent fallback
 
 # Run all tests
 pytest
@@ -40,14 +45,14 @@ ruff check src/compiletools/
 # Format
 ruff format src/compiletools/
 
-# Type-check (pyright also runs via pre-commit; pyproject.toml pins
-# `[tool.pyright].venvPath = ".", venv = ".venv"` so it sees worktree deps)
+# Type-check (also runs via the pre-commit hook; pyproject.toml pins
+# `[tool.pyright].venvPath = ".", venv = ".venv"` so the hook's isolated
+# env still resolves worktree deps).
 pyright src/compiletools/
 
-# Run all pre-commit hooks against the entire codebase
-# (prek is a drop-in Rust replacement for pre-commit and uses the same
-# .pre-commit-config.yaml — substitute `prek` for `pre-commit` if installed)
-pre-commit run --all-files
+# Run all hooks against the entire codebase (handy after a big rebase or
+# before pushing).
+prek run --all-files       # or: pre-commit run --all-files
 ```
 
 pytest configuration is in `pyproject.toml` (`[tool.pytest.ini_options]`): tests live in `src/compiletools/`, matching `test_*.py`, verbose by default.

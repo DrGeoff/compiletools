@@ -38,6 +38,12 @@ dev = [
     "pytest-xdist>=3.5",
     "ruff>=0.14.0",
     "pyright>=1.1",
+    # ``prek`` is the Rust drop-in replacement for ``pre-commit``: same
+    # ``.pre-commit-config.yaml``, ~10× faster hook startup, single static
+    # binary distributed on PyPI. ``pre-commit`` is kept alongside it so
+    # developers who already have it installed (or who want the reference
+    # implementation for debugging hook behaviour) aren't forced to switch.
+    "prek>=0.3.13",
     "pre-commit>=4.0",
     "pytest-cov>=6.0",
     "textual>=0.40.0",
