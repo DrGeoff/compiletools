@@ -254,6 +254,14 @@ def reset():
     import compiletools.git_utils as git_utils
 
     git_utils.clear_cache()
+    # Clear configutils caches (default_config_directories, the per-path
+    # parse cache, and the runtime out-of-order extends dedup set). Tests
+    # that mutate conf files mid-process need this to see fresh content;
+    # function-based tests would otherwise see stale state from the
+    # previous test in the same xdist worker.
+    import compiletools.configutils as configutils
+
+    configutils.clear_cache()
     # Note: global_hash_registry, file_analyzer, preprocessing_cache,
     # and headerdeps include-list caches now live on BuildContext instances.
     # Creating a fresh BuildContext gives clean state, so no module-level

@@ -106,6 +106,16 @@ def add_base_arguments(cap, argv=None, variant=None):
         "gcc debug asan — all equivalent).",
         default=variant,
     )
+    # The CLI flag and env var registered here are honored two ways:
+    # (a) configutils.get_canonical_order scans argv / reads os.environ
+    #     DIRECTLY at create_parser time (before configargparse parses),
+    #     because canonical_order is needed to canonicalize the variant
+    #     before conf files are loaded. That direct read is what makes
+    #     --variant-canonical-order actually steer resolution.
+    # (b) This registration also lets configargparse store the value in
+    #     args.variant_canonical_order post-parse and surfaces the flag
+    #     in --help / man pages. Both reads honor the same env var, so
+    #     they agree on the value.
     cap.add(
         "--variant-canonical-order",
         env_var="CT_VARIANT_CANONICAL_ORDER",
@@ -113,7 +123,12 @@ def add_base_arguments(cap, argv=None, variant=None):
         "--variant tokens. Comma/space/dot separated. Precedence: CLI > env "
         "CT_VARIANT_CANONICAL_ORDER > ct.conf `variant-canonical-order = ...` "
         "> builtin _DEFAULT_VARIANT_CANONICAL_ORDER. Rarely needed; the "
-        "builtin covers all bundled axes and composite bundles.",
+        "builtin covers all bundled axes and composite bundles. NOTE: "
+        "overriding the order makes the bundled composite confs (dev / ci / "
+        "production / safety / perf / secure) emit the out-of-canonical-order "
+        "warning, because their `extends = ...` was authored against the "
+        "builtin order. That's intentional — if you change the order, you've "
+        "taken responsibility for the flag-layering consequences.",
         default=None,
     )
     cap.add(

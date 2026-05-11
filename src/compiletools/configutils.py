@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import sys
+import types
 from dataclasses import dataclass, field
 from functools import cache
 
@@ -140,16 +141,18 @@ def _parse_conf_file_cached(path):
     otherwise re-open and re-parse the same files. Caching the parsed dict
     keyed on absolute path collapses that to one open per file per process.
 
-    The configargparse parser returns a mutable dict; consumers in this
-    module read-only — DO NOT mutate the returned dict or the next caller
-    will see the changes. `clear_cache()` flushes this between tests.
+    Returned as a ``types.MappingProxyType`` to enforce read-only access
+    at runtime — the configargparse parser returns a mutable dict, and
+    if any consumer were to mutate it the next caller would silently see
+    the changes. The proxy turns that footgun into an ``AttributeError``
+    on assignment. ``clear_cache()`` flushes the cache between tests.
 
     Raises OSError on a read failure. Failures are NOT cached (functools.cache
     only stores successful returns), so transient errors don't get pinned.
     """
     fileparser = CfgFileParser()
     with open(path) as cfg:
-        return fileparser.parse(cfg)
+        return types.MappingProxyType(fileparser.parse(cfg))
 
 
 def extract_item_from_ct_conf_with_source(
@@ -622,10 +625,13 @@ def _check_extends_canonical_order(conf_path, extends, canonical_order):
     if not canonical_order or conf_path in _extends_order_warnings_emitted:
         return
     position = {tok: i for i, tok in enumerate(canonical_order)}
-    positions = [position.get(tok) for tok in extends]
-    if any(p is None for p in positions):
-        return
-    if positions != sorted(positions):  # type: ignore[type-var]
+    positions: list[int] = []
+    for tok in extends:
+        pos = position.get(tok)
+        if pos is None:
+            return  # unknown axis: skip the order check entirely
+        positions.append(pos)
+    if positions != sorted(positions):
         expected = sorted(extends, key=lambda t: position[t])
         _extends_order_warnings_emitted.add(conf_path)
         logger.warning(
