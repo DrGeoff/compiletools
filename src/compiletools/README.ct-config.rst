@@ -61,25 +61,27 @@ VARIANT COMPOSITION
 ===================
 
 A variant is a composition of *axis* conf files — one per orthogonal
-concern: toolchain (``gcc``, ``clang``), optimization (``debug``,
-``release``), instrumentation (``asan``, ``ubsan``, ``coverage``, ``lto``,
-…). To build with gcc, the debug optimization level, and AddressSanitizer
-you ask for::
+concern: toolchain (``gcc``, ``clang``, ``icc``, ``msvc``), linker
+(``ld``, ``gold``, ``mold``, ``wild``), optimization (``debug``,
+``release``, ``releasewithdebinfo``), instrumentation (``asan``,
+``ubsan``, ``tsan``, ``msan``, ``coverage``, ``lto``, ``pgo``). To build
+with gcc, mold as the linker, the release optimization level, and
+AddressSanitizer you ask for::
 
-    ct-cake --variant=gcc,debug,asan      # comma-separated
-    ct-cake --variant=gcc.debug.asan      # dot-separated (equivalent)
-    ct-cake --variant=gcc debug asan      # whitespace-separated (also equivalent)
+    ct-cake --variant=gcc,mold,release,asan      # comma-separated
+    ct-cake --variant=gcc.mold.release.asan      # dot-separated (equivalent)
+    ct-cake --variant=gcc mold release asan      # whitespace-separated (also equivalent)
 
-All three forms canonicalize to ``gcc.debug.asan`` (the canonical order is
-read from ``variant-canonical-order`` in ct.conf — see above). The canonical
-name appears in ``cas-objdir/<variant>/``, ``cas-pchdir/<variant>/``,
-``compile_commands.<variant>.json``, and ``bin/<variant>/``, so two
-typings of the same set share caches and outputs.
+All three forms canonicalize to ``gcc.mold.release.asan`` (the canonical
+order is read from ``variant-canonical-order`` in ct.conf — see above).
+The canonical name appears in ``cas-objdir/<variant>/``,
+``cas-pchdir/<variant>/``, ``compile_commands.<variant>.json``, and
+``bin/<variant>/``, so two typings of the same set share caches and outputs.
 
-You do *not* need to write a conf file per combination. ``gcc.debug.asan``
-is synthesized at resolution time from ``gcc.conf``, ``debug.conf``, and
-``asan.conf`` — three files, not one per (toolchain × opt × instrument)
-combination. To *tune* a specific composition, drop a literal
+You do *not* need to write a conf file per combination.
+``gcc.mold.release.asan`` is synthesized at resolution time from
+``gcc.conf``, ``mold.conf``, ``release.conf``, and ``asan.conf`` — four
+files, not one per (toolchain × linker × opt × instrument) combination. To *tune* a specific composition, drop a literal
 ``gcc.debug.asan.conf`` anywhere in the hierarchy; it layers on top of the
 synthesized atoms (the composite is semantically equivalent to a conf
 with ``extends = gcc, debug, asan``, picking up the atoms automatically).

@@ -28,13 +28,21 @@ _VARIANT_SEP_RE = re.compile(r"[\s,.]+")
 # (e.g. `myproj`) can be tacked on without re-declaring the whole order.
 _DEFAULT_CANONICAL_ORDER = (
     "blank",
+    # toolchain
     "gcc",
     "clang",
     "icc",
     "msvc",
+    # linker (mutually exclusive — choose one; -fuse-ld=<name> on LDFLAGS)
+    "ld",
+    "gold",
+    "mold",
+    "wild",
+    # optimization
     "debug",
     "release",
     "releasewithdebinfo",
+    # instrumentation
     "asan",
     "ubsan",
     "tsan",
