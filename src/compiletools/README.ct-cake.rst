@@ -385,6 +385,18 @@ the legacy mtime-based behavior for interactive workflows where
 re-touching a source should force a rebuild even when the producer
 key would not change.
 
+``--use-mtime`` is honored only by the Make and Ninja backends:
+their rule emitters consume the prereq list as a literal mtime
+comparison, so they can branch on the flag. The cmake / bazel /
+tup / shake / slurm backends use their own change detection
+(cmake's out-of-source incremental tracking, bazel's
+content-addressable action cache, tup's FUSE content tracking,
+trace_backend's verifying traces) and a touched-but-otherwise-
+unchanged source is invisible to all of them — they cannot
+deliver "touch to force rebuild" semantics regardless of how the
+flag is set. Passing ``--use-mtime=True`` against one of those
+backends emits a stderr warning and is otherwise ignored.
+
 Caveats of ``--use-mtime=False`` mode
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
