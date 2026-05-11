@@ -440,24 +440,24 @@ The ct-* applications are aware of two levels of configs.  There is a base level
 ct.conf that contains the basic variables that apply no  matter what variant
 (i.e, debug/release/etc) is being built.
 
-The second layer of config files are the variant configs that contain the
-details for the debug/release/etc.  The variant names are simply a config file
-name but without the .conf. There are also variant aliases to make for less
-typing. So ``--variant=debug`` looks up the variant alias (specified in ct.conf).
-The default aliases are ``{'debug':'blank', 'release':'blank.release'}``, so
-"debug" maps to "blank" and uses ``blank.conf``.
+The second layer of config files are *axis* configs: one per orthogonal
+concern (toolchain, optimization, instrumentation). A variant string composes
+these axes — ``--variant=gcc,debug,asan`` resolves to ``gcc.conf`` +
+``debug.conf`` + ``asan.conf``. Comma, dot, and whitespace are interchangeable
+separators (``gcc.debug.asan``, ``gcc debug asan`` are equivalent). The
+canonical dotted form is what appears in ``cas-objdir/<variant>/``,
+``compile_commands.<variant>.json``, ``bin/<variant>/``, etc.
 
 The ``blank.conf`` file is intentionally empty, inheriting all settings from the
-environment or parent configs. This allows environment variables (CC, CXX,
-CFLAGS, etc.) to control the build without explicit config file settings.
+environment or parent configs. ``--variant=blank`` lets environment variables
+(CC, CXX, CFLAGS, …) control the build entirely.
 
-To use explicit compiler configs, either specify them directly
-(``--variant=gcc.debug``) or customize the aliases in your
-``~/.config/ct/ct.conf``:
-
-.. code-block:: ini
-
-    variantaliases = {'debug':'gcc.debug', 'release':'gcc.release'}
+To pull additional axes into a custom variant, write a small conf file with
+an ``extends = ...`` directive (parents apply first, child's flags layer on
+top). To override a specific synthesized composition, drop a literal conf
+file with the canonical name (e.g. ``gcc.debug.asan.conf``) anywhere in the
+hierarchy — it takes precedence. See ``README.ct-config.rst`` for the full
+upgrade guide from the pre-inheritance ``variantaliases`` mechanism.
 
 If any config value is specified in more than one way then the following
 hierarchy is used

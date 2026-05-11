@@ -51,55 +51,173 @@ ct.conf defines the following variables:
 
 .. code-block:: ini
 
-    variant = debug
-    variantaliases = {'debug':'blank', 'release':'blank.release'}
+    variant = gcc.debug
+    variant-canonical-order = blank, gcc, clang, icc, msvc, debug, release, releasewithdebinfo, asan, ubsan, tsan, msan, coverage, lto, pgo
     exemarkers = [main(,main (,wxIMPLEMENT_APP,g_main_loop_new]
     testmarkers = unit_test.hpp
     max_file_read_size = 0
 
-The second layer of config files are the variant configs that contain the
-details for the debug/release/etc.  The variant names are simply a config file
-name but without the .conf. There are also variant aliases to make for less
-typing. So ``--variant=debug`` looks up the variant alias (specified in ct.conf)
-and notices that "debug" really means "blank".  So the config file that
-gets opened is ``blank.conf``.
+VARIANT COMPOSITION
+===================
 
-The ``blank.conf`` file is intentionally empty, inheriting all settings from the
-environment or parent configs. This allows environment variables (CC, CXX,
-CFLAGS, etc.) to control the build without explicit config file settings.
-When no environment variables are set, the built-in defaults apply (gcc with
-debug flags).
+A variant is a composition of *axis* conf files — one per orthogonal
+concern: toolchain (``gcc``, ``clang``), optimization (``debug``,
+``release``), instrumentation (``asan``, ``ubsan``, ``coverage``, ``lto``,
+…). To build with gcc, the debug optimization level, and AddressSanitizer
+you ask for::
 
-To use explicit compiler configs, either specify them directly
-(``--variant=gcc.debug``) or customize the aliases in your
-``~/.config/ct/ct.conf``:
+    ct-cake --variant=gcc,debug,asan      # comma-separated
+    ct-cake --variant=gcc.debug.asan      # dot-separated (equivalent)
+    ct-cake --variant=gcc debug asan      # whitespace-separated (also equivalent)
 
-.. code-block:: ini
+All three forms canonicalize to ``gcc.debug.asan`` (the canonical order is
+read from ``variant-canonical-order`` in ct.conf — see above). The canonical
+name appears in ``cas-objdir/<variant>/``, ``cas-pchdir/<variant>/``,
+``compile_commands.<variant>.json``, and ``bin/<variant>/``, so two
+typings of the same set share caches and outputs.
 
+You do *not* need to write a conf file per combination. ``gcc.debug.asan``
+is synthesized at resolution time from ``gcc.conf``, ``debug.conf``, and
+``asan.conf`` — three files, not one per (toolchain × opt × instrument)
+combination. To override a specific composition, drop a literal
+``gcc.debug.asan.conf`` anywhere in the hierarchy; it takes precedence over
+the synthesized one. To pull in parents from inside a conf file::
+
+    # myrelease.conf
+    extends = gcc, release, lto
+    append-CXXFLAGS = -DMY_PRODUCT=1
+
+``extends = ...`` accepts the same comma/whitespace separators as
+``--variant``. Diamond inheritance (two parents pulling in the same
+grand-parent) is deduplicated on first visit. Cycles raise an error
+naming the cycle path.
+
+Axis conf files should use ``append-CFLAGS = ...`` (and ``append-CXXFLAGS``,
+``append-LDFLAGS``, …) rather than the plain ``CFLAGS = ...`` form, so
+multiple axes contribute their flags additively instead of overwriting
+each other. The bundled ``gcc.conf`` and ``asan.conf`` ship this way.
+
+The ``blank.conf`` file is intentionally empty. ``--variant=blank``
+inherits all settings from the environment or parent configs, useful for
+shell-driven builds that pass ``CC``/``CXX``/``CFLAGS`` directly.
+
+UPGRADING FROM VARIANTALIASES
+=============================
+
+The ``variantaliases = {...}`` mechanism has been retired and is no longer
+read; an old ``ct.conf`` containing it raises a startup error pointing
+back here. Replace each alias with one of the patterns below.
+
+**Default variant alias** — old::
+
+    variant = debug
     variantaliases = {'debug':'gcc.debug', 'release':'gcc.release'}
 
-For reference, the ``gcc.debug.conf`` variant defines:
+new — just set the default to the composed name::
 
-.. code-block:: ini
+    variant = gcc.debug
 
-    ID=GNU
-    CC=gcc
-    CXX=g++
-    LD=g++
-    CFLAGS=-fPIC -g -Wall
-    CXXFLAGS=-std=c++17 -fPIC -g -Wall
-    LDFLAGS=-fPIC -Wall -Werror -Xlinker --build-id
+(``--variant=release`` still works because ``release.conf`` exists as an
+axis conf and ``gcc.release`` is synthesized on demand.)
+
+**Flat per-combination conf file** — old:
+
+``gcc.debug.conf`` with the full flag list duplicated in ``gcc.release.conf``,
+``clang.debug.conf``, ``clang.release.conf``.
+
+new — split into per-axis files using ``append-`` form so they compose::
+
+    # gcc.conf
+    ID = GNU
+    CC = gcc
+    CXX = g++
+    LD = g++
+    append-CFLAGS   = -fPIC -Wall
+    append-CXXFLAGS = -std=c++17 -fPIC -Wall
+
+    # debug.conf
+    append-CFLAGS   = -g
+    append-CXXFLAGS = -g
+
+    # release.conf
+    append-CFLAGS   = -O3 -DNDEBUG -finline-functions -Wno-inline
+    append-CXXFLAGS = -O3 -DNDEBUG -finline-functions -Wno-inline
+
+Call as ``--variant=gcc,debug``, ``--variant=gcc,release``, etc. No per-
+combination files needed.
+
+**Custom project alias** — old::
+
+    variantaliases = {'rls':'myproject.release', 'dbg':'myproject.debug'}
+
+new — write the project axis once and compose::
+
+    # myproject.conf
+    append-CXXFLAGS = -DMY_PRODUCT=1 -I${MYPROJECT_INCLUDE}
+
+    # then use:
+    ct-cake --variant=myproject,debug
+    ct-cake --variant=myproject,release,asan
+
+(``myproject`` is not in the builtin canonical order; the resolver
+appends it to the end of the canonical name, preserving the user-typed
+order for tokens it doesn't know about. Add it to
+``variant-canonical-order`` in your project's ``ct.conf`` to lock its
+position.)
+
+**Mid-project upgrade path** — for projects that want to keep their
+existing ``foo.debug.conf`` literal files during a transition, those keep
+working: a literal composite conf takes precedence over synthesis. You
+can migrate one axis at a time.
+
+PRIORITY HIERARCHY
+==================
 
 If any config value is specified in more than one way then the following
 hierarchy is used to overwrite the final value
 
 * command line > environment variables > config file values > defaults
 
+Conf files are read in low-to-high priority order:
+``ct.conf (bundled→cwd) < axis_1 (bundled→cwd) < axis_2 < ... < composite_override < --config``.
+Scalar keys (``CC``, ``CXX``, …) follow last-writer-wins. Append-style
+keys (``append-CFLAGS``, ``append-CXXFLAGS``, ``append-LDFLAGS``,
+``append-pkg-config-path``, …) accumulate across the stack.
+
 If you need to append values rather than replace values, this can be
 done (currently only for environment variables) by specifying
 --variable-handling-method append
 or equivalently add an environment variable
-VARIABLE_HANDLING_METHOD=append
+VARIABLE_HANDLING_METHOD=append. Inside conf files, just use the
+``append-CFLAGS = ...`` form directly — there's no global flag needed.
+
+PROVENANCE: --variant-trace AND ct-config
+=========================================
+
+``ct-config`` always prints a per-axis breakdown of which conf files
+contributed to the resolved variant, including the canonical-order
+source, the ``extends`` chain, and any composite override. Other ct-* tools
+emit the same trace on demand via ``--variant-trace``::
+
+    $ ct-cake --variant=gcc,debug,asan --variant-trace
+    Variant: 'gcc,debug,asan'  ->  gcc.debug.asan  (canonicalized)
+    Canonical order: blank, gcc, clang, ..., asan, ...
+      source: /opt/.../src/compiletools/ct.conf.d/ct.conf
+
+    Base ct.conf files (low -> high priority):
+      /opt/.../src/compiletools/ct.conf.d/ct.conf
+      /home/geoff/.config/ct/ct.conf
+
+    Axes (each axis lists its conf files low -> high priority):
+      [gcc]
+          /opt/.../src/compiletools/ct.conf.d/gcc.conf
+      [debug]
+          /opt/.../src/compiletools/ct.conf.d/debug.conf
+      [asan]
+          /opt/.../src/compiletools/ct.conf.d/asan.conf
+
+Use this to answer "why did I get these flags?" without rebuilding under
+``-vvv``.
 
 ct-config can be used to create a new config and write the config to file
 simply by using the ``-w`` flag.
@@ -149,9 +267,6 @@ supports the following features:
     # Number
     max_file_read_size = 0
 
-    # Python dict (for variant aliases)
-    variantaliases = {'debug':'blank', 'release':'blank.release'}
-
     # Python list (for markers)
     exemarkers = [main(,main (,wxIMPLEMENT_APP]
 
@@ -175,15 +290,15 @@ Base configuration (ct.conf):
 
 .. code-block:: ini
 
-    variant = debug                                    # Default variant
-    variantaliases = {'debug':'blank', 'release':'blank.release'}
+    variant = gcc.debug                                # Default variant (canonical composed form)
+    variant-canonical-order = blank, gcc, clang, icc, msvc, debug, release, asan, ubsan, tsan, coverage, lto
     exemarkers = [main(,main (,wxIMPLEMENT_APP,g_main_loop_new]
     testmarkers = unit_test.hpp
     max_file_read_size = 0                            # 0 = read entire file
     # file-locking = true                              # Enable file locking
-    # cas-objdir = /path/to/cache                         # Object file cache location
+    # cas-objdir = /path/to/cache                      # Object file cache location
 
-Variant configuration (e.g., gcc.debug.conf):
+Axis configuration (e.g., gcc.conf — toolchain axis):
 
 .. code-block:: ini
 
@@ -191,9 +306,15 @@ Variant configuration (e.g., gcc.debug.conf):
     CC = gcc                                          # C compiler
     CXX = g++                                         # C++ compiler
     LD = g++                                          # Linker
-    CFLAGS = -fPIC -g -Wall                          # C compiler flags
-    CXXFLAGS = -std=c++17 -fPIC -g -Wall             # C++ compiler flags
-    LDFLAGS = -fPIC -Wall -Werror                    # Linker flags
+    append-CFLAGS   = -fPIC -Wall                     # ADDITIVE — composes with other axes
+    append-CXXFLAGS = -std=c++17 -fPIC -Wall
+    append-LDFLAGS  = -fPIC -Wall -Werror
+
+Note ``append-CFLAGS = ...`` not ``CFLAGS = ...``: the append- form
+accumulates across axes (debug.conf, asan.conf, …), so a build with
+``--variant=gcc,debug,asan`` ends up with all three contributions on
+the command line. The override form (``CFLAGS = ...``) would clobber
+any earlier-applied axis's flags.
 
 EXAMPLE
 =======
@@ -204,24 +325,29 @@ Say that you are cross compiling to a beaglebone. First off you might discover t
 
 What you would really prefer to type is
 
-* ct-cake main.cpp --variant=bb.debug
-* ct-cake main.cpp --variant=bb.release
+* ct-cake main.cpp --variant=bb,debug
+* ct-cake main.cpp --variant=bb,release,asan
 
-Which leads you to the question, how do you write the new variant? A variant is just a config file (with extension .conf) so you could simply copy an existing variant config and edit with a text editor. Alternatively, there is an app for that.  The -w option on the ct-config command will write a new config file.
+The trick: write a single ``bb.conf`` describing the cross-toolchain
+axis once, and let composition with the existing ``debug.conf`` /
+``release.conf`` / instrumentation axes give you every combination for
+free.
 
-* ct-config --CXX=arm-linux-gnueabihf-g++ --CPP=arm-linux-gnueabihf-g++  --CC=arm-linux-gnueabihf-g++ --LD=arm-linux-gnueabihf-g++ -w ~/.config/ct/bb.debug.conf
+* ct-config --CXX=arm-linux-gnueabihf-g++ --CPP=arm-linux-gnueabihf-g++  --CC=arm-linux-gnueabihf-g++ --LD=arm-linux-gnueabihf-g++ -w ~/.config/ct/bb.conf
 
-Once that has written you should now use your favourite editor to edit ~/.config/ct/bb.debug.conf.  You will probably need to edit the various FLAGS variables.  Most of the other variables can be removed as they will default to the values shown in the file anyway.
+Then edit ``~/.config/ct/bb.conf`` and turn any ``CFLAGS = ...`` /
+``CXXFLAGS = ...`` / ``LDFLAGS = ...`` lines into their ``append-...`` forms,
+so they compose with the optimization and instrumentation axes instead
+of overriding them.
 
-Now if almost all you ever do is cross compile to the beaglebone then you might prefer that the "debug" meant "bb.debug" and similarly for release. That is, you really might prefer to type
+To make ``--variant=release`` (with no toolchain) mean "bb plus release"
+by default, set ``variant = bb.release`` in your project's ``ct.conf``.
+No alias dict needed — the default variant string IS the composition.
 
-* ct-cake main.cpp --variant=release   # meaning bb.release
-* ct-cake main.cpp                     # meaning bb.debug
-
-To achieve that you have to edit the ct.conf file in ~/.config/ct/ct.conf (or /etc/xdg/ct/ct.conf if you are doing a systemwide setup) to include the following lines
-
-variant = debug
-variantaliases = {'debug':'bb.debug', 'release':'bb.release'}
+* ct-cake main.cpp                       # uses the configured default
+* ct-cake main.cpp --variant=bb,debug    # bb + debug
+* ct-cake main.cpp --variant=bb,release  # bb + release
+* ct-cake main.cpp --variant=bb,release,asan  # bb + release + AddressSanitizer
 
 SEE ALSO
 ========

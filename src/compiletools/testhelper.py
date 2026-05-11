@@ -349,15 +349,18 @@ def create_temp_config(tempdir=None, filename=None, extralines=None):
     return filename
 
 
-def create_temp_ct_conf(tempdir, defaultvariant="dbg", extralines=None):
+def create_temp_ct_conf(tempdir, defaultvariant="gcc.debug", extralines=None):
     """User is responsible for removing the config file when
-    they are finished
+    they are finished.
+
+    Default variant is ``gcc.debug`` — canonicalizes to itself under the
+    builtin canonical-order, and the bundled ``gcc.conf`` + ``debug.conf``
+    axis files satisfy the resolver in tests that don't supply their own.
     """
     if extralines is None:
         extralines = []
     with builtins.open(os.path.join(tempdir, "ct.conf"), "w") as ff:
         ff.write(f"variant = {defaultvariant}\n")
-        ff.write("variantaliases = {'dbg':'foo.debug', 'rls':'foo.release'}\n")
         ff.write("exemarkers = [main]\n")
         ff.write("testmarkers = unit_test.hpp\n")
         for line in extralines:
