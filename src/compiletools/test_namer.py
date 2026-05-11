@@ -581,6 +581,7 @@ def test_create_link_rule_returns_cas_link_plus_publish_pair():
             backend.hunter = hunter
             backend.namer = uth.make_mock_namer(args)
             backend.context = BuildContext()
+            backend._anchor_root = ""
 
             rules = backend._create_link_rule("/src/main.cpp")
             assert len(rules) == 2, f"expected [link, symlink], got {[r.rule_type for r in rules]}"
@@ -657,6 +658,7 @@ def test_create_link_rule_legacy_shape_when_backend_has_native_cas():
             backend.hunter = hunter
             backend.namer = uth.make_mock_namer(args)
             backend.context = BuildContext()
+            backend._anchor_root = ""
 
             rules = backend._create_link_rule("/src/main.cpp")
             assert len(rules) == 1, f"legacy shape should be a single rule, got {len(rules)}"
@@ -704,6 +706,7 @@ def _make_minimal_link_backend(tmpdir, *, sources=None, env=None):
     backend.hunter = hunter
     backend.namer = uth.make_mock_namer(args)
     backend.context = BuildContext()
+    backend._anchor_root = ""
     return backend
 
 

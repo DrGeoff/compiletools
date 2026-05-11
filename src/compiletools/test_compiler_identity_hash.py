@@ -60,6 +60,177 @@ def test_compiler_identity_handles_ccache_g_plus_plus():
 
 
 # ---------------------------------------------------------------------------
+# Anchor-aware canonicalisation: the realpath segment must be canonicalised
+# against the gitroot anchor when the binary lives under the workspace
+# (e.g. an in-repo coverage / sccache / distcc wrapper script). Otherwise
+# every CI checkout under a fresh attempt directory produces a distinct
+# compiler_identity → distinct PCH/PCM/object/link cache key → no reuse.
+# Cross-references the upstream report's Part 1 leak.
+# ---------------------------------------------------------------------------
+
+
+def test_compiler_identity_canonicalises_in_workspace_binary(tmp_path):
+    """When the resolved compiler binary lives under the supplied
+    anchor_root, the realpath portion is rewritten to ``<GITROOT>/...``
+    so two workspaces sharing a CAS see identical identity strings."""
+    workspace = tmp_path / "workspace"
+    (workspace / "tools").mkdir(parents=True)
+    binary = workspace / "tools" / "cc-wrap.sh"
+    binary.write_text("#!/bin/sh\nexec g++ \"$@\"\n")
+    binary.chmod(0o755)
+
+    compiler_identity.cache_clear()
+    result = compiler_identity(str(binary), anchor_root=str(workspace))
+    realpath_part = result.split("|", 1)[0]
+    assert realpath_part == "<GITROOT>/tools/cc-wrap.sh", (
+        f"compiler_identity leaked workspace prefix: {result!r}"
+    )
+
+
+def test_compiler_identity_outside_anchor_unchanged(tmp_path):
+    """A system / out-of-workspace compiler is left alone — only paths
+    actually under the anchor get rewritten."""
+    sibling = tmp_path / "external"
+    sibling.mkdir()
+    binary = sibling / "g++-fake"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    compiler_identity.cache_clear()
+    result = compiler_identity(str(binary), anchor_root=str(workspace))
+    realpath_part = result.split("|", 1)[0]
+    assert realpath_part == str(binary)
+
+
+def test_compiler_identity_empty_anchor_is_identity(tmp_path):
+    """anchor_root="" must be a graceful no-op (no canonicalisation)."""
+    binary = tmp_path / "workspace" / "tools" / "cc.sh"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+
+    compiler_identity.cache_clear()
+    result = compiler_identity(str(binary), anchor_root="")
+    realpath_part = result.split("|", 1)[0]
+    assert realpath_part == str(binary)
+
+
+def test_compiler_identity_fallback_string_canonicalised_when_under_anchor(tmp_path):
+    """If shutil.which / os.stat fail (non-existent binary, ``ccache g++``
+    multi-token), the helper falls back to the raw string. That fallback
+    must ALSO canonicalise when the raw string is an absolute path under
+    the anchor — otherwise the leak survives the fallback path."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    bogus = str(workspace / "tools" / "does-not-exist")
+
+    compiler_identity.cache_clear()
+    result = compiler_identity(bogus, anchor_root=str(workspace))
+    assert result == "<GITROOT>/tools/does-not-exist", (
+        f"compiler_identity fallback leaked workspace prefix: {result!r}"
+    )
+
+
+def test_every_production_caller_passes_anchor_root():
+    """Convention guard: every non-test call to ``compiler_identity`` /
+    ``_compiler_identity`` must pass ``anchor_root=`` (the parameter is
+    keyword-only at the function level; this test catches anyone who
+    deletes the keyword-only marker AND adds a new positional caller).
+
+    Production code paths whose result feeds into a cache key must
+    canonicalise — a missing ``anchor_root`` would silently re-introduce
+    the workspace-prefix leak this fix exists to prevent. Test files
+    are exempt; they use the helper for both anchor-aware and
+    anchor-agnostic assertions."""
+    import pathlib
+    import re
+
+    src_dir = pathlib.Path(__file__).parent
+    pattern = re.compile(r"\b_?compiler_identity\s*\(")
+    offenders: list[str] = []
+    for py in src_dir.glob("*.py"):
+        if py.name.startswith("test_") or py.name == "conftest.py":
+            continue
+        text = py.read_text()
+        for match in pattern.finditer(text):
+            # Slice from the call's opening paren forward to find its
+            # matching close. Allow nested parens because ld_argv[0]
+            # contains brackets but no parens.
+            i = match.end()
+            depth = 1
+            while i < len(text) and depth > 0:
+                c = text[i]
+                if c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+                i += 1
+            call = text[match.start() : i]
+            # Skip definition (``def compiler_identity(``) and the alias
+            # assignment (``_compiler_identity = compiletools...``).
+            head = text[max(0, match.start() - 4) : match.start()]
+            if head.endswith("def "):
+                continue
+            # Single-arg form (no comma in the args) is allowed only for
+            # the ``args.CXX``-less / ``cxx``-less compatibility callers
+            # that don't go into a cache key. There aren't any in
+            # production, so flag any 1-arg call.
+            args_str = call[call.index("(") + 1 : -1]
+            if "anchor_root" not in args_str:
+                line_no = text.count("\n", 0, match.start()) + 1
+                offenders.append(f"{py.name}:{line_no}: {call.strip()}")
+
+    assert not offenders, (
+        "Production callers of compiler_identity must pass anchor_root=. "
+        "Missing-anchor callers silently emit per-workspace cache keys "
+        "(see upstream report Part 1). Offenders:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_compiler_identity_two_workspaces_canonicalise_to_same_realpath(tmp_path):
+    """**Upstream-report acceptance test for Part 1.**
+
+    The earlier tests in this section unit-test the helper one
+    invocation at a time; this one exercises the property end-to-end
+    with two real fixture workspaces and pinned mtimes, mirroring the
+    report's wrapper-script reproducer. Distinct from the unit tests
+    because it proves the *cross-workspace* equality the leak
+    actually broke."""
+    wrapper_content = "#!/bin/sh\nexec g++ \"$@\"\n"
+
+    ws_a = tmp_path / "run-A" / "workspace"
+    (ws_a / "tools").mkdir(parents=True)
+    bin_a = ws_a / "tools" / "cc-wrap.sh"
+    bin_a.write_text(wrapper_content)
+    bin_a.chmod(0o755)
+
+    ws_b = tmp_path / "run-B" / "workspace"
+    (ws_b / "tools").mkdir(parents=True)
+    bin_b = ws_b / "tools" / "cc-wrap.sh"
+    bin_b.write_text(wrapper_content)
+    bin_b.chmod(0o755)
+
+    # Pin mtime+atime so the size|mtime portions match — the realpath
+    # canonicalisation is what we're proving, not the (separate, more
+    # invasive) mtime → content-hash refinement.
+    fixed = (1700000000, 1700000000)
+    os.utime(bin_a, fixed)
+    os.utime(bin_b, fixed)
+
+    compiler_identity.cache_clear()
+    id_a = compiler_identity(str(bin_a), anchor_root=str(ws_a))
+    compiler_identity.cache_clear()
+    id_b = compiler_identity(str(bin_b), anchor_root=str(ws_b))
+    assert id_a == id_b, (
+        "compiler_identity must canonicalise the realpath across workspaces.\n"
+        f"  WS-A: {id_a}\n"
+        f"  WS-B: {id_b}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Tests 4-5: MacroState build-context hash includes compiler_identity
 # ---------------------------------------------------------------------------
 

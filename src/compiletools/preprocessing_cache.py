@@ -126,6 +126,7 @@ class MacroState:
     _cache_key: Optional[MacroCacheKey]  # Cached frozenset for cache keys
     _hash: Optional[str]  # Cached hex digest for convergence detection (variable only)
     _hash_full: Optional[str]  # Cached hex digest including core + variable + build context
+    _build_context_hash: Optional[int]  # Cached sz.hash() of the canonicalised build_context block
 
     def __init__(
         self,
@@ -177,6 +178,7 @@ class MacroState:
         self._cache_key = None  # Lazy-computed cache key
         self._hash = None  # Lazy-computed hash (variable only)
         self._hash_full = None  # Lazy-computed hash (core + variable + build context)
+        self._build_context_hash = None  # Lazy-computed sz.hash() of build_context block
 
     def all_macros(self) -> MacroDict:
         """Get merged view of all macros (core + variable).
@@ -410,37 +412,36 @@ class MacroState:
             combined ^= sz.hash(bytes(name))
             combined ^= sz.hash(bytes(value))
 
-        # Build context. When structured token lists are provided, hash those
-        # instead of the raw flag strings (the tokens have -D/-U stripped, so
-        # they don't smuggle filtered cmdline macros back into the hash).
-        # Labeled composite avoids XOR cancellation when fields collide.
-        # Diagnostic-only flags (-Wall, -fdiagnostics-color, -pipe, -v...)
-        # are filtered out of the token lists before hashing so warning-level
-        # changes don't invalidate the cache. The stored ``*_tokens`` fields
-        # themselves stay unfiltered -- only the hash sees the filtered view.
+        combined ^= self._get_build_context_hash()
+        return combined
+
+    def _get_build_context_hash(self) -> int:
+        """Hash of the canonicalised build_context block (compiler path,
+        identity, flag tokens). All inputs are MacroState invariants —
+        cache so the scope-filtered hash path doesn't re-canonicalise on
+        every per-TU call.
+        """
+        cached = self._build_context_hash
+        if cached is not None:
+            return cached
+
         # Deferred import: apptools transitively pulls in many modules and
         # preprocessing_cache is imported very early at startup.
         from compiletools.apptools import (
             canonicalize_for_cache_key,
+            canonicalize_path_for_cache_key,
             filter_hash_irrelevant_tokens,
             tokenize_compile_flags,
         )
 
-        # Always go through the token + filter + canonicalize pipeline so
-        # diagnostic-flag filtering AND path canonicalization apply
-        # uniformly. tokenize_compile_flags accepts either raw strings
-        # OR pre-tokenized lists (idempotent on the latter -- it strips
-        # -D/-U which upstream callers already stripped), so passing
-        # ``self._or_raw`` works whether or not the caller pre-tokenized.
+        # tokenize_compile_flags accepts raw strings OR pre-tokenized lists
+        # (idempotent on the latter — it strips -D/-U which upstream callers
+        # already stripped), so passing whichever the caller populated works.
         cpp_in = self.cppflags if self.cppflags_tokens is None else self.cppflags_tokens
         c_in = self.cflags if self.cflags_tokens is None else self.cflags_tokens
         cxx_in = self.cxxflags if self.cxxflags_tokens is None else self.cxxflags_tokens
         cppflags_tokens, cflags_tokens, cxxflags_tokens = tokenize_compile_flags(cpp_in, c_in, cxx_in)
 
-        # Canonicalize path-bearing -I/-isystem/etc. tokens against the
-        # gitroot anchor before hashing. Decouples the cache key from
-        # the absolute workspace path so identical TUs in /run-1/... and
-        # /run-2/... share cache entries. Empty anchor is identity.
         def _canon(toks):
             return canonicalize_for_cache_key(filter_hash_irrelevant_tokens(toks), self.anchor_root)
 
@@ -448,18 +449,15 @@ class MacroState:
         cflags_part = "CFLAGS_TOKENS=" + "\x00".join(_canon(cflags_tokens))
         cxxflags_part = "CXXFLAGS_TOKENS=" + "\x00".join(_canon(cxxflags_tokens))
 
-        # ``CC=`` keeps the user-visible command (still useful for diagnostic
-        # collision triage). ``COMPILER_IDENTITY=`` is the strict form
-        # (realpath|size|mtime_ns) symmetric with the PCH cache key in
-        # ``build_backend._pch_command_hash`` -- it catches in-place
-        # toolchain swaps that don't change ``CC``.
+        canonical_cc = canonicalize_path_for_cache_key(self.compiler_path, self.anchor_root)
         build_context = (
-            f"CC={self.compiler_path}\x00"
+            f"CC={canonical_cc}\x00"
             f"COMPILER_IDENTITY={self.compiler_identity}\x00"
             f"{cppflags_part}\x00{cflags_part}\x00{cxxflags_part}"
         )
-        combined ^= sz.hash(bytes(build_context, "utf-8"))
-        return combined
+        result = int(sz.hash(bytes(build_context, "utf-8")))
+        self._build_context_hash = result
+        return result
 
 
 # Simple cache: if variable dict is empty, return cached empty frozenset

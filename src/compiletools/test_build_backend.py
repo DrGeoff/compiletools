@@ -1309,6 +1309,7 @@ class TestPchManifest:
             transitive_headers=[],
             cxx_command="g++",
             context=BuildContext(),
+            anchor_root="",
         )
 
         manifest_path = pchdir / cmd_hash / "manifest.json"
@@ -1329,9 +1330,9 @@ class TestPchManifest:
         header.write_text("#pragma once\n")
 
         ctx = BuildContext()
-        _write_pch_manifest(str(pchdir), cmd_hash, str(header), [], "g++", context=ctx)
+        _write_pch_manifest(str(pchdir), cmd_hash, str(header), [], "g++", context=ctx, anchor_root="")
         # Second write replaces, never leaves .tmp behind.
-        _write_pch_manifest(str(pchdir), cmd_hash, str(header), [], "clang++", context=ctx)
+        _write_pch_manifest(str(pchdir), cmd_hash, str(header), [], "clang++", context=ctx, anchor_root="")
 
         manifest_dir = pchdir / cmd_hash
         assert (manifest_dir / "manifest.json").is_file()

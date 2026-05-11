@@ -154,7 +154,7 @@ def _canonicalize_cmd_for_hash(cmd: list[str], anchor_root: str) -> list[str]:
     if not anchor_root:
         return list(cmd)
     flag_canonicalized = compiletools.apptools.canonicalize_for_cache_key(list(cmd), anchor_root)
-    return [compiletools.apptools.canonicalize_path_for_cache_key(tok, anchor_root) for tok in flag_canonicalized]
+    return compiletools.apptools.canonicalize_paths_for_cache_key(flag_canonicalized, anchor_root)
 
 
 def hash_command(cmd: list[str], compiler_identity: str | None = None) -> str:
@@ -241,7 +241,7 @@ def _make_trace_entry(rule: BuildRule, context, output_hash: str | None = None) 
             input_hashes[key] = get_file_hash(p, context)
         else:
             logger.debug("_make_trace_entry: skipping non-file input %s for %s", p, rule.output)
-    identity = _compiler_identity(rule.command[0]) if rule.command else None
+    identity = _compiler_identity(rule.command[0], anchor_root=anchor_root) if rule.command else None
     canonical_cmd = _canonicalize_cmd_for_hash(rule.command, anchor_root)
     return TraceEntry(
         output_hash=output_hash if output_hash is not None else get_file_hash(rule.output, context),
@@ -491,7 +491,7 @@ class ShakeBackend(BuildBackend):
         # gitroot so cross-workspace traces still verify (the trace's keys
         # and command_hash were canonicalized at write time).
         anchor_root = compiletools.git_utils.find_git_root()
-        identity = _compiler_identity(rule.command[0]) if rule.command else None
+        identity = _compiler_identity(rule.command[0], anchor_root=anchor_root) if rule.command else None
         canonical_cmd = _canonicalize_cmd_for_hash(rule.command, anchor_root)
         if hash_command(canonical_cmd, compiler_identity=identity) != trace.command_hash:
             return False

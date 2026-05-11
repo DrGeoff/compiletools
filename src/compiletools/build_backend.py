@@ -346,6 +346,12 @@ class BuildBackend(abc.ABC):
                 "BuildBackend requires either hunter or context. Pass context=BuildContext() if you have no hunter."
             )
         self.namer = compiletools.namer.Namer(args, context=self.context)
+        # Resolve once per backend instance; threaded into every cache-key
+        # site so they share a single find_git_root() call (which itself is
+        # cached but pays an os.getcwd() per call) and a single source of truth.
+        # Captured at __init__: a mid-build os.chdir won't update this; every
+        # production path constructs the backend with the build's cwd already set.
+        self._anchor_root: str = compiletools.git_utils.find_git_root() or ""
         self._graph: BuildGraph | None = None
         self._dynamic_sources: set[str] = set()
         # C++20 modules state. Set here so every read site can use
@@ -624,6 +630,7 @@ class BuildBackend(abc.ABC):
                     magic_cxx_flags,
                     cxxflags_tokens=cxxflags_tokens,
                     scope_macro_hash=scope_macro_hash,
+                    anchor_root=self._anchor_root,
                 )
             else:
                 cmd_hash = None
@@ -640,6 +647,7 @@ class BuildBackend(abc.ABC):
                     transitive_headers=transitive,
                     cxx_command=self.args.CXX,
                     context=self.context,
+                    anchor_root=self._anchor_root,
                 )
 
             pch_deps = [pch_header] + sorted(str(d) for d in self.hunter.header_dependencies(pch_header))
@@ -1575,6 +1583,7 @@ class BuildBackend(abc.ABC):
                     cxx_command=self.args.CXX,
                     stage="clang_header_unit",
                     context=self.context,
+                    anchor_root=self._anchor_root,
                 )
                 return pcm_path, hash_dir
             return os.path.join(flat_dir, stem + ".pcm"), flat_dir
@@ -1597,6 +1606,7 @@ class BuildBackend(abc.ABC):
                     cxx_command=self.args.CXX,
                     stage="gcc_header_unit",
                     context=self.context,
+                    anchor_root=self._anchor_root,
                 )
                 return dest
         # gcc (and any unknown compiler) without cache stays on the
@@ -1633,6 +1643,7 @@ class BuildBackend(abc.ABC):
             magic_cxx_flags=[],
             extra_flags=["-stdlib=libc++"] if injects_libcxx else [],
             stage="clang_header_unit",
+            anchor_root=self._anchor_root,
         )
 
     def _create_header_unit_precompile_rule(self, token: str, artefact_path: str) -> BuildRule:
@@ -1786,6 +1797,7 @@ class BuildBackend(abc.ABC):
             cxx_command=self.args.CXX,
             stage="gcc_module_interface",
             context=self.context,
+            anchor_root=self._anchor_root,
         )
         return gcm_path, per_hash_dir
 
@@ -1893,6 +1905,7 @@ class BuildBackend(abc.ABC):
             cxx_command=self.args.CXX,
             stage="clang_module_interface",
             context=self.context,
+            anchor_root=self._anchor_root,
         )
         return pcm_path, per_hash_dir
 
@@ -1927,6 +1940,7 @@ class BuildBackend(abc.ABC):
             magic_cxx_flags=magic_cxx,
             extra_flags=extra_flags,
             stage=stage,
+            anchor_root=self._anchor_root,
         )
 
     def _create_clang_module_interface_rules(self, filename: str, module_name: str) -> tuple[BuildRule, BuildRule]:
@@ -2407,18 +2421,17 @@ class BuildBackend(abc.ABC):
         # Source path is NOT in the hash — different sources naturally
         # hash to different link keys via their object names, and
         # including the source path would defeat workspace-portability.
-        anchor_root = compiletools.git_utils.find_git_root() or ""
+        anchor_root = self._anchor_root
         link_key_payload = {
-            "linker_identity": _compiler_identity(ld_argv[0]) if ld_argv else "",
-            "ld_argv": ld_argv,
+            "linker_identity": _compiler_identity(ld_argv[0], anchor_root=anchor_root) if ld_argv else "",
+            "ld_argv": compiletools.apptools.canonicalize_paths_for_cache_key(ld_argv, anchor_root),
             "objects": sorted(
-                compiletools.apptools.canonicalize_path_for_cache_key(o, anchor_root) for o in object_names
+                compiletools.apptools.canonicalize_paths_for_cache_key(object_names, anchor_root)
             ),
             "merged_ldflags": compiletools.apptools.canonicalize_for_cache_key(list(merged_ldflags), anchor_root),
             "extra_link_argv": extra_link_argv,
             "library_outputs": sorted(
-                compiletools.apptools.canonicalize_path_for_cache_key(lib, anchor_root)
-                for lib in (library_outputs or [])
+                compiletools.apptools.canonicalize_paths_for_cache_key(library_outputs or [], anchor_root)
             ),
             "ld_extra": ld_extra,
             # canonical_bindir: full anchor-relative bindir, not just the
@@ -2506,7 +2519,7 @@ class BuildBackend(abc.ABC):
                 )
             ]
 
-        anchor_root = compiletools.git_utils.find_git_root() or ""
+        anchor_root = self._anchor_root
         # ar_binary: honour args.AR if provided; otherwise the literal
         # "ar" gets resolved against PATH at exec time. The identity
         # captures the binary the user actually runs (binutils version
@@ -2516,10 +2529,10 @@ class BuildBackend(abc.ABC):
         ar_binary = getattr(self.args, "AR", None) or "ar"
         ar_argv_prefix = [ar_binary, "-src"]
         lib_key_payload = {
-            "ar_argv_prefix": ar_argv_prefix,
-            "ar_identity": _compiler_identity(ar_binary),
+            "ar_argv_prefix": compiletools.apptools.canonicalize_paths_for_cache_key(ar_argv_prefix, anchor_root),
+            "ar_identity": _compiler_identity(ar_binary, anchor_root=anchor_root),
             "objects": sorted(
-                compiletools.apptools.canonicalize_path_for_cache_key(o, anchor_root) for o in object_names
+                compiletools.apptools.canonicalize_paths_for_cache_key(object_names, anchor_root)
             ),
         }
         lib_key_hash = self._compute_artefact_key_hash(lib_key_payload)
@@ -2568,13 +2581,13 @@ class BuildBackend(abc.ABC):
                 )
             ]
 
-        anchor_root = compiletools.git_utils.find_git_root() or ""
+        anchor_root = self._anchor_root
         lib_key_payload = {
-            "linker_identity": _compiler_identity(ld_argv[0]) if ld_argv else "",
-            "ld_argv": ld_argv,
+            "linker_identity": _compiler_identity(ld_argv[0], anchor_root=anchor_root) if ld_argv else "",
+            "ld_argv": compiletools.apptools.canonicalize_paths_for_cache_key(ld_argv, anchor_root),
             "shared": True,
             "objects": sorted(
-                compiletools.apptools.canonicalize_path_for_cache_key(o, anchor_root) for o in object_names
+                compiletools.apptools.canonicalize_paths_for_cache_key(object_names, anchor_root)
             ),
             "merged_ldflags": compiletools.apptools.canonicalize_for_cache_key(list(merged_ldflags), anchor_root),
             "ld_extra": ld_extra,
@@ -2748,8 +2761,8 @@ def _pcm_command_hash(
         anchor_root = compiletools.git_utils.find_git_root()
     canonical = {
         "stage": stage,
-        "compiler_identity": _compiler_identity(args.CXX),
-        "cxx_command": args.CXX,
+        "compiler_identity": _compiler_identity(args.CXX, anchor_root=anchor_root),
+        "cxx_command": compiletools.apptools.canonicalize_path_for_cache_key(args.CXX, anchor_root),
         "CXXFLAGS_TOKENS": compiletools.apptools.canonicalize_for_cache_key(list(cxxflags_tokens), anchor_root),
         "magic_cpp_flags": compiletools.apptools.canonicalize_for_cache_key(
             compiletools.apptools.filter_hash_irrelevant_tokens([str(f) for f in magic_cpp_flags]),
@@ -2910,8 +2923,10 @@ def _pch_command_hash(
     if anchor_root is None:
         anchor_root = compiletools.git_utils.find_git_root()
     canonical = {
-        "compiler_identity": _compiler_identity(args.CXX),
-        "cxx_command": args.CXX,
+        # In-workspace wrapper scripts (coverage / sccache / distcc) leak
+        # the per-checkout absolute path through both fields otherwise.
+        "compiler_identity": _compiler_identity(args.CXX, anchor_root=anchor_root),
+        "cxx_command": compiletools.apptools.canonicalize_path_for_cache_key(args.CXX, anchor_root),
         # Structured tokens with -D/-U stripped AND diagnostic-only flags
         # removed; pre-filtered by caller via args.flags.hash_relevant("cxx").
         # Cmdline -D macros are captured by ``scope_macro_hash`` after
@@ -3042,6 +3057,8 @@ def _write_pcm_manifest(
     cxx_command: str,
     stage: str,
     context,
+    *,
+    anchor_root: str,
 ) -> None:
     """Write a sidecar manifest next to a cached ``.pcm`` / ``.gcm`` file.
 
@@ -3075,7 +3092,7 @@ def _write_pcm_manifest(
         "bucket_key": bucket_key,
         "stage": stage,
         "compiler": cxx_command,
-        "compiler_identity": _compiler_identity(cxx_command),
+        "compiler_identity": _compiler_identity(cxx_command, anchor_root=anchor_root),
         "transitive_hashes": transitive_hashes,
     }
 
@@ -3093,6 +3110,8 @@ def _write_pch_manifest(
     transitive_headers: list[str],
     cxx_command: str,
     context,
+    *,
+    anchor_root: str,
 ) -> None:
     """Write a sidecar manifest next to a cached .gch file.
 
@@ -3127,7 +3146,7 @@ def _write_pch_manifest(
     manifest = {
         "header_realpath": compiletools.wrappedos.realpath(pch_header),
         "compiler": cxx_command,
-        "compiler_identity": _compiler_identity(cxx_command),
+        "compiler_identity": _compiler_identity(cxx_command, anchor_root=anchor_root),
         "transitive_hashes": transitive_hashes,
     }
 

@@ -1062,6 +1062,19 @@ def canonicalize_path_for_cache_key(path: str, anchor_root: str) -> str:
     return _canonicalize_one_path(path, anchor + "/")
 
 
+def canonicalize_paths_for_cache_key(paths: Sequence[str], anchor_root: str) -> list[str]:
+    """Apply :func:`canonicalize_path_for_cache_key` element-wise.
+
+    For raw path lists (argv slots, object/library file lists) where every
+    element is a path. Distinct from :func:`canonicalize_for_cache_key`,
+    which parses path-bearing flags (``-I``, ``-Wl,...``, ``-Xlinker``).
+    Empty anchor short-circuits to a list copy.
+    """
+    if not anchor_root:
+        return list(paths)
+    return [canonicalize_path_for_cache_key(p, anchor_root) for p in paths]
+
+
 def canonicalize_for_cache_key(tokens: Sequence[str], anchor_root: str) -> list[str]:
     """Rewrite path-bearing flag tokens to be anchor-relative.
 
@@ -1223,7 +1236,7 @@ def tokenize_compile_flags(
 
 
 @functools.lru_cache(maxsize=64)
-def compiler_identity(cxx: str) -> str:
+def compiler_identity(cxx: str, *, anchor_root: str = "") -> str:
     """Return a stable identity string for a compiler binary.
 
     Used as part of cache keys (PCH cache key in ``build_backend`` and the
@@ -1235,10 +1248,24 @@ def compiler_identity(cxx: str) -> str:
     defeats the cache. By including binary realpath + (st_size, st_mtime),
     we make distinct compilers produce distinct cache entries.
 
+    When the resolved binary lives under ``anchor_root``, the realpath
+    *segment* of the returned ``<realpath>|<size>|<mtime_ns>`` triple is
+    rewritten to ``<GITROOT>/<relpath>`` via
+    :func:`canonicalize_path_for_cache_key` so two CI checkouts at
+    different absolute prefixes share the same cache key. The
+    ``|<size>|<mtime_ns>`` tail is unchanged. The default
+    ``anchor_root=""`` is a graceful no-op (identity) for backward
+    compatibility and ad-hoc test fixtures — **production call sites
+    must always pass an anchor**, otherwise the workspace prefix leaks
+    into every downstream cache key (PCH / PCM / per-TU object / link / ar).
+
     Falls back to the original string when the binary cannot be stat'd
-    (e.g. user passed a non-path command like ``ccache g++``). Returns
-    ``""`` when ``cxx`` is None / empty so unconfigured ``args.CXX``
-    (some unit-test fixtures) doesn't crash the helper.
+    (e.g. user passed a non-path command like ``ccache g++``). The fallback
+    string is also canonicalised against ``anchor_root`` when it parses
+    as an absolute path under the anchor — otherwise the leak would
+    survive the fallback path. Returns ``""`` when ``cxx`` is None /
+    empty so unconfigured ``args.CXX`` (some unit-test fixtures) doesn't
+    crash the helper.
 
     Side effect: any tool that bumps the compiler binary's mtime (e.g.
     a no-op ``touch /usr/bin/g++``) will invalidate the cache. This is
@@ -1254,9 +1281,11 @@ def compiler_identity(cxx: str) -> str:
         # Use nanosecond mtime so a sub-second compiler swap (e.g.
         # ``cp new-g++ /usr/local/bin/g++`` followed immediately by a
         # build) does not collide on the cache key.
-        return f"{compiletools.wrappedos.realpath(resolved)}|{st.st_size}|{st.st_mtime_ns}"
+        real = compiletools.wrappedos.realpath(resolved)
+        canonical = canonicalize_path_for_cache_key(real, anchor_root)
+        return f"{canonical}|{st.st_size}|{st.st_mtime_ns}"
     except OSError:
-        return resolved
+        return canonicalize_path_for_cache_key(resolved, anchor_root)
 
 
 @functools.lru_cache(maxsize=64)

@@ -46,16 +46,23 @@ class Flags:
         been populated (parseargs does this; testhelper.create_args
         mirrors it). Raises AttributeError otherwise -- callers must go
         through parseargs / create_args, not construct args ad hoc.
+
+        The compiler_identity is computed against the gitroot anchor so
+        in-workspace wrapper scripts (coverage / sccache / distcc shims)
+        canonicalise to ``<GITROOT>/...`` instead of leaking the per-
+        checkout absolute path into every downstream cache key.
         """
         from compiletools.apptools import compiler_identity
+        from compiletools.git_utils import find_git_root
 
         cxx_command = getattr(args, "CXX", "") or ""
+        anchor_root = find_git_root() or ""
         return cls(
             cpp=tuple(args.CPPFLAGS_tokens),
             c=tuple(args.CFLAGS_tokens),
             cxx=tuple(args.CXXFLAGS_tokens),
             ld=tuple(args.LDFLAGS_tokens),
-            compiler_identity=compiler_identity(cxx_command),
+            compiler_identity=compiler_identity(cxx_command, anchor_root=anchor_root),
         )
 
     def hash_relevant(self, slot: str) -> list[str]:
