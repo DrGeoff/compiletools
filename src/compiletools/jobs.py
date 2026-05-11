@@ -34,7 +34,7 @@ def add_arguments(cap):
     cap.add(
         "-j",
         "--jobs",
-        "--CAKE_PARALLEL",
+        "--CT_PARALLEL",
         "--parallel",
         dest="parallel",
         type=int,

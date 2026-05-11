@@ -449,12 +449,12 @@ def add_target_arguments_ex(cap):
     cap.add(
         "--project-version",
         dest="projectversion",
-        help="Set the CAKE_PROJECT_VERSION macro to this value",
+        help="Set the CT_PROJECT_VERSION macro to this value",
     )
     cap.add(
         "--project-version-cmd",
         dest="projectversioncmd",
-        help="Execute this command to determine the CAKE_PROJECT_VERSION macro",
+        help="Execute this command to determine the CT_PROJECT_VERSION macro",
     )
 
 
@@ -1838,7 +1838,7 @@ def _batch_pkg_config(packages: list[str], option: str) -> dict[str, str]:
 
 
 def _set_project_version(args):
-    """C/C++ source code can rely on the CAKE_PROJECT_VERSION macro being set.
+    """C/C++ source code can rely on the CT_PROJECT_VERSION macro being set.
     If the user specified a projectversion then use that.
     Otherwise execute projectversioncmd to determine projectversion.
     In the completely unspecified case, use the zero version.
@@ -1882,12 +1882,12 @@ def _set_project_version(args):
         # Escape for C string literal (backslashes and double quotes)
         version_escaped = args.projectversion.replace("\\", "\\\\").replace('"', '\\"')
 
-        if "-DCAKE_PROJECT_VERSION" not in args.CPPFLAGS:
-            args.CPPFLAGS += " -DCAKE_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
-        if "-DCAKE_PROJECT_VERSION" not in args.CFLAGS:
-            args.CFLAGS += " -DCAKE_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
-        if "-DCAKE_PROJECT_VERSION" not in args.CXXFLAGS:
-            args.CXXFLAGS += " -DCAKE_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
+        if "-DCT_PROJECT_VERSION" not in args.CPPFLAGS:
+            args.CPPFLAGS += " -DCT_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
+        if "-DCT_PROJECT_VERSION" not in args.CFLAGS:
+            args.CFLAGS += " -DCT_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
+        if "-DCT_PROJECT_VERSION" not in args.CXXFLAGS:
+            args.CXXFLAGS += " -DCT_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
 
         if args.verbose >= 6:
             print("*FLAG variables have been modified with the project version:")
