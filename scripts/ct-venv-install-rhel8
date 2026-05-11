@@ -3,10 +3,12 @@
 #
 # Performs the recipe documented in INSTALL section 6 (RHEL 8 / older GCC):
 #   1. install only the dnf pkgs that aren't already satisfied (git and/or
-#      gcc-toolset-13). If both are present, the dnf step is skipped
+#      gcc-toolset-14). If both are present, the dnf step is skipped
 #      entirely -- no sudo prompt.
-#   2. discover or enable a modern GCC (12+); the system gcc-8 cannot compile
-#      stringzilla's AVX-512 intrinsics
+#   2. discover or enable a modern GCC (14+); the system gcc-8 cannot compile
+#      stringzilla's AVX-512 intrinsics, AND the bundled default variant
+#      `gcc.cxx26.debug` needs gcc>=14 for C++26 support. gcc-toolset-14
+#      satisfies both with one toolchain install.
 #   3. create a uv-managed Python 3.13 venv if missing (system python3 is
 #      3.6, below the >=3.10 floor; RHEL 8 AppStream caps out below 3.13)
 #   4. install stringzilla with CC pointed at the modern GCC and the
@@ -198,10 +200,16 @@ if ! command -v git >/dev/null 2>&1; then
     DNF_PKGS+=(git)
 fi
 
-# gcc-toolset-13 -- modern GCC (12+) for stringzilla's AVX-512 intrinsics;
-#                   INSTALL prescribes GCC 12+. Skip if a usable modern gcc
-#                   is already discoverable (--gcc override, system gcc 12+,
-#                   or an existing /opt/rh/gcc-toolset-{14,13,12}/enable).
+# gcc-toolset-14 -- modern GCC (>=14) needed for two independent things:
+#                   (a) stringzilla's AVX-512 intrinsics need gcc 12+;
+#                   (b) the bundled default variant `gcc.cxx26.debug`
+#                       needs gcc 14+ for substantially-complete C++26.
+#                   gcc-toolset-14 satisfies both. Skip if a usable
+#                   modern gcc is already discoverable (--gcc override,
+#                   system gcc 14+, or an existing
+#                   /opt/rh/gcc-toolset-{14,13,12}/enable). Older
+#                   toolsets (12/13) are accepted to skip the install;
+#                   the post-install verify warns if cxx26 won't work.
 need_toolset=1
 if [[ -n "$GCC_OVERRIDE" ]]; then
     need_toolset=0
@@ -216,7 +224,7 @@ else
     done
 fi
 if [[ "$need_toolset" -eq 1 ]]; then
-    DNF_PKGS+=(gcc-toolset-13)
+    DNF_PKGS+=(gcc-toolset-14)
 fi
 
 if [[ "$SKIP_PKG" -eq 1 ]]; then
@@ -260,10 +268,20 @@ fi
 
 if [[ "$DRY_RUN" -eq 0 ]]; then
     if [[ -z "$MODERN_CC" ]] || ! gcc_at_least "$MODERN_CC" 12; then
-        err "no GCC >=12 available. Install gcc-toolset-13 or pass --gcc=PATH."
+        err "no GCC >=12 available. Install gcc-toolset-14 or pass --gcc=PATH."
         exit 1
     fi
     ok "modern gcc: $MODERN_CC ($("$MODERN_CC" -dumpfullversion -dumpversion))"
+    # The bundled default variant `gcc.cxx26.debug` requires gcc 14+. An
+    # older modern gcc (12/13) still works for stringzilla's AVX-512 build
+    # below, but ct-cake's default variant will fail at parseargs time on
+    # this host -- callers must pick a lower C++ standard explicitly.
+    if ! gcc_at_least "$MODERN_CC" 14; then
+        warn "$MODERN_CC is older than 14; the default variant 'gcc.cxx26.debug'"
+        warn "will not work on this host. Either install gcc-toolset-14, or"
+        warn "invoke ct-cake with an explicit lower C++ standard, e.g."
+        warn "    ct-cake --variant=gcc,cxx20,debug"
+    fi
 fi
 
 # ---------- step 3: venv ---------------------------------------------------

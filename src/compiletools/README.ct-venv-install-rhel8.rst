@@ -33,20 +33,28 @@ both automatically:
    with ``--python=3.14`` (or any other uv version spec / binary / path)
    if you want a different interpreter.
 
-2. **The system GCC cannot compile stringzilla's AVX-512 intrinsics.**
-   RHEL 8's default ``gcc`` (8.x, with the older AppStream branch shipping
-   GCC 10) is below the GCC 12 floor that stringzilla 4.6+ requires for
-   its AVX-512 paths. The script discovers a usable modern GCC in this
-   order: ``--gcc=PATH`` override, then the system ``gcc`` if it is
-   already 12+, then the most recent ``gcc-toolset-{14,13,12}`` enable
-   script under ``/opt/rh/``. If none is present, ``gcc-toolset-13`` is
-   added to the ``dnf install`` set. Stringzilla is then compiled with
-   ``CC`` pointed at the modern GCC and the four AVX-512 ``CFLAGS``
-   prescribed by the ``INSTALL`` recipe
+2. **The system GCC cannot compile stringzilla's AVX-512 intrinsics, AND
+   the bundled default variant needs gcc 14+.** RHEL 8's default ``gcc``
+   (8.x, with the older AppStream branch shipping GCC 10) is below the
+   GCC 12 floor that stringzilla 4.6+ requires for its AVX-512 paths,
+   and below the GCC 14 floor that the default ``ct-cake`` variant
+   ``gcc.cxx26.debug`` requires for substantially-complete C++26. The
+   script discovers a usable modern GCC in this order: ``--gcc=PATH``
+   override, then the system ``gcc`` if it is already 12+, then the
+   most recent ``gcc-toolset-{14,13,12}`` enable script under ``/opt/rh/``.
+   If none is present, ``gcc-toolset-14`` is added to the ``dnf install``
+   set (satisfies both floors with one toolchain). Stringzilla is then
+   compiled with ``CC`` pointed at the modern GCC and the four AVX-512
+   ``CFLAGS`` prescribed by the ``INSTALL`` recipe
    (``-mavx512f -mavx512bw -mavx512vl -mavx512vbmi``). The flags are a
    *compile-time* requirement so the compiler will emit code for those
    intrinsics; stringzilla still does runtime CPU dispatch, so the
    resulting wheel works on hosts without AVX-512.
+
+   If only a 12 or 13 toolset is already installed, the script accepts
+   it (skips the ``dnf install``) and emits a post-install warning: the
+   default variant won't work, but ``ct-cake --variant=gcc,cxx20,debug``
+   (or any lower C++ standard) will.
 
 Unlike the Termux recipe, the ``[dev]`` extra *is* used here (extended
 to ``[tui,dev]`` to pull in textual for the timing TUI): ruff has a
@@ -76,9 +84,11 @@ PHASES
    the ``dnf install`` set only if it is not already satisfied:
 
    * ``git`` -- skipped if already on ``$PATH``.
-   * ``gcc-toolset-13`` -- skipped if ``--gcc=PATH`` is given, if the
+   * ``gcc-toolset-14`` -- skipped if ``--gcc=PATH`` is given, if the
      system ``gcc`` is already 12+, or if any of
-     ``/opt/rh/gcc-toolset-{14,13,12}/enable`` exists.
+     ``/opt/rh/gcc-toolset-{14,13,12}/enable`` exists. 14 (not 13) is
+     the install target because the bundled default variant
+     ``gcc.cxx26.debug`` needs gcc 14+.
 
    If both are present, the ``dnf install`` step is skipped entirely --
    no ``sudo`` prompt. Otherwise ``sudo dnf install -y`` runs only with

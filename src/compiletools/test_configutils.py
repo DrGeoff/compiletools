@@ -1,3 +1,4 @@
+import logging
 import os
 
 import pytest
@@ -584,6 +585,233 @@ class TestVariant:
             )
 
             assert dirs.count(conf_d) == 1
+
+    def test_bundled_ct_conf_comment_example_matches_builtin(self):
+        """The commented `variant-canonical-order` example in the bundled
+        ct.conf must enumerate the same tokens as `_DEFAULT_VARIANT_CANONICAL_ORDER`.
+
+        The example exists so a user can copy-paste it as a starting point
+        for their own override. If it drifts from the builtin (someone adds
+        a new axis to one but not the other), copy-pasters silently get a
+        stale list. This test is the drift guard.
+        """
+        import re
+
+        ct_conf_path = os.path.join(
+            os.path.dirname(compiletools.configutils.__file__),
+            "ct.conf.d",
+            "ct.conf",
+        )
+        with open(ct_conf_path) as fh:
+            text = fh.read()
+        m = re.search(r"^#\s*variant-canonical-order\s*=\s*(.+)$", text, re.MULTILINE)
+        assert m is not None, (
+            f"Expected a commented `# variant-canonical-order = ...` example "
+            f"in {ct_conf_path}; users rely on it as a starting point for "
+            f"writing their own override."
+        )
+        example_tokens = compiletools.configutils.split_variant(m.group(1))
+        assert example_tokens == compiletools.configutils._DEFAULT_VARIANT_CANONICAL_ORDER, (
+            "Commented example in bundled ct.conf has drifted from "
+            "_DEFAULT_VARIANT_CANONICAL_ORDER. Update both. Diff:\n"
+            f"  builtin only: {set(compiletools.configutils._DEFAULT_VARIANT_CANONICAL_ORDER) - set(example_tokens)}\n"
+            f"  example only: {set(example_tokens) - set(compiletools.configutils._DEFAULT_VARIANT_CANONICAL_ORDER)}\n"
+            f"  builtin head: {compiletools.configutils._DEFAULT_VARIANT_CANONICAL_ORDER[:5]}\n"
+            f"  example head: {example_tokens[:5]}"
+        )
+
+    def test_bundled_composite_extends_obeys_canonical_order(self):
+        """Bundled composite conf files (the ones with ``extends = ...``)
+        must list their parents in canonical order, and must themselves be
+        positioned after all their parents in ``_DEFAULT_VARIANT_CANONICAL_ORDER``.
+
+        Why this matters: ``_resolve_axis`` walks ``extends`` in declared
+        order, and configargparse layers per-axis scalar keys
+        last-writer-wins. So ``extends = werror, gcc`` would load
+        ``werror.conf`` BEFORE ``gcc.conf`` — different from the
+        equivalent ``--variant=gcc,werror`` invocation which loads them
+        in canonical (gcc-first) order. Bundles must mirror what a user
+        gets from typing the same tokens on the CLI; otherwise
+        ``--variant=production`` silently differs from the manually-
+        written equivalent.
+
+        Also: a bundle whose canonical position precedes one of its
+        parents would canonicalize to a name with a parent trailing the
+        bundle, which is semantically nonsensical (bundles are
+        composites OF their parents, so they conceptually come "after").
+        """
+        bundled_conf_d = os.path.join(
+            os.path.dirname(compiletools.configutils.__file__), "ct.conf.d"
+        )
+        canonical = compiletools.configutils._DEFAULT_VARIANT_CANONICAL_ORDER
+        position = {tok: i for i, tok in enumerate(canonical)}
+
+        # Discover all conf files that declare `extends = ...`. This
+        # naturally extends to any new bundles added later — no hardcoded
+        # bundle list to keep in sync.
+        composite_confs = []
+        for entry in sorted(os.listdir(bundled_conf_d)):
+            if not entry.endswith(".conf"):
+                continue
+            path = os.path.join(bundled_conf_d, entry)
+            extends = compiletools.configutils._parse_extends_directive(path)
+            if extends:
+                composite_confs.append((entry[: -len(".conf")], path, extends))
+
+        assert composite_confs, (
+            "Expected at least one bundled composite conf with `extends = ...` "
+            "(dev, ci, production, safety, perf, secure)"
+        )
+
+        violations = []
+        for name, path, extends in composite_confs:
+            # Every parent must be a known canonical token.
+            unknown = [p for p in extends if p not in position]
+            if unknown:
+                violations.append(
+                    f"  {name}.conf extends unknown token(s) "
+                    f"{unknown!r}; add them to _DEFAULT_VARIANT_CANONICAL_ORDER."
+                )
+                continue
+
+            # Parents must be in canonical position order.
+            positions = [position[p] for p in extends]
+            if positions != sorted(positions):
+                expected = sorted(extends, key=lambda p: position[p])
+                violations.append(
+                    f"  {name}.conf extends list is out of canonical order: "
+                    f"got {list(extends)!r}, expected {expected!r}."
+                )
+
+            # The bundle itself must come after all its parents.
+            if name in position:
+                bundle_pos = position[name]
+                if positions and bundle_pos <= max(positions):
+                    worst_parent = max(extends, key=lambda p: position[p])
+                    violations.append(
+                        f"  {name}.conf appears at canonical position "
+                        f"{bundle_pos} but extends `{worst_parent}` at "
+                        f"position {position[worst_parent]}; move {name} "
+                        f"later in _DEFAULT_VARIANT_CANONICAL_ORDER."
+                    )
+
+        assert not violations, (
+            "Composite conf files violate canonical-order invariants:\n"
+            + "\n".join(violations)
+        )
+
+    def test_user_conf_with_out_of_order_extends_emits_warning(self, caplog):
+        """Runtime guard: a user-authored conf with ``extends = ...``
+        parents listed out of canonical order must trigger a logger
+        warning naming the file and the recommended order.
+
+        Out-of-order extends silently changes the flag layering compared
+        with the equivalent ``--variant=tok1,tok2,...`` CLI form (the
+        resolver walks ``extends`` in declared order, configargparse
+        layers in load order). The warning surfaces the inconsistency
+        without blocking the build — user's call whether to fix.
+
+        Uses ``logging.getLogger(__name__).warning(...)`` (matching the
+        ``cache_report.py`` / ``trace_backend.py`` / ``git_sha_report.py``
+        precedent and the ``apptools.py`` TODO direction) so users can
+        suppress per-module via
+        ``logging.getLogger('compiletools.configutils').setLevel(logging.ERROR)``.
+        """
+        with uth.TempDirContextNoChange() as repo_root:
+            uth.create_temp_ct_conf(repo_root, defaultvariant="my-bad-order")
+            conf_d = os.path.join(repo_root, "ct.conf.d")
+            os.makedirs(conf_d)
+            # werror is canonical-position 41; gcc is 1. Reversed order
+            # is the buggy pattern this guard catches.
+            with open(os.path.join(conf_d, "my-bad-order.conf"), "w") as fh:
+                fh.write("extends = werror, gcc\n")
+            with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+                fh.write("CC = gcc\n")
+            with open(os.path.join(conf_d, "werror.conf"), "w") as fh:
+                fh.write("append-CFLAGS = -Werror\n")
+
+            with uth.DirectoryContext(repo_root):
+                compiletools.configutils.clear_cache()
+                with caplog.at_level(logging.WARNING, logger="compiletools.configutils"):
+                    compiletools.configutils.resolve_variant(
+                        variant="my-bad-order",
+                        argv=[],
+                        user_config_dir="/var",
+                        system_config_dir="/var",
+                        exedir=uth.cakedir(),
+                        gitroot=repo_root,
+                    )
+
+            matching = [
+                rec.getMessage()
+                for rec in caplog.records
+                if rec.name == "compiletools.configutils"
+                and "my-bad-order.conf" in rec.getMessage()
+            ]
+            assert matching, (
+                "expected a configutils warning naming my-bad-order.conf; "
+                f"got {[(r.name, r.getMessage()) for r in caplog.records]!r}"
+            )
+            msg = matching[0]
+            assert "not in canonical order" in msg, msg
+            assert "extends = gcc, werror" in msg, msg
+
+    def test_resolve_variant_parses_each_conf_at_most_once(self):
+        """Regression guard against redundant conf-file parsing.
+
+        The full parseargs flow calls into the resolver several times per
+        invocation: extract_variant -> resolve_variant -> canonicalize -> a
+        second resolve_variant from _commonsubstitutions. Without caching,
+        each call re-opens ct.conf and re-parses every touched axis conf,
+        compounding the I/O cost on a 5-axis variant.
+
+        This test mirrors that pattern (resolve + canonicalize + resolve)
+        and asserts that no individual conf file is parsed more than once
+        across the whole sequence.
+        """
+        with uth.TempDirContextNoChange() as repo_root:
+            uth.create_temp_ct_conf(repo_root, defaultvariant="gcc.debug")
+            conf_d = os.path.join(repo_root, "ct.conf.d")
+            os.makedirs(conf_d)
+            with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+                fh.write("CC = gcc\n")
+            with open(os.path.join(conf_d, "debug.conf"), "w") as fh:
+                fh.write("append-CFLAGS = -g\n")
+
+            compiletools.configutils.clear_cache()
+
+            parse_counts: dict[str, int] = {}
+            real_parse = compiletools.configutils.CfgFileParser.parse
+
+            def counting_parse(self, stream):
+                path = getattr(stream, "name", "<unknown>")
+                parse_counts[path] = parse_counts.get(path, 0) + 1
+                return real_parse(self, stream)
+
+            kwargs: dict[str, object] = dict(
+                user_config_dir="/var",
+                system_config_dir="/var",
+                exedir=uth.cakedir(),
+                gitroot=repo_root,
+            )
+
+            with uth.DirectoryContext(repo_root):
+                original = compiletools.configutils.CfgFileParser.parse
+                compiletools.configutils.CfgFileParser.parse = counting_parse  # type: ignore[method-assign]
+                try:
+                    compiletools.configutils.resolve_variant(variant="gcc.debug", argv=[], **kwargs)  # type: ignore[arg-type]
+                    compiletools.configutils.canonicalize_variant_input("gcc.debug", **kwargs)  # type: ignore[arg-type]
+                    compiletools.configutils.resolve_variant(variant="gcc.debug", argv=[], **kwargs)  # type: ignore[arg-type]
+                finally:
+                    compiletools.configutils.CfgFileParser.parse = original  # type: ignore[method-assign]
+
+            over_parsed = {p: n for p, n in parse_counts.items() if n > 1}
+            assert not over_parsed, (
+                "Some conf files were parsed more than once within a single "
+                f"parseargs-shaped sequence: {over_parsed}. Ensure all callers "
+                "go through configutils._parse_conf_file_cached so repeated "
+                "parses within the same process are deduplicated."
+            )
 
     def teardown_method(self):
         uth.reset()

@@ -51,11 +51,16 @@ ct.conf defines the following variables:
 
 .. code-block:: ini
 
-    variant = gcc.debug
-    variant-canonical-order = blank, gcc, clang, icc, msvc, debug, release, releasewithdebinfo, asan, ubsan, tsan, msan, coverage, lto, pgo
+    variant = gcc.cxx26.debug
     exemarkers = [main(,main (,wxIMPLEMENT_APP,g_main_loop_new]
     testmarkers = unit_test.hpp
     max_file_read_size = 0
+
+The canonical token ordering used during variant canonicalization is the
+``_DEFAULT_VARIANT_CANONICAL_ORDER`` tuple in ``compiletools/configutils.py`` —
+that constant is the single source of truth. To override project-wide,
+set ``variant-canonical-order = <comma-separated tokens>`` in your
+project ``ct.conf``.
 
 VARIANT COMPOSITION
 ===================
@@ -88,8 +93,10 @@ level, and AddressSanitizer you ask for::
     ct-cake --variant=gcc mold cxx20 release asan   # whitespace-separated (also equivalent)
 
 All three forms canonicalize to ``gcc.cxx20.mold.release.asan`` (the
-canonical order is read from ``variant-canonical-order`` in ct.conf —
-see above). The canonical name appears in ``cas-objdir/<variant>/``,
+canonical order comes from ``_DEFAULT_VARIANT_CANONICAL_ORDER`` in
+``configutils.py``; a project can override it by setting
+``variant-canonical-order = ...`` in its ``ct.conf``). The canonical
+name appears in ``cas-objdir/<variant>/``,
 ``cas-pchdir/<variant>/``, ``compile_commands.<variant>.json``, and
 ``bin/<variant>/``, so two typings of the same set share caches and outputs.
 

@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import sys
@@ -15,6 +16,8 @@ import compiletools.git_utils
 import compiletools.utils
 import compiletools.wrappedos
 
+logger = logging.getLogger(__name__)
+
 # Variant tokens may be separated by '.', ',', or whitespace anywhere they appear:
 # in --variant on the CLI, in the `variant = ...` line of ct.conf, and in the
 # `extends = ...` directive inside an axis conf file. All three forms are
@@ -26,7 +29,7 @@ _VARIANT_SEP_RE = re.compile(r"[\s,.]+")
 # `variant-canonical-order = ...` in its ct.conf. Tokens NOT in this list are
 # appended to the end of a resolution in user-typed order, so a project axis
 # (e.g. `myproj`) can be tacked on without re-declaring the whole order.
-_DEFAULT_CANONICAL_ORDER = (
+_DEFAULT_VARIANT_CANONICAL_ORDER = (
     "blank",
     # toolchain
     "gcc",
@@ -127,6 +130,28 @@ def extract_value_from_argv(key, argv=None, default=None, verbose=0):
     return value
 
 
+@cache
+def _parse_conf_file_cached(path):
+    """Parse a conf file once per process and reuse the result.
+
+    The full parseargs flow walks the conf hierarchy several times per
+    invocation (extract_variant, resolve_variant, canonicalize_variant_input,
+    a second resolve_variant from _commonsubstitutions). Each pass would
+    otherwise re-open and re-parse the same files. Caching the parsed dict
+    keyed on absolute path collapses that to one open per file per process.
+
+    The configargparse parser returns a mutable dict; consumers in this
+    module read-only — DO NOT mutate the returned dict or the next caller
+    will see the changes. `clear_cache()` flushes this between tests.
+
+    Raises OSError on a read failure. Failures are NOT cached (functools.cache
+    only stores successful returns), so transient errors don't get pinned.
+    """
+    fileparser = CfgFileParser()
+    with open(path) as cfg:
+        return fileparser.parse(cfg)
+
+
 def extract_item_from_ct_conf(
     key,
     user_config_dir=None,
@@ -142,7 +167,6 @@ def extract_item_from_ct_conf(
     Walks the ct.conf hierarchy from highest to lowest priority and returns
     the first match (so a project ct.conf overrides the bundled one).
     """
-    fileparser = CfgFileParser()
     for cfgpath in reversed(
         get_existing_config_files(
             filename="ct.conf",
@@ -152,15 +176,14 @@ def extract_item_from_ct_conf(
             gitroot=gitroot,
         )
     ):
-        with open(cfgpath) as cfg:
-            items = fileparser.parse(cfg)
-            try:
-                value = items[key]
-                if verbose >= 2:
-                    print(" ".join([cfgpath, "contains", key, "=", str(value)]))
-                return value
-            except KeyError:
-                continue
+        items = _parse_conf_file_cached(cfgpath)
+        try:
+            value = items[key]
+            if verbose >= 2:
+                print(" ".join([cfgpath, "contains", key, "=", str(value)]))
+            return value
+        except KeyError:
+            continue
 
     return default
 
@@ -179,7 +202,6 @@ def extract_item_from_ct_conf_with_source(
     Used by the provenance renderer to attribute config decisions back to
     their source file.
     """
-    fileparser = CfgFileParser()
     for cfgpath in reversed(
         get_existing_config_files(
             filename="ct.conf",
@@ -189,12 +211,11 @@ def extract_item_from_ct_conf_with_source(
             gitroot=gitroot,
         )
     ):
-        with open(cfgpath) as cfg:
-            items = fileparser.parse(cfg)
-            if key in items:
-                if verbose and verbose >= 2:
-                    print(f"{cfgpath} contains {key} = {items[key]}")
-                return items[key], cfgpath
+        items = _parse_conf_file_cached(cfgpath)
+        if key in items:
+            if verbose and verbose >= 2:
+                print(f"{cfgpath} contains {key} = {items[key]}")
+            return items[key], cfgpath
     return None, None
 
 
@@ -253,7 +274,7 @@ def get_canonical_order(
         gitroot=gitroot,
     )
     if raw is None or source is None:
-        return _DEFAULT_CANONICAL_ORDER, "builtin"
+        return _DEFAULT_VARIANT_CANONICAL_ORDER, "builtin"
     return split_variant(str(raw)), source
 
 
@@ -456,6 +477,8 @@ def get_existing_config_files(filename="ct.conf", **kwargs):
 def clear_cache():
     """Clear LRU caches for testing"""
     default_config_directories.cache_clear()
+    _parse_conf_file_cached.cache_clear()
+    _extends_order_warnings_emitted.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -535,10 +558,8 @@ def _parse_extends_directive(conf_path, verbose=0):
     verbose>=1 so a silently-skipped permission-denied conf doesn't
     masquerade as "no inheritance configured".
     """
-    fileparser = CfgFileParser()
     try:
-        with open(conf_path) as cfg:
-            items = fileparser.parse(cfg)
+        items = _parse_conf_file_cached(conf_path)
     except OSError as exc:
         if verbose >= 1:
             print(f"warning: could not read {conf_path}: {exc}; treating as no `extends`")
@@ -551,6 +572,53 @@ def _parse_extends_directive(conf_path, verbose=0):
     return split_variant(str(raw))
 
 
+# Tracks conf paths we've already warned about so repeated resolve_variant
+# calls within the same process don't emit the same warning multiple times.
+# Cleared by clear_cache() to keep tests independent.
+_extends_order_warnings_emitted: set = set()
+
+
+def _check_extends_canonical_order(conf_path, extends, canonical_order):
+    """Emit a logger warning if ``extends`` parents are out of canonical order.
+
+    The resolver walks ``extends`` in declared order; configargparse layers
+    scalar keys last-writer-wins and accumulates ``append-*`` form in load
+    order. So ``extends = werror, gcc`` produces different flag layering
+    than the equivalent ``--variant=gcc,werror`` CLI form. This warning
+    surfaces the inconsistency at parseargs time, naming the file and
+    showing the fix.
+
+    Tokens not in canonical_order are skipped (the resolver itself surfaces
+    truly-unknown axes via "missing axis" errors elsewhere). Emitted via
+    ``logging.getLogger(__name__).warning(...)`` so users can suppress
+    per-module via ``logging.getLogger('compiletools.configutils').setLevel(logging.ERROR)``.
+    One warning per process per offending path — repeated resolve_variant
+    calls within one process don't repeat the message.
+    """
+    if not canonical_order or conf_path in _extends_order_warnings_emitted:
+        return
+    position = {tok: i for i, tok in enumerate(canonical_order)}
+    positions = [position.get(tok) for tok in extends]
+    if any(p is None for p in positions):
+        return
+    if positions != sorted(positions):  # type: ignore[type-var]
+        expected = sorted(extends, key=lambda t: position[t])
+        _extends_order_warnings_emitted.add(conf_path)
+        logger.warning(
+            "%s: `extends = ...` is not in canonical order.\n"
+            "  got:      extends = %s\n"
+            "  expected: extends = %s\n"
+            "  Out-of-order extends produces different flag layering than\n"
+            "  the equivalent --variant=%s CLI form\n"
+            "  (the resolver walks extends in declared order, configargparse\n"
+            "  layers in load order). Reorder for parity.",
+            conf_path,
+            ", ".join(extends),
+            ", ".join(expected),
+            ",".join(expected),
+        )
+
+
 def _find_axis_confs(name, **kwargs):
     """Return conf files for an axis in ascending priority order (low → high).
 
@@ -561,7 +629,7 @@ def _find_axis_confs(name, **kwargs):
     return list(get_existing_config_files(filename=f"{name}.conf", **kwargs))
 
 
-def _resolve_axis(name, search_kwargs, visited, on_path, _axis_cache):
+def _resolve_axis(name, search_kwargs, visited, on_path, _axis_cache, canonical_order=()):
     """DFS resolve one axis. Returns ordered list of AxisResolution.
 
     visited: set of axis names already emitted (for diamond dedup)
@@ -569,6 +637,9 @@ def _resolve_axis(name, search_kwargs, visited, on_path, _axis_cache):
         traversal order so cycle diagnostics show the actual path through
         the graph). Membership check is O(len(on_path)) but the stack is
         typically tiny (depth ~3).
+    canonical_order: when non-empty, validates ``extends = ...`` parents
+        against the canonical order via _check_extends_canonical_order
+        (warning only, never a hard fail).
 
     Cache semantics: an entry in _axis_cache is only populated AFTER the
     DFS for that name has completed without raising — so the cached path
@@ -590,16 +661,23 @@ def _resolve_axis(name, search_kwargs, visited, on_path, _axis_cache):
 
     # extends is read from the highest-priority conf that has it.
     extends = ()
+    extends_source = None
     for path in reversed(paths):
         e = _parse_extends_directive(path, verbose=search_kwargs.get("verbose", 0))
         if e:
             extends = e
+            extends_source = path
             break
+
+    if extends_source is not None and canonical_order:
+        _check_extends_canonical_order(extends_source, extends, canonical_order)
 
     on_path.append(name)
     out = []
     for parent in extends:
-        out.extend(_resolve_axis(parent, search_kwargs, visited, on_path, _axis_cache))
+        out.extend(
+            _resolve_axis(parent, search_kwargs, visited, on_path, _axis_cache, canonical_order=canonical_order)
+        )
     on_path.pop()
 
     axis = AxisResolution(name=name, conf_paths=tuple(paths), extends=extends)
@@ -691,6 +769,8 @@ def resolve_variant(
             composite_paths_tuple = tuple(composite_paths)
             composite_override = composite_paths[-1]
             composite_extends = _parse_extends_directive(composite_override)
+            if composite_extends:
+                _check_extends_canonical_order(composite_override, composite_extends, canonical_order)
 
     # --config=<path> takes highest priority (appended last). When the user
     # supplies one, the path itself is authoritative — we don't also require
@@ -740,7 +820,7 @@ def resolve_variant(
         # is also `myrelease`).
         if composite_override is not None and tok == canonical_name:
             continue
-        chain = _resolve_axis(tok, search_kwargs, visited, on_path, axis_cache)
+        chain = _resolve_axis(tok, search_kwargs, visited, on_path, axis_cache, canonical_order=canonical_order)
         for axis in chain:
             if not axis.conf_paths:
                 missing_axes.append(axis.name)
