@@ -97,6 +97,7 @@ def find_possible_variants(
         repoonly = args.repoonly
 
     confext = ""
+    removeconf = ".conf"
     if args:
         if args.configname:
             confext = ".conf"

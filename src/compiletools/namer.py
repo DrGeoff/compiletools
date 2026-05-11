@@ -324,6 +324,8 @@ class Namer:
     def staticlibrary_name(self, sourcefilename=None):
         if sourcefilename is None and self.args.static:
             sourcefilename = self.args.static[0]
+        if sourcefilename is None:
+            raise ValueError("staticlibrary_name requires sourcefilename or args.static")
         name = os.path.split(sourcefilename)[1]
         return "lib" + os.path.splitext(name)[0] + ".a"
 
@@ -344,6 +346,8 @@ class Namer:
     def dynamiclibrary_name(self, sourcefilename=None):
         if sourcefilename is None and self.args.dynamic:
             sourcefilename = self.args.dynamic[0]
+        if sourcefilename is None:
+            raise ValueError("dynamiclibrary_name requires sourcefilename or args.dynamic")
         name = os.path.split(sourcefilename)[1]
         return "lib" + os.path.splitext(name)[0] + ".so"
 

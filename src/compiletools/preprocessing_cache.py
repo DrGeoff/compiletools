@@ -552,6 +552,7 @@ def get_or_compute_preprocessing(
 
     content_hash = file_result.content_hash
     invariant = is_macro_invariant(file_result, input_macros)
+    cache_key: tuple = ()
 
     # Check appropriate cache
     if invariant:

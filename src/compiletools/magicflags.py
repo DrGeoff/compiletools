@@ -136,7 +136,19 @@ class MagicFlagsBase:
         # Store final converged MacroState objects by filename.
         # After _parse() runs, the MacroState carries effective compile flags
         # (global + per-file magic) so get_hash(include_core=True) captures everything.
-        self._final_macro_states = {}
+        self._final_macro_states: dict = {}
+
+        # Populated by subclasses; declared here for type checkers and to
+        # avoid AttributeError if _handle_readmacros runs before subclass init.
+        self._explicit_macro_files: set = set()
+
+    def parse(self, filename):
+        """Parse magic flags for the given file. Implemented by subclasses."""
+        raise NotImplementedError
+
+    def get_structured_data(self, filename):
+        """Return structured file-analysis data. Implemented by subclasses."""
+        raise NotImplementedError
 
     def _initialize_macro_state(self) -> MacroState:
         """Initialize MacroState with command-line and compiler macros as core.

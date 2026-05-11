@@ -67,6 +67,7 @@ def main(argv=None):
         verbose < 2: Catch exceptions, print simple message, return 1
         verbose >= 2: Re-raise exceptions with full traceback for debugging
     """
+    args = None
     try:
         # Create parser with standard compiletools configuration
         cap = compiletools.apptools.create_parser("Clean up stale locks in the object CAS", argv=argv)
@@ -119,7 +120,7 @@ def main(argv=None):
 
     except OSError as ioe:
         # Check if args was set (might fail before argument parsing)
-        verbose = getattr(args, "verbose", 0) if "args" in locals() else 0
+        verbose = getattr(args, "verbose", 0) if args is not None else 0
         if verbose < 2:
             print(f"Error: {ioe.strerror}: {ioe.filename}", file=sys.stderr)
             return 1
@@ -127,7 +128,7 @@ def main(argv=None):
             raise
     except Exception as err:
         # Check if args was set (might fail during argument parsing)
-        verbose = getattr(args, "verbose", 0) if "args" in locals() else 0
+        verbose = getattr(args, "verbose", 0) if args is not None else 0
         if verbose < 2:
             print(f"Error: {err}", file=sys.stderr)
             return 1

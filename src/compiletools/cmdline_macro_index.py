@@ -93,9 +93,10 @@ class CmdlineMacroIndex:
         cached = self._haystack_cache.get(content_hash, _MISSING)
         if cached is _MISSING:
             data = self._bytes_provider(content_hash)
-            cached = (data, sz.Str(data)) if data else None
-            self._haystack_cache[content_hash] = cached
-        return cached
+            entry: tuple[bytes, sz.Str] | None = (data, sz.Str(data)) if data else None
+            self._haystack_cache[content_hash] = entry
+            return entry
+        return cached  # type: ignore[return-value]
 
     def _scan(self, content_hash: str, macro_name: sz.Str) -> bool:
         haystack_pair = self._haystack(content_hash)

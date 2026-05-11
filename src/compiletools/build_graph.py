@@ -223,6 +223,8 @@ def render_shell_recipe(rule: BuildRule) -> str:
        respects this contract -- its bare-header argument
        (``vector``) has no shell-active characters.
     """
+    if rule.command is None:
+        raise ValueError(f"render_shell_recipe called on rule {rule.output!r} with no command")
     cmd_str = shlex.join(rule.command)
     if rule.success_marker:
         cmd_str += f" && touch {shlex.quote(rule.success_marker)}"

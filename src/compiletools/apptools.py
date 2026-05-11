@@ -43,7 +43,11 @@ if _rich_rst_available and sys.version_info >= (3, 9):
             )
 
         def __call__(self, parser, namespace, values, option_string=None):
-            if option_string in self.option_strings and not option_string.startswith("--no-"):
+            if (
+                option_string is not None
+                and option_string in self.option_strings
+                and not option_string.startswith("--no-")
+            ):
                 import inspect
 
                 import rich
@@ -1554,7 +1558,7 @@ def get_functional_cxx_compiler():
 
 
 # Expose the cache_clear method for tests
-get_functional_cxx_compiler.cache_clear = _get_functional_cxx_compiler_cached.cache_clear
+get_functional_cxx_compiler.cache_clear = _get_functional_cxx_compiler_cached.cache_clear  # type: ignore[attr-defined]
 
 
 def _test_compiler_functionality(compiler_name):
@@ -1595,6 +1599,7 @@ def _test_compiler_functionality(compiler_name):
             )
             test_cpp = f.name
 
+        obj_path = None
         try:
             # Try to compile with C++20
             with tempfile.NamedTemporaryFile(suffix=".o", delete=False) as obj_file:
@@ -1615,11 +1620,11 @@ def _test_compiler_functionality(compiler_name):
                 os.unlink(test_cpp)
             except OSError:
                 pass
-            try:
-                if "obj_path" in locals():
+            if obj_path is not None:
+                try:
                     os.unlink(obj_path)
-            except OSError:
-                pass
+                except OSError:
+                    pass
 
         return success
 

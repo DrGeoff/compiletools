@@ -477,6 +477,7 @@ def main(argv=None):
     compiletools.hunter.add_arguments(cap)
     MakefileBackend.add_arguments(cap)
 
+    args = None
     try:
         from compiletools.build_context import BuildContext
 
@@ -491,13 +492,15 @@ def main(argv=None):
         backend.generate(graph)
 
     except OSError as ioe:
-        if args.verbose < 2:
+        verbose = getattr(args, "verbose", 0) if args is not None else 0
+        if verbose < 2:
             print(f"Error processing {ioe.filename}: {ioe.strerror}")
             return 1
         else:
             raise
     except Exception as err:
-        if args.verbose < 2:
+        verbose = getattr(args, "verbose", 0) if args is not None else 0
+        if verbose < 2:
             print(err)
             return 1
         else:

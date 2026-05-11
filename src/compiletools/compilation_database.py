@@ -171,7 +171,7 @@ class CompilationDatabaseCreator:
             return extras
         return []
 
-    def _create_command_object(self, source_file: str) -> dict[str, Any]:
+    def _create_command_object(self, source_file: str) -> dict[str, Any] | None:
         """Create a single command object for the compilation database"""
 
         # Directory is always absolute (working directory)

@@ -80,6 +80,7 @@ def main(argv=None):
     Returns:
         int: Exit code (0 = success, 1 = failure)
     """
+    args = None
     try:
         cap = compiletools.apptools.create_parser("Trim stale entries from shared build caches", argv=argv)
 
@@ -160,14 +161,14 @@ def main(argv=None):
         return 1 if any_failed else 0
 
     except OSError as ioe:
-        verbose = getattr(args, "verbose", 0) if "args" in locals() else 0
+        verbose = getattr(args, "verbose", 0) if args is not None else 0
         if verbose < 2:
             print(f"Error: {ioe.strerror}: {ioe.filename}", file=sys.stderr)
             return 1
         else:
             raise
     except Exception as err:
-        verbose = getattr(args, "verbose", 0) if "args" in locals() else 0
+        verbose = getattr(args, "verbose", 0) if args is not None else 0
         if verbose < 2:
             print(f"Error: {err}", file=sys.stderr)
             return 1

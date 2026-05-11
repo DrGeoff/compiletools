@@ -222,7 +222,7 @@ def instance_cache(method):
             cache[args] = result
             return result
 
-    wrapper.cache_attr = cache_attr
+    wrapper.cache_attr = cache_attr  # type: ignore[attr-defined]
     return wrapper
 
 
@@ -769,7 +769,7 @@ def merge_ldflags_with_topo_sort(
     return deduped_non_l + [f"-l{name}" for name in sorted_libs]
 
 
-def _process_flag_source(source: Union[str, list[str], tuple[str, ...]]) -> list[str]:
+def _process_flag_source(source: Union[str, list[str], tuple[str, ...], None]) -> list[str]:
     """Process a single flag source into a list of individual flags."""
     if not source:
         return []
@@ -793,7 +793,9 @@ def _process_flag_source(source: Union[str, list[str], tuple[str, ...]]) -> list
     return [str(source)]
 
 
-def combine_and_deduplicate_compiler_flags(*flag_sources: Union[str, list[str], tuple[str, ...]]) -> list[str]:
+def combine_and_deduplicate_compiler_flags(
+    *flag_sources: Union[str, list[str], tuple[str, ...], None],
+) -> list[str]:
     """Combine multiple sources of compiler flags and deduplicate intelligently.
 
     Takes multiple flag sources (lists or strings) and:

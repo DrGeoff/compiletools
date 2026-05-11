@@ -186,7 +186,7 @@ class DirectHeaderDeps(HeaderDepsBase):
         # populates them when _core_macros is None.
         self._core_macros = None
         self._anchor_root: str = ""
-        self._includes = None
+        self._includes: list = []
 
         # Initialize includes and macros
         self._initialize_includes_and_macros({})
@@ -274,17 +274,17 @@ class DirectHeaderDeps(HeaderDepsBase):
         return self._search_project_includes(include)
 
     @instance_cache
-    def _process_impl(self, realpath, initial_macro_key):
+    def _process_impl(self, realpath, macro_cache_key):
         """Process file with macro state in cache key.
 
         Args:
             realpath: File to process
-            initial_macro_key: Frozenset cache key of initial macro state (part of cache key)
+            macro_cache_key: Frozenset cache key of initial macro state (part of cache key)
 
         Note: Assumes caller has already initialized macro state via process()
         """
         if self.args.verbose >= 9:
-            print(f"DirectHeaderDeps::_process_impl: {realpath} (macro_key={initial_macro_key})")
+            print(f"DirectHeaderDeps::_process_impl: {realpath} (macro_key={macro_cache_key})")
 
         results_order = []
         results_set = set()

@@ -7,6 +7,7 @@ This module provides filesystem type detection and policy decisions for:
 """
 
 import os
+import subprocess
 from functools import lru_cache
 from pathlib import Path
 
@@ -49,8 +50,6 @@ def get_filesystem_type(path: str) -> str:
 
     # Fallback: try stat command (for non-Linux Unix)
     try:
-        import subprocess
-
         result = subprocess.run(["stat", "-f", "-c", "%T", path], capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
             return result.stdout.strip()
