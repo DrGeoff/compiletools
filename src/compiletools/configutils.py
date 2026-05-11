@@ -435,7 +435,9 @@ def default_config_directories(
 def get_existing_config_files(filename="ct.conf", **kwargs):
     """Get list of existing config files in standard directories.
 
-    Returns paths in priority order: highest-priority first, lowest last.
+    Returns paths in low-to-high priority order (bundled first, cwd last) —
+    the order configargparse expects in ``default_config_files``, where
+    later entries override earlier ones.
     """
     if "current_dir" not in kwargs or kwargs["current_dir"] is None:
         kwargs["current_dir"] = os.getcwd()
