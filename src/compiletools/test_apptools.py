@@ -611,6 +611,57 @@ class TestAddArguments:
         assert args.prepend_ldflags == []
 
 
+class TestProjectVersionOptIn:
+    """--project-version / --project-version-cmd are opt-in: no flag
+    specified -> no cmdline -D injection. This keeps the cmdline -D
+    macro set clean for TUs that don't need the macro, so the byte-level
+    scope filter has no needle to scan for in unrelated headers."""
+
+    def _make_args(self, **kwargs):
+        cap = configargparse.ArgParser(default_config_files=[])
+        add_target_arguments_ex(cap)
+        argv = []
+        for key, value in kwargs.items():
+            argv.append(f"--{key}={value}")
+        args = cap.parse_args(argv)
+        args.CPPFLAGS = ""
+        args.CFLAGS = ""
+        args.CXXFLAGS = ""
+        args.verbose = 0
+        return args
+
+    def test_no_injection_when_neither_flag_set(self):
+        from compiletools.apptools import _set_project_version
+        args = self._make_args()
+        _set_project_version(args)
+        assert "-DCT_PROJECT_VERSION" not in args.CPPFLAGS
+        assert "-DCT_PROJECT_VERSION" not in args.CFLAGS
+        assert "-DCT_PROJECT_VERSION" not in args.CXXFLAGS
+
+    def test_explicit_version_injects(self):
+        from compiletools.apptools import _set_project_version
+        args = self._make_args(**{"project-version": "1.2.3"})
+        _set_project_version(args)
+        assert '-DCT_PROJECT_VERSION=\'"1.2.3"\'' in args.CPPFLAGS
+        assert '-DCT_PROJECT_VERSION=\'"1.2.3"\'' in args.CFLAGS
+        assert '-DCT_PROJECT_VERSION=\'"1.2.3"\'' in args.CXXFLAGS
+
+    def test_version_cmd_alone_injects(self):
+        from compiletools.apptools import _set_project_version
+        args = self._make_args(**{"project-version-cmd": "echo from-cmd-1.0"})
+        _set_project_version(args)
+        # First whitespace token of stdout is taken
+        assert '-DCT_PROJECT_VERSION=\'"from-cmd-1.0"\'' in args.CPPFLAGS
+
+    def test_explicit_version_takes_precedence_over_cmd(self):
+        from compiletools.apptools import _set_project_version
+        args = self._make_args(**{"project-version": "explicit-1.0",
+                                  "project-version-cmd": "echo from-cmd"})
+        _set_project_version(args)
+        assert '-DCT_PROJECT_VERSION=\'"explicit-1.0"\'' in args.CPPFLAGS
+        assert "from-cmd" not in args.CPPFLAGS
+
+
 class TestFilterPkgConfigCflagsExtended:
     def test_detached_I_flag(self):
         result = filter_pkg_config_cflags("-I /opt/include")

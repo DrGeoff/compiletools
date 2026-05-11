@@ -1838,17 +1838,25 @@ def _batch_pkg_config(packages: list[str], option: str) -> dict[str, str]:
 
 
 def _set_project_version(args):
-    """C/C++ source code can rely on the CT_PROJECT_VERSION macro being set.
-    If the user specified a projectversion then use that.
-    Otherwise execute projectversioncmd to determine projectversion.
-    In the completely unspecified case, use the zero version.
+    """Inject ``-DCT_PROJECT_VERSION="<value>"`` into CPPFLAGS/CFLAGS/CXXFLAGS,
+    but only if the user opted in.
+
+    Opt-in is any of:
+      * ``--project-version VALUE`` on CLI / ct.conf / env
+      * ``--project-version-cmd CMD`` on CLI / ct.conf / env
+
+    If neither is set, do nothing — no macro is injected. This keeps
+    cmdline ``-D`` cache-key noise off TUs that don't ask for it.
     """
-    # Only try to determine version if not already set
-    if not (hasattr(args, "projectversion") and args.projectversion):
+    projectversion = getattr(args, "projectversion", None)
+    projectversioncmd = getattr(args, "projectversioncmd", None)
+
+    if not projectversion and projectversioncmd:
         try:
-            args.projectversion = (
-                subprocess.check_output(args.projectversioncmd.split(), universal_newlines=True).strip("\n").split()[0]
+            projectversion = (
+                subprocess.check_output(projectversioncmd.split(), universal_newlines=True).strip("\n").split()[0]
             )
+            args.projectversion = projectversion
             if args.verbose >= 6:
                 print("Used projectversioncmd to set projectversion")
         except (subprocess.CalledProcessError, OSError) as err:
@@ -1856,7 +1864,7 @@ def _set_project_version(args):
                 " ".join(
                     [
                         "Could not use projectversioncmd =",
-                        args.projectversioncmd,
+                        projectversioncmd,
                         "to set projectversion.\n",
                     ]
                 )
@@ -1866,37 +1874,24 @@ def _set_project_version(args):
                 sys.exit(1)
             else:
                 raise
-        except AttributeError:
-            if args.verbose >= 6:
-                print(
-                    "Could not use projectversioncmd to set projectversion. "
-                    "Will use either existing projectversion or the zero version."
-                )
 
-    try:
-        if not args.projectversion:
-            args.projectversion = "-".join([os.path.basename(os.getcwd()), "0.0.0-0"])
-            if args.verbose >= 5:
-                print("Set projectversion to the zero version")
+    if not projectversion:
+        return
 
-        # Escape for C string literal (backslashes and double quotes)
-        version_escaped = args.projectversion.replace("\\", "\\\\").replace('"', '\\"')
+    version_escaped = projectversion.replace("\\", "\\\\").replace('"', '\\"')
 
-        if "-DCT_PROJECT_VERSION" not in args.CPPFLAGS:
-            args.CPPFLAGS += " -DCT_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
-        if "-DCT_PROJECT_VERSION" not in args.CFLAGS:
-            args.CFLAGS += " -DCT_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
-        if "-DCT_PROJECT_VERSION" not in args.CXXFLAGS:
-            args.CXXFLAGS += " -DCT_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
+    if "-DCT_PROJECT_VERSION" not in args.CPPFLAGS:
+        args.CPPFLAGS += " -DCT_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
+    if "-DCT_PROJECT_VERSION" not in args.CFLAGS:
+        args.CFLAGS += " -DCT_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
+    if "-DCT_PROJECT_VERSION" not in args.CXXFLAGS:
+        args.CXXFLAGS += " -DCT_PROJECT_VERSION=" + shlex.quote(f'"{version_escaped}"')
 
-        if args.verbose >= 6:
-            print("*FLAG variables have been modified with the project version:")
-            print("\tCPPFLAGS=" + args.CPPFLAGS)
-            print("\tCFLAGS=" + args.CFLAGS)
-            print("\tCXXFLAGS=" + args.CXXFLAGS)
-    except AttributeError:
-        if args.verbose >= 3:
-            print("No projectversion specified for the args.")
+    if args.verbose >= 6:
+        print("*FLAG variables have been modified with the project version:")
+        print("\tCPPFLAGS=" + args.CPPFLAGS)
+        print("\tCFLAGS=" + args.CFLAGS)
+        print("\tCXXFLAGS=" + args.CXXFLAGS)
 
 
 def _do_xxpend(args, name):

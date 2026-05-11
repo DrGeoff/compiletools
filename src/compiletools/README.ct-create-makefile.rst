@@ -80,10 +80,15 @@ OPTIONS
     FILES is a space-delimited list of absolute paths to changed files.
 
 --project-version VERSION
-    Set the project version string.
+    Opt in to ``-DCT_PROJECT_VERSION="<version>"`` injection into
+    CPPFLAGS/CFLAGS/CXXFLAGS. If neither this flag nor
+    ``--project-version-cmd`` is set (on CLI, in ct.conf, or via env),
+    no macro is injected.
 
 --project-version-cmd CMD
     Command to run to determine project version (e.g., "git describe").
+    Opts in to ``-DCT_PROJECT_VERSION`` injection the same way as
+    ``--project-version``.
 
 -v, --verbose
     Increase output verbosity. Use multiple times for more detail.
