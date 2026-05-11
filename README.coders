@@ -12,8 +12,11 @@ scripts/ct-venv-install-termux
 # cargo build (which OOM-kills the device). See INSTALL section 6 or
 # `scripts/ct-venv-install-termux --help` for the manual recipe and options.
 
-# Install pre-commit hooks (required for all contributors)
-pre-commit install
+# Install pre-commit hooks (required for all contributors). The project
+# standardises on `prek` (a Rust drop-in for `pre-commit`, ~10× faster
+# startup, single binary). prek is in [dev], so `uv pip install -e .[dev]`
+# already put it in your venv; this just wires .git/hooks/pre-commit to it.
+prek install
 
 #
 # Code Style
@@ -32,15 +35,21 @@ ruff check src/compiletools/
 # Auto-fix lint issues
 ruff check --fix src/compiletools/
 
-Ruff configuration is in pyproject.toml under [tool.ruff].
+# Type-check
+pyright src/compiletools/
+
+Ruff configuration is in pyproject.toml under [tool.ruff]. Pyright is
+configured under [tool.pyright] (venvPath = ".", venv = ".venv") so the
+pre-commit hook's isolated env still resolves worktree dependencies.
 
 #
 # Pre-commit Hooks
 #
-Pre-commit hooks run automatically on every commit. They enforce:
+Pre-commit hooks run automatically on every commit via prek. They enforce:
 
 - Code formatting (ruff format)
 - Linting (ruff check)
+- Type checking (pyright)
 - Trailing whitespace removal
 - YAML/TOML validation
 - Merge conflict detection
@@ -48,11 +57,16 @@ Pre-commit hooks run automatically on every commit. They enforce:
 
 To run all hooks against the entire codebase:
 
-pre-commit run --all-files
+prek run --all-files
 
 To skip hooks for a specific commit (not recommended):
 
 git commit --no-verify
+
+The hook config lives in .pre-commit-config.yaml. prek reuses that file
+verbatim, so a contributor who already has the reference `pre-commit`
+binary installed globally can substitute `pre-commit` for `prek` in any
+of the commands above and get identical behaviour.
 
 #
 # Running tests

@@ -123,11 +123,11 @@ PHASES
 6. **compiletools + dev/tui tooling.** ``uv pip install -e
    $REPO_ROOT[tui,dev]`` -- editable install plus ``bump-my-version``,
    ``pytest``, ``pytest-xdist``, ``pytest-cov``, ``pyright``,
-   ``pre-commit``, ``ruff``, and ``textual`` (the latter from the
+   ``prek``, ``ruff``, and ``textual`` (the latter from the
    ``[tui]`` extra, used by the timing TUI).
 
 7. **Verify.** Imports stringzilla, compiletools, and textual; runs
-   ``--version`` on ruff/pre-commit/pytest/pyright. Any failure aborts
+   ``--version`` on ruff/prek/pytest/pyright. Any failure aborts
    with a non-zero exit code.
 
 OPTIONS

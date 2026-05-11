@@ -66,12 +66,12 @@ PHASES
    ``stringzilla>=4.6.0`` with the four-flag ``CFLAGS`` workaround.
 
 5. **compiletools + dev tooling.** Editable install of compiletools, then
-   ``bump-my-version pytest pytest-xdist pytest-cov pyright pre-commit
+   ``bump-my-version pytest pytest-xdist pytest-cov pyright prek
    textual``. The ``[dev]`` extra is deliberately not used because it
    would pull in ruff and trigger the cargo OOM.
 
 6. **Verify.** Imports stringzilla, imports compiletools, and runs
-   ``--version`` on ruff/pre-commit/pytest/pyright. Any failure aborts
+   ``--version`` on ruff/prek/pytest/pyright. Any failure aborts
    with a non-zero exit code.
 
 OPTIONS

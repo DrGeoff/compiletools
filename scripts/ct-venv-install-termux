@@ -229,7 +229,7 @@ DEV_PKGS=(
     pytest-xdist
     pytest-cov
     pyright
-    pre-commit
+    prek
     textual
 )
 
@@ -260,7 +260,7 @@ verify() {
 verify "stringzilla import"   python -c 'import stringzilla; assert stringzilla.hash(b"abc") != 0'
 verify "compiletools import"  python -c 'import compiletools'
 verify "ruff on PATH"         ruff --version
-verify "pre-commit installed" pre-commit --version
+verify "prek installed"       prek --version
 verify "pytest installed"     pytest --version
 verify "pyright installed"    pyright --version
 
@@ -274,9 +274,9 @@ cat <<EOF
 ${C_GREEN}${C_BOLD}Termux dev install complete.${C_RESET}
 
   Activate the venv:    source $VENV_DIR/bin/activate
-  Install hooks:        pre-commit install
+  Install hooks:        prek install
   Run tests:            pytest -n auto
 
 Note: ruff lives on the system PATH (Termux pkg), not inside the venv.
-Pre-commit hooks and 'ruff check src/compiletools/' will find it normally.
+prek hooks and 'ruff check src/compiletools/' will find it normally.
 EOF

@@ -374,7 +374,7 @@ verify "stringzilla import"   python -c 'import stringzilla; assert stringzilla.
 verify "compiletools import"  python -c 'import compiletools'
 verify "textual import"       python -c 'import textual'
 verify "ruff installed"       ruff --version
-verify "pre-commit installed" pre-commit --version
+verify "prek installed"       prek --version
 verify "pytest installed"     pytest --version
 verify "pyright installed"    pyright --version
 
@@ -388,7 +388,7 @@ cat <<EOF
 ${C_GREEN}${C_BOLD}RHEL 8 dev install complete.${C_RESET}
 
   Activate the venv:    source $VENV_DIR/bin/activate
-  Install hooks:        pre-commit install
+  Install hooks:        prek install
   Run tests:            pytest -n auto
 
 Note: the modern-GCC environment ($MODERN_CC) was only needed to compile
