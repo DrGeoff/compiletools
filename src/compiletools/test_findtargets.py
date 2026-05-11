@@ -85,6 +85,9 @@ class TestFindTargetsModule:
             "version_dependent_api/test_main.cpp",
             "version_dependent_api/test_main_new.cpp",
             "pkg_config_header_deps/src/test.cpp",
+            "test_xml_output/test_stub_doctest.cpp",
+            "test_xml_output/test_stub_gtest.cpp",
+            "test_xml_output/test_unknown_framework.cpp",
         }
 
         expectedexes = set()
