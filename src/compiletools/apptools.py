@@ -456,6 +456,16 @@ def add_target_arguments_ex(cap):
         dest="projectversioncmd",
         help="Execute this command to determine the CT_PROJECT_VERSION macro",
     )
+    cap.add(
+        "--project-name",
+        dest="projectname",
+        help="Set the CT_PROJECT_NAME macro to this value",
+    )
+    cap.add(
+        "--project-name-cmd",
+        dest="projectnamecmd",
+        help="Execute this command to determine the CT_PROJECT_NAME macro",
+    )
 
 
 def unsupplied_replacement(variable, default_variable, verbose, variable_str):
@@ -1846,7 +1856,9 @@ def _set_project_version(args):
       * ``--project-version-cmd CMD`` on CLI / ct.conf / env
 
     If neither is set, do nothing — no macro is injected. This keeps
-    cmdline ``-D`` cache-key noise off TUs that don't ask for it.
+    cmdline ``-D`` cache-key noise off TUs that don't ask for it (see the
+    "Macro Scope Filter" section of README.ct-cake.rst for why a
+    cmdline ``-D`` macro is sticky once introduced).
     """
     projectversion = getattr(args, "projectversion", None)
     projectversioncmd = getattr(args, "projectversioncmd", None)
@@ -1889,6 +1901,67 @@ def _set_project_version(args):
 
     if args.verbose >= 6:
         print("*FLAG variables have been modified with the project version:")
+        print("\tCPPFLAGS=" + args.CPPFLAGS)
+        print("\tCFLAGS=" + args.CFLAGS)
+        print("\tCXXFLAGS=" + args.CXXFLAGS)
+
+
+def _set_project_name(args):
+    """Inject ``-DCT_PROJECT_NAME="<value>"`` into CPPFLAGS/CFLAGS/CXXFLAGS,
+    but only if the user opted in.
+
+    Opt-in is any of:
+      * ``--project-name VALUE`` on CLI / ct.conf / env
+      * ``--project-name-cmd CMD`` on CLI / ct.conf / env
+
+    If neither is set, do nothing — no macro is injected. Mirrors
+    _set_project_version. See the "Macro Scope Filter" section of
+    README.ct-cake.rst for why CT_PROJECT_NAME (like any cmdline ``-D``
+    macro) should only be turned on when actually needed: comments in
+    transitive headers that mention the macro by name will pull it
+    into every includer's per-TU cache key.
+    """
+    projectname = getattr(args, "projectname", None)
+    projectnamecmd = getattr(args, "projectnamecmd", None)
+
+    if not projectname and projectnamecmd:
+        try:
+            projectname = (
+                subprocess.check_output(projectnamecmd.split(), universal_newlines=True).strip("\n").split()[0]
+            )
+            args.projectname = projectname
+            if args.verbose >= 6:
+                print("Used projectnamecmd to set projectname")
+        except (subprocess.CalledProcessError, OSError) as err:
+            sys.stderr.write(
+                " ".join(
+                    [
+                        "Could not use projectnamecmd =",
+                        projectnamecmd,
+                        "to set projectname.\n",
+                    ]
+                )
+            )
+            if args.verbose <= 2:
+                sys.stderr.write(str(err) + "\n")
+                sys.exit(1)
+            else:
+                raise
+
+    if not projectname:
+        return
+
+    name_escaped = projectname.replace("\\", "\\\\").replace('"', '\\"')
+
+    if "-DCT_PROJECT_NAME" not in args.CPPFLAGS:
+        args.CPPFLAGS += " -DCT_PROJECT_NAME=" + shlex.quote(f'"{name_escaped}"')
+    if "-DCT_PROJECT_NAME" not in args.CFLAGS:
+        args.CFLAGS += " -DCT_PROJECT_NAME=" + shlex.quote(f'"{name_escaped}"')
+    if "-DCT_PROJECT_NAME" not in args.CXXFLAGS:
+        args.CXXFLAGS += " -DCT_PROJECT_NAME=" + shlex.quote(f'"{name_escaped}"')
+
+    if args.verbose >= 6:
+        print("*FLAG variables have been modified with the project name:")
         print("\tCPPFLAGS=" + args.CPPFLAGS)
         print("\tCFLAGS=" + args.CFLAGS)
         print("\tCXXFLAGS=" + args.CXXFLAGS)
@@ -2070,6 +2143,7 @@ def _commonsubstitutions(args):
     )
     _add_flags_from_pkg_config(args)
     _set_project_version(args)
+    _set_project_name(args)
     _unify_cpp_cxx_flags(args)
 
     try:

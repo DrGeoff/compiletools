@@ -90,6 +90,17 @@ OPTIONS
     Opts in to ``-DCT_PROJECT_VERSION`` injection the same way as
     ``--project-version``.
 
+--project-name NAME
+    Opt in to ``-DCT_PROJECT_NAME="<name>"`` injection into
+    CPPFLAGS/CFLAGS/CXXFLAGS. If neither this flag nor
+    ``--project-name-cmd`` is set (on CLI, in ct.conf, or via env), no
+    macro is injected.
+
+--project-name-cmd CMD
+    Command to run to determine project name. The first whitespace-separated
+    token of the command's stdout is used. Opts in to ``-DCT_PROJECT_NAME``
+    injection the same way as ``--project-name``.
+
 -v, --verbose
     Increase output verbosity. Use multiple times for more detail.
 
