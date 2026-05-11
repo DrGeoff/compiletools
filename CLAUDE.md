@@ -187,6 +187,7 @@ The `--use-mtime` boolean (registered in `apptools.add_cas_arguments`, called fr
 | `global_hash_registry.py` | Content-addressable file hashing |
 | `trim_cache.py` | Cache trimming utility for object, PCH, PCM, and linker-artefact (cas-exedir) directories with configurable retention; `trim_exedir` honours hard-link protection and re-stats `nlink` under the lock to close the scan-to-unlink TOCTOU |
 | `cache_report.py` | `ct-cache-report` entry point: read-only diagnostic that walks the four CAS layers (`cas-objdir` / `cas-pchdir` / `cas-pcmdir` / `cas-exedir`) and reports occupancy plus duplication caused by cache-key pollution; shares the on-disk format helpers (`_load_*_manifest`, `_OBJ_BUCKET_RE`, `_PCH/PCM_COMMAND_HASH_RE`, `_CAS_EXE_SUFFIXES`) with `trim_cache.py` so format drift is impossible |
+| `test_framework.py` | Single source of truth for the `--test-xml-dir` framework table: `KNOWN_FRAMEWORKS` (gtest / doctest / Catch2) and `detect_framework(transitive_headers, test_source)`. Detection trips on header-substring match against the test's transitive header set, computed by `Hunter.header_dependencies`. Multi-match raises `ValueError` (must disambiguate); no match returns `None` (test runs without XML, warning at verbose ≥ 1). Consumed by `BuildBackend._run_tests` to append the per-framework XML-emit argv after `exe_path`, with the rerun-skip predicate extended to "skip iff `.result` is current AND (XML file exists OR no framework detected)". |
 
 ### Configuration Files
 

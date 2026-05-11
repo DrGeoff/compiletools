@@ -679,6 +679,59 @@ or:
 
     ``$ ./build.sh --variant=release --append-CXXFLAGS=-DSPECIALMODE``
 
+JUnit XML Output
+================
+
+Pass ``--test-xml-dir=DIR`` to emit per-test JUnit XML reports for
+GitHub Actions and other CI systems::
+
+    ct-cake --auto --variant=gcc.debug --test-xml-dir=test-results
+
+Each test executable produces ``test-results/<variant>/<exe>.xml``.
+ct-cake automatically picks the right framework flag based on the
+headers each test transitively includes:
+
+==========  ===================================================
+Framework   XML argv appended after exe_path
+==========  ===================================================
+gtest       ``--gtest_output=xml:PATH``
+doctest     ``--reporters=junit --out=PATH``
+Catch2      ``--reporter junit --out PATH``
+==========  ===================================================
+
+Detection trips on whether ``gtest/gtest.h``, ``doctest/doctest.h``
+(or bare ``doctest.h``), or ``catch2/catch_all.hpp`` /
+``catch2/catch.hpp`` / ``catch.hpp`` appears in each test's
+transitive header set. A test that pulls in two framework headers
+at once is rejected with an error naming both — disambiguate by
+fixing the include paths. A test that matches none runs normally
+and produces no XML; a warning is emitted at ``--verbose=1``.
+
+The XML argv is appended *after* the exe_path so prefix tools like
+``valgrind --quiet`` (passed via ``--TESTPREFIX``) forward the XML
+flag to the child process correctly.
+
+A test whose ``.result`` marker is current but whose XML file has
+been deleted (someone ``rm -rf``'d the output dir, or asked for a
+different one) is re-run to regenerate the XML. ct-cake does NOT
+clean ``DIR/<variant>/`` before running, so stale XML from a removed
+test will linger; run ``rm -rf test-results/<variant>/`` for a clean
+slate. Most CI systems publish from a fresh checkout, so staleness
+doesn't accumulate there in practice.
+
+GitHub Actions usage::
+
+    - run: ct-cake --auto --variant=gcc.debug --test-xml-dir=test-results
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: junit
+        path: test-results/**/*.xml
+    - uses: EnricoMi/publish-unit-test-result-action@v2
+      if: always()
+      with:
+        files: test-results/**/*.xml
+
 References
 ==========
 

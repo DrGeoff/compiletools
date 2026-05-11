@@ -579,6 +579,17 @@ class TestAddArguments:
         args = cap.parse_args([])
         assert hasattr(args, "projectversion")
 
+    def test_add_target_arguments_ex_registers_test_xml_dir(self):
+        """The --test-xml-dir flag must be registered next to --TESTPREFIX
+        on every parser that calls add_target_arguments_ex(), so ct-cake
+        and ct-cmakelists both pick it up. Default is None (no XML)."""
+        cap = configargparse.ArgParser(default_config_files=[])
+        add_target_arguments_ex(cap)
+        args = cap.parse_args([])
+        assert args.test_xml_dir is None
+        args = cap.parse_args(["--test-xml-dir", "test-results"])
+        assert args.test_xml_dir == "test-results"
+
     def test_add_xxpend_argument(self):
         cap = configargparse.ArgParser(default_config_files=[])
         _add_xxpend_argument(cap, "cppflags")

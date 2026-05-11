@@ -1935,6 +1935,392 @@ class TestRunTests:
         assert os.path.exists(cas_exe_path + ".result"), "successful test run did not touch the CAS-side success marker"
 
 
+class TestRunTestsXmlOutput:
+    """Test ``--test-xml-dir`` integration in _run_tests().
+
+    Verifies the four behaviours called out in the design doc:
+      1. The right framework-specific XML argv is appended after exe_path.
+      2. A test whose .result is current but whose XML file was deleted
+         is re-run to regenerate the XML.
+      3. Adding --test-xml-dir on a subsequent invocation triggers a re-run
+         on tests whose .result is otherwise current.
+      4. A test with no detected framework runs but produces no XML and
+         does not error.
+    """
+
+    def _make_backend(self, tmp_path, headers, args=None):
+        """Construct a stub backend whose hunter reports the given
+        transitive header set for any test source it's asked about."""
+        StubClass = make_stub_backend_class()
+        args = args or make_backend_args(
+            tmp_path,
+            tests=["/src/test_foo.cpp"],
+            test_xml_dir=str(tmp_path / "junit"),
+            variant="gcc.debug",
+        )
+        hunter = MagicMock()
+        hunter.header_dependencies = MagicMock(return_value=headers)
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        return backend
+
+    @staticmethod
+    def _test_call_argv(mock_run, exe_basename):
+        """Pull the subprocess.run call that actually launched the test
+        out of mock_run.call_args_list, ignoring incidental calls (the
+        backend constructor calls ``find_git_root`` which shells out to
+        ``git rev-parse``).
+
+        Scans every token, not just argv[0], because a TESTPREFIX like
+        ``valgrind --quiet`` pushes the exe to argv[2+]."""
+        for call in mock_run.call_args_list:
+            argv = call.args[0]
+            if not argv:
+                continue
+            for token in argv:
+                if isinstance(token, str) and token.endswith("/" + exe_basename):
+                    return argv
+        raise AssertionError(
+            f"no subprocess.run call ran {exe_basename}; saw {[c.args[0] for c in mock_run.call_args_list]}"
+        )
+
+    @patch("subprocess.run")
+    @patch("compiletools.wrappedos.realpath", side_effect=lambda x: x)
+    def test_appends_gtest_xml_argv(self, mock_realpath, mock_run, tmp_path):
+        """gtest gets a single ``--gtest_output=xml:PATH`` token after
+        exe_path. PATH is ``<test-xml-dir>/<variant>/<exe>.xml`` and the
+        variant subdir is created lazily."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        backend = self._make_backend(
+            tmp_path,
+            headers=["/usr/include/iostream", "third_party/googletest/include/gtest/gtest.h"],
+        )
+
+        backend._run_tests()
+
+        argv = self._test_call_argv(mock_run, "test_foo")
+        expected_xml = str(tmp_path / "junit" / "gcc.debug" / "test_foo.xml")
+        assert argv == [f"{tmp_path}/bin/test_foo", f"--gtest_output=xml:{expected_xml}"]
+        assert (tmp_path / "junit" / "gcc.debug").is_dir(), (
+            "variant subdir must be pre-created so parallel workers don't race"
+        )
+
+    @patch("subprocess.run")
+    @patch("compiletools.wrappedos.realpath", side_effect=lambda x: x)
+    def test_appends_doctest_xml_argv(self, mock_realpath, mock_run, tmp_path):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        backend = self._make_backend(
+            tmp_path,
+            headers=["vendor/doctest.h"],
+        )
+
+        backend._run_tests()
+
+        argv = self._test_call_argv(mock_run, "test_foo")
+        expected_xml = str(tmp_path / "junit" / "gcc.debug" / "test_foo.xml")
+        assert argv == [
+            f"{tmp_path}/bin/test_foo",
+            "--reporters=junit",
+            f"--out={expected_xml}",
+        ]
+
+    @patch("subprocess.run")
+    @patch("compiletools.wrappedos.realpath", side_effect=lambda x: x)
+    def test_appends_catch2_xml_argv_after_testprefix(self, mock_realpath, mock_run, tmp_path):
+        """Catch2's argv is four tokens (``--reporter junit --out PATH``).
+        With TESTPREFIX set, the order must be:
+        ``<prefix tokens> <exe> <framework xml argv>`` so prefixes like
+        valgrind that forward trailing argv to the child get the XML
+        flag onto the test, not onto themselves."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        args = make_backend_args(
+            tmp_path,
+            tests=["/src/test_foo.cpp"],
+            test_xml_dir=str(tmp_path / "junit"),
+            variant="gcc.debug",
+            TESTPREFIX="valgrind --quiet",
+        )
+        backend = self._make_backend(
+            tmp_path,
+            headers=["/usr/include/catch2/catch_all.hpp"],
+            args=args,
+        )
+
+        backend._run_tests()
+
+        argv = self._test_call_argv(mock_run, "test_foo")
+        expected_xml = str(tmp_path / "junit" / "gcc.debug" / "test_foo.xml")
+        assert argv == [
+            "valgrind",
+            "--quiet",
+            f"{tmp_path}/bin/test_foo",
+            "--reporter",
+            "junit",
+            "--out",
+            expected_xml,
+        ]
+
+    @patch("subprocess.run")
+    @patch("compiletools.wrappedos.realpath", side_effect=lambda x: x)
+    def test_unknown_framework_runs_test_without_xml_argv(self, mock_realpath, mock_run, tmp_path, capsys):
+        """A test whose transitive headers contain none of the recognised
+        framework headers is run normally (no XML argv appended) and a
+        warning is emitted at verbose >= 1. No XML file is produced."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        args = make_backend_args(
+            tmp_path,
+            tests=["/src/test_foo.cpp"],
+            test_xml_dir=str(tmp_path / "junit"),
+            variant="gcc.debug",
+            verbose=1,
+        )
+        backend = self._make_backend(
+            tmp_path,
+            headers=["/usr/include/string.h", "vendor/myhelper.h"],
+            args=args,
+        )
+
+        backend._run_tests()
+
+        argv = self._test_call_argv(mock_run, "test_foo")
+        assert argv == [f"{tmp_path}/bin/test_foo"], "unknown framework must not append any XML argv"
+        err = capsys.readouterr().err
+        assert "no known unit-test framework detected" in err
+        assert "/src/test_foo.cpp" in err
+
+    @patch("subprocess.run")
+    @patch("compiletools.wrappedos.realpath", side_effect=lambda x: x)
+    def test_multi_framework_match_raises(self, mock_realpath, mock_run, tmp_path):
+        """A test pulling in two framework headers must hard-error rather
+        than silently picking one (which would lose data)."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        backend = self._make_backend(
+            tmp_path,
+            headers=[
+                "/inc/gtest/gtest.h",
+                "/inc/doctest/doctest.h",
+            ],
+        )
+
+        with pytest.raises(ValueError, match="multiple test frameworks"):
+            backend._run_tests()
+
+    @patch("subprocess.run")
+    @patch("compiletools.wrappedos.realpath", side_effect=lambda x: x)
+    def test_skips_when_result_current_and_xml_exists(self, mock_realpath, mock_run, tmp_path):
+        """The classical mtime skip still applies when both the .result
+        marker is current AND the expected XML file is present."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        backend = self._make_backend(
+            tmp_path,
+            headers=["/inc/gtest/gtest.h"],
+        )
+        # Create a fake exe with .result newer than it, plus the XML.
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        exe = bin_dir / "test_foo"
+        exe.write_text("#!/bin/sh\nexit 0\n")
+        exe.chmod(0o755)
+        result = bin_dir / "test_foo.result"
+        result.write_text("ok")
+        # Bump result mtime above exe mtime to simulate "current"
+        os.utime(result, (os.path.getmtime(exe) + 10, os.path.getmtime(exe) + 10))
+        xml_dir = tmp_path / "junit" / "gcc.debug"
+        xml_dir.mkdir(parents=True)
+        (xml_dir / "test_foo.xml").write_text("<testsuite/>")
+
+        backend._run_tests()
+
+        # No subprocess.run call ran the test exe.
+        test_calls = [
+            c
+            for c in mock_run.call_args_list
+            if c.args and c.args[0] and isinstance(c.args[0][0], str) and c.args[0][0].endswith("test_foo")
+        ]
+        assert test_calls == [], "test must be skipped when .result and XML are both current"
+
+    @patch("subprocess.run")
+    @patch("compiletools.wrappedos.realpath", side_effect=lambda x: x)
+    def test_reruns_when_result_current_but_xml_missing(self, mock_realpath, mock_run, tmp_path):
+        """When the .result marker is current but the XML file was
+        deleted (someone rm-rf'd the XML dir, or asked for a different
+        DIR), the test must re-run to regenerate the XML."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        backend = self._make_backend(
+            tmp_path,
+            headers=["/inc/gtest/gtest.h"],
+        )
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        exe = bin_dir / "test_foo"
+        exe.write_text("#!/bin/sh\nexit 0\n")
+        exe.chmod(0o755)
+        result = bin_dir / "test_foo.result"
+        result.write_text("ok")
+        os.utime(result, (os.path.getmtime(exe) + 10, os.path.getmtime(exe) + 10))
+        # Note: deliberately do NOT create the XML file.
+
+        backend._run_tests()
+
+        argv = TestRunTestsXmlOutput._test_call_argv(mock_run, "test_foo")
+        assert "--gtest_output=xml:" in argv[-1], f"missing XML must trigger re-run; got argv={argv}"
+
+    @patch("subprocess.run")
+    @patch("compiletools.wrappedos.realpath", side_effect=lambda x: x)
+    def test_unknown_framework_skips_normally_when_result_current(self, mock_realpath, mock_run, tmp_path):
+        """A test with no detected framework keeps the legacy skip rule:
+        if .result is current it is NOT re-run, even though no XML file
+        exists (one would never be produced). Otherwise such tests would
+        re-run forever."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        backend = self._make_backend(
+            tmp_path,
+            headers=["/usr/include/string.h"],  # no framework
+        )
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        exe = bin_dir / "test_foo"
+        exe.write_text("#!/bin/sh\nexit 0\n")
+        exe.chmod(0o755)
+        result = bin_dir / "test_foo.result"
+        result.write_text("ok")
+        os.utime(result, (os.path.getmtime(exe) + 10, os.path.getmtime(exe) + 10))
+
+        backend._run_tests()
+
+        test_calls = [
+            c
+            for c in mock_run.call_args_list
+            if c.args and c.args[0] and isinstance(c.args[0][0], str) and c.args[0][0].endswith("test_foo")
+        ]
+        assert test_calls == [], "unknown-framework test must keep legacy skip behaviour, not loop on missing XML"
+
+    @patch("subprocess.run")
+    @patch("compiletools.wrappedos.realpath", side_effect=lambda x: x)
+    def test_no_xml_dir_means_no_detection_and_no_warning(self, mock_realpath, mock_run, tmp_path, capsys):
+        """When --test-xml-dir is unset, behaviour must be byte-identical
+        to today: no detection runs (so an unknown-framework test produces
+        no warning), no XML argv is appended, no XML directory is created."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        args = make_backend_args(
+            tmp_path,
+            tests=["/src/test_foo.cpp"],
+            verbose=2,
+            # test_xml_dir intentionally absent
+        )
+        backend = self._make_backend(
+            tmp_path,
+            headers=["/usr/include/string.h"],
+            args=args,
+        )
+
+        backend._run_tests()
+
+        argv = TestRunTestsXmlOutput._test_call_argv(mock_run, "test_foo")
+        assert argv == [f"{tmp_path}/bin/test_foo"]
+        err = capsys.readouterr().err
+        assert "no known unit-test framework" not in err
+
+    @patch("subprocess.run")
+    @patch("compiletools.wrappedos.realpath", side_effect=lambda x: x)
+    def test_mixed_frameworks_in_same_build_each_get_own_argv(
+        self, mock_realpath, mock_run, tmp_path
+    ):
+        """Two tests in the same build, fileA using gtest and fileB using
+        Catch2, must each receive their own framework's XML argv. This
+        pins the per-exe cache so a future refactor can't collapse it
+        into a build-wide single-framework lookup."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        # Different header sets per test source -- gtest vs Catch2.
+        headers_per_source = {
+            "/src/test_alpha.cpp": ["/usr/include/gtest/gtest.h"],
+            "/src/test_beta.cpp": ["/usr/include/catch2/catch_all.hpp"],
+        }
+
+        args = make_backend_args(
+            tmp_path,
+            tests=list(headers_per_source.keys()),
+            test_xml_dir=str(tmp_path / "junit"),
+            variant="gcc.debug",
+        )
+        StubClass = make_stub_backend_class()
+        hunter = MagicMock()
+        hunter.header_dependencies = MagicMock(
+            side_effect=lambda src: headers_per_source[src]
+        )
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+
+        backend._run_tests()
+
+        alpha_argv = TestRunTestsXmlOutput._test_call_argv(mock_run, "test_alpha")
+        beta_argv = TestRunTestsXmlOutput._test_call_argv(mock_run, "test_beta")
+        alpha_xml = str(tmp_path / "junit" / "gcc.debug" / "test_alpha.xml")
+        beta_xml = str(tmp_path / "junit" / "gcc.debug" / "test_beta.xml")
+
+        assert alpha_argv == [
+            f"{tmp_path}/bin/test_alpha",
+            f"--gtest_output=xml:{alpha_xml}",
+        ], "test_alpha (gtest) must get the gtest single-token argv"
+
+        assert beta_argv == [
+            f"{tmp_path}/bin/test_beta",
+            "--reporter",
+            "junit",
+            "--out",
+            beta_xml,
+        ], "test_beta (Catch2) must get Catch2's four-token argv, not gtest's"
+
+    @patch("subprocess.run")
+    @patch("compiletools.wrappedos.realpath", side_effect=lambda x: x)
+    def test_xml_dir_set_after_initial_run_triggers_rerun(self, mock_realpath, mock_run, tmp_path):
+        """End-to-end of two consecutive _run_tests invocations:
+        the first WITHOUT --test-xml-dir creates the .result marker, the
+        second WITH --test-xml-dir must re-run because no XML file
+        exists yet."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        # First invocation: no --test-xml-dir. Test runs, .result created.
+        args1 = make_backend_args(
+            tmp_path,
+            tests=["/src/test_foo.cpp"],
+        )
+        backend1 = self._make_backend(
+            tmp_path,
+            headers=["/inc/gtest/gtest.h"],
+            args=args1,
+        )
+        # Pre-create exe so the .result write later is meaningful.
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        exe = bin_dir / "test_foo"
+        exe.write_text("#!/bin/sh\nexit 0\n")
+        exe.chmod(0o755)
+        backend1._run_tests()
+        assert (bin_dir / "test_foo.result").exists()
+
+        # Second invocation: --test-xml-dir added. Must re-run.
+        mock_run.reset_mock()
+        args2 = make_backend_args(
+            tmp_path,
+            tests=["/src/test_foo.cpp"],
+            test_xml_dir=str(tmp_path / "junit"),
+            variant="gcc.debug",
+        )
+        backend2 = self._make_backend(
+            tmp_path,
+            headers=["/inc/gtest/gtest.h"],
+            args=args2,
+        )
+        backend2._run_tests()
+
+        argv = TestRunTestsXmlOutput._test_call_argv(mock_run, "test_foo")
+        assert "--gtest_output=xml:" in argv[-1], (
+            f"adding --test-xml-dir must trigger re-run to populate XML; got argv={argv}"
+        )
+
+
 class TestExtractLinkopts:
     """extract_linkopts must normalise paths before stripping object files."""
 
