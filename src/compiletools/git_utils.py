@@ -23,15 +23,26 @@ def _find_git_root(directory):
     """Internal function to find the git root but cache it against the given directory"""
     # Define the git root of a project that isn't under version control to be the directory
     gitroot = directory
+    git_succeeded = False
     try:
         # Use cwd parameter instead of os.chdir() to avoid concurrent access issues
-        gitroot = subprocess.check_output(
+        toplevel = subprocess.check_output(
             ["git", "rev-parse", "--show-toplevel"],
             stderr=subprocess.STDOUT,
             universal_newlines=True,
             cwd=directory,  # Run git command from the specified directory
         ).strip("\n")
+        # An empty toplevel (rare git edge cases, e.g. some bare-repo / GIT_DIR
+        # configurations) would silently propagate as "" and break callers that
+        # use the return value as a path (subprocess cwd, os.path.join, …).
+        # Treat it the same as a CalledProcessError so the fallback walker runs.
+        if toplevel:
+            gitroot = toplevel
+            git_succeeded = True
     except (subprocess.CalledProcessError, OSError):
+        pass
+
+    if not git_succeeded:
         # A CalledProcessError exception means we aren't in a real git repository.
         # An OSError probably means git isn't installed on this machine.
         # But are we in a fake git repository? (i.e., there exists a dummy .git
