@@ -61,6 +61,77 @@ def _setup_backend_for_source(backend_name, tmp_path, src_file="helloworld_cpp.c
     return backend, graph, args
 
 
+def _run_backend_build(
+    backend,
+    backend_name: str,
+    graph,
+    effective_tmp,
+    *,
+    monkeypatch,
+    capfd,
+    timeout: int = 30,
+) -> None:
+    """Generate the native build file and execute the build for *backend*.
+
+    Handles per-backend scaffolding (BUILD.bazel + MODULE.bazel for bazel,
+    chdir for cmake/bazel, raw subprocess for make/ninja). Translates a
+    bazel toolchain-env failure into pytest.skip via skip_if_bazel_env_error.
+    """
+    effective_tmp = str(effective_tmp)
+    if backend_name in ("shake", "slurm"):
+        backend.generate(graph)
+        backend.execute("build")
+        return
+    if backend_name == "cmake":
+        with open(os.path.join(effective_tmp, "CMakeLists.txt"), "w") as f:
+            backend.generate(graph, output=f)
+        monkeypatch.chdir(effective_tmp)
+        backend.execute("build")
+        return
+    if backend_name == "bazel":
+        with open(os.path.join(effective_tmp, "BUILD.bazel"), "w") as f:
+            backend.generate(graph, output=f)
+        with open(os.path.join(effective_tmp, "MODULE.bazel"), "w") as f:
+            f.write('module(name = "compiletools_test")\n')
+            f.write('bazel_dep(name = "rules_cc", version = "0.1.5")\n')
+        monkeypatch.chdir(effective_tmp)
+        try:
+            backend.execute("build")
+        except subprocess.CalledProcessError:
+            captured = capfd.readouterr()
+            uth.skip_if_bazel_env_error(captured.err)
+            raise
+        return
+    build_file = os.path.join(effective_tmp, type(backend).build_filename())
+    with open(build_file, "w") as f:
+        backend.generate(graph, output=f)
+    if backend_name == "make":
+        cmd = ["make", "-s", "-j1", "-f", build_file, "build"]
+    elif backend_name == "ninja":
+        cmd = ["ninja", "-f", build_file, "build"]
+    else:
+        pytest.skip(f"Don't know how to invoke {backend_name}")
+    result = subprocess.run(cmd, cwd=effective_tmp, capture_output=True, text=True, timeout=timeout)
+    assert result.returncode == 0, f"{backend_name} build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+
+
+def _find_built_executable(search_root, exe_name: str, *, exact: bool = False) -> list[str]:
+    """Walk *search_root* and return executable paths matching *exe_name*.
+
+    When *exact* is True, basename must equal *exe_name*; otherwise *exe_name*
+    just has to be a substring of the basename.
+    """
+    matches: list[str] = []
+    for dirpath, _dirs, files in os.walk(str(search_root)):
+        for f in files:
+            if (exact and f != exe_name) or (not exact and exe_name not in f):
+                continue
+            full = os.path.join(dirpath, f)
+            if compiletools.utils.is_executable(full):
+                matches.append(full)
+    return matches
+
+
 class TestBackendBuildApplication(BaseCompileToolsTestCase):
     """Build a real application with each available backend.
 
@@ -88,112 +159,19 @@ class TestBackendBuildApplication(BaseCompileToolsTestCase):
             assert any(r.output == "build" for r in phony_rules), f"{backend_name}: expected 'build' phony"
             assert any(r.output == "all" for r in phony_rules), f"{backend_name}: expected 'all' phony"
 
-            # Generate and execute the build
             # Note: do NOT pre-create objdir here — the build system must
             # handle it via the mkdir rule in the BuildGraph.
             objdir = args.cas_objdir
             bindir = args.bindir
             os.makedirs(bindir, exist_ok=True)
 
-            if backend_name in ("shake", "slurm"):
-                # Self-executing backends — no external build file needed
-                backend.generate(graph)
-                backend.execute("build")
-            elif backend_name == "cmake":
-                # CMake needs CMakeLists.txt in the source directory
-                build_file = os.path.join(str(tmp_path), "CMakeLists.txt")
-                with open(build_file, "w") as f:
-                    backend.generate(graph, output=f)
-                assert os.path.exists(build_file), f"{backend_name}: CMakeLists.txt not created"
+            _run_backend_build(backend, backend_name, graph, effective_tmp, monkeypatch=monkeypatch, capfd=capfd)
 
-                cmake_build_dir = os.path.join(str(tmp_path), "cmake-build")
-                os.makedirs(cmake_build_dir, exist_ok=True)
-
-                # Configure
-                result = subprocess.run(
-                    ["cmake", "-S", str(tmp_path), "-B", cmake_build_dir],
-                    cwd=str(tmp_path),
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                assert result.returncode == 0, (
-                    f"cmake configure failed (rc={result.returncode}):\n"
-                    f"stdout: {result.stdout}\nstderr: {result.stderr}"
-                )
-
-                # Build
-                result = subprocess.run(
-                    ["cmake", "--build", cmake_build_dir],
-                    cwd=str(tmp_path),
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                assert result.returncode == 0, (
-                    f"cmake build failed (rc={result.returncode}):\nstdout: {result.stdout}\nstderr: {result.stderr}"
-                )
-
-                # Copy executable to bindir for verification
-                for dirpath, _dirs, files in os.walk(cmake_build_dir):
-                    for fname in files:
-                        full = os.path.join(dirpath, fname)
-                        if os.access(full, os.X_OK) and not fname.endswith(".cmake"):
-                            shutil.copy2(full, os.path.join(bindir, fname))
-
-            elif backend_name == "bazel":
-                # Bazel needs BUILD.bazel + WORKSPACE in the source directory
-                build_file = os.path.join(str(tmp_path), "BUILD.bazel")
-                with open(build_file, "w") as f:
-                    backend.generate(graph, output=f)
-                workspace_file = os.path.join(str(tmp_path), "WORKSPACE")
-                with open(workspace_file, "w") as f:
-                    f.write("# WORKSPACE generated by compiletools\n")
-                module_file = os.path.join(str(tmp_path), "MODULE.bazel")
-                with open(module_file, "w") as f:
-                    f.write('module(name = "compiletools_test")\n')
-                    f.write('bazel_dep(name = "rules_cc", version = "0.1.1")\n')
-                assert os.path.exists(build_file), f"{backend_name}: BUILD.bazel not created"
-
-                monkeypatch.chdir(str(tmp_path))
-                try:
-                    backend.execute("build")
-                except subprocess.CalledProcessError:
-                    captured = capfd.readouterr()
-                    uth.skip_if_bazel_env_error(captured.err)
-                    raise
-            else:
-                build_file = os.path.join(str(tmp_path), type(backend).build_filename())
-                with open(build_file, "w") as f:
-                    backend.generate(graph, output=f)
-
-                assert os.path.exists(build_file), f"{backend_name}: build file not created"
-
-                if backend_name == "make":
-                    cmd = ["make", "-s", "-j1", "-f", build_file, "build"]
-                elif backend_name == "ninja":
-                    cmd = ["ninja", "-f", build_file, "build"]
-                else:
-                    pytest.skip(f"Don't know how to invoke {backend_name}")
-
-                result = subprocess.run(cmd, cwd=str(tmp_path), capture_output=True, text=True, timeout=30)
-                assert result.returncode == 0, (
-                    f"{backend_name} build failed (rc={result.returncode}):\n"
-                    f"stdout: {result.stdout}\nstderr: {result.stderr}"
-                )
-
-            # Verify an executable was produced
             src_file = "helloworld_cpp.cpp"
-            exe_name = os.path.splitext(src_file)[0]  # "helloworld_cpp"
+            exe_name = os.path.splitext(src_file)[0]
             exe_path = os.path.join(bindir, exe_name)
             if not os.path.exists(exe_path):
-                # Search for it
-                candidates = []
-                for dirpath, _dirs, files in os.walk(str(effective_tmp)):
-                    for f in files:
-                        full = os.path.join(dirpath, f)
-                        if compiletools.utils.is_executable(full) and exe_name in f:
-                            candidates.append(full)
+                candidates = _find_built_executable(effective_tmp, exe_name)
                 assert candidates, (
                     f"{backend_name}: no executable '{exe_name}' found.\n"
                     f"Files in bindir: {list(os.listdir(bindir)) if os.path.isdir(bindir) else 'N/A'}\n"
@@ -289,69 +267,12 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
             ]
             assert pch_i_indices, f"{backend_name}: no -I points to pchdir hash dir; cmd={source_cmd}"
 
-            # Generate and execute the build
             os.makedirs(bindir, exist_ok=True)
+            _run_backend_build(backend, backend_name, graph, effective_tmp, monkeypatch=monkeypatch, capfd=capfd)
 
-            if backend_name in ("shake", "slurm"):
-                backend.generate(graph)
-                backend.execute("build")
-            elif backend_name == "cmake":
-                build_file = os.path.join(str(effective_tmp), "CMakeLists.txt")
-                with open(build_file, "w") as f:
-                    backend.generate(graph, output=f)
-                # Use backend.execute() rather than direct cmake invocation
-                # so the prebuild step (_prebuild_aux_artefacts) runs --
-                # without it, the .gch is never produced because cmake's
-                # add_executable() doesn't model the PCH rule.
-                monkeypatch.chdir(str(effective_tmp))
-                backend.execute("build")
-            elif backend_name == "bazel":
-                build_file = os.path.join(str(effective_tmp), "BUILD.bazel")
-                with open(build_file, "w") as f:
-                    backend.generate(graph, output=f)
-                with open(os.path.join(str(effective_tmp), "WORKSPACE"), "w") as f:
-                    f.write("# WORKSPACE generated by compiletools\n")
-                with open(os.path.join(str(effective_tmp), "MODULE.bazel"), "w") as f:
-                    f.write('module(name = "compiletools_test")\n')
-                    f.write('bazel_dep(name = "rules_cc", version = "0.1.1")\n')
-                monkeypatch.chdir(str(effective_tmp))
-                try:
-                    backend.execute("build")
-                except subprocess.CalledProcessError:
-                    captured = capfd.readouterr()
-                    uth.skip_if_bazel_env_error(captured.err)
-                    raise
-            else:
-                build_file = os.path.join(str(effective_tmp), type(backend).build_filename())
-                with open(build_file, "w") as f:
-                    backend.generate(graph, output=f)
-                if backend_name == "make":
-                    cmd = ["make", "-s", "-j1", "-f", build_file, "build"]
-                elif backend_name == "ninja":
-                    cmd = ["ninja", "-f", build_file, "build"]
-                else:
-                    pytest.skip(f"Don't know how to invoke {backend_name}")
-                result = subprocess.run(
-                    cmd,
-                    cwd=str(effective_tmp),
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                assert result.returncode == 0, (
-                    f"{backend_name} build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
-                )
-
-            # Verify an executable was produced and runs correctly
-            exe_name = "pch_user"
-            candidates = []
-            for dirpath, _dirs, files in os.walk(str(effective_tmp)):
-                for f in files:
-                    full = os.path.join(dirpath, f)
-                    if compiletools.utils.is_executable(full) and exe_name in f:
-                        candidates.append(full)
+            candidates = _find_built_executable(effective_tmp, "pch_user")
             assert candidates, (
-                f"{backend_name}: no executable '{exe_name}' found.\n"
+                f"{backend_name}: no executable 'pch_user' found.\n"
                 f"Files in bindir: {list(os.listdir(bindir)) if os.path.isdir(bindir) else 'N/A'}\n"
                 f"Files in objdir: {list(os.listdir(objdir)) if os.path.isdir(objdir) else 'N/A'}"
             )
@@ -483,70 +404,22 @@ class TestBackendBuildHeaderUnits(BaseCompileToolsTestCase):
                 )
 
                 os.makedirs(bindir, exist_ok=True)
+                _run_backend_build(
+                    backend, backend_name, graph, effective_tmp, monkeypatch=monkeypatch, capfd=capfd, timeout=60
+                )
 
-                if backend_name in ("shake", "slurm"):
-                    backend.generate(graph)
-                    backend.execute("build")
-                elif backend_name == "cmake":
-                    build_file = os.path.join(str(effective_tmp), "CMakeLists.txt")
-                    with open(build_file, "w") as f:
-                        backend.generate(graph, output=f)
-                    monkeypatch.chdir(str(effective_tmp))
-                    backend.execute("build")
-                elif backend_name == "bazel":
-                    build_file = os.path.join(str(effective_tmp), "BUILD.bazel")
-                    with open(build_file, "w") as f:
-                        backend.generate(graph, output=f)
-                    with open(os.path.join(str(effective_tmp), "MODULE.bazel"), "w") as f:
-                        f.write('module(name = "compiletools_test")\n')
-                        f.write('bazel_dep(name = "rules_cc", version = "0.1.5")\n')
-                    monkeypatch.chdir(str(effective_tmp))
-                    try:
-                        backend.execute("build")
-                    except subprocess.CalledProcessError:
-                        captured = capfd.readouterr()
-                        uth.skip_if_bazel_env_error(captured.err)
-                        raise
-                else:
-                    build_file = os.path.join(str(effective_tmp), type(backend).build_filename())
-                    with open(build_file, "w") as f:
-                        backend.generate(graph, output=f)
-                    if backend_name == "make":
-                        cmd = ["make", "-s", "-j1", "-f", build_file, "build"]
-                    elif backend_name == "ninja":
-                        cmd = ["ninja", "-f", build_file, "build"]
-                    else:
-                        pytest.skip(f"Don't know how to invoke {backend_name}")
-                    result = subprocess.run(
-                        cmd,
-                        cwd=str(effective_tmp),
-                        capture_output=True,
-                        text=True,
-                        timeout=60,
-                    )
-                    assert result.returncode == 0, (
-                        f"{backend_name} build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
-                    )
-
-            # Verify all aux producer artefacts exist post-build. The
-            # prebuild step is what creates them on cmake/bazel; on
-            # make/ninja/shake/slurm they're part of the per-rule
-            # executor's graph.
+            # Aux producer artefacts must exist post-build. The prebuild step
+            # creates them on cmake/bazel; on make/ninja/shake/slurm they're
+            # part of the per-rule executor's graph.
             missing = [r.output for r in aux_producers if not os.path.isfile(r.output)]
             assert not missing, (
                 f"{backend_name}: aux producer outputs missing post-build: {missing}\n"
                 f"pcmdir contents: {list(pathlib.Path(pcmdir).rglob('*')) if os.path.isdir(pcmdir) else 'N/A'}"
             )
 
-            exe_name = "main"
-            candidates = []
-            for dirpath, _dirs, files in os.walk(str(effective_tmp)):
-                for f in files:
-                    full = os.path.join(dirpath, f)
-                    if compiletools.utils.is_executable(full) and f == exe_name:
-                        candidates.append(full)
+            candidates = _find_built_executable(effective_tmp, "main", exact=True)
             assert candidates, (
-                f"{backend_name}: no executable '{exe_name}' found.\n"
+                f"{backend_name}: no executable 'main' found.\n"
                 f"Files in bindir: {list(os.listdir(bindir)) if os.path.isdir(bindir) else 'N/A'}"
             )
             run_result = subprocess.run([candidates[0]], capture_output=True, text=True, timeout=10)
