@@ -173,6 +173,70 @@ class TestBazelGenerate:
         assert '"config.h"' in content
         assert '"types.h"' in content
 
+    def test_known_limitation_cc_binary_does_not_use_cc_library_deps(self):
+        """Breadcrumb: when a graph contains both a static_library and a
+        link rule that consumes its objects, the emitted cc_binary
+        re-lists the library's source files in its own srcs rather than
+        using ``deps = [":mylib"]``. This is correct (Bazel still
+        compiles each .cpp once per binary) but suboptimal — at scale
+        bazel duplicates compile work across binaries that share libs.
+
+        When this assertion stops holding, the cc_library deps gap has
+        been fixed; remove this test, validate the corresponding
+        CLAUDE.md notes, and update the bazel_backend docstring.
+        """
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="obj/lib_only.o",
+                inputs=["lib_only.cpp"],
+                command=["g++", "-c", "lib_only.cpp", "-o", "obj/lib_only.o"],
+                rule_type="compile",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="bin/libmylib.a",
+                inputs=["obj/lib_only.o"],
+                command=["ar", "rcs", "bin/libmylib.a", "obj/lib_only.o"],
+                rule_type="static_library",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="obj/main.o",
+                inputs=["main.cpp"],
+                command=["g++", "-c", "main.cpp", "-o", "obj/main.o"],
+                rule_type="compile",
+            )
+        )
+        # Binary's link rule consumes BOTH the lib's object and its own.
+        graph.add_rule(
+            BuildRule(
+                output="bin/app",
+                inputs=["obj/main.o", "obj/lib_only.o"],
+                command=["g++", "-o", "bin/app", "obj/main.o", "obj/lib_only.o"],
+                rule_type="link",
+            )
+        )
+
+        backend = self._make_backend()
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        # Library and binary both exist.
+        assert "cc_library(" in content
+        assert "cc_binary(" in content
+        # The library source appears in both targets (the gap).
+        assert content.count('"lib_only.cpp"') == 2, (
+            f"expected lib source duplicated across cc_library and cc_binary; if the "
+            f"deps gap is fixed and cc_binary now uses deps=[':libmylib_a'], remove "
+            f"this regression marker. content:\n{content}"
+        )
+        # No deps wiring yet.
+        assert "deps =" not in content
+
 
 class TestCoptsExtraction:
     def test_basic_flags(self):
@@ -212,6 +276,56 @@ class TestLinkoptsExtraction:
         assert extract_linkopts(cmd, objs) == ["-lz"]
 
 
+class TestStarlarkStringEscape:
+    """``BazelBackend._starlark_str`` must produce a parser-safe quoted literal
+    for any input — paths and flag tokens may contain double quotes, backslashes,
+    or control characters, and an unescaped one would break BUILD.bazel."""
+
+    def test_plain_path_unchanged(self):
+        assert BazelBackend._starlark_str("foo/bar.cpp") == '"foo/bar.cpp"'
+
+    def test_double_quote_escaped(self):
+        assert BazelBackend._starlark_str('weird"name.cpp') == '"weird\\"name.cpp"'
+
+    def test_backslash_escaped(self):
+        # Path with a literal backslash (rare on POSIX but legal in filenames).
+        assert BazelBackend._starlark_str("a\\b.cpp") == '"a\\\\b.cpp"'
+
+    def test_newline_escaped(self):
+        assert BazelBackend._starlark_str("line1\nline2") == '"line1\\nline2"'
+
+    def test_control_char_raises(self):
+        # Bazel's Java Starlark parser does not accept \xNN escapes, so we
+        # refuse to emit them up front rather than producing bytes Bazel
+        # would reject as a syntax error.
+        with pytest.raises(ValueError, match="control char"):
+            BazelBackend._starlark_str("a\x07b")
+        with pytest.raises(ValueError, match="control char"):
+            BazelBackend._starlark_str("\x7f")  # DEL
+
+    def test_emit_target_quotes_pathological_src(self):
+        """End-to-end: a src containing ``"`` must round-trip through
+        ``_emit_target`` without producing an unbalanced quote in the output."""
+        from io import StringIO
+
+        buf = StringIO()
+        BazelBackend._emit_target(
+            buf,
+            "cc_binary",
+            "weird_target",
+            ['weird"src.cpp', "normal.cpp"],
+            ['-DFOO="x"'],
+            ["-lpthread"],
+        )
+        out = buf.getvalue()
+        # The pathological src is escaped, not literal.
+        assert '"weird\\"src.cpp"' in out
+        # The pathological copt is escaped.
+        assert '"-DFOO=\\"x\\""' in out
+        # No bare ``"weird"src.cpp"`` (would indicate an unescaped quote).
+        assert '"weird"src.cpp"' not in out
+
+
 class TestBazelExecuteRuntests:
     def test_execute_runtests_calls_run_tests(self):
         args = MagicMock()
@@ -232,6 +346,7 @@ class TestBazelExecuteRuntests:
         with (
             patch.object(backend, "_run_tests") as mock_run_tests,
             patch.object(backend, "_run_bazel"),
+            patch.object(backend, "_write_bazelrc"),
             patch("shutil.which", return_value="/usr/bin/bazel"),
             patch("os.path.exists", return_value=False),
             patch("os.path.isdir", return_value=False),
@@ -342,39 +457,27 @@ class TestBazelExecute:
         hunter = MagicMock()
         return BazelBackend(args=args, hunter=hunter)
 
-    @patch("shutil.which", side_effect=lambda name: "/usr/bin/bazel" if name == "bazel" else None)
     @patch("os.path.exists", return_value=True)
-    def test_execute_includes_tls_workaround_when_cacerts_exist(self, mock_exists, mock_which):
+    def test_bazelrc_includes_tls_workaround_when_cacerts_exist(self, mock_exists):
         backend = self._make_backend()
-        with patch.object(backend, "_run_bazel") as mock_run:
-            backend.execute("build")
+        content = backend._build_bazelrc_content()
+        assert "trustStore=" in content, f"Expected trustStore in {content!r}"
+        assert "trustStorePassword=" in content, f"Expected trustStorePassword in {content!r}"
 
-        cmd = mock_run.call_args[0][0]
-        assert any("trustStore=" in arg for arg in cmd), f"Expected trustStore in {cmd}"
-        assert any("trustStorePassword=" in arg for arg in cmd), f"Expected trustStorePassword in {cmd}"
-
-    @patch("shutil.which", side_effect=lambda name: "/usr/bin/bazel" if name == "bazel" else None)
     @patch("os.path.exists", return_value=False)
-    def test_execute_omits_tls_workaround_when_no_cacerts(self, mock_exists, mock_which):
+    def test_bazelrc_omits_tls_workaround_when_no_cacerts(self, mock_exists):
         backend = self._make_backend()
-        with patch.object(backend, "_run_bazel") as mock_run:
-            backend.execute("build")
+        content = backend._build_bazelrc_content()
+        assert "trustStore" not in content, f"Unexpected trustStore in {content!r}"
 
-        cmd = mock_run.call_args[0][0]
-        assert not any("trustStore" in arg for arg in cmd), f"Unexpected trustStore in {cmd}"
-
-    @patch("shutil.which", side_effect=lambda name: "/usr/bin/bazel" if name == "bazel" else None)
     @patch("os.path.exists", return_value=False)
-    def test_execute_includes_spawn_strategy_and_action_env(self, mock_exists, mock_which):
+    def test_bazelrc_includes_spawn_strategy_and_action_env(self, mock_exists):
         backend = self._make_backend()
-        with patch.object(backend, "_run_bazel") as mock_run:
-            backend.execute("build")
+        content = backend._build_bazelrc_content()
+        assert "build --spawn_strategy=local" in content
+        assert "build --action_env=PATH" in content
 
-        cmd = mock_run.call_args[0][0]
-        assert "--spawn_strategy=local" in cmd
-        assert "--action_env=PATH" in cmd
-
-    def test_execute_propagates_configured_compiler(self):
+    def test_bazelrc_propagates_configured_compiler(self):
         """args.CC / args.CXX must be passed to bazel so its autoconfig
         toolchain doesn't fall back to /bin/gcc (which on RHEL 8 is gcc 8
         and rejects -std=c++20)."""
@@ -384,23 +487,110 @@ class TestBazelExecute:
         args.parallel = 4
         backend = BazelBackend(args=args, hunter=MagicMock())
 
-        def which_side(name):
-            if name in ("bazel", "bazelisk"):
-                return "/usr/bin/bazel" if name == "bazel" else None
-            return name
+        with patch("os.path.exists", return_value=False):
+            content = backend._build_bazelrc_content()
 
+        assert "build --repo_env=CC=/opt/gcc-15/bin/gcc" in content, content
+        assert "build --repo_env=CXX=/opt/gcc-15/bin/g++" in content, content
+        assert "build --action_env=CC=/opt/gcc-15/bin/gcc" in content, content
+        assert "build --action_env=CXX=/opt/gcc-15/bin/g++" in content, content
+
+    def test_execute_passes_minimal_cli_to_run_bazel(self):
+        """All static-per-build flags live in .bazelrc; the CLI carries
+        only the bazel binary, ``build``, optional ``--jobs=N``, and
+        the target."""
+        args = MagicMock()
+        args.parallel = 4
+        backend = BazelBackend(args=args, hunter=MagicMock())
         with (
-            patch("shutil.which", side_effect=which_side),
-            patch("os.path.exists", return_value=False),
+            patch("shutil.which", side_effect=lambda n: "/usr/bin/bazel" if n == "bazel" else None),
+            patch("os.path.isdir", return_value=False),
             patch.object(backend, "_run_bazel") as mock_run,
+            patch.object(backend, "_write_bazelrc") as mock_write,
         ):
             backend.execute("build")
 
         cmd = mock_run.call_args[0][0]
-        assert "--repo_env=CC=/opt/gcc-15/bin/gcc" in cmd, f"missing CC repo_env in {cmd}"
-        assert "--repo_env=CXX=/opt/gcc-15/bin/g++" in cmd, f"missing CXX repo_env in {cmd}"
-        assert "--action_env=CC=/opt/gcc-15/bin/gcc" in cmd, f"missing CC action_env in {cmd}"
-        assert "--action_env=CXX=/opt/gcc-15/bin/g++" in cmd, f"missing CXX action_env in {cmd}"
+        # Pin: every static-per-build flag belongs in .bazelrc, not the CLI.
+        # A failure here means a flag has crept back onto the CLI and a
+        # peer's manual `bazel build //:all` will diverge from the wrapper.
+        assert cmd == ["/usr/bin/bazel", "build", "--jobs=4", "//:all"], cmd
+        mock_write.assert_called_once()
+
+
+class TestBazelWriteBazelrc:
+    """End-to-end: ``_execute_build`` actually persists ``.bazelrc`` next to
+    BUILD.bazel so a manual ``bazel build //:all`` from the workspace picks
+    up the same flags as the wrapper-driven build."""
+
+    def test_write_bazelrc_persists_content_to_disk(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        args = MagicMock()
+        args.parallel = 2
+        args.bazel_jvm_stack_size = "256k"
+        args.LDFLAGS = ""
+        args.CC = ""
+        args.CXX = ""
+        args.tests = []
+        backend = BazelBackend(args=args, hunter=MagicMock())
+        backend._graph = None
+
+        with (
+            patch("shutil.which", side_effect=lambda n: "/usr/bin/bazel" if n == "bazel" else None),
+            patch.object(backend, "_run_bazel"),
+            patch.object(backend, "_publish_bazel_outputs"),
+        ):
+            backend.execute("build")
+
+        bazelrc = tmp_path / ".bazelrc"
+        assert bazelrc.exists(), "expected .bazelrc to be written by _execute_build"
+        content = bazelrc.read_text()
+        assert "build --spawn_strategy=local" in content
+        assert "startup --host_jvm_args=-Xss256k" in content
+        assert "startup --host_jvm_args=-XX:ActiveProcessorCount=2" in content
+
+    def test_write_bazelrc_skips_when_content_unchanged(self, tmp_path):
+        """Concurrent peer runs with the same args must not race on the
+        atomic-rename. Eliminate the race by comparing first."""
+        args = MagicMock()
+        args.parallel = 2
+        args.bazel_jvm_stack_size = "256k"
+        args.LDFLAGS = ""
+        args.CC = ""
+        args.CXX = ""
+        args.tests = []
+        backend = BazelBackend(args=args, hunter=MagicMock())
+        backend._graph = None
+
+        path = tmp_path / ".bazelrc"
+        with patch("os.path.exists", return_value=False):
+            content = backend._build_bazelrc_content()
+        path.write_text(content)
+        original_mtime_ns = path.stat().st_mtime_ns
+
+        # Second invocation with identical content must not rewrite (mtime
+        # preserved). atomic_output_file would bump mtime on rewrite.
+        with patch("os.path.exists", return_value=False):
+            backend._write_bazelrc(str(tmp_path))
+        assert path.stat().st_mtime_ns == original_mtime_ns, "expected skip-on-unchanged"
+
+    def test_write_bazelrc_replaces_when_content_differs(self, tmp_path):
+        args = MagicMock()
+        args.parallel = 2
+        args.bazel_jvm_stack_size = "256k"
+        args.LDFLAGS = ""
+        args.CC = ""
+        args.CXX = ""
+        args.tests = []
+        backend = BazelBackend(args=args, hunter=MagicMock())
+        backend._graph = None
+
+        path = tmp_path / ".bazelrc"
+        path.write_text("# stale content from a peer\n")
+        with patch("os.path.exists", return_value=False):
+            backend._write_bazelrc(str(tmp_path))
+        assert path.read_text() != "# stale content from a peer\n"
+        assert "build --spawn_strategy=local" in path.read_text()
 
 
 class TestBazelLinkerDefault:
@@ -420,23 +610,18 @@ class TestBazelLinkerDefault:
         backend._graph = graph
         return backend
 
-    def _exec_and_capture(self, backend):
-        with (
-            patch("shutil.which", side_effect=lambda n: "/usr/bin/bazel" if n == "bazel" else None),
-            patch("os.path.exists", return_value=False),
-            patch("os.path.isdir", return_value=False),
-            patch.object(backend, "_run_bazel") as mock_run,
-        ):
-            backend.execute("build")
-        return mock_run.call_args[0][0]
+    @staticmethod
+    def _bazelrc_for(backend):
+        with patch("os.path.exists", return_value=False):
+            return backend._build_bazelrc_content()
 
     def test_gold_added_when_no_user_setting(self):
-        cmd = self._exec_and_capture(self._backend_with())
-        assert "--linkopt=-fuse-ld=gold" in cmd
+        content = self._bazelrc_for(self._backend_with())
+        assert "build --linkopt=-fuse-ld=gold" in content, content
 
     def test_gold_skipped_when_ldflags_sets_fuse_ld(self):
-        cmd = self._exec_and_capture(self._backend_with(ldflags="-Wall -fuse-ld=mold"))
-        assert not any("--linkopt=-fuse-ld=" in arg for arg in cmd), cmd
+        content = self._bazelrc_for(self._backend_with(ldflags="-Wall -fuse-ld=mold"))
+        assert "-fuse-ld=" not in content, content
 
     def test_user_set_fuse_ld_via_link_rule_command(self):
         # Test the predicate directly to avoid running the full execute path.
@@ -496,28 +681,23 @@ class TestBazelJvmStackSize:
         backend._graph = None
         return backend
 
-    def _exec_and_capture(self, backend):
-        with (
-            patch("shutil.which", side_effect=lambda n: "/usr/bin/bazel" if n == "bazel" else None),
-            patch("os.path.exists", return_value=False),
-            patch("os.path.isdir", return_value=False),
-            patch.object(backend, "_run_bazel") as mock_run,
-        ):
-            backend.execute("build")
-        return mock_run.call_args[0][0]
+    @staticmethod
+    def _bazelrc_for(backend):
+        with patch("os.path.exists", return_value=False):
+            return backend._build_bazelrc_content()
 
-    def test_default_size_appears_in_cmd(self):
-        cmd = self._exec_and_capture(self._backend_with(jvm_stack="256k"))
-        assert "--host_jvm_args=-Xss256k" in cmd
+    def test_default_size_appears_in_bazelrc(self):
+        content = self._bazelrc_for(self._backend_with(jvm_stack="256k"))
+        assert "startup --host_jvm_args=-Xss256k" in content, content
 
-    def test_custom_size_appears_in_cmd(self):
-        cmd = self._exec_and_capture(self._backend_with(jvm_stack="512k"))
-        assert "--host_jvm_args=-Xss512k" in cmd
-        assert "--host_jvm_args=-Xss256k" not in cmd
+    def test_custom_size_appears_in_bazelrc(self):
+        content = self._bazelrc_for(self._backend_with(jvm_stack="512k"))
+        assert "startup --host_jvm_args=-Xss512k" in content, content
+        assert "-Xss256k" not in content, content
 
     def test_empty_skips_xss_flag(self):
-        cmd = self._exec_and_capture(self._backend_with(jvm_stack=""))
-        assert not any("-Xss" in arg for arg in cmd), cmd
+        content = self._bazelrc_for(self._backend_with(jvm_stack=""))
+        assert "-Xss" not in content, content
 
 
 class TestBazelActiveProcessorCount:
@@ -537,23 +717,18 @@ class TestBazelActiveProcessorCount:
         backend._graph = None
         return backend
 
-    def _exec_and_capture(self, backend):
-        with (
-            patch("shutil.which", side_effect=lambda n: "/usr/bin/bazel" if n == "bazel" else None),
-            patch("os.path.exists", return_value=False),
-            patch("os.path.isdir", return_value=False),
-            patch.object(backend, "_run_bazel") as mock_run,
-        ):
-            backend.execute("build")
-        return mock_run.call_args[0][0]
+    @staticmethod
+    def _bazelrc_for(backend):
+        with patch("os.path.exists", return_value=False):
+            return backend._build_bazelrc_content()
 
     def test_active_processor_count_matches_parallel(self):
-        cmd = self._exec_and_capture(self._backend_with(parallel=8))
-        assert "--host_jvm_args=-XX:ActiveProcessorCount=8" in cmd
+        content = self._bazelrc_for(self._backend_with(parallel=8))
+        assert "startup --host_jvm_args=-XX:ActiveProcessorCount=8" in content, content
 
     def test_no_flag_when_parallel_unset(self):
-        cmd = self._exec_and_capture(self._backend_with(parallel=None))
-        assert not any("ActiveProcessorCount" in arg for arg in cmd), cmd
+        content = self._bazelrc_for(self._backend_with(parallel=None))
+        assert "ActiveProcessorCount" not in content, content
 
 
 class TestBazelRunBazelDiagnostic:
