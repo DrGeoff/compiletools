@@ -9,6 +9,7 @@ file or per module/header/linker-artefact bucket.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -998,15 +999,20 @@ def _safe_locked_rmtree(dir_path):
         # Dir vanished — nothing to do
         return True
 
-    locks = []
-    try:
-        from compiletools.locking import FileLock
+    from compiletools.locking import FileLock
 
+    def _release_quiet(fl):
+        # Match the original best-effort release semantics: a stray OSError
+        # on lock release during cleanup must not fail the trim (the rmtree
+        # may already have succeeded).
+        with contextlib.suppress(OSError):
+            fl.__exit__(None, None, None)
+
+    with contextlib.ExitStack() as stack:
         for path in files_to_lock:
             try:
                 fl = FileLock(path, lock_args)
                 fl.__enter__()
-                locks.append(fl)
             except OSError as exc:
                 # Lock acquisition failed — refuse to delete unlocked.
                 # Deleting without a lock could clobber a peer build
@@ -1016,6 +1022,7 @@ def _safe_locked_rmtree(dir_path):
                     file=sys.stderr,
                 )
                 return False
+            stack.callback(_release_quiet, fl)
 
         # Re-scan inside the lock window to catch files that appeared
         # between the initial scan and lock acquisition. A peer build
@@ -1044,12 +1051,6 @@ def _safe_locked_rmtree(dir_path):
             return True
         except OSError:
             return False
-    finally:
-        for fl in locks:
-            try:
-                fl.__exit__(None, None, None)
-            except OSError:
-                pass
 
 
 def _format_size(size_bytes):
