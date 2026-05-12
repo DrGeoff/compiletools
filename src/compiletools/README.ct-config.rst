@@ -137,34 +137,31 @@ projects converge on a handful of recurring combinations. ct-* ships six
 opinionated bundles (each is a tiny ``.conf`` file using ``extends = ...``)
 covering common workflows:
 
-============= ==================================== =========================
-Bundle        Composition                          When to use
-============= ==================================== =========================
-``dev``       gcc, cxx26, debug, asan, ubsan,      Daily development —
-              werror                                fast feedback,
-                                                    sanitizers catch most
-                                                    C++ bugs early.
-``ci``        gcc, cxx26, release, hardened,       Continuous integration
-              werror                                — production-like
-                                                    with strict warnings.
-``production`` gcc, cxx26, release, lto, hardened, Shipped binary —
-              pie, strip                            optimized, secured,
-                                                    minimal.
-``safety``    clang, cxx26, debug, asan, ubsan     Intensive sanitizer
-                                                    debugging (clang's
-                                                    sanitizer libs are
-                                                    most comprehensive).
-``perf``      gcc, cxx26, release, lto             Performance work.
-                                                    Deliberately NOT
-                                                    ``native`` — preserves
-                                                    cross-host cache
-                                                    reuse.
-``secure``    clang, cxx26, release, hardened,     Maximum hardening
-              pie, cfi                              including Control-Flow
-                                                    Integrity. Heavyweight
-                                                    (LTO required, ~5-15%
-                                                    runtime cost).
-============= ==================================== =========================
+.. list-table::
+   :header-rows: 1
+   :widths: 15 40 45
+
+   * - Bundle
+     - Composition
+     - When to use
+   * - ``dev``
+     - gcc, cxx26, debug, asan, ubsan, werror
+     - Daily development — fast feedback, sanitizers catch most C++ bugs early.
+   * - ``ci``
+     - gcc, cxx26, release, hardened, werror
+     - Continuous integration — production-like with strict warnings.
+   * - ``production``
+     - gcc, cxx26, release, lto, hardened, pie, strip
+     - Shipped binary — optimized, secured, minimal.
+   * - ``safety``
+     - clang, cxx26, debug, asan, ubsan
+     - Intensive sanitizer debugging (clang's sanitizer libs are most comprehensive).
+   * - ``perf``
+     - gcc, cxx26, release, lto
+     - Performance work. Deliberately NOT ``native`` — preserves cross-host cache reuse.
+   * - ``secure``
+     - clang, cxx26, release, hardened, pie, cfi
+     - Maximum hardening including Control-Flow Integrity. Heavyweight (LTO required, ~5-15% runtime cost).
 
 Invoke a bundle the same way as any other variant::
 
