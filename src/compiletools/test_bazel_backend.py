@@ -433,6 +433,77 @@ class TestBazelCopyExecutables:
         assert os.path.exists(dest_path)
 
 
+class TestBazelPublishOutputs:
+    """Regression: ``_publish_bazel_outputs`` must land test executables at
+    ``namer.executable_pathname(source)`` (the path ``_run_tests`` computes),
+    not at topbindir.
+
+    The original bug placed exes at ``topbindir/<name>`` while
+    ``_run_tests`` looked at ``bin/<variant>/<name>``, so the subprocess
+    call raised FileNotFoundError on every bazel build with tests.
+    """
+
+    def test_publish_lands_test_exes_at_namer_paths(self, tmp_path, monkeypatch):
+        import os
+
+        monkeypatch.chdir(tmp_path)
+        bazel_bin = tmp_path / "bazel-bin"
+        bazel_bin.mkdir()
+        test_exe = bazel_bin / "test_combinator"
+        test_exe.write_text("#!/bin/sh\nexit 0\n")
+        test_exe.chmod(0o555)  # r-x, matching real bazel output
+
+        args = MagicMock()
+        args.filename = []
+        args.tests = ["/src/test_combinator.cpp"]
+        backend = BazelBackend(args=args, hunter=MagicMock())
+
+        expected_path = str(tmp_path / "bin" / "gcc.debug" / "test_combinator")
+        backend.namer = MagicMock()
+        backend.namer.executable_pathname = MagicMock(return_value=expected_path)
+        backend.namer.topbindir = MagicMock(return_value=str(tmp_path / "bin") + "/")
+        backend._graph = None
+
+        with patch("compiletools.wrappedos.realpath", side_effect=lambda x: x):
+            backend._publish_bazel_outputs()
+
+        # The path _run_tests would query (via namer.executable_pathname) must
+        # exist. If _publish_bazel_outputs reverts to copying to topbindir, this
+        # test fails because the test exe ends up at bin/test_combinator instead.
+        assert os.path.exists(expected_path), (
+            f"test exe not at namer.executable_pathname path {expected_path!r}; "
+            f"_run_tests would raise FileNotFoundError"
+        )
+
+    def test_publish_idempotent_on_rerun_with_readonly_dest(self, tmp_path, monkeypatch):
+        """Second invocation must not fail with EACCES on the r-x output."""
+        import os
+
+        monkeypatch.chdir(tmp_path)
+        bazel_bin = tmp_path / "bazel-bin"
+        bazel_bin.mkdir()
+        exe = bazel_bin / "myapp"
+        exe.write_text("#!/bin/sh\nexit 0\n")
+        exe.chmod(0o555)
+
+        args = MagicMock()
+        args.filename = ["/src/myapp.cpp"]
+        args.tests = []
+        backend = BazelBackend(args=args, hunter=MagicMock())
+
+        expected_path = str(tmp_path / "bin" / "gcc.debug" / "myapp")
+        backend.namer = MagicMock()
+        backend.namer.executable_pathname = MagicMock(return_value=expected_path)
+        backend.namer.topbindir = MagicMock(return_value=str(tmp_path / "bin") + "/")
+        backend._graph = None
+
+        with patch("compiletools.wrappedos.realpath", side_effect=lambda x: x):
+            backend._publish_bazel_outputs()
+            backend._publish_bazel_outputs()  # rerun must not raise
+
+        assert os.path.exists(expected_path)
+
+
 class TestBazelClean:
     def test_clean_runs_bazel_clean_command(self, tmp_path):
         """clean() should invoke 'bazel clean' then call super().clean()."""

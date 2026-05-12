@@ -1,6 +1,5 @@
 import os
 import shlex
-import shutil
 import signal
 import subprocess
 import sys
@@ -11,6 +10,7 @@ import compiletools.compilation_database
 import compiletools.configutils
 import compiletools.diagnostics
 import compiletools.filelist
+import compiletools.filesystem_utils
 import compiletools.findtargets
 import compiletools.git_utils
 import compiletools.headerdeps
@@ -237,49 +237,50 @@ class Cake:
 
     def _copyexes(self):
         assert self.namer is not None
-        # Copy the executables into the "bin" dir (as per cake)
-        # Unless the user has changed the bindir (or set --output)
-        # in which case assume that they know what they are doing
+        # If the user set --output or a custom bindir, trust their layout.
+        atomic_copy = compiletools.filesystem_utils.atomic_copy
         if self.args.output:
             if self.args.verbose > 0:
                 print(self.args.output)
             if self.args.filename:
-                shutil.copy2(
+                atomic_copy(
                     self.namer.executable_pathname(self.args.filename[0]),
                     self.args.output,
                 )
             if self.args.static:
-                shutil.copy2(self.namer.staticlibrary_pathname(), self.args.output)
+                atomic_copy(self.namer.staticlibrary_pathname(), self.args.output)
             if self.args.dynamic:
-                shutil.copy2(self.namer.dynamiclibrary_pathname(), self.args.output)
-        else:
-            outputdir = self.namer.topbindir()
-            filelist = self.namer.all_executable_pathnames()
-            for srcexe in filelist:
-                base = os.path.basename(srcexe)
-                destexe = compiletools.wrappedos.realpath(os.path.join(outputdir, base))
-                if compiletools.utils.is_executable(srcexe) and srcexe != destexe:
-                    if self.args.verbose > 0:
-                        print("".join([outputdir, base]))
-                    shutil.copy2(srcexe, outputdir)
+                atomic_copy(self.namer.dynamiclibrary_pathname(), self.args.output)
+            return
 
-            if self.args.static:
-                src = self.namer.staticlibrary_pathname()
-                filename = self.namer.staticlibrary_name()
-                dest = compiletools.wrappedos.realpath(os.path.join(outputdir, filename))
-                if src != dest:
-                    if self.args.verbose > 0:
-                        print(os.path.join(outputdir, filename))
-                    shutil.copy2(src, outputdir)
+        outputdir = self.namer.topbindir()
 
-            if self.args.dynamic:
-                src = self.namer.dynamiclibrary_pathname()
-                filename = self.namer.dynamiclibrary_name()
-                dest = compiletools.wrappedos.realpath(os.path.join(outputdir, filename))
-                if src != dest:
-                    if self.args.verbose > 0:
-                        print(os.path.join(outputdir, filename))
-                    shutil.copy2(src, outputdir)
+        def _publish(src: str, dest: str) -> None:
+            # samefile catches the hardlink-fast-path of atomic_copy on
+            # rerun (the prior publish made src and dest share an inode),
+            # so no-op reruns degenerate to a stat.
+            if os.path.exists(dest) and os.path.samefile(src, dest):
+                return
+            if self.args.verbose > 0:
+                print(dest)
+            atomic_copy(src, dest)
+
+        for srcexe in self.namer.all_executable_pathnames():
+            if not compiletools.utils.is_executable(srcexe):
+                continue
+            _publish(srcexe, os.path.join(outputdir, os.path.basename(srcexe)))
+
+        if self.args.static:
+            _publish(
+                self.namer.staticlibrary_pathname(),
+                os.path.join(outputdir, self.namer.staticlibrary_name()),
+            )
+
+        if self.args.dynamic:
+            _publish(
+                self.namer.dynamiclibrary_pathname(),
+                os.path.join(outputdir, self.namer.dynamiclibrary_name()),
+            )
 
     def _clean_topbindir(self):
         """Remove copied executables from the top-level bin directory."""

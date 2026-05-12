@@ -241,10 +241,10 @@ class CMakeBackend(BuildBackend):
             build_cmd.extend(["--target", target])
         subprocess.check_call(build_cmd, text=True)
 
-        # Copy built executables directly to the final output directory
-        # (topbindir or --output) to avoid a redundant intermediate copy.
-        dest = getattr(self.args, "output", None) or self.namer.topbindir()
-        self._copy_built_executables(build_dir, dest_dir=dest)
+        # Copy executables to namer paths (variant-specific dir) so that
+        # _run_tests can find test executables; cake._copyexes afterwards
+        # copies args.filename executables to topbindir / --output.
+        self._copy_built_executables(build_dir)
         # Copy built libraries to namer library paths so the second
         # cake.main() (linking the exe) can find them via -L/-l flags.
         if self._graph is not None:
@@ -281,4 +281,4 @@ class CMakeBackend(BuildBackend):
                     src = os.path.join(dirpath, fname)
                     dest = mangled_to_dest[fname]
                     os.makedirs(os.path.dirname(dest), exist_ok=True)
-                    shutil.copy2(src, dest)
+                    compiletools.filesystem_utils.atomic_copy(src, dest)

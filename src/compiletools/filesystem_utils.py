@@ -6,10 +6,87 @@ This module provides filesystem type detection and policy decisions for:
 3. Filesystem-specific performance tuning
 """
 
+import contextlib
+import errno
 import os
+import shutil
 import subprocess
+import tempfile
+from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
+
+
+def atomic_replace(
+    dst: str,
+    populate: Callable[[str], None],
+    *,
+    tmp_prefix: str | None = None,
+    tmp_suffix: str | None = None,
+) -> None:
+    """Atomically install at ``dst`` whatever ``populate`` puts at the
+    temp path it is handed.
+
+    The temp file is created in ``dst``'s directory (so the final
+    ``os.replace`` is always within-fs, never ``EXDEV``), its placeholder
+    is unlinked, and ``populate(tmp_path)`` is called to claim that
+    path — typically via ``os.link``, ``os.symlink``, or by writing
+    bytes. The result is then ``os.replace``'d onto ``dst``, atomic
+    against peer readers and tolerant of a read-only existing target
+    (``os.replace`` only needs write permission on the parent dir).
+
+    Concurrent peers each ``mkstemp`` a unique tmp (process-local) and
+    each ``os.replace`` independently; the last replace wins. Both
+    final-states are valid provided ``populate`` produces byte-equivalent
+    output for the same caller intent (the contract callers must uphold).
+
+    ``tmp_prefix`` / ``tmp_suffix`` override the temp filename pattern
+    for callers whose orphan-cleanup tooling scans for specific names
+    (e.g. ``cas_publish`` looks for ``*.publish.tmp``).
+    """
+    dst_dir = os.path.dirname(dst) or "."
+    if tmp_prefix is None:
+        tmp_prefix = f".tmp.{os.path.basename(dst)}."
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=dst_dir, prefix=tmp_prefix, suffix=tmp_suffix or "")
+    os.close(tmp_fd)
+    os.unlink(tmp_path)
+    try:
+        populate(tmp_path)
+        os.replace(tmp_path, dst)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
+
+
+def atomic_copy(src: str, dst: str) -> None:
+    """Copy ``src`` to ``dst`` atomically; hardlink fast path.
+
+    Tries ``os.link`` first (O(1) inode share on the same filesystem)
+    and falls back to ``shutil.copy2`` on ``EXDEV``. Inode sharing on
+    the fast path means a subsequent ``os.path.samefile(src, dst)``
+    returns True, so idempotent callers can skip re-publishing on no-op
+    reruns.
+
+    .. warning::
+       On the hardlink fast path, ``src`` and ``dst`` share an inode.
+       Callers must not *in-place* modify either side — an in-place
+       write would corrupt the other. All current callers write via
+       temp+rename (atomic_replace, atomic_compile, etc.), which always
+       produces a fresh inode for the write target, so the sharing is
+       safe. New callers that ``open(dst, 'r+')`` or ``truncate(dst)``
+       must use a different helper.
+    """
+
+    def populate(tmp_path: str) -> None:
+        try:
+            os.link(src, tmp_path)
+        except OSError as e:
+            if e.errno != errno.EXDEV:
+                raise
+            shutil.copy2(src, tmp_path)
+
+    atomic_replace(dst, populate)
 
 
 @lru_cache(maxsize=128)

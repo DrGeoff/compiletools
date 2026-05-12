@@ -517,16 +517,13 @@ class BuildBackend(abc.ABC):
                     except OSError:
                         pass
 
-    def _copy_built_executables(self, build_output_dir: str, dest_dir: str | None = None) -> None:
-        """Copy built executables from a build output dir to dest_dir.
+    def _copy_built_executables(self, build_output_dir: str) -> None:
+        """Copy built executables from a build output dir to namer paths.
 
         Walks build_output_dir recursively to find executables, matching
         them by name (original or mangled) back to source files.
         Backends that produce outputs in a non-standard location (e.g.
         bazel-bin/, cmake-build/) call this after a successful build.
-
-        If dest_dir is None, copies to namer.executable_pathname() locations.
-        Otherwise, copies directly to dest_dir (e.g. topbindir).
         """
         all_sources = list(self.args.filename or []) + list(self.args.tests or [])
         source_by_basename: dict[str, str] = {}
@@ -535,9 +532,6 @@ class BuildBackend(abc.ABC):
             mangled = mangle_target_name(exe_basename)
             source_by_basename[exe_basename] = source
             source_by_basename[mangled] = source
-
-        if dest_dir is not None:
-            os.makedirs(dest_dir, exist_ok=True)
 
         for dirpath, dirs, files in os.walk(build_output_dir, followlinks=False):
             dirs[:] = [d for d in dirs if not d.endswith(".runfiles")]
@@ -554,12 +548,9 @@ class BuildBackend(abc.ABC):
                 mangled = mangle_target_name(exe_basename)
                 source_by_basename.pop(exe_basename, None)
                 source_by_basename.pop(mangled, None)
-                if dest_dir is not None:
-                    dest_path = os.path.join(dest_dir, exe_basename)
-                else:
-                    dest_path = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
+                dest_path = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
                 os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-                shutil.copy2(full, dest_path)
+                compiletools.filesystem_utils.atomic_copy(full, dest_path)
 
     def build_graph(self) -> BuildGraph:
         """Populate a BuildGraph from hunter/namer data.

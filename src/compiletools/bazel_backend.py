@@ -474,12 +474,18 @@ class BazelBackend(BuildBackend):
         return [f"--jobs={parallel}"] if parallel else []
 
     def _publish_bazel_outputs(self) -> None:
-        """Copy bazel-bin/ outputs to topbindir/--output and library paths."""
+        """Copy bazel-bin/ outputs to namer paths and library paths.
+
+        Executables land at ``namer.executable_pathname()`` (variant-specific
+        dir like ``bin/<variant>/<name>``) so that ``_run_tests`` can find
+        test executables at the path it computes from ``args.tests``;
+        ``cake._copyexes`` afterwards handles the user-facing copy to
+        ``topbindir`` / ``--output`` for ``args.filename`` targets.
+        """
         bazel_bin = os.path.join(os.getcwd(), "bazel-bin")
         if not os.path.isdir(bazel_bin):
             return
-        dest = getattr(self.args, "output", None) or self.namer.topbindir()
-        self._copy_built_executables(bazel_bin, dest_dir=dest)
+        self._copy_built_executables(bazel_bin)
         self._copy_bazel_libraries(bazel_bin)
 
     @staticmethod
@@ -584,7 +590,7 @@ class BazelBackend(BuildBackend):
                 bazel_lib = os.path.join(bazel_bin, f"lib{target_name}{ext}")
                 if os.path.exists(bazel_lib):
                     os.makedirs(os.path.dirname(rule.output), exist_ok=True)
-                    shutil.copy2(bazel_lib, rule.output)
+                    compiletools.filesystem_utils.atomic_copy(bazel_lib, rule.output)
 
     def _bazel_clean(self, *extra: str) -> None:
         """Best-effort ``bazel clean [extra…]``; ignored if bazel is absent."""

@@ -54,11 +54,9 @@ import json
 import logging
 import os
 import shlex
-import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import asdict, dataclass
 from typing import ClassVar
@@ -170,20 +168,6 @@ def hash_command(cmd: list[str], compiler_identity: str | None = None) -> str:
     """
     payload = [compiler_identity, cmd] if compiler_identity is not None else cmd
     return hashlib.sha256(json.dumps(payload, sort_keys=False).encode()).hexdigest()
-
-
-def _atomic_copy(src: str, dst: str) -> None:
-    """Copy src to dst atomically via temp file + rename."""
-    dst_dir = os.path.dirname(dst) or "."
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=dst_dir)
-    try:
-        os.close(tmp_fd)
-        shutil.copy2(src, tmp_path)
-        os.replace(tmp_path, dst)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_path)
-        raise
 
 
 def _is_build_artifact(rule) -> bool:
@@ -395,7 +379,7 @@ class ShakeBackend(BuildBackend):
                 # collapse into the existence-only fast path above.
                 ca = self._ca_target(rule)
                 if os.path.exists(ca):
-                    _atomic_copy(ca, target)
+                    compiletools.filesystem_utils.atomic_copy(ca, target)
                     return False
 
         # SUSPEND: build all inputs concurrently via gather.
@@ -459,7 +443,7 @@ class ShakeBackend(BuildBackend):
             ca_cmd = [ca if a == target else a for a in flat_cmd]
             lock_impl = FileLock(ca, self.args).lock
             atomic_link(lock_impl, ca, ca_cmd)
-            _atomic_copy(ca, target)
+            compiletools.filesystem_utils.atomic_copy(ca, target)
         else:
             lock_impl = FileLock(target, self.args).lock
             atomic_link(lock_impl, target, flat_cmd)
@@ -1608,7 +1592,7 @@ class SlurmBackend(ShakeBackend):
         if rule.rule_type in (RuleType.LINK, RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY):
             ca = self._ca_target(rule)
             if os.path.exists(ca):
-                _atomic_copy(ca, rule.output)
+                compiletools.filesystem_utils.atomic_copy(ca, rule.output)
                 return
             out_dir = os.path.dirname(rule.output)
             if out_dir:
@@ -1619,7 +1603,7 @@ class SlurmBackend(ShakeBackend):
                 os.makedirs(ca_dir, exist_ok=True)
             lock_impl = FileLock(ca, self.args).lock
             atomic_link(lock_impl, ca, ca_cmd)
-            _atomic_copy(ca, rule.output)
+            compiletools.filesystem_utils.atomic_copy(ca, rule.output)
         else:
             # Non-build-artifact (copy etc.): verify trace before re-executing.
             trace = traces.get(rule.output)

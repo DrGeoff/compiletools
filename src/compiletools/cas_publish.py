@@ -39,7 +39,8 @@ import errno
 import json
 import os
 import sys
-import tempfile
+
+import compiletools.filesystem_utils
 
 
 def publish(cas_path: str, user_path: str, source_realpath: str | None = None) -> None:
@@ -51,44 +52,31 @@ def publish(cas_path: str, user_path: str, source_realpath: str | None = None) -
     so any winner is correct. Inode swap under a process holding ``user_path``
     open is harmless on POSIX (the open file descriptor pins the old inode).
 
+    Hardlink first (preserves the cas-exedir trim hard-link-protection
+    invariant by giving the cas entry ``nlink >= 2``); on ``EXDEV`` fall
+    back to a symlink so cross-filesystem publishes still work. Any other
+    OSError surfaces visibly instead of silently degrading.
+
     Sidecar errors are non-fatal: a missing/corrupt manifest just falls back
     to legacy basename bucketing in trim_exedir. The publish itself failing
     IS fatal — surface it.
     """
-    user_dir = os.path.dirname(user_path) or "."
-    os.makedirs(user_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(user_path) or ".", exist_ok=True)
 
-    # Per-process tmp name in the destination directory so the rename is
-    # always within-fs (no EXDEV at the rename step).
-    tmp_fd, tmp_path = tempfile.mkstemp(
-        prefix=os.path.basename(user_path) + ".",
-        suffix=".publish.tmp",
-        dir=user_dir,
-    )
-    # We need the path, not the fd — close the descriptor and unlink the
-    # placeholder so link() can target the same name.
-    os.close(tmp_fd)
-    os.unlink(tmp_path)
-
-    try:
+    def populate(tmp_path):
         try:
             os.link(cas_path, tmp_path)
         except OSError as e:
-            if e.errno == errno.EXDEV:
-                os.symlink(cas_path, tmp_path)
-            else:
+            if e.errno != errno.EXDEV:
                 raise
-        # POSIX-atomic replacement — concurrent readers see either the
-        # previous inode or the new one, never a missing path.
-        os.replace(tmp_path, user_path)
-    except BaseException:
-        # Best-effort cleanup of the tmp on any failure path so we don't
-        # litter user_dir with stale .publish.tmp files.
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+            os.symlink(cas_path, tmp_path)
+
+    compiletools.filesystem_utils.atomic_replace(
+        user_path,
+        populate,
+        tmp_prefix=os.path.basename(user_path) + ".",
+        tmp_suffix=".publish.tmp",
+    )
 
     # Sidecar manifest: best-effort. Written after the publish so a
     # publish-failed entry doesn't mislead trim_exedir into thinking it
