@@ -517,9 +517,14 @@ def _run_sample_with_compiler(sample_name: str, cxx: str, tmp_path, monkeypatch)
     """Copy a sample into tmp_path, run ct-cake --auto with CXX overridden,
     and assert the produced exe runs and prints the expected message.
 
-    Uses environment overrides (CXX/CC/CPP) so this exercises exactly the
+    Uses environment overrides (CXX/CPP/LD) so this exercises exactly the
     same compile-rule-emission code path as a user invoking ct-cake from
-    a config that pins the compiler.
+    a config that pins the compiler. LD must follow CXX: the bundled
+    default variant (``gcc.cxx26.debug``) loads ``gcc.conf`` which pins
+    ``LD = g++``; without an env LD override the linker stays g++ and any
+    clang compile that auto-injects ``-stdlib=libc++`` (e.g. import-std,
+    header-unit builds) leaks libc++ symbols into a g++ link, producing
+    undefined references to ``std::__1::*``.
     """
     import shutil
 
@@ -532,6 +537,7 @@ def _run_sample_with_compiler(sample_name: str, cxx: str, tmp_path, monkeypatch)
     env = os.environ.copy()
     env["CXX"] = cxx
     env["CPP"] = cxx
+    env["LD"] = cxx
     # CC stays unchanged: the samples are pure C++.
     r = subprocess.run(
         ["ct-cake", "--auto"],
@@ -579,6 +585,7 @@ def _run_partitions_sample_with(cxx: str, tmp_path, monkeypatch):
     env = os.environ.copy()
     env["CXX"] = cxx
     env["CPP"] = cxx
+    env["LD"] = cxx  # see _run_sample_with_compiler for why LD must follow CXX
     r = subprocess.run(
         ["ct-cake", "--auto"],
         capture_output=True,
@@ -636,6 +643,7 @@ def _run_import_std_sample_with(cxx: str, tmp_path, monkeypatch):
     env = os.environ.copy()
     env["CXX"] = cxx
     env["CPP"] = cxx
+    env["LD"] = cxx  # see _run_sample_with_compiler for why LD must follow CXX
     r = subprocess.run(
         ["ct-cake", "--auto"],
         capture_output=True,
@@ -860,6 +868,7 @@ def _run_header_units_sample_with(cxx: str, tmp_path, monkeypatch):
     env = os.environ.copy()
     env["CXX"] = cxx
     env["CPP"] = cxx
+    env["LD"] = cxx  # see _run_sample_with_compiler for why LD must follow CXX
     r = subprocess.run(
         ["ct-cake", "--auto"],
         capture_output=True,
