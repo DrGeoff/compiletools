@@ -10,42 +10,61 @@ from __future__ import annotations
 import shlex
 from dataclasses import dataclass, field
 
+
+class RuleType:
+    """Named string constants for ``BuildRule.rule_type``.
+
+    Comparisons remain string-equality because the field type is ``str``
+    — but these names give IDE-aware refactoring and make typos a
+    NameError instead of a silently-False comparison.
+
+    Documentation of the per-type semantics:
+
+    * ``LINK`` / ``STATIC_LIBRARY`` / ``SHARED_LIBRARY`` — CAS-aware
+      producers. In ``--use-mtime=False`` mode (default), each writes
+      to a content-addressable ``<cas-exedir>/<shard>/<name>_<key>.<ext>``
+      and is paired with a downstream ``SYMLINK`` rule that publishes
+      the user-facing path. Make/Ninja backends lift their inputs to
+      order-only so existence-on-disk is the sole rebuild signal. In
+      ``--use-mtime=True`` mode (legacy), producers write directly to
+      the user-facing path with normal mtime semantics.
+    * ``HEADER_UNIT`` — C++20 header-unit precompile that writes its
+      actual artefact to an under-the-hood location (gcc:
+      ``gcm.cache/<abs-path>.gcm``) and cannot conform to the
+      ``COMPILE`` contract of producing the rule's named output. The
+      named output is a stamp file, touched via ``success_marker``.
+    * ``SYMLINK`` — idempotent hard-link/symlink publish step that
+      exposes a content-addressable artefact at a stable, user-facing
+      path. Single input (the cas artefact path), single output (the
+      user-facing path).
+    """
+
+    COMPILE = "compile"
+    LINK = "link"
+    STATIC_LIBRARY = "static_library"
+    SHARED_LIBRARY = "shared_library"
+    TEST = "test"
+    PHONY = "phony"
+    MKDIR = "mkdir"
+    CLEAN = "clean"
+    COPY = "copy"
+    HEADER_UNIT = "header_unit"
+    SYMLINK = "symlink"
+
+
 VALID_RULE_TYPES = frozenset(
     {
-        "compile",
-        # Three CAS-aware producer rule types. In ``--use-mtime=False``
-        # mode (default), each writes to a content-addressable
-        # ``<cas-exedir>/<shard>/<name>_<key>.<ext>`` and is paired
-        # with a downstream ``symlink`` rule that publishes the
-        # user-facing path. Make/Ninja backends lift their inputs to
-        # order-only so existence-on-disk is the sole rebuild signal.
-        # In ``--use-mtime=True`` mode (legacy), producers write
-        # directly to the user-facing path with normal mtime semantics.
-        "link",
-        "static_library",
-        "shared_library",
-        "test",
-        "phony",
-        "mkdir",
-        "clean",
-        "copy",
-        # C++20 header-unit precompile that writes its actual artefact to
-        # an under-the-hood location (gcc: gcm.cache/<abs-path>.gcm) and
-        # cannot conform to the "compile" contract of producing the
-        # rule's named output. The named output is a stamp file, touched
-        # via ``success_marker`` to record completion.
-        "header_unit",
-        # Idempotent hard-link/symlink publish step that exposes a
-        # content-addressable artefact at a stable, user-facing path.
-        # Used by the cas-exedir layer: producer rule (link /
-        # static_library / shared_library) writes to
-        # <cas-exedir>/<shard>/<name>_<key>.<ext>, then a `symlink`
-        # rule materializes bin/<variant>/<name> as a hard link to it
-        # (with symlink fallback for cross-filesystem cases). Recipe is
-        # cheap and deterministic; can run on every invocation without
-        # cost. Single input (the cas artefact path), single output
-        # (the user-facing path).
-        "symlink",
+        RuleType.COMPILE,
+        RuleType.LINK,
+        RuleType.STATIC_LIBRARY,
+        RuleType.SHARED_LIBRARY,
+        RuleType.TEST,
+        RuleType.PHONY,
+        RuleType.MKDIR,
+        RuleType.CLEAN,
+        RuleType.COPY,
+        RuleType.HEADER_UNIT,
+        RuleType.SYMLINK,
     }
 )
 
@@ -187,7 +206,7 @@ class BuildGraph:
         # Build new graph with only affected rules
         filtered = BuildGraph()
         for rule in self._rules.values():
-            if rule.rule_type == "phony":
+            if rule.rule_type == RuleType.PHONY:
                 pruned_inputs = [i for i in rule.inputs if i in targets]
                 filtered.add_rule(
                     BuildRule(

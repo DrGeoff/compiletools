@@ -985,6 +985,10 @@ def make_backend_args(tmpdir, **overrides):
         serialisetests=False,
         build_only_changed=None,
         diagnostics_dir=None,
+        use_mtime=False,
+        makefilename="Makefile",
+        parallel=1,
+        shuffle=False,
     )
     defaults.update(overrides)
     args = SimpleNamespace(**defaults)

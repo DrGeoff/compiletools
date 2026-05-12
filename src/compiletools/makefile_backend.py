@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import builtins
 import functools
+import json
 import os
-import re
 import shlex
 import subprocess
 import time
@@ -17,26 +16,53 @@ import compiletools.hunter
 import compiletools.magicflags
 import compiletools.namer
 import compiletools.utils
-import compiletools.wrappedos
 from compiletools.build_backend import (
+    CAS_PRODUCER_TYPES,
     BuildBackend,
-    ordering_inputs_for_compile,
+    cas_demoted_order_only,
     register_backend,
 )
-from compiletools.build_graph import BuildGraph, render_shell_recipe
+from compiletools.build_context import BuildContext
+from compiletools.build_graph import BuildGraph, RuleType, render_shell_recipe
+
+# Shell snippet that prints a nanosecond timestamp portably:
+#   1. Prefer bash 5+'s $EPOCHREALTIME (works on macOS/BSD where date lacks %N).
+#   2. Fall back to `date +%s%N` and validate the output is purely numeric
+#      (BSD date returns e.g. "1745247600N" literally — Python's int() would
+#      drop the suffix, corrupting timing data).
+#   3. Emit 0 if both fail so the JSONL line stays well-formed.
+# Every shell `$` is escaped as `$$` so Make passes the literal `$` to the
+# shell. In particular `$${EPOCHREALTIME-}` is critical: without the `$$`,
+# Make would parse `${EPOCHREALTIME-}` as a Make variable reference (Make
+# treats `${X}` and `$(X)` identically), substitute empty, and the bash 5
+# fast path would silently never fire.
+# Used both inline (test path) and as the body of a recursive Make
+# variable CT_NS_EXPR (production path) so the snippet appears once on
+# disk instead of being duplicated into every timed recipe.
+_NS_EXPR_INLINE = (
+    "{ "
+    'if [ -n "$${EPOCHREALTIME-}" ]; then '
+    'printf %s "$${EPOCHREALTIME//./}000"; '
+    "else "
+    "_ct_d=$$(date +%s%N 2>/dev/null); "
+    'case "$$_ct_d" in '
+    "''|*[!0-9]*) printf 0 ;; "
+    '*) printf %s "$$_ct_d" ;; '
+    "esac; "
+    "fi; "
+    "}"
+)
+_NS_EXPR_VAR_REF = "$(CT_NS_EXPR)"
+
+# Cap each `rm -f` invocation in clean rules at this many paths so a build
+# with tens of thousands of objects doesn't trip ARG_MAX (256KB on macOS,
+# 2MB on Linux). 1000 paths * ~256-byte mean = ~256KB, well under the limit.
+_RM_CHUNK_SIZE = 1000
 
 
-@functools.lru_cache(maxsize=1)
-def _get_make_version() -> tuple[int, int]:
-    """Detect GNU Make version. Returns (major, minor) or (0, 0) on failure."""
-    try:
-        line = subprocess.check_output(["make", "--version"], text=True).splitlines()[0]
-        m = re.search(r"(\d+)\.(\d+)", line)
-        if not m:
-            return (0, 0)
-        return (int(m.group(1)), int(m.group(2)))
-    except (subprocess.CalledProcessError, ValueError, IndexError, FileNotFoundError):
-        return (0, 0)
+def _rm_f_chunked(paths: list[str], chunk_size: int = _RM_CHUNK_SIZE) -> list[str]:
+    """Split paths into multiple ``rm -f`` invocations to stay under ARG_MAX."""
+    return ["rm -f " + " ".join(paths[i : i + chunk_size]) for i in range(0, len(paths), chunk_size)]
 
 
 @register_backend
@@ -82,9 +108,6 @@ class MakefileBackend(BuildBackend):
             "filenames in this space-delimited list.",
         )
         compiletools.apptools.add_locking_arguments(cap)
-        # M2: --use-mtime is now registered centrally via
-        # add_output_directory_arguments so all backends accept it.
-        # The redundant per-backend call has been removed.
         compiletools.utils.add_flag_argument(
             parser=cap,
             name="serialise-tests",
@@ -123,151 +146,54 @@ class MakefileBackend(BuildBackend):
             ) as f:
                 self._write_makefile(graph, f)
 
-    def _args_signature(self) -> str:
-        """Return a deterministic string representation of args for the header.
+    def _build_file_path(self) -> str:
+        return self.args.makefilename
 
-        Filters out attributes that hold complex objects whose repr embeds a
-        memory address (e.g. ``_parser``, ``_context``); two consecutive
-        invocations with identical CLI args must produce byte-identical
-        signatures so ``_build_file_uptodate`` can short-circuit.
-        """
-        items = sorted((k, v) for k, v in vars(self.args).items() if not k.startswith("_"))
-        return "Namespace(" + ", ".join(f"{k}={v!r}" for k, v in items) + ")"
-
-    def _build_file_uptodate(self, graph: BuildGraph) -> bool:
-        """Check if the Makefile needs regeneration.
-
-        Compares the args signature in the Makefile header and checks mtimes
-        of every input referenced by a build rule (compile, link, library,
-        test, copy). Phony and mkdir rules have no real inputs.
-        """
-        try:
-            makefilemtime = compiletools.wrappedos.getmtime(self.args.makefilename)
-        except OSError:
-            if self.args.verbose > 7:
-                print("Regenerating Makefile.")
-                print(f"Could not determine mtime for {self.args.makefilename}. Assuming that it doesn't exist.")
-            return False
-
-        expected = f"# Makefile generated by {self._args_signature()}"
-        with builtins.open(self.args.makefilename, encoding="utf-8") as mfile:
-            previous = mfile.readline().strip()
-            if previous != expected:
-                if self.args.verbose > 7:
-                    print("Regenerating Makefile.")
-                    print(f'Previous generation line was "{previous}".')
-                    print(f'Current  generation line  is "{expected}".')
-                return False
-            elif self.args.verbose > 9:
-                print("Makefile header line is identical.  Testing mod time of all the files now.")
-
-        # Check mtimes of every build-rule input against the Makefile's mtime.
-        # Includes link/library inputs (e.g. linker scripts, additional .o
-        # files) so a change to a non-compile dependency triggers regen.
-        # Inputs that are themselves outputs of other in-graph rules are
-        # skipped: their mtimes track the build, not source freshness, so
-        # checking them would force regen on every post-build invocation.
-        graph_outputs = graph.outputs
-        skip_types = {"phony", "mkdir"}
-        for rule in graph.rules:
-            if rule.rule_type in skip_types:
-                continue
-            for dep in rule.inputs:
-                if dep in graph_outputs:
-                    continue
-                try:
-                    dep_mtime = compiletools.wrappedos.getmtime(dep)
-                except OSError:
-                    continue
-                if dep_mtime >= makefilemtime:
-                    if self.args.verbose > 7:
-                        print("Regenerating Makefile.")
-                        print(f"mtime {dep_mtime} for {dep} is newer than mtime for the Makefile")
-                    return False
-                elif self.args.verbose > 9:
-                    print(
-                        f"mtime {dep_mtime} for {dep} is older than "
-                        f"mtime for the Makefile. This wont trigger regeneration of the Makefile."
-                    )
-
-        if self.args.verbose > 9:
-            print("Makefile is up to date.  Not recreating.")
-        return True
-
-    @property
-    def _timing_enabled(self) -> bool:
-        return self._timer is not None
-
-    @property
+    @functools.cached_property
     def _timing_log_path(self) -> str:
         """Per-invocation JSONL log path.
 
         Namespaced by PID + monotonic_ns so that concurrent ``ct-cake --timing``
         invocations against the same Makefile do not race on the same file.
-        Logs from all concurrent invocations are merged at parse time via
-        ``_timing_log_glob``.
         """
-        makefilename = getattr(self.args, "makefilename", "Makefile")
-        if getattr(self, "_timing_log_path_cached", None) is None:
-            suffix = f"{os.getpid()}.{time.monotonic_ns()}"
-            self._timing_log_path_cached = os.path.join(
-                os.path.dirname(makefilename) or ".",
-                f".ct-make-timing.{suffix}.jsonl",
-            )
-        return self._timing_log_path_cached
-
-    @property
-    def _timing_log_glob(self) -> str:
-        """Glob matching all concurrent timing-log fragments for this Makefile."""
-        makefilename = getattr(self.args, "makefilename", "Makefile")
+        suffix = f"{os.getpid()}.{time.monotonic_ns()}"
         return os.path.join(
-            os.path.dirname(makefilename) or ".",
-            ".ct-make-timing.*.jsonl",
+            os.path.dirname(self.args.makefilename) or ".",
+            f".ct-make-timing.{suffix}.jsonl",
         )
 
     def _write_makefile(self, graph: BuildGraph, f) -> None:
         """Write a complete Makefile from the BuildGraph."""
-        f.write(f"# Makefile generated by {self._args_signature()}\n\n")
+        f.write(f"{self._build_file_header_token()}\n\n")
         f.write(".DELETE_ON_ERROR:\n\n")
         f.write("MAKEFLAGS += -rR\n\n")
         if os.path.isfile("/bin/bash"):
             f.write("SHELL := /bin/bash\n\n")
+        if self._timer is not None:
+            # Hoist the ns-timestamp shell helper into a Make variable so
+            # it appears once on disk instead of in every timed recipe.
+            # Recursive `=` defers expansion to the use site; the single
+            # `$$` escape in `_NS_EXPR_INLINE` is then collapsed once by
+            # recipe expansion, yielding the right text for the shell.
+            # `:=` would collapse early and Make would re-parse the
+            # surviving `${EPOCHREALTIME-}` as a Make variable lookup at
+            # recipe expansion time, eating it.
+            f.write(f"CT_NS_EXPR = {_NS_EXPR_INLINE}\n\n")
 
         # Write phony rules first so "all" is the default target
-        phony_rules = [r for r in graph.rules if r.rule_type == "phony"]
-        non_phony_rules = [r for r in graph.rules if r.rule_type != "phony"]
+        phony_rules = [r for r in graph.rules if r.rule_type == RuleType.PHONY]
+        non_phony_rules = [r for r in graph.rules if r.rule_type != RuleType.PHONY]
 
         # Ensure "all" comes first among phony rules
         phony_rules.sort(key=lambda r: (0 if r.output == "all" else 1, r.output))
 
-        cas_only = not getattr(self.args, "use_mtime", False)
+        cas_only = not self.args.use_mtime
         for rule in phony_rules + non_phony_rules:
-            if rule.rule_type == "phony":
+            if rule.rule_type == RuleType.PHONY:
                 f.write(f".PHONY: {rule.output}\n")
 
-            if rule.rule_type == "compile" and cas_only:
-                # CAS-only mode: the cached object's name encodes
-                # file_h+dep_h+macro_h, so existence on disk is the sole
-                # rebuild signal. Sources/headers are dropped from
-                # prerequisites entirely; PCH/BMI artefacts are lifted
-                # to order-only so make still builds them ahead of the
-                # compile recipe but never re-runs the recipe on their
-                # mtime change.
-                ordering = list(rule.order_only_deps) + ordering_inputs_for_compile(rule.inputs)
-                line = f"{rule.output}:"
-                if ordering:
-                    line += f" | {' '.join(ordering)}"
-            elif rule.rule_type in ("link", "static_library", "shared_library") and cas_only:
-                # CAS-only mode: the producer rule writes to a CAS path
-                # (cas-exedir/<shard>/<name>_<key>.<ext>) whose name
-                # encodes the relevant link key (linker identity +
-                # ldflags + sorted canonical objects + libs, or the
-                # ar-argv + objects equivalent). All inputs are lifted
-                # to order-only so make builds them first but does not
-                # retrigger the producer on their mtime change. The
-                # publish-as-symlink rule materialises the user-facing
-                # bin/<name> from this CAS entry.
-                ordering = list(rule.order_only_deps) + list(rule.inputs)
+            if cas_only and rule.rule_type in CAS_PRODUCER_TYPES:
+                ordering = list(rule.order_only_deps) + cas_demoted_order_only(rule)
                 line = f"{rule.output}:"
                 if ordering:
                     line += f" | {' '.join(ordering)}"
@@ -283,7 +209,7 @@ class MakefileBackend(BuildBackend):
             f.write("\n")
 
         # Serialise tests: prevent Make from parallelising test execution
-        if getattr(self.args, "serialisetests", False) and graph.rules_by_type("test"):
+        if self.args.serialisetests and graph.rules_by_type(RuleType.TEST):
             f.write(".NOTPARALLEL: runtests\n\n")
 
         # Write clean rules
@@ -291,59 +217,49 @@ class MakefileBackend(BuildBackend):
 
     def _format_recipe(self, rule) -> str:
         """Format a BuildRule's command into a Makefile recipe string."""
-        if rule.rule_type == "compile":
+        rt = rule.rule_type
+        if rt == RuleType.COMPILE:
             cmd_str = self._wrap_compile_cmd(rule.command)
-            if self.args.verbose >= 1:
-                # Find the source file (first input)
-                source = rule.inputs[0] if rule.inputs else rule.output
-                recipe = f"@echo ... {source} ; {cmd_str}"
-            else:
-                recipe = cmd_str
-        elif rule.rule_type in ("link", "shared_library", "static_library"):
+            echo_target = rule.inputs[0] if rule.inputs else rule.output
+            echo_prefix = "@"
+        elif rt in (RuleType.LINK, RuleType.SHARED_LIBRARY, RuleType.STATIC_LIBRARY):
             cmd_str = self._wrap_link_cmd(rule.command)
-            if self.args.verbose >= 1:
-                recipe = f"+@echo ... {rule.output} ; {cmd_str}"
-            else:
-                recipe = cmd_str
-        elif rule.rule_type == "test":
+            echo_target = rule.output
+            echo_prefix = "+@"
+        elif rt == RuleType.TEST:
             cmd_str = render_shell_recipe(rule)
-            if self.args.verbose >= 1:
-                # ``test_cmd = [*testprefix, exe_path]`` (build_backend._build_graph),
-                # so the exe is always the last command token regardless of
-                # whether the rule shape lives in inputs (legacy mtime mode)
-                # or order_only_deps (CAS-only mode).
-                exe_name = rule.command[-1]
-                recipe = f"@echo ... {exe_name} ; {cmd_str}"
-            else:
-                recipe = cmd_str
+            # ``test_cmd = [*testprefix, exe_path]`` (build_backend._build_graph),
+            # so the exe is always the last command token regardless of
+            # whether the rule shape lives in inputs (legacy mtime mode)
+            # or order_only_deps (CAS-only mode).
+            echo_target = rule.command[-1]
+            echo_prefix = "@"
         else:
-            recipe = render_shell_recipe(rule)
+            cmd_str = render_shell_recipe(rule)
+            echo_target = None
+            echo_prefix = ""
 
-        if self._timing_enabled and rule.rule_type in ("compile", "link", "shared_library", "static_library"):
-            recipe = self._wrap_with_timing(recipe, rule.output)
+        if echo_target is not None and self.args.verbose >= 1:
+            recipe = f"{echo_prefix}echo ... {echo_target} ; {cmd_str}"
+        else:
+            recipe = cmd_str
+
+        if self._timer is not None and rt in CAS_PRODUCER_TYPES:
+            recipe = self._wrap_with_timing(recipe, rule.output, ns_expr=_NS_EXPR_VAR_REF)
         return recipe
 
-    def _wrap_with_timing(self, recipe: str, target: str) -> str:
+    def _wrap_with_timing(self, recipe: str, target: str, ns_expr: str | None = None) -> str:
         """Wrap a recipe with shell timing that writes to the JSONL log.
 
-        Strategy for getting nanosecond timestamps portably:
-
-        1. Prefer bash 5+'s ``$EPOCHREALTIME`` (e.g. ``1745247600.123456``).
-           Stripping the dot yields microseconds; appending ``000`` gives
-           nanoseconds. This is the only fully portable option (works on
-           macOS/BSD where ``date`` does not support ``%N``).
-        2. Fall back to ``date +%s%N`` and validate the output is purely
-           numeric (BSD ``date`` returns e.g. ``1745247600N`` literally,
-           which would parse as a partial garbage integer in Python).
-        3. If both fail, emit ``0`` so the JSONL line is well-formed and
-           parsing produces a 0-second event rather than corrupt data.
-
-        Namespace the JSONL by PID + monotonic_ns to avoid races between
-        concurrent ``ct-cake --timing`` invocations against the same
-        Makefile (logs are merged at parse time).
+        ``ns_expr`` is the shell expression (or Make-variable reference) that
+        prints a nanosecond timestamp on stdout. Defaults to the full
+        portable inline snippet so test callers get a self-contained shell
+        recipe; production callers in ``_format_recipe`` pass
+        ``_NS_EXPR_VAR_REF`` to reference the once-defined Make variable
+        and avoid bloating the on-disk Makefile.
         """
-        import json as _json
-
+        if ns_expr is None:
+            ns_expr = _NS_EXPR_INLINE
         log = shlex.quote(self._timing_log_path)
         # Embed the target as a JSON string literal (not a bare token); a
         # bare path produces invalid JSON like {"target":/foo.o,...} which
@@ -352,21 +268,7 @@ class MakefileBackend(BuildBackend):
         # but no per-rule entries.  Single quotes inside the JSON encoding
         # must be escaped because the surrounding shell echo is a
         # single-quoted string.
-        tgt_json = _json.dumps(target).replace("'", "'\\''")
-        # Helper shell snippet that prints ns as integer or 0
-        ns_expr = (
-            "{ "
-            'if [ -n "${EPOCHREALTIME-}" ]; then '
-            'printf %s "${EPOCHREALTIME//./}000"; '
-            "else "
-            "_ct_d=$$(date +%s%N 2>/dev/null); "
-            'case "$$_ct_d" in '
-            "''|*[!0-9]*) printf 0 ;; "
-            '*) printf %s "$$_ct_d" ;; '
-            "esac; "
-            "fi; "
-            "}"
-        )
+        tgt_json = json.dumps(target).replace("'", "'\\''")
         return (
             f"@_ct_s=$$({ns_expr}); "
             f"{recipe.lstrip('@+')}; _ct_rc=$$?; "
@@ -375,57 +277,49 @@ class MakefileBackend(BuildBackend):
             f"exit $$_ct_rc"
         )
 
+    @staticmethod
+    def _write_phony_recipe(f, name: str, parts: list[str]) -> None:
+        f.write(f".PHONY: {name}\n{name}:\n\t-{';'.join(parts)}\n\n")
+
     def _write_clean_rules(self, graph: BuildGraph, f) -> None:
         """Write clean and realclean rules to the Makefile."""
         exe_dir = self.namer.executable_dir()
         obj_dir = self.namer.object_dir()
 
-        # Gather all outputs and object files from the graph.
-        # PCH .gch outputs are emitted as compile rules (see build_backend.py
-        # _build_pch_rules) so they are picked up here. .gch files in a shared
-        # pchdir cache outside obj_dir are intentionally NOT cleaned: that
-        # cache is cross-variant/cross-build and may be in use by peers; use
+        # PCH .gch outputs are emitted as compile rules so they are
+        # cleaned here. .gch files in a shared pchdir cache outside
+        # obj_dir are intentionally NOT cleaned — that cache is
+        # cross-variant/cross-build and may be in use by peers; use
         # ct-trim-cache to age them out.
         all_outputs = []
         all_objects = []
         for rule in graph.rules:
-            if rule.rule_type == "compile":
+            if rule.rule_type == RuleType.COMPILE:
                 all_objects.append(rule.output)
-            elif rule.rule_type in ("link", "static_library", "shared_library", "copy"):
+            elif rule.rule_type in (RuleType.LINK, RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY, RuleType.COPY):
                 all_outputs.append(rule.output)
 
-        # clean rule: remove executables, objects, and empty dirs
-        rmcopiedexes = f"find {exe_dir} -type f -executable -delete 2>/dev/null"
-        parts = [rmcopiedexes]
-        if all_outputs or all_objects:
-            parts.append("rm -f " + " ".join(all_outputs + all_objects))
-        parts.append(f"find {obj_dir} -type d -empty -delete")
+        clean_parts = [f"find {exe_dir} -type f -executable -delete 2>/dev/null"]
+        clean_parts.extend(_rm_f_chunked(all_outputs + all_objects))
+        clean_parts.append(f"find {obj_dir} -type d -empty -delete")
         if exe_dir != obj_dir:
-            parts.append(f"find {exe_dir} -type d -empty -delete")
-        recipe = ";".join(parts)
+            clean_parts.append(f"find {exe_dir} -type d -empty -delete")
+        self._write_phony_recipe(f, "clean", clean_parts)
 
-        f.write(".PHONY: clean\n")
-        f.write("clean:\n")
-        f.write(f"\t-{recipe}\n\n")
-
-        # realclean rule: rm -rf the per-project exe_dir, but only this build's
+        # realclean: rm -rf the per-project exe_dir, but only this build's
         # products from obj_dir (which may be shared with peer sub-projects).
         # Mirrors BuildBackend.realclean() so `make realclean` and
         # `ct-cake --realclean` are equivalent.
         realclean_parts = [f"rm -rf {exe_dir}"]
-        if exe_dir != obj_dir and (all_outputs or all_objects):
-            realclean_parts.append("rm -f " + " ".join(all_outputs + all_objects))
-            realclean_parts.append(f"find {obj_dir} -type d -empty -delete")
-        realclean_recipe = ";".join(realclean_parts)
-
-        f.write(".PHONY: realclean\n")
-        f.write("realclean:\n")
-        f.write(f"\t-{realclean_recipe}\n\n")
+        if exe_dir != obj_dir:
+            realclean_parts.extend(_rm_f_chunked(all_outputs + all_objects))
+            if all_outputs or all_objects:
+                realclean_parts.append(f"find {obj_dir} -type d -empty -delete")
+        self._write_phony_recipe(f, "realclean", realclean_parts)
 
     def _execute_build(self, target: str) -> None:
-        # Per-invocation timing log path (PID + monotonic_ns suffix);
-        # safe against concurrent ct-cake --timing invocations.
-        timing_log = self._timing_log_path if self._timing_enabled else None
+        timer = self._timer
+        timing_log = self._timing_log_path if timer is not None else None
         if timing_log:
             # Defensive: remove our own fragment if it somehow exists already
             try:
@@ -433,28 +327,24 @@ class MakefileBackend(BuildBackend):
             except FileNotFoundError:
                 pass
 
-        make_version = _get_make_version()
+        make_version = compiletools.apptools.tool_version("make")
         cmd = ["make"]
         if self.args.verbose <= 1:
             cmd.append("-s")
         if self.args.verbose >= 4 and make_version >= (4, 0):
             cmd.append("--trace")
-        parallel = getattr(self.args, "parallel", 1)
+        parallel = self.args.parallel
         if parallel > 1 and make_version >= (4, 0):
             cmd.append("--output-sync=target")
-        if getattr(self.args, "shuffle", False) and make_version >= (4, 4):
+        if self.args.shuffle and make_version >= (4, 4):
             cmd.append("--shuffle")
         cmd.extend(["-j", str(parallel)])
         cmd.extend(["-f", self.args.makefilename, target])
         if self.args.verbose >= 1:
             print(" ".join(cmd))
-        subprocess.check_call(cmd, text=True)
+        subprocess.check_call(cmd)
 
-        # Parse per-file timing from the JSONL log written by instrumented recipes.
-        # Only consume this invocation's fragment to avoid swallowing logs
-        # belonging to a concurrent ct-cake --timing invocation.
-        timer = self._timer
-        if timer and timing_log and os.path.exists(timing_log):
+        if timer is not None and timing_log and os.path.exists(timing_log):
             timer.record_rules_from_make_timing(timing_log, graph=self._graph)
             try:
                 os.remove(timing_log)
@@ -479,8 +369,6 @@ def main(argv=None):
 
     args = None
     try:
-        from compiletools.build_context import BuildContext
-
         context = BuildContext()
         args = compiletools.apptools.parseargs(cap, argv, context=context)
         headerdeps = compiletools.headerdeps.create(args, context=context)

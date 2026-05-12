@@ -35,7 +35,7 @@ import compiletools.namer
 import compiletools.test_framework
 import compiletools.utils
 import compiletools.wrappedos
-from compiletools.build_graph import BuildGraph, BuildRule
+from compiletools.build_graph import BuildGraph, BuildRule, RuleType
 from compiletools.magicflags import _HARD_ORDERINGS_KEY
 from compiletools.test_framework import TestFramework
 
@@ -85,6 +85,34 @@ def ordering_inputs_for_compile(inputs: list[str]) -> list[str]:
     are dropped (their content participates in the CAS object name).
     """
     return [inp for inp in inputs if inp.endswith(_COMPILE_ORDERING_INPUT_EXTS)]
+
+
+# Producer rule types whose outputs are content-addressable: their cached
+# path encodes the relevant cache key (per-TU object hash for compile,
+# link/ar key for link/library) so existence on disk is the sole rebuild
+# signal in CAS-only mode. Backends that emit these rules demote inputs
+# to order-only so the build tool doesn't retrigger the producer when
+# inputs change but the resulting bytes are already cached.
+CAS_PRODUCER_TYPES = frozenset(
+    {
+        RuleType.COMPILE,
+        RuleType.LINK,
+        RuleType.STATIC_LIBRARY,
+        RuleType.SHARED_LIBRARY,
+    }
+)
+
+
+def cas_demoted_order_only(rule) -> list[str]:
+    """Inputs that become order-only deps for a CAS producer rule.
+
+    Compile rules keep PCH/BMI artefacts as ordering deps and drop
+    sources/headers entirely. Link/library rules demote all object
+    inputs (the link key already covers them).
+    """
+    if rule.rule_type == RuleType.COMPILE:
+        return ordering_inputs_for_compile(rule.inputs)
+    return list(rule.inputs)
 
 
 # Environment variables the linker reads (or that flow through to the
@@ -468,7 +496,13 @@ class BuildBackend(abc.ABC):
         obj_dir = self.namer.object_dir()
         if obj_dir != exe_dir and os.path.isdir(obj_dir):
             for rule in graph.rules:
-                if rule.rule_type in ("compile", "link", "static_library", "shared_library", "copy"):
+                if rule.rule_type in (
+                    RuleType.COMPILE,
+                    RuleType.LINK,
+                    RuleType.STATIC_LIBRARY,
+                    RuleType.SHARED_LIBRARY,
+                    RuleType.COPY,
+                ):
                     target = rule.output
                     if os.path.isfile(target):
                         os.remove(target)
@@ -942,7 +976,7 @@ class BuildBackend(abc.ABC):
                 graph.add_rule(r)
                 if r.rule_type in producer_types:
                     cas_exe_bucket_dirs.update(r.order_only_deps)
-                if r.rule_type == "symlink":
+                if r.rule_type == RuleType.SYMLINK:
                     user_facing_output = r.output
             if user_facing_output is None:
                 user_facing_output = rules[-1].output
@@ -1011,7 +1045,7 @@ class BuildBackend(abc.ABC):
                 # entirely.
                 if cas_only_results:
                     publish_rule = graph.get_rule(exe_path)
-                    if publish_rule and publish_rule.rule_type == "symlink":
+                    if publish_rule and publish_rule.rule_type == RuleType.SYMLINK:
                         cas_exe_path = publish_rule.inputs[0]
                     else:
                         cas_exe_path = exe_path
@@ -1071,7 +1105,7 @@ class BuildBackend(abc.ABC):
         graph = self._graph
         if graph is not None:
             rule = graph.get_rule(exe_path)
-            if rule is not None and rule.rule_type == "symlink" and rule.inputs:
+            if rule is not None and rule.rule_type == RuleType.SYMLINK and rule.inputs:
                 return rule.inputs[0] + ".result"
         # Unexpected fallback: CAS-only mode but no publish-symlink rule
         # found. In production ``_run_tests`` always runs after
@@ -1291,14 +1325,103 @@ class BuildBackend(abc.ABC):
         if failures:
             raise RuntimeError(f"Test failures: {', '.join(failures)}")
 
+    def _args_signature(self) -> str:
+        """Deterministic ``Namespace(k=v, ...)`` repr for the build-file header.
+
+        Filters underscore-prefixed attrs so opaque objects (parser,
+        context) whose repr embeds a memory address don't poison the
+        signature — two consecutive invocations with identical CLI args
+        must produce byte-identical signatures so ``_build_file_uptodate``
+        can short-circuit.
+        """
+        items = sorted((k, v) for k, v in vars(self.args).items() if not k.startswith("_"))
+        return "Namespace(" + ", ".join(f"{k}={v!r}" for k, v in items) + ")"
+
+    def _build_file_path(self) -> str:
+        """Path the backend writes its generated build file to.
+
+        Subclasses store this on ``args`` under varying names (``makefilename``,
+        ``ninja_filename``, ...) — override to point at the right one.
+        Default returns ``build_filename()`` for backends that emit a
+        fixed-name file in the cwd.
+        """
+        return self.build_filename()
+
+    def _build_file_header_token(self) -> str:
+        """First-line comment that backends must write at the top of the
+        generated build file. ``_build_file_uptodate`` compares this
+        against the existing first line to detect arg drift.
+
+        Uses the static ``build_filename()`` (backend identity) rather
+        than ``_build_file_path()``: arg drift is detected through the
+        signature; the path string is incidental and a custom
+        ``--makefilename=foo.mk`` shouldn't change the header text.
+        """
+        return f"# {self.build_filename()} generated by {self._args_signature()}"
+
     def _build_file_uptodate(self, graph: BuildGraph) -> bool:
         """Check whether the generated build file is still current.
 
-        Default implementation always returns False (always regenerate).
-        Backends that write a build file can override this to skip
-        unnecessary regeneration by checking args signatures and mtimes.
+        Compares the args-signature header against the existing first
+        line and walks every build-rule input's mtime against the build
+        file's mtime. Inputs that are themselves outputs of other
+        in-graph rules are skipped (their mtime tracks the build, not
+        source freshness). Phony and mkdir rules have no real inputs.
+
+        Returns False (regenerate) if the file is missing, the header
+        differs, or any source input is newer than the build file.
+
+        Backends that don't write a build file (or whose build file has
+        no header line they control) can override to return False
+        unconditionally.
         """
-        return False
+        path = self._build_file_path()
+        try:
+            file_mtime = compiletools.wrappedos.getmtime(path)
+        except OSError:
+            if self.args.verbose > 7:
+                print(f"Regenerating {path} (does not exist).")
+            return False
+
+        expected = self._build_file_header_token()
+        with open(path, encoding="utf-8") as f:
+            previous = f.readline().strip()
+        if previous != expected:
+            if self.args.verbose > 7:
+                print(f"Regenerating {path}.")
+                print(f'Previous generation line was "{previous}".')
+                print(f'Current  generation line  is "{expected}".')
+            return False
+        if self.args.verbose > 9:
+            print(f"{path} header line is identical.  Testing mod time of all the files now.")
+
+        graph_outputs = graph.outputs
+        skip_types = {RuleType.PHONY, RuleType.MKDIR}
+        seen: set[str] = set()
+        for rule in graph.rules:
+            if rule.rule_type in skip_types:
+                continue
+            for dep in rule.inputs:
+                if dep in graph_outputs or dep in seen:
+                    continue
+                seen.add(dep)
+                try:
+                    dep_mtime = compiletools.wrappedos.getmtime(dep)
+                except OSError:
+                    continue
+                if dep_mtime >= file_mtime:
+                    if self.args.verbose > 7:
+                        print(f"Regenerating {path}.")
+                        print(f"mtime {dep_mtime} for {dep} is newer than mtime for {path}")
+                    return False
+                elif self.args.verbose > 9:
+                    print(
+                        f"mtime {dep_mtime} for {dep} is older than mtime for {path}. This wont trigger regeneration."
+                    )
+
+        if self.args.verbose > 9:
+            print(f"{path} is up to date.  Not recreating.")
+        return True
 
     def _validate_umask_for_file_locking(self) -> None:
         """Log warning if umask may affect multi-user file-locking mode."""
@@ -1419,17 +1542,17 @@ class BuildBackend(abc.ABC):
             return False
         has_build_rules = False
         for rule in graph.rules:
-            if rule.rule_type == "compile":
+            if rule.rule_type == RuleType.COMPILE:
                 has_build_rules = True
                 if not os.path.exists(rule.output):
                     return False
-            elif rule.rule_type in ("link", "static_library", "shared_library"):
+            elif rule.rule_type in (RuleType.LINK, RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY):
                 has_build_rules = True
                 if not os.path.exists(rule.output):
                     return False
                 if _read_link_sig(rule.output) != compute_link_signature(rule):
                     return False
-            elif rule.rule_type == "symlink":
+            elif rule.rule_type == RuleType.SYMLINK:
                 # Publish-as-hardlink rules are part of the build's
                 # observable contract — bin/<name> must exist for the
                 # build to count as "current". Without this check, an
@@ -1464,7 +1587,7 @@ class BuildBackend(abc.ABC):
         """
         native_cas = self._has_native_cas_exe()
         for rule in graph.rules:
-            if rule.rule_type in ("link", "static_library", "shared_library"):
+            if rule.rule_type in (RuleType.LINK, RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY):
                 if not os.path.exists(rule.output):
                     if not native_cas and getattr(self.args, "verbose", 0) >= 1:
                         # I5: surface the unexpected case where a non-

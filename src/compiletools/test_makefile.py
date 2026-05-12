@@ -38,6 +38,7 @@ def _make_args(**overrides):
         parallel=1,
         shuffle=False,
         backend="make",
+        use_mtime=False,
         sleep_interval_lockdir=None,
         sleep_interval_cifs=0.01,
         sleep_interval_flock_fallback=0.01,

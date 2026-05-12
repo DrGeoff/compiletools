@@ -22,7 +22,7 @@ from compiletools.build_backend import (
     mangle_target_name,
     register_backend,
 )
-from compiletools.build_graph import BuildGraph
+from compiletools.build_graph import BuildGraph, RuleType
 
 
 def _separate_include_dirs(copts: list[str]) -> tuple[list[str], list[str]]:
@@ -92,7 +92,7 @@ class CMakeBackend(BuildBackend):
 
         has_c = False
         has_cxx = False
-        for rule in graph.rules_by_type("compile"):
+        for rule in graph.rules_by_type(RuleType.COMPILE):
             if rule.inputs and compiletools.utils.is_c_source(rule.inputs[0]):
                 has_c = True
             else:
@@ -107,13 +107,13 @@ class CMakeBackend(BuildBackend):
 
         obj_info = build_obj_info(graph)
 
-        for lib_type in ("static_library", "shared_library"):
+        for lib_type in (RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY):
             for rule in graph.rules_by_type(lib_type):
                 srcs, all_copts = aggregate_rule_sources(rule, obj_info)
                 target_name = mangle_target_name(os.path.basename(rule.output))
                 include_dirs, remaining_copts = _separate_include_dirs(all_copts)
                 rel_srcs = sorted(set(srcs))
-                cmake_type = "STATIC" if lib_type == "static_library" else "SHARED"
+                cmake_type = "STATIC" if lib_type == RuleType.STATIC_LIBRARY else "SHARED"
 
                 f.write(f"\nadd_library({target_name} {cmake_type}\n")
                 for s in rel_srcs:
@@ -122,7 +122,7 @@ class CMakeBackend(BuildBackend):
 
                 self._emit_compile_attrs(f, target_name, remaining_copts, include_dirs)
 
-        for rule in graph.rules_by_type("link"):
+        for rule in graph.rules_by_type(RuleType.LINK):
             srcs, all_copts = aggregate_rule_sources(rule, obj_info)
             object_files = set(rule.inputs)
             linkopts = extract_linkopts(rule.command, object_files) if rule.command else []
@@ -165,7 +165,7 @@ class CMakeBackend(BuildBackend):
                     f.write(f"target_link_options({target_name} PRIVATE {quoted})\n")
 
         # Register tests so `ctest` can run them standalone
-        test_rules = graph.rules_by_type("test")
+        test_rules = graph.rules_by_type(RuleType.TEST)
         if test_rules:
             f.write("\nenable_testing()\n")
             for rule in test_rules:
@@ -258,7 +258,9 @@ class CMakeBackend(BuildBackend):
         cmake-build looking for .a/.so files and copy them to the
         graph-declared output paths.
         """
-        lib_rules = list(graph.rules_by_type("static_library")) + list(graph.rules_by_type("shared_library"))
+        lib_rules = list(graph.rules_by_type(RuleType.STATIC_LIBRARY)) + list(
+            graph.rules_by_type(RuleType.SHARED_LIBRARY)
+        )
         if not lib_rules:
             return
 

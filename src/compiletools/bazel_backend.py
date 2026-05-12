@@ -21,7 +21,7 @@ from compiletools.build_backend import (
     mangle_target_name,
     register_backend,
 )
-from compiletools.build_graph import BuildGraph
+from compiletools.build_graph import BuildGraph, RuleType
 
 
 @register_backend
@@ -83,12 +83,12 @@ class BazelBackend(BuildBackend):
             for source in self.args.tests:
                 test_exe_paths.add(self.namer.executable_pathname(compiletools.wrappedos.realpath(source)))
 
-        has_binaries = bool(graph.rules_by_type("link")) or bool(graph.rules_by_type("shared_library"))
-        has_libraries = bool(graph.rules_by_type("static_library"))
-        has_tests = any(r.output in test_exe_paths for r in graph.rules_by_type("link"))
+        has_binaries = bool(graph.rules_by_type(RuleType.LINK)) or bool(graph.rules_by_type(RuleType.SHARED_LIBRARY))
+        has_libraries = bool(graph.rules_by_type(RuleType.STATIC_LIBRARY))
+        has_tests = any(r.output in test_exe_paths for r in graph.rules_by_type(RuleType.LINK))
         has_non_test_binaries = has_binaries and (
-            bool(graph.rules_by_type("shared_library"))
-            or any(r.output not in test_exe_paths for r in graph.rules_by_type("link"))
+            bool(graph.rules_by_type(RuleType.SHARED_LIBRARY))
+            or any(r.output not in test_exe_paths for r in graph.rules_by_type(RuleType.LINK))
         )
         if has_non_test_binaries:
             f.write('load("@rules_cc//cc:cc_binary.bzl", "cc_binary")\n')
@@ -102,13 +102,13 @@ class BazelBackend(BuildBackend):
 
         obj_info = build_obj_info(graph, strip_includes=True)
 
-        for rule in graph.rules_by_type("static_library"):
+        for rule in graph.rules_by_type(RuleType.STATIC_LIBRARY):
             srcs, all_copts = aggregate_rule_sources(rule, obj_info)
             target_name = mangle_target_name(os.path.basename(rule.output))
             rel_srcs = sorted(set(self._bazel_src(s, base_dir) for s in srcs))
             self._emit_target(f, "cc_library", target_name, rel_srcs, all_copts)
 
-        for rule in graph.rules_by_type("shared_library"):
+        for rule in graph.rules_by_type(RuleType.SHARED_LIBRARY):
             srcs, all_copts = aggregate_rule_sources(rule, obj_info)
             object_files = set(rule.inputs)
             linkopts = self._resolve_linkopts(extract_linkopts(rule.command, object_files) if rule.command else [])
@@ -116,7 +116,7 @@ class BazelBackend(BuildBackend):
             rel_srcs = sorted(set(self._bazel_src(s, base_dir) for s in srcs))
             self._emit_target(f, "cc_binary", target_name, rel_srcs, all_copts, linkopts, linkshared=True)
 
-        for rule in graph.rules_by_type("link"):
+        for rule in graph.rules_by_type(RuleType.LINK):
             srcs, all_copts = aggregate_rule_sources(rule, obj_info)
             object_files = set(rule.inputs)
             linkopts = self._resolve_linkopts(extract_linkopts(rule.command, object_files) if rule.command else [])
@@ -332,8 +332,8 @@ class BazelBackend(BuildBackend):
         """
         if self._graph is None:
             return
-        for lib_type in ("static_library", "shared_library"):
-            ext = ".a" if lib_type == "static_library" else ".so"
+        for lib_type in (RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY):
+            ext = ".a" if lib_type == RuleType.STATIC_LIBRARY else ".so"
             for rule in self._graph.rules_by_type(lib_type):
                 target_name = mangle_target_name(os.path.basename(rule.output))
                 bazel_lib = os.path.join(bazel_bin, f"lib{target_name}{ext}")

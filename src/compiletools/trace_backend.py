@@ -73,7 +73,7 @@ from compiletools.build_backend import (
     _compiler_identity,
     register_backend,
 )
-from compiletools.build_graph import BuildGraph, BuildRule
+from compiletools.build_graph import BuildGraph, BuildRule, RuleType
 from compiletools.global_hash_registry import get_file_hash
 from compiletools.locking import FileLock, atomic_compile, atomic_link
 
@@ -188,7 +188,7 @@ def _atomic_copy(src: str, dst: str) -> None:
 
 def _is_build_artifact(rule) -> bool:
     """Rules whose output names encode all inputs — existence implies correctness."""
-    return rule.rule_type in ("compile", "link", "static_library", "shared_library")
+    return rule.rule_type in (RuleType.COMPILE, RuleType.LINK, RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY)
 
 
 def _flatten_command(command: list[str]) -> list[str]:
@@ -279,7 +279,7 @@ class ShakeBackend(BuildBackend):
     def _write_summary(self, graph: BuildGraph, f) -> None:
         f.write("# Shake build graph summary\n\n")
         for rule in graph.rules:
-            if rule.rule_type == "phony":
+            if rule.rule_type == RuleType.PHONY:
                 f.write(f"phony {rule.output}: {' '.join(rule.inputs)}\n")
             elif rule.command:
                 f.write(f"{rule.rule_type} {rule.output}:\n")
@@ -362,11 +362,11 @@ class ShakeBackend(BuildBackend):
         if rule is None:
             return False  # Leaf node (source/header file)
 
-        if rule.rule_type == "phony":
+        if rule.rule_type == RuleType.PHONY:
             results = await asyncio.gather(*(self._build_async(inp, graph, traces, memo, sem) for inp in rule.inputs))
             return any(results)
 
-        if rule.rule_type == "test":
+        if rule.rule_type == RuleType.TEST:
             # Test rules are handled by execute("runtests") -> _run_tests();
             # walking into them here would invoke the test exe with no
             # success-marker side-effect, leaving the .result file absent
@@ -379,7 +379,7 @@ class ShakeBackend(BuildBackend):
 
         # CONTENT-ADDRESSABLE SHORT-CIRCUIT
         if _is_build_artifact(rule):
-            if rule.rule_type in ("compile", "link"):
+            if rule.rule_type in (RuleType.COMPILE, RuleType.LINK):
                 # Both compile and link rule outputs are content-addressable
                 # by construction: object names encode file_h+dep_h+macro_h;
                 # cas-exe paths encode the link key (linker identity + sorted
@@ -438,7 +438,7 @@ class ShakeBackend(BuildBackend):
     def _execute_rule(self, rule: BuildRule, target: str, flat_cmd: list[str]) -> None:
         """Run the subprocess for a single build rule (called from a thread)."""
         start = time.monotonic()
-        if rule.rule_type == "compile":
+        if rule.rule_type == RuleType.COMPILE:
             try:
                 o_idx = flat_cmd.index("-o")
             except ValueError as e:
@@ -446,7 +446,7 @@ class ShakeBackend(BuildBackend):
             cmd_without_output = flat_cmd[:o_idx] + flat_cmd[o_idx + 2 :]
             lock_impl = FileLock(target, self.args).lock
             atomic_compile(lock_impl, target, cmd_without_output)
-        elif rule.rule_type == "link":
+        elif rule.rule_type == RuleType.LINK:
             # Link output IS the cas-exe path. Atomic-link directly to
             # it; the publish-as-symlink rule downstream will materialise
             # the user-facing bin/<name>. No per-rule CA-then-copy step
@@ -1051,7 +1051,7 @@ class SlurmBackend(ShakeBackend):
         Rules whose weight exceeds the largest threshold use ``--slurm-mem``
         (the per-job ceiling).
         """
-        if rule.rule_type in ("link", "static_library", "shared_library"):
+        if rule.rule_type in (RuleType.LINK, RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY):
             weight = len(rule.inputs)
         else:
             weight = rule.include_weight
@@ -1606,7 +1606,7 @@ class SlurmBackend(ShakeBackend):
 
         flat_cmd = _flatten_command(rule.command)
 
-        if rule.rule_type in ("link", "static_library", "shared_library"):
+        if rule.rule_type in (RuleType.LINK, RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY):
             ca = self._ca_target(rule)
             if os.path.exists(ca):
                 _atomic_copy(ca, rule.output)

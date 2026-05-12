@@ -2397,6 +2397,24 @@ _STD_MIN_COMPILER_VERSION = {
 }
 
 
+@functools.cache
+def tool_version(tool: str, default: tuple[int, int] = (0, 0)) -> tuple[int, int]:
+    """Probe ``<tool> --version`` for ``(major, minor)``.
+
+    Returns ``default`` if the tool is missing, exits non-zero, or the
+    first output line does not contain a ``\\d+\\.\\d+`` token. Cached so
+    repeated probes during one process are free.
+    """
+    try:
+        line = subprocess.check_output([tool, "--version"], text=True).splitlines()[0]
+    except (subprocess.CalledProcessError, OSError, IndexError):
+        return default
+    m = re.search(r"(\d+)\.(\d+)", line)
+    if not m:
+        return default
+    return (int(m.group(1)), int(m.group(2)))
+
+
 def _compiler_major_version(compiler_path: str) -> tuple[str, int] | None:
     """Probe a compiler binary for its (family, major version).
 
