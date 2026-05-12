@@ -946,6 +946,30 @@ def atomic_link(lock, target: str, link_cmd: list[str]) -> int:
         return result.returncode
 
 
+def execute_compile_rule(target: str, cmd: list[str], args) -> None:
+    """Strip ``-o target`` from *cmd* and run it under a target-keyed FileLock.
+
+    The ``-o``/target pair is supplied by ``atomic_compile`` via the temp+rename
+    pipeline; passing it in *cmd* would race with the atomic rewrite.
+    """
+    try:
+        o_idx = cmd.index("-o")
+    except ValueError as e:
+        raise AssertionError(f"compile rule for {target!r} missing -o flag: {cmd}") from e
+    cmd_without_output = cmd[:o_idx] + cmd[o_idx + 2 :]
+    atomic_compile(FileLock(target, args).lock, target, cmd_without_output)
+
+
+def execute_link_rule(target: str, cmd: list[str], args) -> None:
+    """Run a link / header-unit / generic rule under a target-keyed FileLock.
+
+    The command keeps any ``-o target`` it has — ``atomic_link``'s rewriter
+    handles the redirection to a temp path. Used for ``LINK``, ``HEADER_UNIT``,
+    and the trace-backend ``else`` branch.
+    """
+    atomic_link(FileLock(target, args).lock, target, cmd)
+
+
 def _rewrite_link_cmd_for_temp(link_cmd: list[str], target: str, tempfile_path: str) -> tuple[list[str], bool]:
     """Replace target with tempfile_path in a link/ar command.
 

@@ -1182,14 +1182,13 @@ class TestAtomicLinkRouting:
             (td / "foo.o").write_bytes(b"\x7fELF fake object")
             os.makedirs(td / "cas-exe" / "aa", exist_ok=True)
 
-            with mock.patch("compiletools.trace_backend.atomic_link") as mock_link:
-                mock_link.side_effect = lambda lock, target, cmd: open(target, "wb").close() or 0
+            with mock.patch("compiletools.trace_backend.execute_link_rule") as mock_link:
+                mock_link.side_effect = lambda target, cmd, args: open(target, "wb").close() or 0
                 backend.execute("build")
                 assert mock_link.call_count == 1
-                call_args = mock_link.call_args
-                # atomic_link(lock, target=rule.output, cmd=rule.command)
-                # — direct link to the cas-exe path, no in-place CA copy.
-                assert call_args.args[1] == cas_exe
+                # execute_link_rule(target=rule.output, cmd, args) — direct
+                # link to the cas-exe path, no in-place CA copy.
+                assert mock_link.call_args.args[0] == cas_exe
 
     def test_copy_rule_routes_through_atomic_link(self, monkeypatch):
         """Non-build-artifact rule types (e.g. 'copy') must also go through
@@ -1209,12 +1208,12 @@ class TestAtomicLinkRouting:
             monkeypatch.chdir(tmpdir)
             (td / "src.txt").write_text("data")
 
-            with mock.patch("compiletools.trace_backend.atomic_link") as mock_link:
-                mock_link.side_effect = lambda lock, target, cmd: open(target, "wb").close() or 0
+            with mock.patch("compiletools.trace_backend.execute_link_rule") as mock_link:
+                mock_link.side_effect = lambda target, cmd, args: open(target, "wb").close() or 0
                 backend.execute("build")
                 assert mock_link.call_count == 1
                 # The catch-all branch passes target=rule.output, not a CA path
-                assert mock_link.call_args.args[1] == "foo.txt"
+                assert mock_link.call_args.args[0] == "foo.txt"
 
     def test_link_starts_new_session_for_signal_forwarding(self, monkeypatch):
         """End-to-end signal-forwarding regression: link must use Popen with

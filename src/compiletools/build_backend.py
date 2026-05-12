@@ -36,7 +36,7 @@ import compiletools.test_framework
 import compiletools.utils
 import compiletools.wrappedos
 from compiletools.build_graph import BuildGraph, BuildRule, RuleType
-from compiletools.locking import FileLock, atomic_compile, atomic_link
+from compiletools.locking import execute_compile_rule, execute_link_rule
 from compiletools.magicflags import _HARD_ORDERINGS_KEY
 from compiletools.test_framework import TestFramework
 
@@ -502,20 +502,13 @@ class BuildBackend(abc.ABC):
             assert rule.command is not None, f"aux rule {rule.output} has no command"
             if verbose >= 1:
                 print(" ".join(rule.command), file=sys.stderr)
-            lock_impl = FileLock(rule.output, self.args).lock
             if rule.rule_type == RuleType.COMPILE:
-                # atomic_compile requires the command WITHOUT the trailing -o/target pair.
-                cmd = rule.command
-                try:
-                    o_idx = cmd.index("-o")
-                except ValueError as e:
-                    raise AssertionError(f"PCH rule {rule.output!r} missing -o flag: {cmd}") from e
-                atomic_compile(lock_impl, rule.output, cmd[:o_idx] + cmd[o_idx + 2 :])
+                execute_compile_rule(rule.output, rule.command, self.args)
             else:
                 # HEADER_UNIT: gcc's shell-pipeline form does its own producer-side
                 # rename inside the pipeline; atomic_link's outer rewrite no-ops
                 # (emits a one-time warning) but the rule still runs correctly.
-                atomic_link(lock_impl, rule.output, list(rule.command))
+                execute_link_rule(rule.output, list(rule.command), self.args)
 
     def clean(self) -> None:
         """Remove build artifacts. Override for backend-specific cleanup."""

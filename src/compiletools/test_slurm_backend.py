@@ -746,13 +746,13 @@ class TestParallelLocalLink:
             # Both links must hit the barrier concurrently to pass.
             barrier = threading.Barrier(2, timeout=5)
 
-            def fake_link(lock, target, cmd):
+            def fake_link(target, cmd, args):
                 barrier.wait()
                 with open(target, "wb") as f:
                     f.write(b"\x7fELF link")
                 return 0
 
-            with patch("compiletools.trace_backend.atomic_link", side_effect=fake_link) as mock_link:
+            with patch("compiletools.trace_backend.execute_link_rule", side_effect=fake_link) as mock_link:
                 backend.execute("build")
                 assert mock_link.call_count == 2
 
@@ -788,13 +788,13 @@ class TestParallelLocalLink:
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             order: list[str] = []
 
-            def fake_link(lock, target, cmd):
+            def fake_link(target, cmd, args):
                 order.append(target)
                 with open(target, "wb") as f:
                     f.write(b"\x7fELF")
                 return 0
 
-            with patch("compiletools.trace_backend.atomic_link", side_effect=fake_link):
+            with patch("compiletools.trace_backend.execute_link_rule", side_effect=fake_link):
                 backend.execute("build")
 
             # Library must complete before the dependent link.  Order list
@@ -870,10 +870,10 @@ class TestLocalLink:
             store.put(obj, _make_trace_entry(compile_rule, ctx))
             store.save()
 
-            with patch("compiletools.trace_backend.atomic_link") as mock_link:
-                mock_link.side_effect = lambda lock, target, cmd: open(target, "wb").close() or 0
+            with patch("compiletools.trace_backend.execute_link_rule") as mock_link:
+                mock_link.side_effect = lambda target, cmd, args: open(target, "wb").close() or 0
                 backend.execute("build")
-                # Link routed through atomic_link (not raw subprocess.run)
+                # Link routed through execute_link_rule (which wraps atomic_link)
                 assert mock_link.call_count == 1
 
     def test_runtests_delegates_to_run_tests(self):
@@ -2120,9 +2120,9 @@ class TestTimingPopulatesStartEnd:
             mock_timer = MagicMock()
             with (
                 patch.object(type(backend), "_timer", new_callable=lambda: property(lambda self: mock_timer)),
-                patch("compiletools.trace_backend.atomic_link") as mock_link,
+                patch("compiletools.trace_backend.execute_link_rule") as mock_link,
             ):
-                mock_link.side_effect = lambda lock, target, cmd: open(target, "wb").close() or 0
+                mock_link.side_effect = lambda target, cmd, args: open(target, "wb").close() or 0
                 backend.execute("build")
 
             link_calls = [c for c in mock_timer.record_rule.call_args_list if c.kwargs.get("rule_type") == "link"]
@@ -2182,7 +2182,7 @@ class TestCopyRuleCAShortcut:
             store = TraceStore(os.path.join(backend.args.cas_objdir, ".ct-slurm-traces.json"))
             store.put(dst, _make_trace_entry(rule, backend.context))
 
-            with patch("compiletools.trace_backend.atomic_link") as mock_link:
+            with patch("compiletools.trace_backend.execute_link_rule") as mock_link:
                 backend._run_local(rule, store)
             assert not mock_link.called, "valid trace should skip re-execution"
 

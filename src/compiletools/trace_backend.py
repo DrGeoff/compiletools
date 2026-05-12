@@ -73,7 +73,7 @@ from compiletools.build_backend import (
 )
 from compiletools.build_graph import BuildGraph, BuildRule, RuleType
 from compiletools.global_hash_registry import get_file_hash
-from compiletools.locking import FileLock, atomic_compile, atomic_link
+from compiletools.locking import execute_compile_rule, execute_link_rule
 
 logger = logging.getLogger(__name__)
 
@@ -423,30 +423,19 @@ class ShakeBackend(BuildBackend):
         """Run the subprocess for a single build rule (called from a thread)."""
         start = time.monotonic()
         if rule.rule_type == RuleType.COMPILE:
-            try:
-                o_idx = flat_cmd.index("-o")
-            except ValueError as e:
-                raise AssertionError(f"compile rule missing -o flag: {flat_cmd}") from e
-            cmd_without_output = flat_cmd[:o_idx] + flat_cmd[o_idx + 2 :]
-            lock_impl = FileLock(target, self.args).lock
-            atomic_compile(lock_impl, target, cmd_without_output)
+            execute_compile_rule(target, flat_cmd, self.args)
         elif rule.rule_type == RuleType.LINK:
-            # Link output IS the cas-exe path. Atomic-link directly to
-            # it; the publish-as-symlink rule downstream will materialise
-            # the user-facing bin/<name>. No per-rule CA-then-copy step
-            # — that pattern only fits static_library / shared_library
-            # which still output to non-CAS paths.
-            lock_impl = FileLock(target, self.args).lock
-            atomic_link(lock_impl, target, flat_cmd)
+            # Link output IS the cas-exe path; the downstream publish-as-symlink
+            # rule materialises bin/<name>. No per-rule CA-then-copy here —
+            # that's only for static_library / shared_library.
+            execute_link_rule(target, flat_cmd, self.args)
         elif _is_build_artifact(rule):
             ca = self._ca_target(rule)
             ca_cmd = [ca if a == target else a for a in flat_cmd]
-            lock_impl = FileLock(ca, self.args).lock
-            atomic_link(lock_impl, ca, ca_cmd)
+            execute_link_rule(ca, ca_cmd, self.args)
             compiletools.filesystem_utils.atomic_copy(ca, target)
         else:
-            lock_impl = FileLock(target, self.args).lock
-            atomic_link(lock_impl, target, flat_cmd)
+            execute_link_rule(target, flat_cmd, self.args)
 
         # Record per-rule timing
         elapsed = time.monotonic() - start
@@ -1601,16 +1590,14 @@ class SlurmBackend(ShakeBackend):
             ca_dir = os.path.dirname(ca)
             if ca_dir:
                 os.makedirs(ca_dir, exist_ok=True)
-            lock_impl = FileLock(ca, self.args).lock
-            atomic_link(lock_impl, ca, ca_cmd)
+            execute_link_rule(ca, ca_cmd, self.args)
             compiletools.filesystem_utils.atomic_copy(ca, rule.output)
         else:
             # Non-build-artifact (copy etc.): verify trace before re-executing.
             trace = traces.get(rule.output)
             if trace is not None and self._verify(rule, trace):
                 return
-            lock_impl = FileLock(rule.output, self.args).lock
-            atomic_link(lock_impl, rule.output, flat_cmd)
+            execute_link_rule(rule.output, flat_cmd, self.args)
 
         traces.put(rule.output, _make_trace_entry(rule, self.context))
 
