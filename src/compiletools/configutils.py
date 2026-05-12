@@ -52,6 +52,7 @@ _DEFAULT_VARIANT_CANONICAL_ORDER = (
     # linker (mutually exclusive — choose one; -fuse-ld=<name> on LDFLAGS)
     "ld",
     "gold",
+    "gold-nommap",
     "mold",
     "wild",
     # ABI / architecture
