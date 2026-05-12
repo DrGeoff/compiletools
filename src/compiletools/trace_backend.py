@@ -766,17 +766,16 @@ class SlurmBackend(ShakeBackend):
             signal.signal(signum, signal.SIG_DFL)
             os.kill(os.getpid(), signum)
 
-        with compiletools.apptools.graceful_shutdown(_on_signal, signal.SIGINT, signal.SIGTERM):
-            try:
-                self._execute_impl(graph, traces)
-            finally:
-                try:
-                    self._scancel_pending()
-                finally:
-                    try:
-                        self._cleanup_invocation_files()
-                    finally:
-                        traces.save()
+        with (
+            compiletools.apptools.graceful_shutdown(_on_signal, signal.SIGINT, signal.SIGTERM),
+            contextlib.ExitStack() as stack,
+        ):
+            # Callbacks fire in LIFO order, so declared order here matches
+            # the original nested-finally order: scancel → cleanup → save.
+            stack.callback(traces.save)
+            stack.callback(self._cleanup_invocation_files)
+            stack.callback(self._scancel_pending)
+            self._execute_impl(graph, traces)
 
     def _execute_impl(self, graph: BuildGraph, traces: TraceStore) -> None:
         # Ensure output directories exist (order-only deps on compile rules)
