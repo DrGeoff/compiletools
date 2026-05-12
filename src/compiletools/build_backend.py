@@ -359,6 +359,11 @@ def aggregate_rule_sources(
 class BuildBackend(abc.ABC):
     """Abstract base class for build system backends."""
 
+    # Class-level default so tests that bypass __init__ via ``__new__`` see a
+    # safe value at link-rule construction time without needing to mock every
+    # piece of state. Instances set the per-build value during __init__.
+    _compile_used_libcxx: bool = False
+
     def __init__(self, args, hunter, *, context=None):
         self.args = args
         self.hunter = hunter
@@ -398,6 +403,7 @@ class BuildBackend(abc.ABC):
         self._gcc_module_mapper_path: str | None = None
         self._gcc_header_unit_resolved: dict[str, str] = {}
         self._build_imports_std_cached: bool | None = None
+        self._compile_used_libcxx = False
 
         # Warn if the user explicitly opted into legacy mtime semantics
         # but this backend can't deliver them. The flag is a make/ninja
@@ -1611,6 +1617,7 @@ class BuildBackend(abc.ABC):
             return []
         kind = self._module_compiler_kind
         if kind == "clang":
+            self._compile_used_libcxx = True
             return ["-stdlib=libc++", "-Wno-reserved-module-identifier"]
         return []
 
@@ -1705,14 +1712,17 @@ class BuildBackend(abc.ABC):
                     pcm = self._header_unit_artefact.get(token)
                     if pcm is not None:
                         extras.append(f"-fmodule-file={token}={pcm}")
-            # `import std;` requires libc++ when the std module is
-            # libc++-shipped (clang's only supported source today).
-            # Importers, the std-module precompile, and the std .o-from-
-            # .pcm step all need the same -stdlib so headers and ABI
-            # align. The system std source itself also gets libc++ via
-            # _system_module_extra_flags so the two paths agree.
-            if self._build_imports_std() and "std" in result.module_imports:
+            # Importer must use the same -stdlib as the precompile of
+            # any module/header-unit it imports -- otherwise its
+            # ``<vector>`` resolves to libstdc++ and the libc++-built BMI
+            # is rejected as "not known to be a header unit". Gate
+            # mirrors ``_create_header_unit_precompile_rule`` for HUs and
+            # ``_system_module_extra_flags`` for ``import std;``.
+            cxxflags_has_libcxx = "-stdlib=libc++" in self.args.flags.cxx
+            needs_libcxx = "std" in result.module_imports or bool(result.module_header_imports)
+            if self._build_imports_std() and needs_libcxx and not cxxflags_has_libcxx:
                 extras.append("-stdlib=libc++")
+                self._compile_used_libcxx = True
             return extras
         return []
 
@@ -1946,6 +1956,8 @@ class BuildBackend(abc.ABC):
             stdlib_extras = (
                 ["-stdlib=libc++"] if self._build_imports_std() and "-stdlib=libc++" not in self.args.flags.cxx else []
             )
+            if stdlib_extras:
+                self._compile_used_libcxx = True
             cmd = common_cmd + stdlib_extras + ["-xc++-system-header", "--precompile", bare, "-o", artefact_path]
             self._header_unit_artefact[token] = artefact_path
             return BuildRule(
@@ -2472,6 +2484,23 @@ class BuildBackend(abc.ABC):
             hard_ordering_sources=hard_ordering_sources or None,
         )
 
+    def _link_libcxx_extras_if_needed(self, merged_ldflags: list[str], ld_extra: list[str]) -> list[str]:
+        """Return ``["-stdlib=libc++"]`` when the link driver must select
+        libc++ to match objects already compiled against it; else ``[]``.
+
+        Gated on clang as the link driver: a g++ link rejects
+        ``-stdlib=libc++`` as an unrecognized option, which is the right
+        diagnostic for a mixed-toolchain misconfiguration rather than a
+        silent libstdc++ link of libc++ objects.
+        """
+        if not self._compile_used_libcxx:
+            return []
+        if "-stdlib=libc++" in ld_extra or "-stdlib=libc++" in merged_ldflags:
+            return []
+        if compiletools.apptools.compiler_kind(self.args.LD) != "clang":
+            return []
+        return ["-stdlib=libc++"]
+
     def _object_pathname_for_source(self, source: str) -> str:
         """Compute an object-file path for ``source`` using the per-TU
         cache-key scope filter.
@@ -2652,6 +2681,7 @@ class BuildBackend(abc.ABC):
                 link_inputs_for_graph.append(lib_output)
 
         ld_extra = list(self.args.flags.ld) if self.args.flags.ld else []
+        ld_extra.extend(self._link_libcxx_extras_if_needed(merged_ldflags, ld_extra))
 
         if self._has_native_cas_exe():
             # Backend already has its own CAS layer — emit the legacy
@@ -2821,6 +2851,7 @@ class BuildBackend(abc.ABC):
         merged_ldflags = self._merge_ldflags_for_sources(all_source_files)
         ld_argv = compiletools.utils.split_command_cached(self.args.LD)
         ld_extra = list(self.args.flags.ld) if (self.args.LDFLAGS and self.args.flags.ld) else []
+        ld_extra.extend(self._link_libcxx_extras_if_needed(merged_ldflags, ld_extra))
 
         if self._has_native_cas_exe():
             lib_cmd = ld_argv + ["-shared", "-o", lib_path] + list(object_names) + merged_ldflags + ld_extra
