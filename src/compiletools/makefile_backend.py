@@ -13,6 +13,7 @@ import compiletools.apptools
 import compiletools.filesystem_utils
 import compiletools.headerdeps
 import compiletools.hunter
+import compiletools.jobs
 import compiletools.magicflags
 import compiletools.namer
 import compiletools.utils
@@ -365,6 +366,7 @@ def main(argv=None):
     compiletools.apptools.add_link_arguments(cap)
     compiletools.namer.Namer.add_arguments(cap)
     compiletools.hunter.add_arguments(cap)
+    compiletools.jobs.add_arguments(cap)
     MakefileBackend.add_arguments(cap)
 
     args = None

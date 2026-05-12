@@ -1807,6 +1807,10 @@ class TestRunTests:
     def test_run_tests_calls_subprocess(self, mock_realpath, mock_run, tmp_path):
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         backend = self._make_backend(tmp_path)
+        # BuildBackend.__init__ calls find_git_root, which uses
+        # subprocess.check_output (= subprocess.run internally). Reset the
+        # mock so the assertions below only see _run_tests' own invocation.
+        mock_run.reset_mock()
 
         backend._run_tests()
 
