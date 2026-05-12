@@ -50,6 +50,13 @@ class BazelBackend(BuildBackend):
         "/etc/ssl/certs/java/cacerts",  # Debian/Ubuntu
         "/usr/lib/jvm/default/lib/security/cacerts",  # Arch
     )
+    # Bazel 9.1+ is the supported minimum (bzlmod-only, no WORKSPACE shim).
+    # rules_cc 0.1.5 is the last 0.1.x; bazel 9.1's resolver may still
+    # upgrade it to 0.2.x at link time, but the explicit pin silences the
+    # version-mismatch warning.
+    _MIN_BAZEL_VERSION = "9.1.0"
+    _RULES_CC_VERSION = "0.1.5"
+    _BAZELRC_FILENAME = ".bazelrc"
 
     def _has_native_cas_exe(self) -> bool:
         # Bazel has its own content-addressable action cache and emits
@@ -316,9 +323,6 @@ class BazelBackend(BuildBackend):
                 if not os.path.exists(dest):
                     shutil.copy2(source, dest)
 
-    _MIN_BAZEL_VERSION = "9.1.0"
-    _RULES_CC_VERSION = "0.1.5"
-
     def _ensure_workspace(self, output_dir: str) -> None:
         """Create a minimal MODULE.bazel and .bazelversion if absent.
 
@@ -351,8 +355,6 @@ class BazelBackend(BuildBackend):
         so the user-visible ``bin/`` stays in sync.
         """
         return False
-
-    _BAZELRC_FILENAME = ".bazelrc"
 
     def _execute_build(self, target: str) -> None:
         tool = self._find_bazel_tool()
