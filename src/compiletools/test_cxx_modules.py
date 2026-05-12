@@ -496,7 +496,7 @@ def test_cxx_modules_simple_sample_builds_and_runs(tmp_path, monkeypatch):
 
     # Run ct-cake --auto via subprocess so we exercise the same CLI users do.
     r = subprocess.run(
-        ["ct-cake", "--auto"],
+        ["ct-cake"],
         capture_output=True,
         text=True,
         cwd=workdir,
@@ -540,7 +540,7 @@ def _run_sample_with_compiler(sample_name: str, cxx: str, tmp_path, monkeypatch)
     env["LD"] = cxx
     # CC stays unchanged: the samples are pure C++.
     r = subprocess.run(
-        ["ct-cake", "--auto"],
+        ["ct-cake"],
         capture_output=True,
         text=True,
         cwd=workdir,
@@ -587,7 +587,7 @@ def _run_partitions_sample_with(cxx: str, tmp_path, monkeypatch):
     env["CPP"] = cxx
     env["LD"] = cxx  # see _run_sample_with_compiler for why LD must follow CXX
     r = subprocess.run(
-        ["ct-cake", "--auto"],
+        ["ct-cake"],
         capture_output=True,
         text=True,
         cwd=workdir,
@@ -645,7 +645,7 @@ def _run_import_std_sample_with(cxx: str, tmp_path, monkeypatch):
     env["CPP"] = cxx
     env["LD"] = cxx  # see _run_sample_with_compiler for why LD must follow CXX
     r = subprocess.run(
-        ["ct-cake", "--auto"],
+        ["ct-cake"],
         capture_output=True,
         text=True,
         cwd=workdir,
@@ -870,7 +870,7 @@ def _run_header_units_sample_with(cxx: str, tmp_path, monkeypatch):
     env["CPP"] = cxx
     env["LD"] = cxx  # see _run_sample_with_compiler for why LD must follow CXX
     r = subprocess.run(
-        ["ct-cake", "--auto"],
+        ["ct-cake"],
         capture_output=True,
         text=True,
         cwd=workdir,
@@ -938,7 +938,7 @@ def test_cas_pcmdir_clang_pcm_survives_rebuild(tmp_path, monkeypatch):
 
     # First build.
     r1 = subprocess.run(
-        ["ct-cake", "--auto"],
+        ["ct-cake"],
         capture_output=True,
         text=True,
         cwd=workdir,
@@ -962,7 +962,7 @@ def test_cas_pcmdir_clang_pcm_survives_rebuild(tmp_path, monkeypatch):
 
     # Second build.
     r2 = subprocess.run(
-        ["ct-cake", "--auto"],
+        ["ct-cake"],
         capture_output=True,
         text=True,
         cwd=workdir,
@@ -1018,7 +1018,7 @@ def test_gcc_mapper_records_partition_names_with_colon(tmp_path, monkeypatch):
     env["CXX"] = cxx
     env["CPP"] = cxx
     r = subprocess.run(
-        ["ct-cake", "--auto"],
+        ["ct-cake"],
         capture_output=True,
         text=True,
         cwd=workdir,
@@ -1079,7 +1079,7 @@ def test_cas_pcmdir_gcc_gcm_lands_in_cache(tmp_path, monkeypatch):
     env["CXX"] = cxx
     env["CPP"] = cxx
     r = subprocess.run(
-        ["ct-cake", "--auto"],
+        ["ct-cake"],
         capture_output=True,
         text=True,
         cwd=workdir,
@@ -1141,7 +1141,7 @@ def test_cas_pcmdir_gcc_header_unit_gcm_survives_rebuild(tmp_path, monkeypatch):
     env["CXX"] = cxx
     env["CPP"] = cxx
     r1 = subprocess.run(
-        ["ct-cake", "--auto"],
+        ["ct-cake"],
         capture_output=True,
         text=True,
         cwd=workdir,
@@ -1161,7 +1161,7 @@ def test_cas_pcmdir_gcc_header_unit_gcm_survives_rebuild(tmp_path, monkeypatch):
     (workdir / "compile_commands.json").unlink(missing_ok=True)
 
     r2 = subprocess.run(
-        ["ct-cake", "--auto"],
+        ["ct-cake"],
         capture_output=True,
         text=True,
         cwd=workdir,
@@ -1213,7 +1213,7 @@ def test_ct_trim_cache_evicts_old_pcm_entries(tmp_path, monkeypatch):
     # First, do a real build so the current cmd_hash dir is populated
     # with a manifest.
     r = subprocess.run(
-        ["ct-cake", "--auto"],
+        ["ct-cake"],
         capture_output=True,
         text=True,
         cwd=workdir,
@@ -1296,7 +1296,7 @@ def test_cas_pcmdir_path_layout_is_content_addressed(tmp_path, monkeypatch):
     env["CXX"] = cxx
     env["CPP"] = cxx
     r = subprocess.run(
-        ["ct-cake", "--auto"],
+        ["ct-cake"],
         capture_output=True,
         text=True,
         cwd=workdir,
@@ -1379,7 +1379,7 @@ def test_cxx_modules_split_implementation_unit(tmp_path, monkeypatch):
     monkeypatch.chdir(workdir)
 
     r = subprocess.run(
-        ["ct-cake", "--auto"],
+        ["ct-cake"],
         capture_output=True,
         text=True,
         cwd=workdir,

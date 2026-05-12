@@ -304,7 +304,6 @@ class TestCompilationDatabase:
                         argv=[
                             "--config=" + temp_config_name,
                             "--exemarkers=main(",  # Tell it how to identify executable files
-                            "--auto",  # Enable auto-discovery
                         ],
                     )
                     compiletools.compilation_database.CompilationDatabaseCreator.add_arguments(cap)
@@ -318,7 +317,6 @@ class TestCompilationDatabase:
                             "--config=" + temp_config_name,
                             "--exemarkers=main(",  # Tell it how to identify executable files
                             "--testmarkers=test(",  # Tell it how to identify test files
-                            "--auto",  # Enable auto-discovery
                         ],
                         context=BuildContext(),
                     )

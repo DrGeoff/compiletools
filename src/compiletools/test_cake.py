@@ -23,7 +23,6 @@ class TestCake(BaseCompileToolsTestCase):
         return [
             "--exemarkers=main",
             "--testmarkers=unittest.hpp",
-            "--auto",
             "--config=" + self._config_name,
         ]
 

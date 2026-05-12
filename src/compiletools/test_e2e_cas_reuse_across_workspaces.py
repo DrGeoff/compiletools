@@ -59,7 +59,7 @@ def _e2e_env() -> dict[str, str]:
 
 def _run_ct_cake(workdir, *extra_args, timeout=180) -> subprocess.CompletedProcess:
     """Invoke ``ct-cake --auto`` in ``workdir`` with the e2e env."""
-    cmd = ["ct-cake", "--auto", *extra_args]
+    cmd = ["ct-cake", *extra_args]
     return subprocess.run(
         cmd,
         capture_output=True,

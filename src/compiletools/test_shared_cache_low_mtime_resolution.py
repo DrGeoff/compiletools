@@ -102,7 +102,6 @@ class TestSharedCacheLowMtimeResolution(BaseCompileToolsTestCase):
         os.chdir(work_dir)
         argv = [
             "--exemarkers=main",
-            "--auto",
             "--config=" + config_name,
             "--project-version=test-1.0.0",  # Fixed version for same macro hash
         ]

@@ -31,7 +31,6 @@ class TestMagicInclude(tb.BaseCompileToolsTestCase):
                     "--quiet",
                     "--include=subdir2",
                     "--prepend-INCLUDE=subdir3",
-                    "--auto",
                     "--config=" + config_path,
                 ]
 
@@ -60,7 +59,6 @@ class TestMagicInclude(tb.BaseCompileToolsTestCase):
                     "--quiet",
                     "--append-INCLUDE=subdir2",
                     "--append-INCLUDE=subdir3",
-                    "--auto",
                     "--config=" + config_path,
                 ]
 

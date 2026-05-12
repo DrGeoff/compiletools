@@ -26,7 +26,6 @@ class TestSerialiseTests:
                     "--exemarkers=main",
                     "--testmarkers=gtest.hpp",
                     "--quiet",
-                    "--auto",
                     "--serialise-tests",
                     "--config=" + temp_config_name,
                 ]

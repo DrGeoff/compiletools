@@ -52,7 +52,6 @@ def compile_worker(worker_id, source_dir, config_name):
         argv = [
             "--exemarkers=main",
             "--testmarkers=unittest.hpp",
-            "--auto",
             "--config=" + config_name,
         ]
 
@@ -92,7 +91,6 @@ def compile_with_umask(source_dir, config_name, umask_value):
         argv = [
             "--exemarkers=main",
             "--testmarkers=unittest.hpp",
-            "--auto",
             "--config=" + config_name,
         ]
 
@@ -152,7 +150,6 @@ def compile_worker_with_flags(worker_id, source_dir, config_name, extra_argv):
         argv = [
             "--exemarkers=main",
             "--testmarkers=unittest.hpp",
-            "--auto",
             "--config=" + config_name,
         ] + list(extra_argv)
 
@@ -178,7 +175,6 @@ def build_subproject_worker(worker_id, source_dir, config_name):
         os.chdir(source_dir)
         argv = [
             "--exemarkers=main",
-            "--auto",
             "--config=" + config_name,
         ]
         uth.reset()
@@ -411,7 +407,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             os.chdir(source_dir)
             argv = [
                 "--exemarkers=main",
-                "--auto",
                 "--config=" + config_name,
             ]
             uth.reset()
@@ -522,7 +517,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             os.chdir(source_dir_a)
             argv = [
                 "--exemarkers=main",
-                "--auto",
                 "--config=" + config_name_a,
             ]
             uth.reset()
@@ -539,7 +533,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             os.chdir(source_dir_b)
             argv = [
                 "--exemarkers=main",
-                "--auto",
                 "--config=" + config_name_b,
             ]
             uth.reset()
@@ -570,7 +563,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             os.chdir(source_dir_1)
             argv = [
                 "--exemarkers=main",
-                "--auto",
                 "--config=" + config_name_1,
             ]
             uth.reset()
@@ -585,7 +577,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             os.chdir(source_dir_2)
             argv = [
                 "--exemarkers=main",
-                "--auto",
                 "--config=" + config_name_2,
                 "--CXXFLAGS=-O2",
             ]
@@ -618,7 +609,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             os.chdir(source_dir_a)
             argv = [
                 "--exemarkers=main",
-                "--auto",
                 "--config=" + config_name_a,
             ]
             uth.reset()
@@ -662,7 +652,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             os.chdir(source_dir_1)
             argv = [
                 "--exemarkers=main",
-                "--auto",
                 "--config=" + config_name_1,
             ]
             uth.reset()
@@ -691,7 +680,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 os.chdir(source_dir_2)
                 argv_2 = [
                     "--exemarkers=main",
-                    "--auto",
                     "--config=" + config_name_2,
                     "--CXXFLAGS=-O2",
                 ]
@@ -729,7 +717,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             os.chdir(source_dir_1)
             argv = [
                 "--exemarkers=main",
-                "--auto",
                 "--config=" + config_name_1,
             ]
 
@@ -787,7 +774,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             os.chdir(source_dir_1)
             argv = [
                 "--exemarkers=main",
-                "--auto",
                 "--config=" + config_name_1,
             ]
 
@@ -806,7 +792,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             os.chdir(source_dir_2)
             argv_2 = [
                 "--exemarkers=main",
-                "--auto",
                 "--config=" + config_name_2,
             ]
 
@@ -850,7 +835,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             os.chdir(source_dir)
             argv = [
                 "--exemarkers=main",
-                "--auto",
                 "--config=" + config_name,
             ]
             uth.reset()
@@ -1038,7 +1022,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             os.chdir(source_dir_opt)
             argv_opt = [
                 "--exemarkers=main",
-                "--auto",
                 "--config=" + config_opt,
                 "--CXXFLAGS=-O2",
             ]
@@ -1055,7 +1038,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             os.chdir(source_dir_def)
             argv_def = [
                 "--exemarkers=main",
-                "--auto",
                 "--config=" + config_def,
             ]
             uth.reset()

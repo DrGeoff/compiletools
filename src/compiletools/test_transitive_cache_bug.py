@@ -328,7 +328,6 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
                         "--config=" + temp_config_name,
                         "--INCLUDE",
                         temp_engine,
-                        "--auto",
                         "--exemarkers=main",  # Find executables by looking for main()
                     ]
 

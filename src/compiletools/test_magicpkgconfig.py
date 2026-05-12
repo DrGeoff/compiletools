@@ -36,7 +36,6 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                     "--exemarkers=main",
                     "--testmarkers=gtest.hpp",
                     "--quiet",
-                    "--auto",
                     "--config=" + config_path,
                 ]
 
@@ -61,7 +60,6 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                     "--exemarkers=main",
                     "--testmarkers=gtest.hpp",
                     "--quiet",
-                    "--auto",
                     "--pkg-config=zlib",
                     "--config=" + config_path,
                 ]

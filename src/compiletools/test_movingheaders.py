@@ -28,7 +28,6 @@ class TestMovingHeaders(compiletools.test_base.BaseCompileToolsTestCase):
                 "--exemarkers=main",
                 "--testmarkers=unittest.hpp",
                 "--quiet",
-                "--auto",
                 "--include=subdir",
                 "--config=" + temp_config_name,
             ]

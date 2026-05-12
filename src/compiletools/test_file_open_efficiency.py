@@ -91,7 +91,7 @@ class TestFileOpenEfficiency(compiletools.test_base.BaseCompileToolsTestCase):
 
                 # Use --auto to trigger dependency analysis and --file-list to avoid compilation
                 # This runs the full dependency analysis without invoking the compiler
-                argv = ["--auto", "--file-list"]
+                argv = ["--file-list"]
                 from compiletools.build_context import BuildContext
 
                 args = compiletools.apptools.parseargs(cap, argv=argv, context=BuildContext())
