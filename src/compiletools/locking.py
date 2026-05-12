@@ -5,6 +5,7 @@ ct-lock-helper. All policies (timeouts, sleep intervals) are configured via
 args object from apptools.py.
 """
 
+import contextlib
 import os
 import platform
 import shutil
@@ -181,13 +182,12 @@ class LockdirLock:
         else:
             payload = f"{self.hostname}:{self.pid}:{start_time}\n"
         tmp = f"{self.pid_file}.{os.getpid()}.{os.urandom(2).hex()}.tmp"
-        # open() with O_CREAT|O_WRONLY|O_TRUNC — a missing parent directory
-        # raises FileNotFoundError, the signal the outer retry loop wants.
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o664)
-        try:
-            os.write(fd, payload.encode())
-        finally:
-            os.close(fd)
+        # os.open()+os.fdopen with O_CREAT|O_WRONLY|O_TRUNC — a missing
+        # parent directory raises FileNotFoundError, the signal the outer
+        # retry loop wants. The explicit mode 0o664 is preserved through
+        # os.open (umask still applies).
+        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o664), "wb") as f:
+            f.write(payload.encode())
         try:
             os.rename(tmp, self.pid_file)
         except OSError:
@@ -765,6 +765,26 @@ class _NullLock:
         pass
 
 
+@contextlib.contextmanager
+def _temp_under_lock(lock, tempfile_path: str):
+    """Acquire lock for the body, then unlink tempfile_path before releasing.
+
+    Cleanup ordering is load-bearing: the temp file must be removed BEFORE
+    lock.release(), so peers never transiently observe a stale temp file
+    between release and cleanup. Both unlink errors and a missing temp
+    (success path: temp was renamed to target) are swallowed so lock.release
+    is guaranteed to run.
+    """
+    lock.acquire()
+    try:
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            if os.path.exists(tempfile_path):
+                os.unlink(tempfile_path)
+        lock.release()
+
+
 def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.CompletedProcess:
     """Execute compilation atomically under a lock.
 
@@ -830,9 +850,7 @@ def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.Comp
     random_suffix = os.urandom(2).hex()
     tempfile_path = f"{target}.{pid}.{random_suffix}.tmp"
 
-    try:
-        lock.acquire()
-
+    with _temp_under_lock(lock, tempfile_path):
         cmd = list(compile_cmd) + ["-o", tempfile_path]
         result = _run_with_signal_forwarding(cmd)
         if result.returncode != 0:
@@ -843,19 +861,6 @@ def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.Comp
         # POSIX: identical guarantees to os.rename within a filesystem).
         os.replace(tempfile_path, target)
         return result
-
-    finally:
-        # Clean up temp file before releasing lock, so other processes
-        # never see a stale temp file between lock release and cleanup.
-        # Nested finally guarantees lock.release() even if cleanup raises.
-        try:
-            if os.path.exists(tempfile_path):
-                try:
-                    os.unlink(tempfile_path)
-                except OSError:
-                    pass
-        finally:
-            lock.release()
 
 
 def _emit_no_temp_warning(verbose: int, link_cmd: list[str], target: str) -> None:
@@ -917,9 +922,7 @@ def atomic_link(lock, target: str, link_cmd: list[str]) -> int:
         verbose = getattr(getattr(lock, "args", None), "verbose", 0)
         _emit_no_temp_warning(verbose, link_cmd, target)
 
-    try:
-        lock.acquire()
-
+    with _temp_under_lock(lock, tempfile_path):
         # If ar is appending to an existing archive, seed the temp file with
         # the current archive content so the append operates as intended.
         # Skip 0-byte targets: FlockLock/FcntlLock create the lock file via
@@ -941,15 +944,6 @@ def atomic_link(lock, target: str, link_cmd: list[str]) -> int:
             # on platforms where the target may already exist.
             os.replace(tempfile_path, target)
         return result.returncode
-    finally:
-        try:
-            if os.path.exists(tempfile_path):
-                try:
-                    os.unlink(tempfile_path)
-                except OSError:
-                    pass
-        finally:
-            lock.release()
 
 
 def _rewrite_link_cmd_for_temp(link_cmd: list[str], target: str, tempfile_path: str) -> tuple[list[str], bool]:
