@@ -59,13 +59,17 @@ _BUILD_SCRIPT = textwrap.dedent("""\
 
     tmp_path = sys.argv[1]
     report_path = sys.argv[2]
+    # sys.argv[3:] = the four --cas-*dir argv pairs from the parent's
+    # isolated_cas_dirs context manager, passed through verbatim so the
+    # subprocess shares the parent's cas roots (and the parent cleans
+    # them up on exit).
+    cas_argv = sys.argv[3:]
 
     source_path = os.path.realpath(os.path.join(tmp_path, "main.cpp"))
-    objdir = os.path.join(tmp_path, "obj")
     bindir = os.path.join(tmp_path, "bin")
     argv = [
         "--include", tmp_path,
-        "--cas-objdir", objdir,
+        *cas_argv,
         "--bindir", bindir,
         source_path,
     ]
@@ -108,8 +112,15 @@ _BUILD_SCRIPT = textwrap.dedent("""\
 """)
 
 
-def _run_build(tmp_path, report_name, seed):
-    """Run the build script in a subprocess with the given PYTHONHASHSEED."""
+def _run_build(tmp_path, report_name, seed, cas_argv):
+    """Run the build script in a subprocess with the given PYTHONHASHSEED.
+
+    ``cas_argv`` is the four ``--cas-*dir`` argv pairs produced by
+    ``uth.isolated_cas_dirs``; passed through to the subprocess so the
+    subprocess's ct-cake call doesn't fall back to ``{git_root}/cas-*dir/``
+    (which is the compiletools repo, since the subprocess inherits the
+    parent's cwd).
+    """
     import compiletools
 
     report_path = os.path.join(str(tmp_path), report_name)
@@ -122,7 +133,7 @@ def _run_build(tmp_path, report_name, seed):
     worktree_src = os.path.dirname(os.path.dirname(compiletools.__file__))
     env["PYTHONPATH"] = os.pathsep.join([worktree_src, env.get("PYTHONPATH", "")])
     result = subprocess.run(
-        [sys.executable, "-c", _BUILD_SCRIPT, str(tmp_path), report_path],
+        [sys.executable, "-c", _BUILD_SCRIPT, str(tmp_path), report_path, *cas_argv],
         env=env,
         capture_output=True,
         text=True,
@@ -146,16 +157,17 @@ class TestNoopRebuild:
         for name, content in _SOURCES.items():
             (tmp_path / name).write_text(content)
 
-        # Build 1 (seed=42): real compilation — produces .o, executable, traces
-        report1 = _run_build(tmp_path, "report1.json", seed=42)
-        assert report1["subprocess_calls"] >= 1, "First build should invoke the compiler"
+        with uth.isolated_cas_dirs(tmp_path) as cas_argv:
+            # Build 1 (seed=42): real compilation — produces .o, executable, traces
+            report1 = _run_build(tmp_path, "report1.json", seed=42, cas_argv=cas_argv)
+            assert report1["subprocess_calls"] >= 1, "First build should invoke the compiler"
 
-        exe_path = os.path.join(str(tmp_path), "bin", "main")
-        assert os.path.exists(exe_path), "First build did not produce executable"
+            exe_path = os.path.join(str(tmp_path), "bin", "main")
+            assert os.path.exists(exe_path), "First build did not produce executable"
 
-        # Build 2 (seed=999): different hash seed, same source files on disk.
-        # Nothing should compile or link.
-        report2 = _run_build(tmp_path, "report2.json", seed=999)
-        assert report2["subprocess_calls"] == 0, (
-            f"Expected zero compiler/linker calls on repeat build, got {report2['subprocess_calls']}"
-        )
+            # Build 2 (seed=999): different hash seed, same source files on disk.
+            # Nothing should compile or link.
+            report2 = _run_build(tmp_path, "report2.json", seed=999, cas_argv=cas_argv)
+            assert report2["subprocess_calls"] == 0, (
+                f"Expected zero compiler/linker calls on repeat build, got {report2['subprocess_calls']}"
+            )

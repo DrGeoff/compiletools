@@ -1277,35 +1277,34 @@ def test_quoted_define_with_space_compiles_end_to_end(tmp_path, monkeypatch):
         "int main() { return std::strlen(GREETING) == 11 ? 0 : 1; }\n"
     )
 
-    objdir = tmp_path / "obj"
     bindir = tmp_path / "bin"
     bindir.mkdir()
 
-    argv = [
-        "--include",
-        str(tmp_path),
-        "--cas-objdir",
-        str(objdir),
-        "--bindir",
-        str(bindir),
-        str(src_path),
-    ]
+    with uth.isolated_cas_dirs(tmp_path) as cas_argv:
+        argv = [
+            "--include",
+            str(tmp_path),
+            *cas_argv,
+            "--bindir",
+            str(bindir),
+            str(src_path),
+        ]
 
-    with uth.ParserContext():
-        cap = compiletools.apptools.create_parser("Shake greeting test", argv=argv)
-        uth.add_backend_arguments(cap)
+        with uth.ParserContext():
+            cap = compiletools.apptools.create_parser("Shake greeting test", argv=argv)
+            uth.add_backend_arguments(cap)
 
-        ctx = BuildContext()
-        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
-        headerdeps = compiletools.headerdeps.create(args, context=ctx)
-        magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
-        hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
+            ctx = BuildContext()
+            args = compiletools.apptools.parseargs(cap, argv, context=ctx)
+            headerdeps = compiletools.headerdeps.create(args, context=ctx)
+            magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
+            hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
 
-        BackendClass = get_backend_class("shake")
-        backend = BackendClass(args=args, hunter=hunter, context=ctx)
-        graph = backend.build_graph()
-        backend.generate(graph)
-        backend.execute("build")
+            BackendClass = get_backend_class("shake")
+            backend = BackendClass(args=args, hunter=hunter, context=ctx)
+            graph = backend.build_graph()
+            backend.generate(graph)
+            backend.execute("build")
 
     exe_path = bindir / "greeting"
     if not exe_path.exists():

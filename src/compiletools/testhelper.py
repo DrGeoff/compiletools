@@ -500,6 +500,38 @@ def DirectoryContext(target_dir):
 
 
 @contextlib.contextmanager
+def isolated_cas_dirs(parent):
+    """Yield argv overriding the four ``--cas-*dir`` flags into ``parent/cas/``.
+
+    Tests that run ct-cake / Cake from outside ``parent`` (i.e. without
+    ``monkeypatch.chdir(parent)``) inherit the parent process's cwd, so
+    ``find_git_root`` resolves to the compiletools repo and ``--cas-exedir``
+    silently defaults to ``{git_root}/cas-exedir/<variant>`` — leaking link
+    artefacts (and their ``.lock`` / ``.manifest`` sidecars) into the source
+    tree. Overriding ``--cas-objdir`` alone is not enough; the four CAS
+    directories are independent flags. This helper pins all four and removes
+    the tree on exit.
+    """
+    parent = Path(parent)
+    cas_root = parent / "cas"
+    cas_root.mkdir(parents=True, exist_ok=True)
+    argv = [
+        "--cas-objdir",
+        str(cas_root / "obj"),
+        "--cas-pchdir",
+        str(cas_root / "pch"),
+        "--cas-pcmdir",
+        str(cas_root / "pcm"),
+        "--cas-exedir",
+        str(cas_root / "exe"),
+    ]
+    try:
+        yield argv
+    finally:
+        shutil.rmtree(cas_root, ignore_errors=True)
+
+
+@contextlib.contextmanager
 def EnvironmentContext(env_vars):
     """Context manager for temporarily setting environment variables.
 
