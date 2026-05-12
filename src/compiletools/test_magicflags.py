@@ -490,11 +490,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
                     f"Unexpected -l{lib} in LDFLAGS for flags {test_flags}, got: {ldflags_str}"
                 )
 
-    def test_system_header_macro_extraction_bug_fix_disabled(self):
-        """This test is disabled because the iterative processing masks the bug.
-        The bug exists but is corrected in later iterations, making it hard to test."""
-        pass
-
     @uth.requires_functional_compiler
     def test_system_header_macro_extraction_bug_fix(self):
         """Test that DirectMagicFlags has the system header macro extraction fix

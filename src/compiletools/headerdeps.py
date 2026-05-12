@@ -533,5 +533,4 @@ class CppHeaderDeps(HeaderDepsBase):
 
     @staticmethod
     def clear_cache():
-        # print("CppHeaderDeps::clear_cache")
         pass

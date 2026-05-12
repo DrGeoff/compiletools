@@ -9,6 +9,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import typing
 
 import pytest
 
@@ -298,31 +299,12 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
                 build_file = os.path.join(str(effective_tmp), "CMakeLists.txt")
                 with open(build_file, "w") as f:
                     backend.generate(graph, output=f)
-                cmake_build_dir = os.path.join(str(effective_tmp), "cmake-build")
-                os.makedirs(cmake_build_dir, exist_ok=True)
-                result = subprocess.run(
-                    ["cmake", "-S", str(effective_tmp), "-B", cmake_build_dir],
-                    cwd=str(effective_tmp),
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                assert result.returncode == 0, (
-                    f"cmake configure failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
-                )
-                result = subprocess.run(
-                    ["cmake", "--build", cmake_build_dir],
-                    cwd=str(effective_tmp),
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                assert result.returncode == 0, f"cmake build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
-                for dirpath, _dirs, files in os.walk(cmake_build_dir):
-                    for fname in files:
-                        full = os.path.join(dirpath, fname)
-                        if os.access(full, os.X_OK) and not fname.endswith(".cmake"):
-                            shutil.copy2(full, os.path.join(bindir, fname))
+                # Use backend.execute() rather than direct cmake invocation
+                # so the prebuild step (_prebuild_aux_artefacts) runs --
+                # without it, the .gch is never produced because cmake's
+                # add_executable() doesn't model the PCH rule.
+                monkeypatch.chdir(str(effective_tmp))
+                backend.execute("build")
             elif backend_name == "bazel":
                 build_file = os.path.join(str(effective_tmp), "BUILD.bazel")
                 with open(build_file, "w") as f:
@@ -385,6 +367,197 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
             )
             assert "pch works" in run_result.stdout, (
                 f"{backend_name}: expected 'pch works' in output, got: {run_result.stdout}"
+            )
+
+            # Verify the .gch artefact was actually built. Without the
+            # prebuild step in build_backend._prebuild_aux_artefacts the
+            # cmake and bazel backends would silently fall through to
+            # raw-header inclusion -- correctness preserved, performance
+            # lost. Asserting the .gch exists pins the prebuild contract.
+            assert os.path.isfile(gch_rule.output), (
+                f"{backend_name}: PCH .gch was not built at {gch_rule.output}; "
+                f"pchdir contents: {list(pathlib.Path(pchdir).rglob('*')) if os.path.isdir(pchdir) else 'N/A'}"
+            )
+
+
+class TestBackendBuildHeaderUnits(BaseCompileToolsTestCase):
+    """Build a C++20 header-units project with each available backend.
+
+    Mirrors :class:`TestBackendBuildPCH` -- this is the cross-backend
+    correctness check for the prebuild step in
+    ``BuildBackend._prebuild_aux_artefacts``. Without that step the
+    cmake and bazel backends never run the HEADER_UNIT precompile
+    rules, so the consumer compile commands' ``-fmodule-file=`` /
+    ``-fmodule-mapper=`` flags resolve to non-existent paths and the
+    build fails with "module file not found" (clang) or
+    "could not find module" (gcc).
+    """
+
+    # bazel: gcc autoconfig appends ``-fno-canonical-system-headers`` AFTER our
+    # per-target copts and ``--cxxopt`` from .bazelrc, defeating the canonical-
+    # path lookup the global module-mapper relies on. Needs a custom cc_toolchain.
+    # shake/slurm: trace_backend mkdir's every ``rule.order_only_deps`` entry,
+    # turning header-unit ``.gcm`` / ``.pcm`` artefact paths into directories
+    # before the importer compiles.
+    _MODULE_FAILING_BACKENDS: typing.ClassVar[frozenset[str]] = frozenset({"bazel", "shake", "slurm"})
+
+    @uth.requires_functional_compiler
+    @uth.requires_backend_tool()
+    @pytest.mark.parametrize("backend_name", available_backends())
+    def test_build_header_units(self, backend_name, tmp_path, monkeypatch, capfd, capped_parallel_argv, request):
+        """Build cxx_modules_header_units sample with each registered backend."""
+        if backend_name in self._MODULE_FAILING_BACKENDS:
+            request.applymarker(
+                pytest.mark.xfail(
+                    reason="pre-existing defect; see _MODULE_FAILING_BACKENDS comment",
+                    strict=True,
+                )
+            )
+        from compiletools.test_cxx_modules import (
+            _clang_supports_header_units,
+            _detected_gcc_supports_modules,
+            _gcc_supports_header_units,
+            _which,
+        )
+
+        cxx = compiletools.apptools.get_functional_cxx_compiler()
+        if cxx and "g++" in os.path.basename(cxx) and _detected_gcc_supports_modules() and _gcc_supports_header_units():
+            module_cxx = cxx
+        elif _clang_supports_header_units():
+            module_cxx = _which("clang++")
+        else:
+            pytest.skip("No compiler on PATH supports C++20 header units")
+
+        with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp, uth.ParserContext():
+            effective_tmp = pathlib.Path(effective_tmp)
+            sample = os.path.join(uth.samplesdir(), "cxx_modules_header_units")
+            for f in os.listdir(sample):
+                shutil.copy2(os.path.join(sample, f), effective_tmp)
+
+            source_path = os.path.realpath(os.path.join(effective_tmp, "main.cpp"))
+            objdir = os.path.join(str(effective_tmp), "obj")
+            bindir = os.path.join(str(effective_tmp), "bin")
+            pcmdir = os.path.join(str(effective_tmp), "pcm")
+            argv = capped_parallel_argv + [
+                "--include",
+                str(effective_tmp),
+                "--cas-objdir",
+                objdir,
+                "--bindir",
+                bindir,
+                "--cas-pcmdir",
+                pcmdir,
+                source_path,
+            ]
+
+            with uth.CompilerEnvContext(module_cxx):
+                cap = compiletools.apptools.create_parser("Header units integration test", argv=argv)
+                uth.add_backend_arguments(cap)
+                ctx = BuildContext()
+                args = compiletools.apptools.parseargs(cap, argv, context=ctx)
+                headerdeps = compiletools.headerdeps.create(args, context=ctx)
+                magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
+                hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
+
+                BackendClass = get_backend_class(backend_name)
+                backend = BackendClass(args=args, hunter=hunter, context=ctx)
+                graph = backend.build_graph()
+
+                # The graph must carry header-unit producer rules for at
+                # least the imported headers (vector, cstdio). Without
+                # them the prebuild step has nothing to do and the test
+                # would silently degenerate to "compiles without modules"
+                # on backends that ignore module flags.
+                from compiletools.build_graph import RuleType
+
+                hu_rules = graph.rules_by_type(RuleType.HEADER_UNIT)
+                clang_module_precompile = [
+                    r
+                    for r in graph.rules_by_type(RuleType.COMPILE)
+                    if r.command and "--precompile" in r.command and r.output.endswith(".pcm")
+                ]
+                aux_producers = hu_rules + clang_module_precompile
+                assert aux_producers, (
+                    f"{backend_name}: graph has no HEADER_UNIT or clang --precompile rules; "
+                    f"sample probably did not detect the imports."
+                )
+
+                os.makedirs(bindir, exist_ok=True)
+
+                if backend_name in ("shake", "slurm"):
+                    backend.generate(graph)
+                    backend.execute("build")
+                elif backend_name == "cmake":
+                    build_file = os.path.join(str(effective_tmp), "CMakeLists.txt")
+                    with open(build_file, "w") as f:
+                        backend.generate(graph, output=f)
+                    monkeypatch.chdir(str(effective_tmp))
+                    backend.execute("build")
+                elif backend_name == "bazel":
+                    build_file = os.path.join(str(effective_tmp), "BUILD.bazel")
+                    with open(build_file, "w") as f:
+                        backend.generate(graph, output=f)
+                    with open(os.path.join(str(effective_tmp), "MODULE.bazel"), "w") as f:
+                        f.write('module(name = "compiletools_test")\n')
+                        f.write('bazel_dep(name = "rules_cc", version = "0.1.5")\n')
+                    monkeypatch.chdir(str(effective_tmp))
+                    try:
+                        backend.execute("build")
+                    except subprocess.CalledProcessError:
+                        captured = capfd.readouterr()
+                        uth.skip_if_bazel_env_error(captured.err)
+                        raise
+                else:
+                    build_file = os.path.join(str(effective_tmp), type(backend).build_filename())
+                    with open(build_file, "w") as f:
+                        backend.generate(graph, output=f)
+                    if backend_name == "make":
+                        cmd = ["make", "-s", "-j1", "-f", build_file, "build"]
+                    elif backend_name == "ninja":
+                        cmd = ["ninja", "-f", build_file, "build"]
+                    else:
+                        pytest.skip(f"Don't know how to invoke {backend_name}")
+                    result = subprocess.run(
+                        cmd,
+                        cwd=str(effective_tmp),
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+                    assert result.returncode == 0, (
+                        f"{backend_name} build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+                    )
+
+            # Verify all aux producer artefacts exist post-build. The
+            # prebuild step is what creates them on cmake/bazel; on
+            # make/ninja/shake/slurm they're part of the per-rule
+            # executor's graph.
+            missing = [r.output for r in aux_producers if not os.path.isfile(r.output)]
+            assert not missing, (
+                f"{backend_name}: aux producer outputs missing post-build: {missing}\n"
+                f"pcmdir contents: {list(pathlib.Path(pcmdir).rglob('*')) if os.path.isdir(pcmdir) else 'N/A'}"
+            )
+
+            exe_name = "main"
+            candidates = []
+            for dirpath, _dirs, files in os.walk(str(effective_tmp)):
+                for f in files:
+                    full = os.path.join(dirpath, f)
+                    if compiletools.utils.is_executable(full) and f == exe_name:
+                        candidates.append(full)
+            assert candidates, (
+                f"{backend_name}: no executable '{exe_name}' found.\n"
+                f"Files in bindir: {list(os.listdir(bindir)) if os.path.isdir(bindir) else 'N/A'}"
+            )
+            run_result = subprocess.run([candidates[0]], capture_output=True, text=True, timeout=10)
+            assert run_result.returncode == 0, (
+                f"{backend_name}: executable failed:\nstdout: {run_result.stdout}\nstderr: {run_result.stderr}"
+            )
+            assert "vec_size=5" in run_result.stdout, (
+                f"{backend_name}: expected 'vec_size=5' in output, got: {run_result.stdout}"
+            )
+            assert "front=2" in run_result.stdout, (
+                f"{backend_name}: expected 'front=2' in output, got: {run_result.stdout}"
             )
 
 

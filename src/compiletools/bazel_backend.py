@@ -358,6 +358,11 @@ class BazelBackend(BuildBackend):
         if tool is None:
             raise RuntimeError("Neither 'bazelisk' nor 'bazel' found on PATH")
 
+        # Bazel's spawn strategy is pinned to local in .bazelrc, so the
+        # CAS-absolute paths the prebuilt artefacts live at resolve
+        # correctly from inside the bazel-spawned compile.
+        self._prebuild_aux_artefacts()
+
         base_dir = self._default_base_dir()
         # Materialise out-of-workspace sources into <base_dir>/ext/ now,
         # immediately before the actual Bazel build. Done here (not in
@@ -419,6 +424,12 @@ class BazelBackend(BuildBackend):
 
         lines.append("build --spawn_strategy=local")
         lines.append("build --action_env=PATH")
+        # Bazel's gcc autoconfig disables canonical system headers for
+        # path-stable outputs, which makes gcc's <vector> resolution miss the
+        # canonical path key in the module mapper. Re-enable so module-mapper
+        # lookups land on the path compiletools wrote.
+        if self._graph_uses_gcc_modules():
+            lines.append("build --cxxopt=-fcanonical-system-headers")
         # rules_cc 0.2.x defaults to -fuse-ld=lld at the GLOBAL bazel link
         # action, which gcc-only toolchains (e.g. gcc-15.2.0 ships gold, not
         # lld) cannot satisfy. Per-target linkopts (driven by LDFLAGS and magic
@@ -500,6 +511,16 @@ class BazelBackend(BuildBackend):
             return True
         if tok.startswith("-Wl,") and any(p.startswith("-fuse-ld=") for p in tok[4:].split(",")):
             return True
+        return False
+
+    def _graph_uses_gcc_modules(self) -> bool:
+        """True if any rule's command carries ``-fmodule-mapper=`` (gcc-only)."""
+        if self._graph is None:
+            return False
+        for rule in self._graph.rules:
+            for tok in rule.command or ():
+                if tok.startswith("-fmodule-mapper="):
+                    return True
         return False
 
     def _user_set_fuse_ld(self) -> bool:

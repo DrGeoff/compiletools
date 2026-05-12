@@ -210,6 +210,8 @@ class CMakeBackend(BuildBackend):
         if cmake is None:
             raise RuntimeError("'cmake' not found on PATH")
 
+        self._prebuild_aux_artefacts()
+
         # Use out-of-source build in {objdir}/cmake-build
         source_dir = os.path.dirname(compiletools.wrappedos.realpath(self.build_filename()))
         build_dir = os.path.join(self.args.cas_objdir, "cmake-build")

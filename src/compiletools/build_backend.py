@@ -36,6 +36,7 @@ import compiletools.test_framework
 import compiletools.utils
 import compiletools.wrappedos
 from compiletools.build_graph import BuildGraph, BuildRule, RuleType
+from compiletools.locking import FileLock, atomic_compile, atomic_link
 from compiletools.magicflags import _HARD_ORDERINGS_KEY
 from compiletools.test_framework import TestFramework
 
@@ -467,6 +468,54 @@ class BuildBackend(abc.ABC):
     @abc.abstractmethod
     def _execute_build(self, target: str) -> None:
         """Backend-specific build invocation (subprocess call to native tool)."""
+
+    def _prebuild_aux_artefacts(self) -> None:
+        """Subprocess-execute PCH (.gch) and HEADER_UNIT (.pcm/.gcm) producer rules.
+
+        Backends that emit one ``cc_binary`` / ``add_executable`` per LINK
+        rule (CMake, Bazel) hand source-to-binary compilation to the
+        native tool, but the PCH and header-unit producer rules sit
+        outside that chain — the native tool never sees them. Running
+        them here lands the artefacts on disk so the per-TU compile
+        commands the native tool subsequently runs find them via the
+        already-baked ``-fmodule-file=`` / ``-fmodule-mapper=`` /
+        ``-I <pchdir>/<hash>`` flags. Locking via ``atomic_compile`` /
+        ``atomic_link`` lets peer ct-cake invocations sharing a CAS dir
+        cooperate.
+        """
+        graph = self._graph
+        if graph is None:
+            return
+        pch_rules = [r for r in graph.rules_by_type(RuleType.COMPILE) if r.output.endswith(".gch")]
+        aux_rules = pch_rules + graph.rules_by_type(RuleType.HEADER_UNIT)
+        if not aux_rules:
+            return
+
+        for rule in aux_rules:
+            for d in rule.order_only_deps:
+                os.makedirs(d, exist_ok=True)
+
+        verbose = getattr(self.args, "verbose", 0)
+        for rule in aux_rules:
+            if os.path.exists(rule.output):
+                continue
+            assert rule.command is not None, f"aux rule {rule.output} has no command"
+            if verbose >= 1:
+                print(" ".join(rule.command), file=sys.stderr)
+            lock_impl = FileLock(rule.output, self.args).lock
+            if rule.rule_type == RuleType.COMPILE:
+                # atomic_compile requires the command WITHOUT the trailing -o/target pair.
+                cmd = rule.command
+                try:
+                    o_idx = cmd.index("-o")
+                except ValueError as e:
+                    raise AssertionError(f"PCH rule {rule.output!r} missing -o flag: {cmd}") from e
+                atomic_compile(lock_impl, rule.output, cmd[:o_idx] + cmd[o_idx + 2 :])
+            else:
+                # HEADER_UNIT: gcc's shell-pipeline form does its own producer-side
+                # rename inside the pipeline; atomic_link's outer rewrite no-ops
+                # (emits a one-time warning) but the rule still runs correctly.
+                atomic_link(lock_impl, rule.output, list(rule.command))
 
     def clean(self) -> None:
         """Remove build artifacts. Override for backend-specific cleanup."""
