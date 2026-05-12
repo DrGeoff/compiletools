@@ -1251,50 +1251,34 @@ class TestCompilationDatabaseModuleFlags:
     def setup_method(self):
         uth.reset()
 
-    @uth.requires_functional_compiler
     def test_gcc_module_importer_gets_fmodules_ts(self):
         """A TU with `import math;` compiled under gcc must carry -fmodules-ts
-        in its compile_commands.json entry."""
-        import shutil
+        in its compile_commands.json entry; without it clangd / clang-tidy
+        report the import as undefined. Unit-level test (no compiler required):
+        constructs a CompilationDatabaseCreator and stubs the file-analysis
+        result for a gcc CXX, mirroring test_clang_header_unit_importer_gets_fmodules.
+        Avoiding the end-to-end path is deliberate: the CDB-on-disk variant
+        only worked when get_functional_cxx_compiler() returned a g++ that
+        accepted -std=c++20, which is environment-dependent."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
 
-        with uth.TempDirContext():
-            samplesdir = uth.samplesdir()
-            sample_src = os.path.join(samplesdir, "cxx_modules")
-            workdir = os.getcwd()
-            for name in ("main.cpp", "math.cppm"):
-                shutil.copy(os.path.join(sample_src, name), workdir)
+        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
+            compiletools.compilation_database.CompilationDatabaseCreator
+        )
+        creator.args = SimpleNamespace(CXX="g++")
+        creator.hunter = MagicMock()
+        creator.hunter._file_analysis_result = MagicMock(
+            return_value=SimpleNamespace(
+                module_exports=(),
+                module_implements=(),
+                module_imports=("math",),
+                module_header_imports=(),
+            )
+        )
 
-            with uth.TempConfigContext(tempdir=workdir) as temp_config_name:
-                main_path = os.path.join(workdir, "main.cpp")
-                math_path = os.path.join(workdir, "math.cppm")
-                with uth.ParserContext():
-                    compiletools.compilation_database.main(
-                        [
-                            "--config=" + temp_config_name,
-                            "--variant=gcc.debug",
-                            "--CXXFLAGS=-std=c++20",
-                            main_path,
-                            math_path,
-                        ]
-                    )
-
-                cdb_path = os.path.join(workdir, "compile_commands.gcc.debug.json")
-                assert os.path.exists(cdb_path), (
-                    f"expected per-variant CDB at {cdb_path}; workdir contains: {sorted(os.listdir(workdir))}"
-                )
-                with open(cdb_path) as f:
-                    entries = json.load(f)
-
-                main_entries = [e for e in entries if e["file"].endswith("main.cpp")]
-                assert len(main_entries) == 1, (
-                    f"expected one main.cpp entry, got {len(main_entries)}: {[e['file'] for e in entries]}"
-                )
-                args = main_entries[0]["arguments"]
-                assert "-fmodules-ts" in args, (
-                    f"gcc CDB entry for main.cpp lacks -fmodules-ts; "
-                    f"clangd will report `import math;` as undefined. "
-                    f"args={args!r}"
-                )
+        flags = creator._module_kind_flags("/src/main.cpp")
+        assert "-fmodules-ts" in flags, f"gcc TU with import math; needs -fmodules-ts, got {flags!r}"
 
     def test_clang_header_unit_importer_gets_fmodules(self):
         """A TU with `import <vector>;` compiled under clang must carry -fmodules

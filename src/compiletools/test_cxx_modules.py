@@ -519,12 +519,8 @@ def _run_sample_with_compiler(sample_name: str, cxx: str, tmp_path, monkeypatch)
 
     Uses environment overrides (CXX/CPP/LD) so this exercises exactly the
     same compile-rule-emission code path as a user invoking ct-cake from
-    a config that pins the compiler. LD must follow CXX: the bundled
-    default variant (``gcc.cxx26.debug``) loads ``gcc.conf`` which pins
-    ``LD = g++``; without an env LD override the linker stays g++ and any
-    clang compile that auto-injects ``-stdlib=libc++`` (e.g. import-std,
-    header-unit builds) leaks libc++ symbols into a g++ link, producing
-    undefined references to ``std::__1::*``.
+    a config that pins the compiler. ``uth.CompilerEnvContext`` documents
+    why all three must move together.
     """
     import shutil
 
@@ -534,19 +530,14 @@ def _run_sample_with_compiler(sample_name: str, cxx: str, tmp_path, monkeypatch)
     shutil.copytree(sample_src, workdir)
     monkeypatch.chdir(workdir)
 
-    env = os.environ.copy()
-    env["CXX"] = cxx
-    env["CPP"] = cxx
-    env["LD"] = cxx
-    # CC stays unchanged: the samples are pure C++.
-    r = subprocess.run(
-        ["ct-cake"],
-        capture_output=True,
-        text=True,
-        cwd=workdir,
-        timeout=120,
-        env=env,
-    )
+    with uth.CompilerEnvContext(cxx):
+        r = subprocess.run(
+            ["ct-cake"],
+            capture_output=True,
+            text=True,
+            cwd=workdir,
+            timeout=120,
+        )
     assert r.returncode == 0, f"ct-cake --auto (CXX={cxx}) failed:\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
     exe = workdir / "bin" / "main"
     assert exe.exists(), f"executable not produced (CXX={cxx}):\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
@@ -582,18 +573,14 @@ def _run_partitions_sample_with(cxx: str, tmp_path, monkeypatch):
     shutil.copytree(sample_src, workdir)
     monkeypatch.chdir(workdir)
 
-    env = os.environ.copy()
-    env["CXX"] = cxx
-    env["CPP"] = cxx
-    env["LD"] = cxx  # see _run_sample_with_compiler for why LD must follow CXX
-    r = subprocess.run(
-        ["ct-cake"],
-        capture_output=True,
-        text=True,
-        cwd=workdir,
-        timeout=120,
-        env=env,
-    )
+    with uth.CompilerEnvContext(cxx):
+        r = subprocess.run(
+            ["ct-cake"],
+            capture_output=True,
+            text=True,
+            cwd=workdir,
+            timeout=120,
+        )
     assert r.returncode == 0, f"ct-cake --auto (CXX={cxx}) failed:\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
     exe = workdir / "bin" / "main"
     assert exe.exists(), f"executable not produced (CXX={cxx}):\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
@@ -640,18 +627,14 @@ def _run_import_std_sample_with(cxx: str, tmp_path, monkeypatch):
     shutil.copytree(sample_src, workdir)
     monkeypatch.chdir(workdir)
 
-    env = os.environ.copy()
-    env["CXX"] = cxx
-    env["CPP"] = cxx
-    env["LD"] = cxx  # see _run_sample_with_compiler for why LD must follow CXX
-    r = subprocess.run(
-        ["ct-cake"],
-        capture_output=True,
-        text=True,
-        cwd=workdir,
-        timeout=180,
-        env=env,
-    )
+    with uth.CompilerEnvContext(cxx):
+        r = subprocess.run(
+            ["ct-cake"],
+            capture_output=True,
+            text=True,
+            cwd=workdir,
+            timeout=180,
+        )
     assert r.returncode == 0, f"ct-cake --auto (CXX={cxx}) failed:\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
     exe = workdir / "bin" / "main"
     assert exe.exists(), f"executable not produced (CXX={cxx}):\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
@@ -865,18 +848,14 @@ def _run_header_units_sample_with(cxx: str, tmp_path, monkeypatch):
     shutil.copytree(sample_src, workdir)
     monkeypatch.chdir(workdir)
 
-    env = os.environ.copy()
-    env["CXX"] = cxx
-    env["CPP"] = cxx
-    env["LD"] = cxx  # see _run_sample_with_compiler for why LD must follow CXX
-    r = subprocess.run(
-        ["ct-cake"],
-        capture_output=True,
-        text=True,
-        cwd=workdir,
-        timeout=180,
-        env=env,
-    )
+    with uth.CompilerEnvContext(cxx):
+        r = subprocess.run(
+            ["ct-cake"],
+            capture_output=True,
+            text=True,
+            cwd=workdir,
+            timeout=180,
+        )
     assert r.returncode == 0, f"ct-cake --auto (CXX={cxx}) failed:\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
     exe = workdir / "bin" / "main"
     assert exe.exists(), f"executable not produced (CXX={cxx}):\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
@@ -932,44 +911,39 @@ def test_cas_pcmdir_clang_pcm_survives_rebuild(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
     monkeypatch.chdir(workdir)
 
-    env = os.environ.copy()
-    env["CXX"] = cxx
-    env["CPP"] = cxx
+    with uth.CompilerEnvContext(cxx):
+        # First build.
+        r1 = subprocess.run(
+            ["ct-cake"],
+            capture_output=True,
+            text=True,
+            cwd=workdir,
+            timeout=180,
+        )
+        assert r1.returncode == 0, f"first build failed:\n{r1.stdout}\n{r1.stderr}"
+        pcm_files = list((workdir / "cas-pcmdir").rglob("*.pcm"))
+        assert pcm_files, (
+            f"first build produced no .pcm under cas-pcmdir: contents={list((workdir / 'cas-pcmdir').rglob('*'))}"
+        )
+        # Capture the mtime of every cached .pcm so we can prove none of
+        # them got rewritten.
+        mtimes_before = {p: p.stat().st_mtime_ns for p in pcm_files}
 
-    # First build.
-    r1 = subprocess.run(
-        ["ct-cake"],
-        capture_output=True,
-        text=True,
-        cwd=workdir,
-        timeout=180,
-        env=env,
-    )
-    assert r1.returncode == 0, f"first build failed:\n{r1.stdout}\n{r1.stderr}"
-    pcm_files = list((workdir / "cas-pcmdir").rglob("*.pcm"))
-    assert pcm_files, (
-        f"first build produced no .pcm under cas-pcmdir: contents={list((workdir / 'cas-pcmdir').rglob('*'))}"
-    )
-    # Capture the mtime of every cached .pcm so we can prove none of
-    # them got rewritten.
-    mtimes_before = {p: p.stat().st_mtime_ns for p in pcm_files}
+        # Tear down the per-build artefacts but KEEP cas-pcmdir. Then ensure
+        # at least 1ns has passed so any rewrite would be visible in mtime.
+        shutil.rmtree(workdir / "bin", ignore_errors=True)
+        shutil.rmtree(workdir / "cas-objdir", ignore_errors=True)
+        (workdir / "compile_commands.json").unlink(missing_ok=True)
 
-    # Tear down the per-build artefacts but KEEP cas-pcmdir. Then ensure
-    # at least 1ns has passed so any rewrite would be visible in mtime.
-    shutil.rmtree(workdir / "bin", ignore_errors=True)
-    shutil.rmtree(workdir / "cas-objdir", ignore_errors=True)
-    (workdir / "compile_commands.json").unlink(missing_ok=True)
-
-    # Second build.
-    r2 = subprocess.run(
-        ["ct-cake"],
-        capture_output=True,
-        text=True,
-        cwd=workdir,
-        timeout=180,
-        env=env,
-    )
-    assert r2.returncode == 0, f"second build failed:\n{r2.stdout}\n{r2.stderr}"
+        # Second build.
+        r2 = subprocess.run(
+            ["ct-cake"],
+            capture_output=True,
+            text=True,
+            cwd=workdir,
+            timeout=180,
+        )
+        assert r2.returncode == 0, f"second build failed:\n{r2.stdout}\n{r2.stderr}"
 
     # Cache hit: every .pcm path that existed before still exists, with
     # the same mtime (i.e., make didn't re-run the precompile rule).
@@ -1014,17 +988,14 @@ def test_gcc_mapper_records_partition_names_with_colon(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
     monkeypatch.chdir(workdir)
 
-    env = os.environ.copy()
-    env["CXX"] = cxx
-    env["CPP"] = cxx
-    r = subprocess.run(
-        ["ct-cake"],
-        capture_output=True,
-        text=True,
-        cwd=workdir,
-        timeout=180,
-        env=env,
-    )
+    with uth.CompilerEnvContext(cxx):
+        r = subprocess.run(
+            ["ct-cake"],
+            capture_output=True,
+            text=True,
+            cwd=workdir,
+            timeout=180,
+        )
     assert r.returncode == 0, f"build failed:\n{r.stdout}\n{r.stderr}"
 
     # The mapper now lives next to the makefile (was cas-objdir before
@@ -1075,17 +1046,14 @@ def test_cas_pcmdir_gcc_gcm_lands_in_cache(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
     monkeypatch.chdir(workdir)
 
-    env = os.environ.copy()
-    env["CXX"] = cxx
-    env["CPP"] = cxx
-    r = subprocess.run(
-        ["ct-cake"],
-        capture_output=True,
-        text=True,
-        cwd=workdir,
-        timeout=180,
-        env=env,
-    )
+    with uth.CompilerEnvContext(cxx):
+        r = subprocess.run(
+            ["ct-cake"],
+            capture_output=True,
+            text=True,
+            cwd=workdir,
+            timeout=180,
+        )
     assert r.returncode == 0, f"build failed:\n{r.stdout}\n{r.stderr}"
 
     # The .gcm must land under cas-pcmdir (proves the mapper redirected
@@ -1137,38 +1105,34 @@ def test_cas_pcmdir_gcc_header_unit_gcm_survives_rebuild(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
     monkeypatch.chdir(workdir)
 
-    env = os.environ.copy()
-    env["CXX"] = cxx
-    env["CPP"] = cxx
-    r1 = subprocess.run(
-        ["ct-cake"],
-        capture_output=True,
-        text=True,
-        cwd=workdir,
-        timeout=180,
-        env=env,
-    )
-    assert r1.returncode == 0, f"first build failed:\n{r1.stdout}\n{r1.stderr}"
-    gcm_files = list((workdir / "cas-pcmdir").rglob("*.gcm"))
-    assert gcm_files, (
-        f"first build produced no header-unit .gcm under cas-pcmdir: "
-        f"contents={list((workdir / 'cas-pcmdir').rglob('*'))}"
-    )
-    mtimes_before = {p: p.stat().st_mtime_ns for p in gcm_files}
+    with uth.CompilerEnvContext(cxx):
+        r1 = subprocess.run(
+            ["ct-cake"],
+            capture_output=True,
+            text=True,
+            cwd=workdir,
+            timeout=180,
+        )
+        assert r1.returncode == 0, f"first build failed:\n{r1.stdout}\n{r1.stderr}"
+        gcm_files = list((workdir / "cas-pcmdir").rglob("*.gcm"))
+        assert gcm_files, (
+            f"first build produced no header-unit .gcm under cas-pcmdir: "
+            f"contents={list((workdir / 'cas-pcmdir').rglob('*'))}"
+        )
+        mtimes_before = {p: p.stat().st_mtime_ns for p in gcm_files}
 
-    shutil.rmtree(workdir / "bin", ignore_errors=True)
-    shutil.rmtree(workdir / "cas-objdir", ignore_errors=True)
-    (workdir / "compile_commands.json").unlink(missing_ok=True)
+        shutil.rmtree(workdir / "bin", ignore_errors=True)
+        shutil.rmtree(workdir / "cas-objdir", ignore_errors=True)
+        (workdir / "compile_commands.json").unlink(missing_ok=True)
 
-    r2 = subprocess.run(
-        ["ct-cake"],
-        capture_output=True,
-        text=True,
-        cwd=workdir,
-        timeout=180,
-        env=env,
-    )
-    assert r2.returncode == 0, f"second build failed:\n{r2.stdout}\n{r2.stderr}"
+        r2 = subprocess.run(
+            ["ct-cake"],
+            capture_output=True,
+            text=True,
+            cwd=workdir,
+            timeout=180,
+        )
+        assert r2.returncode == 0, f"second build failed:\n{r2.stdout}\n{r2.stderr}"
 
     for gcm_path, before in mtimes_before.items():
         assert gcm_path.exists(), f"cached header-unit .gcm vanished: {gcm_path}"
@@ -1206,58 +1170,53 @@ def test_ct_trim_cache_evicts_old_pcm_entries(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
     monkeypatch.chdir(workdir)
 
-    env = os.environ.copy()
-    env["CXX"] = cxx
-    env["CPP"] = cxx
+    with uth.CompilerEnvContext(cxx):
+        # First, do a real build so the current cmd_hash dir is populated
+        # with a manifest.
+        r = subprocess.run(
+            ["ct-cake"],
+            capture_output=True,
+            text=True,
+            cwd=workdir,
+            timeout=180,
+        )
+        assert r.returncode == 0, f"build failed:\n{r.stdout}\n{r.stderr}"
+        # Default variant resolves to gcc.debug (the bundled ct.conf default
+        # since the variant-aliases retirement); env CXX still selects clang++
+        # because env > config-file in the resolution hierarchy.
+        pcmdir_root = next((workdir / "cas-pcmdir").iterdir())
+        real_dirs = [p for p in pcmdir_root.iterdir() if p.is_dir()]
+        assert real_dirs, f"no cmd_hash dirs under {pcmdir_root}"
+        real_dir = real_dirs[0]
 
-    # First, do a real build so the current cmd_hash dir is populated
-    # with a manifest.
-    r = subprocess.run(
-        ["ct-cake"],
-        capture_output=True,
-        text=True,
-        cwd=workdir,
-        timeout=180,
-        env=env,
-    )
-    assert r.returncode == 0, f"build failed:\n{r.stdout}\n{r.stderr}"
-    # Default variant resolves to gcc.debug (the bundled ct.conf default
-    # since the variant-aliases retirement); env CXX still selects clang++
-    # because env > config-file in the resolution hierarchy.
-    pcmdir_root = next((workdir / "cas-pcmdir").iterdir())
-    real_dirs = [p for p in pcmdir_root.iterdir() if p.is_dir()]
-    assert real_dirs, f"no cmd_hash dirs under {pcmdir_root}"
-    real_dir = real_dirs[0]
+        # Plant a fake stale cmd_hash dir, same bucket via manifest, aged
+        # so the keep_count=1 policy retains the real entry over the fake.
+        import time
 
-    # Plant a fake stale cmd_hash dir, same bucket via manifest, aged
-    # so the keep_count=1 policy retains the real entry over the fake.
-    import time
+        fake = pcmdir_root / ("0" * 16)
+        fake.mkdir()
+        (fake / "math.pcm").write_bytes(b"\x00" * 100)
+        fake_manifest = {
+            "bucket_key": str(workdir / "math.cppm"),  # same bucket as real
+            "stage": "clang_module_interface",
+            "compiler": cxx,
+            "compiler_identity": "fake|0|0",
+            "transitive_hashes": {},
+        }
+        import json
 
-    fake = pcmdir_root / ("0" * 16)
-    fake.mkdir()
-    (fake / "math.pcm").write_bytes(b"\x00" * 100)
-    fake_manifest = {
-        "bucket_key": str(workdir / "math.cppm"),  # same bucket as real
-        "stage": "clang_module_interface",
-        "compiler": cxx,
-        "compiler_identity": "fake|0|0",
-        "transitive_hashes": {},
-    }
-    import json
+        (fake / "manifest.json").write_text(json.dumps(fake_manifest))
+        old_mtime = time.time() - 86400  # one day old
+        os.utime(fake, (old_mtime, old_mtime))
 
-    (fake / "manifest.json").write_text(json.dumps(fake_manifest))
-    old_mtime = time.time() - 86400  # one day old
-    os.utime(fake, (old_mtime, old_mtime))
-
-    r = subprocess.run(
-        ["ct-trim-cache", "--cas-pcmdir-only", "--keep-count", "1", "--cas-pcmdir", str(pcmdir_root)],
-        capture_output=True,
-        text=True,
-        cwd=workdir,
-        timeout=30,
-        env=env,
-    )
-    assert r.returncode == 0, f"trim failed:\n{r.stdout}\n{r.stderr}"
+        r = subprocess.run(
+            ["ct-trim-cache", "--cas-pcmdir-only", "--keep-count", "1", "--cas-pcmdir", str(pcmdir_root)],
+            capture_output=True,
+            text=True,
+            cwd=workdir,
+            timeout=30,
+        )
+        assert r.returncode == 0, f"trim failed:\n{r.stdout}\n{r.stderr}"
 
     # Real (current) dir survives; fake (older, same bucket) was evicted.
     assert real_dir.exists(), f"current build's cmd_hash dir was evicted: {real_dir}\ntrim output:\n{r.stdout}"
@@ -1292,17 +1251,14 @@ def test_cas_pcmdir_path_layout_is_content_addressed(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
     monkeypatch.chdir(workdir)
 
-    env = os.environ.copy()
-    env["CXX"] = cxx
-    env["CPP"] = cxx
-    r = subprocess.run(
-        ["ct-cake"],
-        capture_output=True,
-        text=True,
-        cwd=workdir,
-        timeout=180,
-        env=env,
-    )
+    with uth.CompilerEnvContext(cxx):
+        r = subprocess.run(
+            ["ct-cake"],
+            capture_output=True,
+            text=True,
+            cwd=workdir,
+            timeout=180,
+        )
     assert r.returncode == 0, f"build failed:\n{r.stdout}\n{r.stderr}"
 
     pcm_files = list((workdir / "cas-pcmdir").rglob("*.pcm"))

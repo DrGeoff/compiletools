@@ -570,6 +570,28 @@ def EnvironmentContext(env_vars):
 
 
 @contextlib.contextmanager
+def CompilerEnvContext(cxx):
+    """Pin CXX, CPP, and LD to the same compiler in the environment.
+
+    Subprocesses spawned inside the ``with`` block (e.g. ``ct-cake`` via
+    ``subprocess.run``) inherit ``os.environ`` and pick up all three
+    overrides without an explicit ``env=`` argument.
+
+    LD must move with CXX: the bundled default variant
+    (``gcc.cxx26.debug``) loads ``gcc.conf`` which pins ``LD = g++``;
+    without an env LD override the linker stays g++ and any clang
+    compile that auto-injects ``-stdlib=libc++`` (or merely propagates
+    ``-std=c++20`` from CXXFLAGS into LDFLAGS via
+    ``unsupplied_replacement``) leaks into a g++ link, producing either
+    "unrecognized command line option" on an old g++ or undefined
+    references to ``std::__1::*`` on a newer one. CC stays unchanged --
+    the C++ samples are pure C++ and don't exercise the C compiler.
+    """
+    with EnvironmentContext({"CXX": cxx, "CPP": cxx, "LD": cxx}):
+        yield
+
+
+@contextlib.contextmanager
 def ParserContext():
     """Context manager for temporarily resetting configargparse state."""
     saved_parsers = configargparse._parsers.copy()
