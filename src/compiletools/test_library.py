@@ -430,10 +430,14 @@ class TestLibrary:
                     f.write(f"// Test copy: {os.path.basename(ff)}\n{content}")
 
             # Build the exe, linking against the library
-            argv = capped_parallel_argv + [
-                "--config=" + temp_config_name,
-                f"--backend={backend_name}",
-            ] + realpaths
+            argv = (
+                capped_parallel_argv
+                + [
+                    "--config=" + temp_config_name,
+                    f"--backend={backend_name}",
+                ]
+                + realpaths
+            )
             with uth.ParserContext():
                 ret = compiletools.cake.main(argv)
             if ret != 0 and backend_name == "bazel":

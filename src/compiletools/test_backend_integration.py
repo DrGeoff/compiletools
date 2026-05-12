@@ -74,7 +74,9 @@ class TestBackendBuildApplication(BaseCompileToolsTestCase):
         """Build helloworld_cpp.cpp with each registered backend."""
         with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp, uth.ParserContext():
             effective_tmp = pathlib.Path(effective_tmp)
-            backend, graph, args = _setup_backend_for_source(backend_name, effective_tmp, extra_argv=capped_parallel_argv)
+            backend, graph, args = _setup_backend_for_source(
+                backend_name, effective_tmp, extra_argv=capped_parallel_argv
+            )
 
             # Verify graph has expected structure
             compile_rules = graph.rules_by_type("compile")

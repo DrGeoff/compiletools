@@ -137,7 +137,11 @@ def _run_build(tmp_path, report_name, seed, cas_argv, capped_parallel_argv=()):
     worktree_src = os.path.dirname(os.path.dirname(compiletools.__file__))
     env["PYTHONPATH"] = os.pathsep.join([worktree_src, env.get("PYTHONPATH", "")])
     cmd = [
-        sys.executable, "-c", _BUILD_SCRIPT, str(tmp_path), report_path,
+        sys.executable,
+        "-c",
+        _BUILD_SCRIPT,
+        str(tmp_path),
+        report_path,
         *capped_parallel_argv,
         *cas_argv,
     ]
@@ -169,8 +173,11 @@ class TestNoopRebuild:
         with uth.isolated_cas_dirs(tmp_path) as cas_argv:
             # Build 1 (seed=42): real compilation — produces .o, executable, traces
             report1 = _run_build(
-                tmp_path, "report1.json", seed=42,
-                cas_argv=cas_argv, capped_parallel_argv=capped_parallel_argv,
+                tmp_path,
+                "report1.json",
+                seed=42,
+                cas_argv=cas_argv,
+                capped_parallel_argv=capped_parallel_argv,
             )
             assert report1["subprocess_calls"] >= 1, "First build should invoke the compiler"
 
@@ -180,8 +187,11 @@ class TestNoopRebuild:
             # Build 2 (seed=999): different hash seed, same source files on disk.
             # Nothing should compile or link.
             report2 = _run_build(
-                tmp_path, "report2.json", seed=999,
-                cas_argv=cas_argv, capped_parallel_argv=capped_parallel_argv,
+                tmp_path,
+                "report2.json",
+                seed=999,
+                cas_argv=cas_argv,
+                capped_parallel_argv=capped_parallel_argv,
             )
             assert report2["subprocess_calls"] == 0, (
                 f"Expected zero compiler/linker calls on repeat build, got {report2['subprocess_calls']}"
