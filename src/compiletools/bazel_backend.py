@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import collections
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -83,11 +84,7 @@ class BazelBackend(BuildBackend):
     @classmethod
     def _find_bazel_tool(cls) -> str | None:
         """Return the first available bazel-family tool on PATH, or None."""
-        for name in cls._BAZEL_INVOKE_PREFERENCE:
-            path = shutil.which(name)
-            if path:
-                return path
-        return None
+        return next((p for p in (shutil.which(n) for n in cls._BAZEL_INVOKE_PREFERENCE) if p), None)
 
     @classmethod
     def _default_base_dir(cls) -> str:
@@ -161,8 +158,9 @@ class BazelBackend(BuildBackend):
             kind = "cc_test" if rule.output in test_exe_paths else "cc_binary"
             plan.append((kind, rule, False))
 
+        kinds_present = {k for k, _, _ in plan}
         for kind in ("cc_binary", "cc_library", "cc_test"):
-            if any(k == kind for k, _, _ in plan):
+            if kind in kinds_present:
                 f.write(f'load("@rules_cc//cc:{kind}.bzl", "{kind}")\n')
 
         if base_dir is None:
@@ -222,9 +220,8 @@ class BazelBackend(BuildBackend):
         out.append('"')
         return "".join(out)
 
-    @classmethod
+    @staticmethod
     def _emit_target(
-        cls,
         f,
         kind: str,
         target_name: str,
@@ -235,7 +232,7 @@ class BazelBackend(BuildBackend):
         linkshared: bool = False,
     ) -> None:
         """Write a single ``cc_library`` / ``cc_binary`` / ``cc_test`` stanza."""
-        q = cls._starlark_str
+        q = BazelBackend._starlark_str
         lines = [f"\n{kind}(", f"    name = {q(target_name)},"]
         for attr, values in (("srcs", rel_srcs), ("copts", all_copts), ("linkopts", linkopts)):
             if not values:
@@ -374,7 +371,14 @@ class BazelBackend(BuildBackend):
         # may change between calls.
         self._write_bazelrc(base_dir)
 
-        bazel_target = "//:all" if target in ("build", "all") else f"//:{target}"
+        # The base-class ``execute()`` routes "runtests" through ``_run_tests``
+        # before calling here, so the only targets that reach ``_execute_build``
+        # are "build", "all", or a specific user-named target — all of which
+        # we map to a valid Bazel label.
+        if target in ("build", "all"):
+            bazel_target = "//:all"
+        else:
+            bazel_target = f"//:{target}"
         # CLI is intentionally minimal — every static-per-build flag lives
         # in .bazelrc so ``bazel build //:all`` works directly from a
         # checkout without the compiletools wrapper. Only the target and
@@ -478,21 +482,50 @@ class BazelBackend(BuildBackend):
         self._copy_built_executables(bazel_bin, dest_dir=dest)
         self._copy_bazel_libraries(bazel_bin)
 
+    @staticmethod
+    def _token_picks_linker(tok: str) -> bool:
+        """Return True if *tok* is a linker-selection flag like -fuse-ld=gold.
+
+        Recognises the bare ``-fuse-ld=…`` form and the ``-Wl,-fuse-ld=…``
+        passthrough (possibly with comma-separated peers like
+        ``-Wl,-fuse-ld=gold,--no-as-needed``).
+        """
+        if tok.startswith("-fuse-ld="):
+            return True
+        if tok.startswith("-Wl,") and any(p.startswith("-fuse-ld=") for p in tok[4:].split(",")):
+            return True
+        return False
+
     def _user_set_fuse_ld(self) -> bool:
         """Return True if the user has already chosen a linker via -fuse-ld=...
 
         Checks LDFLAGS (CLI/config) and any per-target link command in the
-        graph (covers magic-flag-injected linker choices).
+        graph (covers magic-flag-injected linker choices). Tokenises LDFLAGS
+        with shlex so quoted strings like ``-DSOMETHING="-fuse-ld=lld"``
+        don't false-positive — a token only triggers if it is itself a
+        linker flag, not if one is embedded inside it.
         """
         ldflags = getattr(self.args, "LDFLAGS", "") or ""
-        if "-fuse-ld=" in ldflags:
+        if not isinstance(ldflags, str):
+            # Defensive: tests sometimes pass a MagicMock-attribute through
+            # here. argparse always produces a str, so production hits the
+            # else branch.
+            ldflags = ""
+        try:
+            ldflags_tokens = shlex.split(ldflags)
+        except ValueError:
+            # Malformed (unmatched quote, etc.); fall back to whitespace
+            # split — the explicit user choice is more important than
+            # precise tokenisation when LDFLAGS itself is broken.
+            ldflags_tokens = ldflags.split()
+        if any(self._token_picks_linker(t) for t in ldflags_tokens):
             return True
         if self._graph is not None:
             for rule in self._graph.rules:
                 if rule.rule_type not in (RuleType.LINK, RuleType.SHARED_LIBRARY):
                     continue
                 for tok in rule.command or ():
-                    if tok.startswith("-fuse-ld=") or tok.startswith("-Wl,-fuse-ld="):
+                    if self._token_picks_linker(tok):
                         return True
         return False
 

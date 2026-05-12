@@ -665,6 +665,19 @@ class TestBazelLinkerDefault:
         backend = self._backend_with(graph=graph)
         assert backend._user_set_fuse_ld() is False
 
+    def test_user_set_fuse_ld_ignores_quoted_substring_in_define(self):
+        # LDFLAGS that quote the substring inside an unrelated flag (e.g. a
+        # -DSOMETHING value) must NOT false-positive — the prior substring
+        # search would have. Tokenisation via shlex makes the predicate
+        # syntactic rather than textual.
+        backend = self._backend_with(ldflags='-DPROBE_FLAG="-fuse-ld=lld" -lm')
+        assert backend._user_set_fuse_ld() is False
+
+    def test_user_set_fuse_ld_via_wl_passthrough(self):
+        # -Wl,-fuse-ld=mold (possibly with comma-separated peers) must trigger.
+        backend = self._backend_with(ldflags="-Wl,-fuse-ld=mold,--no-as-needed")
+        assert backend._user_set_fuse_ld() is True
+
 
 class TestBazelJvmStackSize:
     """`--bazel-jvm-stack-size` drives the JVM -Xss host_jvm_args; empty disables."""
