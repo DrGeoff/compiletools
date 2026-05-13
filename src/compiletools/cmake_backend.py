@@ -42,6 +42,73 @@ def _separate_include_dirs(copts: list[str]) -> tuple[list[str], list[str]]:
     return include_dirs, remaining
 
 
+def _filter_x_lang_copts(copts: list[str]) -> list[str]:
+    """Remove ``-x`` and any following language argument from a copts list.
+
+    Background: gcc < 14 does not recognise ``.cppm`` as C++ source, so
+    ``build_backend._create_compile_rule`` injects ``-x c++`` immediately
+    before the source filename.  ``extract_copts`` keeps the bare ``-x``
+    token but silently drops ``c++`` (it does not start with ``-``), leaving
+    an orphan ``-x`` in the aggregated copts.  When cmake puts that orphan
+    in ``target_compile_options`` at the *global* scope, gcc interprets the
+    next cmake-injected flag (``-MD``) as the language argument and raises::
+
+        g++: error: language -MD not recognized
+
+    This helper strips both the ``-x`` and any adjacent non-flag language
+    argument so the caller can emit a clean global ``target_compile_options``
+    and separately scope ``-x c++`` to the individual ``.cppm`` source via
+    ``set_source_files_properties``.
+    """
+    result = []
+    i = 0
+    while i < len(copts):
+        if copts[i] == "-x":
+            i += 1
+            # Also skip the following language token (e.g. "c++") if present
+            if i < len(copts) and not copts[i].startswith("-"):
+                i += 1
+        else:
+            result.append(copts[i])
+            i += 1
+    return result
+
+
+def _emit_per_source_x_lang(f, srcs: list[str]) -> None:
+    """Emit ``set_source_files_properties`` for each ``.cppm`` source.
+
+    Two things are needed for cmake to correctly compile C++20 module
+    interface units (``.cppm`` files):
+
+    1. **``LANGUAGE CXX``** — cmake 3.20 does not recognise ``.cppm`` as a
+       C++ source extension, so without this property cmake silently omits
+       the file from the compile step and the link fails with
+       ``undefined reference to 'func@module(...)'``.
+
+    2. **``COMPILE_OPTIONS "-x;c++"``** — gcc < 14 does not recognise
+       ``.cppm`` as C++, so it treats the file as a linker input under
+       ``-c`` and produces no ``.o``.  The ``-x c++`` coercion (which
+       ``build_backend._create_compile_rule`` injects immediately before the
+       filename) must be scoped to this single source file.  ``extract_copts``
+       keeps the bare ``-x`` token but drops ``c++`` (not flag-shaped), leaving
+       an orphan ``-x`` in the aggregated copts.  At global
+       ``target_compile_options`` scope that orphan causes gcc to consume
+       cmake's own ``-MD`` flag as the language argument:
+           g++: error: language -MD not recognized
+       Setting it here via ``set_source_files_properties`` keeps it
+       scoped to this TU.
+
+    CMake uses semicolons as list separators inside property values, so the
+    correct form is ``"-x;c++"`` (cmake list) rather than ``"-x" "c++"``
+    (two separate arguments).
+    """
+    seen: set[str] = set()
+    for src in srcs:
+        if src.endswith(".cppm") and src not in seen:
+            seen.add(src)
+            f.write(f'set_source_files_properties("{src}" PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-x;c++")\n')
+
+
 @register_backend
 class CMakeBackend(BuildBackend):
     """Generate and execute CMake build files.
@@ -111,7 +178,10 @@ class CMakeBackend(BuildBackend):
             for rule in graph.rules_by_type(lib_type):
                 srcs, all_copts = aggregate_rule_sources(rule, obj_info)
                 target_name = mangle_target_name(os.path.basename(rule.output))
-                include_dirs, remaining_copts = _separate_include_dirs(all_copts)
+                # Filter orphan -x flags from the global copts; .cppm sources
+                # will receive -x c++ via set_source_files_properties instead.
+                filtered_copts = _filter_x_lang_copts(all_copts)
+                include_dirs, remaining_copts = _separate_include_dirs(filtered_copts)
                 rel_srcs = sorted(set(srcs))
                 cmake_type = "STATIC" if lib_type == RuleType.STATIC_LIBRARY else "SHARED"
 
@@ -120,6 +190,7 @@ class CMakeBackend(BuildBackend):
                     f.write(f'    "{s}"\n')
                 f.write(")\n")
 
+                _emit_per_source_x_lang(f, srcs)
                 self._emit_compile_attrs(f, target_name, remaining_copts, include_dirs)
 
         for rule in graph.rules_by_type(RuleType.LINK):
@@ -127,7 +198,10 @@ class CMakeBackend(BuildBackend):
             object_files = set(rule.inputs)
             linkopts = extract_linkopts(rule.command, object_files) if rule.command else []
             target_name = mangle_target_name(os.path.basename(rule.output))
-            include_dirs, remaining_copts = _separate_include_dirs(all_copts)
+            # Filter orphan -x flags from the global copts; .cppm sources
+            # will receive -x c++ via set_source_files_properties instead.
+            filtered_copts = _filter_x_lang_copts(all_copts)
+            include_dirs, remaining_copts = _separate_include_dirs(filtered_copts)
             rel_srcs = sorted(set(srcs))
 
             f.write(f"\nadd_executable({target_name}\n")
@@ -135,6 +209,7 @@ class CMakeBackend(BuildBackend):
                 f.write(f'    "{s}"\n')
             f.write(")\n")
 
+            _emit_per_source_x_lang(f, srcs)
             self._emit_compile_attrs(f, target_name, remaining_copts, include_dirs)
 
             if linkopts:

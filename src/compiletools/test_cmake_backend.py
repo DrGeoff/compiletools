@@ -7,7 +7,7 @@ import pytest
 
 from compiletools.build_backend import extract_copts, extract_linkopts, get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
-from compiletools.cmake_backend import CMakeBackend, _separate_include_dirs
+from compiletools.cmake_backend import CMakeBackend, _filter_x_lang_copts, _separate_include_dirs
 
 
 class TestCMakeBackendRegistered:
@@ -413,3 +413,150 @@ class TestCMakeAllOutputsCurrent:
         hunter = MagicMock()
         backend = CMakeBackend(args=args, hunter=hunter)
         assert backend._all_outputs_current(BuildGraph()) is False
+
+
+class TestFilterXLangCopts:
+    """Unit tests for _filter_x_lang_copts helper."""
+
+    def test_removes_orphan_x_flag(self):
+        # extract_copts produces an orphan -x (c++ argument is dropped)
+        copts = ["-std=c++20", "-fmodules-ts", "-x"]
+        assert _filter_x_lang_copts(copts) == ["-std=c++20", "-fmodules-ts"]
+
+    def test_removes_x_with_paired_lang_arg(self):
+        # If somehow -x c++ appears as two elements
+        copts = ["-std=c++20", "-x", "c++", "-fmodules-ts"]
+        assert _filter_x_lang_copts(copts) == ["-std=c++20", "-fmodules-ts"]
+
+    def test_no_x_flag_unchanged(self):
+        copts = ["-std=c++20", "-O2", "-Wall"]
+        assert _filter_x_lang_copts(copts) == ["-std=c++20", "-O2", "-Wall"]
+
+    def test_empty(self):
+        assert _filter_x_lang_copts([]) == []
+
+    def test_x_flag_at_end_removed(self):
+        copts = ["-O2", "-x"]
+        assert _filter_x_lang_copts(copts) == ["-O2"]
+
+
+class TestCppmPerSourceProperties:
+    """Test that .cppm sources get per-source set_source_files_properties and
+    -x is NOT in global target_compile_options.
+
+    Background: gcc injects ``-x c++`` immediately before the .cppm filename
+    so it recognises the extension as C++ source.  build_backend.extract_copts
+    keeps the orphan ``-x`` (``c++`` is not flag-shaped) and aggregate_rule_sources
+    deduplicates it into all_copts.  cmake's target_compile_options then emits
+    that orphan at global scope; gcc interprets the next token (cmake's own
+    ``-MD``) as the language argument and raises:
+        g++: error: language -MD not recognized
+    Fix: filter ``-x`` from global copts, emit per-source
+    set_source_files_properties for each .cppm file.
+    """
+
+    def _make_backend(self):
+        args = MagicMock()
+        hunter = MagicMock()
+        return CMakeBackend(args=args, hunter=hunter)
+
+    def _build_graph_with_cppm(self, cppm_path: str = "math.cppm") -> BuildGraph:
+        """Return a minimal BuildGraph: one .cppm compile + one link rule."""
+        graph = BuildGraph()
+        # The compile command mirrors what build_backend._create_compile_rule emits
+        # for a gcc .cppm file: -x c++ placed immediately before the filename.
+        graph.add_rule(
+            BuildRule(
+                output="obj/math.o",
+                inputs=[cppm_path],
+                command=[
+                    "g++",
+                    "-std=c++20",
+                    "-fmodules-ts",
+                    "-c",
+                    "-x",
+                    "c++",
+                    cppm_path,
+                    "-o",
+                    "obj/math.o",
+                ],
+                rule_type="compile",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="bin/math",
+                inputs=["obj/math.o"],
+                command=["g++", "-o", "bin/math", "obj/math.o"],
+                rule_type="link",
+            )
+        )
+        return graph
+
+    def test_cppm_has_per_source_compile_options(self):
+        """set_source_files_properties must appear for the .cppm source."""
+        graph = self._build_graph_with_cppm("math.cppm")
+        backend = self._make_backend()
+        buf = __import__("io").StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        assert "set_source_files_properties" in content
+        assert "math.cppm" in content
+        # The per-source block must contain COMPILE_OPTIONS and LANGUAGE CXX
+        assert "COMPILE_OPTIONS" in content
+        assert "LANGUAGE CXX" in content
+
+    def test_cppm_per_source_contains_x_cxx(self):
+        """The per-source COMPILE_OPTIONS must encode -x;c++ (cmake list separator)."""
+        graph = self._build_graph_with_cppm("math.cppm")
+        backend = self._make_backend()
+        buf = __import__("io").StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        # Check that -x and c++ appear in the set_source_files_properties block
+        lines = content.splitlines()
+        ssf_lines = [ln for ln in lines if "set_source_files_properties" in ln or "COMPILE_OPTIONS" in ln]
+        combined = "\n".join(ssf_lines)
+        assert "-x" in combined
+        assert "c++" in combined
+
+    def test_global_target_compile_options_no_x_flag(self):
+        """The orphan -x must NOT appear in global target_compile_options."""
+        graph = self._build_graph_with_cppm("math.cppm")
+        backend = self._make_backend()
+        buf = __import__("io").StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        lines = content.splitlines()
+        tco_lines = [ln for ln in lines if "target_compile_options" in ln]
+        for ln in tco_lines:
+            assert '"-x"' not in ln, f"Orphan -x found in global target_compile_options: {ln!r}"
+
+    def test_regular_cpp_no_per_source_properties(self):
+        """Regular .cpp sources must NOT trigger set_source_files_properties."""
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="obj/main.o",
+                inputs=["main.cpp"],
+                command=["g++", "-std=c++20", "-c", "main.cpp", "-o", "obj/main.o"],
+                rule_type="compile",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="bin/main",
+                inputs=["obj/main.o"],
+                command=["g++", "-o", "bin/main", "obj/main.o"],
+                rule_type="link",
+            )
+        )
+        backend = self._make_backend()
+        buf = __import__("io").StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        assert "set_source_files_properties" not in content
