@@ -639,6 +639,7 @@ class TestBazelClean:
 class TestBazelExecute:
     def _make_backend(self):
         args = MagicMock()
+        args.LDFLAGS = ""  # explicit: prod always provides a str
         hunter = MagicMock()
         return BazelBackend(args=args, hunter=hunter)
 
@@ -667,6 +668,7 @@ class TestBazelExecute:
         toolchain doesn't fall back to /bin/gcc (which on RHEL 8 is gcc 8
         and rejects -std=c++20)."""
         args = MagicMock()
+        args.LDFLAGS = ""  # explicit: prod always provides a str
         args.CC = "/opt/gcc-15/bin/gcc"
         args.CXX = "/opt/gcc-15/bin/g++"
         args.parallel = 4
@@ -1117,6 +1119,7 @@ class TestBazelNamedModuleHandling:
 
     def _make_backend(self, *, module_iface_obj=None, module_iface_gcm=None):
         args = MagicMock()
+        args.LDFLAGS = ""  # explicit: prod always provides a str
         hunter = MagicMock()
         backend = BazelBackend(args=args, hunter=hunter)
         # Populate the named-module state that _write_build / _bazel_module_inputs_and_copts

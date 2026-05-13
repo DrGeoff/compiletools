@@ -911,11 +911,6 @@ class BazelBackend(BuildBackend):
         linker flag, not if one is embedded inside it.
         """
         ldflags = getattr(self.args, "LDFLAGS", "") or ""
-        if not isinstance(ldflags, str):
-            # Defensive: tests sometimes pass a MagicMock-attribute through
-            # here. argparse always produces a str, so production hits the
-            # else branch.
-            ldflags = ""
         try:
             ldflags_tokens = shlex.split(ldflags)
         except ValueError:
