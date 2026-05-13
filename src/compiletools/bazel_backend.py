@@ -849,14 +849,7 @@ class BazelBackend(BuildBackend):
         """
         path = os.path.join(base_dir, self._BAZELRC_FILENAME)
         new_content = self._build_bazelrc_content()
-        try:
-            with open(path, encoding="utf-8") as f:
-                if f.read() == new_content:
-                    return
-        except FileNotFoundError:
-            pass
-        with compiletools.filesystem_utils.atomic_output_file(path, mode="w", encoding="utf-8") as f:
-            f.write(new_content)
+        compiletools.filesystem_utils.atomic_write_if_changed(path, new_content)
 
     def _jobs_args(self) -> list[str]:
         parallel = getattr(self.args, "parallel", None)
