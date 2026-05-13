@@ -2693,15 +2693,16 @@ class BuildBackend(abc.ABC):
         if self.args.dynamic and filename in self._dynamic_sources:
             compile_cmd.append("-fPIC")
 
-        # gcc < 14 doesn't recognize the ``.cppm`` extension as C++ source —
+        # gcc < 15 doesn't recognize the ``.cppm`` extension as C++ source —
         # without an explicit ``-x c++`` it treats ``math.cppm`` as a linker
         # input and emits "linker input file unused because linking not
         # done" under -c, leaving no .o for the producer-side rename to
-        # land. gcc 14+ added native .cppm recognition, so the coercion is
-        # a no-op there. Scope the override to this single source by
-        # placing it immediately before the filename. Only inject for the
-        # gcc CXX path; clang has its own --precompile flow for .cppm
-        # interface units (see _create_clang_module_interface_rules).
+        # land. gcc 15+ added native .cppm recognition, so the coercion is
+        # a no-op there. (Verified 2026-05-13 across gcc-12.3.0, gcc-13.2.0,
+        # gcc-14.3.0, gcc-15.2.0, gcc-16.1.0.) Scope the override to this
+        # single source by placing it immediately before the filename. Only
+        # inject for the gcc CXX path; clang has its own --precompile flow
+        # for .cppm interface units (see _create_clang_module_interface_rules).
         source_prefix: list[str] = []
         if (
             self._module_compiler_kind == "gcc"

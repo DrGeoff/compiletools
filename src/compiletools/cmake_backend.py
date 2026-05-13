@@ -59,7 +59,7 @@ def _separate_include_dirs(copts: list[str]) -> tuple[list[str], list[str]]:
 def _filter_x_lang_copts(copts: list[str]) -> list[str]:
     """Remove ``-x`` and any following language argument from a copts list.
 
-    Background: gcc < 14 does not recognise ``.cppm`` as C++ source, so
+    Background: gcc < 15 does not recognise ``.cppm`` as C++ source, so
     ``build_backend._create_compile_rule`` injects ``-x c++`` immediately
     before the source filename.  ``extract_copts`` keeps the bare ``-x``
     token but silently drops ``c++`` (it does not start with ``-``), leaving
@@ -68,6 +68,10 @@ def _filter_x_lang_copts(copts: list[str]) -> list[str]:
     next cmake-injected flag (``-MD``) as the language argument and raises::
 
         g++: error: language -MD not recognized
+
+    (Verified 2026-05-13 across gcc-12.3.0, gcc-13.2.0, gcc-14.3.0,
+    gcc-15.2.0, gcc-16.1.0: gcc-14.3.0 still requires the workaround;
+    native ``.cppm`` recognition arrived in gcc 15.)
 
     This helper strips both the ``-x`` and any adjacent non-flag language
     argument so the caller can emit a clean global ``target_compile_options``
@@ -99,7 +103,7 @@ def _emit_per_source_x_lang(f, srcs: list[str]) -> None:
        the file from the compile step and the link fails with
        ``undefined reference to 'func@module(...)'``.
 
-    2. **``COMPILE_OPTIONS "-x;c++"``** — gcc < 14 does not recognise
+    2. **``COMPILE_OPTIONS "-x;c++"``** — gcc < 15 does not recognise
        ``.cppm`` as C++, so it treats the file as a linker input under
        ``-c`` and produces no ``.o``.  The ``-x c++`` coercion (which
        ``build_backend._create_compile_rule`` injects immediately before the
@@ -110,7 +114,8 @@ def _emit_per_source_x_lang(f, srcs: list[str]) -> None:
        cmake's own ``-MD`` flag as the language argument:
            g++: error: language -MD not recognized
        Setting it here via ``set_source_files_properties`` keeps it
-       scoped to this TU.
+       scoped to this TU.  (Verified 2026-05-13 across gcc-12.3.0,
+       gcc-13.2.0, gcc-14.3.0, gcc-15.2.0, gcc-16.1.0.)
 
     CMake uses semicolons as list separators inside property values, so the
     correct form is ``"-x;c++"`` (cmake list) rather than ``"-x" "c++"``

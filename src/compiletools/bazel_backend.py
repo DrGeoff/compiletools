@@ -183,8 +183,9 @@ class BazelBackend(BuildBackend):
         #   "source file '@@//:math.cppm' is misplaced here"
         # Drop named-module interface objects from obj_info entirely so that:
         #  (a) their source files (.cppm / system .cc) are not added to srcs,
-        #  (b) their copts (e.g. "-x c++" injected for gcc<14 .cppm compat) do
-        #      not bleed into the cc_binary copts list for the importer.
+        #  (b) their copts (e.g. "-x c++" injected for gcc<15 .cppm compat;
+        #      verified 2026-05-13 across gcc-12.3.0..gcc-16.1.0) do not
+        #      bleed into the cc_binary copts list for the importer.
         # The prebuilt .o files themselves ARE added directly to srcs as
         # prebuilt object files (bazel cc_binary allows .o in srcs), so the
         # module's definitions are still linked into the final binary.
