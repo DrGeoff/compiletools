@@ -358,30 +358,26 @@ class ShakeBackend(BuildBackend):
             # and crashing _make_trace_entry's get_file_hash call.
             return False
 
-        # Ensure order-only deps exist. Two shapes possible:
-        #
-        # 1. Bucket directory (no file extension, e.g. ``cas-objdir/ab``).
-        #    ``mkdir`` it.
-        # 2. Artefact path (file extension matching
-        #    ``_ORDER_ONLY_DEP_FORBIDDEN_EXTS``) that another rule
-        #    produces. Recurse via ``_build_async`` instead of mkdir.
-        #    For example: gcc named-module importers list the
-        #    interface unit's ``.o`` here so the make/ninja CAS-only
-        #    path's ``|`` clause survives the source-prereq drop --
-        #    the .o is a real rule output, not a directory, and
-        #    mkdir-ing it would clobber the file the producer is
-        #    about to write (the original defect class behind the
-        #    C++20-modules trace_backend xfail). The recursive build
-        #    is also what would happen if the dep were in
-        #    ``inputs``; routing through ``order_only_deps`` lets
-        #    make/ninja's ``cas_demoted_order_only`` lift survive
-        #    bare suffixes like ``.o``/``.stamp`` that are not in
-        #    ``_COMPILE_ORDERING_INPUT_EXTS``.
+        # Ensure order-only deps (bucket directories) exist. Reject
+        # artefact-shaped paths up front: ``order_only_deps`` is reserved
+        # for *bucket directories* (see
+        # ``_ORDER_ONLY_DEP_FORBIDDEN_EXTS``), and a silent mkdir on an
+        # artefact path would clobber the file the producer rule is
+        # supposed to write -- the original defect class behind the
+        # C++20-modules trace_backend xfail. Mirrors the check in
+        # ``BuildBackend._prebuild_aux_artefacts`` so producers can't
+        # smuggle a file path past one backend by hitting the other
+        # first. Module/PCH/BMI deps belong in ``inputs``, where
+        # ``_build_async`` recurses into the producer.
         for dep in rule.order_only_deps:
             if dep.endswith(_ORDER_ONLY_DEP_FORBIDDEN_EXTS):
-                await self._build_async(dep, graph, traces, memo, sem)
-            else:
-                os.makedirs(dep, exist_ok=True)
+                raise AssertionError(
+                    f"order_only_dep {dep!r} on rule {rule.output!r} has an "
+                    f"artefact suffix; order_only_deps must be bucket "
+                    f"directories. Route artefact dependencies through "
+                    f"`inputs` (see build_backend._wire_module_inputs)."
+                )
+            os.makedirs(dep, exist_ok=True)
 
         # CONTENT-ADDRESSABLE SHORT-CIRCUIT
         if _is_build_artifact(rule):

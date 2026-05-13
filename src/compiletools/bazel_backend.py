@@ -284,11 +284,14 @@ class BazelBackend(BuildBackend):
         Returns ``(additional_compiler_inputs, rewritten_copts)``:
 
         * ``additional_compiler_inputs`` -- workspace-relative paths to
-          every BMI artefact this rule depends on (sourced from
-          ``rule.inputs`` filtered by ``_COMPILE_ORDERING_INPUT_EXTS``)
-          plus the bazel-specific module-mapper file. Bazel symlinks
-          each into the action's exec root, so gcc resolves
-          workspace-relative paths to the right files.
+          every BMI/PCH artefact this rule depends on (sourced from
+          ``rule.inputs`` filtered by ``_BMI_PCH_ARTEFACT_EXTS``: just
+          the .gch / .pcm / .gcm files the compiler actually opens at
+          compile time, NOT the .o link inputs that share the broader
+          ``_COMPILE_ORDERING_INPUT_EXTS`` filter) plus the bazel-
+          specific module-mapper file. Bazel symlinks each into the
+          action's exec root, so gcc resolves workspace-relative
+          paths to the right files.
         * ``rewritten_copts`` -- ``all_copts`` with any
           ``-fmodule-mapper=<abs>`` rewritten to point at the
           workspace-relative bazel-specific mapper file
@@ -298,11 +301,11 @@ class BazelBackend(BuildBackend):
         no-op (returns empty inputs and the copts unchanged); the bazel
         backend then emits a normal cc_binary with no module wiring.
         """
-        from compiletools.build_backend import _COMPILE_ORDERING_INPUT_EXTS
+        from compiletools.build_backend import _BMI_PCH_ARTEFACT_EXTS
 
         inputs: list[str] = []
         for path in rule.inputs:
-            if not path.endswith(_COMPILE_ORDERING_INPUT_EXTS):
+            if not path.endswith(_BMI_PCH_ARTEFACT_EXTS):
                 continue
             rel = self._workspace_relative(path, base_dir)
             if rel is None:
@@ -330,7 +333,7 @@ class BazelBackend(BuildBackend):
                 if producer is None:
                     continue
                 for path in producer.inputs:
-                    if not path.endswith(_COMPILE_ORDERING_INPUT_EXTS):
+                    if not path.endswith(_BMI_PCH_ARTEFACT_EXTS):
                         continue
                     rel = self._workspace_relative(path, base_dir)
                     if rel is None or rel in seen:

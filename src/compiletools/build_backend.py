@@ -66,30 +66,49 @@ _NAME_ESCAPE = "^^"
 
 
 # File extensions of build artefacts that compile rules consume but
-# whose mtime must not invalidate the cached object. PCH (.gch) and
-# C++20 module BMIs (.pcm/.gcm) are produced by sibling rules; the
-# consumer compile rule needs them to *exist* before it runs (build
-# ordering), but their mtime is irrelevant — content changes are
-# captured via the consumer's own dep_hash, which is encoded in the
-# CAS object name. In CAS-only mode (``not args.use_mtime``), make
-# and ninja backends lift these from normal prerequisites to
-# order-only deps so build ordering is preserved without triggering
-# spurious rebuilds.
-_COMPILE_ORDERING_INPUT_EXTS = (".gch", ".pcm", ".gcm")
+# whose mtime must not invalidate the cached object. PCH (.gch), C++20
+# module BMIs (.pcm/.gcm), gcc named-module producer objects (.o, the
+# carrier of the .gcm side-effect), and gcc no-cache header-unit
+# stamps (.stamp) are all produced by sibling rules; the consumer
+# compile rule needs them to *exist* before it runs (build ordering),
+# but their mtime is irrelevant — content changes are captured via
+# the consumer's own dep_hash, which is encoded in the CAS object
+# name. In CAS-only mode (``not args.use_mtime``), make and ninja
+# backends lift these from normal prerequisites to order-only deps so
+# build ordering is preserved without triggering spurious rebuilds.
+#
+# Why ``.o`` is here even though it's also a normal compile output:
+# a named-module importer's compile rule lists the interface unit's
+# .o in its ``inputs`` (added by ``_wire_module_inputs``). Without
+# .o in this list the CAS-only path's ``ordering_inputs_for_compile``
+# filter would drop it, leaving the importer to race the producer.
+# Plain compile rules don't list other .o files in their inputs, so
+# the entry is effectively a no-op outside the module path.
+_COMPILE_ORDERING_INPUT_EXTS = (".gch", ".pcm", ".gcm", ".o", ".stamp")
+
+
+# Narrower subset: the BMI/PCH artefacts the *compiler* actually
+# opens at compile time (gcc/clang reads .gch via -include and .pcm /
+# .gcm via -fmodule-file= / -fmodule-mapper=). The bazel backend
+# declares these as ``additional_compiler_inputs`` so bazel symlinks
+# them into the action's exec root for sandbox/dependency-validation.
+# Excludes .o (a link-rule input, not a compile-action input — would
+# spuriously pull link object lists into compile actions) and .stamp
+# (build-ordering marker only, never read by the compiler).
+_BMI_PCH_ARTEFACT_EXTS = (".gch", ".pcm", ".gcm")
 
 
 # Suffixes that disqualify a path from being a valid ``order_only_deps``
 # entry. ``order_only_deps`` is reserved for *bucket directories* the
 # prebuild loop / trace backend will ``mkdir``. A file-shaped entry
-# (object, library, BMI, executable) signals that the producing rule
-# should have been put in ``inputs`` (or its existence ought to be
-# enforced via ``rule.inputs`` so the consumer recurses into the
+# (object, library, BMI, executable, stamp) signals that the producing
+# rule should have been put in ``inputs`` (or its existence ought to
+# be enforced via ``rule.inputs`` so the consumer recurses into the
 # producer rule). Catching this contract violation up front gives a
 # uniform diagnostic across every backend instead of the silent
 # "mkdir clobbers the artefact path" failure that previously haunted
 # trace_backend / cold-cache prebuild paths.
 _ORDER_ONLY_DEP_FORBIDDEN_EXTS = _COMPILE_ORDERING_INPUT_EXTS + (
-    ".o",
     ".obj",
     ".a",
     ".so",
@@ -1877,19 +1896,21 @@ class BuildBackend(abc.ABC):
         files must exist when the importer compiles, since the primary
         ``.pcm`` references them.
 
-        BMI/stamp targets join ``rule.inputs`` (not
-        ``rule.order_only_deps``) because ``order_only_deps`` is reserved
-        for *bucket directories* that the prebuild loop / trace backend
-        ``mkdir``s. Putting an artefact path there would silently clobber
-        the artefact into a directory under any backend that mkdir's
-        order-only deps (trace_backend, and latently make/ninja prebuild
-        on cold caches). The make/ninja CAS-only path lifts these inputs
-        back to the order-only ``|`` clause via
-        ``ordering_inputs_for_compile`` (matched on ``.gch/.pcm/.gcm``
-        suffixes), so the rebuild semantics stay identical to the
-        previous behaviour. Trace backends recurse into ``inputs`` via
-        ``_build_async`` and so naturally build the BMI before the
-        importer.
+        All BMI / .o / .stamp targets join ``rule.inputs`` uniformly.
+        ``order_only_deps`` stays reserved for *bucket directories*
+        the prebuild loop / trace backend will ``mkdir``; putting an
+        artefact path there would silently clobber the artefact into
+        a directory under any backend that mkdir's order-only deps
+        (the original C++20-modules trace_backend defect class). The
+        make/ninja CAS-only path lifts these inputs to the order-only
+        ``|`` clause via ``ordering_inputs_for_compile`` (matched on
+        ``_COMPILE_ORDERING_INPUT_EXTS``, which now covers .gch /
+        .pcm / .gcm / .o / .stamp), so rebuild semantics in CAS-only
+        mode are unchanged. In ``--use-mtime=True`` mode the targets
+        become real prereqs — touching the producer's .o now
+        correctly triggers the importer rebuild (a latent bug under
+        the prior ``order_only_deps`` shape, which silently swallowed
+        BMI mtime changes).
         """
         if file_result is None:
             return
@@ -1914,28 +1935,19 @@ class BuildBackend(abc.ABC):
         target_map: dict[str, str] = self._module_iface_pcm if kind == "clang" else self._module_iface_obj
 
         def _add_dep(target: str | None) -> None:
-            """Route *target* into ``inputs`` if its suffix is preserved
-            by the make/ninja CAS-only filter, otherwise ``order_only_deps``.
+            """Append *target* to ``rule.inputs`` (deduped, skipping self).
 
-            The CAS filter (``ordering_inputs_for_compile``) keeps only
-            paths ending in ``_COMPILE_ORDERING_INPUT_EXTS`` (.gch /
-            .pcm / .gcm); anything else in ``inputs`` would be silently
-            dropped under ``--use-mtime=False`` (the default), leaving
-            the importer to race its producer. Bare ``.o`` (gcc named
-            module no-cache) and ``.stamp`` (gcc header-unit no-cache)
-            paths therefore funnel through ``order_only_deps`` instead
-            -- both bucket-dir shapes the prebuild contract permits
-            (their suffixes are not in
-            ``_ORDER_ONLY_DEP_FORBIDDEN_EXTS``).
+            All module dep targets land in ``inputs``: the CAS-only
+            filter (``ordering_inputs_for_compile``) preserves every
+            suffix in ``_COMPILE_ORDERING_INPUT_EXTS`` (.gch / .pcm /
+            .gcm / .o / .stamp), and trace_backend recurses into
+            ``inputs`` via ``_build_async`` to build the producer
+            before the consumer compiles.
             """
             if target is None or target == rule.output:
                 return
-            if target.endswith(_COMPILE_ORDERING_INPUT_EXTS):
-                if target not in rule.inputs:
-                    rule.inputs.append(target)
-            else:
-                if target not in rule.order_only_deps:
-                    rule.order_only_deps.append(target)
+            if target not in rule.inputs:
+                rule.inputs.append(target)
 
         resolved: list[str] = []
         for raw in tuple(file_result.module_imports) + tuple(file_result.module_implements):
