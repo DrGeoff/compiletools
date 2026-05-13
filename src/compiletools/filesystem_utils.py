@@ -282,6 +282,38 @@ def atomic_write(target_path, content, binary=False, preserve_permissions=True):
         raise
 
 
+def atomic_write_if_changed(
+    target_path: str,
+    content: str | bytes,
+    *,
+    binary: bool = False,
+    preserve_permissions: bool = True,
+    encoding: str = "utf-8",
+) -> bool:
+    """Atomically write *content* to *target_path* iff it differs from on-disk.
+
+    Returns True when a write happened, False when the target was byte-identical
+    and was left untouched (preserving its inode and mtime — important for
+    consumers like clangd / `find -newer` that treat any mtime change as cache
+    invalidation).
+
+    A missing target is treated as "different" and triggers the write.
+    Read failures (corrupt file, permission glitch) fall through to the
+    unconditional write so a transient error never leaves a stale file.
+    """
+    new_bytes = content.encode(encoding) if (not binary and isinstance(content, str)) else content
+    try:
+        with open(target_path, "rb") as f:
+            if f.read() == new_bytes:
+                return False
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass  # fall through to unconditional write
+    atomic_write(target_path, content, binary=binary, preserve_permissions=preserve_permissions)
+    return True
+
+
 def safe_read_text_file(filepath, encoding="utf-8", force_no_mmap=False, respect_locks=False, lock_args=None):
     """Read text file safely, closing file descriptors properly.
 

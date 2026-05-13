@@ -416,3 +416,44 @@ def test_real_filesystem_detection():
         interval = get_lockdir_sleep_interval(fstype)
         assert isinstance(interval, float)
         assert interval > 0
+
+
+def test_atomic_write_if_changed_skips_when_byte_identical(tmp_path):
+    target = tmp_path / "f.txt"
+    target.write_text("hello")
+    initial_mtime_ns = target.stat().st_mtime_ns
+    initial_inode = target.stat().st_ino
+    import time
+
+    time.sleep(0.01)  # widen the window
+
+    from compiletools.filesystem_utils import atomic_write_if_changed
+
+    wrote = atomic_write_if_changed(str(target), "hello")
+
+    assert wrote is False
+    assert target.stat().st_mtime_ns == initial_mtime_ns, "skipped write must not change mtime"
+    assert target.stat().st_ino == initial_inode, "skipped write must not change inode"
+
+
+def test_atomic_write_if_changed_writes_when_content_differs(tmp_path):
+    target = tmp_path / "f.txt"
+    target.write_text("hello")
+    initial_inode = target.stat().st_ino
+
+    from compiletools.filesystem_utils import atomic_write_if_changed
+
+    wrote = atomic_write_if_changed(str(target), "world")
+
+    assert wrote is True
+    assert target.read_text() == "world"
+    assert target.stat().st_ino != initial_inode, "atomic write replaces inode"
+
+
+def test_atomic_write_if_changed_writes_when_target_absent(tmp_path):
+    target = tmp_path / "f.txt"
+    from compiletools.filesystem_utils import atomic_write_if_changed
+
+    wrote = atomic_write_if_changed(str(target), "hello")
+    assert wrote is True
+    assert target.read_text() == "hello"
