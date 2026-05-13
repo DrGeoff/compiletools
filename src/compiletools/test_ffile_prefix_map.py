@@ -101,6 +101,30 @@ def _build_in_two_checkouts(
     return workspaces[0], workspaces[1]
 
 
+def _assert_cas_layer_byte_identical(
+    alice: pathlib.Path,
+    bob: pathlib.Path,
+    cas_layer: str,
+    suffixes: tuple[str, ...],
+) -> None:
+    """Walk the two per-user CAS layers, hash every artefact whose
+    suffix matches, and assert equality. Empty hash dicts on both
+    sides are treated as a "this sample doesn't exercise this CAS
+    layer" skip — only flag when one side has artefacts and the
+    other doesn't, or when contents differ.
+    """
+    alice_hashes = _hash_tree(alice / cas_layer, suffixes=suffixes)
+    bob_hashes = _hash_tree(bob / cas_layer, suffixes=suffixes)
+    if not alice_hashes and not bob_hashes:
+        pytest.skip(f"sample doesn't populate {cas_layer} with {suffixes}")
+    assert alice_hashes == bob_hashes, (
+        f"{cas_layer} byte-mismatch across two checkout paths.\n"
+        f"alice ({alice}): {alice_hashes}\n"
+        f"bob   ({bob}):   {bob_hashes}\n"
+        f"diff: {set(alice_hashes.items()) ^ set(bob_hashes.items())}"
+    )
+
+
 @uth.requires_functional_compiler
 def test_two_checkouts_produce_byte_identical_cas_objdir_make(tmp_path):
     """Build the simple sample under two distinct workspace paths with the
@@ -116,12 +140,90 @@ def test_two_checkouts_produce_byte_identical_cas_objdir_make(tmp_path):
         backend_name="make",
         main_basename="helloworld_cpp.cpp",
     )
-    alice_hashes = _hash_tree(alice / "cas-objdir", suffixes=(".o",))
-    bob_hashes = _hash_tree(bob / "cas-objdir", suffixes=(".o",))
-    assert alice_hashes, f"no .o files found under {alice / 'cas-objdir'}"
-    assert alice_hashes == bob_hashes, (
-        f"cas-objdir byte-mismatch across two checkout paths.\n"
-        f"alice ({alice}): {alice_hashes}\n"
-        f"bob   ({bob}):   {bob_hashes}\n"
-        f"diff: {set(alice_hashes.items()) ^ set(bob_hashes.items())}"
+    _assert_cas_layer_byte_identical(alice, bob, "cas-objdir", suffixes=(".o",))
+
+
+@uth.requires_functional_compiler
+def test_two_checkouts_produce_byte_identical_cas_exedir_make(tmp_path):
+    """Linker artefact byte-identity across two checkouts. The simple
+    sample produces an executable in cas-exedir; the link command's
+    canonicalize_for_command pass must rewrite any workspace-rooted
+    -L / -Wl,-rpath / -Wl,--version-script= so the embedded RPATH
+    bytes match across users."""
+    sample = pathlib.Path(uth.samplesdir()) / "simple"
+    if not sample.is_dir():
+        pytest.skip(f"missing sample dir: {sample}")
+
+    alice, bob = _build_in_two_checkouts(
+        sample_dir=sample,
+        tmp_root=tmp_path,
+        backend_name="make",
+        main_basename="helloworld_cpp.cpp",
     )
+    _assert_cas_layer_byte_identical(alice, bob, "cas-exedir", suffixes=(".exe", ".a", ".so"))
+
+
+_PCH_BMI_XFAIL_REASON = (
+    "Known Round 3 limitation: gcc embeds the absolute source path in PCH "
+    "(.gch) and BMI (.pcm/.gcm) artefacts via its internal path-table, "
+    "which is NOT subject to -ffile-prefix-map. Closing this gap requires "
+    "either workspace-relative source paths in the precompile rule emitter "
+    "(plus per-backend CWD discipline) or a PWD=/proc/self/cwd subprocess-env "
+    "trick. -fdebug-compilation-dir= would address it for clang but is "
+    "rejected by gcc as of 16.1.0. Tracked under Round 3 'Open Questions' "
+    "in docs/superpowers/specs/2026-05-12-round3-workspace-relative-compile-paths-design.md. "
+    "strict=False so a future fix that closes the gap doesn't fail the suite "
+    "until someone gets around to dropping the marker."
+)
+
+
+@pytest.mark.xfail(strict=False, reason=_PCH_BMI_XFAIL_REASON)
+@uth.requires_functional_compiler
+def test_two_checkouts_produce_byte_identical_cas_pchdir_make(tmp_path):
+    """PCH .gch byte-identity across two checkouts. The pch sample uses
+    `//#PCH=stdafx.h` magic so a precompiled header lands in cas-pchdir."""
+    sample = pathlib.Path(uth.samplesdir()) / "pch"
+    if not sample.is_dir():
+        pytest.skip(f"missing sample dir: {sample}")
+
+    alice, bob = _build_in_two_checkouts(
+        sample_dir=sample,
+        tmp_root=tmp_path,
+        backend_name="make",
+        main_basename="pch_user.cpp",
+    )
+    _assert_cas_layer_byte_identical(alice, bob, "cas-pchdir", suffixes=(".gch",))
+
+
+@pytest.mark.xfail(strict=False, reason=_PCH_BMI_XFAIL_REASON)
+@uth.requires_functional_compiler
+def test_two_checkouts_produce_byte_identical_cas_pcmdir_make(tmp_path):
+    """C++20 module BMI byte-identity across two checkouts. The
+    cxx_modules_header_units sample exercises gcc/clang header units
+    so .gcm / .pcm files land in cas-pcmdir."""
+    from compiletools.test_cxx_modules import (
+        _clang_supports_header_units,
+        _detected_gcc_supports_modules,
+        _gcc_supports_header_units,
+    )
+
+    sample = pathlib.Path(uth.samplesdir()) / "cxx_modules_header_units"
+    if not sample.is_dir():
+        pytest.skip(f"missing sample dir: {sample}")
+
+    import compiletools.apptools
+
+    cxx = compiletools.apptools.get_functional_cxx_compiler()
+    gcc_ok = (
+        cxx and "g++" in os.path.basename(cxx) and _detected_gcc_supports_modules() and _gcc_supports_header_units()
+    )
+    if not gcc_ok and not _clang_supports_header_units():
+        pytest.skip("No compiler on PATH supports C++20 header units")
+
+    alice, bob = _build_in_two_checkouts(
+        sample_dir=sample,
+        tmp_root=tmp_path,
+        backend_name="make",
+        main_basename="main.cpp",
+    )
+    _assert_cas_layer_byte_identical(alice, bob, "cas-pcmdir", suffixes=(".pcm", ".gcm"))

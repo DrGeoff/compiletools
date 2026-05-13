@@ -1138,15 +1138,28 @@ def _inject_ffile_prefix_map(args) -> None:
     and args.CFLAGS where the user has not already specified any
     prefix-map flag.
 
-    The flag rewrites paths the compiler EMITS (debug info, ``__FILE__``,
-    ``__builtin_FILE``, ``.d`` output) so two users compiling the same
-    source at different workspace paths produce byte-identical .o /
-    .gch / .pcm / .gcm bytes. Cache contents become shareable across
-    users — the user-stated goal of Round 3.
+    The flag rewrites paths the compiler EMITS (DWARF debug info,
+    ``__FILE__`` / ``__builtin_FILE``, ``.d`` output) so two users
+    compiling the same source at different workspace paths produce
+    byte-identical .o bytes -- the user-stated goal of Round 3 for
+    the cas-objdir layer.
+
+    Known scope limitation: PCH (.gch) and C++20 BMI (.pcm / .gcm)
+    files embed the absolute source path through gcc's internal
+    path-table, which is NOT subject to -ffile-prefix-map.
+    -fdebug-compilation-dir= would address this for clang but is not
+    a recognised gcc flag (rejected by gcc as of 16.1.0). Closing
+    the gcc PCH / BMI gap requires either (a) workspace-relative
+    source paths in the precompile rule emitter plus per-backend
+    CWD discipline, or (b) a PWD=/proc/self/cwd subprocess-env
+    trick. Both are deferred follow-ups; cas-pchdir and cas-pcmdir
+    cross-user sharing remains per-user until then. See
+    docs/superpowers/specs/2026-05-12-round3-workspace-relative-compile-paths-design.md
+    "Open Questions" for the design escalation paths.
 
     Skipped when ``compiletools.git_utils.find_git_root()`` returns an
     empty / falsy value (no anchor to canonicalize against). Per-slot
-    independently — user can override C++ but accept the C default.
+    independently -- user can override C++ but accept the C default.
 
     Mutates ``args.CXXFLAGS`` and ``args.CFLAGS`` in place. The caller
     (``_commonsubstitutions``) triggers ``_finalize_flag_state``
