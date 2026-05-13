@@ -473,6 +473,11 @@ class TestFilterXLangCopts:
         copts = ["-O2", "-x"]
         assert _filter_x_lang_copts(copts) == ["-O2"]
 
+    def test_x_followed_by_flag_token_preserved(self):
+        """`-x` followed by a flag-shaped token (e.g., `-Wall`) should
+        only strip `-x`; the flag token is NOT a language argument."""
+        assert _filter_x_lang_copts(["-x", "-Wall"]) == ["-Wall"]
+
 
 class TestCppmPerSourceProperties:
     """Test that .cppm sources get per-source set_source_files_properties and
@@ -531,7 +536,7 @@ class TestCppmPerSourceProperties:
         """set_source_files_properties must appear for the .cppm source."""
         graph = self._build_graph_with_cppm("math.cppm")
         backend = self._make_backend()
-        buf = __import__("io").StringIO()
+        buf = io.StringIO()
         backend.generate(graph, output=buf)
         content = buf.getvalue()
 
@@ -545,7 +550,7 @@ class TestCppmPerSourceProperties:
         """The per-source COMPILE_OPTIONS must encode -x;c++ (cmake list separator)."""
         graph = self._build_graph_with_cppm("math.cppm")
         backend = self._make_backend()
-        buf = __import__("io").StringIO()
+        buf = io.StringIO()
         backend.generate(graph, output=buf)
         content = buf.getvalue()
 
@@ -560,7 +565,7 @@ class TestCppmPerSourceProperties:
         """The orphan -x must NOT appear in global target_compile_options."""
         graph = self._build_graph_with_cppm("math.cppm")
         backend = self._make_backend()
-        buf = __import__("io").StringIO()
+        buf = io.StringIO()
         backend.generate(graph, output=buf)
         content = buf.getvalue()
 
@@ -589,7 +594,7 @@ class TestCppmPerSourceProperties:
             )
         )
         backend = self._make_backend()
-        buf = __import__("io").StringIO()
+        buf = io.StringIO()
         backend.generate(graph, output=buf)
         content = buf.getvalue()
 

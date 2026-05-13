@@ -115,11 +115,11 @@ def _emit_per_source_x_lang(f, srcs: list[str]) -> None:
     CMake uses semicolons as list separators inside property values, so the
     correct form is ``"-x;c++"`` (cmake list) rather than ``"-x" "c++"``
     (two separate arguments).
+
+    *srcs* must already be sorted and deduplicated (callers pass ``rel_srcs``).
     """
-    seen: set[str] = set()
     for src in srcs:
-        if src.endswith(".cppm") and src not in seen:
-            seen.add(src)
+        if src.endswith(".cppm"):
             f.write(f'set_source_files_properties("{src}" PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-x;c++")\n')
 
 
@@ -204,7 +204,7 @@ class CMakeBackend(BuildBackend):
                     f.write(f'    "{s}"\n')
                 f.write(")\n")
 
-                _emit_per_source_x_lang(f, srcs)
+                _emit_per_source_x_lang(f, rel_srcs)
                 self._emit_compile_attrs(f, target_name, remaining_copts, include_dirs)
 
         for rule in graph.rules_by_type(RuleType.LINK):
@@ -223,7 +223,7 @@ class CMakeBackend(BuildBackend):
                 f.write(f'    "{s}"\n')
             f.write(")\n")
 
-            _emit_per_source_x_lang(f, srcs)
+            _emit_per_source_x_lang(f, rel_srcs)
             self._emit_compile_attrs(f, target_name, remaining_copts, include_dirs)
 
             if linkopts:
