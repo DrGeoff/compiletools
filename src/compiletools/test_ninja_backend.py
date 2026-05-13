@@ -628,3 +628,169 @@ class TestUseMtime:
         before_ordering, _, _ = line.partition("||")
         assert "/tmp/pch/aa/std_xxx.gch" not in before_ordering
         assert "/work/foo.cpp" not in before_ordering
+
+
+class TestModuleIfaceCompileRule:
+    """Named-module interface compile rules must NOT receive -MMD -MF.
+
+    GCC's module-mapper protocol makes the compile look like a multi-input
+    action to ninja.  With deps=gcc, ninja reports "inputs may not also have
+    inputs" and stops.  The separate ``compile_module_iface_cmd`` rule
+    (no depfile / no deps) is used for these rules instead.
+    """
+
+    def _make_args(self, **overrides):
+        defaults = dict(
+            verbose=0,
+            cas_objdir="/tmp/obj",
+            bindir="/tmp/bin",
+            git_root="",
+            file_locking=False,
+            filename=[],
+            tests=[],
+            static=[],
+            dynamic=[],
+            CC="gcc",
+            CXX="g++",
+            CFLAGS="",
+            CXXFLAGS="",
+            LD="g++",
+            LDFLAGS="",
+            serialisetests=False,
+            build_only_changed=None,
+            use_mtime=False,
+            sleep_interval_lockdir=None,
+            sleep_interval_cifs=0.1,
+            sleep_interval_flock_fallback=0.1,
+            lock_warn_interval=30,
+            lock_cross_host_timeout=600,
+        )
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    def _generate_with_module_iface(self, module_iface_obj, module_iface_pcm=None):
+        """Build a graph with one module-iface compile rule and generate ninja."""
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="/tmp/obj/aa/math_abc123.o",
+                inputs=["/work/math.cppm"],
+                command=[
+                    "g++",
+                    "-c",
+                    "/work/math.cppm",
+                    "-fmodule-mapper=mapper.txt",
+                    "-o",
+                    "/tmp/obj/aa/math_abc123.o",
+                ],
+                rule_type="compile",
+                order_only_deps=["/tmp/obj/aa"],
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="/tmp/obj/aa/main_def456.o",
+                inputs=["/work/main.cpp"],
+                command=["g++", "-c", "/work/main.cpp", "-o", "/tmp/obj/aa/main_def456.o"],
+                rule_type="compile",
+                order_only_deps=["/tmp/obj/aa"],
+            )
+        )
+
+        args = self._make_args()
+        hunter = MagicMock()
+        hunter.huntsource = MagicMock()
+        hunter.getsources = MagicMock(return_value=[])
+        backend = NinjaBackend(args=args, hunter=hunter)
+        # Inject module-interface tracking so the backend knows which output is
+        # a module-interface artefact.
+        backend._module_iface_obj = module_iface_obj
+        if module_iface_pcm is not None:
+            backend._module_iface_pcm = module_iface_pcm
+
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        return buf.getvalue()
+
+    def test_module_iface_rule_omits_mmd_mf(self):
+        """compile rule for a module-interface output must not contain -MMD."""
+        content = self._generate_with_module_iface(
+            module_iface_obj={"math": "/tmp/obj/aa/math_abc123.o"},
+        )
+        # Find the cmd line for the module-interface output.
+        lines = content.splitlines()
+        module_cmd = None
+        for i, line in enumerate(lines):
+            if "math_abc123.o" in line and line.startswith("build "):
+                # Next cmd = line belongs to this rule.
+                for j in range(i + 1, min(i + 5, len(lines))):
+                    if lines[j].strip().startswith("cmd = "):
+                        module_cmd = lines[j]
+                        break
+                break
+        assert module_cmd is not None, "module-interface cmd not found"
+        assert "-MMD" not in module_cmd, f"unexpected -MMD in module-iface cmd: {module_cmd}"
+        assert "-MF" not in module_cmd, f"unexpected -MF in module-iface cmd: {module_cmd}"
+
+    def test_module_iface_uses_separate_ninja_rule(self):
+        """Module-interface rules use compile_module_iface_cmd (no depfile)."""
+        content = self._generate_with_module_iface(
+            module_iface_obj={"math": "/tmp/obj/aa/math_abc123.o"},
+        )
+        # The separate rule definition must appear.
+        assert "rule compile_module_iface_cmd" in content
+        # The build line for the module-interface output uses that rule.
+        assert (
+            "build /tmp/obj/aa/math_abc123.o: compile_module_iface_cmd" in content
+            or "math_abc123.o: compile_module_iface_cmd" in content
+        )
+        # The compile_module_iface_cmd rule definition must NOT have depfile.
+        in_module_rule = False
+        for line in content.splitlines():
+            if line == "rule compile_module_iface_cmd":
+                in_module_rule = True
+                continue
+            if in_module_rule:
+                if line == "" or (line.startswith("rule ") and "compile_module_iface_cmd" not in line):
+                    break
+                assert "depfile" not in line, f"depfile found in module-iface rule: {line}"
+                assert "deps = gcc" not in line, f"deps=gcc found in module-iface rule: {line}"
+
+    def test_normal_compile_rule_still_has_mmd_mf(self):
+        """Ordinary (non-module-interface) compile rules still get -MMD -MF."""
+        content = self._generate_with_module_iface(
+            module_iface_obj={"math": "/tmp/obj/aa/math_abc123.o"},
+        )
+        lines = content.splitlines()
+        main_cmd = None
+        for i, line in enumerate(lines):
+            if "main_def456.o" in line and line.startswith("build "):
+                for j in range(i + 1, min(i + 5, len(lines))):
+                    if lines[j].strip().startswith("cmd = "):
+                        main_cmd = lines[j]
+                        break
+                break
+        assert main_cmd is not None, "normal compile cmd not found"
+        assert "-MMD" in main_cmd, f"-MMD missing from normal compile cmd: {main_cmd}"
+        assert "-MF" in main_cmd, f"-MF missing from normal compile cmd: {main_cmd}"
+
+    def test_no_module_iface_rule_when_no_module_iface_outputs(self):
+        """compile_module_iface_cmd is NOT emitted when no module-interface rules."""
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="/tmp/obj/aa/foo_aabbcc.o",
+                inputs=["/work/foo.cpp"],
+                command=["g++", "-c", "/work/foo.cpp", "-o", "/tmp/obj/aa/foo_aabbcc.o"],
+                rule_type="compile",
+            )
+        )
+        args = self._make_args()
+        hunter = MagicMock()
+        hunter.huntsource = MagicMock()
+        hunter.getsources = MagicMock(return_value=[])
+        backend = NinjaBackend(args=args, hunter=hunter)
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+        assert "compile_module_iface_cmd" not in content

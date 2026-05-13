@@ -703,6 +703,80 @@ class TestProjectVersionAndNameOptIn:
         assert "oldvalue" in args.CPPFLAGS
         assert "newvalue" not in args.CPPFLAGS
 
+    def test_project_version_token_is_argv_safe(self):
+        """The -DCT_PROJECT_VERSION token must survive the full
+        _set_project_version → _unify_cpp_cxx_flags pipeline.
+
+        _unify_cpp_cxx_flags deduplicates by calling shlex.split on the raw
+        CPPFLAGS string and then joining the result. If that join uses
+        ' '.join (a plain space-join) instead of shlex.join, any token
+        containing double-quote characters (like -DCT_PROJECT_VERSION="1.2.3")
+        is written back to the raw string with unquoted double-quotes.  A
+        subsequent shlex.split then strips those double-quotes so args.flags.cxx
+        ends up with '-DCT_PROJECT_VERSION=1.2.3' — a bare numeric token — which
+        causes the compiler to reject '1.2.3' as "too many decimal points in
+        number".
+
+        The assertion: after the full injection+unification round-trip, the token
+        in the tokenized flag list must have literal double-quote characters (the C
+        string-literal delimiters).
+        """
+        from compiletools.apptools import _set_project_version, _unify_cpp_cxx_flags
+        from compiletools.utils import split_command_cached
+
+        args = self._make_args(**{"project-version": "1.2.3"})
+        args.separate_flags_CPP_CXX = False  # default; unify will run
+        _set_project_version(args)
+
+        # Simulate _unify_cpp_cxx_flags (runs immediately after _set_project_version
+        # in _commonsubstitutions) followed by _finalize_flag_state (shlex.split):
+        _unify_cpp_cxx_flags(args)
+        final_tokens = split_command_cached(args.CPPFLAGS)
+
+        version_tokens = [t for t in final_tokens if t.startswith("-DCT_PROJECT_VERSION")]
+        assert version_tokens, (
+            f"no -DCT_PROJECT_VERSION token survived the injection+unification "
+            f"round-trip; final CPPFLAGS tokens: {final_tokens!r}"
+        )
+        assert len(version_tokens) == 1, f"duplicate version tokens: {version_tokens!r}"
+        token = version_tokens[0]
+
+        macro, _, value = token.partition("=")
+        assert macro == "-DCT_PROJECT_VERSION"
+        assert value == '"1.2.3"', (
+            f'macro value must be the C string literal "1.2.3" '
+            f"(with literal double-quote chars) after the unification round-trip, "
+            f"got {value!r}.  Likely cause: _unify_cpp_cxx_flags uses ' '.join "
+            f"instead of shlex.join to reconstruct args.CPPFLAGS, dropping the "
+            f"shell-quoting that protects the double-quote characters."
+        )
+
+    def test_project_name_token_is_argv_safe(self):
+        """Mirror of test_project_version_token_is_argv_safe for CT_PROJECT_NAME."""
+        from compiletools.apptools import _set_project_name, _unify_cpp_cxx_flags
+        from compiletools.utils import split_command_cached
+
+        args = self._make_args(**{"project-name": "myapp"})
+        args.separate_flags_CPP_CXX = False
+        _set_project_name(args)
+        _unify_cpp_cxx_flags(args)
+        final_tokens = split_command_cached(args.CPPFLAGS)
+
+        name_tokens = [t for t in final_tokens if t.startswith("-DCT_PROJECT_NAME")]
+        assert name_tokens, (
+            f"no -DCT_PROJECT_NAME token survived the injection+unification "
+            f"round-trip; final CPPFLAGS tokens: {final_tokens!r}"
+        )
+        token = name_tokens[0]
+
+        macro, _, value = token.partition("=")
+        assert macro == "-DCT_PROJECT_NAME"
+        assert value == '"myapp"', (
+            f'macro value must be the C string literal "myapp" '
+            f"(with literal double-quote chars) after the unification round-trip, "
+            f"got {value!r}"
+        )
+
 
 class TestFilterPkgConfigCflagsExtended:
     def test_detached_I_flag(self):

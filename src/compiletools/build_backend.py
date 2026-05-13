@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import deque
 from typing import NamedTuple, TypeVar
 
 import compiletools.apptools
@@ -319,6 +320,43 @@ def extract_copts(command: list[str], *, strip_includes: bool = False) -> list[s
     return copts
 
 
+def extract_include_paths(command: list[str]) -> list[str]:
+    """Extract include-path arguments from a compile command.
+
+    Returns the path values from -I / -iquote / -isystem (and the
+    two-token "-I path" form). Used by the Bazel backend to re-emit
+    include paths via cc_binary(includes=[...]) since Bazel manages
+    include paths itself and extract_copts(strip_includes=True) drops
+    them.
+    """
+    if not command:
+        return []
+    args = split_compound_args(command[1:])
+    paths: list[str] = []
+    include_next = False
+    for arg in args:
+        if include_next:
+            paths.append(arg)
+            include_next = False
+            continue
+        if arg == "-I":
+            include_next = True
+            continue
+        if arg.startswith("-I") and len(arg) > 2:
+            paths.append(arg[2:])
+            continue
+        if arg in ("-isystem", "-iquote"):
+            include_next = True
+            continue
+        if arg.startswith("-isystem"):
+            paths.append(arg[len("-isystem") :].lstrip("="))
+            continue
+        if arg.startswith("-iquote"):
+            paths.append(arg[len("-iquote") :].lstrip("="))
+            continue
+    return paths
+
+
 def extract_linkopts(command: list[str], object_files: set[str]) -> list[str]:
     """Extract linker flags from a link command.
 
@@ -402,6 +440,43 @@ def aggregate_rule_sources(
     return srcs, all_copts
 
 
+def _toposort_rules(rules_by_output: dict[str, BuildRule]) -> list[BuildRule]:
+    """Topologically sort build rules by their ``inputs`` dependency edges.
+
+    Only edges whose target is itself a key in *rules_by_output* are
+    treated as ordering constraints. Edges to external artefacts (source
+    files, pre-existing headers) are ignored. Raises ``ValueError`` on a
+    cycle (which would indicate a malformed build graph).
+
+    Used by ``BuildBackend._prebuild_aux_artefacts`` to order named-module
+    interface compile rules so partitions compile before the primary
+    interface units that import them.
+    """
+    in_degree: dict[str, int] = {output: 0 for output in rules_by_output}
+    dependents: dict[str, list[str]] = {output: [] for output in rules_by_output}
+    for output, rule in rules_by_output.items():
+        for inp in rule.inputs:
+            if inp in rules_by_output:
+                in_degree[output] += 1
+                dependents[inp].append(output)
+
+    ready: deque[str] = deque(sorted(out for out, deg in in_degree.items() if deg == 0))
+    result: list[BuildRule] = []
+    while ready:
+        out = ready.popleft()
+        result.append(rules_by_output[out])
+        for dep in sorted(dependents[out]):
+            in_degree[dep] -= 1
+            if in_degree[dep] == 0:
+                ready.append(dep)
+
+    if len(result) != len(rules_by_output):
+        unprocessed = sorted(set(rules_by_output.keys()) - {r.output for r in result})
+        descriptors = [f"{out} (type={rules_by_output[out].rule_type})" for out in unprocessed]
+        raise ValueError(f"_toposort_rules: cycle detected among named-module interface rules: {descriptors}")
+    return result
+
+
 class BuildBackend(abc.ABC):
     """Abstract base class for build system backends."""
 
@@ -409,6 +484,18 @@ class BuildBackend(abc.ABC):
     # safe value at link-rule construction time without needing to mock every
     # piece of state. Instances set the per-build value during __init__.
     _compile_used_libcxx: bool = False
+
+    # Same rationale: class-level defaults for C++20 modules state so test
+    # fixtures bypassing __init__ via __new__ can still read these without
+    # AttributeError, and _prebuild_aux_artefacts can use plain attribute
+    # access (matches the invariant documented in __init__).
+    _module_compiler_kind: str | None = None
+    _module_pcm_cache_root: str | None = None
+    _module_pcm_dir: str | None = None
+    _module_iface_obj: dict[str, str] = {}  # noqa: RUF012
+    _module_iface_pcm: dict[str, str] = {}  # noqa: RUF012
+    _module_iface_gcm: dict[str, str] = {}  # noqa: RUF012
+    _gcc_module_mapper_path: str | None = None
 
     def __init__(self, args, hunter, *, context=None):
         self.args = args
@@ -515,24 +602,56 @@ class BuildBackend(abc.ABC):
         """Backend-specific build invocation (subprocess call to native tool)."""
 
     def _prebuild_aux_artefacts(self) -> None:
-        """Subprocess-execute PCH (.gch) and HEADER_UNIT (.pcm/.gcm) producer rules.
+        """Locally execute aux artefact producer rules before the native backend runs.
 
         Backends that emit one ``cc_binary`` / ``add_executable`` per LINK
         rule (CMake, Bazel) hand source-to-binary compilation to the
-        native tool, but the PCH and header-unit producer rules sit
-        outside that chain — the native tool never sees them. Running
-        them here lands the artefacts on disk so the per-TU compile
-        commands the native tool subsequently runs find them via the
+        native tool, but the PCH, header-unit, and named-module interface
+        producer rules sit outside that chain — the native tool never sees
+        them. Running them here lands the artefacts on disk so the per-TU
+        compile commands the native tool subsequently runs find them via the
         already-baked ``-fmodule-file=`` / ``-fmodule-mapper=`` /
         ``-I <pchdir>/<hash>`` flags. Locking via ``atomic_compile`` /
         ``atomic_link`` lets peer ct-cake invocations sharing a CAS dir
         cooperate.
+
+        Slurm submits all compiles as a flat job array with no DAG
+        ordering, so named-module interface compile rules (which write
+        ``.gcm`` / ``.pcm`` as side effects of producing their ``.o``)
+        must also be executed locally in Phase 0 before the flat array
+        is submitted. Without this, importer compiles race with interface
+        compiles in the array and GCC reports "failed to read compiled
+        module".
+
+        Execution order for named-module interface rules: we topologically
+        sort by ``rule.inputs`` within the interface-rule set so partitions
+        are compiled before primary interfaces that import them (clang's
+        precompile stage; gcc's -fmodule-mapper compile).
         """
         graph = self._graph
         if graph is None:
             return
         pch_rules = [r for r in graph.rules_by_type(RuleType.COMPILE) if r.output.endswith(".gch")]
         aux_rules = pch_rules + graph.rules_by_type(RuleType.HEADER_UNIT)
+
+        # Named-module interface compile rules: those whose outputs appear
+        # in _module_iface_obj (gcc .o, and clang .o from pcm-to-o stage)
+        # or _module_iface_pcm (clang precompile .pcm stage). We must NOT
+        # include _module_iface_gcm entries separately -- those .gcm paths
+        # are side effects of the same gcc compile rule whose .o is already
+        # in _module_iface_obj; double-executing would corrupt the output.
+        # Topological sort within this set ensures partitions (whose .pcm/.o
+        # appear in other interface rules' inputs) run before primary
+        # interface units that import them.
+        module_iface_outputs: set[str] = set(self._module_iface_obj.values()) | set(self._module_iface_pcm.values())
+        if module_iface_outputs:
+            iface_rules_by_output: dict[str, BuildRule] = {}
+            for rule in graph.rules_by_type(RuleType.COMPILE):
+                if rule.output in module_iface_outputs:
+                    iface_rules_by_output[rule.output] = rule
+            module_iface_rules = _toposort_rules(iface_rules_by_output)
+            aux_rules = module_iface_rules + aux_rules
+
         if not aux_rules:
             return
 

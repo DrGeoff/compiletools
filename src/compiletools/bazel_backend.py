@@ -21,11 +21,17 @@ from compiletools.build_backend import (
     BuildBackend,
     aggregate_rule_sources,
     build_obj_info,
+    extract_include_paths,
     extract_linkopts,
     mangle_target_name,
     register_backend,
 )
 from compiletools.build_graph import BuildGraph, BuildRule, RuleType
+
+# Header file extensions used when globbing include directories to populate
+# Bazel's srcs=[...] list (Bazel's sandbox cannot infer header ownership from
+# includes=[...] alone, so we enumerate them explicitly).
+_HDR_EXTS = frozenset((".h", ".hpp", ".hxx", ".hh", ".H", ".inl", ".inc", ".ipp"))
 
 
 @register_backend
@@ -168,14 +174,93 @@ class BazelBackend(BuildBackend):
 
         obj_info = build_obj_info(graph, strip_includes=True)
 
+        # Named-module interface compile objects (e.g. the .o produced from
+        # math.cppm) are built locally by _prebuild_aux_artefacts before bazel
+        # runs. Bazel's rules_cc ALLOWED_SRC_FILES does not include .cppm (or
+        # compiler-shipped .cc module sources), so listing the source in
+        # cc_binary srcs=[...] causes analysis-time failure:
+        #   "source file '@@//:math.cppm' is misplaced here"
+        # Drop named-module interface objects from obj_info entirely so that:
+        #  (a) their source files (.cppm / system .cc) are not added to srcs,
+        #  (b) their copts (e.g. "-x c++" injected for gcc<14 .cppm compat) do
+        #      not bleed into the cc_binary copts list for the importer.
+        # The prebuilt .o files themselves ARE added directly to srcs as
+        # prebuilt object files (bazel cc_binary allows .o in srcs), so the
+        # module's definitions are still linked into the final binary.
+        _module_iface_obj_paths: frozenset[str] = frozenset(self._module_iface_obj.values())
+        bazel_obj_info = {obj: info for obj, info in obj_info.items() if obj not in _module_iface_obj_paths}
+        # Prebuilt .o paths for named-module interface units, workspace-relative.
+        # These are added to each link/library target's srcs (not compile
+        # targets) to ensure the object code is linked without recompilation.
+        _module_iface_obj_rel: list[str] = sorted(
+            rel
+            for obj_path in _module_iface_obj_paths
+            for rel in [self._workspace_relative(obj_path, base_dir)]
+            if rel is not None
+        )
+
         for kind, rule, linkshared in plan:
-            srcs, all_copts = aggregate_rule_sources(rule, obj_info)
+            srcs, all_copts = aggregate_rule_sources(rule, bazel_obj_info)
             target_name = mangle_target_name(os.path.basename(rule.output))
-            rel_srcs = sorted({self._bazel_src(s, base_dir) for s in srcs})
+            # For link/library targets: include prebuilt interface .o files so
+            # the module's definitions are linked. Compile-only targets (if any)
+            # don't need the interface .o — the importer's own compile uses
+            # -fmodule-mapper= to find the prebuilt .gcm at runtime.
+            if kind in ("cc_binary", "cc_library", "cc_test"):
+                srcs_set = {self._bazel_src(s, base_dir) for s in srcs}
+                srcs_set.update(_module_iface_obj_rel)
+                rel_srcs = sorted(srcs_set)
+            else:
+                rel_srcs = sorted({self._bazel_src(s, base_dir) for s in srcs})
             linkopts: list[str] | None = None
             if kind != "cc_library":
                 object_files = set(rule.inputs)
                 linkopts = self._resolve_linkopts(extract_linkopts(rule.command, object_files) if rule.command else [])
+            # Collect include paths that extract_copts(strip_includes=True) dropped.
+            # Re-emit them via cc_binary(includes=[...]) so Bazel's include mechanism
+            # sees //#INCLUDE= annotations and --include CLI paths.
+            includes_seen: set[str] = set()
+            includes: list[str] = []
+            for obj in rule.inputs:
+                compile_rule = graph.get_rule(obj)
+                if compile_rule is None or compile_rule.command is None:
+                    continue
+                for inc in extract_include_paths(compile_rule.command):
+                    if os.path.isabs(inc):
+                        try:
+                            rel = os.path.relpath(inc, base_dir)
+                        except ValueError:
+                            continue  # different drive / unresolvable; let toolchain handle
+                        if rel.startswith(".."):
+                            continue  # outside workspace; skip
+                        inc = rel
+                    # Skip "." — Bazel forbids includes=["."] since it
+                    # would expose the entire workspace root to dependents.
+                    if inc and inc != "." and inc not in includes_seen:
+                        includes.append(inc)
+                        includes_seen.add(inc)
+            # Bazel's undeclared-inclusion check requires every header that
+            # is actually #include'd to be listed in srcs (or reachable via
+            # a cc_library dep). For directories exposed via includes=[...],
+            # the compiler can see their headers but Bazel's sandbox cannot
+            # infer ownership — so we glob all header files from each include
+            # directory and add them to srcs. Only do this when base_dir is
+            # a real path (not None / StringIO case) and the directory exists.
+            existing_rel_srcs: set[str] = set(rel_srcs)
+            extra_hdrs: list[str] = []
+            if base_dir is not None:
+                for inc in includes:
+                    inc_abs = os.path.join(base_dir, inc) if not os.path.isabs(inc) else inc
+                    if not os.path.isdir(inc_abs):
+                        continue
+                    for fname in os.listdir(inc_abs):
+                        if os.path.splitext(fname)[1] in _HDR_EXTS:
+                            hdr_rel = self._bazel_src(os.path.join(inc_abs, fname), base_dir)
+                            if hdr_rel not in existing_rel_srcs:
+                                extra_hdrs.append(hdr_rel)
+                                existing_rel_srcs.add(hdr_rel)
+            if extra_hdrs:
+                rel_srcs = sorted(set(rel_srcs) | set(extra_hdrs))
             module_inputs, all_copts = self._bazel_module_inputs_and_copts(rule, all_copts, base_dir)
             self._emit_target(
                 f,
@@ -184,6 +269,7 @@ class BazelBackend(BuildBackend):
                 rel_srcs,
                 all_copts,
                 linkopts,
+                includes=includes if includes else None,
                 linkshared=linkshared,
                 additional_compiler_inputs=module_inputs,
             )
@@ -239,6 +325,7 @@ class BazelBackend(BuildBackend):
         all_copts: list[str],
         linkopts: list[str] | None = None,
         *,
+        includes: list[str] | None = None,
         linkshared: bool = False,
         additional_compiler_inputs: list[str] | None = None,
     ) -> None:
@@ -249,6 +336,7 @@ class BazelBackend(BuildBackend):
             ("srcs", rel_srcs),
             ("additional_compiler_inputs", additional_compiler_inputs),
             ("copts", all_copts),
+            ("includes", includes),
             ("linkopts", linkopts),
         ):
             if not values:
@@ -341,6 +429,19 @@ class BazelBackend(BuildBackend):
                     seen.add(rel)
                     inputs.append(rel)
                     queue.append(rel)
+
+        # GCC named-module interface .gcm artefacts are side effects of the
+        # interface .o compile, NOT outputs of any rule, so they never appear
+        # in rule.inputs of the importer. Walk _module_iface_gcm directly so
+        # bazel's input validation sees the prebuilt .gcm files that the
+        # module-mapper file references. Without this, bazel rejects the build
+        # with "undeclared inclusion(s) ... 'std.c++-module'" or similar.
+        seen_inputs: set[str] = set(inputs)
+        for gcm_path in self._module_iface_gcm.values():
+            rel = self._workspace_relative(gcm_path, base_dir)
+            if rel is not None and rel not in seen_inputs:
+                inputs.append(rel)
+                seen_inputs.add(rel)
 
         copts = list(all_copts)
         mapper_basename = self._BAZEL_MODULE_MAPPER_BASENAME
@@ -619,6 +720,17 @@ class BazelBackend(BuildBackend):
         # bazel's autoconfig flag-ordering wins after this option.)
         if self._graph_uses_gcc_modules():
             lines.append("build --cxxopt=-fcanonical-system-headers")
+            # gcc's -MD depfile output for named-module imports includes virtual
+            # entries like `math.c++-module` (the CXX_IMPORTS make-variable
+            # format gcc uses for module dependency tracking). These are not
+            # real files on disk; bazel's depfile inclusion scanner
+            # misinterprets them as undeclared file inclusions and rejects
+            # the build with "undeclared inclusion(s) ... 'math.c++-module'".
+            # `-Mno-modules` suppresses the CXX_IMPORTS lines from the .d
+            # output so bazel only sees real file dependencies; gcc's
+            # -fmodule-mapper= already ensures correct build ordering.
+            if self._module_iface_gcm:
+                lines.append("build --cxxopt=-Mno-modules")
             # Bazel's gcc autoconfig appends `-std=c++17` to all C++ compile
             # actions. The header-unit precompile that compiletools runs
             # locally uses gcc's default `-std=` (typically C++20+ on

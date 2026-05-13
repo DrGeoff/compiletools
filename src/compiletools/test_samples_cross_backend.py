@@ -94,12 +94,15 @@ _LINK_FAIL_FICTIONAL_LIBS: SamplePlan = SamplePlan(
 )
 
 # Named C++20 modules (interface units, partitions, split impl, import std)
-# only build on `make` and `shake` today; the other four backends fail
-# at the BMI plumbing stage. `cxx_modules_header_units` is the exception:
-# header-units now build on every backend after the upstream fix tracked
-# by commit d30e2040 ("test(modules): drop dead _MODULE_FAILING_BACKENDS
-# xfail dispatch"), so that sample uses an empty blocklist.
-_CXX_MODULES_NAMED_BACKENDS_BLOCKED = frozenset({"bazel", "cmake", "ninja", "slurm"})
+# fail on ninja/cmake/bazel today. `slurm` was unblocked by the Wave 2
+# fix: _prebuild_aux_artefacts now locally executes named-module interface
+# compile rules before the flat slurm job array is submitted, so importer
+# compiles no longer race with interface compiles.
+# `cxx_modules_header_units` is the exception: header-units now build on
+# every backend after the upstream fix tracked by commit d30e2040
+# ("test(modules): drop dead _MODULE_FAILING_BACKENDS xfail dispatch"),
+# so that sample uses an empty blocklist.
+_CXX_MODULES_NAMED_BACKENDS_BLOCKED = frozenset()
 
 _SAMPLE_PLANS: dict[str, SamplePlan] = {
     # ----- vanilla --auto, no special setup -----
@@ -132,12 +135,6 @@ _SAMPLE_PLANS: dict[str, SamplePlan] = {
         # other two header dirs (subdir2, subdir3) are reachable only
         # via the --include CLI flag, mirroring test_magicinclude.py.
         extra_args=("--include=subdir2", "--prepend-INCLUDE=subdir3"),
-        # Bazel backend: the emitted cc_binary doesn't propagate the
-        # in-source //#INCLUDE=subdir annotation to copts, so subdir/
-        # isn't on the include path and the build fails to find
-        # important.hpp. Tracked as a bazel-backend gap; other
-        # backends honour the flag.
-        skip_for_backends=frozenset({"bazel"}),
     ),
     "numbers": SamplePlan(
         # The directory has two test entry points — test_direct_include.cpp
@@ -227,16 +224,14 @@ _SAMPLE_PLANS: dict[str, SamplePlan] = {
             "three framework include paths simultaneously, which fails."
         ),
     ),
+    # cmake wraps each copt in "..." (line: f'"{c}"') so a copt token like
+    # -DCT_PROJECT_VERSION="1.2.3" becomes "-DCT_PROJECT_VERSION="1.2.3""
+    # which is malformed CMake syntax.  bazel passes copts through its own
+    # quoting layer which strips the inner double-quote chars.  Both are
+    # separate bugs from the make/ninja fix in apptools._unify_cpp_cxx_flags.
     "project_version": SamplePlan(
-        skip_reason=(
-            "Known limitation: --project-version='1.2.3' produces "
-            "-DCT_PROJECT_VERSION='\"1.2.3\"' in args.CPPFLAGS (verified "
-            "by test_apptools.test_explicit_version_injects), but the "
-            "single-quote layer is dropped when the flag is serialized "
-            "into a Make/Ninja recipe, so the macro expands as a bare "
-            "token instead of a string literal. Sample stays as "
-            "documentation; cross-backend coverage waits on the fix."
-        ),
+        extra_args=("--project-version=1.2.3", "--project-name=demo_app"),
+        skip_for_backends=frozenset({"cmake", "bazel"}),
     ),
     # ----- multi-step build.sh — exercised by their own dedicated tests -----
     "library": SamplePlan(
