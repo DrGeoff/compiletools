@@ -1,0 +1,5 @@
+Name: CycleBeta
+Description: Half of a deliberately cyclic link-order pair (beta before alpha)
+Version: 1.0.0
+Cflags: -I/usr/local/include/cycle_beta
+Libs: -L/usr/local/lib -lcycle_beta

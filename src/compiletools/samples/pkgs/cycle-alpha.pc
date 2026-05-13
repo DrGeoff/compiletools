@@ -1,0 +1,5 @@
+Name: CycleAlpha
+Description: Half of a deliberately cyclic link-order pair (alpha before beta)
+Version: 1.0.0
+Cflags: -I/usr/local/include/cycle_alpha
+Libs: -L/usr/local/lib -lcycle_alpha
