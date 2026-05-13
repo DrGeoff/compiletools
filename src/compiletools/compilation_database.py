@@ -362,32 +362,16 @@ class CompilationDatabaseCreator:
             json_content = json.dumps(merged_commands, indent=2, ensure_ascii=False)
 
             # Skip the write entirely when the rendered JSON matches what is
-            # already on disk. atomic_write replaces the file via mkstemp +
-            # os.replace, which advances the inode and mtime even for byte-
-            # identical content; clangd and `find -newer`-based watchers treat
-            # any such change as an invalidation and re-index the world. We
-            # are inside the FileLock the caller acquired, so the read is
-            # race-free against peer writers.
-            if os.path.exists(output_file):
-                try:
-                    existing_content = compiletools.filesystem_utils.safe_read_text_file(output_file, encoding="utf-8")
-                    if str(existing_content) == json_content:
-                        if self.args.verbose:
-                            print(
-                                f"Compilation database unchanged ({len(merged_commands)} entries); "
-                                f"skipping write of {output_file}"
-                            )
-                        return
-                except Exception as e:
-                    # Fall through to the unconditional write so a transient
-                    # read failure never leaves a stale file on disk.
-                    if self.args.verbose:
-                        print(f"Warning: could not compare existing compilation database, rewriting: {e}")
-
-            # Use atomic write to prevent SIGBUS for concurrent mmap readers (e.g., clangd)
-            compiletools.filesystem_utils.atomic_write(output_file, json_content)
-
-            if self.args.verbose:
+            # already on disk. atomic_write_if_changed reads, compares, and
+            # either skips or atomically replaces — preserves inode/mtime for
+            # clangd consumers when unchanged. We are inside the FileLock the
+            # caller acquired, so the read is race-free against peer writers.
+            wrote = compiletools.filesystem_utils.atomic_write_if_changed(output_file, json_content)
+            if not wrote and self.args.verbose:
+                print(
+                    f"Compilation database unchanged ({len(merged_commands)} entries); skipping write of {output_file}"
+                )
+            elif wrote and self.args.verbose:
                 print(f"Written compilation database with {len(merged_commands)} entries to {output_file}")
                 print(f"  Updated: {len(new_commands)} entries")
                 print(f"  Preserved: {len(merged_commands) - len(new_commands)} entries")
