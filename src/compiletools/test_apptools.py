@@ -1346,3 +1346,89 @@ class TestHasPrefixMapFlag:
         # Bare prefix without trailing '=': not a recognized prefix-map
         # flag (the flag syntax is OLD=NEW after the equals).
         assert not _has_prefix_map_flag("-ffile-prefix-map")
+
+
+class TestInjectFfilePrefixMap:
+    """``_inject_ffile_prefix_map`` appends
+    ``-ffile-prefix-map=<gitroot>=<target>`` to args.CXXFLAGS / args.CFLAGS
+    when the user has not already specified any prefix-map flag (per
+    slot independently). The injection is a no-op when no git root is
+    resolvable (find_git_root returns the cwd as a fallback root, but
+    the helper treats that case the same — see below).
+    """
+
+    def _make_args(self, **overrides):
+        from types import SimpleNamespace
+
+        defaults = dict(
+            ffile_prefix_map_target=".",
+            CXXFLAGS="-O2 -g",
+            CFLAGS="-O2",
+            LDFLAGS="",
+        )
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    def test_appends_when_absent(self, monkeypatch):
+        import compiletools.apptools as apptools
+
+        monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "/home/alice/proj")
+        args = self._make_args()
+        apptools._inject_ffile_prefix_map(args)
+        assert "-ffile-prefix-map=/home/alice/proj=." in args.CXXFLAGS
+        assert "-ffile-prefix-map=/home/alice/proj=." in args.CFLAGS
+
+    def test_respects_user_override_per_slot(self, monkeypatch):
+        """User-set ``-fdebug-prefix-map`` in CXXFLAGS suppresses injection
+        for CXXFLAGS only; CFLAGS still gets the default."""
+        import compiletools.apptools as apptools
+
+        monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "/home/alice/proj")
+        args = self._make_args(CXXFLAGS="-O2 -fdebug-prefix-map=/user/set=foo")
+        apptools._inject_ffile_prefix_map(args)
+        # CXXFLAGS unchanged: user already specified a prefix-map flag
+        assert args.CXXFLAGS == "-O2 -fdebug-prefix-map=/user/set=foo"
+        # CFLAGS gets the default injection (independent slot)
+        assert "-ffile-prefix-map=/home/alice/proj=." in args.CFLAGS
+
+    def test_no_op_when_git_root_falsy(self, monkeypatch):
+        """An empty / falsy gitroot is the identity -- no anchor to
+        canonicalize against, so injection is silently skipped."""
+        import compiletools.apptools as apptools
+
+        monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "")
+        args = self._make_args(CXXFLAGS="-O2", CFLAGS="-O2")
+        apptools._inject_ffile_prefix_map(args)
+        assert args.CXXFLAGS == "-O2"
+        assert args.CFLAGS == "-O2"
+
+    def test_honors_custom_target(self, monkeypatch):
+        import compiletools.apptools as apptools
+
+        monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "/home/alice/proj")
+        args = self._make_args(ffile_prefix_map_target="/__ct__/", CFLAGS="")
+        apptools._inject_ffile_prefix_map(args)
+        assert "-ffile-prefix-map=/home/alice/proj=/__ct__/" in args.CXXFLAGS
+
+    def test_handles_empty_initial_flag_string(self, monkeypatch):
+        """No leading whitespace when the slot starts empty."""
+        import compiletools.apptools as apptools
+
+        monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "/repo")
+        args = self._make_args(CXXFLAGS="", CFLAGS="")
+        apptools._inject_ffile_prefix_map(args)
+        assert args.CXXFLAGS == "-ffile-prefix-map=/repo=."
+        assert args.CFLAGS == "-ffile-prefix-map=/repo=."
+
+    def test_idempotent(self, monkeypatch):
+        """Second call detects its own injection and skips."""
+        import compiletools.apptools as apptools
+
+        monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "/repo")
+        args = self._make_args()
+        apptools._inject_ffile_prefix_map(args)
+        first_cxx = args.CXXFLAGS
+        first_c = args.CFLAGS
+        apptools._inject_ffile_prefix_map(args)
+        assert first_cxx == args.CXXFLAGS
+        assert first_c == args.CFLAGS

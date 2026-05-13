@@ -1133,6 +1133,42 @@ def _has_prefix_map_flag(raw_flags: str) -> bool:
     return any(prefix in raw_flags for prefix in _PREFIX_MAP_FLAG_PREFIXES)
 
 
+def _inject_ffile_prefix_map(args) -> None:
+    """Append ``-ffile-prefix-map=<gitroot>=<target>`` to args.CXXFLAGS
+    and args.CFLAGS where the user has not already specified any
+    prefix-map flag.
+
+    The flag rewrites paths the compiler EMITS (debug info, ``__FILE__``,
+    ``__builtin_FILE``, ``.d`` output) so two users compiling the same
+    source at different workspace paths produce byte-identical .o /
+    .gch / .pcm / .gcm bytes. Cache contents become shareable across
+    users — the user-stated goal of Round 3.
+
+    Skipped when ``compiletools.git_utils.find_git_root()`` returns an
+    empty / falsy value (no anchor to canonicalize against). Per-slot
+    independently — user can override C++ but accept the C default.
+
+    Mutates ``args.CXXFLAGS`` and ``args.CFLAGS`` in place. The caller
+    (``_commonsubstitutions``) triggers ``_finalize_flag_state``
+    afterward so the ``*_tokens`` lists and ``args.flags`` reflect the
+    new strings.
+
+    Idempotent: a second call detects the previously-injected flag via
+    :func:`_has_prefix_map_flag` and skips. The CLI flag
+    ``--ffile-prefix-map-target`` (default ``.``) controls the RHS.
+    """
+    git_root = compiletools.git_utils.find_git_root()
+    if not git_root:
+        return
+    target = getattr(args, "ffile_prefix_map_target", ".")
+    flag = f"-ffile-prefix-map={git_root}={target}"
+    for attr in ("CXXFLAGS", "CFLAGS"):
+        existing = getattr(args, attr, "") or ""
+        if _has_prefix_map_flag(existing):
+            continue
+        setattr(args, attr, f"{existing} {flag}".strip() if existing else flag)
+
+
 def _canonicalize_one_path(path: str, anchor_prefix: str) -> str:
     """Replace anchor_prefix with _GITROOT_SENTINEL if `path` is anchor-rooted.
 
@@ -2319,6 +2355,16 @@ def _commonsubstitutions(args):
             args.test_xml_dir = os.path.join(git_root, test_xml_dir)
         else:
             args.test_xml_dir = os.path.abspath(test_xml_dir)
+
+    # Round 3: inject -ffile-prefix-map=<gitroot>=<target> into CXXFLAGS /
+    # CFLAGS so cas-objdir / cas-pchdir / cas-pcmdir contents are byte-
+    # identical across users with different checkout paths. Must run AFTER
+    # all earlier flag mutations (project version / name macros, CPP/CXX
+    # unification, pkg-config flag merging) so the detection scan sees the
+    # final user-state of the slot before deciding whether to inject. The
+    # subsequent _finalize_flag_state call (via substitutions(args) in the
+    # caller) rebuilds args.flags from the now-injected raw strings.
+    _inject_ffile_prefix_map(args)
 
 
 # List to store the callback functions for parse args
