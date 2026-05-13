@@ -785,7 +785,13 @@ def _temp_under_lock(lock, tempfile_path: str):
         lock.release()
 
 
-def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.CompletedProcess:
+def atomic_compile(
+    lock,
+    target: str,
+    compile_cmd: list[str],
+    *,
+    skip_if_exists: bool = False,
+) -> subprocess.CompletedProcess | None:
     """Execute compilation atomically under a lock.
 
     DO NOT 'OPTIMIZE' THIS BACK TO IN-PLACE WRITES FOR direct_compile=True
@@ -836,9 +842,20 @@ def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.Comp
             temp+rename + signal forwarding).
         target: Final output file path.
         compile_cmd: Compile command WITHOUT -o flag.
+        skip_if_exists: If True, recheck ``os.path.exists(target)`` *after*
+            acquiring the lock; if the artefact already exists, return
+            ``None`` without spawning a compiler. Realises the "slower
+            peer short-circuits" property the docstring above promises:
+            for content-addressable outputs (cas-objdir, cas-pchdir,
+            cas-pcmdir), a peer winning the race produced byte-identical
+            output, so re-running the compiler is wasted work. Off by
+            default — non-CA callers (verify-trace failed; output is
+            stale and MUST be rebuilt) need the unconditional rebuild.
 
     Returns:
-        subprocess.CompletedProcess from the compiler invocation.
+        subprocess.CompletedProcess from the compiler invocation, or
+        ``None`` if ``skip_if_exists`` was True and a peer had already
+        produced the target.
 
     Raises:
         subprocess.CalledProcessError: If compilation fails.
@@ -851,6 +868,8 @@ def atomic_compile(lock, target: str, compile_cmd: list[str]) -> subprocess.Comp
     tempfile_path = f"{target}.{pid}.{random_suffix}.tmp"
 
     with _temp_under_lock(lock, tempfile_path):
+        if skip_if_exists and os.path.exists(target):
+            return None
         cmd = list(compile_cmd) + ["-o", tempfile_path]
         result = _run_with_signal_forwarding(cmd)
         if result.returncode != 0:
@@ -877,7 +896,13 @@ def _emit_no_temp_warning(verbose: int, link_cmd: list[str], target: str) -> Non
         )
 
 
-def atomic_link(lock, target: str, link_cmd: list[str]) -> int:
+def atomic_link(
+    lock,
+    target: str,
+    link_cmd: list[str],
+    *,
+    skip_if_exists: bool = False,
+) -> int | None:
     """Execute a link/ar command under lock with temp-then-rename.
 
     Links/archives to ``{target}.{pid}.{rand}.tmp`` and renames to the final
@@ -903,9 +928,10 @@ def atomic_link(lock, target: str, link_cmd: list[str]) -> int:
         target: Final output file path.
         link_cmd: Complete link command. The output path in the command is
             rewritten to the temp file before execution.
+        skip_if_exists: See ``atomic_compile``.
 
     Returns:
-        0 on success.
+        0 on success, or ``None`` if skipped per ``skip_if_exists``.
 
     Raises:
         subprocess.CalledProcessError: If the link command fails.
@@ -923,6 +949,8 @@ def atomic_link(lock, target: str, link_cmd: list[str]) -> int:
         _emit_no_temp_warning(verbose, link_cmd, target)
 
     with _temp_under_lock(lock, tempfile_path):
+        if skip_if_exists and os.path.exists(target):
+            return None
         # If ar is appending to an existing archive, seed the temp file with
         # the current archive content so the append operates as intended.
         # Skip 0-byte targets: FlockLock/FcntlLock create the lock file via
@@ -946,28 +974,47 @@ def atomic_link(lock, target: str, link_cmd: list[str]) -> int:
         return result.returncode
 
 
-def execute_compile_rule(target: str, cmd: list[str], args) -> None:
+def execute_compile_rule(
+    target: str,
+    cmd: list[str],
+    args,
+    *,
+    skip_if_exists: bool = False,
+) -> None:
     """Strip ``-o target`` from *cmd* and run it under a target-keyed FileLock.
 
     The ``-o``/target pair is supplied by ``atomic_compile`` via the temp+rename
     pipeline; passing it in *cmd* would race with the atomic rewrite.
+    ``skip_if_exists`` is forwarded to ``atomic_compile``.
     """
     try:
         o_idx = cmd.index("-o")
     except ValueError as e:
         raise AssertionError(f"compile rule for {target!r} missing -o flag: {cmd}") from e
     cmd_without_output = cmd[:o_idx] + cmd[o_idx + 2 :]
-    atomic_compile(FileLock(target, args).lock, target, cmd_without_output)
+    atomic_compile(
+        FileLock(target, args).lock,
+        target,
+        cmd_without_output,
+        skip_if_exists=skip_if_exists,
+    )
 
 
-def execute_link_rule(target: str, cmd: list[str], args) -> None:
+def execute_link_rule(
+    target: str,
+    cmd: list[str],
+    args,
+    *,
+    skip_if_exists: bool = False,
+) -> None:
     """Run a link / header-unit / generic rule under a target-keyed FileLock.
 
     The command keeps any ``-o target`` it has — ``atomic_link``'s rewriter
     handles the redirection to a temp path. Used for ``LINK``, ``HEADER_UNIT``,
-    and the trace-backend ``else`` branch.
+    and the trace-backend ``else`` branch. ``skip_if_exists`` is forwarded
+    to ``atomic_link``.
     """
-    atomic_link(FileLock(target, args).lock, target, cmd)
+    atomic_link(FileLock(target, args).lock, target, cmd, skip_if_exists=skip_if_exists)
 
 
 def _rewrite_link_cmd_for_temp(link_cmd: list[str], target: str, tempfile_path: str) -> tuple[list[str], bool]:

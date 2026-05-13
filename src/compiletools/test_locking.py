@@ -960,6 +960,84 @@ class TestAtomicCompile:
             for f in os.listdir(subdir):
                 assert ".tmp" not in f
 
+    @requires_functional_compiler
+    def test_atomic_compile_skip_if_exists_returns_none_without_compile(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            with open(target, "w") as f:
+                f.write("PEER_PRODUCED")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+
+            patcher, mock_run = self._patch_runner()
+            with patcher:
+                result = atomic_compile(lock, target, self._compile_cmd(), skip_if_exists=True)
+
+            assert result is None
+            mock_run.assert_not_called()
+            with open(target) as f:
+                assert f.read() == "PEER_PRODUCED"
+            for f in os.listdir(tmpdir):
+                assert ".tmp" not in f
+
+    @requires_functional_compiler
+    def test_atomic_compile_skip_if_exists_releases_lock(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            open(target, "w").close()
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+
+            patcher, _ = self._patch_runner()
+            with patcher:
+                atomic_compile(lock, target, self._compile_cmd(), skip_if_exists=True)
+
+            lock2 = FlockLock(target, args)
+            lock2.acquire()
+            lock2.release()
+
+    @requires_functional_compiler
+    def test_atomic_compile_skip_if_exists_false_compiles_even_if_present(self):
+        # Required by trace_backend's non-CA else branch where verify-trace failed.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            with open(target, "w") as f:
+                f.write("STALE")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+
+            def create_temp(cmd):
+                out = cmd[cmd.index("-o") + 1]
+                with open(out, "w") as f:
+                    f.write("FRESH")
+
+            patcher, mock_run = self._patch_runner(on_run=create_temp)
+            with patcher:
+                atomic_compile(lock, target, self._compile_cmd())
+
+            mock_run.assert_called_once()
+            with open(target) as f:
+                assert f.read() == "FRESH"
+
+    @requires_functional_compiler
+    def test_atomic_compile_skip_if_exists_no_target_compiles(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.o")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+
+            def create_temp(cmd):
+                out = cmd[cmd.index("-o") + 1]
+                open(out, "w").close()
+
+            patcher, mock_run = self._patch_runner(on_run=create_temp)
+            with patcher:
+                result = atomic_compile(lock, target, self._compile_cmd(), skip_if_exists=True)
+
+            mock_run.assert_called_once()
+            assert result is not None and result.returncode == 0
+            assert os.path.exists(target)
+
 
 class TestAtomicLink:
     """Test atomic_link with temp-then-rename semantics (Critical bug C2)."""
@@ -1214,6 +1292,65 @@ class TestAtomicLink:
             assert seen_temp_state.get("existed_before_ar") is False
             with open(target) as f:
                 assert f.read() == "FRESH_ARCHIVE"
+
+    def test_atomic_link_skip_if_exists_returns_none_without_link(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.exe")
+            with open(target, "w") as f:
+                f.write("PEER_PRODUCED")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+
+            patcher, mock_run = self._patch_runner()
+            with patcher:
+                result = atomic_link(lock, target, ["cc", "-o", target, "foo.o"], skip_if_exists=True)
+
+            assert result is None
+            mock_run.assert_not_called()
+            with open(target) as f:
+                assert f.read() == "PEER_PRODUCED"
+            for f in os.listdir(tmpdir):
+                assert ".tmp" not in f
+
+    def test_atomic_link_skip_if_exists_false_links_even_if_present(self):
+        # Required by trace_backend's else branch where verify-trace failed.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.exe")
+            with open(target, "w") as f:
+                f.write("STALE")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+
+            def on_run(cmd):
+                tmp = cmd[cmd.index("-o") + 1]
+                with open(tmp, "w") as f:
+                    f.write("FRESH")
+
+            patcher, mock_run = self._patch_runner(on_run=on_run)
+            with patcher:
+                atomic_link(lock, target, ["cc", "-o", target, "foo.o"])
+
+            mock_run.assert_called_once()
+            with open(target) as f:
+                assert f.read() == "FRESH"
+
+    def test_atomic_link_skip_if_exists_no_target_links(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = os.path.join(tmpdir, "test.exe")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+
+            def on_run(cmd):
+                tmp = cmd[cmd.index("-o") + 1]
+                open(tmp, "w").close()
+
+            patcher, mock_run = self._patch_runner(on_run=on_run)
+            with patcher:
+                result = atomic_link(lock, target, ["cc", "-o", target, "foo.o"], skip_if_exists=True)
+
+            mock_run.assert_called_once()
+            assert result == 0
+            assert os.path.exists(target)
 
 
 class TestFileLock:
