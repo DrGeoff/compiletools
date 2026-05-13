@@ -1077,3 +1077,134 @@ class TestBazelAllOutputsCurrent:
         hunter = MagicMock()
         backend = BazelBackend(args=args, hunter=hunter)
         assert backend._all_outputs_current(BuildGraph()) is False
+
+
+class TestBazelNamedModuleHandling:
+    """Verify that .cppm module interface sources are excluded from srcs=[],
+    their prebuilt .gcm artefacts land in additional_compiler_inputs, and
+    the bazel module mapper contains an entry for each named module."""
+
+    def _make_backend(self, *, module_iface_obj=None, module_iface_gcm=None):
+        args = MagicMock()
+        hunter = MagicMock()
+        backend = BazelBackend(args=args, hunter=hunter)
+        # Populate the named-module state that _write_build / _bazel_module_inputs_and_copts
+        # consult at generation time. The backend normally gets these from build_graph().
+        backend._module_iface_obj = module_iface_obj or {}
+        backend._module_iface_gcm = module_iface_gcm or {}
+        backend._module_iface_pcm = {}
+        backend._module_compiler_kind = "gcc" if module_iface_gcm else None
+        backend._module_pcm_cache_root = "/cas/pcm" if module_iface_gcm else None
+        backend._gcc_header_unit_resolved = {}
+        backend._header_unit_artefact = {}
+        return backend
+
+    def _build_simple_module_graph(self):
+        """Return a graph with math.cppm (module iface) + main.cpp (importer).
+
+        math.cppm  -> obj/math.o  (compile rule, gcc writes math.gcm as side-effect)
+        main.cpp   -> obj/main.o  (compile rule, imports "math" via -fmodule-mapper=)
+        link rule  -> bin/main    (link)
+        """
+        graph = BuildGraph()
+        # Module interface compile rule
+        graph.add_rule(
+            BuildRule(
+                output="obj/math.o",
+                inputs=["math.cppm"],
+                command=[
+                    "g++",
+                    "-fmodules-ts",
+                    "-fmodule-mapper=.module-mapper.txt",
+                    "-c",
+                    "-x",
+                    "c++",
+                    "math.cppm",
+                    "-o",
+                    "obj/math.o",
+                ],
+                rule_type="compile",
+            )
+        )
+        # Importer compile rule — lists math.o as ordering input (gcc)
+        graph.add_rule(
+            BuildRule(
+                output="obj/main.o",
+                inputs=["main.cpp", "obj/math.o"],
+                command=[
+                    "g++",
+                    "-fmodules-ts",
+                    "-fmodule-mapper=.module-mapper.txt",
+                    "-c",
+                    "main.cpp",
+                    "-o",
+                    "obj/main.o",
+                ],
+                rule_type="compile",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="bin/main",
+                inputs=["obj/main.o", "obj/math.o"],
+                command=["g++", "-o", "bin/main", "obj/main.o", "obj/math.o"],
+                rule_type="link",
+            )
+        )
+        return graph
+
+    def test_cppm_excluded_from_srcs(self):
+        """math.cppm must NOT appear in cc_binary srcs=[]; rules_cc rejects it."""
+        graph = self._build_simple_module_graph()
+        backend = self._make_backend(
+            module_iface_obj={"math": "obj/math.o"},
+            module_iface_gcm={"math": "cas-pcm/math.gcm"},
+        )
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+        assert "math.cppm" not in content, (
+            "math.cppm must not appear in BUILD.bazel: bazel's rules_cc ALLOWED_SRC_FILES does not include .cppm"
+        )
+
+    def test_gcm_in_additional_compiler_inputs(self):
+        """The prebuilt .gcm artefact must appear in additional_compiler_inputs."""
+        graph = self._build_simple_module_graph()
+        backend = self._make_backend(
+            module_iface_obj={"math": "obj/math.o"},
+            module_iface_gcm={"math": "cas-pcm/math.gcm"},
+        )
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+        assert "cas-pcm/math.gcm" in content, (
+            "math.gcm must appear in additional_compiler_inputs so bazel's "
+            "input validation sees the prebuilt BMI artefact"
+        )
+
+    def test_main_cpp_still_in_srcs(self):
+        """main.cpp (the importer, not a module iface) must remain in srcs."""
+        graph = self._build_simple_module_graph()
+        backend = self._make_backend(
+            module_iface_obj={"math": "obj/math.o"},
+            module_iface_gcm={"math": "cas-pcm/math.gcm"},
+        )
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+        assert "main.cpp" in content, "main.cpp (importer) must still appear in srcs"
+
+    def test_prebuilt_obj_in_srcs_for_linking(self):
+        """The prebuilt .o from math.cppm must appear in srcs so it gets linked."""
+        graph = self._build_simple_module_graph()
+        backend = self._make_backend(
+            module_iface_obj={"math": "obj/math.o"},
+            module_iface_gcm={"math": "cas-pcm/math.gcm"},
+        )
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+        assert "obj/math.o" in content, (
+            "obj/math.o (prebuilt interface object) must appear in srcs=[...] so "
+            "its definitions are linked into the final cc_binary"
+        )

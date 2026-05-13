@@ -174,10 +174,44 @@ class BazelBackend(BuildBackend):
 
         obj_info = build_obj_info(graph, strip_includes=True)
 
+        # Named-module interface compile objects (e.g. the .o produced from
+        # math.cppm) are built locally by _prebuild_aux_artefacts before bazel
+        # runs. Bazel's rules_cc ALLOWED_SRC_FILES does not include .cppm (or
+        # compiler-shipped .cc module sources), so listing the source in
+        # cc_binary srcs=[...] causes analysis-time failure:
+        #   "source file '@@//:math.cppm' is misplaced here"
+        # Drop named-module interface objects from obj_info entirely so that:
+        #  (a) their source files (.cppm / system .cc) are not added to srcs,
+        #  (b) their copts (e.g. "-x c++" injected for gcc<14 .cppm compat) do
+        #      not bleed into the cc_binary copts list for the importer.
+        # The prebuilt .o files themselves ARE added directly to srcs as
+        # prebuilt object files (bazel cc_binary allows .o in srcs), so the
+        # module's definitions are still linked into the final binary.
+        _module_iface_obj_paths: frozenset[str] = frozenset(self._module_iface_obj.values())
+        bazel_obj_info = {obj: info for obj, info in obj_info.items() if obj not in _module_iface_obj_paths}
+        # Prebuilt .o paths for named-module interface units, workspace-relative.
+        # These are added to each link/library target's srcs (not compile
+        # targets) to ensure the object code is linked without recompilation.
+        _module_iface_obj_rel: list[str] = sorted(
+            rel
+            for obj_path in _module_iface_obj_paths
+            for rel in [self._workspace_relative(obj_path, base_dir)]
+            if rel is not None
+        )
+
         for kind, rule, linkshared in plan:
-            srcs, all_copts = aggregate_rule_sources(rule, obj_info)
+            srcs, all_copts = aggregate_rule_sources(rule, bazel_obj_info)
             target_name = mangle_target_name(os.path.basename(rule.output))
-            rel_srcs = sorted({self._bazel_src(s, base_dir) for s in srcs})
+            # For link/library targets: include prebuilt interface .o files so
+            # the module's definitions are linked. Compile-only targets (if any)
+            # don't need the interface .o — the importer's own compile uses
+            # -fmodule-mapper= to find the prebuilt .gcm at runtime.
+            if kind in ("cc_binary", "cc_library", "cc_test"):
+                srcs_set = {self._bazel_src(s, base_dir) for s in srcs}
+                srcs_set.update(_module_iface_obj_rel)
+                rel_srcs = sorted(srcs_set)
+            else:
+                rel_srcs = sorted({self._bazel_src(s, base_dir) for s in srcs})
             linkopts: list[str] | None = None
             if kind != "cc_library":
                 object_files = set(rule.inputs)
@@ -395,6 +429,19 @@ class BazelBackend(BuildBackend):
                     seen.add(rel)
                     inputs.append(rel)
                     queue.append(rel)
+
+        # GCC named-module interface .gcm artefacts are side effects of the
+        # interface .o compile, NOT outputs of any rule, so they never appear
+        # in rule.inputs of the importer. Walk _module_iface_gcm directly so
+        # bazel's input validation sees the prebuilt .gcm files that the
+        # module-mapper file references. Without this, bazel rejects the build
+        # with "undeclared inclusion(s) ... 'std.c++-module'" or similar.
+        seen_inputs: set[str] = set(inputs)
+        for gcm_path in self._module_iface_gcm.values():
+            rel = self._workspace_relative(gcm_path, base_dir)
+            if rel is not None and rel not in seen_inputs:
+                inputs.append(rel)
+                seen_inputs.add(rel)
 
         copts = list(all_copts)
         mapper_basename = self._BAZEL_MODULE_MAPPER_BASENAME
@@ -673,6 +720,17 @@ class BazelBackend(BuildBackend):
         # bazel's autoconfig flag-ordering wins after this option.)
         if self._graph_uses_gcc_modules():
             lines.append("build --cxxopt=-fcanonical-system-headers")
+            # gcc's -MD depfile output for named-module imports includes virtual
+            # entries like `math.c++-module` (the CXX_IMPORTS make-variable
+            # format gcc uses for module dependency tracking). These are not
+            # real files on disk; bazel's depfile inclusion scanner
+            # misinterprets them as undeclared file inclusions and rejects
+            # the build with "undeclared inclusion(s) ... 'math.c++-module'".
+            # `-Mno-modules` suppresses the CXX_IMPORTS lines from the .d
+            # output so bazel only sees real file dependencies; gcc's
+            # -fmodule-mapper= already ensures correct build ordering.
+            if self._module_iface_gcm:
+                lines.append("build --cxxopt=-Mno-modules")
             # Bazel's gcc autoconfig appends `-std=c++17` to all C++ compile
             # actions. The header-unit precompile that compiletools runs
             # locally uses gcc's default `-std=` (typically C++20+ on
