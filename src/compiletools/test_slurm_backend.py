@@ -746,7 +746,7 @@ class TestParallelLocalLink:
             # Both links must hit the barrier concurrently to pass.
             barrier = threading.Barrier(2, timeout=5)
 
-            def fake_link(target, cmd, args):
+            def fake_link(target, cmd, args, **_kw):
                 barrier.wait()
                 with open(target, "wb") as f:
                     f.write(b"\x7fELF link")
@@ -788,7 +788,7 @@ class TestParallelLocalLink:
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             order: list[str] = []
 
-            def fake_link(target, cmd, args):
+            def fake_link(target, cmd, args, **_kw):
                 order.append(target)
                 with open(target, "wb") as f:
                     f.write(b"\x7fELF")
@@ -871,7 +871,7 @@ class TestLocalLink:
             store.save()
 
             with patch("compiletools.trace_backend.execute_link_rule") as mock_link:
-                mock_link.side_effect = lambda target, cmd, args: open(target, "wb").close() or 0
+                mock_link.side_effect = lambda target, cmd, args, **_kw: open(target, "wb").close() or 0
                 backend.execute("build")
                 # Link routed through execute_link_rule (which wraps atomic_link)
                 assert mock_link.call_count == 1
@@ -2122,7 +2122,7 @@ class TestTimingPopulatesStartEnd:
                 patch.object(type(backend), "_timer", new_callable=lambda: property(lambda self: mock_timer)),
                 patch("compiletools.trace_backend.execute_link_rule") as mock_link,
             ):
-                mock_link.side_effect = lambda target, cmd, args: open(target, "wb").close() or 0
+                mock_link.side_effect = lambda target, cmd, args, **_kw: open(target, "wb").close() or 0
                 backend.execute("build")
 
             link_calls = [c for c in mock_timer.record_rule.call_args_list if c.kwargs.get("rule_type") == "link"]

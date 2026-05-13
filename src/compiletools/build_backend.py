@@ -493,22 +493,32 @@ class BuildBackend(abc.ABC):
 
         for rule in aux_rules:
             for d in rule.order_only_deps:
-                os.makedirs(d, exist_ok=True)
+                # order_only_deps must be bucket dirs, not artefact paths.
+                # See trace_backend xfail for the file-shaped-dep defect class.
+                try:
+                    os.makedirs(d, exist_ok=True)
+                except FileExistsError as e:
+                    raise AssertionError(
+                        f"order_only_dep {d!r} on rule {rule.output!r} is a file but must be a directory"
+                    ) from e
 
         verbose = getattr(self.args, "verbose", 0)
         for rule in aux_rules:
+            # Pre-lock fast-path mirrors trace_backend._do_build:365-383.
+            # The skip_if_exists=True below closes the TOCTOU window inside
+            # the lock; this skip avoids the lock entirely on warm builds.
             if os.path.exists(rule.output):
                 continue
             assert rule.command is not None, f"aux rule {rule.output} has no command"
             if verbose >= 1:
                 print(" ".join(rule.command), file=sys.stderr)
             if rule.rule_type == RuleType.COMPILE:
-                execute_compile_rule(rule.output, rule.command, self.args)
+                execute_compile_rule(rule.output, rule.command, self.args, skip_if_exists=True)
             else:
-                # HEADER_UNIT: gcc's shell-pipeline form does its own producer-side
+                # gcc's shell-pipeline header-unit form does its own producer-side
                 # rename inside the pipeline; atomic_link's outer rewrite no-ops
                 # (emits a one-time warning) but the rule still runs correctly.
-                execute_link_rule(rule.output, list(rule.command), self.args)
+                execute_link_rule(rule.output, list(rule.command), self.args, skip_if_exists=True)
 
     def clean(self) -> None:
         """Remove build artifacts. Override for backend-specific cleanup."""

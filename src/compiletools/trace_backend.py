@@ -420,19 +420,25 @@ class ShakeBackend(BuildBackend):
         return old_hash != new_hash
 
     def _execute_rule(self, rule: BuildRule, target: str, flat_cmd: list[str]) -> None:
-        """Run the subprocess for a single build rule (called from a thread)."""
+        """Run the subprocess for a single build rule (called from a thread).
+
+        ``skip_if_exists=True`` on the three CA branches closes the TOCTOU
+        window between the pre-lock fast-path in ``_do_build`` and the
+        helper's own lock acquire. The ``else`` branch keeps the default
+        False — verify-trace already decided the output is stale.
+        """
         start = time.monotonic()
         if rule.rule_type == RuleType.COMPILE:
-            execute_compile_rule(target, flat_cmd, self.args)
+            execute_compile_rule(target, flat_cmd, self.args, skip_if_exists=True)
         elif rule.rule_type == RuleType.LINK:
             # Link output IS the cas-exe path; the downstream publish-as-symlink
             # rule materialises bin/<name>. No per-rule CA-then-copy here —
             # that's only for static_library / shared_library.
-            execute_link_rule(target, flat_cmd, self.args)
+            execute_link_rule(target, flat_cmd, self.args, skip_if_exists=True)
         elif _is_build_artifact(rule):
             ca = self._ca_target(rule)
             ca_cmd = [ca if a == target else a for a in flat_cmd]
-            execute_link_rule(ca, ca_cmd, self.args)
+            execute_link_rule(ca, ca_cmd, self.args, skip_if_exists=True)
             compiletools.filesystem_utils.atomic_copy(ca, target)
         else:
             execute_link_rule(target, flat_cmd, self.args)

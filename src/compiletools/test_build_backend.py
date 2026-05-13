@@ -201,6 +201,129 @@ class TestBuildBackendCommon:
             assert isinstance(graph, BuildGraph)
 
 
+class TestPrebuildAuxArtefacts:
+    """_prebuild_aux_artefacts: pre-lock fast-path, skip_if_exists kwarg,
+    and the directory-only assertion on order_only_deps."""
+
+    def _make_backend(self, tmp_path):
+        return make_stub_backend_class()(args=make_backend_args(tmp_path), hunter=make_mock_hunter())
+
+    def _attach_rule(self, backend, rule):
+        graph = BuildGraph()
+        graph.add_rule(rule)
+        backend._graph = graph
+
+    @staticmethod
+    def _pch_rule(gch, bucket):
+        from compiletools.build_graph import BuildRule, RuleType
+
+        return BuildRule(
+            output=str(gch),
+            inputs=["/some/header.h"],
+            command=["g++", "-x", "c++-header", "-c", "/some/header.h", "-o", str(gch)],
+            rule_type=RuleType.COMPILE,
+            order_only_deps=[str(bucket)],
+        )
+
+    @staticmethod
+    def _header_unit_rule(pcm, bucket):
+        from compiletools.build_graph import BuildRule, RuleType
+
+        return BuildRule(
+            output=str(pcm),
+            inputs=["<vector>"],
+            command=["clang++", "-x", "c++-system-header", "<vector>", "-o", str(pcm)],
+            rule_type=RuleType.HEADER_UNIT,
+            order_only_deps=[str(bucket)],
+        )
+
+    def test_pre_lock_fast_path_skips_helper_when_pch_exists(self, tmp_path):
+        backend = self._make_backend(tmp_path)
+        bucket = tmp_path / "pch-bucket"
+        bucket.mkdir()
+        gch = bucket / "header.h.gch"
+        gch.write_bytes(b"PEER_PRODUCED_PCH")
+        self._attach_rule(backend, self._pch_rule(gch, bucket))
+
+        with patch("compiletools.build_backend.execute_compile_rule") as mock_compile:
+            backend._prebuild_aux_artefacts()
+
+        mock_compile.assert_not_called()
+        assert gch.read_bytes() == b"PEER_PRODUCED_PCH"
+
+    def test_invokes_helper_with_skip_if_exists_true(self, tmp_path):
+        backend = self._make_backend(tmp_path)
+        bucket = tmp_path / "pch-bucket"
+        gch = bucket / "header.h.gch"
+        self._attach_rule(backend, self._pch_rule(gch, bucket))
+
+        with patch("compiletools.build_backend.execute_compile_rule") as mock_compile:
+            backend._prebuild_aux_artefacts()
+
+        mock_compile.assert_called_once()
+        assert mock_compile.call_args.kwargs.get("skip_if_exists") is True
+
+    def test_header_unit_routed_through_link_helper_with_skip(self, tmp_path):
+        backend = self._make_backend(tmp_path)
+        bucket = tmp_path / "pcm-bucket"
+        pcm = bucket / "vector.pcm"
+        self._attach_rule(backend, self._header_unit_rule(pcm, bucket))
+
+        with (
+            patch("compiletools.build_backend.execute_link_rule") as mock_link,
+            patch("compiletools.build_backend.execute_compile_rule") as mock_compile,
+        ):
+            backend._prebuild_aux_artefacts()
+
+        mock_compile.assert_not_called()
+        mock_link.assert_called_once()
+        assert mock_link.call_args.kwargs.get("skip_if_exists") is True
+
+    def test_assertion_when_order_only_dep_is_a_file(self, tmp_path):
+        backend = self._make_backend(tmp_path)
+        bucket = tmp_path / "pcm-bucket"
+        bucket.mkdir()
+        bogus_file_dep = bucket / "leaked.pcm"
+        bogus_file_dep.write_bytes(b"i am a file, not a directory")
+        pcm = bucket / "vector.pcm"
+        from compiletools.build_graph import BuildRule, RuleType
+
+        rule = BuildRule(
+            output=str(pcm),
+            inputs=["<vector>"],
+            command=["clang++", "-x", "c++-system-header", "<vector>", "-o", str(pcm)],
+            rule_type=RuleType.HEADER_UNIT,
+            order_only_deps=[str(bogus_file_dep)],
+        )
+        self._attach_rule(backend, rule)
+
+        with pytest.raises(AssertionError, match="must be a directory"):
+            backend._prebuild_aux_artefacts()
+
+    def test_no_op_when_graph_has_no_aux_rules(self, tmp_path):
+        backend = self._make_backend(tmp_path)
+        from compiletools.build_graph import BuildRule, RuleType
+
+        self._attach_rule(
+            backend,
+            BuildRule(
+                output=str(tmp_path / "main.o"),
+                inputs=[str(tmp_path / "main.cpp")],
+                command=["g++", "-c", "main.cpp", "-o", "main.o"],
+                rule_type=RuleType.COMPILE,
+            ),
+        )
+
+        with (
+            patch("compiletools.build_backend.execute_link_rule") as mock_link,
+            patch("compiletools.build_backend.execute_compile_rule") as mock_compile,
+        ):
+            backend._prebuild_aux_artefacts()
+
+        mock_compile.assert_not_called()
+        mock_link.assert_not_called()
+
+
 class TestBackendRegistry:
     def test_register_and_retrieve(self):
         class FakeBackend(BuildBackend):

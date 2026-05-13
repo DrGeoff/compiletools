@@ -1183,7 +1183,7 @@ class TestAtomicLinkRouting:
             os.makedirs(td / "cas-exe" / "aa", exist_ok=True)
 
             with mock.patch("compiletools.trace_backend.execute_link_rule") as mock_link:
-                mock_link.side_effect = lambda target, cmd, args: open(target, "wb").close() or 0
+                mock_link.side_effect = lambda target, cmd, args, **_kw: open(target, "wb").close() or 0
                 backend.execute("build")
                 assert mock_link.call_count == 1
                 # execute_link_rule(target=rule.output, cmd, args) — direct
@@ -1209,7 +1209,7 @@ class TestAtomicLinkRouting:
             (td / "src.txt").write_text("data")
 
             with mock.patch("compiletools.trace_backend.execute_link_rule") as mock_link:
-                mock_link.side_effect = lambda target, cmd, args: open(target, "wb").close() or 0
+                mock_link.side_effect = lambda target, cmd, args, **_kw: open(target, "wb").close() or 0
                 backend.execute("build")
                 assert mock_link.call_count == 1
                 # The catch-all branch passes target=rule.output, not a CA path
