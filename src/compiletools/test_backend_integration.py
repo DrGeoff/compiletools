@@ -9,7 +9,6 @@ import os
 import pathlib
 import shutil
 import subprocess
-import typing
 
 import pytest
 
@@ -314,20 +313,11 @@ class TestBackendBuildHeaderUnits(BaseCompileToolsTestCase):
     "could not find module" (gcc).
     """
 
-    _MODULE_FAILING_BACKENDS: typing.ClassVar[frozenset[str]] = frozenset()
-
     @uth.requires_functional_compiler
     @uth.requires_backend_tool()
     @pytest.mark.parametrize("backend_name", available_backends())
-    def test_build_header_units(self, backend_name, tmp_path, monkeypatch, capfd, capped_parallel_argv, request):
+    def test_build_header_units(self, backend_name, tmp_path, monkeypatch, capfd, capped_parallel_argv):
         """Build cxx_modules_header_units sample with each registered backend."""
-        if backend_name in self._MODULE_FAILING_BACKENDS:
-            request.applymarker(
-                pytest.mark.xfail(
-                    reason="pre-existing defect; see _MODULE_FAILING_BACKENDS comment",
-                    strict=True,
-                )
-            )
         from compiletools.test_cxx_modules import (
             _clang_supports_header_units,
             _detected_gcc_supports_modules,
