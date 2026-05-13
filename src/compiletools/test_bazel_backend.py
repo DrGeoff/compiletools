@@ -1239,3 +1239,21 @@ class TestBazelNamedModuleHandling:
             "obj/math.o (prebuilt interface object) must appear in srcs=[...] so "
             "its definitions are linked into the final cc_binary"
         )
+
+    def test_mno_modules_not_injected_when_no_module_iface_gcm(self):
+        """-Mno-modules must NOT appear in .bazelrc when _module_iface_gcm is empty.
+
+        Clang builds and header-unit-only gcc builds have no named-module
+        interface artefacts (.gcm files), so the gcc-specific workaround flag
+        -Mno-modules should not appear in the generated bazelrc.
+        """
+        # Backend with empty _module_iface_gcm (no named-module GCC artefacts).
+        backend = self._make_backend(
+            module_iface_obj={},
+            module_iface_gcm={},
+        )
+        content = backend._build_bazelrc_content()
+        assert "-Mno-modules" not in content, (
+            "-Mno-modules must not be injected into .bazelrc when there are no "
+            "named-module GCC artefacts (_module_iface_gcm is empty)"
+        )

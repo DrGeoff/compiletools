@@ -202,16 +202,15 @@ class BazelBackend(BuildBackend):
         for kind, rule, linkshared in plan:
             srcs, all_copts = aggregate_rule_sources(rule, bazel_obj_info)
             target_name = mangle_target_name(os.path.basename(rule.output))
-            # For link/library targets: include prebuilt interface .o files so
-            # the module's definitions are linked. Compile-only targets (if any)
-            # don't need the interface .o — the importer's own compile uses
-            # -fmodule-mapper= to find the prebuilt .gcm at runtime.
-            if kind in ("cc_binary", "cc_library", "cc_test"):
-                srcs_set = {self._bazel_src(s, base_dir) for s in srcs}
-                srcs_set.update(_module_iface_obj_rel)
-                rel_srcs = sorted(srcs_set)
-            else:
-                rel_srcs = sorted({self._bazel_src(s, base_dir) for s in srcs})
+            # plan is built exclusively from cc_library / cc_binary / cc_test
+            # rules (see the classification loop above). For all three kinds,
+            # include prebuilt interface .o files so the module's definitions
+            # are linked. Compile-only targets (if any) don't need the
+            # interface .o — the importer's own compile uses -fmodule-mapper=
+            # to find the prebuilt .gcm at runtime.
+            srcs_set = {self._bazel_src(s, base_dir) for s in srcs}
+            srcs_set.update(_module_iface_obj_rel)
+            rel_srcs = sorted(srcs_set)
             linkopts: list[str] | None = None
             if kind != "cc_library":
                 object_files = set(rule.inputs)
@@ -490,6 +489,9 @@ class BazelBackend(BuildBackend):
         # bazel's input validation sees the prebuilt .gcm files that the
         # module-mapper file references. Without this, bazel rejects the build
         # with "undeclared inclusion(s) ... 'std.c++-module'" or similar.
+        # Rebuild seen-set after transitive walk above (which used its own
+        # `seen` at the start of the walk) so GCM paths are deduped against
+        # the full post-walk inputs list rather than just the initial direct inputs.
         seen_inputs: set[str] = set(inputs)
         for gcm_path in self._module_iface_gcm.values():
             rel = self._workspace_relative(gcm_path, base_dir)
