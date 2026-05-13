@@ -317,6 +317,56 @@ class BazelBackend(BuildBackend):
         return "".join(out)
 
     @staticmethod
+    def _starlark_copt(s: str) -> str:
+        """Quote *s* as a Starlark string for use in a ``copts`` list.
+
+        Bazel applies Bourne-shell tokenization on top of Starlark string
+        parsing when it expands ``copts`` values into compiler argv.  A
+        plain Starlark ``"`` escape (``\\"``) survives Starlark parsing as a
+        literal ``"`` character, but Bazel's shell tokenizer then treats
+        that ``"`` as a quoting delimiter and **strips it**, so
+        ``-DFOO=\\"1.2.3\\"`` (Starlark: ``-DFOO="1.2.3"``) reaches the
+        compiler as ``-DFOO=1.2.3`` — a number, not a string literal.
+
+        The fix is one extra level of escaping for ``"``: emit ``\\\\\\\"``
+        in the Starlark source (four bytes: ``\\``, ``\\``, ``\\``, ``"``).
+        Starlark parses the leading ``\\\\`` as a literal backslash and
+        ``\\"`` as a literal ``"``; the string value is therefore
+        ``\\"`` (two chars: backslash + double-quote).  Bazel's Bourne-shell
+        tokenizer then sees that ``\\"`` as a shell-escaped quote and passes a
+        literal ``"`` to the compiler, giving gcc the argv token
+        ``-DFOO="value"`` it expects.
+
+        All other characters are handled identically to ``_starlark_str``.
+        """
+        out = ['"']
+        for ch in s:
+            if ch == "\\":
+                out.append("\\\\")
+            elif ch == '"':
+                # \\\" in the BUILD.bazel file:
+                #   Starlark: \\\\ -> \, \" -> " => string value = \"
+                #   Bazel shell tokenizer: \" -> literal "
+                #   gcc argv: " (preserved double-quote)
+                out.append('\\\\\\"')
+            elif ch == "\n":
+                out.append("\\n")
+            elif ch == "\r":
+                out.append("\\r")
+            elif ch == "\t":
+                out.append("\\t")
+            elif ord(ch) < 0x20 or ord(ch) == 0x7F:
+                raise ValueError(
+                    f"refusing to emit control char ord={ord(ch)} in BUILD.bazel "
+                    f"(Java Starlark parser rejects \\xNN escapes); offending "
+                    f"input: {s!r}"
+                )
+            else:
+                out.append(ch)
+        out.append('"')
+        return "".join(out)
+
+    @staticmethod
     def _emit_target(
         f,
         kind: str,
@@ -331,18 +381,22 @@ class BazelBackend(BuildBackend):
     ) -> None:
         """Write a single ``cc_library`` / ``cc_binary`` / ``cc_test`` stanza."""
         q = BazelBackend._starlark_str
+        qcopt = BazelBackend._starlark_copt
         lines = [f"\n{kind}(", f"    name = {q(target_name)},"]
-        for attr, values in (
-            ("srcs", rel_srcs),
-            ("additional_compiler_inputs", additional_compiler_inputs),
-            ("copts", all_copts),
-            ("includes", includes),
-            ("linkopts", linkopts),
+        for attr, values, quoter in (
+            ("srcs", rel_srcs, q),
+            ("additional_compiler_inputs", additional_compiler_inputs, q),
+            # copts use _starlark_copt: Bazel applies Bourne-shell tokenization
+            # on top of Starlark parsing, which strips bare " chars.  Double-
+            # escaping (\") lets the shell tokenizer preserve them as literals.
+            ("copts", all_copts, qcopt),
+            ("includes", includes, q),
+            ("linkopts", linkopts, q),
         ):
             if not values:
                 continue
             lines.append(f"    {attr} = [")
-            lines.extend(f"        {q(v)}," for v in values)
+            lines.extend(f"        {quoter(v)}," for v in values)
             lines.append("    ],")
         if linkshared:
             lines.append("    linkshared = True,")
