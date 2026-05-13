@@ -40,7 +40,7 @@ USAGE
     # Preview what would be removed
     ct-cleanup-locks --dry-run
 
-    # Remove stale locks (uses objdir from ct.conf)
+    # Remove stale locks (uses cas-objdir from ct.conf)
     ct-cleanup-locks
 
     # Custom object directory
@@ -53,7 +53,7 @@ CONFIGURATION
 =============
 Respects settings from ct.conf:
 
-- ``objdir``: Object directory to scan (default from configuration)
+- ``cas-objdir``: Object directory to scan (default from configuration)
 - ``lock-cross-host-timeout``: Minimum lock age before considering stale
 - Uses same timeout policy as build system for consistency
 
@@ -117,7 +117,7 @@ General Options
 
 HOW IT WORKS
 ============
-1. Scans objdir for ``.lockdir`` directories
+1. Scans the cas-objdir for ``.lockdir`` directories
 2. Reads hostname:pid from lockdir pid file
 3. For local locks: checks if process still exists
 4. For remote locks: SSHs to host and checks if process exists
@@ -212,7 +212,7 @@ TROUBLESHOOTING
 
 **Permission denied errors**
 
-- Ensure you have write access to objdir
+- Ensure you have write access to the cas-objdir
 - In multi-user environments, ensure group permissions are correct
 - May need to run as same user who created locks
 

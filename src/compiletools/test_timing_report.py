@@ -17,33 +17,14 @@ class TestFindTimingFile:
         assert _find_timing_file("/some/path.json") == "/some/path.json"
 
     def test_auto_detect_cwd(self, tmp_path, monkeypatch):
-        timing = tmp_path / ".ct-timing.json"
+        timing = tmp_path / "timing.json"
         timing.write_text("{}")
         monkeypatch.chdir(tmp_path)
-        assert _find_timing_file(None) == ".ct-timing.json"
+        assert _find_timing_file(None) == "timing.json"
 
     def test_auto_detect_none_when_missing(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         assert _find_timing_file(None) is None
-
-    def test_auto_detect_objdir(self, tmp_path, monkeypatch):
-        """Fix 6: users with ``--cas-objdir=cas-objdir/...`` previously got
-        false 'no timing file found'.  ``_find_timing_file`` must accept
-        an ``objdir`` argument and search there too."""
-        monkeypatch.chdir(tmp_path)
-        objdir = tmp_path / "cas-objdir" / "myproject"
-        objdir.mkdir(parents=True)
-        timing = objdir / ".ct-timing.json"
-        timing.write_text("{}")
-        # cwd has no .ct-timing.json, but objdir does
-        result = _find_timing_file(None, objdir=str(objdir))
-        assert result == str(timing)
-
-    def test_auto_detect_objdir_none_when_missing(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        objdir = tmp_path / "cas-objdir"
-        objdir.mkdir()
-        assert _find_timing_file(None, objdir=str(objdir)) is None
 
     def test_auto_detect_bindir_diagnostics_newest(self, tmp_path, monkeypatch):
         """With the new diagnostics-dir layout, look up the newest invocation
@@ -89,16 +70,6 @@ class TestFindTimingFile:
         result = _find_timing_file(None, bindir=str(bindir), diagnostics_dir=str(diag))
         assert result == str(timing)
 
-    def test_auto_detect_nonexistent_diagnostics_dir_falls_through(self, tmp_path, monkeypatch):
-        """If the diagnostics-dir doesn't exist, fall through to the legacy
-        ``./.ct-timing.json`` candidate (which exists in this test) instead
-        of erroring."""
-        monkeypatch.chdir(tmp_path)
-        legacy = tmp_path / ".ct-timing.json"
-        legacy.write_text("{}")
-        result = _find_timing_file(None, diagnostics_dir=str(tmp_path / "does-not-exist"))
-        assert result == ".ct-timing.json"
-
     def test_auto_detect_nonexistent_diagnostics_dir_returns_none(self, tmp_path, monkeypatch):
         """If diagnostics-dir doesn't exist and no other fallback hits,
         return None rather than raising."""
@@ -124,34 +95,14 @@ class TestFindTimingFile:
         result = _find_timing_file(None, bindir=str(bindir))
         assert result == str(real / "timing.json")
 
-    def test_auto_detect_prefers_cwd_timing_json_over_legacy(self, tmp_path, monkeypatch):
-        """``./timing.json`` (no leading dot, the new name) takes precedence
-        over the legacy ``./.ct-timing.json`` when both are present."""
-        monkeypatch.chdir(tmp_path)
-        new = tmp_path / "timing.json"
-        new.write_text("{}")
-        legacy = tmp_path / ".ct-timing.json"
-        legacy.write_text("{}")
-        assert _find_timing_file(None) == "timing.json"
-
-    def test_auto_detect_falls_back_to_legacy_dotfile(self, tmp_path, monkeypatch):
-        """When ``./timing.json`` is absent, fall back to the legacy
-        ``./.ct-timing.json``."""
-        monkeypatch.chdir(tmp_path)
-        legacy = tmp_path / ".ct-timing.json"
-        legacy.write_text("{}")
-        assert _find_timing_file(None) == ".ct-timing.json"
-
-    def test_auto_detect_empty_diagnostics_dir_falls_through(self, tmp_path, monkeypatch):
-        """An existing-but-empty diagnostics-dir falls through to legacy
-        candidates rather than returning a bogus path."""
+    def test_auto_detect_empty_diagnostics_dir_returns_none(self, tmp_path, monkeypatch):
+        """An existing-but-empty diagnostics-dir returns None rather than
+        a bogus path."""
         monkeypatch.chdir(tmp_path)
         bindir = tmp_path / "bin"
         diag = bindir / "diagnostics"
         diag.mkdir(parents=True)  # empty
-        legacy = tmp_path / ".ct-timing.json"
-        legacy.write_text("{}")
-        assert _find_timing_file(None, bindir=str(bindir)) == ".ct-timing.json"
+        assert _find_timing_file(None, bindir=str(bindir)) is None
 
 
 class TestMainCLI:

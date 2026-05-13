@@ -42,8 +42,6 @@ class DotStyle(compiletools.git_utils.NameAdjuster):
     def __init__(self, tree_, args):
         compiletools.git_utils.NameAdjuster.__init__(self, args)
         for key in tree_:
-            # TODO: Take care of the case where there are multiple top level
-            # nodes
             self.name = self.adjust(key)
         self._print_header()
         tree.depth_first_traverse(node=tree_, pre_traverse_function=self._print_node)
@@ -65,13 +63,6 @@ class DotStyle(compiletools.git_utils.NameAdjuster):
 
 class TreeStyle(compiletools.git_utils.NameAdjuster):
     """Show the cumulative cost and self cost of including the header files"""
-
-    # TODO: There are now four different statistics that TreeStyle calculates and
-    #       we can easily imagine more.  And by embedding the statistics in here
-    #       they are unavailable to DotStyle.  We need to separate the output
-    #       formatting style from the calculated statistics. Also the statistics
-    #       should be command line settable so that you only get what
-    #       you want
 
     def __init__(self, tree_, args):
         compiletools.git_utils.NameAdjuster.__init__(self, args)

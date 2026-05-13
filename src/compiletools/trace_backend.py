@@ -176,16 +176,6 @@ def _is_build_artifact(rule) -> bool:
     return rule.rule_type in (RuleType.COMPILE, RuleType.LINK, RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY)
 
 
-def _flatten_command(command: list[str]) -> list[str]:
-    """Return command as-is. Producers in build_backend.py pre-split flag
-    strings (CXXFLAGS/CFLAGS/LDFLAGS) before constructing rule.command, so
-    no re-splitting is needed here. A second shlex.split would corrupt args
-    like ``-DGREETING=Hello World`` whose value contains a literal space.
-    Kept as a no-op for back-compat with existing call sites and tests.
-    """
-    return list(command)
-
-
 def _parse_slurm_elapsed(elapsed_str: str) -> float:
     """Parse sacct Elapsed field (HH:MM:SS or D-HH:MM:SS) to seconds."""
     days = 0
@@ -421,7 +411,7 @@ class ShakeBackend(BuildBackend):
         if verbose >= 1:
             print(" ".join(cmd), file=sys.stderr)
 
-        flat_cmd = _flatten_command(cmd)
+        flat_cmd = list(cmd)
 
         loop = asyncio.get_running_loop()
         async with sem:
@@ -1100,7 +1090,7 @@ class SlurmBackend(ShakeBackend):
         with open(cmds_file, "w") as fc, open(outs_file, "w") as fo:
             for rule in rules:
                 assert rule.command is not None, "compile rules always have a command"
-                flat = _flatten_command(rule.command)
+                flat = list(rule.command)
                 # Strip the trailing "-o <path>" pair: the wrap script reattaches
                 # ``-o "$TMP"`` so the compile writes to a per-task temp file and
                 # is atomically renamed to OUT, matching the local atomic_compile
@@ -1614,7 +1604,7 @@ class SlurmBackend(ShakeBackend):
         if rule.command is None:
             return
 
-        flat_cmd = _flatten_command(rule.command)
+        flat_cmd = list(rule.command)
 
         if rule.rule_type in (RuleType.LINK, RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY):
             ca = self._ca_target(rule)

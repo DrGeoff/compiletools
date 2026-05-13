@@ -1725,8 +1725,6 @@ class TestWrapScriptEval:
         so eval treats it as a literal string instead of running a subshell."""
         import shlex as _shlex
 
-        from compiletools.trace_backend import _flatten_command
-
         rule = BuildRule(
             output=str(tmp_path / "foo.o"),
             inputs=["src/foo.cpp"],
@@ -1734,7 +1732,7 @@ class TestWrapScriptEval:
             rule_type="compile",
         )
         assert rule.command is not None
-        line = _shlex.join(_flatten_command(rule.command))
+        line = _shlex.join(rule.command)
         # The metacharacter-bearing token must be single-quoted in the cmds file
         # so that `eval "$CMD"` treats `$(rogue)` as a literal string.
         assert "'-DFOO=$(rogue)'" in line

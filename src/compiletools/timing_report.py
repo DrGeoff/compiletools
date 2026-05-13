@@ -123,7 +123,6 @@ def _newest_invocation_timing(diagnostics_dir: str) -> str | None:
 def _find_timing_file(
     path: str | None,
     *,
-    objdir: str | None = None,
     bindir: str | None = None,
     diagnostics_dir: str | None = None,
 ) -> str | None:
@@ -131,13 +130,10 @@ def _find_timing_file(
 
     Search order:
       1. Explicit ``path`` argument (if given).
-      2. ``./timing.json`` in cwd (the new no-leading-dot filename).
-      3. ``./.ct-timing.json`` in cwd (legacy name, kept for one release).
-      4. Newest ``<diagnostics-dir>/<invocation-id>/timing.json``. If
+      2. ``./timing.json`` in cwd.
+      3. Newest ``<diagnostics-dir>/<invocation-id>/timing.json``. If
          ``diagnostics_dir`` is provided, use it directly; otherwise
          derive ``<bindir>/diagnostics/`` if ``bindir`` is provided.
-      5. ``{objdir}/.ct-timing.json`` if ``objdir`` is provided (legacy).
-      6. ``bin/.ct-timing.json``, ``obj/.ct-timing.json`` (legacy).
 
     A cwd hit short-circuits the diagnostics-dir lookup, so a stale
     ``./timing.json`` will outrank a fresh diagnostics-dir entry.
@@ -146,22 +142,11 @@ def _find_timing_file(
         return path
     if os.path.exists("timing.json"):
         return "timing.json"
-    if os.path.exists(".ct-timing.json"):
-        return ".ct-timing.json"
     diag_dir = diagnostics_dir
     if diag_dir is None and bindir:
         diag_dir = os.path.join(bindir, "diagnostics")
     if diag_dir:
-        found = _newest_invocation_timing(diag_dir)
-        if found is not None:
-            return found
-    candidates = []
-    if objdir:
-        candidates.append(os.path.join(objdir, ".ct-timing.json"))
-    candidates.extend(["bin/.ct-timing.json", "obj/.ct-timing.json"])
-    for candidate in candidates:
-        if os.path.exists(candidate):
-            return candidate
+        return _newest_invocation_timing(diag_dir)
     return None
 
 
@@ -179,7 +164,6 @@ def _resolve_and_load(args) -> tuple[BuildTimer | None, str | None]:
     """
     path = _find_timing_file(
         getattr(args, "timing_file", None),
-        objdir=getattr(args, "cas_objdir", None),
         bindir=getattr(args, "bindir", None),
         diagnostics_dir=getattr(args, "diagnostics_dir", None),
     )

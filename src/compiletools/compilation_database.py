@@ -333,31 +333,20 @@ class CompilationDatabaseCreator:
                     print(f"Warning: Could not read existing compilation database: {e}")
                 existing_commands = []
 
-        # Merge: Keep existing entries for files we're not updating using StringZilla operations
+        # Merge: keep existing entries for files we're not updating. CDB merges
+        # are infrequent and I/O-bound on the JSON write below, so a plain str
+        # path through os.path.realpath is the right tool — no StringZilla wrap
+        # / unwrap roundtrip.
+        new_files_normalized = {compiletools.wrappedos.realpath(cmd["file"]) for cmd in new_commands}
+
         merged_commands = []
-
-        # Use StringZilla for optimal path processing performance
-        # Build set of normalized file paths from new commands
-        new_files_normalized = set()
-        for cmd in new_commands:
-            # Convert to StringZilla for optimal caching, then back to str for set
-            file_sz = sz.Str(cmd["file"])
-            normalized_sz = compiletools.wrappedos.realpath_sz(file_sz)
-            new_files_normalized.add(str(normalized_sz))
-
-        # Process existing commands with StringZilla optimization
         for existing_cmd in existing_commands:
             existing_file = existing_cmd["file"]
-
-            # Resolve relative paths against their "directory" context, not cwd
+            # Resolve relative paths against their "directory" context, not cwd.
             if not os.path.isabs(existing_file):
                 base_dir = existing_cmd.get("directory", os.getcwd())
                 existing_file = os.path.join(base_dir, existing_file)
-
-            # Convert to StringZilla for consistent processing
-            existing_file_sz = sz.Str(existing_file)
-            existing_normalized_sz = compiletools.wrappedos.realpath_sz(existing_file_sz)
-            if str(existing_normalized_sz) not in new_files_normalized:
+            if compiletools.wrappedos.realpath(existing_file) not in new_files_normalized:
                 merged_commands.append(existing_cmd)
 
         # Add all new/updated entries

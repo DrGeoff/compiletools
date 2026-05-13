@@ -57,7 +57,7 @@ Watch and rebuild continuously using the default variant::
 
     ct-watch-build
 
-Watch while building with release flags and a custom objdir::
+Watch while building with release flags and a custom cas-objdir::
 
     ct-watch-build --variant=release --cas-objdir=/tmp/ct-obj
 

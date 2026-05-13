@@ -177,10 +177,8 @@ def supports_mmap_safely(fstype: str) -> bool:
     if any(fs in fstype_lower for fs in unsafe_filesystems):
         return False
 
-    # Questionable filesystems - for now treat as safe but should log warning
-    # NFS v4 usually works, but has had issues historically
-    # FUSE varies by implementation
-    # Unknown or local filesystems assumed safe
+    # NFS v4 usually works, but has had issues historically. FUSE varies by
+    # implementation. Unknown or local filesystems are assumed safe.
     return True
 
 

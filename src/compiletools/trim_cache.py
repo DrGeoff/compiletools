@@ -71,13 +71,13 @@ def _load_exe_manifest(cas_path: str) -> dict | None:
         return None
 
 
-def _load_pcm_manifest(cmd_hash_dir: str) -> dict | None:
-    """Read a PCM cmd_hash dir's sidecar manifest.
+def _load_cmd_hash_manifest(cmd_hash_dir: str) -> dict | None:
+    """Read a cmd_hash dir's sidecar manifest (PCH or PCM).
 
-    Same contract as ``_load_pch_manifest`` -- returns ``None`` for
-    legacy (manifest-less) entries so the trim path keeps working
-    during a manifest-rollout window. Callers must treat ``None`` as
-    "fall back to global ranking".
+    Returns ``None`` for legacy (manifest-less) entries or unreadable /
+    corrupt files. Callers must treat ``None`` as "fall back to global
+    ranking" so the trim path keeps working during the manifest-rollout
+    window.
     """
     path = os.path.join(cmd_hash_dir, "manifest.json")
     try:
@@ -87,19 +87,10 @@ def _load_pcm_manifest(cmd_hash_dir: str) -> dict | None:
         return None
 
 
-def _load_pch_manifest(cmd_hash_dir: str) -> dict | None:
-    """Read a PCH cmd_hash dir's sidecar manifest.
-
-    Returns ``None`` for legacy entries (no manifest) or unreadable / corrupt
-    files. Callers must treat ``None`` as "fall back to legacy behavior" so
-    the trim path keeps working during the manifest-rollout window.
-    """
-    path = os.path.join(cmd_hash_dir, "manifest.json")
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
+# Back-compat aliases for the (now-deduplicated) PCH/PCM manifest loaders.
+# Re-exported by cache_report.py.
+_load_pch_manifest = _load_cmd_hash_manifest
+_load_pcm_manifest = _load_cmd_hash_manifest
 
 
 def parse_object_filename(filename):

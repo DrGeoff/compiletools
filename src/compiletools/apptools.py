@@ -538,20 +538,21 @@ def unsupplied_replacement(variable, default_variable, verbose, variable_str):
 
 def _substitute_CXX_for_missing(args):
     """If C PreProcessor variables (and the same for the LD*) are not set
-    but CXX ones are set then just use the CXX equivalents
+    but CXX ones are set then just use the CXX equivalents.
+
+    LD/LDFLAGS are only registered by ``add_link_arguments`` (used by ct-cake
+    and the makefile backend); tools that build only the CPP/CXX side of the
+    parser (ct-cleanup-locks, ct-trim-cache, ct-list-variants, ...) won't
+    have those attrs, so we skip that substitution rather than raise.
     """
     if args.verbose > 8:
         print("Using CXX variables as defaults for missing C, CPP, LD variables")
     args.CPP = unsupplied_replacement(args.CPP, args.CXX, args.verbose, "CPP")
     args.CPPFLAGS = unsupplied_replacement(args.CPPFLAGS, args.CXXFLAGS, args.verbose, "CPPFLAGS")
-    try:
+    if hasattr(args, "LD"):
         args.LD = unsupplied_replacement(args.LD, args.CXX, args.verbose, "LD")
-    except AttributeError:
-        pass
-    try:
+    if hasattr(args, "LDFLAGS"):
         args.LDFLAGS = unsupplied_replacement(args.LDFLAGS, args.CXXFLAGS, args.verbose, "LDFLAGS")
-    except AttributeError:
-        pass
 
 
 def _extend_includes_using_git_root(args):
@@ -1853,8 +1854,6 @@ def cached_pkg_config(package, option):
     # First check if the package exists
     exists_result = subprocess.run(["pkg-config", "--exists", package], capture_output=True, check=False)
     if exists_result.returncode != 0:
-        # Package doesn't exist, return empty string
-        # TODO: Switch from warnings to logging for pkg-config messages
         warnings.warn(f"pkg-config package '{package}' not found", UserWarning, stacklevel=2)
         return ""
 

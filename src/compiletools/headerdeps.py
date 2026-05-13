@@ -199,10 +199,7 @@ class DirectHeaderDeps(HeaderDepsBase):
         """
         # Cache core macros and includes - they never change for this instance
         if self._core_macros is None:
-            # Grab the include paths from the CPPFLAGS
-            # By default, exclude system paths
-            # TODO: include system paths if the user sets (the currently nonexistent) "use-system" flag
-
+            # Grab the include paths from the CPPFLAGS, excluding system paths.
             # Use proper shell parsing instead of regex to handle quoted paths with spaces
             self._includes = self._extract_include_paths_from_flags(self.args.CPPFLAGS)
 
@@ -256,7 +253,6 @@ class DirectHeaderDeps(HeaderDepsBase):
             if compiletools.wrappedos.isfile_sz(trialpath_sz):
                 return str(compiletools.wrappedos.realpath_sz(trialpath_sz))
 
-        # TODO: Try system include paths if the user sets (the currently nonexistent) "use-system" flag
         return None
 
     @instance_cache
@@ -497,10 +493,8 @@ class CppHeaderDeps(HeaderDepsBase):
         a dummy, blank, source file will be transparently provided
         and the supplied header file will be included into the dummy source file.
         """
-        # By default, exclude system paths
-        # TODO: include system paths if the user sets (the currently nonexistent) "use-system" flag
-
-        # Use proper shell parsing instead of regex to handle quoted paths with spaces
+        # Exclude system paths. Use proper shell parsing instead of regex to
+        # handle quoted paths with spaces.
         isystem_paths = self._extract_isystem_paths_from_flags(self.args.CPPFLAGS)
         system_paths = tuple(item for pth in isystem_paths for item in (pth, compiletools.wrappedos.realpath(pth)))
         realpath_obj = Path(realpath)
