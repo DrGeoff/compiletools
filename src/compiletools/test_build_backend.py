@@ -297,7 +297,7 @@ class TestPrebuildAuxArtefacts:
         )
         self._attach_rule(backend, rule)
 
-        with pytest.raises(AssertionError, match="must be a directory"):
+        with pytest.raises(AssertionError, match=r"artefact suffix|must be a directory"):
             backend._prebuild_aux_artefacts()
 
     def test_no_op_when_graph_has_no_aux_rules(self, tmp_path):
@@ -1297,7 +1297,7 @@ class TestGccHeaderUnitProducerSideRename:
         from compiletools.build_graph import render_shell_recipe
 
         backend = self._make_gcc_cache_backend(tmp_path)
-        backend._gcc_header_unit_resolved = {"<vector>": "/usr/include/vector"}
+        backend._gcc_header_unit_resolved = {"<vector>": ["/usr/include/vector"]}
         artefact_path = str(tmp_path / "cas-pcmdir" / "abc" / "vector.gcm")
         rule = backend._create_header_unit_precompile_rule("<vector>", artefact_path)
         recipe = render_shell_recipe(rule)
@@ -1314,7 +1314,7 @@ class TestGccHeaderUnitProducerSideRename:
         the shared destination converges on identical bytes (deterministic
         from the cmd_hash inputs)."""
         backend = self._make_gcc_cache_backend(tmp_path)
-        backend._gcc_header_unit_resolved = {"<vector>": "/usr/include/vector"}
+        backend._gcc_header_unit_resolved = {"<vector>": ["/usr/include/vector"]}
         artefact_path = str(tmp_path / "cas-pcmdir" / "abc" / "vector.gcm")
         rule = backend._create_header_unit_precompile_rule("<vector>", artefact_path)
         # The recipe text mentions the tmp path with a PID suffix, distinct
@@ -1337,7 +1337,7 @@ class TestGccHeaderUnitProducerSideRename:
         reads stay valid."""
         backend = self._make_gcc_cache_backend(tmp_path)
         artefact_path = str(tmp_path / "cas-pcmdir" / "abc" / "vector.gcm")
-        backend._gcc_header_unit_resolved = {"<vector>": "/usr/include/vector"}
+        backend._gcc_header_unit_resolved = {"<vector>": ["/usr/include/vector"]}
         backend._create_header_unit_precompile_rule("<vector>", artefact_path)
         backend._write_gcc_module_mapper()
 
@@ -1388,7 +1388,7 @@ class TestGccHeaderUnitProducerSideRename:
         artefact_path = str(tmp_path / "cas-pcmdir" / "abc" / "vector.gcm")
 
         # Cache-mode path with resolved abs header => recipe is `sh -c <pipeline>`.
-        backend._gcc_header_unit_resolved = {"<vector>": "/usr/include/vector"}
+        backend._gcc_header_unit_resolved = {"<vector>": ["/usr/include/vector"]}
         rule = backend._create_header_unit_precompile_rule("<vector>", artefact_path)
         pipeline = _cmd(rule)[2]  # ["sh", "-c", "<pipeline>"]
         assert "-fmodules-ts" in pipeline, (

@@ -78,6 +78,26 @@ _NAME_ESCAPE = "^^"
 _COMPILE_ORDERING_INPUT_EXTS = (".gch", ".pcm", ".gcm")
 
 
+# Suffixes that disqualify a path from being a valid ``order_only_deps``
+# entry. ``order_only_deps`` is reserved for *bucket directories* the
+# prebuild loop / trace backend will ``mkdir``. A file-shaped entry
+# (object, library, BMI, executable) signals that the producing rule
+# should have been put in ``inputs`` (or its existence ought to be
+# enforced via ``rule.inputs`` so the consumer recurses into the
+# producer rule). Catching this contract violation up front gives a
+# uniform diagnostic across every backend instead of the silent
+# "mkdir clobbers the artefact path" failure that previously haunted
+# trace_backend / cold-cache prebuild paths.
+_ORDER_ONLY_DEP_FORBIDDEN_EXTS = _COMPILE_ORDERING_INPUT_EXTS + (
+    ".o",
+    ".obj",
+    ".a",
+    ".so",
+    ".dylib",
+    ".exe",
+)
+
+
 def ordering_inputs_for_compile(inputs: list[str]) -> list[str]:
     """Return inputs that must remain as ordering deps in CAS-only mode.
 
@@ -319,9 +339,15 @@ def build_obj_info(graph: BuildGraph, *, strip_includes: bool = False) -> dict[s
     obj_info: dict[str, ObjInfo] = {}
     for rule in graph.rules_by_type("compile"):
         source = rule.inputs[0] if rule.inputs else ""
-        # Filter out .gch files — they are build artifacts (precompiled headers),
-        # not source files that backends like CMake/Bazel should list.
-        headers = [h for h in rule.inputs[1:] if not h.endswith(".gch")] if len(rule.inputs) > 1 else []
+        # Filter out build-ordering artefacts -- PCH (.gch) and C++20
+        # module BMIs (.pcm/.gcm). These appear in `inputs` so the
+        # make/ninja CAS-only path can lift them to order-only deps and
+        # so trace_backend recurses into the producer rules, but they
+        # are not source/header files that cmake/bazel should list as
+        # cc_binary srcs.
+        headers = (
+            [h for h in rule.inputs[1:] if not h.endswith(_COMPILE_ORDERING_INPUT_EXTS)] if len(rule.inputs) > 1 else []
+        )
         copts = extract_copts(rule.command, strip_includes=strip_includes) if rule.command else []
         obj_info[rule.output] = ObjInfo(source, headers, copts)
     return obj_info
@@ -402,7 +428,7 @@ class BuildBackend(abc.ABC):
         self._module_iface_gcm: dict[str, str] = {}
         self._header_unit_artefact: dict[str, str] = {}
         self._gcc_module_mapper_path: str | None = None
-        self._gcc_header_unit_resolved: dict[str, str] = {}
+        self._gcc_header_unit_resolved: dict[str, list[str]] = {}
         self._build_imports_std_cached: bool | None = None
         self._compile_used_libcxx = False
 
@@ -494,7 +520,21 @@ class BuildBackend(abc.ABC):
         for rule in aux_rules:
             for d in rule.order_only_deps:
                 # order_only_deps must be bucket dirs, not artefact paths.
-                # See trace_backend xfail for the file-shaped-dep defect class.
+                # The earlier "catch FileExistsError after mkdir" form only
+                # tripped if the artefact already existed -- a cold cache
+                # with a file-shaped order_only_dep would silently mkdir a
+                # directory at the artefact's path, then the producer rule
+                # would fail opaquely. Reject artefact suffixes up front so
+                # the diagnostic fires identically whether or not the path
+                # has been built yet, and so the same check protects every
+                # backend that funnels through this prebuild loop.
+                if d.endswith(_ORDER_ONLY_DEP_FORBIDDEN_EXTS):
+                    raise AssertionError(
+                        f"order_only_dep {d!r} on rule {rule.output!r} has an artefact "
+                        f"suffix; order_only_deps must be bucket directories. Route "
+                        f"artefact dependencies through `inputs` instead (see "
+                        f"build_backend._wire_module_inputs)."
+                    )
                 try:
                     os.makedirs(d, exist_ok=True)
                 except FileExistsError as e:
@@ -892,8 +932,13 @@ class BuildBackend(abc.ABC):
         self._header_unit_artefact: dict[str, str] = {}
         # Per-token absolute-header-path resolution (gcc only; populated
         # when gcc + cas-pcmdir are both active so the mapper file can
-        # key entries by resolved path).
-        self._gcc_header_unit_resolved: dict[str, str] = {}
+        # key entries by resolved path). Stores ALL spellings the
+        # compiler may use as a lookup key -- canonical and
+        # non-canonical -- because bazel's autoconfig appends
+        # ``-fno-canonical-system-headers`` after our cxxopts and the
+        # mapper has to hit under either flag set. Order is canonical
+        # first for stability.
+        self._gcc_header_unit_resolved: dict[str, list[str]] = {}
         all_header_imports: set[str] = set()
         for filename in all_compile_sources:
             r = self.hunter._file_analysis_result(filename)
@@ -922,9 +967,9 @@ class BuildBackend(abc.ABC):
                         (t for t in self.args.flags.cxx if str(t).startswith("-std=")),
                         "-std=c++20",
                     )
-                    abs_path = _resolve_system_header_abs_path(self.args.CXX, token, std_flag=str(std_flag))
-                    if abs_path is not None:
-                        self._gcc_header_unit_resolved[token] = abs_path
+                    abs_paths = _resolve_system_header_abs_paths(self.args.CXX, token, std_flag=str(std_flag))
+                    if abs_paths:
+                        self._gcc_header_unit_resolved[token] = abs_paths
             for d in sorted(hu_mkdirs):
                 graph.add_rule(
                     BuildRule(
@@ -962,9 +1007,9 @@ class BuildBackend(abc.ABC):
                 # primary, or `import :P;` in another partition). Without
                 # this edge clang fails the precompile with "module file
                 # not found" since the partition .pcm hasn't been built.
-                self._wire_module_order_only_deps(pcm_rule, file_result)
+                self._wire_module_inputs(pcm_rule, file_result)
                 graph.add_rule(pcm_rule)
-                self._wire_module_order_only_deps(obj_rule, file_result)
+                self._wire_module_inputs(obj_rule, file_result)
                 graph.add_rule(obj_rule)
                 if obj_rule.order_only_deps:
                     compile_bucket_dirs.add(obj_rule.order_only_deps[0])
@@ -980,7 +1025,7 @@ class BuildBackend(abc.ABC):
                 )
 
             rule = self._create_compile_rule(filename)
-            self._wire_module_order_only_deps(rule, file_result)
+            self._wire_module_inputs(rule, file_result)
             graph.add_rule(rule)
             if rule.order_only_deps:
                 compile_bucket_dirs.add(rule.order_only_deps[0])
@@ -1803,11 +1848,11 @@ class BuildBackend(abc.ABC):
             if cache_active or ":" in name
         ]
 
-    def _wire_module_order_only_deps(self, rule: BuildRule, file_result) -> None:
-        """Append order-only edges from `rule` to its module dependencies.
+    def _wire_module_inputs(self, rule: BuildRule, file_result) -> None:
+        """Append BMI/stamp inputs from `rule` to its module dependencies.
 
-        Mutates `rule.order_only_deps` in place. The artefact a downstream
-        TU waits on differs by compiler:
+        Mutates ``rule.inputs`` in place. The artefact a downstream TU
+        waits on differs by compiler:
 
         - GCC: the interface unit's object file. Building it under
           ``-fmodules-ts`` writes ``gcm.cache/<name>.gcm`` as a side
@@ -1831,12 +1876,66 @@ class BuildBackend(abc.ABC):
         to every partition of ``M`` -- the partitions' ``.pcm``/``.o``
         files must exist when the importer compiles, since the primary
         ``.pcm`` references them.
+
+        BMI/stamp targets join ``rule.inputs`` (not
+        ``rule.order_only_deps``) because ``order_only_deps`` is reserved
+        for *bucket directories* that the prebuild loop / trace backend
+        ``mkdir``s. Putting an artefact path there would silently clobber
+        the artefact into a directory under any backend that mkdir's
+        order-only deps (trace_backend, and latently make/ninja prebuild
+        on cold caches). The make/ninja CAS-only path lifts these inputs
+        back to the order-only ``|`` clause via
+        ``ordering_inputs_for_compile`` (matched on ``.gch/.pcm/.gcm``
+        suffixes), so the rebuild semantics stay identical to the
+        previous behaviour. Trace backends recurse into ``inputs`` via
+        ``_build_async`` and so naturally build the BMI before the
+        importer.
         """
         if file_result is None:
             return
         own_module = self.hunter._own_module_name(file_result)
         kind = self._module_compiler_kind
-        target_map = self._module_iface_pcm if kind == "clang" else self._module_iface_obj
+        # Target selection for named modules. The target must be a
+        # path that actually has a producing rule in the graph -- only
+        # then can downstream backends (make ``no rule to make target``
+        # check; trace_backend's recursive ``_build_async``) wait on
+        # it.
+        #
+        # * clang -- ``_module_iface_pcm`` holds the .pcm BMI path,
+        #   which is the output of the clang precompile rule.
+        # * gcc -- ``_module_iface_obj`` holds the producer's .o
+        #   path, which IS a rule output. The .gcm cache file (in
+        #   ``_module_iface_gcm``) is a *side effect* of that .o
+        #   compile under ``-fmodules-ts`` + ``-fmodule-mapper=`` --
+        #   no rule produces it directly, so make would error with
+        #   "no rule to make target <name>.gcm" if the importer
+        #   listed the .gcm. The .o has the same wait semantics
+        #   (existence implies the .gcm is on disk).
+        target_map: dict[str, str] = self._module_iface_pcm if kind == "clang" else self._module_iface_obj
+
+        def _add_dep(target: str | None) -> None:
+            """Route *target* into ``inputs`` if its suffix is preserved
+            by the make/ninja CAS-only filter, otherwise ``order_only_deps``.
+
+            The CAS filter (``ordering_inputs_for_compile``) keeps only
+            paths ending in ``_COMPILE_ORDERING_INPUT_EXTS`` (.gch /
+            .pcm / .gcm); anything else in ``inputs`` would be silently
+            dropped under ``--use-mtime=False`` (the default), leaving
+            the importer to race its producer. Bare ``.o`` (gcc named
+            module no-cache) and ``.stamp`` (gcc header-unit no-cache)
+            paths therefore funnel through ``order_only_deps`` instead
+            -- both bucket-dir shapes the prebuild contract permits
+            (their suffixes are not in
+            ``_ORDER_ONLY_DEP_FORBIDDEN_EXTS``).
+            """
+            if target is None or target == rule.output:
+                return
+            if target.endswith(_COMPILE_ORDERING_INPUT_EXTS):
+                if target not in rule.inputs:
+                    rule.inputs.append(target)
+            else:
+                if target not in rule.order_only_deps:
+                    rule.order_only_deps.append(target)
 
         resolved: list[str] = []
         for raw in tuple(file_result.module_imports) + tuple(file_result.module_implements):
@@ -1854,18 +1953,15 @@ class BuildBackend(abc.ABC):
                         resolved.append(part_name)
 
         for name in resolved:
-            target = target_map.get(name)
-            if target is not None and target != rule.output and target not in rule.order_only_deps:
-                rule.order_only_deps.append(target)
+            _add_dep(target_map.get(name))
 
         # Header-unit imports: regardless of compiler, importers must
-        # wait for the header-unit precompile to finish (gcc: stamp file
-        # whose touch follows .gcm placement; clang: the .pcm itself).
+        # wait for the header-unit precompile to finish (gcc cache: the
+        # .gcm itself; gcc no-cache: a .stamp file touched after the
+        # precompile; clang: the .pcm itself).
         if self._header_unit_artefact:
             for token in file_result.module_header_imports:
-                target = self._header_unit_artefact.get(token)
-                if target is not None and target != rule.output and target not in rule.order_only_deps:
-                    rule.order_only_deps.append(target)
+                _add_dep(self._header_unit_artefact.get(token))
 
     def _header_unit_destination(self, token: str, flat_dir: str) -> tuple[str, str]:
         """Resolve the per-token artefact path and its parent dir.
@@ -2043,8 +2139,8 @@ class BuildBackend(abc.ABC):
         # `_wrap_compile_cmd`'s -o-driven lock+temp+rename pipeline.
         self._header_unit_artefact[token] = artefact_path
         mapper = self._gcc_module_mapper_path
-        abs_path = self._gcc_header_unit_resolved.get(token)
-        if mapper and abs_path:
+        abs_paths = self._gcc_header_unit_resolved.get(token)
+        if mapper and abs_paths:
             # Suffix mini-mapper and tmp with the build_graph process's PID
             # so two concurrent peer ct-cake invocations targeting the same
             # cmd_hash slot don't share a tmp inode (would risk torn-write
@@ -2057,8 +2153,13 @@ class BuildBackend(abc.ABC):
             tmp_path = f"{artefact_path}.compiletools.tmp.{unique}"
             mini_mapper = f"{artefact_path}.precompile-mapper.{unique}.txt"
             os.makedirs(artefact_dir, exist_ok=True)
+            # Emit one mapper key per spelling the compiler may produce
+            # (canonical + non-canonical) -- both point at tmp_path so
+            # gcc writes the .gcm there regardless of which form its
+            # active flag set produces. Same multi-key shape as the
+            # global mapper writer in _write_gcc_module_mapper.
             with open(mini_mapper, "w") as f:
-                f.write(f"{abs_path} {tmp_path}\n")
+                f.writelines(f"{p} {tmp_path}\n" for p in abs_paths)
             cmd = common_cmd + [
                 "-fmodules-ts",
                 "-c",
@@ -2179,10 +2280,19 @@ class BuildBackend(abc.ABC):
         for name in sorted(self._module_iface_gcm):
             lines.append(f"{name} {self._module_iface_gcm[name]}")
         for token in sorted(self._gcc_header_unit_resolved):
-            abs_path = self._gcc_header_unit_resolved[token]
+            abs_paths = self._gcc_header_unit_resolved[token]
             gcm_path = self._header_unit_artefact.get(token)
-            if abs_path and gcm_path:
-                lines.append(f"{abs_path} {gcm_path}")
+            if not gcm_path:
+                continue
+            # One line per spelling (canonical + non-canonical), all
+            # pointing at the same .gcm. See _resolve_system_header_abs_paths
+            # for why both spellings exist: bazel's autoconfig appends
+            # ``-fno-canonical-system-headers`` after our cxxopts, so the
+            # importer's lookup may use either form depending on whose
+            # flag won the ordering race.
+            for abs_path in abs_paths:
+                if abs_path:
+                    lines.append(f"{abs_path} {gcm_path}")
         # Atomic write so concurrent ct-cake invocations don't see a
         # partial mapper. We don't need a lock here -- worst case two
         # invocations write the same content and one rename wins.
@@ -2946,63 +3056,88 @@ class BuildBackend(abc.ABC):
 
 
 @functools.lru_cache(maxsize=512)
-def _resolve_system_header_abs_path(cxx: str, token: str, std_flag: str = "-std=c++20") -> str | None:
-    """Resolve a header-unit token to its absolute filesystem path.
+def _resolve_system_header_abs_paths(cxx: str, token: str, std_flag: str = "-std=c++20") -> list[str]:
+    """Resolve a header-unit token to every path the compiler may key it by.
 
-    Used by the gcc cas-pcmdir mapper, which keys header-unit cache
-    entries by absolute path (gcc looks the header up via the include
-    search path, then keys the .gcm by the *resolved* path -- not by
-    the angle/quote token in the source).
+    Used by the gcc cas-pcmdir mapper. gcc keys header-unit lookups by
+    the *string form* of the resolved include path -- and that string
+    depends on the compiler's flag context. Two cases that produce
+    different strings for the same physical header:
 
-    Pipes ``#include <token>`` (or quoted equivalent) through
-    ``<cxx> <std_flag> -M -x c++ -`` and parses the dep list. The
-    first dep whose basename or trailing path matches the token is
-    returned. Cached per ``(cxx, token, std_flag)`` since the lookup
-    is the same for every build that mentions the same header under
-    the same standard.
+    * Default: ``-fcanonical-system-headers`` is on, so gcc reports the
+      include path with ``..`` segments collapsed and symlinks resolved.
+    * ``-fno-canonical-system-headers``: gcc reports whatever raw search
+      path produced the hit -- typically containing ``..`` segments
+      (e.g. ``.../gcc/16/bin/../lib/gcc/.../include/vector``) and
+      preserving symlinks.
 
-    ``std_flag`` defaults to ``-std=c++20`` (the minimum standard that
-    supports header units). The caller should pass through whatever
-    ``-std=`` the user has set so the dep walk uses the same
-    preprocessor configuration the actual precompile will use --
-    otherwise a compiler that rejects a newer standard the user
-    requested (e.g. ``-std=c++23``) would silently fail the
-    resolution and the cache entry would be omitted from the mapper.
+    Bazel's gcc autoconfig appends ``-fno-canonical-system-headers``
+    AFTER user ``copts`` / ``--cxxopt``, so the importer compile sees
+    the non-canonical form even though our explicit
+    ``--cxxopt=-fcanonical-system-headers`` is present. If the mapper
+    only carries the canonical key, the importer's lookup misses with
+    "unknown compiled module interface". The fix is to emit BOTH
+    spellings as mapper keys (both pointing to the same ``.gcm``) so
+    the lookup hits regardless of how the consumer's flag set ended up
+    canonicalizing.
 
-    Returns ``None`` when the compiler invocation fails or no matching
-    dep can be found -- callers must handle missing entries (for the
-    mapper case, omit them and gcc will fall back to its default
-    gcm.cache placement, which still works correctness-wise just
-    without the cache).
+    Returns a list with the canonical path first (for stability) and
+    any additional non-canonical spelling. Duplicates collapsed.
+    Empty list when the compiler probe fails -- callers must handle
+    this (for the mapper case, omit those entries and gcc will fall
+    back to its default ``gcm.cache`` placement, still correct just
+    not cached).
     """
     bare = _header_unit_arg(token)
     delim_open, delim_close = ("<", ">") if (token.startswith("<") and token.endswith(">")) else ('"', '"')
     snippet = f"#include {delim_open}{bare}{delim_close}\n"
-    try:
-        r = subprocess.run(
-            [cxx, std_flag, "-M", "-x", "c++", "-"],
-            input=snippet,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+
+    def _probe(extra_flags: list[str]) -> str | None:
+        try:
+            r = subprocess.run(
+                [cxx, std_flag, *extra_flags, "-M", "-x", "c++", "-"],
+                input=snippet,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return None
+        if r.returncode != 0:
+            return None
+        # gcc emits a make-style dep listing: `<obj>: <dep1> <dep2> \\\n  <dep3> ...`
+        # Flatten line continuations, split on whitespace, then find a dep
+        # whose tail matches the bare header path.
+        deps = r.stdout.replace("\\\n", " ").split()
+        if deps and deps[0].endswith(":"):
+            deps = deps[1:]
+        for dep in deps:
+            if dep == "-" or dep.endswith("/stdc-predef.h"):
+                continue
+            if dep.endswith("/" + bare) or os.path.basename(dep) == bare:
+                return dep
         return None
-    if r.returncode != 0:
-        return None
-    # gcc emits a make-style dep listing: `<obj>: <dep1> <dep2> \\\n  <dep3> ...`
-    # Flatten line continuations, split on whitespace, then find a dep
-    # whose tail matches the bare header path.
-    deps = r.stdout.replace("\\\n", " ").split()
-    # Drop the `<obj>:` prefix (always the first token).
-    if deps and deps[0].endswith(":"):
-        deps = deps[1:]
-    for dep in deps:
-        if dep == "-" or dep.endswith("/stdc-predef.h"):
-            continue
-        if dep.endswith("/" + bare) or os.path.basename(dep) == bare:
-            return dep
-    return None
+
+    paths: list[str] = []
+    seen: set[str] = set()
+    # Probe canonical first -- preserves the existing cache key shape and
+    # gives the bazel-free build path the same string as before.
+    for extra in ([], ["-fno-canonical-system-headers"]):
+        p = _probe(extra)
+        if p and p not in seen:
+            paths.append(p)
+            seen.add(p)
+    return paths
+
+
+def _resolve_system_header_abs_path(cxx: str, token: str, std_flag: str = "-std=c++20") -> str | None:
+    """Backward-compatible single-path wrapper around
+    ``_resolve_system_header_abs_paths``. Returns the canonical
+    spelling when both probes succeed, the only spelling when only one
+    does, ``None`` when both fail.
+    """
+    paths = _resolve_system_header_abs_paths(cxx, token, std_flag=std_flag)
+    return paths[0] if paths else None
 
 
 def _cas_pcm_path(filename_stem: str, pcmdir: str, command_hash: str) -> str:

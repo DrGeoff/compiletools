@@ -176,7 +176,17 @@ class BazelBackend(BuildBackend):
             if kind != "cc_library":
                 object_files = set(rule.inputs)
                 linkopts = self._resolve_linkopts(extract_linkopts(rule.command, object_files) if rule.command else [])
-            self._emit_target(f, kind, target_name, rel_srcs, all_copts, linkopts, linkshared=linkshared)
+            module_inputs, all_copts = self._bazel_module_inputs_and_copts(rule, all_copts, base_dir)
+            self._emit_target(
+                f,
+                kind,
+                target_name,
+                rel_srcs,
+                all_copts,
+                linkopts,
+                linkshared=linkshared,
+                additional_compiler_inputs=module_inputs,
+            )
 
     @staticmethod
     def _starlark_str(s: str) -> str:
@@ -230,11 +240,17 @@ class BazelBackend(BuildBackend):
         linkopts: list[str] | None = None,
         *,
         linkshared: bool = False,
+        additional_compiler_inputs: list[str] | None = None,
     ) -> None:
         """Write a single ``cc_library`` / ``cc_binary`` / ``cc_test`` stanza."""
         q = BazelBackend._starlark_str
         lines = [f"\n{kind}(", f"    name = {q(target_name)},"]
-        for attr, values in (("srcs", rel_srcs), ("copts", all_copts), ("linkopts", linkopts)):
+        for attr, values in (
+            ("srcs", rel_srcs),
+            ("additional_compiler_inputs", additional_compiler_inputs),
+            ("copts", all_copts),
+            ("linkopts", linkopts),
+        ):
             if not values:
                 continue
             lines.append(f"    {attr} = [")
@@ -244,6 +260,117 @@ class BazelBackend(BuildBackend):
             lines.append("    linkshared = True,")
         lines.append(")\n")
         f.write("\n".join(lines))
+
+    _BAZEL_MODULE_MAPPER_BASENAME = ".module-mapper.bazel.txt"
+
+    def _bazel_module_inputs_and_copts(
+        self,
+        rule: BuildRule,
+        all_copts: list[str],
+        base_dir: str,
+    ) -> tuple[list[str], list[str]]:
+        """Collect the BMI/mapper inputs needed by *rule* and rewrite copts.
+
+        Bazel's CcCompileAction enforces that every path appearing in the
+        compile action's ``.d`` output is either declared as an input to
+        the action or lives under a path in the toolchain's
+        ``cxx_builtin_include_directories``. Module-mapper files and the
+        ``.gcm`` / ``.pcm`` artefacts they reference do not satisfy
+        either condition by default, so the absolute paths
+        ``compiletools`` would otherwise embed in the compile command
+        ("``-fmodule-mapper=/abs/path``") fail Bazel's input-validation
+        step with "absolute path inclusion(s) found in rule ...".
+
+        Returns ``(additional_compiler_inputs, rewritten_copts)``:
+
+        * ``additional_compiler_inputs`` -- workspace-relative paths to
+          every BMI artefact this rule depends on (sourced from
+          ``rule.inputs`` filtered by ``_COMPILE_ORDERING_INPUT_EXTS``)
+          plus the bazel-specific module-mapper file. Bazel symlinks
+          each into the action's exec root, so gcc resolves
+          workspace-relative paths to the right files.
+        * ``rewritten_copts`` -- ``all_copts`` with any
+          ``-fmodule-mapper=<abs>`` rewritten to point at the
+          workspace-relative bazel-specific mapper file
+          (``<base_dir>/<_BAZEL_MODULE_MAPPER_BASENAME>``).
+
+        When the rule references no BMI artefacts the function is a
+        no-op (returns empty inputs and the copts unchanged); the bazel
+        backend then emits a normal cc_binary with no module wiring.
+        """
+        from compiletools.build_backend import _COMPILE_ORDERING_INPUT_EXTS
+
+        inputs: list[str] = []
+        for path in rule.inputs:
+            if not path.endswith(_COMPILE_ORDERING_INPUT_EXTS):
+                continue
+            rel = self._workspace_relative(path, base_dir)
+            if rel is None:
+                # Outside the workspace -- bazel can't symlink it via
+                # additional_compiler_inputs (the file path it stores
+                # is workspace-relative). Skip rather than crash; the
+                # importer compile will fail at compile time with a
+                # clearer message naming the missing module.
+                continue
+            inputs.append(rel)
+        # Walk transitively through any pcm_rule / obj_rule chain so an
+        # importer that only directly references a single .pcm still
+        # gets all its predecessors' BMIs wired in. The graph stores
+        # those edges in ``inputs`` after _wire_module_inputs ran during
+        # build_graph().
+        if inputs and self._graph is not None:
+            seen = set(inputs)
+            queue = list(inputs)
+            while queue:
+                item = queue.pop()
+                # Look up the rule that produces this artefact path so
+                # we can pick up its own module inputs (e.g. a clang
+                # pcm_rule with a partition .pcm in its inputs).
+                producer = self._graph.get_rule(self._absolute_workspace_path(item, base_dir))
+                if producer is None:
+                    continue
+                for path in producer.inputs:
+                    if not path.endswith(_COMPILE_ORDERING_INPUT_EXTS):
+                        continue
+                    rel = self._workspace_relative(path, base_dir)
+                    if rel is None or rel in seen:
+                        continue
+                    seen.add(rel)
+                    inputs.append(rel)
+                    queue.append(rel)
+
+        copts = list(all_copts)
+        mapper_basename = self._BAZEL_MODULE_MAPPER_BASENAME
+        for i, c in enumerate(copts):
+            if c.startswith("-fmodule-mapper="):
+                copts[i] = f"-fmodule-mapper={mapper_basename}"
+                if mapper_basename not in inputs:
+                    inputs.append(mapper_basename)
+                break
+
+        return sorted(set(inputs)), copts
+
+    @staticmethod
+    def _workspace_relative(path: str, base_dir: str) -> str | None:
+        """Return *path* as a workspace-relative string, or None if outside.
+
+        ``..``-prefixed results indicate the path is outside the
+        workspace; bazel cannot reach those via
+        ``additional_compiler_inputs`` (which expects workspace
+        labels), so the caller treats ``None`` as "skip this entry".
+        """
+        try:
+            rel = os.path.relpath(path, base_dir)
+        except ValueError:
+            return None
+        if rel.startswith("..") or os.path.isabs(rel):
+            return None
+        return rel
+
+    @staticmethod
+    def _absolute_workspace_path(rel: str, base_dir: str) -> str:
+        """Inverse of ``_workspace_relative`` — used to look up rules in the graph."""
+        return os.path.normpath(os.path.join(base_dir, rel))
 
     @staticmethod
     def _resolve_linkopts(linkopts: list[str]) -> list[str]:
@@ -320,6 +447,57 @@ class BazelBackend(BuildBackend):
                 if not os.path.exists(dest):
                     shutil.copy2(source, dest)
 
+    def _write_bazel_module_mapper(self, base_dir: str) -> None:
+        """Materialise a bazel-specific gcc module mapper file.
+
+        Mirrors :meth:`BuildBackend._write_gcc_module_mapper` but
+        writes ``<base_dir>/<_BAZEL_MODULE_MAPPER_BASENAME>`` with
+        workspace-relative ``.gcm`` paths on the right-hand side. The
+        global mapper continues to use absolute paths (consumed by the
+        non-bazel-driven precompile and by every other backend); the
+        bazel-specific mapper is consumed only by bazel's CcCompileAction
+        spawns, which run with CWD=execroot/_main and rely on bazel's
+        symlinking of declared inputs (see
+        :meth:`_bazel_module_inputs_and_copts`) to resolve those
+        relative paths.
+
+        No-op when the build does not use gcc named modules / header
+        units (i.e. when the global mapper writer also produced
+        nothing). The bazel backend then emits cc_binary stanzas
+        without ``additional_compiler_inputs`` and without the
+        ``-fmodule-mapper=`` rewrite.
+        """
+        if self._module_compiler_kind != "gcc" or not self._module_pcm_cache_root:
+            return
+        lines: list[str] = []
+        for name in sorted(self._module_iface_gcm):
+            rel = self._workspace_relative(self._module_iface_gcm[name], base_dir)
+            if rel is not None:
+                lines.append(f"{name} {rel}")
+        for token in sorted(self._gcc_header_unit_resolved):
+            abs_paths = self._gcc_header_unit_resolved[token]
+            gcm_path = self._header_unit_artefact.get(token)
+            if not gcm_path:
+                continue
+            rel = self._workspace_relative(gcm_path, base_dir)
+            if rel is None:
+                continue
+            for abs_path in abs_paths:
+                if abs_path:
+                    lines.append(f"{abs_path} {rel}")
+        if not lines:
+            return
+        path = os.path.join(base_dir, self._BAZEL_MODULE_MAPPER_BASENAME)
+        new_content = "\n".join(lines) + "\n"
+        try:
+            with open(path, encoding="utf-8") as fh:
+                if fh.read() == new_content:
+                    return
+        except FileNotFoundError:
+            pass
+        with compiletools.filesystem_utils.atomic_output_file(path, mode="w", encoding="utf-8") as fh:
+            fh.write(new_content)
+
     def _ensure_workspace(self, output_dir: str) -> None:
         """Create a minimal MODULE.bazel and .bazelversion if absent.
 
@@ -364,6 +542,11 @@ class BazelBackend(BuildBackend):
         self._prebuild_aux_artefacts()
 
         base_dir = self._default_base_dir()
+        # After the .gcm/.pcm artefacts exist on disk, materialise the
+        # bazel-specific module mapper (workspace-relative paths) so
+        # the importer compiles bazel later spawns find the BMIs via
+        # paths that pass bazel's absolute-path-inclusion check.
+        self._write_bazel_module_mapper(base_dir)
         # Materialise out-of-workspace sources into <base_dir>/ext/ now,
         # immediately before the actual Bazel build. Done here (not in
         # generate()) so that generate() to a StringIO stays a pure file
@@ -427,9 +610,32 @@ class BazelBackend(BuildBackend):
         # Bazel's gcc autoconfig disables canonical system headers for
         # path-stable outputs, which makes gcc's <vector> resolution miss the
         # canonical path key in the module mapper. Re-enable so module-mapper
-        # lookups land on the path compiletools wrote.
+        # lookups land on the path compiletools wrote. (We additionally emit
+        # both canonical and non-canonical mapper keys via
+        # _resolve_system_header_abs_paths so the lookup hits even when
+        # bazel's autoconfig flag-ordering wins after this option.)
         if self._graph_uses_gcc_modules():
             lines.append("build --cxxopt=-fcanonical-system-headers")
+            # Bazel's gcc autoconfig appends `-std=c++17` to all C++ compile
+            # actions. The header-unit precompile that compiletools runs
+            # locally uses gcc's default `-std=` (typically C++20+ on
+            # gcc-14+), producing a C++20-dialect .gcm. The bazel-driven
+            # importer compile then sees `-std=c++17` (autoconfig's
+            # default) and rejects with "language dialect differs 'C++20',
+            # expected 'C++17'". Inject the std actually used by the
+            # precompile so the importer matches. --cxxopt is passed as a
+            # single token; bazel autoconfig's later -std=c++17 appears
+            # too, but per-target/global cxxopts win when re-emitted
+            # after autoconfig (last -std= wins). When the user has
+            # explicitly set a newer standard (-std=c++23 / -std=c++26)
+            # we must NOT downgrade them to c++20 -- modules work on
+            # any C++20+; only inject the c++20 default when no -std=
+            # is present at all.
+            std_flag = next(
+                (str(t) for t in self.args.flags.cxx if str(t).startswith("-std=")),
+                "-std=c++20",
+            )
+            lines.append(f"build --cxxopt={std_flag}")
         # rules_cc 0.2.x defaults to -fuse-ld=lld at the GLOBAL bazel link
         # action, which gcc-only toolchains (e.g. gcc-15.2.0 ships gold, not
         # lld) cannot satisfy. Per-target linkopts (driven by LDFLAGS and magic

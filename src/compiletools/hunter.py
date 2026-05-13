@@ -105,8 +105,8 @@ class Hunter:
         # C++20 modules: every `import M;` in this TU pulls the file that
         # declares `export module M;` into the dependency graph as a source.
         # The interface unit must compile before this TU; that ordering is
-        # enforced by the backend via order-only edges (see
-        # build_backend._wire_module_order_only_deps).
+        # enforced by the backend via BMI/stamp edges on the importer's
+        # inputs (see build_backend._wire_module_inputs).
         module_iface_sources = self._module_interface_sources_for(realpath)
         if module_iface_sources:
             sources = sources + module_iface_sources

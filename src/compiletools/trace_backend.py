@@ -67,6 +67,7 @@ import compiletools.filesystem_utils
 import compiletools.git_utils
 import compiletools.wrappedos
 from compiletools.build_backend import (
+    _ORDER_ONLY_DEP_FORBIDDEN_EXTS,
     BuildBackend,
     _compiler_identity,
     register_backend,
@@ -357,9 +358,30 @@ class ShakeBackend(BuildBackend):
             # and crashing _make_trace_entry's get_file_hash call.
             return False
 
-        # Ensure order-only deps (directories) exist
+        # Ensure order-only deps exist. Two shapes possible:
+        #
+        # 1. Bucket directory (no file extension, e.g. ``cas-objdir/ab``).
+        #    ``mkdir`` it.
+        # 2. Artefact path (file extension matching
+        #    ``_ORDER_ONLY_DEP_FORBIDDEN_EXTS``) that another rule
+        #    produces. Recurse via ``_build_async`` instead of mkdir.
+        #    For example: gcc named-module importers list the
+        #    interface unit's ``.o`` here so the make/ninja CAS-only
+        #    path's ``|`` clause survives the source-prereq drop --
+        #    the .o is a real rule output, not a directory, and
+        #    mkdir-ing it would clobber the file the producer is
+        #    about to write (the original defect class behind the
+        #    C++20-modules trace_backend xfail). The recursive build
+        #    is also what would happen if the dep were in
+        #    ``inputs``; routing through ``order_only_deps`` lets
+        #    make/ninja's ``cas_demoted_order_only`` lift survive
+        #    bare suffixes like ``.o``/``.stamp`` that are not in
+        #    ``_COMPILE_ORDERING_INPUT_EXTS``.
         for dep in rule.order_only_deps:
-            os.makedirs(dep, exist_ok=True)
+            if dep.endswith(_ORDER_ONLY_DEP_FORBIDDEN_EXTS):
+                await self._build_async(dep, graph, traces, memo, sem)
+            else:
+                os.makedirs(dep, exist_ok=True)
 
         # CONTENT-ADDRESSABLE SHORT-CIRCUIT
         if _is_build_artifact(rule):
@@ -763,6 +785,20 @@ class SlurmBackend(ShakeBackend):
                 subprocess.check_call(rule.command)
             else:
                 os.makedirs(rule.output, exist_ok=True)
+
+        # Phase 0: locally build PCH (.gch) and HEADER_UNIT (.pcm/.gcm)
+        # producers before submitting compile jobs to slurm. Slurm
+        # parallelises compile rules into a flat job array with no DAG
+        # ordering, so an importer compile job submitted alongside its
+        # header-unit precompile would race the .gcm and crash with
+        # "imports must be built before being imported". The shake
+        # backend has no equivalent gap because its async engine
+        # recurses into rule.inputs and naturally builds dependencies
+        # first; cmake/bazel solve the same problem the same way (call
+        # _prebuild_aux_artefacts before handing off to the native
+        # tool). Doing it here makes slurm symmetric with cmake/bazel
+        # for any artefact that lives outside the per-TU compile chain.
+        self._prebuild_aux_artefacts()
 
         # Phase 1: identify compile rules that need rebuilding.
         to_submit = [

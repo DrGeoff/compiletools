@@ -314,13 +314,7 @@ class TestBackendBuildHeaderUnits(BaseCompileToolsTestCase):
     "could not find module" (gcc).
     """
 
-    # bazel: gcc autoconfig appends ``-fno-canonical-system-headers`` AFTER our
-    # per-target copts and ``--cxxopt`` from .bazelrc, defeating the canonical-
-    # path lookup the global module-mapper relies on. Needs a custom cc_toolchain.
-    # shake/slurm: trace_backend mkdir's every ``rule.order_only_deps`` entry,
-    # turning header-unit ``.gcm`` / ``.pcm`` artefact paths into directories
-    # before the importer compiles.
-    _MODULE_FAILING_BACKENDS: typing.ClassVar[frozenset[str]] = frozenset({"bazel", "shake", "slurm"})
+    _MODULE_FAILING_BACKENDS: typing.ClassVar[frozenset[str]] = frozenset()
 
     @uth.requires_functional_compiler
     @uth.requires_backend_tool()
