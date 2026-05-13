@@ -650,14 +650,7 @@ class BazelBackend(BuildBackend):
             return
         path = os.path.join(base_dir, self._BAZEL_MODULE_MAPPER_BASENAME)
         new_content = "\n".join(lines) + "\n"
-        try:
-            with open(path, encoding="utf-8") as fh:
-                if fh.read() == new_content:
-                    return
-        except FileNotFoundError:
-            pass
-        with compiletools.filesystem_utils.atomic_output_file(path, mode="w", encoding="utf-8") as fh:
-            fh.write(new_content)
+        compiletools.filesystem_utils.atomic_write_if_changed(path, new_content)
 
     def _ensure_workspace(self, output_dir: str) -> None:
         """Create a minimal MODULE.bazel and .bazelversion if absent.
