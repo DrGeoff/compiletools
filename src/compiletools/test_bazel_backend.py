@@ -328,6 +328,16 @@ class TestIncludePathsExtraction:
         assert extract_include_paths([]) == []
         assert extract_include_paths(["g++", "-c", "x.cpp", "-o", "x.o"]) == []
 
+    def test_isystem_equals_form(self):
+        cmd = ["g++", "-c", "-isystem=/usr/include/boost", "x.cpp", "-o", "x.o"]
+        paths = extract_include_paths(cmd)
+        assert paths == ["/usr/include/boost"]
+
+    def test_iquote_equals_form(self):
+        cmd = ["g++", "-c", "-iquote=/abs/path", "y.cpp", "-o", "y.o"]
+        paths = extract_include_paths(cmd)
+        assert paths == ["/abs/path"]
+
 
 class TestLinkoptsExtraction:
     def test_library_flags(self):

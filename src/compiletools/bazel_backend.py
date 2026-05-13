@@ -28,6 +28,11 @@ from compiletools.build_backend import (
 )
 from compiletools.build_graph import BuildGraph, BuildRule, RuleType
 
+# Header file extensions used when globbing include directories to populate
+# Bazel's srcs=[...] list (Bazel's sandbox cannot infer header ownership from
+# includes=[...] alone, so we enumerate them explicitly).
+_HDR_EXTS = frozenset((".h", ".hpp", ".hxx", ".hh", ".H", ".inl", ".inc", ".ipp"))
+
 
 @register_backend
 class BazelBackend(BuildBackend):
@@ -210,7 +215,6 @@ class BazelBackend(BuildBackend):
             existing_rel_srcs: set[str] = set(rel_srcs)
             extra_hdrs: list[str] = []
             if base_dir is not None:
-                _HDR_EXTS = frozenset((".h", ".hpp", ".hxx", ".hh", ".H", ".inl", ".inc", ".ipp"))
                 for inc in includes:
                     inc_abs = os.path.join(base_dir, inc) if not os.path.isabs(inc) else inc
                     if not os.path.isdir(inc_abs):

@@ -332,12 +332,8 @@ def extract_include_paths(command: list[str]) -> list[str]:
         return []
     args = split_compound_args(command[1:])
     paths: list[str] = []
-    skip_next = False
     include_next = False
     for arg in args:
-        if skip_next:
-            skip_next = False
-            continue
         if include_next:
             paths.append(arg)
             include_next = False
@@ -352,10 +348,10 @@ def extract_include_paths(command: list[str]) -> list[str]:
             include_next = True
             continue
         if arg.startswith("-isystem"):
-            paths.append(arg[len("-isystem") :])
+            paths.append(arg[len("-isystem") :].lstrip("="))
             continue
         if arg.startswith("-iquote"):
-            paths.append(arg[len("-iquote") :])
+            paths.append(arg[len("-iquote") :].lstrip("="))
             continue
     return paths
 
