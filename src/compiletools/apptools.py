@@ -230,6 +230,22 @@ def add_common_arguments(cap, argv=None, variant=None):
         help="Determine the git root then add it to the include paths.",
     )
     cap.add_argument(
+        "--ffile-prefix-map-target",
+        dest="ffile_prefix_map_target",
+        default=".",
+        help=(
+            "RHS of the auto-injected -ffile-prefix-map=<gitroot>=<target> "
+            "flag added to CXXFLAGS / CFLAGS for cross-user CAS sharing "
+            "(Round 3). Default '.' matches the Debian fixfilepath "
+            "convention; gdb resolves automatically via $cwd when run "
+            "from the workspace. VSCode-heavy teams may prefer a sentinel "
+            "like '/__ct__/' paired with a sourceFileMap entry. If the "
+            "user manually sets any -f{file,debug,macro,canon}-prefix-map= "
+            "in their flags, the auto-injection is skipped (user choice "
+            "wins, per slot independently)."
+        ),
+    )
+    cap.add_argument(
         "--INCLUDE",
         "--include",
         dest="INCLUDE",

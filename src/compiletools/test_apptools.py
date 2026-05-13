@@ -1274,3 +1274,44 @@ class TestCompilerSupportsRequestedStandard:
         )
         with pytest.raises(RuntimeError, match=r"does not support -std=c\+\+2c"):
             apptools._check_compiler_supports_requested_standard(args)
+
+
+# ---------------------------------------------------------------------------
+# Round 3: --ffile-prefix-map-target CLI flag (cross-user CAS sharing)
+# ---------------------------------------------------------------------------
+
+
+class TestFfilePrefixMapTargetArg:
+    """The --ffile-prefix-map-target CLI argument controls the RHS of the
+    auto-injected ``-ffile-prefix-map=<gitroot>=<target>`` flag added to
+    CXXFLAGS / CFLAGS in :func:`apptools._inject_ffile_prefix_map`.
+
+    Default ``.`` matches the Debian fixfilepath convention; gdb resolves
+    via ``$cwd`` when run from the workspace. VSCode-heavy teams may
+    prefer a sentinel like ``/__ct__/``.
+    """
+
+    def _build_parser(self):
+        cap = configargparse.ArgParser(default_config_files=[])
+        import compiletools.apptools as apptools
+
+        # add_common_arguments is where compile/link-related flags live
+        # (--CXXFLAGS / --CFLAGS / --git-root / --ffile-prefix-map-target).
+        # add_base_arguments only carries the variant/verbose/help skeleton.
+        apptools.add_common_arguments(cap)
+        return cap
+
+    def test_default_is_dot(self):
+        cap = self._build_parser()
+        args = cap.parse_args([])
+        assert args.ffile_prefix_map_target == "."
+
+    def test_user_override_to_sentinel(self):
+        cap = self._build_parser()
+        args = cap.parse_args(["--ffile-prefix-map-target=/__ct__/"])
+        assert args.ffile_prefix_map_target == "/__ct__/"
+
+    def test_user_override_to_empty_string(self):
+        cap = self._build_parser()
+        args = cap.parse_args(["--ffile-prefix-map-target="])
+        assert args.ffile_prefix_map_target == ""
