@@ -132,12 +132,6 @@ _SAMPLE_PLANS: dict[str, SamplePlan] = {
         # other two header dirs (subdir2, subdir3) are reachable only
         # via the --include CLI flag, mirroring test_magicinclude.py.
         extra_args=("--include=subdir2", "--prepend-INCLUDE=subdir3"),
-        # Bazel backend: the emitted cc_binary doesn't propagate the
-        # in-source //#INCLUDE=subdir annotation to copts, so subdir/
-        # isn't on the include path and the build fails to find
-        # important.hpp. Tracked as a bazel-backend gap; other
-        # backends honour the flag.
-        skip_for_backends=frozenset({"bazel"}),
     ),
     "numbers": SamplePlan(
         # The directory has two test entry points — test_direct_include.cpp

@@ -21,6 +21,7 @@ from compiletools.build_backend import (
     BuildBackend,
     aggregate_rule_sources,
     build_obj_info,
+    extract_include_paths,
     extract_linkopts,
     mangle_target_name,
     register_backend,
@@ -176,6 +177,52 @@ class BazelBackend(BuildBackend):
             if kind != "cc_library":
                 object_files = set(rule.inputs)
                 linkopts = self._resolve_linkopts(extract_linkopts(rule.command, object_files) if rule.command else [])
+            # Collect include paths that extract_copts(strip_includes=True) dropped.
+            # Re-emit them via cc_binary(includes=[...]) so Bazel's include mechanism
+            # sees //#INCLUDE= annotations and --include CLI paths.
+            includes_seen: set[str] = set()
+            includes: list[str] = []
+            for obj in rule.inputs:
+                compile_rule = graph.get_rule(obj)
+                if compile_rule is None or compile_rule.command is None:
+                    continue
+                for inc in extract_include_paths(compile_rule.command):
+                    if os.path.isabs(inc):
+                        try:
+                            rel = os.path.relpath(inc, base_dir)
+                        except ValueError:
+                            continue  # different drive / unresolvable; let toolchain handle
+                        if rel.startswith(".."):
+                            continue  # outside workspace; skip
+                        inc = rel
+                    # Skip "." — Bazel forbids includes=["."] since it
+                    # would expose the entire workspace root to dependents.
+                    if inc and inc != "." and inc not in includes_seen:
+                        includes.append(inc)
+                        includes_seen.add(inc)
+            # Bazel's undeclared-inclusion check requires every header that
+            # is actually #include'd to be listed in srcs (or reachable via
+            # a cc_library dep). For directories exposed via includes=[...],
+            # the compiler can see their headers but Bazel's sandbox cannot
+            # infer ownership — so we glob all header files from each include
+            # directory and add them to srcs. Only do this when base_dir is
+            # a real path (not None / StringIO case) and the directory exists.
+            existing_rel_srcs: set[str] = set(rel_srcs)
+            extra_hdrs: list[str] = []
+            if base_dir is not None:
+                _HDR_EXTS = frozenset((".h", ".hpp", ".hxx", ".hh", ".H", ".inl", ".inc", ".ipp"))
+                for inc in includes:
+                    inc_abs = os.path.join(base_dir, inc) if not os.path.isabs(inc) else inc
+                    if not os.path.isdir(inc_abs):
+                        continue
+                    for fname in os.listdir(inc_abs):
+                        if os.path.splitext(fname)[1] in _HDR_EXTS:
+                            hdr_rel = self._bazel_src(os.path.join(inc_abs, fname), base_dir)
+                            if hdr_rel not in existing_rel_srcs:
+                                extra_hdrs.append(hdr_rel)
+                                existing_rel_srcs.add(hdr_rel)
+            if extra_hdrs:
+                rel_srcs = sorted(set(rel_srcs) | set(extra_hdrs))
             module_inputs, all_copts = self._bazel_module_inputs_and_copts(rule, all_copts, base_dir)
             self._emit_target(
                 f,
@@ -184,6 +231,7 @@ class BazelBackend(BuildBackend):
                 rel_srcs,
                 all_copts,
                 linkopts,
+                includes=includes if includes else None,
                 linkshared=linkshared,
                 additional_compiler_inputs=module_inputs,
             )
@@ -239,6 +287,7 @@ class BazelBackend(BuildBackend):
         all_copts: list[str],
         linkopts: list[str] | None = None,
         *,
+        includes: list[str] | None = None,
         linkshared: bool = False,
         additional_compiler_inputs: list[str] | None = None,
     ) -> None:
@@ -249,6 +298,7 @@ class BazelBackend(BuildBackend):
             ("srcs", rel_srcs),
             ("additional_compiler_inputs", additional_compiler_inputs),
             ("copts", all_copts),
+            ("includes", includes),
             ("linkopts", linkopts),
         ):
             if not values:

@@ -319,6 +319,47 @@ def extract_copts(command: list[str], *, strip_includes: bool = False) -> list[s
     return copts
 
 
+def extract_include_paths(command: list[str]) -> list[str]:
+    """Extract include-path arguments from a compile command.
+
+    Returns the path values from -I / -iquote / -isystem (and the
+    two-token "-I path" form). Used by the Bazel backend to re-emit
+    include paths via cc_binary(includes=[...]) since Bazel manages
+    include paths itself and extract_copts(strip_includes=True) drops
+    them.
+    """
+    if not command:
+        return []
+    args = split_compound_args(command[1:])
+    paths: list[str] = []
+    skip_next = False
+    include_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if include_next:
+            paths.append(arg)
+            include_next = False
+            continue
+        if arg == "-I":
+            include_next = True
+            continue
+        if arg.startswith("-I") and len(arg) > 2:
+            paths.append(arg[2:])
+            continue
+        if arg in ("-isystem", "-iquote"):
+            include_next = True
+            continue
+        if arg.startswith("-isystem"):
+            paths.append(arg[len("-isystem") :])
+            continue
+        if arg.startswith("-iquote"):
+            paths.append(arg[len("-iquote") :])
+            continue
+    return paths
+
+
 def extract_linkopts(command: list[str], object_files: set[str]) -> list[str]:
     """Extract linker flags from a link command.
 

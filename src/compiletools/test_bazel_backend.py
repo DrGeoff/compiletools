@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from compiletools.bazel_backend import BazelBackend
-from compiletools.build_backend import extract_copts, extract_linkopts, get_backend_class
+from compiletools.build_backend import extract_copts, extract_include_paths, extract_linkopts, get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
 
 
@@ -121,6 +121,63 @@ class TestBazelGenerate:
         assert '"-std=c++17"' in content
         assert '"-DFOO=1"' in content
         assert '"-lm"' in content
+
+    def test_include_paths_emitted_as_includes(self):
+        """//#INCLUDE= annotations produce includes=[...] in the cc_binary stanza."""
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="obj/main.o",
+                inputs=["main.cpp"],
+                command=["g++", "-Isubdir", "-c", "main.cpp", "-o", "obj/main.o"],
+                rule_type="compile",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="bin/main",
+                inputs=["obj/main.o"],
+                command=["g++", "-o", "bin/main", "obj/main.o"],
+                rule_type="link",
+            )
+        )
+
+        backend = self._make_backend()
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        assert "includes = [" in content
+        assert '"subdir"' in content
+        # The -I path must NOT appear in copts (strip_includes=True removes it).
+        assert '"-Isubdir"' not in content
+
+    def test_no_includes_when_no_dash_I(self):
+        """When no -I flags are present, includes= is omitted."""
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="obj/main.o",
+                inputs=["main.cpp"],
+                command=["g++", "-O2", "-c", "main.cpp", "-o", "obj/main.o"],
+                rule_type="compile",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="bin/main",
+                inputs=["obj/main.o"],
+                command=["g++", "-o", "bin/main", "obj/main.o"],
+                rule_type="link",
+            )
+        )
+
+        backend = self._make_backend()
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        assert "includes = [" not in content
 
     def test_phony_rules_not_emitted(self):
         graph = BuildGraph()
@@ -254,6 +311,22 @@ class TestCoptsExtraction:
         # -I flags are filtered out since Bazel manages includes itself
         cmd = ["g++", "-Wall", "-Wextra", "-I/usr/include", "-c", "x.cpp", "-o", "x.o"]
         assert extract_copts(cmd, strip_includes=True) == ["-Wall", "-Wextra"]
+
+
+class TestIncludePathsExtraction:
+    def test_attached_dash_I(self):
+        cmd = ["g++", "-c", "-Isubdir", "-I", "subdir2", "-isystem/usr/include", "main.cpp", "-o", "main.o"]
+        paths = extract_include_paths(cmd)
+        assert paths == ["subdir", "subdir2", "/usr/include"]
+
+    def test_iquote(self):
+        cmd = ["g++", "-c", "-iquote", "include", "-iquote/abs/path", "x.cpp", "-o", "x.o"]
+        paths = extract_include_paths(cmd)
+        assert paths == ["include", "/abs/path"]
+
+    def test_empty(self):
+        assert extract_include_paths([]) == []
+        assert extract_include_paths(["g++", "-c", "x.cpp", "-o", "x.o"]) == []
 
 
 class TestLinkoptsExtraction:
