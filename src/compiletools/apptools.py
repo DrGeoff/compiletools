@@ -1169,6 +1169,28 @@ def _inject_ffile_prefix_map(args) -> None:
         setattr(args, attr, f"{existing} {flag}".strip() if existing else flag)
 
 
+def _canonicalize_one_path_to_target(path: str, anchor_prefix: str, target: str) -> str:
+    """Replace anchor_prefix with `target` if `path` is anchor-rooted.
+
+    `anchor_prefix` is the anchor with a trailing slash already attached.
+    The exact-match case (path == anchor without slash) is handled by the
+    caller. When `target == _GITROOT_SENTINEL` the rewrite is idempotent:
+    paths already containing the sentinel pass through unchanged. For
+    non-sentinel targets (e.g. ``.``) idempotency falls out for free
+    because once rewritten the path no longer starts with anchor_prefix.
+
+    Round 3: this is the shared core of both
+    :func:`_canonicalize_one_path` (cache-key flavour, target=sentinel)
+    and :func:`canonicalize_path_for_command` (emitted-command flavour,
+    target configurable).
+    """
+    if target == _GITROOT_SENTINEL and _GITROOT_SENTINEL in path:
+        return path
+    if path.startswith(anchor_prefix):
+        return target + "/" + path[len(anchor_prefix) :]
+    return path
+
+
 def _canonicalize_one_path(path: str, anchor_prefix: str) -> str:
     """Replace anchor_prefix with _GITROOT_SENTINEL if `path` is anchor-rooted.
 
@@ -1176,12 +1198,11 @@ def _canonicalize_one_path(path: str, anchor_prefix: str) -> str:
     The exact-match case (path == anchor without slash) is handled by the
     caller. Idempotent: paths already containing _GITROOT_SENTINEL pass
     through unchanged.
+
+    Thin wrapper around :func:`_canonicalize_one_path_to_target` with
+    target fixed to ``_GITROOT_SENTINEL``.
     """
-    if _GITROOT_SENTINEL in path:
-        return path
-    if path.startswith(anchor_prefix):
-        return _GITROOT_SENTINEL + "/" + path[len(anchor_prefix) :]
-    return path
+    return _canonicalize_one_path_to_target(path, anchor_prefix, _GITROOT_SENTINEL)
 
 
 def canonicalize_path_for_cache_key(path: str, anchor_root: str) -> str:
@@ -1196,7 +1217,8 @@ def canonicalize_path_for_cache_key(path: str, anchor_root: str) -> str:
     graceful no-op when gitroot can't be resolved.
 
     Hash-input only: callers must NOT pass canonicalized paths to the
-    actual compile command. The compiler still needs the real path.
+    actual compile command. For emitted-command rewriting, see
+    :func:`canonicalize_path_for_command`.
     """
     if not anchor_root:
         return path
@@ -1204,6 +1226,33 @@ def canonicalize_path_for_cache_key(path: str, anchor_root: str) -> str:
     if path == anchor:
         return _GITROOT_SENTINEL
     return _canonicalize_one_path(path, anchor + "/")
+
+
+def canonicalize_path_for_command(path: str, anchor_root: str, *, target: str) -> str:
+    """Rewrite `path` to be anchor-relative, substituting *target* in place
+    of the anchor.
+
+    Sister of :func:`canonicalize_path_for_cache_key`. The cache-key
+    version uses the ``<GITROOT>`` sentinel (hash-stable across users);
+    the command version uses a configurable target (typically ``.``)
+    so the rewritten path is what the compiler / linker actually sees.
+
+    Use for the actual emitted argv (compile / link / ar) so absolute
+    paths rooted at the workspace become target-prefixed in the bytes
+    those tools write (debug info, RPATHs, version-script paths). The
+    cache key continues to use :func:`canonicalize_path_for_cache_key`
+    so two users get the same hash regardless of their workspace
+    location.
+
+    `anchor_root="" ` (or any falsy anchor) is the identity function —
+    graceful no-op when gitroot can't be resolved.
+    """
+    if not anchor_root:
+        return path
+    anchor = anchor_root.rstrip("/")
+    if path == anchor:
+        return target
+    return _canonicalize_one_path_to_target(path, anchor + "/", target)
 
 
 def canonicalize_paths_for_cache_key(paths: Sequence[str], anchor_root: str) -> list[str]:
@@ -1219,27 +1268,21 @@ def canonicalize_paths_for_cache_key(paths: Sequence[str], anchor_root: str) -> 
     return [canonicalize_path_for_cache_key(p, anchor_root) for p in paths]
 
 
-def canonicalize_for_cache_key(tokens: Sequence[str], anchor_root: str) -> list[str]:
-    """Rewrite path-bearing flag tokens to be anchor-relative.
+def _canonicalize_tokens_to_target(tokens: Sequence[str], anchor_root: str, target: str) -> list[str]:
+    """Shared core of :func:`canonicalize_for_cache_key` and
+    :func:`canonicalize_for_command`.
 
-    For each token, if it parses as a path-bearing flag whose path
-    argument is an absolute path under `anchor_root`, replace the path
-    portion with the literal token `<GITROOT>/<relpath>`. Both attached
-    form (``-I/path``) and detached form (``-I /path``, two tokens)
-    are handled.
+    Walks `tokens` recognizing path-bearing flag families (-I, -isystem,
+    -idirafter, -iquote, -include, -include-pch, -F, -B, -Wl,...,
+    -Xlinker, -f{file,debug,macro,canon}-prefix-map=) and substitutes
+    *target* in place of the anchor in the path portion of each.
 
-    Path-bearing flag families recognized: -I -isystem -iquote
-    -idirafter -F -B -include -include-pch.
+    target == ``<GITROOT>`` produces the hash-stable form (cache keys).
+    target == ``.`` (or another configured string) produces the actual
+    emitted form (compile / link / ar argv).
 
-    Anything else passes through unchanged: paths outside `anchor_root`,
-    non-path flags (``-O2``, ``-std=c++20``, ``-DFOO``), already-relative
-    paths, and tokens already containing the `<GITROOT>` sentinel
-    (idempotent — applying twice is a no-op).
-
-    `anchor_root="" ` (or any falsy anchor) is the identity function —
-    graceful no-op when gitroot can't be resolved.
-
-    Returns a NEW list; input is not mutated.
+    `anchor_root="" ` is the identity. Returns a NEW list; input not
+    mutated.
     """
     if not anchor_root:
         return list(tokens)
@@ -1268,10 +1311,10 @@ def canonicalize_for_cache_key(tokens: Sequence[str], anchor_root: str) -> list[
                 break
             old, _, new = rest.partition("=")
             if old == anchor:
-                out.append(f"{prefix}{_GITROOT_SENTINEL}={new}")
+                out.append(f"{prefix}{target}={new}")
             elif old.startswith(anchor_prefix):
                 relative = old[len(anchor_prefix) :]
-                out.append(f"{prefix}{_GITROOT_SENTINEL}/{relative}={new}")
+                out.append(f"{prefix}{target}/{relative}={new}")
             else:
                 # OLD lives outside the anchor: pass through. The user
                 # explicitly mapped a non-workspace path; we don't
@@ -1295,15 +1338,15 @@ def canonicalize_for_cache_key(tokens: Sequence[str], anchor_root: str) -> list[
                 if "=" in p:
                     opt, _, val = p.partition("=")
                     if val == anchor:
-                        rewritten_parts.append(f"{opt}={_GITROOT_SENTINEL}")
+                        rewritten_parts.append(f"{opt}={target}")
                     elif val.startswith("/"):
-                        rewritten_parts.append(f"{opt}={_canonicalize_one_path(val, anchor_prefix)}")
+                        rewritten_parts.append(f"{opt}={_canonicalize_one_path_to_target(val, anchor_prefix, target)}")
                     else:
                         rewritten_parts.append(p)
                 elif p == anchor:
-                    rewritten_parts.append(_GITROOT_SENTINEL)
+                    rewritten_parts.append(target)
                 elif p.startswith("/"):
-                    rewritten_parts.append(_canonicalize_one_path(p, anchor_prefix))
+                    rewritten_parts.append(_canonicalize_one_path_to_target(p, anchor_prefix, target))
                 else:
                     rewritten_parts.append(p)
             out.append(",".join(rewritten_parts))
@@ -1318,9 +1361,9 @@ def canonicalize_for_cache_key(tokens: Sequence[str], anchor_root: str) -> list[
             out.append(tok)
             nxt = tokens[i + 1]
             if nxt == anchor:
-                out.append(_GITROOT_SENTINEL)
+                out.append(target)
             elif nxt.startswith("/"):
-                out.append(_canonicalize_one_path(nxt, anchor_prefix))
+                out.append(_canonicalize_one_path_to_target(nxt, anchor_prefix, target))
             else:
                 out.append(nxt)
             i += 2
@@ -1331,9 +1374,9 @@ def canonicalize_for_cache_key(tokens: Sequence[str], anchor_root: str) -> list[
             out.append(tok)
             path_tok = tokens[i + 1]
             if path_tok == anchor:
-                out.append(_GITROOT_SENTINEL)
+                out.append(target)
             else:
-                out.append(_canonicalize_one_path(path_tok, anchor_prefix))
+                out.append(_canonicalize_one_path_to_target(path_tok, anchor_prefix, target))
             i += 2
             continue
         # Attached form: token starts with a path-bearing flag and the
@@ -1344,9 +1387,9 @@ def canonicalize_for_cache_key(tokens: Sequence[str], anchor_root: str) -> list[
             if tok.startswith(flag) and len(tok) > len(flag):
                 path_part = tok[len(flag) :]
                 if path_part == anchor:
-                    rewritten = flag + _GITROOT_SENTINEL
+                    rewritten = flag + target
                 else:
-                    rewritten = flag + _canonicalize_one_path(path_part, anchor_prefix)
+                    rewritten = flag + _canonicalize_one_path_to_target(path_part, anchor_prefix, target)
                 break
         if rewritten is not None:
             out.append(rewritten)
@@ -1354,6 +1397,52 @@ def canonicalize_for_cache_key(tokens: Sequence[str], anchor_root: str) -> list[
             out.append(tok)
         i += 1
     return out
+
+
+def canonicalize_for_cache_key(tokens: Sequence[str], anchor_root: str) -> list[str]:
+    """Rewrite path-bearing flag tokens to be anchor-relative.
+
+    For each token, if it parses as a path-bearing flag whose path
+    argument is an absolute path under `anchor_root`, replace the path
+    portion with the literal token `<GITROOT>/<relpath>`. Both attached
+    form (``-I/path``) and detached form (``-I /path``, two tokens)
+    are handled.
+
+    Path-bearing flag families recognized: -I -isystem -iquote
+    -idirafter -F -B -include -include-pch -Wl,... -Xlinker
+    -f{file,debug,macro,canon}-prefix-map=.
+
+    Anything else passes through unchanged: paths outside `anchor_root`,
+    non-path flags (``-O2``, ``-std=c++20``, ``-DFOO``), already-relative
+    paths, and tokens already containing the `<GITROOT>` sentinel
+    (idempotent — applying twice is a no-op).
+
+    `anchor_root="" ` (or any falsy anchor) is the identity function —
+    graceful no-op when gitroot can't be resolved.
+
+    Returns a NEW list; input is not mutated. Hash-input only — for
+    emitted-command rewriting, see :func:`canonicalize_for_command`.
+    """
+    return _canonicalize_tokens_to_target(tokens, anchor_root, _GITROOT_SENTINEL)
+
+
+def canonicalize_for_command(tokens: Sequence[str], anchor_root: str, *, target: str) -> list[str]:
+    """Sister of :func:`canonicalize_for_cache_key`. Substitutes *target*
+    in place of the ``<GITROOT>`` sentinel.
+
+    Use for the actual emitted argv (compile / link / ar) so absolute
+    paths rooted at the workspace become target-prefixed paths in the
+    bytes the compiler / linker writes (debug info, RPATHs,
+    version-script paths). The cache key continues to use
+    :func:`canonicalize_for_cache_key` so two users get the same hash
+    regardless of their workspace location.
+
+    *target* of ``.`` matches the Debian fixfilepath convention;
+    ``/__ct__`` or similar absolute sentinels work better with VSCode
+    sourceFileMap. Same flag families recognized as
+    :func:`canonicalize_for_cache_key`.
+    """
+    return _canonicalize_tokens_to_target(tokens, anchor_root, target)
 
 
 def tokenize_compile_flags(

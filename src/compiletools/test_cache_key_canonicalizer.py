@@ -320,3 +320,82 @@ def test_prefix_map_inside_other_tokens_unaffected():
         ANCHOR,
     )
     assert out == ["-O2", "-I<GITROOT>/include", "-ffile-prefix-map=<GITROOT>=.", "-Wall"]
+
+
+# ---------------------------------------------------------------------------
+# Round 3: canonicalize_for_command + canonicalize_path_for_command
+#
+# Sister functions of canonicalize_for_cache_key / canonicalize_path_for_cache_key.
+# Same parsing logic; substitute a configurable target string instead of
+# the <GITROOT> sentinel. Used by link-rule constructors to rewrite the
+# actual emitted argv so binary RPATHs / version-script paths / -L paths
+# are workspace-location-independent.
+# ---------------------------------------------------------------------------
+
+
+def test_canonicalize_for_command_substitutes_target_not_sentinel():
+    from compiletools.apptools import canonicalize_for_command
+
+    out = canonicalize_for_command(
+        [f"-I{ANCHOR}/include", f"-Wl,-rpath,{ANCHOR}/lib"],
+        ANCHOR,
+        target=".",
+    )
+    assert out == ["-I./include", "-Wl,-rpath,./lib"]
+
+
+def test_canonicalize_for_command_with_custom_target():
+    from compiletools.apptools import canonicalize_for_command
+
+    out = canonicalize_for_command([f"-I{ANCHOR}/include"], ANCHOR, target="/__ct__")
+    assert out == ["-I/__ct__/include"]
+
+
+def test_canonicalize_for_command_passes_through_outside_anchor():
+    from compiletools.apptools import canonicalize_for_command
+
+    out = canonicalize_for_command(["-I/usr/include", "-O2"], ANCHOR, target=".")
+    assert out == ["-I/usr/include", "-O2"]
+
+
+def test_canonicalize_for_command_empty_anchor_is_identity():
+    """Falsy anchor -> identity; same contract as canonicalize_for_cache_key."""
+    from compiletools.apptools import canonicalize_for_command
+
+    tokens = [f"-I{ANCHOR}/include", "-O2"]
+    assert canonicalize_for_command(tokens, "", target=".") == tokens
+
+
+def test_canonicalize_for_command_handles_prefix_map_flag():
+    """The prefix-map flag's LHS gets the target substitution too -- so the
+    auto-injected ``-ffile-prefix-map=<gitroot>=.`` becomes
+    ``-ffile-prefix-map=.=.`` in the emitted command (which is harmless
+    -- gcc maps ``.`` to ``.``)."""
+    from compiletools.apptools import canonicalize_for_command
+
+    out = canonicalize_for_command([f"-ffile-prefix-map={ANCHOR}=."], ANCHOR, target=".")
+    assert out == ["-ffile-prefix-map=.=."]
+
+
+def test_canonicalize_path_for_command_substitutes_target():
+    from compiletools.apptools import canonicalize_path_for_command
+
+    assert canonicalize_path_for_command(f"{ANCHOR}/foo.o", ANCHOR, target=".") == "./foo.o"
+    assert canonicalize_path_for_command(ANCHOR, ANCHOR, target=".") == "."
+    assert canonicalize_path_for_command("/usr/lib/libc.a", ANCHOR, target=".") == "/usr/lib/libc.a"
+
+
+def test_canonicalize_path_for_command_empty_anchor_is_identity():
+    from compiletools.apptools import canonicalize_path_for_command
+
+    assert canonicalize_path_for_command(f"{ANCHOR}/foo.o", "", target=".") == f"{ANCHOR}/foo.o"
+
+
+def test_canonicalize_for_cache_key_unchanged_after_refactor():
+    """Smoke check that the existing public API still produces sentinel
+    output (the refactor extracted a shared core but the public function
+    must keep its pre-refactor semantics)."""
+    out = canonicalize_for_cache_key([f"-I{ANCHOR}/include"], ANCHOR)
+    assert out == ["-I<GITROOT>/include"]
+    out = canonicalize_path_for_cache_key(f"{ANCHOR}/foo.o", ANCHOR)
+    assert out == "<GITROOT>/foo.o"
