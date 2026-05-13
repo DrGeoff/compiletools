@@ -101,7 +101,6 @@ def _build_in_two_checkouts(
     return workspaces[0], workspaces[1]
 
 
-@pytest.mark.xfail(strict=True, reason="Round 3 not yet implemented; injection pending")
 @uth.requires_functional_compiler
 def test_two_checkouts_produce_byte_identical_cas_objdir_make(tmp_path):
     """Build the simple sample under two distinct workspace paths with the
