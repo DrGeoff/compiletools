@@ -1103,6 +1103,36 @@ _PATH_BEARING_FLAGS: tuple[str, ...] = (
 _GITROOT_SENTINEL = "<GITROOT>"
 
 
+# Prefix-map flag families. Each takes ``OLD=NEW`` syntax and rewrites
+# paths the compiler emits (debug info, ``__FILE__``, ``.d`` output,
+# etc.). Round 3 auto-injects ``-ffile-prefix-map`` for cross-user CAS
+# sharing unless the user has already set any of these (their choice
+# wins, per CXXFLAGS / CFLAGS slot independently).
+#
+# Trailing ``=`` is part of the prefix to keep the substring search
+# tight — a bare ``-ffile-prefix-map`` (no equals, malformed) is not
+# a recognized prefix-map flag.
+_PREFIX_MAP_FLAG_PREFIXES: tuple[str, ...] = (
+    "-ffile-prefix-map=",
+    "-fdebug-prefix-map=",
+    "-fmacro-prefix-map=",
+    "-fcanon-prefix-map=",
+)
+
+
+def _has_prefix_map_flag(raw_flags: str) -> bool:
+    """Return True if *raw_flags* contains any
+    ``-f{file,debug,macro,canon}-prefix-map=`` flag.
+
+    Substring search is sufficient: every recognized prefix ends in
+    ``=``, so lookalikes like ``-fno-omit-frame-pointer`` cannot
+    false-positive. Empty / None / no-match returns False.
+    """
+    if not raw_flags:
+        return False
+    return any(prefix in raw_flags for prefix in _PREFIX_MAP_FLAG_PREFIXES)
+
+
 def _canonicalize_one_path(path: str, anchor_prefix: str) -> str:
     """Replace anchor_prefix with _GITROOT_SENTINEL if `path` is anchor-rooted.
 

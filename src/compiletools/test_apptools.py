@@ -1315,3 +1315,34 @@ class TestFfilePrefixMapTargetArg:
         cap = self._build_parser()
         args = cap.parse_args(["--ffile-prefix-map-target="])
         assert args.ffile_prefix_map_target == ""
+
+
+class TestHasPrefixMapFlag:
+    """``_has_prefix_map_flag`` detects user-specified prefix-map flags so
+    :func:`apptools._inject_ffile_prefix_map` can skip auto-injection on
+    a per-slot basis (user choice wins).
+    """
+
+    def test_detects_all_four_aliases(self):
+        from compiletools.apptools import _has_prefix_map_flag
+
+        for prefix in (
+            "-ffile-prefix-map",
+            "-fdebug-prefix-map",
+            "-fmacro-prefix-map",
+            "-fcanon-prefix-map",
+        ):
+            assert _has_prefix_map_flag(f"-O2 {prefix}=/foo=. -g")
+            assert _has_prefix_map_flag(f"{prefix}=/foo=.")
+
+    def test_negative_cases(self):
+        from compiletools.apptools import _has_prefix_map_flag
+
+        assert not _has_prefix_map_flag("-O2 -g -Wall")
+        assert not _has_prefix_map_flag("")
+        # Lookalike: -fno-omit-frame-pointer shares the -f prefix but
+        # is not a prefix-map flag. Must not false-positive.
+        assert not _has_prefix_map_flag("-fno-omit-frame-pointer")
+        # Bare prefix without trailing '=': not a recognized prefix-map
+        # flag (the flag syntax is OLD=NEW after the equals).
+        assert not _has_prefix_map_flag("-ffile-prefix-map")
