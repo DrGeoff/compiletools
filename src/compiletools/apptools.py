@@ -2381,10 +2381,21 @@ def _safely_unquote_string(value):
 def _flatten_variables(args):
     """Most of the code base was written to expect CXXFLAGS are a single string with space separation.
     However, around 20240920 we allowed some variables to be lists of those strings.  To allow this
-    change to slip in with minimal code changes, we flatten out the list into a single string."""
+    change to slip in with minimal code changes, we flatten out the list into a single string.
+
+    Uses ``shlex.join`` (not ``' '.join``) so that list elements containing
+    shell-special characters (embedded spaces, double-quotes, etc.) survive the
+    subsequent ``shlex.split`` call in ``_finalize_flag_state``.  When the user
+    passes ``--CPPFLAGS '-DFOO=bar baz'`` on the CLI, the shell consumes the
+    outer quotes and argparse stores ``'-DFOO=bar baz'`` as a single list element;
+    ``' '.join`` would produce ``'-DFOO=bar baz -Wall'`` (unsplit on the space),
+    and ``shlex.split`` would then misparse it as three tokens.  Cousin fix to
+    commit 5cd77781 which patched the same pattern in ``_unify_cpp_cxx_flags``
+    and ``_deduplicate_all_flags``.
+    """
     for varname in ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "INCLUDE"):
         if isinstance(getattr(args, varname, None), list):
-            setattr(args, varname, " ".join(getattr(args, varname)))
+            setattr(args, varname, shlex.join(getattr(args, varname)))
 
 
 def _commonsubstitutions(args):
