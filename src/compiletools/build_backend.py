@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import deque
 from typing import NamedTuple, TypeVar
 
 import compiletools.apptools
@@ -459,10 +460,10 @@ def _toposort_rules(rules_by_output: dict[str, BuildRule]) -> list[BuildRule]:
                 in_degree[output] += 1
                 dependents[inp].append(output)
 
-    ready = sorted(out for out, deg in in_degree.items() if deg == 0)
+    ready: deque[str] = deque(sorted(out for out, deg in in_degree.items() if deg == 0))
     result: list[BuildRule] = []
     while ready:
-        out = ready.pop(0)
+        out = ready.popleft()
         result.append(rules_by_output[out])
         for dep in sorted(dependents[out]):
             in_degree[dep] -= 1
@@ -470,8 +471,9 @@ def _toposort_rules(rules_by_output: dict[str, BuildRule]) -> list[BuildRule]:
                 ready.append(dep)
 
     if len(result) != len(rules_by_output):
-        remaining = sorted(set(rules_by_output) - {r.output for r in result})
-        raise ValueError(f"_toposort_rules: cycle detected among named-module interface rules: {remaining}")
+        unprocessed = sorted(set(rules_by_output.keys()) - {r.output for r in result})
+        descriptors = [f"{out} (type={rules_by_output[out].rule_type})" for out in unprocessed]
+        raise ValueError(f"_toposort_rules: cycle detected among named-module interface rules: {descriptors}")
     return result
 
 
@@ -482,6 +484,18 @@ class BuildBackend(abc.ABC):
     # safe value at link-rule construction time without needing to mock every
     # piece of state. Instances set the per-build value during __init__.
     _compile_used_libcxx: bool = False
+
+    # Same rationale: class-level defaults for C++20 modules state so test
+    # fixtures bypassing __init__ via __new__ can still read these without
+    # AttributeError, and _prebuild_aux_artefacts can use plain attribute
+    # access (matches the invariant documented in __init__).
+    _module_compiler_kind: str | None = None
+    _module_pcm_cache_root: str | None = None
+    _module_pcm_dir: str | None = None
+    _module_iface_obj: dict[str, str] = {}  # noqa: RUF012
+    _module_iface_pcm: dict[str, str] = {}  # noqa: RUF012
+    _module_iface_gcm: dict[str, str] = {}  # noqa: RUF012
+    _gcc_module_mapper_path: str | None = None
 
     def __init__(self, args, hunter, *, context=None):
         self.args = args
@@ -629,11 +643,7 @@ class BuildBackend(abc.ABC):
         # Topological sort within this set ensures partitions (whose .pcm/.o
         # appear in other interface rules' inputs) run before primary
         # interface units that import them.
-        # getattr guards against test fixtures that instantiate backends via
-        # __new__ without running __init__ (e.g. SlurmBackendTestContext).
-        module_iface_outputs: set[str] = set(getattr(self, "_module_iface_obj", {}).values()) | set(
-            getattr(self, "_module_iface_pcm", {}).values()
-        )
+        module_iface_outputs: set[str] = set(self._module_iface_obj.values()) | set(self._module_iface_pcm.values())
         if module_iface_outputs:
             iface_rules_by_output: dict[str, BuildRule] = {}
             for rule in graph.rules_by_type(RuleType.COMPILE):
