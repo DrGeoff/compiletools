@@ -755,6 +755,7 @@ class TestModuleIfaceCompileRule:
                     break
                 assert "depfile" not in line, f"depfile found in module-iface rule: {line}"
                 assert "deps = gcc" not in line, f"deps=gcc found in module-iface rule: {line}"
+        assert in_module_rule, "scan never entered compile_module_iface_cmd block — rule header not found"
 
     def test_normal_compile_rule_still_has_mmd_mf(self):
         """Ordinary (non-module-interface) compile rules still get -MMD -MF."""
