@@ -102,7 +102,7 @@ _LINK_FAIL_FICTIONAL_LIBS: SamplePlan = SamplePlan(
 # every backend after the upstream fix tracked by commit d30e2040
 # ("test(modules): drop dead _MODULE_FAILING_BACKENDS xfail dispatch"),
 # so that sample uses an empty blocklist.
-_CXX_MODULES_NAMED_BACKENDS_BLOCKED = frozenset({"bazel", "cmake", "ninja"})
+_CXX_MODULES_NAMED_BACKENDS_BLOCKED = frozenset({"bazel", "cmake"})
 
 _SAMPLE_PLANS: dict[str, SamplePlan] = {
     # ----- vanilla --auto, no special setup -----

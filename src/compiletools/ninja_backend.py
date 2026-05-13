@@ -55,7 +55,18 @@ class NinjaBackend(BuildBackend):
     def _write_ninja(self, graph: BuildGraph, f) -> None:
         f.write(f"{self._build_file_header_token()}\n\n")
 
+        # Compute module-interface outputs once.  Named-module interface
+        # compile rules use -fmodule-mapper= (gcc) or --precompile -o
+        # (clang); appending -MMD -MF would conflict with the module-mapper
+        # protocol.  GCC reports "inputs may not also have inputs" because the
+        # module mapper makes the compile look like a multi-input action to
+        # ninja, and deps=gcc cannot handle that.  Hunter has already computed
+        # transitive header deps for these rules; a depfile is unnecessary.
+        module_iface_outputs: set[str] = set(self._module_iface_obj.values()) | set(self._module_iface_pcm.values())
+
         rule_types_seen = set()
+        # Track whether we need the separate no-depfile rule for module ifaces.
+        needs_module_iface_rule = False
         for rule in graph.rules:
             if rule.command and rule.rule_type not in rule_types_seen:
                 ninja_rule = f"{rule.rule_type}_cmd"
@@ -85,13 +96,26 @@ class NinjaBackend(BuildBackend):
                     f.write("  restat = 1\n")
                 f.write("\n")
                 rule_types_seen.add(rule.rule_type)
+            if rule.rule_type == RuleType.COMPILE and rule.output in module_iface_outputs:
+                needs_module_iface_rule = True
+
+        # Emit a separate compile rule without depfile/deps for module-interface
+        # units.  This rule is only written when the graph actually contains
+        # such units, so ordinary projects are not affected.
+        if needs_module_iface_rule:
+            f.write("rule compile_module_iface_cmd\n")
+            f.write("  command = $cmd\n")
+            f.write("  description = Compiling module interface $out\n")
+            f.write("  restat = 1\n")
+            f.write("\n")
 
         cas_only = not self.args.use_mtime
         for rule in graph.rules:
             if rule.rule_type == RuleType.PHONY:
                 f.write(f"build {rule.output}: phony {' '.join(rule.inputs)}\n")
             elif rule.command:
-                ninja_rule = f"{rule.rule_type}_cmd"
+                is_module_iface = rule.rule_type == RuleType.COMPILE and rule.output in module_iface_outputs
+                ninja_rule = "compile_module_iface_cmd" if is_module_iface else f"{rule.rule_type}_cmd"
                 if cas_only and rule.rule_type in CAS_PRODUCER_TYPES:
                     # CAS-only: producer's cached path encodes the cache
                     # key, so inputs become order-only — ninja builds
@@ -113,7 +137,13 @@ class NinjaBackend(BuildBackend):
                 f.write(line + "\n")
 
                 if rule.rule_type == RuleType.COMPILE:
-                    cmd_str = self._wrap_compile_cmd(rule.command + ["-MMD", "-MF", rule.output + ".d"])
+                    if is_module_iface:
+                        # Skip -MMD -MF: module-interface rules use
+                        # -fmodule-mapper= (gcc) or --precompile -o (clang),
+                        # which conflict with depfile generation.
+                        cmd_str = self._wrap_compile_cmd(rule.command)
+                    else:
+                        cmd_str = self._wrap_compile_cmd(rule.command + ["-MMD", "-MF", rule.output + ".d"])
                 elif rule.rule_type in (RuleType.LINK, RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY):
                     cmd_str = self._wrap_link_cmd(rule.command)
                 else:
