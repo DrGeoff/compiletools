@@ -439,6 +439,42 @@ def aggregate_rule_sources(
     return srcs, all_copts
 
 
+def _toposort_rules(rules_by_output: dict[str, BuildRule]) -> list[BuildRule]:
+    """Topologically sort build rules by their ``inputs`` dependency edges.
+
+    Only edges whose target is itself a key in *rules_by_output* are
+    treated as ordering constraints. Edges to external artefacts (source
+    files, pre-existing headers) are ignored. Raises ``ValueError`` on a
+    cycle (which would indicate a malformed build graph).
+
+    Used by ``BuildBackend._prebuild_aux_artefacts`` to order named-module
+    interface compile rules so partitions compile before the primary
+    interface units that import them.
+    """
+    in_degree: dict[str, int] = {output: 0 for output in rules_by_output}
+    dependents: dict[str, list[str]] = {output: [] for output in rules_by_output}
+    for output, rule in rules_by_output.items():
+        for inp in rule.inputs:
+            if inp in rules_by_output:
+                in_degree[output] += 1
+                dependents[inp].append(output)
+
+    ready = sorted(out for out, deg in in_degree.items() if deg == 0)
+    result: list[BuildRule] = []
+    while ready:
+        out = ready.pop(0)
+        result.append(rules_by_output[out])
+        for dep in sorted(dependents[out]):
+            in_degree[dep] -= 1
+            if in_degree[dep] == 0:
+                ready.append(dep)
+
+    if len(result) != len(rules_by_output):
+        remaining = sorted(set(rules_by_output) - {r.output for r in result})
+        raise ValueError(f"_toposort_rules: cycle detected among named-module interface rules: {remaining}")
+    return result
+
+
 class BuildBackend(abc.ABC):
     """Abstract base class for build system backends."""
 
@@ -552,24 +588,60 @@ class BuildBackend(abc.ABC):
         """Backend-specific build invocation (subprocess call to native tool)."""
 
     def _prebuild_aux_artefacts(self) -> None:
-        """Subprocess-execute PCH (.gch) and HEADER_UNIT (.pcm/.gcm) producer rules.
+        """Locally execute aux artefact producer rules before the native backend runs.
 
         Backends that emit one ``cc_binary`` / ``add_executable`` per LINK
         rule (CMake, Bazel) hand source-to-binary compilation to the
-        native tool, but the PCH and header-unit producer rules sit
-        outside that chain — the native tool never sees them. Running
-        them here lands the artefacts on disk so the per-TU compile
-        commands the native tool subsequently runs find them via the
+        native tool, but the PCH, header-unit, and named-module interface
+        producer rules sit outside that chain — the native tool never sees
+        them. Running them here lands the artefacts on disk so the per-TU
+        compile commands the native tool subsequently runs find them via the
         already-baked ``-fmodule-file=`` / ``-fmodule-mapper=`` /
         ``-I <pchdir>/<hash>`` flags. Locking via ``atomic_compile`` /
         ``atomic_link`` lets peer ct-cake invocations sharing a CAS dir
         cooperate.
+
+        Slurm submits all compiles as a flat job array with no DAG
+        ordering, so named-module interface compile rules (which write
+        ``.gcm`` / ``.pcm`` as side effects of producing their ``.o``)
+        must also be executed locally in Phase 0 before the flat array
+        is submitted. Without this, importer compiles race with interface
+        compiles in the array and GCC reports "failed to read compiled
+        module".
+
+        Execution order for named-module interface rules: we topologically
+        sort by ``rule.inputs`` within the interface-rule set so partitions
+        are compiled before primary interfaces that import them (clang's
+        precompile stage; gcc's -fmodule-mapper compile).
         """
         graph = self._graph
         if graph is None:
             return
         pch_rules = [r for r in graph.rules_by_type(RuleType.COMPILE) if r.output.endswith(".gch")]
         aux_rules = pch_rules + graph.rules_by_type(RuleType.HEADER_UNIT)
+
+        # Named-module interface compile rules: those whose outputs appear
+        # in _module_iface_obj (gcc .o, and clang .o from pcm-to-o stage)
+        # or _module_iface_pcm (clang precompile .pcm stage). We must NOT
+        # include _module_iface_gcm entries separately -- those .gcm paths
+        # are side effects of the same gcc compile rule whose .o is already
+        # in _module_iface_obj; double-executing would corrupt the output.
+        # Topological sort within this set ensures partitions (whose .pcm/.o
+        # appear in other interface rules' inputs) run before primary
+        # interface units that import them.
+        # getattr guards against test fixtures that instantiate backends via
+        # __new__ without running __init__ (e.g. SlurmBackendTestContext).
+        module_iface_outputs: set[str] = set(getattr(self, "_module_iface_obj", {}).values()) | set(
+            getattr(self, "_module_iface_pcm", {}).values()
+        )
+        if module_iface_outputs:
+            iface_rules_by_output: dict[str, BuildRule] = {}
+            for rule in graph.rules_by_type(RuleType.COMPILE):
+                if rule.output in module_iface_outputs:
+                    iface_rules_by_output[rule.output] = rule
+            module_iface_rules = _toposort_rules(iface_rules_by_output)
+            aux_rules = module_iface_rules + aux_rules
+
         if not aux_rules:
             return
 

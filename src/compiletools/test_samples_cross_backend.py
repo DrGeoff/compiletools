@@ -94,12 +94,15 @@ _LINK_FAIL_FICTIONAL_LIBS: SamplePlan = SamplePlan(
 )
 
 # Named C++20 modules (interface units, partitions, split impl, import std)
-# only build on `make` and `shake` today; the other four backends fail
-# at the BMI plumbing stage. `cxx_modules_header_units` is the exception:
-# header-units now build on every backend after the upstream fix tracked
-# by commit d30e2040 ("test(modules): drop dead _MODULE_FAILING_BACKENDS
-# xfail dispatch"), so that sample uses an empty blocklist.
-_CXX_MODULES_NAMED_BACKENDS_BLOCKED = frozenset({"bazel", "cmake", "ninja", "slurm"})
+# fail on ninja/cmake/bazel today. `slurm` was unblocked by the Wave 2
+# fix: _prebuild_aux_artefacts now locally executes named-module interface
+# compile rules before the flat slurm job array is submitted, so importer
+# compiles no longer race with interface compiles.
+# `cxx_modules_header_units` is the exception: header-units now build on
+# every backend after the upstream fix tracked by commit d30e2040
+# ("test(modules): drop dead _MODULE_FAILING_BACKENDS xfail dispatch"),
+# so that sample uses an empty blocklist.
+_CXX_MODULES_NAMED_BACKENDS_BLOCKED = frozenset({"bazel", "cmake", "ninja"})
 
 _SAMPLE_PLANS: dict[str, SamplePlan] = {
     # ----- vanilla --auto, no special setup -----
