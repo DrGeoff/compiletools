@@ -65,8 +65,6 @@ class NinjaBackend(BuildBackend):
         module_iface_outputs: set[str] = set(self._module_iface_obj.values()) | set(self._module_iface_pcm.values())
 
         rule_types_seen = set()
-        # Track whether we need the separate no-depfile rule for module ifaces.
-        needs_module_iface_rule = False
         for rule in graph.rules:
             if rule.command and rule.rule_type not in rule_types_seen:
                 ninja_rule = f"{rule.rule_type}_cmd"
@@ -96,13 +94,14 @@ class NinjaBackend(BuildBackend):
                     f.write("  restat = 1\n")
                 f.write("\n")
                 rule_types_seen.add(rule.rule_type)
-            if rule.rule_type == RuleType.COMPILE and rule.output in module_iface_outputs:
-                needs_module_iface_rule = True
 
         # Emit a separate compile rule without depfile/deps for module-interface
         # units.  This rule is only written when the graph actually contains
         # such units, so ordinary projects are not affected.
-        if needs_module_iface_rule:
+        # module_iface_outputs is empty iff there are no module-interface
+        # compile rules in the graph; checking its truthiness is equivalent
+        # to scanning rules and faster.
+        if module_iface_outputs:
             f.write("rule compile_module_iface_cmd\n")
             f.write("  command = $cmd\n")
             f.write("  description = Compiling module interface $out\n")

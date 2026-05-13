@@ -25,6 +25,20 @@ from compiletools.build_backend import (
 from compiletools.build_graph import BuildGraph, RuleType
 
 
+def _cmake_quote_copt(token: str) -> str:
+    """Quote *token* for use as a CMake ``target_compile_options`` argument.
+
+    CMake's quoted-argument syntax wraps the value in ``"..."`` and uses
+    ``\\"`` as the escape sequence for a literal double-quote character
+    inside the string.  Naively wrapping with ``f'"{token}"'`` breaks when
+    *token* already contains ``"``, e.g. ``-DFOO="bar"`` would produce the
+    malformed cmake syntax ``"-DFOO="bar""``.  This function escapes any
+    embedded ``"`` before adding the outer quotes so the result is always
+    a well-formed CMake quoted argument.
+    """
+    return '"' + token.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def _separate_include_dirs(copts: list[str]) -> tuple[list[str], list[str]]:
     """Separate -I flags from other compiler options.
 
@@ -101,11 +115,11 @@ def _emit_per_source_x_lang(f, srcs: list[str]) -> None:
     CMake uses semicolons as list separators inside property values, so the
     correct form is ``"-x;c++"`` (cmake list) rather than ``"-x" "c++"``
     (two separate arguments).
+
+    *srcs* must already be sorted and deduplicated (callers pass ``rel_srcs``).
     """
-    seen: set[str] = set()
     for src in srcs:
-        if src.endswith(".cppm") and src not in seen:
-            seen.add(src)
+        if src.endswith(".cppm"):
             f.write(f'set_source_files_properties("{src}" PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-x;c++")\n')
 
 
@@ -190,7 +204,7 @@ class CMakeBackend(BuildBackend):
                     f.write(f'    "{s}"\n')
                 f.write(")\n")
 
-                _emit_per_source_x_lang(f, srcs)
+                _emit_per_source_x_lang(f, rel_srcs)
                 self._emit_compile_attrs(f, target_name, remaining_copts, include_dirs)
 
         for rule in graph.rules_by_type(RuleType.LINK):
@@ -209,7 +223,7 @@ class CMakeBackend(BuildBackend):
                 f.write(f'    "{s}"\n')
             f.write(")\n")
 
-            _emit_per_source_x_lang(f, srcs)
+            _emit_per_source_x_lang(f, rel_srcs)
             self._emit_compile_attrs(f, target_name, remaining_copts, include_dirs)
 
             if linkopts:
@@ -259,7 +273,7 @@ class CMakeBackend(BuildBackend):
     ) -> None:
         """Write ``target_compile_options`` and ``target_include_directories`` for a target."""
         if remaining_copts:
-            quoted = " ".join(f'"{c}"' for c in remaining_copts)
+            quoted = " ".join(_cmake_quote_copt(c) for c in remaining_copts)
             f.write(f"target_compile_options({target_name} PRIVATE {quoted})\n")
         if include_dirs:
             quoted = " ".join(f'"{d}"' for d in include_dirs)

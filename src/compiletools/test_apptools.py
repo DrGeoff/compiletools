@@ -437,6 +437,43 @@ class TestFlattenVariables:
         _flatten_variables(args)
         assert args.CPPFLAGS == "-Wall"
 
+    def test_token_with_embedded_space_survives_roundtrip(self):
+        """A token containing an embedded space must survive the _flatten_variables →
+        shlex.split round-trip.
+
+        When the user passes '--CPPFLAGS' with a quoted value to the CLI, the shell
+        consumes the outer quotes before argv reaches argparse.  With ``nargs='+'``,
+        configargparse stores the already-shell-split token directly in the list — e.g.
+        ``['-DFOO=bar baz', '-Wall']`` — where ``'-DFOO=bar baz'`` is a single token
+        that happens to contain a space.
+
+        ``' '.join(['-DFOO=bar baz', '-Wall'])`` produces ``'-DFOO=bar baz -Wall'``; a
+        downstream ``shlex.split`` then splits on the internal space and yields
+        ``['-DFOO=bar', 'baz', '-Wall']`` — three tokens instead of two.
+
+        ``shlex.join`` re-adds quoting around the space-containing token so the
+        round-trip is lossless.  Cousin fix to commit 5cd77781 which patched the same
+        pattern in ``_unify_cpp_cxx_flags`` and ``_deduplicate_all_flags``.
+        """
+        import shlex
+
+        args = SimpleNamespace(
+            CPPFLAGS=["-DFOO=bar baz", "-Wall"],
+            CFLAGS=["-DFOO=bar baz", "-Wall"],
+            CXXFLAGS=["-DFOO=bar baz", "-Wall"],
+            INCLUDE=["/foo", "/bar"],
+        )
+        _flatten_variables(args)
+
+        for slot in ("CPPFLAGS", "CFLAGS", "CXXFLAGS"):
+            tokens = shlex.split(getattr(args, slot))
+            assert tokens == ["-DFOO=bar baz", "-Wall"], (
+                f"token with embedded space was mangled in {slot} after _flatten_variables → "
+                f"shlex.split round-trip: expected ['-DFOO=bar baz', '-Wall'], got {tokens!r}.  "
+                f"Likely cause: _flatten_variables uses ' '.join instead of shlex.join to "
+                f"reconstruct the raw flag string.  See cousin commit 5cd77781."
+            )
+
 
 class TestStripQuotes:
     def test_strips_string_quotes(self):

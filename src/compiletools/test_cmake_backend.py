@@ -7,7 +7,7 @@ import pytest
 
 from compiletools.build_backend import extract_copts, extract_linkopts, get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
-from compiletools.cmake_backend import CMakeBackend, _filter_x_lang_copts, _separate_include_dirs
+from compiletools.cmake_backend import CMakeBackend, _cmake_quote_copt, _filter_x_lang_copts, _separate_include_dirs
 
 
 class TestCMakeBackendRegistered:
@@ -258,6 +258,40 @@ class TestCMakeGenerate:
         assert "types.h" in content
 
 
+class TestCmakeQuoteCopt:
+    """``_cmake_quote_copt`` must produce well-formed CMake quoted arguments.
+
+    Tokens are wrapped in ``"..."`` with any embedded ``"`` escaped as ``\\"``
+    so that cmake's Makefile generator passes them verbatim to the compiler.
+    The specific bug: ``f'"{c}"'`` for ``c = '-DFOO="bar"'`` produced the
+    malformed cmake syntax ``"-DFOO="bar""``; the helper fixes that.
+    """
+
+    def test_plain_flag_unchanged(self):
+        assert _cmake_quote_copt("-O2") == '"-O2"'
+
+    def test_define_without_quotes(self):
+        assert _cmake_quote_copt("-DFOO=1") == '"-DFOO=1"'
+
+    def test_flag_with_embedded_double_quotes(self):
+        # -DCT_PROJECT_VERSION="1.2.3" must survive cmake quoting so the
+        # macro expands to a C string literal, not a bare number.
+        result = _cmake_quote_copt('-DCT_PROJECT_VERSION="1.2.3"')
+        # Outer quotes + inner " escaped as \":
+        assert result == '"-DCT_PROJECT_VERSION=\\"1.2.3\\""'
+        # The malformed form (pre-fix) must not be produced.
+        assert result != '"-DCT_PROJECT_VERSION="1.2.3""'
+
+    def test_flag_with_string_value_name(self):
+        assert _cmake_quote_copt('-DCT_PROJECT_NAME="demo_app"') == '"-DCT_PROJECT_NAME=\\"demo_app\\""'
+
+    def test_backslash_escaped(self):
+        # A backslash in a token is escaped so cmake does not treat it as
+        # the start of an escape sequence inside a quoted arg.
+        result = _cmake_quote_copt("-DPATH=a\\b")
+        assert result == '"-DPATH=a\\\\b"'
+
+
 class TestSeparateIncludeDirs:
     def test_separates_i_flags(self):
         copts = ["-I/usr/include", "-O2", "-I/opt/include", "-Wall"]
@@ -439,6 +473,11 @@ class TestFilterXLangCopts:
         copts = ["-O2", "-x"]
         assert _filter_x_lang_copts(copts) == ["-O2"]
 
+    def test_x_followed_by_flag_token_preserved(self):
+        """`-x` followed by a flag-shaped token (e.g., `-Wall`) should
+        only strip `-x`; the flag token is NOT a language argument."""
+        assert _filter_x_lang_copts(["-x", "-Wall"]) == ["-Wall"]
+
 
 class TestCppmPerSourceProperties:
     """Test that .cppm sources get per-source set_source_files_properties and
@@ -497,7 +536,7 @@ class TestCppmPerSourceProperties:
         """set_source_files_properties must appear for the .cppm source."""
         graph = self._build_graph_with_cppm("math.cppm")
         backend = self._make_backend()
-        buf = __import__("io").StringIO()
+        buf = io.StringIO()
         backend.generate(graph, output=buf)
         content = buf.getvalue()
 
@@ -511,7 +550,7 @@ class TestCppmPerSourceProperties:
         """The per-source COMPILE_OPTIONS must encode -x;c++ (cmake list separator)."""
         graph = self._build_graph_with_cppm("math.cppm")
         backend = self._make_backend()
-        buf = __import__("io").StringIO()
+        buf = io.StringIO()
         backend.generate(graph, output=buf)
         content = buf.getvalue()
 
@@ -526,7 +565,7 @@ class TestCppmPerSourceProperties:
         """The orphan -x must NOT appear in global target_compile_options."""
         graph = self._build_graph_with_cppm("math.cppm")
         backend = self._make_backend()
-        buf = __import__("io").StringIO()
+        buf = io.StringIO()
         backend.generate(graph, output=buf)
         content = buf.getvalue()
 
@@ -555,7 +594,7 @@ class TestCppmPerSourceProperties:
             )
         )
         backend = self._make_backend()
-        buf = __import__("io").StringIO()
+        buf = io.StringIO()
         backend.generate(graph, output=buf)
         content = buf.getvalue()
 

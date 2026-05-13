@@ -386,6 +386,33 @@ class TestStarlarkStringEscape:
         with pytest.raises(ValueError, match="control char"):
             BazelBackend._starlark_str("\x7f")  # DEL
 
+    def test_starlark_copt_preserves_double_quotes(self):
+        """``_starlark_copt`` uses double-escaping so Bazel's shell tokenizer
+        preserves ``"`` chars in the compiler argv.
+
+        Bazel applies Bourne-shell tokenization to ``copts`` values after
+        Starlark parses them.  A plain ``\\"`` (``_starlark_str`` form) in the
+        BUILD.bazel file survives Starlark parsing as a literal ``"`` but is
+        then stripped by the shell tokenizer.  ``_starlark_copt`` emits
+        ``\\\\\\\"`` (Starlark: ``\\\\`` + ``\\"``) so the shell tokenizer sees
+        the two-char sequence ``\\"`` and passes a literal ``"`` to gcc.
+        """
+        # Plain flags are unchanged vs _starlark_str.
+        assert BazelBackend._starlark_copt("-fPIC") == '"-fPIC"'
+        assert BazelBackend._starlark_copt("-Wall") == '"-Wall"'
+
+        # -DCT_PROJECT_VERSION="1.2.3" must be double-escaped so it reaches
+        # the compiler as -DCT_PROJECT_VERSION="1.2.3" (with literal ").
+        result = BazelBackend._starlark_copt('-DCT_PROJECT_VERSION="1.2.3"')
+        # BUILD.bazel text: "-DCT_PROJECT_VERSION=\\\"1.2.3\\\""
+        assert result == '"-DCT_PROJECT_VERSION=\\\\\\"1.2.3\\\\\\""'
+        # Verify it differs from the broken single-escape form.
+        assert result != '"-DCT_PROJECT_VERSION=\\"1.2.3\\""'
+
+        # Same for a string-valued project name define.
+        result_name = BazelBackend._starlark_copt('-DCT_PROJECT_NAME="demo_app"')
+        assert result_name == '"-DCT_PROJECT_NAME=\\\\\\"demo_app\\\\\\""'
+
     def test_emit_target_quotes_pathological_src(self):
         """End-to-end: a src containing ``"`` must round-trip through
         ``_emit_target`` without producing an unbalanced quote in the output."""
@@ -401,11 +428,15 @@ class TestStarlarkStringEscape:
             ["-lpthread"],
         )
         out = buf.getvalue()
-        # The pathological src is escaped, not literal.
+        # The pathological src uses single-escape (_starlark_str): \" for each ".
         assert '"weird\\"src.cpp"' in out
-        # The pathological copt is escaped.
-        assert '"-DFOO=\\"x\\""' in out
-        # No bare ``"weird"src.cpp"`` (would indicate an unescaped quote).
+        # The pathological copt uses double-escape (_starlark_copt): \\\" for each "
+        # so that Bazel's Bourne-shell tokenizer preserves the " in the compiler argv.
+        assert '"-DFOO=\\\\\\"x\\\\\\""' in out
+        # The old single-escape form must NOT appear in the copt (it would let
+        # Bazel's shell tokenizer strip the " before reaching the compiler).
+        assert '"-DFOO=\\"x\\""' not in out
+        # No bare ``"weird"src.cpp"`` (would indicate an unescaped quote in srcs).
         assert '"weird"src.cpp"' not in out
 
 
@@ -1207,4 +1238,22 @@ class TestBazelNamedModuleHandling:
         assert "obj/math.o" in content, (
             "obj/math.o (prebuilt interface object) must appear in srcs=[...] so "
             "its definitions are linked into the final cc_binary"
+        )
+
+    def test_mno_modules_not_injected_when_no_module_iface_gcm(self):
+        """-Mno-modules must NOT appear in .bazelrc when _module_iface_gcm is empty.
+
+        Clang builds and header-unit-only gcc builds have no named-module
+        interface artefacts (.gcm files), so the gcc-specific workaround flag
+        -Mno-modules should not appear in the generated bazelrc.
+        """
+        # Backend with empty _module_iface_gcm (no named-module GCC artefacts).
+        backend = self._make_backend(
+            module_iface_obj={},
+            module_iface_gcm={},
+        )
+        content = backend._build_bazelrc_content()
+        assert "-Mno-modules" not in content, (
+            "-Mno-modules must not be injected into .bazelrc when there are no "
+            "named-module GCC artefacts (_module_iface_gcm is empty)"
         )
