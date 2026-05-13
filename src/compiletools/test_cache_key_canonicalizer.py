@@ -251,3 +251,72 @@ def test_Wl_idempotent():
     once = canonicalize_for_cache_key([f"-Wl,-rpath,{ANCHOR}/lib"], ANCHOR)
     twice = canonicalize_for_cache_key(once, ANCHOR)
     assert once == twice
+
+
+# ---------------------------------------------------------------------------
+# Round 3: -f{file,debug,macro,canon}-prefix-map=OLD=NEW recognition
+#
+# The canonicalizer must rewrite the OLD (LHS) of these flags so two users
+# at different checkout paths produce the same cache-key hash for the same
+# auto-injected -ffile-prefix-map=<gitroot>=<target> token. NEW (RHS) is
+# preserved verbatim — only OLD is path-shaped.
+# ---------------------------------------------------------------------------
+
+
+def test_ffile_prefix_map_recognized():
+    out = canonicalize_for_cache_key([f"-ffile-prefix-map={ANCHOR}=."], ANCHOR)
+    assert out == ["-ffile-prefix-map=<GITROOT>=."]
+
+
+def test_fdebug_prefix_map_recognized():
+    out = canonicalize_for_cache_key([f"-fdebug-prefix-map={ANCHOR}/sub=/__ct__/sub"], ANCHOR)
+    assert out == ["-fdebug-prefix-map=<GITROOT>/sub=/__ct__/sub"]
+
+
+def test_fmacro_prefix_map_recognized():
+    out = canonicalize_for_cache_key([f"-fmacro-prefix-map={ANCHOR}=."], ANCHOR)
+    assert out == ["-fmacro-prefix-map=<GITROOT>=."]
+
+
+def test_fcanon_prefix_map_recognized():
+    out = canonicalize_for_cache_key([f"-fcanon-prefix-map={ANCHOR}=."], ANCHOR)
+    assert out == ["-fcanon-prefix-map=<GITROOT>=."]
+
+
+def test_prefix_map_outside_anchor_passes_through():
+    """``/system/path`` is outside ``ANCHOR`` — the LHS is not anchor-rooted,
+    so the token passes through unchanged. The user explicitly mapped a
+    non-workspace path; we don't touch it."""
+    out = canonicalize_for_cache_key(["-ffile-prefix-map=/system/path=foo"], ANCHOR)
+    assert out == ["-ffile-prefix-map=/system/path=foo"]
+
+
+def test_prefix_map_idempotent():
+    once = canonicalize_for_cache_key([f"-ffile-prefix-map={ANCHOR}=."], ANCHOR)
+    twice = canonicalize_for_cache_key(once, ANCHOR)
+    assert once == twice
+
+
+def test_prefix_map_malformed_no_equals_passes_through():
+    """A bare ``-ffile-prefix-map=NOEQUALS`` (missing the inner ``=`` between
+    OLD and NEW) is malformed — pass through unchanged rather than guess
+    the user's intent."""
+    out = canonicalize_for_cache_key([f"-ffile-prefix-map={ANCHOR}"], ANCHOR)
+    assert out == [f"-ffile-prefix-map={ANCHOR}"]
+
+
+def test_prefix_map_anchor_exact_match():
+    """When the LHS is exactly the anchor (no trailing slash, no subpath),
+    the rewrite produces ``<GITROOT>`` without any trailing slash."""
+    out = canonicalize_for_cache_key([f"-ffile-prefix-map={ANCHOR}=."], ANCHOR)
+    assert out == ["-ffile-prefix-map=<GITROOT>=."]
+
+
+def test_prefix_map_inside_other_tokens_unaffected():
+    """Mixing prefix-map tokens with normal -I and -O flags doesn't perturb
+    either side."""
+    out = canonicalize_for_cache_key(
+        ["-O2", f"-I{ANCHOR}/include", f"-ffile-prefix-map={ANCHOR}=.", "-Wall"],
+        ANCHOR,
+    )
+    assert out == ["-O2", "-I<GITROOT>/include", "-ffile-prefix-map=<GITROOT>=.", "-Wall"]

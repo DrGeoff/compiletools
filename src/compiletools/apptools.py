@@ -1251,6 +1251,37 @@ def canonicalize_for_cache_key(tokens: Sequence[str], anchor_root: str) -> list[
     n = len(tokens)
     while i < n:
         tok = tokens[i]
+        # Round 3: ``-f{file,debug,macro,canon}-prefix-map=OLD=NEW`` —
+        # the path-shaped LHS (OLD) is canonicalised; NEW (the rewrite
+        # target the compiler will use) is preserved verbatim. Without
+        # this, the auto-injected ``-ffile-prefix-map=<gitroot>=.``
+        # token would carry per-user absolute paths into the cache key
+        # and defeat cross-user CAS sharing.
+        prefix_map_handled = False
+        for prefix in _PREFIX_MAP_FLAG_PREFIXES:
+            if not tok.startswith(prefix):
+                continue
+            rest = tok[len(prefix) :]
+            if "=" not in rest:
+                # Malformed (no inner '='): pass through unchanged
+                # rather than guess the user's intent.
+                break
+            old, _, new = rest.partition("=")
+            if old == anchor:
+                out.append(f"{prefix}{_GITROOT_SENTINEL}={new}")
+            elif old.startswith(anchor_prefix):
+                relative = old[len(anchor_prefix) :]
+                out.append(f"{prefix}{_GITROOT_SENTINEL}/{relative}={new}")
+            else:
+                # OLD lives outside the anchor: pass through. The user
+                # explicitly mapped a non-workspace path; we don't
+                # touch it.
+                out.append(tok)
+            i += 1
+            prefix_map_handled = True
+            break
+        if prefix_map_handled:
+            continue
         # ``-Wl,opt[=value][,opt2,/abs/path,...]`` — passes args to the
         # linker. Split on comma, canonicalise each path-shaped segment.
         # Without this, an rpath or version-script absolute path leaks
