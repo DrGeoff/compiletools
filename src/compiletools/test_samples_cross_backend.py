@@ -93,9 +93,13 @@ _LINK_FAIL_FICTIONAL_LIBS: SamplePlan = SamplePlan(
     ),
 )
 
-# C++20 module backends besides make are still maturing. Track sample-
-# side opt-outs so the matrix can be re-checked when support lands.
-_CXX_MODULES_BACKENDS_BLOCKED = frozenset({"bazel", "cmake", "shake", "slurm", "ninja"})
+# Named C++20 modules (interface units, partitions, split impl, import std)
+# only build on `make` and `shake` today; the other four backends fail
+# at the BMI plumbing stage. `cxx_modules_header_units` is the exception:
+# header-units now build on every backend after the upstream fix tracked
+# by commit d30e2040 ("test(modules): drop dead _MODULE_FAILING_BACKENDS
+# xfail dispatch"), so that sample uses an empty blocklist.
+_CXX_MODULES_NAMED_BACKENDS_BLOCKED = frozenset({"bazel", "cmake", "ninja", "slurm"})
 
 _SAMPLE_PLANS: dict[str, SamplePlan] = {
     # ----- vanilla --auto, no special setup -----
@@ -262,12 +266,13 @@ _SAMPLE_PLANS: dict[str, SamplePlan] = {
             "test_serialisetests.py with backend-specific fixtures."
         ),
     ),
-    # ----- C++20 modules: most backends still maturing -----
-    "cxx_modules": SamplePlan(skip_for_backends=_CXX_MODULES_BACKENDS_BLOCKED),
-    "cxx_modules_split": SamplePlan(skip_for_backends=_CXX_MODULES_BACKENDS_BLOCKED),
-    "cxx_modules_partitions": SamplePlan(skip_for_backends=_CXX_MODULES_BACKENDS_BLOCKED),
-    "cxx_modules_header_units": SamplePlan(skip_for_backends=_CXX_MODULES_BACKENDS_BLOCKED),
-    "cxx_modules_import_std": SamplePlan(skip_for_backends=_CXX_MODULES_BACKENDS_BLOCKED),
+    # ----- C++20 modules: backend support varies by sample shape -----
+    "cxx_modules": SamplePlan(skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED),
+    "cxx_modules_split": SamplePlan(skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED),
+    "cxx_modules_partitions": SamplePlan(skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED),
+    "cxx_modules_import_std": SamplePlan(skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED),
+    # Header units: full cross-backend coverage thanks to upstream fix.
+    "cxx_modules_header_units": _VANILLA,
     # ----- pure fixture directories (no buildable TU) -----
     "pkgs": SamplePlan(
         skip_reason="Holds .pc fixtures only; not a buildable sample.",
@@ -379,7 +384,23 @@ def _run_build(
 ) -> subprocess.CompletedProcess:
     argv = _build_argv(workspace, backend_name, plan)
     env = _build_env(plan)
-    return subprocess.run(argv, cwd=workspace, env=env, capture_output=True, text=True)
+    try:
+        return subprocess.run(argv, cwd=workspace, env=env, capture_output=True, text=True)
+    finally:
+        # Bazel keeps a JVM server alive per cwd. Across many cells the
+        # accumulated server processes exhaust native thread allocation
+        # and downstream cells fail with `unable to create native thread:
+        # possibly out of memory or process/resource limits reached`.
+        # Explicit shutdown after each cell prevents the pile-up.
+        if backend_name == "bazel":
+            subprocess.run(
+                ["bazel", "shutdown"],
+                cwd=workspace,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
 
 
 # ---------------------------------------------------------------------------
