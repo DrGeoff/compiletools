@@ -2857,10 +2857,37 @@ class BuildBackend(abc.ABC):
         ld_extra = list(self.args.flags.ld) if self.args.flags.ld else []
         ld_extra.extend(self._link_libcxx_extras_if_needed(merged_ldflags, ld_extra))
 
+        # Round 3: rewrite workspace-rooted paths in the EMITTED link
+        # argv so embedded RPATHs / version-script paths / -L paths
+        # produce byte-identical binaries across users with different
+        # checkout paths. Cache key still uses canonicalize_for_cache_key
+        # below (sentinel form); only the actual command is target-
+        # substituted. anchor_root is captured per backend instance and
+        # is empty when no gitroot resolves -- in that case
+        # canonicalize_for_command is the identity, leaving the argv
+        # unchanged.
+        ffile_prefix_map_target = getattr(self.args, "ffile_prefix_map_target", ".")
+        merged_ldflags_for_cmd = compiletools.apptools.canonicalize_for_command(
+            list(merged_ldflags), self._anchor_root, target=ffile_prefix_map_target
+        )
+        ld_extra_for_cmd = compiletools.apptools.canonicalize_for_command(
+            ld_extra, self._anchor_root, target=ffile_prefix_map_target
+        )
+        extra_link_argv_for_cmd = compiletools.apptools.canonicalize_for_command(
+            extra_link_argv, self._anchor_root, target=ffile_prefix_map_target
+        )
+
         if self._has_native_cas_exe():
             # Backend already has its own CAS layer — emit the legacy
             # single-rule shape that writes directly to bin/<name>.
-            link_cmd = ld_argv + ["-o", exename] + list(object_names) + merged_ldflags + extra_link_argv + ld_extra
+            link_cmd = (
+                ld_argv
+                + ["-o", exename]
+                + list(object_names)
+                + merged_ldflags_for_cmd
+                + extra_link_argv_for_cmd
+                + ld_extra_for_cmd
+            )
             return [
                 BuildRule(
                     output=exename,
@@ -2914,7 +2941,14 @@ class BuildBackend(abc.ABC):
         cas_exe_path = self.namer.cas_exe_pathname(real_source, link_key_hash)
         cas_exe_bucket = os.path.dirname(cas_exe_path)
 
-        link_cmd = ld_argv + ["-o", cas_exe_path] + list(object_names) + merged_ldflags + extra_link_argv + ld_extra
+        link_cmd = (
+            ld_argv
+            + ["-o", cas_exe_path]
+            + list(object_names)
+            + merged_ldflags_for_cmd
+            + extra_link_argv_for_cmd
+            + ld_extra_for_cmd
+        )
 
         link_rule = BuildRule(
             output=cas_exe_path,
@@ -3027,8 +3061,21 @@ class BuildBackend(abc.ABC):
         ld_extra = list(self.args.flags.ld) if (self.args.LDFLAGS and self.args.flags.ld) else []
         ld_extra.extend(self._link_libcxx_extras_if_needed(merged_ldflags, ld_extra))
 
+        # Round 3: rewrite workspace-rooted paths in the EMITTED argv;
+        # see _create_link_rule for rationale. anchor_root captured per
+        # backend instance.
+        ffile_prefix_map_target = getattr(self.args, "ffile_prefix_map_target", ".")
+        merged_ldflags_for_cmd = compiletools.apptools.canonicalize_for_command(
+            list(merged_ldflags), self._anchor_root, target=ffile_prefix_map_target
+        )
+        ld_extra_for_cmd = compiletools.apptools.canonicalize_for_command(
+            ld_extra, self._anchor_root, target=ffile_prefix_map_target
+        )
+
         if self._has_native_cas_exe():
-            lib_cmd = ld_argv + ["-shared", "-o", lib_path] + list(object_names) + merged_ldflags + ld_extra
+            lib_cmd = (
+                ld_argv + ["-shared", "-o", lib_path] + list(object_names) + merged_ldflags_for_cmd + ld_extra_for_cmd
+            )
             return [
                 BuildRule(
                     output=lib_path,
@@ -3056,7 +3103,9 @@ class BuildBackend(abc.ABC):
         cas_lib_path = self.namer.cas_dynamiclibrary_pathname(sourcefilename, lib_key_hash)
         cas_lib_bucket = os.path.dirname(cas_lib_path)
 
-        lib_cmd = ld_argv + ["-shared", "-o", cas_lib_path] + list(object_names) + merged_ldflags + ld_extra
+        lib_cmd = (
+            ld_argv + ["-shared", "-o", cas_lib_path] + list(object_names) + merged_ldflags_for_cmd + ld_extra_for_cmd
+        )
         lib_rule = BuildRule(
             output=cas_lib_path,
             inputs=list(object_names),
