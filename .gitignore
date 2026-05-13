@@ -45,6 +45,12 @@ uv.lock
 # Local directories
 docs/superpowers/
 docs/_build/
+# docs/_generated/ contains per-tool stub .rst files written by
+# docs/conf.py's _generate_tool_stubs() setup hook on every Sphinx
+# build. They are derived from src/compiletools/README.ct-*.rst — the
+# README is the source of truth, the stub is just an `.. include::`.
+# Committing them would bake in a snapshot that drifts from the
+# READMEs as new tools are added or renamed.
 docs/_generated/
 cas-objdir/
 cas-pchdir/
