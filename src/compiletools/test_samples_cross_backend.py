@@ -227,16 +227,14 @@ _SAMPLE_PLANS: dict[str, SamplePlan] = {
             "three framework include paths simultaneously, which fails."
         ),
     ),
+    # cmake wraps each copt in "..." (line: f'"{c}"') so a copt token like
+    # -DCT_PROJECT_VERSION="1.2.3" becomes "-DCT_PROJECT_VERSION="1.2.3""
+    # which is malformed CMake syntax.  bazel passes copts through its own
+    # quoting layer which strips the inner double-quote chars.  Both are
+    # separate bugs from the make/ninja fix in apptools._unify_cpp_cxx_flags.
     "project_version": SamplePlan(
-        skip_reason=(
-            "Known limitation: --project-version='1.2.3' produces "
-            "-DCT_PROJECT_VERSION='\"1.2.3\"' in args.CPPFLAGS (verified "
-            "by test_apptools.test_explicit_version_injects), but the "
-            "single-quote layer is dropped when the flag is serialized "
-            "into a Make/Ninja recipe, so the macro expands as a bare "
-            "token instead of a string literal. Sample stays as "
-            "documentation; cross-backend coverage waits on the fix."
-        ),
+        extra_args=("--project-version=1.2.3", "--project-name=demo_app"),
+        skip_for_backends=frozenset({"cmake", "bazel"}),
     ),
     # ----- multi-step build.sh — exercised by their own dedicated tests -----
     "library": SamplePlan(

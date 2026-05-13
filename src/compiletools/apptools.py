@@ -2253,16 +2253,34 @@ def _unify_cpp_cxx_flags(args):
     """Combine CPPFLAGS and CXXFLAGS into a single deduplicated value.
 
     Skipped when --separate-flags-CPP-CXX is set.
+
+    Uses ``shlex.join`` (not ``' '.join``) to reconstruct the raw flag
+    string from the deduplicated token list.  ``combine_and_deduplicate``
+    calls ``shlex.split`` to tokenise, so the token list may contain
+    entries with shell-special characters (e.g. ``-DCT_PROJECT_VERSION="1.2.3"``
+    with literal double-quote chars produced by ``_set_project_version``).
+    A plain ``' '.join`` writes those tokens back to the raw string without
+    any shell quoting, causing a subsequent ``shlex.split`` (in
+    ``_finalize_flag_state``) to strip the double-quote characters — so the
+    C-string-literal delimiters are lost before the token ever reaches the
+    compiler.  ``shlex.join`` re-adds single-quote wrapping for tokens that
+    contain shell-active characters, preserving the round-trip invariant.
     """
     if getattr(args, "separate_flags_CPP_CXX", False):
         return
-    unified = " ".join(compiletools.utils.combine_and_deduplicate_compiler_flags(args.CPPFLAGS, args.CXXFLAGS))
+    unified = shlex.join(compiletools.utils.combine_and_deduplicate_compiler_flags(args.CPPFLAGS, args.CXXFLAGS))
     args.CPPFLAGS = unified
     args.CXXFLAGS = unified
 
 
 def _deduplicate_all_flags(args):
-    """Deduplicate all compiler and linker flags after all processing is complete"""
+    """Deduplicate all compiler and linker flags after all processing is complete.
+
+    Uses ``shlex.join`` to reconstruct each raw flag string from the
+    deduplicated token list, preserving shell-special characters in tokens
+    (e.g. double-quote chars in ``-DCT_PROJECT_VERSION="1.2.3"``).  See
+    ``_unify_cpp_cxx_flags`` for the full rationale.
+    """
     flaglist = ("CPPFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS")
     for flag_name in flaglist:
         if hasattr(args, flag_name):
@@ -2270,8 +2288,9 @@ def _deduplicate_all_flags(args):
             if flag_value:
                 # Split the flag string into individual flags and deduplicate
                 deduplicated_flags = compiletools.utils.combine_and_deduplicate_compiler_flags(flag_value)
-                # Convert back to space-separated string
-                setattr(args, flag_name, " ".join(deduplicated_flags))
+                # Use shlex.join (not ' '.join) so tokens with shell-active
+                # characters survive the round-trip through shlex.split.
+                setattr(args, flag_name, shlex.join(deduplicated_flags))
 
 
 def _tier_one_modifications(args):
