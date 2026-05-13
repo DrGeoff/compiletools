@@ -24,6 +24,11 @@ import subprocess
 import pytest
 
 import compiletools.testhelper as uth
+from compiletools.build_backend import available_backends, ensure_backends_registered
+
+# Trigger @register_backend across all backend modules so available_backends()
+# returns the full list at parametrization time.
+ensure_backends_registered()
 
 
 def _hash_tree(root: pathlib.Path, suffixes: tuple[str, ...]) -> dict[str, str]:
@@ -108,59 +113,76 @@ def _assert_cas_layer_byte_identical(
     suffixes: tuple[str, ...],
 ) -> None:
     """Walk the two per-user CAS layers, hash every artefact whose
-    suffix matches, and assert equality. Empty hash dicts on both
-    sides are treated as a "this sample doesn't exercise this CAS
-    layer" skip — only flag when one side has artefacts and the
-    other doesn't, or when contents differ.
+    suffix matches, and assert their CONTENT SETS match.
+
+    Compares the set of distinct content-hashes rather than the
+    filename → hash mapping because some backends (notably slurm)
+    sidecar a per-invocation copy of the artefact under a hash-
+    suffixed name; alice's ``foo_<hashA>.exe`` and bob's
+    ``foo_<hashB>.exe`` carry byte-identical content but the
+    filename hash differs per run. Set comparison sees them as
+    equivalent; mapping comparison would falsely fail.
+
+    Empty hash sets on both sides are treated as a "this sample
+    doesn't exercise this CAS layer" skip.
     """
     alice_hashes = _hash_tree(alice / cas_layer, suffixes=suffixes)
     bob_hashes = _hash_tree(bob / cas_layer, suffixes=suffixes)
     if not alice_hashes and not bob_hashes:
         pytest.skip(f"sample doesn't populate {cas_layer} with {suffixes}")
-    assert alice_hashes == bob_hashes, (
-        f"{cas_layer} byte-mismatch across two checkout paths.\n"
+    alice_content = set(alice_hashes.values())
+    bob_content = set(bob_hashes.values())
+    assert alice_content == bob_content, (
+        f"{cas_layer} content-set mismatch across two checkout paths.\n"
         f"alice ({alice}): {alice_hashes}\n"
         f"bob   ({bob}):   {bob_hashes}\n"
-        f"diff: {set(alice_hashes.items()) ^ set(bob_hashes.items())}"
+        f"alice-only content: {alice_content - bob_content}\n"
+        f"bob-only content:   {bob_content - alice_content}"
     )
 
 
+@uth.requires_backend_tool()
 @uth.requires_functional_compiler
-def test_two_checkouts_produce_byte_identical_cas_objdir_make(tmp_path):
-    """Build the simple sample under two distinct workspace paths with the
-    make backend; assert every .o under cas-objdir is byte-identical
-    across the two checkouts."""
+@pytest.mark.parametrize("backend_name", available_backends())
+def test_two_checkouts_produce_byte_identical_cas_objdir(backend_name, tmp_path):
+    """Build the simple sample under two distinct workspace paths with
+    every available backend; assert every .o under cas-objdir is
+    byte-identical across the two checkouts."""
     sample = pathlib.Path(uth.samplesdir()) / "simple"
     if not sample.is_dir():
         pytest.skip(f"missing sample dir: {sample}")
 
-    alice, bob = _build_in_two_checkouts(
-        sample_dir=sample,
-        tmp_root=tmp_path,
-        backend_name="make",
-        main_basename="helloworld_cpp.cpp",
-    )
-    _assert_cas_layer_byte_identical(alice, bob, "cas-objdir", suffixes=(".o",))
+    with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
+        alice, bob = _build_in_two_checkouts(
+            sample_dir=sample,
+            tmp_root=pathlib.Path(effective_tmp),
+            backend_name=backend_name,
+            main_basename="helloworld_cpp.cpp",
+        )
+        _assert_cas_layer_byte_identical(alice, bob, "cas-objdir", suffixes=(".o",))
 
 
+@uth.requires_backend_tool()
 @uth.requires_functional_compiler
-def test_two_checkouts_produce_byte_identical_cas_exedir_make(tmp_path):
-    """Linker artefact byte-identity across two checkouts. The simple
-    sample produces an executable in cas-exedir; the link command's
-    canonicalize_for_command pass must rewrite any workspace-rooted
-    -L / -Wl,-rpath / -Wl,--version-script= so the embedded RPATH
-    bytes match across users."""
+@pytest.mark.parametrize("backend_name", available_backends())
+def test_two_checkouts_produce_byte_identical_cas_exedir(backend_name, tmp_path):
+    """Linker artefact byte-identity across two checkouts. Bazel and
+    cmake have their own native CAS layers (``_has_native_cas_exe``
+    returns True), so they don't populate cas-exedir at all -- the
+    ``_assert_cas_layer_byte_identical`` helper skips when both sides
+    are empty."""
     sample = pathlib.Path(uth.samplesdir()) / "simple"
     if not sample.is_dir():
         pytest.skip(f"missing sample dir: {sample}")
 
-    alice, bob = _build_in_two_checkouts(
-        sample_dir=sample,
-        tmp_root=tmp_path,
-        backend_name="make",
-        main_basename="helloworld_cpp.cpp",
-    )
-    _assert_cas_layer_byte_identical(alice, bob, "cas-exedir", suffixes=(".exe", ".a", ".so"))
+    with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
+        alice, bob = _build_in_two_checkouts(
+            sample_dir=sample,
+            tmp_root=pathlib.Path(effective_tmp),
+            backend_name=backend_name,
+            main_basename="helloworld_cpp.cpp",
+        )
+        _assert_cas_layer_byte_identical(alice, bob, "cas-exedir", suffixes=(".exe", ".a", ".so"))
 
 
 _PCH_BMI_XFAIL_REASON = (
@@ -178,26 +200,31 @@ _PCH_BMI_XFAIL_REASON = (
 
 
 @pytest.mark.xfail(strict=False, reason=_PCH_BMI_XFAIL_REASON)
+@uth.requires_backend_tool()
 @uth.requires_functional_compiler
-def test_two_checkouts_produce_byte_identical_cas_pchdir_make(tmp_path):
+@pytest.mark.parametrize("backend_name", available_backends())
+def test_two_checkouts_produce_byte_identical_cas_pchdir(backend_name, tmp_path):
     """PCH .gch byte-identity across two checkouts. The pch sample uses
     `//#PCH=stdafx.h` magic so a precompiled header lands in cas-pchdir."""
     sample = pathlib.Path(uth.samplesdir()) / "pch"
     if not sample.is_dir():
         pytest.skip(f"missing sample dir: {sample}")
 
-    alice, bob = _build_in_two_checkouts(
-        sample_dir=sample,
-        tmp_root=tmp_path,
-        backend_name="make",
-        main_basename="pch_user.cpp",
-    )
-    _assert_cas_layer_byte_identical(alice, bob, "cas-pchdir", suffixes=(".gch",))
+    with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
+        alice, bob = _build_in_two_checkouts(
+            sample_dir=sample,
+            tmp_root=pathlib.Path(effective_tmp),
+            backend_name=backend_name,
+            main_basename="pch_user.cpp",
+        )
+        _assert_cas_layer_byte_identical(alice, bob, "cas-pchdir", suffixes=(".gch",))
 
 
 @pytest.mark.xfail(strict=False, reason=_PCH_BMI_XFAIL_REASON)
+@uth.requires_backend_tool()
 @uth.requires_functional_compiler
-def test_two_checkouts_produce_byte_identical_cas_pcmdir_make(tmp_path):
+@pytest.mark.parametrize("backend_name", available_backends())
+def test_two_checkouts_produce_byte_identical_cas_pcmdir(backend_name, tmp_path):
     """C++20 module BMI byte-identity across two checkouts. The
     cxx_modules_header_units sample exercises gcc/clang header units
     so .gcm / .pcm files land in cas-pcmdir."""
@@ -220,10 +247,11 @@ def test_two_checkouts_produce_byte_identical_cas_pcmdir_make(tmp_path):
     if not gcc_ok and not _clang_supports_header_units():
         pytest.skip("No compiler on PATH supports C++20 header units")
 
-    alice, bob = _build_in_two_checkouts(
-        sample_dir=sample,
-        tmp_root=tmp_path,
-        backend_name="make",
-        main_basename="main.cpp",
-    )
-    _assert_cas_layer_byte_identical(alice, bob, "cas-pcmdir", suffixes=(".pcm", ".gcm"))
+    with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
+        alice, bob = _build_in_two_checkouts(
+            sample_dir=sample,
+            tmp_root=pathlib.Path(effective_tmp),
+            backend_name=backend_name,
+            main_basename="main.cpp",
+        )
+        _assert_cas_layer_byte_identical(alice, bob, "cas-pcmdir", suffixes=(".pcm", ".gcm"))
