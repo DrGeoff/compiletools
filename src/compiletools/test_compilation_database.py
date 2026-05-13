@@ -1,5 +1,7 @@
 import json
 import os
+import time
+import types
 
 import compiletools.apptools
 import compiletools.compilation_database
@@ -457,6 +459,306 @@ class TestCompilationDatabase:
                     assert "directory" in entry
                     assert "file" in entry
                     assert "-c" in entry["arguments"], "Should be compilation command"
+
+    def test_no_op_write_does_not_advance_file_mtime(self):
+        """A second _write_database_impl call with identical commands must not rewrite the database.
+
+        clangd, ccls, and `find -newer`-based watchers treat any inode/mtime
+        change on compile_commands.json as an invalidation event. Re-emitting
+        byte-identical content forces them to re-index the world for nothing.
+
+        Drives _write_database_impl directly (rather than via main()) for the
+        same reason as test_content_change_still_writes: the method reads only
+        self.args.verbose from self, so __new__ + SimpleNamespace keeps the
+        test independent of unrelated FileAnalyzer / Hunter changes that would
+        otherwise be in the call path.
+        """
+
+        with uth.TempDirContext() as _:
+            cwd = os.getcwd()
+            output_file = os.path.join(cwd, "compile_commands.json")
+
+            creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
+                compiletools.compilation_database.CompilationDatabaseCreator
+            )
+            creator.args = types.SimpleNamespace(verbose=0)
+
+            # Synthetic source paths: _write_database_impl runs realpath_sz on
+            # cmd["file"] for de-duplication but does not require the files to
+            # exist on disk; absolute paths inside the temp dir keep realpath
+            # resolution deterministic.
+            file_a = os.path.join(cwd, "a.cpp")
+            file_b = os.path.join(cwd, "b.cpp")
+            file_c = os.path.join(cwd, "c.cpp")
+
+            commands = [
+                {"directory": cwd, "file": file_a, "arguments": ["c++", "-c", file_a, "-O0"]},
+                {"directory": cwd, "file": file_b, "arguments": ["c++", "-c", file_b, "-O0"]},
+                {"directory": cwd, "file": file_c, "arguments": ["c++", "-c", file_c, "-O0"]},
+            ]
+
+            creator._write_database_impl(output_file, commands)
+
+            assert os.path.exists(output_file), "First write should create the database"
+            first_stat = os.stat(output_file)
+            first_ino = first_stat.st_ino
+            first_mtime_ns = first_stat.st_mtime_ns
+            first_size = first_stat.st_size
+
+            # Sleep long enough that any rewrite would advance mtime even on
+            # filesystems with coarse mtime resolution.
+            time.sleep(0.05)
+
+            creator._write_database_impl(output_file, commands)
+
+            second_stat = os.stat(output_file)
+            assert second_stat.st_ino == first_ino, (
+                f"No-op rewrite changed inode ({first_ino} -> {second_stat.st_ino}); "
+                f"compile_commands.json must not be replaced when content is unchanged "
+                f"or clangd / find -newer watchers will re-index unnecessarily."
+            )
+            assert second_stat.st_mtime_ns == first_mtime_ns, (
+                f"No-op rewrite advanced mtime ({first_mtime_ns} -> {second_stat.st_mtime_ns}); "
+                f"compile_commands.json must be left untouched when the rendered JSON matches "
+                f"the existing on-disk content."
+            )
+            assert second_stat.st_size == first_size, (
+                f"No-op rewrite changed size ({first_size} -> {second_stat.st_size})."
+            )
+
+    @uth.requires_functional_compiler
+    def test_no_op_symlink_update_does_not_advance_mtime(self):
+        """A second main() call must not replace the compile_commands.json symlink.
+
+        The unconditional os.symlink + os.replace cycle in _update_symlink
+        creates a fresh symlink inode on every build, advancing the symlink's
+        mtime even when the readlink target is unchanged. clangd and other
+        IDE indexers re-stat the symlink and treat any mtime change as an
+        invalidation, re-indexing the world for nothing.
+
+        Drives _update_symlink directly (rather than via main()) so the assertion
+        targets the production guard exactly and is not entangled with cdb
+        building. The full end-to-end coverage lives in
+        test_symlink_repoints_on_subsequent_variant_build /
+        test_default_pathname_is_variant_qualified. We construct a minimal
+        CompilationDatabaseCreator via __new__ rather than driving main()
+        because _update_symlink reads only self.args.verbose from self; this
+        keeps the test independent of unrelated FileAnalyzer / Hunter changes
+        that would otherwise be in the call path.
+        """
+
+        with uth.TempDirContext() as _:
+            cwd = os.getcwd()
+            target_path = os.path.join(cwd, "compile_commands.gcc.debug.json")
+            symlink_path = os.path.join(cwd, "compile_commands.json")
+
+            # The on-disk target file must exist for relpath() to be meaningful;
+            # _update_symlink doesn't read it but a stale symlink that points
+            # at nothing wouldn't model the real production scenario.
+            with open(target_path, "w") as f:
+                f.write("[]")
+
+            # Build a minimal stand-in for CompilationDatabaseCreator to invoke
+            # the bound _update_symlink method without engaging hunter / args
+            # plumbing that the surrounding test infra assembles.
+            creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
+                compiletools.compilation_database.CompilationDatabaseCreator
+            )
+            creator.args = types.SimpleNamespace(verbose=0)
+
+            creator._update_symlink(symlink_path, target_path)
+            assert os.path.islink(symlink_path), f"First _update_symlink call should create symlink at {symlink_path}"
+
+            first_lstat = os.lstat(symlink_path)
+            first_ino = first_lstat.st_ino
+            first_mtime_ns = first_lstat.st_mtime_ns
+            first_target = os.readlink(symlink_path)
+
+            # Sleep long enough that any replace would advance mtime even
+            # on filesystems with coarse mtime resolution.
+            time.sleep(0.05)
+
+            creator._update_symlink(symlink_path, target_path)
+
+            second_lstat = os.lstat(symlink_path)
+            second_target = os.readlink(symlink_path)
+
+            assert second_target == first_target, (
+                f"No-op rebuild changed symlink target ({first_target!r} -> {second_target!r})."
+            )
+            assert second_lstat.st_ino == first_ino, (
+                f"No-op rebuild replaced symlink inode ({first_ino} -> {second_lstat.st_ino}); "
+                f"the symlink must not be re-created when its readlink target is unchanged "
+                f"or clangd / IDE indexers will re-index on every ct-cake invocation."
+            )
+            assert second_lstat.st_mtime_ns == first_mtime_ns, (
+                f"No-op rebuild advanced symlink mtime ({first_mtime_ns} -> {second_lstat.st_mtime_ns}); "
+                f"compile_commands.json (symlink) must be left untouched when its readlink "
+                f"target is unchanged."
+            )
+
+    def test_content_change_still_writes(self):
+        """A content-changing _write_database_impl call must update the file.
+
+        Companion to test_no_op_write_does_not_advance_file_mtime: that test
+        verifies the no-op-skip path; this one verifies the symmetric positive
+        case so an over-eager content-equality guard (e.g., one that compares
+        only the entry count, or that hashes a stale rendering) cannot silently
+        suppress a real flag change. Suppressing a content-changing write would
+        leave clangd indexing stale flags forever.
+
+        Drives _write_database_impl directly (rather than via main()) for the
+        same reason as test_no_op_symlink_update_does_not_advance_mtime: the
+        method reads only self.args.verbose from self, so __new__ +
+        SimpleNamespace keeps the test independent of unrelated FileAnalyzer /
+        Hunter changes that would otherwise be in the call path.
+        """
+
+        with uth.TempDirContext() as _:
+            cwd = os.getcwd()
+            output_file = os.path.join(cwd, "compile_commands.json")
+
+            creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
+                compiletools.compilation_database.CompilationDatabaseCreator
+            )
+            creator.args = types.SimpleNamespace(verbose=0)
+
+            # Synthetic source paths: _write_database_impl runs realpath_sz on
+            # cmd["file"] for de-duplication but does not require the files to
+            # exist on disk; absolute paths inside the temp dir keep realpath
+            # resolution deterministic.
+            file_a = os.path.join(cwd, "a.cpp")
+            file_b = os.path.join(cwd, "b.cpp")
+            file_c = os.path.join(cwd, "c.cpp")
+
+            initial_commands = [
+                {"directory": cwd, "file": file_a, "arguments": ["c++", "-c", file_a, "-O0"]},
+                {"directory": cwd, "file": file_b, "arguments": ["c++", "-c", file_b, "-O0"]},
+            ]
+            creator._write_database_impl(output_file, initial_commands)
+
+            assert os.path.exists(output_file), "First write should create the database"
+            first_stat = os.stat(output_file)
+            first_ino = first_stat.st_ino
+            first_mtime_ns = first_stat.st_mtime_ns
+            with open(output_file) as fh:
+                first_content = fh.read()
+            first_entries = json.loads(first_content)
+            assert len(first_entries) == 2, "First write should contain both initial entries"
+
+            # Sleep long enough that any rewrite advances mtime even on
+            # filesystems with coarse mtime resolution.
+            time.sleep(0.05)
+
+            # New command set: adds an entry AND modifies an existing one's
+            # arguments. Either change alone must trigger a rewrite.
+            updated_commands = [
+                {"directory": cwd, "file": file_a, "arguments": ["c++", "-c", file_a, "-O2", "-DNDEBUG"]},
+                {"directory": cwd, "file": file_b, "arguments": ["c++", "-c", file_b, "-O0"]},
+                {"directory": cwd, "file": file_c, "arguments": ["c++", "-c", file_c, "-O0"]},
+            ]
+            creator._write_database_impl(output_file, updated_commands)
+
+            second_stat = os.stat(output_file)
+            with open(output_file) as fh:
+                second_content = fh.read()
+            second_entries = json.loads(second_content)
+
+            assert second_stat.st_mtime_ns > first_mtime_ns, (
+                f"Content-changing rewrite did NOT advance mtime "
+                f"({first_mtime_ns} -> {second_stat.st_mtime_ns}); the content-equality "
+                f"guard is suppressing a legitimate write, which would leave clangd / IDE "
+                f"indexers reading stale flags forever."
+            )
+            assert second_content != first_content, (
+                "Content-changing rewrite left file content unchanged; the on-disk JSON "
+                "is stale relative to the merged_commands the producer just rendered."
+            )
+            assert second_stat.st_size == len(second_content.encode("utf-8")), (
+                f"File size {second_stat.st_size} does not match rendered content length "
+                f"{len(second_content.encode('utf-8'))}; partial write or stale stat."
+            )
+            # Sanity: the new entry and modified arguments are actually present.
+            files_present = {os.path.realpath(e["file"]) for e in second_entries}
+            assert os.path.realpath(file_c) in files_present, (
+                "Newly-added entry for c.cpp is missing from the rewritten database."
+            )
+            a_entry = next(e for e in second_entries if os.path.realpath(e["file"]) == os.path.realpath(file_a))
+            assert "-O2" in a_entry["arguments"], (
+                "Modified arguments for a.cpp were not persisted to the rewritten database."
+            )
+            # Inode change is incidental (atomic_write uses mkstemp + os.replace),
+            # but verify it for symmetry with the no-op test's inode assertion.
+            assert second_stat.st_ino != first_ino, (
+                f"Content-changing rewrite preserved inode ({first_ino}); the producer should "
+                f"have written via mkstemp + os.replace, allocating a fresh inode."
+            )
+
+    def test_changed_symlink_target_does_advance_mtime(self):
+        """A target-changing _update_symlink call must replace the symlink.
+
+        Companion to test_no_op_symlink_update_does_not_advance_mtime: that
+        test verifies the no-op-skip path; this one verifies the symmetric
+        positive case so an over-eager readlink-equality guard cannot silently
+        skip a legitimate retarget. Skipping a real retarget would leave
+        compile_commands.json pointing at the previous variant's database, so
+        clangd would index against the wrong flags after a --variant switch.
+
+        Same direct-invocation rationale as the no-op companion: _update_symlink
+        reads only self.args.verbose from self, so __new__ + SimpleNamespace
+        keeps the test independent of unrelated FileAnalyzer / Hunter changes.
+        """
+
+        with uth.TempDirContext() as _:
+            cwd = os.getcwd()
+            target_a = os.path.join(cwd, "compile_commands.gcc.debug.json")
+            target_b = os.path.join(cwd, "compile_commands.clang.release.json")
+            symlink_path = os.path.join(cwd, "compile_commands.json")
+
+            for path in (target_a, target_b):
+                with open(path, "w") as fh:
+                    fh.write("[]")
+
+            creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
+                compiletools.compilation_database.CompilationDatabaseCreator
+            )
+            creator.args = types.SimpleNamespace(verbose=0)
+
+            creator._update_symlink(symlink_path, target_a)
+            assert os.path.islink(symlink_path), f"First _update_symlink call should create symlink at {symlink_path}"
+            first_lstat = os.lstat(symlink_path)
+            first_ino = first_lstat.st_ino
+            first_mtime_ns = first_lstat.st_mtime_ns
+            first_target = os.readlink(symlink_path)
+            assert first_target == os.path.relpath(target_a, cwd), (
+                f"First symlink target {first_target!r} does not match expected relative form of {target_a!r}"
+            )
+
+            # Sleep long enough that any replace advances mtime even on
+            # filesystems with coarse mtime resolution.
+            time.sleep(0.05)
+
+            creator._update_symlink(symlink_path, target_b)
+
+            second_lstat = os.lstat(symlink_path)
+            second_target = os.readlink(symlink_path)
+            expected_relative_b = os.path.relpath(target_b, cwd)
+
+            assert second_target == expected_relative_b, (
+                f"Target-changing _update_symlink left readlink unchanged "
+                f"({first_target!r} -> {second_target!r}, expected {expected_relative_b!r}); "
+                f"the readlink-equality guard is suppressing a legitimate retarget, which "
+                f"would point compile_commands.json at the wrong variant's database."
+            )
+            assert second_lstat.st_mtime_ns > first_mtime_ns, (
+                f"Target-changing _update_symlink did NOT advance mtime "
+                f"({first_mtime_ns} -> {second_lstat.st_mtime_ns}); the symlink replace "
+                f"path must run when the readlink target differs."
+            )
+            assert second_lstat.st_ino != first_ino, (
+                f"Target-changing _update_symlink preserved symlink inode ({first_ino}); "
+                f"os.symlink + os.replace must have allocated a fresh inode."
+            )
 
     @uth.requires_functional_compiler
     def test_compilation_database_complex_incremental_scenarios(self):
