@@ -49,6 +49,7 @@ def _make_state(
         kwargs["cflags_tokens"] = cflags_tokens
     if cxxflags_tokens is not None:
         kwargs["cxxflags_tokens"] = cxxflags_tokens
+    kwargs.setdefault("anchor_root", "")
     return MacroState(**kwargs)
 
 

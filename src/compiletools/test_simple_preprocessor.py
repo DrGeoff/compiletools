@@ -722,7 +722,7 @@ class TestExpandHasFunctions:
         file_result = self._create_file_analysis_result(text)
 
         core = {sz.Str("__GNUC__"): sz.Str("11")}
-        macros = MacroState(core, compiler_path="gcc", cppflags="-I/usr/include")
+        macros = MacroState(core, compiler_path="gcc", cppflags="-I/usr/include", anchor_root="")
 
         with patch("compiletools.compiler_macros.query_has_function", return_value=1):
             result = get_or_compute_preprocessing(file_result, macros, verbose=0, context=self.ctx)
@@ -738,7 +738,7 @@ class TestExpandHasFunctions:
         file_result = self._create_file_analysis_result(text)
 
         core = {sz.Str("__GNUC__"): sz.Str("11")}
-        macros = MacroState(core)
+        macros = MacroState(core, anchor_root="")
 
         result = get_or_compute_preprocessing(file_result, macros, verbose=0, context=self.ctx)
         assert 1 not in result.active_lines
@@ -1169,7 +1169,7 @@ class TestMacroHashConsistency:
 
         core = {}
         variable = {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("value"), sz.Str("BAZ"): sz.Str("0x100")}
-        macros = MacroState(core, variable)
+        macros = MacroState(core, variable, anchor_root="")
 
         hash1 = macros.get_hash()
         hash2 = macros.get_hash()
@@ -1188,8 +1188,8 @@ class TestMacroHashConsistency:
 
         variable2 = {sz.Str("C"): sz.Str("3"), sz.Str("A"): sz.Str("1"), sz.Str("B"): sz.Str("2")}
 
-        macros1 = MacroState(core, variable1)
-        macros2 = MacroState(core, variable2)
+        macros1 = MacroState(core, variable1, anchor_root="")
+        macros2 = MacroState(core, variable2, anchor_root="")
 
         hash1 = macros1.get_hash()
         hash2 = macros2.get_hash()
@@ -1201,10 +1201,12 @@ class TestMacroHashConsistency:
         import stringzilla as sz
 
         core = {}
-        macros1 = MacroState(core, {sz.Str("FOO"): sz.Str("1")})
-        macros2 = MacroState(core, {sz.Str("FOO"): sz.Str("2")})  # Different value
-        macros3 = MacroState(core, {sz.Str("BAR"): sz.Str("1")})  # Different key
-        macros4 = MacroState(core, {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("2")})  # Additional key
+        macros1 = MacroState(core, {sz.Str("FOO"): sz.Str("1")}, anchor_root="")
+        macros2 = MacroState(core, {sz.Str("FOO"): sz.Str("2")}, anchor_root="")  # Different value
+        macros3 = MacroState(core, {sz.Str("BAR"): sz.Str("1")}, anchor_root="")  # Different key
+        macros4 = MacroState(
+            core, {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("2")}, anchor_root=""
+        )  # Additional key
 
         hash1 = macros1.get_hash()
         hash2 = macros2.get_hash()
@@ -1221,8 +1223,8 @@ class TestMacroHashConsistency:
     def test_hash_empty_macro_state(self):
         """Verify empty macro state has consistent hash."""
 
-        empty1 = MacroState({}, {})
-        empty2 = MacroState({}, {})
+        empty1 = MacroState({}, {}, anchor_root="")
+        empty2 = MacroState({}, {}, anchor_root="")
 
         hash1 = empty1.get_hash()
         hash2 = empty2.get_hash()
@@ -1237,7 +1239,9 @@ class TestMacroHashConsistency:
 
         core = {}
         macros1 = MacroState(
-            core, {sz.Str("PATH"): sz.Str("/usr/local/include"), sz.Str("FLAGS"): sz.Str("-O2 -g -Wall")}
+            core,
+            {sz.Str("PATH"): sz.Str("/usr/local/include"), sz.Str("FLAGS"): sz.Str("-O2 -g -Wall")},
+            anchor_root="",
         )
 
         macros2 = MacroState(
@@ -1246,6 +1250,7 @@ class TestMacroHashConsistency:
                 sz.Str("PATH"): sz.Str("/usr/local/include"),
                 sz.Str("FLAGS"): sz.Str("-O3 -g -Wall"),  # Different flag
             },
+            anchor_root="",
         )
 
         hash1 = macros1.get_hash()
@@ -1261,7 +1266,7 @@ class TestMacroHashConsistency:
 
         core = {}
         variable = {sz.Str("LINUX"): sz.Str("1"), sz.Str("DEBUG"): sz.Str("1"), sz.Str("VERSION"): sz.Str("100")}
-        macros = MacroState(core, variable)
+        macros = MacroState(core, variable, anchor_root="")
 
         # Hash computation (used by magicflags for convergence detection)
         hash_result = macros.get_hash()
@@ -1288,8 +1293,8 @@ class TestMacroStateBuildContextHash:
         import stringzilla as sz
 
         core = {sz.Str("__GNUC__"): sz.Str("12")}
-        ms1 = MacroState(core, {}, compiler_path="g++", cppflags="", cflags="-O0", cxxflags="")
-        ms2 = MacroState(core, {}, compiler_path="g++", cppflags="", cflags="-O2", cxxflags="")
+        ms1 = MacroState(core, {}, compiler_path="g++", cppflags="", cflags="-O0", cxxflags="", anchor_root="")
+        ms2 = MacroState(core, {}, compiler_path="g++", cppflags="", cflags="-O2", cxxflags="", anchor_root="")
         assert ms1.get_hash(include_core=True) != ms2.get_hash(include_core=True)
 
     def test_macro_state_hash_differs_with_different_cxxflags(self):
@@ -1297,8 +1302,8 @@ class TestMacroStateBuildContextHash:
         import stringzilla as sz
 
         core = {sz.Str("__GNUC__"): sz.Str("12")}
-        ms1 = MacroState(core, {}, compiler_path="g++", cppflags="", cflags="", cxxflags="-std=c++17")
-        ms2 = MacroState(core, {}, compiler_path="g++", cppflags="", cflags="", cxxflags="-std=c++20")
+        ms1 = MacroState(core, {}, compiler_path="g++", cppflags="", cflags="", cxxflags="-std=c++17", anchor_root="")
+        ms2 = MacroState(core, {}, compiler_path="g++", cppflags="", cflags="", cxxflags="-std=c++20", anchor_root="")
         assert ms1.get_hash(include_core=True) != ms2.get_hash(include_core=True)
 
     def test_macro_state_hash_differs_with_different_cppflags(self):
@@ -1306,8 +1311,8 @@ class TestMacroStateBuildContextHash:
         import stringzilla as sz
 
         core = {sz.Str("__GNUC__"): sz.Str("12")}
-        ms1 = MacroState(core, {}, compiler_path="g++", cppflags="-I/opt/libfoo/v1/include")
-        ms2 = MacroState(core, {}, compiler_path="g++", cppflags="-I/opt/libfoo/v2/include")
+        ms1 = MacroState(core, {}, compiler_path="g++", cppflags="-I/opt/libfoo/v1/include", anchor_root="")
+        ms2 = MacroState(core, {}, compiler_path="g++", cppflags="-I/opt/libfoo/v2/include", anchor_root="")
         assert ms1.get_hash(include_core=True) != ms2.get_hash(include_core=True)
 
     def test_macro_state_hash_differs_with_different_compiler(self):
@@ -1315,8 +1320,8 @@ class TestMacroStateBuildContextHash:
         import stringzilla as sz
 
         core = {sz.Str("__GNUC__"): sz.Str("12")}
-        ms1 = MacroState(core, {}, compiler_path="g++")
-        ms2 = MacroState(core, {}, compiler_path="clang++")
+        ms1 = MacroState(core, {}, compiler_path="g++", anchor_root="")
+        ms2 = MacroState(core, {}, compiler_path="clang++", anchor_root="")
         assert ms1.get_hash(include_core=True) != ms2.get_hash(include_core=True)
 
     def test_macro_state_hash_without_core_ignores_build_context(self):
@@ -1324,8 +1329,12 @@ class TestMacroStateBuildContextHash:
         import stringzilla as sz
 
         core = {sz.Str("__GNUC__"): sz.Str("12")}
-        ms1 = MacroState(core, {}, compiler_path="g++", cppflags="-I/a", cflags="-O0", cxxflags="-std=c++17")
-        ms2 = MacroState(core, {}, compiler_path="clang++", cppflags="-I/b", cflags="-O2", cxxflags="-std=c++20")
+        ms1 = MacroState(
+            core, {}, compiler_path="g++", cppflags="-I/a", cflags="-O0", cxxflags="-std=c++17", anchor_root=""
+        )
+        ms2 = MacroState(
+            core, {}, compiler_path="clang++", cppflags="-I/b", cflags="-O2", cxxflags="-std=c++20", anchor_root=""
+        )
         assert ms1.get_hash(include_core=False) == ms2.get_hash(include_core=False)
 
     def test_with_updates_propagates_build_context(self):
@@ -1333,7 +1342,9 @@ class TestMacroStateBuildContextHash:
         import stringzilla as sz
 
         core = {sz.Str("X"): sz.Str("1")}
-        ms = MacroState(core, {}, compiler_path="g++", cppflags="-I/foo", cflags="-O2", cxxflags="-std=c++17")
+        ms = MacroState(
+            core, {}, compiler_path="g++", cppflags="-I/foo", cflags="-O2", cxxflags="-std=c++17", anchor_root=""
+        )
         ms2 = ms.with_updates({sz.Str("Y"): sz.Str("2")})
         assert ms2.cflags == "-O2"
         assert ms2.cxxflags == "-std=c++17"
@@ -1346,7 +1357,9 @@ class TestMacroStateBuildContextHash:
 
         core = {sz.Str("X"): sz.Str("1")}
         var = {sz.Str("Y"): sz.Str("2")}
-        ms = MacroState(core, var, compiler_path="g++", cppflags="-I/foo", cflags="-O2", cxxflags="-std=c++17")
+        ms = MacroState(
+            core, var, compiler_path="g++", cppflags="-I/foo", cflags="-O2", cxxflags="-std=c++17", anchor_root=""
+        )
         ms2 = ms.without_keys([sz.Str("Y")])
         assert ms2.cflags == "-O2"
         assert ms2.cxxflags == "-std=c++17"

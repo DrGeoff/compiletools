@@ -77,15 +77,15 @@ def test_object_hash_distinguishes_in_workspace_vs_outside():
 
 
 def test_object_hash_empty_anchor_is_graceful_noop():
-    """anchor_root='' must produce the same hash as anchor_root unset
-    (today's behavior preserved bit-for-bit when gitroot can't be
-    resolved)."""
+    """anchor_root='' (the fallback when gitroot can't be resolved) must
+    be a no-op canonicaliser: two identically-constructed MacroStates
+    both passing anchor_root='' must hash identically."""
     cppflags_tokens = ["-I/foo/bar", "-DAPP=app"]
     cflags_tokens = ["-O2"]
     cxxflags_tokens = ["-I/foo/bar", "-std=c++20"]
 
-    def _make(anchor_root: str | None = None) -> MacroState:
-        kwargs: dict = dict(
+    def _make() -> MacroState:
+        return MacroState(
             core={b"__GNUC__": b"13"},
             variable={},
             compiler_path="/usr/bin/g++",
@@ -97,11 +97,7 @@ def test_object_hash_empty_anchor_is_graceful_noop():
             cflags_tokens=cflags_tokens,
             cxxflags_tokens=cxxflags_tokens,
             compiler_identity="/usr/bin/g++|123456|1700000000",
+            anchor_root="",
         )
-        if anchor_root is not None:
-            kwargs["anchor_root"] = anchor_root
-        return MacroState(**kwargs)
 
-    h_explicit_empty = _make(anchor_root="").get_hash(include_core=True)
-    h_default = _make().get_hash(include_core=True)
-    assert h_explicit_empty == h_default
+    assert _make().get_hash(include_core=True) == _make().get_hash(include_core=True)

@@ -256,6 +256,7 @@ class TestExtractMacrosFromPreprocessor:
                 cppflags="",
                 cflags="",
                 cxxflags="",
+                anchor_root="",
             )
             obj.preprocessor = MagicMock()
             return obj

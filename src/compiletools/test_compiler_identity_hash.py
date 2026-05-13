@@ -241,6 +241,7 @@ def _make_state(**kwargs):
         "cflags": "-O2",
         "cxxflags": "-std=c++17",
     }
+    base.setdefault("anchor_root", "")
     base.update(kwargs)
     return MacroState(**base)
 

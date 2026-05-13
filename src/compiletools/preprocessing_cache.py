@@ -141,7 +141,8 @@ class MacroState:
         cflags_tokens: Optional[list] = None,
         cxxflags_tokens: Optional[list] = None,
         compiler_identity: str = "",
-        anchor_root: str = "",
+        *,
+        anchor_root: str,  # required: gitroot for canonicalisation; pass "" only in tests
     ):
         """Initialize macro state.
 
@@ -161,7 +162,12 @@ class MacroState:
             compiler_identity: Stable identity for the compiler binary
                 (realpath|size|mtime_ns) from ``apptools.compiler_identity``.
                 Folded into the include_core hash so an in-place toolchain
-                swap invalidates objects. Default ``""`` for backward compat.
+                swap invalidates objects. Default ``""`` when not applicable.
+            anchor_root: Gitroot prefix used by ``canonicalize_path_for_cache_key``
+                to make flag-token hashes workspace-independent. Pass ``""``
+                only in tests or when the gitroot cannot be resolved (graceful
+                no-op). Required: omitting it silently re-introduces the
+                gitroot-leak bug the canonicaliser exists to prevent.
         """
         self.core = core
         self.variable = variable if variable is not None else {}

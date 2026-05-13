@@ -135,7 +135,7 @@ class TestPreprocessingCache:
         """).strip()
 
         file_result = self._create_simple_file_result(text, "hash_001")
-        macros = MacroState({}, {sz.Str("TEST_MACRO"): sz.Str("1")})
+        macros = MacroState({}, {sz.Str("TEST_MACRO"): sz.Str("1")}, anchor_root="")
 
         # First call - cache miss
         result1 = get_or_compute_preprocessing(file_result, macros, 0, context=self.ctx)
@@ -163,8 +163,8 @@ class TestPreprocessingCache:
         """).strip()
 
         file_result = self._create_simple_file_result(text, "hash_002")
-        macros1 = MacroState({}, {sz.Str("FOO"): sz.Str("1")})
-        macros2 = MacroState({}, {sz.Str("FOO"): sz.Str("2")})
+        macros1 = MacroState({}, {sz.Str("FOO"): sz.Str("1")}, anchor_root="")
+        macros2 = MacroState({}, {sz.Str("FOO"): sz.Str("2")}, anchor_root="")
 
         result1 = get_or_compute_preprocessing(file_result, macros1, 0, context=self.ctx)
         result2 = get_or_compute_preprocessing(file_result, macros2, 0, context=self.ctx)
@@ -188,8 +188,8 @@ class TestPreprocessingCache:
         """).strip()
 
         file_result = self._create_simple_file_result(text, "hash_003")
-        macros1 = MacroState({}, {sz.Str("FOO"): sz.Str("1")})
-        macros2 = MacroState({}, {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("1")})
+        macros1 = MacroState({}, {sz.Str("FOO"): sz.Str("1")}, anchor_root="")
+        macros2 = MacroState({}, {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("1")}, anchor_root="")
 
         result1 = get_or_compute_preprocessing(file_result, macros1, 0, context=self.ctx)
         result2 = get_or_compute_preprocessing(file_result, macros2, 0, context=self.ctx)
@@ -214,8 +214,8 @@ class TestPreprocessingCache:
         """).strip()
 
         file_result = self._create_simple_file_result(text, "hash_004")
-        macros1 = MacroState({}, {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("1")})
-        macros2 = MacroState({}, {sz.Str("FOO"): sz.Str("1")})
+        macros1 = MacroState({}, {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("1")}, anchor_root="")
+        macros2 = MacroState({}, {sz.Str("FOO"): sz.Str("1")}, anchor_root="")
 
         result1 = get_or_compute_preprocessing(file_result, macros1, 0, context=self.ctx)
         result2 = get_or_compute_preprocessing(file_result, macros2, 0, context=self.ctx)
@@ -243,8 +243,8 @@ class TestPreprocessingCache:
 
         file_result = self._create_simple_file_result(text, "hash_003b")
         # Both FOO and BAR are in conditional_macros for this file
-        macros1 = MacroState({}, {sz.Str("FOO"): sz.Str("1")})
-        macros2 = MacroState({}, {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("1")})
+        macros1 = MacroState({}, {sz.Str("FOO"): sz.Str("1")}, anchor_root="")
+        macros2 = MacroState({}, {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("1")}, anchor_root="")
 
         result1 = get_or_compute_preprocessing(file_result, macros1, 0, context=self.ctx)
         result2 = get_or_compute_preprocessing(file_result, macros2, 0, context=self.ctx)
@@ -276,7 +276,7 @@ class TestPreprocessingCache:
 
         file_result1 = self._create_simple_file_result(text1, "hash_005a")
         file_result2 = self._create_simple_file_result(text2, "hash_005b")
-        macros = MacroState({}, {sz.Str("FOO"): sz.Str("1")})
+        macros = MacroState({}, {sz.Str("FOO"): sz.Str("1")}, anchor_root="")
 
         result1 = get_or_compute_preprocessing(file_result1, macros, 0, context=self.ctx)
         result2 = get_or_compute_preprocessing(file_result2, macros, 0, context=self.ctx)
@@ -332,7 +332,7 @@ class TestPreprocessingCache:
             include_guard=None,
         )
 
-        initial_macros = MacroState({}, {})
+        initial_macros = MacroState({}, {}, anchor_root="")
         result = get_or_compute_preprocessing(file_result, initial_macros, 0, context=self.ctx)
 
         # Verify NEW_MACRO is in updated_macros
@@ -376,7 +376,7 @@ class TestPreprocessingCache:
             conditional_macros=frozenset(),
         )
 
-        initial_macros = MacroState({}, {sz.Str("REMOVED_MACRO"): sz.Str("1")})
+        initial_macros = MacroState({}, {sz.Str("REMOVED_MACRO"): sz.Str("1")}, anchor_root="")
 
         # First call computes result and should drop REMOVED_MACRO from updated macros
         result1 = get_or_compute_preprocessing(file_result, initial_macros, 0, context=self.ctx)
@@ -396,7 +396,7 @@ class TestPreprocessingCache:
         """).strip()
 
         file_result = self._create_simple_file_result(text, "hash_007")
-        empty_macros = MacroState({}, {})
+        empty_macros = MacroState({}, {}, anchor_root="")
 
         result1 = get_or_compute_preprocessing(file_result, empty_macros, 0, context=self.ctx)
         result2 = get_or_compute_preprocessing(file_result, empty_macros, 0, context=self.ctx)
@@ -415,7 +415,7 @@ class TestPreprocessingCache:
         """).strip()
 
         file_result = self._create_simple_file_result(text, "hash_008")
-        macros = MacroState({}, {})
+        macros = MacroState({}, {}, anchor_root="")
 
         # Clear stats
         clear_cache(self.ctx)
@@ -485,7 +485,7 @@ class TestCacheManagement:
         )
 
         # Add entry to cache
-        get_or_compute_preprocessing(file_result, MacroState({}, {}), 0, context=self.ctx)
+        get_or_compute_preprocessing(file_result, MacroState({}, {}, anchor_root=""), 0, context=self.ctx)
         stats1 = get_cache_stats(self.ctx)
         assert stats1["entries"] == 1
 
@@ -534,7 +534,7 @@ class TestCacheManagement:
                 content_hash=f"hash_{i:03d}",
                 include_guard=None,
             )
-            macros = MacroState({}, {sz.Str(f"MACRO_{i}"): sz.Str(str(i))})
+            macros = MacroState({}, {sz.Str(f"MACRO_{i}"): sz.Str(str(i))}, anchor_root="")
             get_or_compute_preprocessing(file_result, macros, 0, context=self.ctx)
 
         _current, peak = tracemalloc.get_traced_memory()
@@ -556,7 +556,7 @@ class TestMacroStateImmutability:
 
     def test_with_updates_returns_new_instance_on_change(self):
         """with_updates should return a new instance when actual changes occur."""
-        state = MacroState(core={}, variable={})
+        state = MacroState(core={}, variable={}, anchor_root="")
 
         # Add new macro
         new_state = state.with_updates({sz.Str("FOO"): sz.Str("1")})
@@ -566,7 +566,7 @@ class TestMacroStateImmutability:
 
     def test_with_updates_returns_self_on_no_change(self):
         """with_updates should return self when updates don't change state."""
-        state = MacroState(core={}, variable={sz.Str("FOO"): sz.Str("1")})
+        state = MacroState(core={}, variable={sz.Str("FOO"): sz.Str("1")}, anchor_root="")
 
         # Update with same value
         new_state = state.with_updates({sz.Str("FOO"): sz.Str("1")})
@@ -578,7 +578,7 @@ class TestMacroStateImmutability:
 
     def test_with_updates_returns_new_instance_value_change(self):
         """with_updates should return new instance on value change."""
-        state = MacroState(core={}, variable={sz.Str("FOO"): sz.Str("1")})
+        state = MacroState(core={}, variable={sz.Str("FOO"): sz.Str("1")}, anchor_root="")
 
         # Update with different value
         new_state = state.with_updates({sz.Str("FOO"): sz.Str("2")})
@@ -588,13 +588,13 @@ class TestMacroStateImmutability:
 
     def test_copy_returns_self(self):
         """copy() should return self for immutable object."""
-        state = MacroState(core={}, variable={sz.Str("FOO"): sz.Str("1")})
+        state = MacroState(core={}, variable={sz.Str("FOO"): sz.Str("1")}, anchor_root="")
         copied = state.copy()
         assert copied is state
 
     def test_immutability_enforced(self):
         """Verify that mutation methods are gone."""
-        state = MacroState(core={}, variable={})
+        state = MacroState(core={}, variable={}, anchor_root="")
 
         # Check that setters raise AttributeError (methods removed). The
         # subscripted assignment below is exactly the API we're asserting
