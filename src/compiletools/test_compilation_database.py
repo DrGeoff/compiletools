@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import types
 
 import compiletools.apptools
 import compiletools.compilation_database
@@ -509,6 +510,73 @@ class TestCompilationDatabase:
                 assert second_stat.st_size == first_size, (
                     f"No-op rewrite changed size ({first_size} -> {second_stat.st_size})."
                 )
+
+    @uth.requires_functional_compiler
+    def test_no_op_symlink_update_does_not_advance_mtime(self):
+        """A second main() call must not replace the compile_commands.json symlink.
+
+        The unconditional os.symlink + os.replace cycle in _update_symlink
+        creates a fresh symlink inode on every build, advancing the symlink's
+        mtime even when the readlink target is unchanged. clangd and other
+        IDE indexers re-stat the symlink and treat any mtime change as an
+        invalidation, re-indexing the world for nothing.
+
+        Drives _update_symlink directly (rather than via main()) so the assertion
+        targets the production guard exactly and is not entangled with cdb
+        building. The full end-to-end coverage lives in
+        test_symlink_repoints_on_subsequent_variant_build /
+        test_default_pathname_is_variant_qualified.
+        """
+
+        with uth.TempDirContext() as _:
+            cwd = os.getcwd()
+            target_path = os.path.join(cwd, "compile_commands.gcc.debug.json")
+            symlink_path = os.path.join(cwd, "compile_commands.json")
+
+            # The on-disk target file must exist for relpath() to be meaningful;
+            # _update_symlink doesn't read it but a stale symlink that points
+            # at nothing wouldn't model the real production scenario.
+            with open(target_path, "w") as f:
+                f.write("[]")
+
+            # Build a minimal stand-in for CompilationDatabaseCreator to invoke
+            # the bound _update_symlink method without engaging hunter / args
+            # plumbing that the surrounding test infra assembles.
+            creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
+                compiletools.compilation_database.CompilationDatabaseCreator
+            )
+            creator.args = types.SimpleNamespace(verbose=0)
+
+            creator._update_symlink(symlink_path, target_path)
+            assert os.path.islink(symlink_path), f"First _update_symlink call should create symlink at {symlink_path}"
+
+            first_lstat = os.lstat(symlink_path)
+            first_ino = first_lstat.st_ino
+            first_mtime_ns = first_lstat.st_mtime_ns
+            first_target = os.readlink(symlink_path)
+
+            # Sleep long enough that any replace would advance mtime even
+            # on filesystems with coarse mtime resolution.
+            time.sleep(0.05)
+
+            creator._update_symlink(symlink_path, target_path)
+
+            second_lstat = os.lstat(symlink_path)
+            second_target = os.readlink(symlink_path)
+
+            assert second_target == first_target, (
+                f"No-op rebuild changed symlink target ({first_target!r} -> {second_target!r})."
+            )
+            assert second_lstat.st_ino == first_ino, (
+                f"No-op rebuild replaced symlink inode ({first_ino} -> {second_lstat.st_ino}); "
+                f"the symlink must not be re-created when its readlink target is unchanged "
+                f"or clangd / IDE indexers will re-index on every ct-cake invocation."
+            )
+            assert second_lstat.st_mtime_ns == first_mtime_ns, (
+                f"No-op rebuild advanced symlink mtime ({first_mtime_ns} -> {second_lstat.st_mtime_ns}); "
+                f"compile_commands.json (symlink) must be left untouched when its readlink "
+                f"target is unchanged."
+            )
 
     @uth.requires_functional_compiler
     def test_compilation_database_complex_incremental_scenarios(self):

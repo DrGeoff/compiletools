@@ -262,6 +262,25 @@ class CompilationDatabaseCreator:
             # Different drives on Windows — fall back to absolute target.
             relative_target = target_path
 
+        # Skip the replace when the existing symlink already points at the
+        # same target. os.symlink + os.replace creates a fresh inode and
+        # advances mtime even on a target-identical update; clangd and other
+        # IDE indexers re-stat the symlink on every build and treat any
+        # mtime change as an invalidation. Compare the *literal* readlink
+        # target — not os.path.realpath — because the target itself may be
+        # a symlink chain whose resolution differs from its declared name.
+        try:
+            current_target = os.readlink(symlink_path)
+            if current_target == relative_target:
+                if self.args.verbose:
+                    print(f"Symlink {symlink_path} already points to {relative_target}; skipping update")
+                return
+        except OSError:
+            # Path doesn't exist, or isn't a symlink — fall through to the
+            # normal replace path (preserves the regular-file replacement
+            # behavior for stale pre-upgrade installs).
+            pass
+
         # Build a unique tmp name in the same directory so os.replace is atomic.
         tmp_path = f"{symlink_path}.tmp.{os.getpid()}"
         try:
