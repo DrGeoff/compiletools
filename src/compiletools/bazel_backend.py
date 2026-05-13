@@ -136,8 +136,9 @@ class BazelBackend(BuildBackend):
             # then returns relative path strings only and never copies
             # source files into ext/.
             base_dir = None
-            if hasattr(output, "name") and isinstance(output.name, str) and os.path.isabs(output.name):
-                base_dir = os.path.dirname(compiletools.wrappedos.realpath(output.name))
+            name = getattr(output, "name", None)
+            if isinstance(name, str) and os.path.isabs(name):
+                base_dir = os.path.dirname(compiletools.wrappedos.realpath(name))
             self._write_build(graph, output, base_dir=base_dir)
         else:
             filename = self.build_filename()
