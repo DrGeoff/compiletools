@@ -1,5 +1,6 @@
 import json
 import os
+import time
 
 import compiletools.apptools
 import compiletools.compilation_database
@@ -457,6 +458,57 @@ class TestCompilationDatabase:
                     assert "directory" in entry
                     assert "file" in entry
                     assert "-c" in entry["arguments"], "Should be compilation command"
+
+    @uth.requires_functional_compiler
+    def test_no_op_write_does_not_advance_file_mtime(self):
+        """A second main() call with identical args must not rewrite the database.
+
+        clangd, ccls, and `find -newer`-based watchers treat any inode/mtime
+        change on compile_commands.json as an invalidation event. Re-emitting
+        byte-identical content forces them to re-index the world for nothing.
+        """
+
+        with uth.TempDirContext() as _:
+            samplesdir = uth.samplesdir()
+            source = os.path.join(samplesdir, "simple/helloworld_cpp.cpp")
+
+            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+                output_file = "compile_commands.json"
+
+                with uth.ParserContext():
+                    compiletools.compilation_database.main(
+                        ["--config=" + temp_config_name, "--compilation-database-output=" + output_file, source]
+                    )
+
+                assert os.path.exists(output_file), "First write should create the database"
+                first_stat = os.stat(output_file)
+                first_ino = first_stat.st_ino
+                first_mtime_ns = first_stat.st_mtime_ns
+                first_size = first_stat.st_size
+
+                # Sleep long enough that any rewrite would advance mtime even on
+                # filesystems with coarse mtime resolution.
+                time.sleep(0.05)
+
+                with uth.ParserContext():
+                    compiletools.compilation_database.main(
+                        ["--config=" + temp_config_name, "--compilation-database-output=" + output_file, source]
+                    )
+
+                second_stat = os.stat(output_file)
+                assert second_stat.st_ino == first_ino, (
+                    f"No-op rewrite changed inode ({first_ino} -> {second_stat.st_ino}); "
+                    f"compile_commands.json must not be replaced when content is unchanged "
+                    f"or clangd / find -newer watchers will re-index unnecessarily."
+                )
+                assert second_stat.st_mtime_ns == first_mtime_ns, (
+                    f"No-op rewrite advanced mtime ({first_mtime_ns} -> {second_stat.st_mtime_ns}); "
+                    f"compile_commands.json must be left untouched when the rendered JSON matches "
+                    f"the existing on-disk content."
+                )
+                assert second_stat.st_size == first_size, (
+                    f"No-op rewrite changed size ({first_size} -> {second_stat.st_size})."
+                )
 
     @uth.requires_functional_compiler
     def test_compilation_database_complex_incremental_scenarios(self):
