@@ -824,34 +824,6 @@ class TestNinjaRunsTestsInBuildPhase:
         backend = NinjaBackend(args=SimpleNamespace(), hunter=MagicMock())
         assert backend._runs_tests_in_build_phase() is True
 
-    def _build_backend(self, tmp_path, sources, *, tests=None, extra_argv=None):
-        """Construct a NinjaBackend + graph from real argv for *sources*, with
-        *tests* passed via ``--tests``. Returns (backend, graph)."""
-        import compiletools.apptools
-        import compiletools.headerdeps
-        import compiletools.hunter
-        import compiletools.magicflags
-        from compiletools.build_context import BuildContext
-
-        objdir = os.path.join(str(tmp_path), "obj")
-        bindir = os.path.join(str(tmp_path), "bin")
-        argv = list(extra_argv or [])
-        argv += ["--include", str(tmp_path), "--cas-objdir", objdir, "--bindir", bindir]
-        for t in tests or []:
-            argv.append("--tests=" + str(t))
-        argv += [str(s) for s in sources]
-
-        cap = compiletools.apptools.create_parser("ninja in-build test", argv=argv)
-        uth.add_backend_arguments(cap)
-        ctx = BuildContext()
-        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
-        headerdeps = compiletools.headerdeps.create(args, context=ctx)
-        magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
-        hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
-        backend = NinjaBackend(args=args, hunter=hunter, context=ctx)
-        graph = backend.build_graph()
-        return backend, graph
-
     @uth.requires_functional_compiler
     def test_ninja_runs_tests_in_build(self, tmp_path, monkeypatch):
         """After execute("build") — NOT execute("runtests") — the test's
@@ -862,14 +834,15 @@ class TestNinjaRunsTestsInBuildPhase:
         test_src = tmp_path / "test_pass.cpp"
         test_src.write_text('#include "unit_test.hpp"\nint main() { return 0; }\n')
 
-        backend, graph = self._build_backend(tmp_path, [], tests=[test_src])
+        backend, graph = uth.build_real_backend(NinjaBackend, tmp_path, [], tests=[test_src])
         with open(tmp_path / "build.ninja", "w") as f:
             backend.generate(graph, output=f)
 
         backend.execute("build")
 
-        results = [os.path.join(dp, fn) for dp, _, files in os.walk(tmp_path) for fn in files if fn.endswith(".result")]
-        assert results, "no .result marker after execute('build') — test did not run during the build phase"
+        assert uth.find_result_markers(tmp_path), (
+            "no .result marker after execute('build') — test did not run during the build phase"
+        )
 
     @uth.requires_functional_compiler
     def test_ninja_test_failure_halts_build(self, tmp_path, monkeypatch):
@@ -881,14 +854,14 @@ class TestNinjaRunsTestsInBuildPhase:
         test_src = tmp_path / "test_fail.cpp"
         test_src.write_text('#include "unit_test.hpp"\nint main() { return 1; }\n')
 
-        backend, graph = self._build_backend(tmp_path, [], tests=[test_src])
+        backend, graph = uth.build_real_backend(NinjaBackend, tmp_path, [], tests=[test_src])
         with open(tmp_path / "build.ninja", "w") as f:
             backend.generate(graph, output=f)
 
         with pytest.raises(subprocess.CalledProcessError):
             backend.execute("build")
 
-        results = [os.path.join(dp, fn) for dp, _, files in os.walk(tmp_path) for fn in files if fn.endswith(".result")]
+        results = uth.find_result_markers(tmp_path)
         assert not results, f"failing test left a .result marker (touch ran despite rc!=0): {results}"
 
     @uth.requires_functional_compiler
@@ -905,43 +878,11 @@ class TestNinjaRunsTestsInBuildPhase:
           - the JUnit XML file DOES still exist after the failed build.
         """
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
-        # Stub gtest header: framework detection trips on the include-path
-        # token "gtest/gtest.h" in the transitive header set, not on any
-        # symbol -- so an empty header is sufficient (mirrors the make
-        # backend's test_make_framework_test_failure_preserves_xml).
-        (tmp_path / "gtest").mkdir()
-        (tmp_path / "gtest" / "gtest.h").write_text("#pragma once\n")
-        # A gtest-flavoured fixture that writes its JUnit XML when handed
-        # --gtest_output=xml:PATH and THEN returns 1. The write-then-fail
-        # ordering is what makes ninja's no-delete-on-failure observable.
-        test_src = tmp_path / "test_fail_gtest.cpp"
-        test_src.write_text(
-            '#include "unit_test.hpp"\n'
-            '#include "gtest/gtest.h"\n'
-            "#include <cstdio>\n"
-            "#include <cstring>\n"
-            "int main(int argc, char** argv) {\n"
-            '    static const char prefix[] = "--gtest_output=xml:";\n'
-            "    const size_t plen = sizeof(prefix) - 1;\n"
-            "    for (int i = 1; i < argc; ++i) {\n"
-            "        if (std::strncmp(argv[i], prefix, plen) == 0) {\n"
-            '            FILE* f = std::fopen(argv[i] + plen, "w");\n'
-            "            if (f != nullptr) {\n"
-            '                std::fputs("<testsuites>\\n", f);\n'
-            '                std::fputs("  <testsuite name=\\"stub\\" tests=\\"1\\" failures=\\"1\\"/>\\n", f);\n'
-            '                std::fputs("</testsuites>\\n", f);\n'
-            "                std::fclose(f);\n"
-            "            }\n"
-            "        }\n"
-            "    }\n"
-            "    return 1;\n"
-            "}\n"
-        )
+        test_src = uth.write_failing_gtest_fixture(tmp_path)
 
         xml_dir = tmp_path / "junit"
-        backend, graph = self._build_backend(
-            tmp_path, [], tests=[test_src], extra_argv=["--test-xml-dir=" + str(xml_dir)]
+        backend, graph = uth.build_real_backend(
+            NinjaBackend, tmp_path, [], tests=[test_src], extra_argv=["--test-xml-dir=" + str(xml_dir)]
         )
 
         # The framework test rule's output must be the XML path (not the
@@ -961,7 +902,7 @@ class TestNinjaRunsTestsInBuildPhase:
         with pytest.raises(subprocess.CalledProcessError):
             backend.execute("build")
 
-        results = [os.path.join(dp, fn) for dp, _, files in os.walk(tmp_path) for fn in files if fn.endswith(".result")]
+        results = uth.find_result_markers(tmp_path)
         assert not results, f"failing test left a .result marker (touch ran despite rc!=0): {results}"
         assert os.path.exists(xml_path), (
             f"JUnit XML at {xml_path} was deleted by ninja on rule failure -- "

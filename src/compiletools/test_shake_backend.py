@@ -1526,36 +1526,6 @@ class TestShakeRunsTestsInBuildPhase:
     def teardown_method(self):
         uth.reset()
 
-    def _build_backend(self, tmp_path, sources, *, tests=None, extra_argv=None):
-        """Construct a ShakeBackend + graph from real argv for *sources*, with
-        *tests* passed via ``--tests``. Returns (backend, graph)."""
-        objdir = os.path.join(str(tmp_path), "obj")
-        bindir = os.path.join(str(tmp_path), "bin")
-        argv = list(extra_argv or [])
-        argv += ["--include", str(tmp_path), "--cas-objdir", objdir, "--bindir", bindir]
-        if tests:
-            # --tests is nargs="*"; a single flag with all values (a repeated
-            # --tests=... flag would let only the last one survive).
-            argv.append("--tests")
-            argv += [str(t) for t in tests]
-        argv += [str(s) for s in sources]
-
-        with uth.ParserContext():
-            cap = compiletools.apptools.create_parser("shake in-build test", argv=argv)
-            uth.add_backend_arguments(cap)
-            ctx = BuildContext()
-            args = compiletools.apptools.parseargs(cap, argv, context=ctx)
-            headerdeps = compiletools.headerdeps.create(args, context=ctx)
-            magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
-            hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
-            backend = ShakeBackend(args=args, hunter=hunter, context=ctx)
-            graph = backend.build_graph()
-        return backend, graph
-
-    @staticmethod
-    def _result_markers(tmp_path):
-        return [os.path.join(dp, fn) for dp, _, files in os.walk(tmp_path) for fn in files if fn.endswith(".result")]
-
     @uth.requires_functional_compiler
     def test_shake_runs_tests_in_build(self, tmp_path, monkeypatch):
         """After execute("build") — NOT execute("runtests") — the test's
@@ -1566,11 +1536,11 @@ class TestShakeRunsTestsInBuildPhase:
         test_src = tmp_path / "test_pass.cpp"
         test_src.write_text('#include "unit_test.hpp"\nint main() { return 0; }\n')
 
-        backend, graph = self._build_backend(tmp_path, [], tests=[test_src])
+        backend, graph = uth.build_real_backend(ShakeBackend, tmp_path, [], tests=[test_src])
         backend.generate(graph)
         backend.execute("build")
 
-        assert self._result_markers(tmp_path), (
+        assert uth.find_result_markers(tmp_path), (
             "no .result marker after execute('build') — test did not run during the build phase"
         )
 
@@ -1584,13 +1554,15 @@ class TestShakeRunsTestsInBuildPhase:
         test_src = tmp_path / "test_fail.cpp"
         test_src.write_text('#include "unit_test.hpp"\nint main() { return 1; }\n')
 
-        backend, graph = self._build_backend(tmp_path, [], tests=[test_src])
+        backend, graph = uth.build_real_backend(ShakeBackend, tmp_path, [], tests=[test_src])
         backend.generate(graph)
 
         with pytest.raises(RuntimeError, match="test execution failed"):
             backend.execute("build")
 
-        assert not self._result_markers(tmp_path), "failing test left a .result marker (marker touched despite rc!=0)"
+        assert not uth.find_result_markers(tmp_path), (
+            "failing test left a .result marker (marker touched despite rc!=0)"
+        )
 
     @uth.requires_functional_compiler
     def test_shake_aggregates_test_failures(self, tmp_path, monkeypatch):
@@ -1604,7 +1576,7 @@ class TestShakeRunsTestsInBuildPhase:
         test_b = tmp_path / "test_fail_b.cpp"
         test_b.write_text('#include "unit_test.hpp"\nint main() { return 2; }\n')
 
-        backend, graph = self._build_backend(tmp_path, [], tests=[test_a, test_b])
+        backend, graph = uth.build_real_backend(ShakeBackend, tmp_path, [], tests=[test_a, test_b])
         backend.generate(graph)
 
         with pytest.raises(RuntimeError) as excinfo:
@@ -1613,7 +1585,7 @@ class TestShakeRunsTestsInBuildPhase:
         msg = str(excinfo.value)
         assert "test_fail_a" in msg, f"first failing test not aggregated: {msg}"
         assert "test_fail_b" in msg, f"second failing test not aggregated: {msg}"
-        assert not self._result_markers(tmp_path)
+        assert not uth.find_result_markers(tmp_path)
 
     @uth.requires_functional_compiler
     def test_shake_framework_test_failure_preserves_xml(self, tmp_path, monkeypatch):
@@ -1626,41 +1598,11 @@ class TestShakeRunsTestsInBuildPhase:
           - the JUnit XML file DOES still exist after the failed build.
         """
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
-        # Stub gtest header: framework detection trips on the include-path
-        # token "gtest/gtest.h" in the transitive header set, not on any
-        # symbol -- so an empty header is sufficient.
-        (tmp_path / "gtest").mkdir()
-        (tmp_path / "gtest" / "gtest.h").write_text("#pragma once\n")
-        # A gtest-flavoured fixture that writes its JUnit XML when handed
-        # --gtest_output=xml:PATH and THEN returns 1.
-        test_src = tmp_path / "test_fail_gtest.cpp"
-        test_src.write_text(
-            '#include "unit_test.hpp"\n'
-            '#include "gtest/gtest.h"\n'
-            "#include <cstdio>\n"
-            "#include <cstring>\n"
-            "int main(int argc, char** argv) {\n"
-            '    static const char prefix[] = "--gtest_output=xml:";\n'
-            "    const size_t plen = sizeof(prefix) - 1;\n"
-            "    for (int i = 1; i < argc; ++i) {\n"
-            "        if (std::strncmp(argv[i], prefix, plen) == 0) {\n"
-            '            FILE* f = std::fopen(argv[i] + plen, "w");\n'
-            "            if (f != nullptr) {\n"
-            '                std::fputs("<testsuites>\\n", f);\n'
-            '                std::fputs("  <testsuite name=\\"stub\\" tests=\\"1\\" failures=\\"1\\"/>\\n", f);\n'
-            '                std::fputs("</testsuites>\\n", f);\n'
-            "                std::fclose(f);\n"
-            "            }\n"
-            "        }\n"
-            "    }\n"
-            "    return 1;\n"
-            "}\n"
-        )
+        test_src = uth.write_failing_gtest_fixture(tmp_path)
 
         xml_dir = tmp_path / "junit"
-        backend, graph = self._build_backend(
-            tmp_path, [], tests=[test_src], extra_argv=["--test-xml-dir=" + str(xml_dir)]
+        backend, graph = uth.build_real_backend(
+            ShakeBackend, tmp_path, [], tests=[test_src], extra_argv=["--test-xml-dir=" + str(xml_dir)]
         )
 
         # The framework test rule's output must be the XML path (not the
@@ -1678,7 +1620,9 @@ class TestShakeRunsTestsInBuildPhase:
         with pytest.raises(RuntimeError, match="test execution failed"):
             backend.execute("build")
 
-        assert not self._result_markers(tmp_path), "failing test left a .result marker (marker touched despite rc!=0)"
+        assert not uth.find_result_markers(tmp_path), (
+            "failing test left a .result marker (marker touched despite rc!=0)"
+        )
         assert os.path.exists(xml_path), (
             f"JUnit XML at {xml_path} was deleted after the failed shake build -- "
             "a failed framework test must still leave its report behind"

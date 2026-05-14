@@ -48,21 +48,6 @@ class NinjaBackend(BuildBackend):
     def _build_file_path(self) -> str:
         return getattr(self.args, "ninja_filename", "build.ninja")
 
-    def execute(self, target: str = "build") -> None:
-        """Invoke ninja to execute the build.
-
-        Overrides the base template's ``runtests`` handling: rather than
-        delegating to the legacy Python-side ``_run_tests`` sweep, route
-        ``execute("runtests")`` through the generated ``runtests`` phony so
-        standalone test runs use the same native, content-addressed
-        ``.result`` recipes as the in-build path. ``execute("build")`` falls
-        through to ``_execute_build``, which retargets ``build`` -> ``all``.
-        """
-        if target == "runtests":
-            self._execute_build("runtests")
-            return
-        super().execute(target)
-
     def generate(self, graph: BuildGraph, output=None) -> None:
         self._setup_file_locking()
         graph = self._apply_build_only_changed(graph)
@@ -193,16 +178,7 @@ class NinjaBackend(BuildBackend):
         if timer and os.path.exists(ninja_log):
             log_offset = os.path.getsize(ninja_log)
 
-        # ``execute("build")`` must drive the aggregate ``all`` phony, not the
-        # bare ``build`` phony. ``build`` depends only on the link/library
-        # outputs; ``all`` additionally depends on ``runtests`` (-> every test
-        # rule). Each test rule depends solely on its own exe, so ninja's
-        # scheduler runs each test the instant its link rule finishes —
-        # interleaved with continued compilation of unrelated TUs — instead of
-        # in a separate post-build sweep. ``runtests`` and explicit targets
-        # pass through verbatim so the ``execute("runtests")`` contract and
-        # ad-hoc ``ninja <target>`` calls still work.
-        ninja_target = "all" if target == "build" else target
+        ninja_target = self._native_target_for(target)
 
         cmd = ["ninja", "-f", filename]
         parallel = getattr(self.args, "parallel", None)

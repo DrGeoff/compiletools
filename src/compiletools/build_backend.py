@@ -613,7 +613,14 @@ class BuildBackend(abc.ABC):
         (e.g. ShakeBackend which uses its own build engine).
         """
         if target == "runtests":
-            self._run_tests()
+            # Backends that run tests in the build phase route a standalone
+            # ``runtests`` through their own native test rules (via
+            # _execute_build) so it uses the same recipes as the in-build path;
+            # the rest fall back to the legacy Python-side _run_tests sweep.
+            if self._runs_tests_in_build_phase():
+                self._execute_build("runtests")
+            else:
+                self._run_tests()
             return
         if self._graph is not None and self._all_outputs_current(self._graph):
             return
@@ -624,6 +631,17 @@ class BuildBackend(abc.ABC):
     @abc.abstractmethod
     def _execute_build(self, target: str) -> None:
         """Backend-specific build invocation (subprocess call to native tool)."""
+
+    def _native_target_for(self, target: str) -> str:
+        """Map the abstract ``build`` target onto the backend's aggregate phony.
+
+        ``execute("build")`` must drive ``all``, not the bare ``build`` phony:
+        ``build`` covers only link/library outputs, while ``all`` additionally
+        depends on ``runtests`` -> every test rule, so the native ``-j``
+        scheduler interleaves test runs with compilation. ``runtests`` and
+        explicit targets pass through verbatim.
+        """
+        return "all" if target == "build" else target
 
     def _runs_tests_in_build_phase(self) -> bool:
         """Return True if this backend's execute("build") natively runs test rules

@@ -1071,6 +1071,92 @@ def add_backend_arguments(cap):
     SlurmBackend.add_arguments(cap)
 
 
+def build_real_backend(backend_cls, tmp_path, sources, *, tests=None, extra_argv=None):
+    """Construct a backend instance + BuildGraph from real ``argv``.
+
+    Drives the full apptools -> headerdeps -> magicflags -> Hunter pipeline so
+    callers get a backend wired to real dependency analysis (not mocks).
+    *sources* and *tests* are path-likes; *tests* are passed via ``--tests``.
+    Returns ``(backend, graph)``.
+    """
+    from compiletools import headerdeps as _headerdeps
+    from compiletools import hunter as _hunter
+    from compiletools import magicflags as _magicflags
+    from compiletools.build_context import BuildContext
+
+    objdir = os.path.join(str(tmp_path), "obj")
+    bindir = os.path.join(str(tmp_path), "bin")
+    argv = list(extra_argv or [])
+    argv += ["--include", str(tmp_path), "--cas-objdir", objdir, "--bindir", bindir]
+    if tests:
+        # --tests is nargs="*": one flag carrying all values. A repeated
+        # --tests=... flag would let only the last value survive.
+        argv.append("--tests")
+        argv += [str(t) for t in tests]
+    argv += [str(s) for s in sources]
+
+    with ParserContext():
+        cap = compiletools.apptools.create_parser(f"{backend_cls.name()} real backend", argv=argv)
+        add_backend_arguments(cap)
+        ctx = BuildContext()
+        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
+        headerdeps = _headerdeps.create(args, context=ctx)
+        magicparser = _magicflags.create(args, headerdeps, context=ctx)
+        hunter = _hunter.Hunter(args, headerdeps, magicparser, context=ctx)
+        backend = backend_cls(args=args, hunter=hunter, context=ctx)
+        graph = backend.build_graph()
+    return backend, graph
+
+
+def find_result_markers(tmp_path):
+    """Return every ``.result`` test-success marker under *tmp_path*."""
+    return [os.path.join(dp, fn) for dp, _, files in os.walk(str(tmp_path)) for fn in files if fn.endswith(".result")]
+
+
+# A gtest-flavoured test fixture that writes its JUnit XML report when handed
+# ``--gtest_output=xml:PATH`` and *then* exits non-zero. The write-then-fail
+# ordering is what makes a backend's delete-output-on-failure behaviour
+# observable.
+_FAILING_GTEST_FIXTURE_SRC = (
+    '#include "unit_test.hpp"\n'
+    '#include "gtest/gtest.h"\n'
+    "#include <cstdio>\n"
+    "#include <cstring>\n"
+    "int main(int argc, char** argv) {\n"
+    '    static const char prefix[] = "--gtest_output=xml:";\n'
+    "    const size_t plen = sizeof(prefix) - 1;\n"
+    "    for (int i = 1; i < argc; ++i) {\n"
+    "        if (std::strncmp(argv[i], prefix, plen) == 0) {\n"
+    '            FILE* f = std::fopen(argv[i] + plen, "w");\n'
+    "            if (f != nullptr) {\n"
+    '                std::fputs("<testsuites>\\n", f);\n'
+    '                std::fputs("  <testsuite name=\\"stub\\" tests=\\"1\\" failures=\\"1\\"/>\\n", f);\n'
+    '                std::fputs("</testsuites>\\n", f);\n'
+    "                std::fclose(f);\n"
+    "            }\n"
+    "        }\n"
+    "    }\n"
+    "    return 1;\n"
+    "}\n"
+)
+
+
+def write_failing_gtest_fixture(tmp_path):
+    """Write a deliberately-failing gtest test fixture into *tmp_path*.
+
+    Framework detection trips on the ``gtest/gtest.h`` include-path token in
+    the transitive header set (not on any symbol), so an empty stub header is
+    sufficient. Also writes a ``unit_test.hpp`` stub so the file is recognised
+    as a test target. Returns the test source ``Path``.
+    """
+    (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
+    (tmp_path / "gtest").mkdir(exist_ok=True)
+    (tmp_path / "gtest" / "gtest.h").write_text("#pragma once\n")
+    test_src = tmp_path / "test_fail_gtest.cpp"
+    test_src.write_text(_FAILING_GTEST_FIXTURE_SRC)
+    return test_src
+
+
 def make_mock_hunter(sources=None, headers=None, magicflags_map=None, per_file_magicflags=None):
     """Create a MagicMock hunter with standard behavior.
 

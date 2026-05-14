@@ -135,21 +135,6 @@ class MakefileBackend(BuildBackend):
             "Useful for CI to detect missing dependencies.",
         )
 
-    def execute(self, target: str = "build") -> None:
-        """Invoke make to execute the build.
-
-        Overrides the base template's ``runtests`` handling: rather than
-        delegating to the legacy Python-side ``_run_tests`` sweep, route
-        ``execute("runtests")`` through the Makefile's own ``runtests`` phony
-        so standalone test runs use the same native, content-addressed
-        ``.result`` recipes as the in-build path. ``execute("build")`` falls
-        through to ``_execute_build``, which retargets ``build`` -> ``all``.
-        """
-        if target == "runtests":
-            self._execute_build("runtests")
-            return
-        super().execute(target)
-
     def generate(self, graph: BuildGraph, output=None) -> None:
         """Write Makefile from BuildGraph.
 
@@ -370,17 +355,7 @@ class MakefileBackend(BuildBackend):
             except FileNotFoundError:
                 pass
 
-        # ``execute("build")`` must drive the aggregate ``all`` phony, not the
-        # bare ``build`` phony. ``build`` depends only on the link/library
-        # outputs; ``all`` additionally depends on ``runtests`` (-> every test
-        # ``.result`` rule). Each test ``.result`` rule depends solely on its
-        # own exe, so make's ``-j`` scheduler runs each test the instant its
-        # link rule finishes — interleaved with continued compilation of
-        # unrelated TUs — instead of in a separate post-build sweep.
-        # ``runtests`` and explicit targets pass through verbatim so the
-        # ``execute("runtests")`` contract and ad-hoc ``make <target>`` calls
-        # still work.
-        make_target = "all" if target == "build" else target
+        make_target = self._native_target_for(target)
 
         make_version = compiletools.apptools.tool_version("make")
         cmd = ["make"]
