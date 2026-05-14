@@ -145,6 +145,14 @@ class CMakeBackend(BuildBackend):
         # never writes there). Use the legacy single-rule shape.
         return True
 
+    def _runs_tests_in_build_phase(self) -> bool:
+        """CMake runs each test as an ``add_custom_command`` build-graph node
+        gathered under a ``runtests ALL`` target, so ``cmake --build`` runs
+        every test concurrently with the rest of the build — cake.py skips the
+        legacy post-build ``runtests`` sweep.
+        """
+        return True
+
     @staticmethod
     def name() -> str:
         return "cmake"
@@ -258,16 +266,44 @@ class CMakeBackend(BuildBackend):
                     quoted = " ".join(f'"{opt}"' for opt in other_opts)
                     f.write(f"target_link_options({target_name} PRIVATE {quoted})\n")
 
-        # Register tests so `ctest` can run them standalone
-        test_rules = graph.rules_by_type(RuleType.TEST)
-        if test_rules:
-            f.write("\nenable_testing()\n")
-            for rule in test_rules:
-                if rule.inputs:
-                    exe_path = rule.inputs[0]
-                    test_name = mangle_target_name(os.path.splitext(os.path.basename(exe_path))[0])
-                    f.write(f'add_test(NAME {test_name} COMMAND "{exe_path}")\n')
-            f.write("\n")
+        # Tests are real build-graph nodes: each RuleType.TEST rule becomes an
+        # add_custom_command whose OUTPUT is the rule's output (the JUnit XML
+        # path for framework tests, else the .result marker) and whose COMMAND
+        # runs the test argv then touches the .result success marker. An
+        # aggregate ``runtests ALL`` target makes ``cmake --build`` run every
+        # test concurrently with the rest of the build — no ctest, no separate
+        # post-build phase. The test argv references the freshly built binary
+        # via $<TARGET_FILE:...>, not the user-facing exe path, which
+        # _copy_built_executables only populates after the build finishes.
+        test_outputs: list[str] = []
+        for rule in graph.rules_by_type(RuleType.TEST):
+            if not (rule.inputs and rule.command):
+                continue
+            exe_path = rule.inputs[0]
+            try:
+                exe_idx = rule.command.index(exe_path)
+            except ValueError:
+                continue
+            target_name = mangle_target_name(os.path.basename(exe_path))
+            test_argv = (
+                list(rule.command[:exe_idx]) + [f"$<TARGET_FILE:{target_name}>"] + list(rule.command[exe_idx + 1 :])
+            )
+            argv_str = " ".join(f'"{a}"' for a in test_argv)
+            f.write("\nadd_custom_command(\n")
+            f.write(f'    OUTPUT "{rule.output}"\n')
+            # -E make_directory is mkdir -p: a no-op when the dir already
+            # exists, required when rule.output is a JUnit XML file under
+            # <xml-dir>/<variant> that no link rule created.
+            f.write(f'    COMMAND "${{CMAKE_COMMAND}}" -E make_directory "{os.path.dirname(rule.output)}"\n')
+            f.write(f"    COMMAND {argv_str}\n")
+            f.write(f'    COMMAND "${{CMAKE_COMMAND}}" -E touch "{rule.success_marker}"\n')
+            f.write(f"    DEPENDS {target_name}\n")
+            f.write("    VERBATIM\n")
+            f.write(")\n")
+            test_outputs.append(rule.output)
+        if test_outputs:
+            deps = " ".join(f'"{o}"' for o in test_outputs)
+            f.write(f"\nadd_custom_target(runtests ALL DEPENDS {deps})\n")
 
     @staticmethod
     def _emit_compile_attrs(
@@ -337,9 +373,10 @@ class CMakeBackend(BuildBackend):
             build_cmd.extend(["--target", target])
         subprocess.check_call(build_cmd, text=True)
 
-        # Copy executables to namer paths (variant-specific dir) so that
-        # _run_tests can find test executables; cake._copyexes afterwards
-        # copies args.filename executables to topbindir / --output.
+        # Copy executables to namer paths (variant-specific dir) so the
+        # user-visible bin/ stays in sync; cake._copyexes afterwards copies
+        # args.filename executables to topbindir / --output. Tests already ran
+        # during ``cmake --build`` via the runtests target's custom commands.
         self._copy_built_executables(build_dir)
         # Copy built libraries to namer library paths so the second
         # cake.main() (linking the exe) can find them via -L/-l flags.

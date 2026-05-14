@@ -1,10 +1,14 @@
 """Unit tests for the CMake build backend (no compiler required)."""
 
 import io
+import shutil
+import subprocess
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import compiletools.testhelper as uth
 from compiletools.build_backend import extract_copts, extract_linkopts, get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.cmake_backend import CMakeBackend, _cmake_quote_copt, _filter_x_lang_copts, _separate_include_dirs
@@ -256,6 +260,51 @@ class TestCMakeGenerate:
 
         assert "config.h" in content
         assert "types.h" in content
+
+    def test_emits_custom_command_per_test(self):
+        """Each RuleType.TEST rule becomes an add_custom_command that runs the
+        freshly built binary via $<TARGET_FILE:...> and touches its .result
+        marker, gathered under a ``runtests ALL`` target — no ctest."""
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="obj/test_foo.o",
+                inputs=["test_foo.cpp"],
+                command=["g++", "-c", "test_foo.cpp", "-o", "obj/test_foo.o"],
+                rule_type="compile",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="bin/test_foo",
+                inputs=["obj/test_foo.o"],
+                command=["g++", "-o", "bin/test_foo", "obj/test_foo.o"],
+                rule_type="link",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="bin/test_foo.result",
+                inputs=["bin/test_foo"],
+                command=["bin/test_foo"],
+                rule_type="test",
+                success_marker="bin/test_foo.result",
+            )
+        )
+
+        backend = self._make_backend()
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        assert "add_custom_command(" in content
+        assert 'OUTPUT "bin/test_foo.result"' in content
+        assert "$<TARGET_FILE:test_foo>" in content
+        assert "DEPENDS test_foo" in content
+        assert "add_custom_target(runtests ALL DEPENDS" in content
+        # ctest is no longer involved.
+        assert "enable_testing" not in content
+        assert "add_test(" not in content
 
 
 class TestCmakeQuoteCopt:
@@ -599,3 +648,61 @@ class TestCppmPerSourceProperties:
         content = buf.getvalue()
 
         assert "set_source_files_properties" not in content
+
+
+@pytest.mark.skipif(shutil.which("cmake") is None, reason="cmake not on PATH")
+class TestCMakeRunsTestsInBuildPhase:
+    """CMakeBackend.execute("build") runs each test via its runtests-target
+    add_custom_command, so ``cmake --build`` runs the test as part of the
+    build — no separate post-build ``runtests`` phase.
+    """
+
+    def setup_method(self):
+        uth.reset()
+
+    def teardown_method(self):
+        uth.reset()
+
+    def test_capability_flag_is_true(self):
+        backend = CMakeBackend(args=SimpleNamespace(), hunter=MagicMock())
+        assert backend._runs_tests_in_build_phase() is True
+
+    @uth.requires_functional_compiler
+    def test_cmake_runs_tests_in_build(self, tmp_path, monkeypatch):
+        """After execute("build") — NOT execute("runtests") — the test's
+        ``.result`` success marker exists, proving the test ran during the
+        build phase."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
+        test_src = tmp_path / "test_pass.cpp"
+        test_src.write_text('#include "unit_test.hpp"\nint main() { return 0; }\n')
+
+        backend, graph = uth.build_real_backend(CMakeBackend, tmp_path, [], tests=[test_src])
+        with open(tmp_path / "CMakeLists.txt", "w") as f:
+            backend.generate(graph, output=f)
+
+        backend.execute("build")
+
+        assert uth.find_result_markers(tmp_path), (
+            "no .result marker after execute('build') — test did not run during the build phase"
+        )
+
+    @uth.requires_functional_compiler
+    def test_cmake_test_failure_fails_build(self, tmp_path, monkeypatch):
+        """A failing test must make execute("build") raise CalledProcessError,
+        and the failing test's ``.result`` marker must NOT be created (the
+        touch only runs after the test exits 0)."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
+        test_src = tmp_path / "test_fail.cpp"
+        test_src.write_text('#include "unit_test.hpp"\nint main() { return 1; }\n')
+
+        backend, graph = uth.build_real_backend(CMakeBackend, tmp_path, [], tests=[test_src])
+        with open(tmp_path / "CMakeLists.txt", "w") as f:
+            backend.generate(graph, output=f)
+
+        with pytest.raises(subprocess.CalledProcessError):
+            backend.execute("build")
+
+        results = uth.find_result_markers(tmp_path)
+        assert not results, f"failing test left a .result marker (touch ran despite rc!=0): {results}"
