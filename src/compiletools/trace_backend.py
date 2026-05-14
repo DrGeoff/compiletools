@@ -798,26 +798,40 @@ class SlurmBackend(ShakeBackend):
         )
 
     def _runs_tests_in_build_phase(self) -> bool:
-        # Slurm still uses the legacy post-build _run_tests() sweep; migrating it
-        # to the in-build test path is a later step. Without this override slurm
-        # would inherit ShakeBackend's True and cake.py would skip runtests
-        # entirely.
-        return False
+        """Slurm runs ``RuleType.TEST`` rules locally as part of the Phase 5
+        local-rule sweep — each test fires as soon as its exe's link rule
+        resolves, so cake.py skips the legacy post-build ``runtests`` sweep.
+        """
+        return True
 
     # ------------------------------------------------------------------
     # Core execute() — overrides ShakeBackend's async engine
 
     def execute(self, target: str = "build") -> None:
-        if target == "runtests":
-            self._run_tests()
-            return
-
         if self._graph is None:
             raise RuntimeError("generate() must be called before execute()")
 
         graph = self._graph
         trace_path = os.path.join(self.args.cas_objdir, self.build_filename())
         traces = TraceStore(trace_path)
+
+        # Each execute() call is a fresh traversal; clear any test failures
+        # aggregated by a prior call on the same backend instance.
+        self._test_failures = []
+
+        if target == "runtests":
+            # Standalone test run: exes were produced by a prior
+            # execute("build"). Run the graph's RuleType.TEST rules through
+            # the same local-rule path the in-build phase uses, after
+            # materialising any xml-bucket dirs they order-only depend on.
+            for rule in graph.rules_by_type("mkdir"):
+                os.makedirs(rule.output, exist_ok=True)
+            test_rules = list(graph.rules_by_type("test"))
+            if test_rules:
+                asyncio.run(self._run_local_async(test_rules, traces))
+            if self._test_failures:
+                raise RuntimeError("test execution failed:\n  " + "\n  ".join(self._test_failures))
+            return
 
         # Resolve (and create) the per-invocation diagnostics directory once,
         # so the three downstream sites (sbatch --output=, _invocation_log_paths,
@@ -1034,18 +1048,23 @@ class SlurmBackend(ShakeBackend):
 
         self._cleanup_slurm_logs()
 
-        # Phase 5: run link/library/other non-compile rules locally, in
+        # Phase 5: run link/library/test/other non-compile rules locally, in
         # parallel where dependency order permits.  Mirrors the Shake backend's
         # asyncio approach so independent links don't serialize on the
-        # submitter (I5).
-        # Test rules carry pure-argv commands and are touched by the Python
-        # test runner via execute("runtests"); they have no atomic-output
-        # semantics and must not pass through atomic_link.
-        local_rules = [r for r in graph.rules if r.rule_type not in ("phony", "mkdir", "compile", "clean", "test")]
+        # submitter (I5).  RuleType.TEST rules participate too — _run_local
+        # handles them as pure-argv invocations (no atomic_link) and a test
+        # rule's order_only_deps make it wait for its exe's link/symlink rule.
+        local_rules = [r for r in graph.rules if r.rule_type not in ("phony", "mkdir", "compile", "clean")]
         if local_rules:
             asyncio.run(self._run_local_async(local_rules, traces))
 
         self._record_link_signatures(graph)
+
+        # A failed test buffered itself in _test_failures instead of raising
+        # mid-sweep so sibling locals could finish; surface the aggregate now
+        # so a failing test makes ct-cake exit non-zero.
+        if self._test_failures:
+            raise RuntimeError("test execution failed:\n  " + "\n  ".join(self._test_failures))
 
     async def _run_local_async(self, local_rules: list[BuildRule], traces: TraceStore) -> None:
         """Run *local_rules* concurrently, respecting input-output dependencies.
@@ -1066,8 +1085,13 @@ class SlurmBackend(ShakeBackend):
         tasks: dict[str, asyncio.Task[None]] = {}
 
         async def run(rule: BuildRule) -> None:
-            # Wait for dependencies that are themselves local rules.
-            deps = [tasks[inp] for inp in rule.inputs if inp in tasks]
+            # Wait for dependencies that are themselves local rules. Both
+            # inputs and order_only_deps matter: a RuleType.TEST rule carries
+            # its exe in order_only_deps (CAS-only mode) or inputs (mtime
+            # mode), so the test must not fire before the link/symlink rule
+            # that produces it.
+            dep_names = list(rule.inputs) + list(rule.order_only_deps)
+            deps = [tasks[d] for d in dep_names if d in tasks]
             if deps:
                 await asyncio.gather(*deps)
             async with sem:
@@ -1695,6 +1719,26 @@ class SlurmBackend(ShakeBackend):
             return
 
         flat_cmd = list(rule.command)
+
+        if rule.rule_type == RuleType.TEST:
+            # Pure-argv test invocation -- NOT a build artefact, so no
+            # atomic-output / trace-store semantics. flat_cmd already carries
+            # TESTPREFIX + exe + framework XML argv, baked in at graph-build
+            # time by _test_command_for. Skip the re-run when the rule's
+            # output (the JUnit XML path for framework tests, else the
+            # .result marker) already exists: the exe bytes were tested
+            # before -- mirrors ShakeBackend and the make/ninja
+            # order-only-prereq rule. On success touch the .result marker; on
+            # failure append to _test_failures and let sibling locals finish
+            # (execute() raises the aggregate once the sweep returns).
+            if not getattr(self.args, "use_mtime", False) and os.path.exists(rule.output):
+                return
+            result = subprocess.run(flat_cmd)
+            if result.returncode == 0:
+                self._touch_result_marker(rule.success_marker or "")
+            else:
+                self._test_failures.append(f"{rule.output} (exit {result.returncode}): {' '.join(flat_cmd)}")
+            return
 
         if rule.rule_type in (RuleType.LINK, RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY):
             ca = self._ca_target(rule)

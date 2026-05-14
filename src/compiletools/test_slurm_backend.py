@@ -105,6 +105,9 @@ def SlurmBackendTestContext(graph, **arg_overrides):
         backend._graph = graph
         backend.namer = MagicMock()
         backend.context = BuildContext()
+        # __init__ is bypassed here; the in-build test-execution path appends
+        # failing tests to this list (ShakeBackend.__init__ would set it).
+        backend._test_failures = []
         if set_diag_dir:
             backend._diag_dir = compiletools.diagnostics.resolve_diagnostics_dir(args)
         yield backend, tmpdir
@@ -876,24 +879,36 @@ class TestLocalLink:
                 # Link routed through execute_link_rule (which wraps atomic_link)
                 assert mock_link.call_count == 1
 
-    def test_runtests_delegates_to_run_tests(self):
+    def test_runtests_runs_test_rules_locally(self):
+        """``execute("runtests")`` runs the graph's RuleType.TEST rules through
+        the local-rule path (``_run_local``) — the same path the in-build
+        sweep uses — not the legacy Python-side ``_run_tests`` sweep."""
+        result_path = "/tmp/ct-slurm-runtests/test_foo.result"
+        test_rule = BuildRule(
+            output=result_path,
+            inputs=[],
+            command=["/bin/true"],
+            rule_type="test",
+            order_only_deps=["/tmp/ct-slurm-runtests/test_foo"],
+            success_marker=result_path,
+        )
         graph = BuildGraph()
-        graph.add_rule(make_phony_rule("build"))
+        graph.add_rule(test_rule)
+        graph.add_rule(make_phony_rule("runtests", [result_path]))
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
-            with patch.object(backend, "_run_tests") as mock_run_tests:
+            with patch.object(backend, "_run_local") as mock_run_local:
                 backend.execute("runtests")
 
-        mock_run_tests.assert_called_once()
+        mock_run_local.assert_called_once()
+        assert mock_run_local.call_args[0][0] is test_rule
 
-    def test_runs_tests_in_build_phase_is_false(self):
-        """SlurmBackend subclasses ShakeBackend (which returns True), but slurm
-        still uses the legacy post-build ``_run_tests`` sweep — so it must
-        override the capability gate back to False, otherwise cake.py skips
-        ``execute("runtests")`` entirely. Migrating slurm to the in-build test
-        path must consciously flip this pin."""
+    def test_runs_tests_in_build_phase_is_true(self):
+        """SlurmBackend runs RuleType.TEST rules in the Phase 5 local-rule
+        sweep, so the capability gate reports True and cake.py skips the legacy
+        post-build ``runtests`` sweep."""
         backend = SlurmBackend.__new__(SlurmBackend)
-        assert backend._runs_tests_in_build_phase() is False
+        assert backend._runs_tests_in_build_phase() is True
 
     def test_generate_before_execute_required(self):
         args = SimpleNamespace(
@@ -2222,34 +2237,30 @@ class TestTracesAlwaysSaved:
 
 
 # ---------------------------------------------------------------------------
-# Test rules: must NOT pass through _run_local
+# Test rules: run locally as part of the Phase 5 sweep
 # ---------------------------------------------------------------------------
 
 
-class TestTestRulesAreNotExecutedLocally:
-    """Test rules carry pure-argv commands (no `&&`/`touch`); their .result
-    marker is touched by the Python test runner via execute("runtests"), not
-    by atomic_link.  If _execute_impl ever feeds a test rule to _run_local,
-    atomic_link would invoke the test exe with `&&`/`touch` as ignored argv,
-    return 0, and then _make_trace_entry would crash trying to hash the
-    never-touched .result file.  This test pins the filter that prevents
-    that regression.
+class TestTestRulesExecutedLocally:
+    """RuleType.TEST rules participate in the Phase 5 local-rule sweep:
+    _run_local handles them as pure-argv invocations (no atomic_link) and
+    touches their .result marker on success. This pins the filter that
+    includes them.
     """
 
-    def test_execute_impl_skips_test_rules(self, tmp_path):
+    def test_execute_impl_runs_test_rules_locally(self, tmp_path):
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         result_path = str(bin_dir / "test_foo.result")
-        graph = BuildGraph()
-        graph.add_rule(
-            BuildRule(
-                output=result_path,
-                inputs=[str(bin_dir / "test_foo")],
-                command=[str(bin_dir / "test_foo")],
-                rule_type="test",
-                success_marker=result_path,
-            )
+        test_rule = BuildRule(
+            output=result_path,
+            inputs=[str(bin_dir / "test_foo")],
+            command=[str(bin_dir / "test_foo")],
+            rule_type="test",
+            success_marker=result_path,
         )
+        graph = BuildGraph()
+        graph.add_rule(test_rule)
         graph.add_rule(make_phony_rule("runtests", [result_path]))
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
@@ -2260,7 +2271,61 @@ class TestTestRulesAreNotExecutedLocally:
                 traces = TraceStore(os.path.join(backend.args.cas_objdir, "traces.json"))
                 backend._execute_impl(graph, traces)
 
-            mock_run_local.assert_not_called()
+            mock_run_local.assert_called_once()
+            assert mock_run_local.call_args[0][0] is test_rule
+
+    @staticmethod
+    def _test_rule(tmp_path, command):
+        result_path = str(tmp_path / "test_foo.result")
+        return result_path, BuildRule(
+            output=result_path,
+            inputs=[],
+            command=command,
+            rule_type="test",
+            order_only_deps=[str(tmp_path / "test_foo")],
+            success_marker=result_path,
+        )
+
+    def test_run_local_touches_result_marker_on_success(self, tmp_path):
+        result_path, test_rule = self._test_rule(tmp_path, ["/bin/true"])
+        graph = BuildGraph()
+        graph.add_rule(test_rule)
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            traces = TraceStore(os.path.join(backend.args.cas_objdir, "traces.json"))
+            backend._run_local(test_rule, traces)
+            assert os.path.exists(result_path)
+            assert backend._test_failures == []
+
+    def test_run_local_buffers_failure_without_touching_marker(self, tmp_path):
+        result_path, test_rule = self._test_rule(tmp_path, ["/bin/false"])
+        graph = BuildGraph()
+        graph.add_rule(test_rule)
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            traces = TraceStore(os.path.join(backend.args.cas_objdir, "traces.json"))
+            backend._run_local(test_rule, traces)
+            assert not os.path.exists(result_path)
+            assert len(backend._test_failures) == 1
+
+    def test_execute_runtests_runs_and_marks_tests(self, tmp_path):
+        """execute("runtests") end-to-end: test rules run via the local sweep
+        and their .result markers are touched on success."""
+        result_path, test_rule = self._test_rule(tmp_path, ["/bin/true"])
+        graph = BuildGraph()
+        graph.add_rule(test_rule)
+        graph.add_rule(make_phony_rule("runtests", [result_path]))
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            backend.execute("runtests")
+        assert os.path.exists(result_path)
+
+    def test_execute_runtests_raises_on_failure(self, tmp_path):
+        result_path, test_rule = self._test_rule(tmp_path, ["/bin/false"])
+        graph = BuildGraph()
+        graph.add_rule(test_rule)
+        graph.add_rule(make_phony_rule("runtests", [result_path]))
+        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+            with pytest.raises(RuntimeError, match="test execution failed"):
+                backend.execute("runtests")
+        assert not os.path.exists(result_path)
 
 
 class TestScancelOnSignal:
