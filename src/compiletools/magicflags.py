@@ -1251,7 +1251,7 @@ class CppMagicFlags(MagicFlagsBase):
         # Get preprocessed text (existing logic)
         preprocessed_text = self._readfile(filename)
 
-        # Bulk-find scan: jump directly to linemarkers and magic flags via SIMD find
+        # Bulk-find scan: locate linemarkers and magic flags directly via SIMD find
         # instead of splitting into ~697K lines and checking each one.
         text = sz.Str(preprocessed_text)
         text_len = len(text)
