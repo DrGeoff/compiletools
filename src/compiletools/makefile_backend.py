@@ -191,6 +191,22 @@ class MakefileBackend(BuildBackend):
         """Write a complete Makefile from the BuildGraph."""
         f.write(f"{self._build_file_header_token()}\n\n")
         f.write(".DELETE_ON_ERROR:\n\n")
+        # A framework-detected test rule's ``output`` is its JUnit XML path
+        # (so make reruns the test when the XML is deleted), while
+        # ``success_marker`` stays the ``.result`` stamp. Such a test writes
+        # its XML report and *then* exits non-zero on failure — without this
+        # exemption ``.DELETE_ON_ERROR`` would delete the just-written XML,
+        # contradicting the contract that a failed test still leaves its
+        # report behind. ``.PRECIOUS`` exempts these targets from
+        # deletion-on-error (and on interrupt). Tests with no framework keep
+        # ``output == success_marker`` and are intentionally NOT protected.
+        precious_xml = [
+            rule.output
+            for rule in graph.rules
+            if rule.rule_type == RuleType.TEST and rule.output != rule.success_marker
+        ]
+        if precious_xml:
+            f.write(".PRECIOUS: " + " ".join(precious_xml) + "\n\n")
         f.write("MAKEFLAGS += -rR\n\n")
         if os.path.isfile("/bin/bash"):
             f.write("SHELL := /bin/bash\n\n")

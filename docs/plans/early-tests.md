@@ -48,6 +48,31 @@ The `test_execution` phase and the second `backend.execute("runtests")` call are
 Test events nest inside `build_execution` with `category="test"`; `aggregate_by_category` already
 breaks them out as a sub-row.
 
+### Shared test-rule graph shape (established by Task 2)
+
+Task 2 (make backend) settled the shape every later backend migration builds on. It rode in
+under a make-only commit, so it is documented here explicitly:
+
+- A `RuleType.TEST` rule's `success_marker` is **always** the `.result` marker.
+- Its `output` is the **JUnit XML path when a framework was detected** (so make/ninja rerun
+  the test if the XML is deleted — the `test_rerun_when_xml_deleted_between_runs` contract),
+  **otherwise** the `.result` marker. In other words `output != success_marker` iff a
+  framework (gtest/doctest/Catch2) was detected.
+- The `runtests` phony's inputs are therefore **heterogeneous**: `.result` for no-framework
+  tests, `.xml` for framework tests. That is literally `[r.output for r in test_rules]` and is
+  intentional — not a bug to "normalize."
+- When a framework test's `output` is an XML path, that path **must be `.PRECIOUS`** (or the
+  backend's equivalent delete-on-error exemption). A failing framework test writes its XML
+  report and *then* exits non-zero; without the exemption GNU Make's `.DELETE_ON_ERROR` would
+  delete the just-written report, contradicting the contract that a failed test still leaves
+  its report behind. The make backend emits `.PRECIOUS: <each framework-test xml output>`
+  alongside `.DELETE_ON_ERROR:`. Empirically verified against GNU Make 4.4.1
+  (`test_make_framework_test_failure_preserves_xml`).
+- `_build_graph` emits a `mkdir` rule for `<xml-dir>/<variant>` as an order-only dep of every
+  test rule (the legacy `_run_tests` path used to `os.makedirs` this itself).
+- `_all_outputs_current` has a `RuleType.TEST` branch gated on `_runs_tests_in_build_phase()`
+  — a no-op for un-migrated backends.
+
 ## Tasks
 
 Each task is implemented + reviewed + committed before the next one starts.
@@ -146,8 +171,20 @@ for in-build test execution`
    the Chrome trace tags them `category="test"` instead of falling through to `_classify_output`
    (which would guess from extension and miss bare-name test execs).
 
+**Note (delete-on-error parity):** ninja already emits framework test rules with
+`output=<xml_path>` into `build.ninja` (see "Shared test-rule graph shape" above). Make needed
+`.PRECIOUS` because `.DELETE_ON_ERROR` deletes a failed recipe's target. Task 3 must ensure
+ninja has an equivalent exemption for framework-test XML outputs — but **verify ninja's actual
+behavior rather than assume**: ninja does NOT delete outputs on failure by default (only on
+interrupt, and only for outputs it considers "restat"-tracked), so ninja may need no
+`.PRECIOUS` equivalent at all. Confirm with a failing-framework-test ninja build that the XML
+survives; if it does, document that ninja needs nothing here.
+
 **Tests:**
 - `test_ninja_runs_tests_in_build`: same shape as the make version.
+- `test_ninja_framework_test_failure_preserves_xml`: failing framework test, assert the XML
+  survives the failed ninja build (the ninja analogue of
+  `test_make_framework_test_failure_preserves_xml`).
 - `test_ninja_log_classifies_test_rules`: feed a synthetic `.ninja_log` plus a graph with a
   test rule; assert the resulting event has `category="test"`.
 
@@ -173,6 +210,15 @@ wherever shake tests live)
    - Record per-rule timing via the existing path.
 4. After `_do_build` returns from the top-level call, raise `RuntimeError` if
    `self._test_failures` is non-empty.
+
+**Note (dual `output` shape):** `trace_backend.py`'s `_make_trace_entry` raises if a rule
+succeeded but `rule.output` is missing on disk. Shake's `_do_build` currently early-returns for
+`RuleType.TEST`; when step 2 removes that early-return, the handler must be aware that a test
+rule's `output` may be the JUnit XML path (framework tests) **or** the `.result` marker
+(no-framework tests) — see "Shared test-rule graph shape" above. Both files exist on a
+successful test run (the framework writes the XML, then `&& touch` / `_touch_result_marker`
+writes `.result`), so `_make_trace_entry` is fine on the success path; just don't assume
+`output` is always `.result`.
 
 **Tests:**
 - `test_shake_runs_tests_in_build`: same shape.

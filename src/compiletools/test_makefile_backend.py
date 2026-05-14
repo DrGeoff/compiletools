@@ -1408,6 +1408,91 @@ class TestMakeRunsTestsInBuildPhase:
         results = [os.path.join(dp, fn) for dp, _, files in os.walk(tmp_path) for fn in files if fn.endswith(".result")]
         assert not results, f"failing test left a .result marker (touch ran despite rc!=0): {results}"
 
+    @uth.requires_functional_compiler
+    def test_make_framework_test_failure_preserves_xml(self, tmp_path, monkeypatch):
+        """A failing framework-detected test writes its JUnit XML report and
+        *then* exits non-zero. Because the test rule's ``output`` is the XML
+        path, ``.DELETE_ON_ERROR`` would delete that just-written report --
+        contradicting the spec contract that a failed test still leaves its
+        report behind. The XML target must be ``.PRECIOUS`` so it survives.
+
+        Asserts:
+          - execute("build") raises CalledProcessError (test failure halts),
+          - the failing test's ``.result`` marker is NOT created,
+          - the JUnit XML file DOES still exist after the failed build.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
+        # Stub gtest header: framework detection trips on the include-path
+        # token "gtest/gtest.h" in the transitive header set, not on any
+        # symbol -- so an empty header is sufficient (mirrors the e2e fixture
+        # under samples/test_xml_output/gtest/gtest.h).
+        (tmp_path / "gtest").mkdir()
+        (tmp_path / "gtest" / "gtest.h").write_text("#pragma once\n")
+        # A gtest-flavoured fixture that writes its JUnit XML when handed
+        # --gtest_output=xml:PATH and THEN returns 1. The write-then-fail
+        # ordering is what makes .DELETE_ON_ERROR vs .PRECIOUS observable.
+        test_src = tmp_path / "test_fail_gtest.cpp"
+        test_src.write_text(
+            '#include "unit_test.hpp"\n'
+            '#include "gtest/gtest.h"\n'
+            "#include <cstdio>\n"
+            "#include <cstring>\n"
+            "int main(int argc, char** argv) {\n"
+            '    static const char prefix[] = "--gtest_output=xml:";\n'
+            "    const size_t plen = sizeof(prefix) - 1;\n"
+            "    for (int i = 1; i < argc; ++i) {\n"
+            "        if (std::strncmp(argv[i], prefix, plen) == 0) {\n"
+            '            FILE* f = std::fopen(argv[i] + plen, "w");\n'
+            "            if (f != nullptr) {\n"
+            '                std::fputs("<testsuites>\\n", f);\n'
+            '                std::fputs("  <testsuite name=\\"stub\\" tests=\\"1\\" failures=\\"1\\"/>\\n", f);\n'
+            '                std::fputs("</testsuites>\\n", f);\n'
+            "                std::fclose(f);\n"
+            "            }\n"
+            "        }\n"
+            "    }\n"
+            "    return 1;\n"
+            "}\n"
+        )
+
+        xml_dir = tmp_path / "junit"
+        backend, graph = self._build_backend(
+            tmp_path, [], tests=[test_src], extra_argv=["--test-xml-dir=" + str(xml_dir)]
+        )
+
+        # The framework test rule's output must be the XML path (not the
+        # .result marker) for the .PRECIOUS protection to be exercised.
+        test_rules = [r for r in graph.rules if r.rule_type == "test"]
+        assert len(test_rules) == 1
+        xml_rule = test_rules[0]
+        assert xml_rule.output != xml_rule.success_marker, (
+            "framework was not detected -- test rule output is still the .result marker"
+        )
+        assert xml_rule.output.endswith(".xml")
+        xml_path = xml_rule.output
+
+        makefile = tmp_path / "Makefile"
+        with open(makefile, "w") as f:
+            backend.generate(graph, output=f)
+        # The makefile must mark the XML target .PRECIOUS.
+        assert f".PRECIOUS: {xml_path}" in makefile.read_text() or any(
+            xml_path in line for line in makefile.read_text().splitlines() if line.startswith(".PRECIOUS:")
+        ), "framework-test XML output is not .PRECIOUS in the generated makefile"
+
+        with pytest.raises(subprocess.CalledProcessError):
+            backend.execute("build")
+
+        results = [os.path.join(dp, fn) for dp, _, files in os.walk(tmp_path) for fn in files if fn.endswith(".result")]
+        assert not results, f"failing test left a .result marker (touch ran despite rc!=0): {results}"
+        assert os.path.exists(xml_path), (
+            f"JUnit XML at {xml_path} was deleted by .DELETE_ON_ERROR -- "
+            f".PRECIOUS did not protect it. tmp_path contents: "
+            f"{[os.path.join(dp, fn) for dp, _, files in os.walk(tmp_path) for fn in files]}"
+        )
+        with open(xml_path) as xf:
+            assert "<testsuites>" in xf.read()
+
 
 class TestMakefileTestEchoTarget:
     """Sub-change 4: the TEST-rule echo line must reference the test exe,
