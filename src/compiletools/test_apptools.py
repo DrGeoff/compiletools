@@ -905,6 +905,99 @@ class TestTestCompilerFunctionality:
             assert _test_compiler_functionality("fake_compiler") is False
 
 
+class TestCompilerDefaultCxxStd:
+    """Tests for ``compiler_default_cxx_std`` — the helper that asks
+    a compiler what its natural default C++ dialect is, used by
+    ``bazel_backend`` to align bazel's ``--cxxopt=-std=`` with the
+    compiler's actual default so prebuilt PCH/BMI artefacts match
+    consumer compiles inside bazel's sandbox."""
+
+    def test_returns_none_for_empty_input(self):
+        from compiletools.apptools import compiler_default_cxx_std
+
+        assert compiler_default_cxx_std(None) is None
+        assert compiler_default_cxx_std("") is None
+
+    def test_returns_none_for_nonexistent_compiler(self):
+        from compiletools.apptools import compiler_default_cxx_std
+
+        assert compiler_default_cxx_std("nonexistent_compiler_xyz_999") is None
+
+    def test_returns_none_when_compiler_exits_nonzero(self):
+        from compiletools.apptools import clear_cache, compiler_default_cxx_std
+
+        clear_cache()
+        with patch(
+            "subprocess.run",
+            return_value=MagicMock(returncode=1, stdout=""),
+        ):
+            assert compiler_default_cxx_std("fake_cxx") is None
+        clear_cache()
+
+    def test_returns_none_when_macro_missing(self):
+        from compiletools.apptools import clear_cache, compiler_default_cxx_std
+
+        clear_cache()
+        # Compiler ran but its -dM output didn't include __cplusplus
+        # (would happen with a bogus -x mode, or a compiler that
+        # doesn't speak C++).
+        with patch(
+            "subprocess.run",
+            return_value=MagicMock(returncode=0, stdout="#define __STDC_VERSION__ 201112L\n"),
+        ):
+            assert compiler_default_cxx_std("fake_cxx") is None
+        clear_cache()
+
+    @pytest.mark.parametrize(
+        "cplusplus_value,expected",
+        [
+            ("199711L", "-std=gnu++98"),
+            ("201103L", "-std=gnu++11"),
+            ("201402L", "-std=gnu++14"),
+            ("201703L", "-std=gnu++17"),
+            ("202002L", "-std=gnu++20"),
+            ("202302L", "-std=gnu++23"),
+            ("202602L", "-std=gnu++26"),
+        ],
+    )
+    def test_maps_cplusplus_to_gnu_dialect(self, cplusplus_value, expected):
+        """Each canonical ``__cplusplus`` value maps to a ``gnu++NN``
+        dialect — never strict ``c++NN``, because both gcc and clang
+        default to gnu mode and switching to strict mode would
+        undefine non-ISO built-ins (``unix``, ``linux``) and invalidate
+        any prebuilt PCH that recorded them."""
+        from compiletools.apptools import clear_cache, compiler_default_cxx_std
+
+        clear_cache()
+        with patch(
+            "subprocess.run",
+            return_value=MagicMock(
+                returncode=0,
+                stdout=f"#define __cplusplus {cplusplus_value}\n",
+            ),
+        ):
+            assert compiler_default_cxx_std("fake_cxx") == expected
+        clear_cache()
+
+    def test_unknown_future_value_falls_back_to_closest_known(self):
+        """A ``__cplusplus`` value newer than any in our dialect map
+        (e.g. a hypothetical c++29 with value 202902) falls back to
+        the closest known value below — ``gnu++NN`` is forward-
+        compatible with future minor revisions."""
+        from compiletools.apptools import clear_cache, compiler_default_cxx_std
+
+        clear_cache()
+        with patch(
+            "subprocess.run",
+            return_value=MagicMock(
+                returncode=0,
+                stdout="#define __cplusplus 202902L\n",  # hypothetical c++29
+            ),
+        ):
+            assert compiler_default_cxx_std("fake_cxx") == "-std=gnu++26"
+        clear_cache()
+
+
 class TestVerbosePrintConfig:
     def test_verbose_level_2(self):
         args = SimpleNamespace(verbose=2, variant="gcc.debug")

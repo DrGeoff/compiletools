@@ -1672,12 +1672,85 @@ def compiler_kind(cxx: str | None) -> str:
     return "unknown"
 
 
+@functools.lru_cache(maxsize=64)
+def compiler_default_cxx_std(cxx: str | None) -> str | None:
+    """Return the ``-std=`` flag matching the compiler's natural default
+    C++ dialect, e.g. ``-std=gnu++20`` for gcc-16, ``-std=gnu++17`` for
+    clang-21. Returns ``None`` if the default cannot be determined.
+
+    Used to align PCH/BMI prebuilt artefacts with downstream consumer
+    compiles when the user hasn't explicitly set ``-std=`` in CXXFLAGS.
+    Different compilers (and different versions of the same compiler)
+    pick different defaults — gcc-16 ships ``gnu++20``, clang-21 ships
+    ``gnu++17`` — and a hardcoded fallback would silently desync one
+    of them. Bazel's ``rules_cc`` autoconfig appends its own
+    ``-std=c++17`` to every C++ action; without aligning to the
+    compiler's actual default, the prebuilt artefact and the bazel-
+    spawned consumer end up at different dialects and gcc rejects the
+    PCH (``__cpp_impl_three_way_comparison not defined``) or the BMI
+    (``language dialect differs 'C++20', expected 'C++17'``).
+
+    Always returns the ``gnu++`` mode (preserving non-ISO built-ins
+    like ``unix``, ``linux``, ``__unix__``) rather than strict
+    ``c++`` mode — gcc/clang both default to gnu mode, and switching
+    to strict mode would itself invalidate PCH (``unix not defined``).
+
+    Implementation: invokes ``<cxx> -dM -E -x c++ /dev/null`` and
+    parses the ``__cplusplus`` macro value. Cached by ``cxx`` string.
+    """
+    if not cxx or not isinstance(cxx, str):
+        return None
+    cmd = shlex.split(cxx) + ["-dM", "-E", "-x", "c++", os.devnull]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    # Parse `#define __cplusplus 202002L` etc.
+    cplusplus_value: int | None = None
+    for line in result.stdout.splitlines():
+        if line.startswith("#define __cplusplus "):
+            tok = line.split()[-1].rstrip("Ll")
+            try:
+                cplusplus_value = int(tok)
+            except ValueError:
+                return None
+            break
+    if cplusplus_value is None:
+        return None
+    # Map __cplusplus value → gnu++NN dialect string. Values are the
+    # ISO C++ feature-test macro: 199711 (C++98), 201103 (C++11),
+    # 201402 (C++14), 201703 (C++17), 202002 (C++20), 202302 (C++23),
+    # and forward-compat for unreleased standards.
+    _STD_MAP = {
+        199711: "gnu++98",
+        201103: "gnu++11",
+        201402: "gnu++14",
+        201703: "gnu++17",
+        202002: "gnu++20",
+        202302: "gnu++23",
+        202602: "gnu++26",
+    }
+    dialect = _STD_MAP.get(cplusplus_value)
+    if dialect is None:
+        # Unknown future value — pick the closest known dialect ≤ value.
+        # gnu++NN is forward-compatible (a c++23 compiler accepts
+        # `-std=gnu++23` even if it predates the c++23 spec).
+        known = sorted(k for k in _STD_MAP if k <= cplusplus_value)
+        if not known:
+            return None
+        dialect = _STD_MAP[known[-1]]
+    return f"-std={dialect}"
+
+
 def clear_cache():
     """Clear any caches for macro extraction and pkg-config."""
     cached_pkg_config.cache_clear()
     _get_functional_cxx_compiler_cached.cache_clear()
     compiler_identity.cache_clear()
     compiler_kind.cache_clear()
+    compiler_default_cxx_std.cache_clear()
     find_system_std_module_source.cache_clear()
 
 

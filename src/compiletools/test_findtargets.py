@@ -69,6 +69,7 @@ class TestFindTargetsModule:
             "parse_order_macro_bug/libs/entry_point_1.cpp",
             "parse_order_macro_bug/libs/entry_point_2.cpp",
             "pch/pch_user.cpp",
+            "pch_bypass_bug/consumer.cpp",
             "pkgconfig/main.cpp",
             "pkgconfig_cycle/main.cpp",
             "platform_has_include/platform_main.cpp",

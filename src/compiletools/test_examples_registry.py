@@ -15,8 +15,8 @@ def test_e2e_registry_size():
 
 
 def test_features_registry_size():
-    """Spec pins 23 entries in examples-features."""
-    assert len(er.EXAMPLES_FEATURES) == 23
+    """Spec pins 24 entries in examples-features."""
+    assert len(er.EXAMPLES_FEATURES) == 24
 
 
 def test_registries_are_disjoint():

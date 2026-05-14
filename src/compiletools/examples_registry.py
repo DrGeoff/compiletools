@@ -81,6 +81,7 @@ EXAMPLES_FEATURES: frozenset[str] = frozenset(
         "magicpkgconfig",
         "magicpkgconfig_fake",
         "parse_order_macro_bug",
+        "pch_bypass_bug",
         "pkg_config_header_deps",
         "pkgconfig",
         "pkgs",

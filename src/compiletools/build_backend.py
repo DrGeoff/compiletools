@@ -276,6 +276,16 @@ def split_compound_args(args: list[str]) -> list[str]:
     return result
 
 
+_DETACHED_ARG_FLAGS: frozenset[str] = frozenset({"-include"})
+"""Compiler flags whose argument is a separate token (the ``-flag value``
+form) and must be preserved in copts as a 2-token pair. Without this
+list, the value would be dropped by the ``not arg.startswith("-")``
+guard in :func:`extract_copts`, producing an orphan flag that the
+receiving backend translates into a malformed compile command (e.g.
+gcc consuming cmake's downstream ``-MD`` as the missing file argument
+to ``-include``)."""
+
+
 def extract_copts(command: list[str], *, strip_includes: bool = False) -> list[str]:
     """Extract compiler flags from a compile command.
 
@@ -283,6 +293,9 @@ def extract_copts(command: list[str], *, strip_includes: bool = False) -> list[s
     When strip_includes is True, drops all -I/-isystem/-iquote flags
     (needed by Bazel which manages include paths itself).
     When False, recombines space-separated ``-I <dir>`` into ``-I<dir>``.
+    Detached-argument flags listed in :data:`_DETACHED_ARG_FLAGS` (e.g.
+    ``-include <header>``) are preserved as the original 2-token pair —
+    gcc has no joined form for these, so we must not collapse them.
     """
     if not command:
         return []
@@ -290,6 +303,7 @@ def extract_copts(command: list[str], *, strip_includes: bool = False) -> list[s
     copts = []
     skip_next = False
     include_next = False
+    keep_next = False
     for arg in args:
         if skip_next:
             skip_next = False
@@ -298,6 +312,10 @@ def extract_copts(command: list[str], *, strip_includes: bool = False) -> list[s
             if not strip_includes:
                 copts.append(f"-I{arg}")
             include_next = False
+            continue
+        if keep_next:
+            copts.append(arg)
+            keep_next = False
             continue
         if arg == "-c":
             continue
@@ -314,6 +332,10 @@ def extract_copts(command: list[str], *, strip_includes: bool = False) -> list[s
                 continue
             if arg.startswith("-I") and len(arg) > 2:
                 continue
+        if arg in _DETACHED_ARG_FLAGS:
+            copts.append(arg)
+            keep_next = True
+            continue
         if not arg.startswith("-"):
             continue
         copts.append(arg)
@@ -611,7 +633,7 @@ class BuildBackend(abc.ABC):
         them. Running them here lands the artefacts on disk so the per-TU
         compile commands the native tool subsequently runs find them via the
         already-baked ``-fmodule-file=`` / ``-fmodule-mapper=`` /
-        ``-I <pchdir>/<hash>`` flags. Locking via ``atomic_compile`` /
+        ``-include <pchdir>/<hash>/<basename>`` flags. Locking via ``atomic_compile`` /
         ``atomic_link`` lets peer ct-cake invocations sharing a CAS dir
         cooperate.
 
@@ -911,6 +933,18 @@ class BuildBackend(abc.ABC):
                     cxx_command=self.args.CXX,
                     context=self.context,
                     anchor_root=self._anchor_root,
+                )
+                # Stage a copy of the .h alongside the .gch so the consumer's
+                # `-include <cache>/<basename>` directive resolves correctly
+                # in every gcc fallback path (e.g. when bazel's rules_cc adds
+                # `-U_FORTIFY_SOURCE` / `-fstack-protector` etc. that
+                # invalidate the cached PCH at consume time, gcc would error
+                # "No such file or directory" trying to open the bare .h).
+                # Hardlink first (zero disk-cost), copy fallback if EXDEV.
+                # Idempotent: safe across racing ct-cake invocations.
+                _stage_pch_header_alongside_gch(
+                    pch_header,
+                    os.path.join(pchdir, cmd_hash, os.path.basename(pch_header)),
                 )
 
             pch_deps = [pch_header] + sorted(str(d) for d in self.hunter.header_dependencies(pch_header))
@@ -2640,7 +2674,7 @@ class BuildBackend(abc.ABC):
         magicflags = self.hunter.magicflags(filename)
 
         # Add PCH .gch dependency if this source uses a precompiled header.
-        # Collect -I flags for the PCH CAS so GCC finds the cached .gch.
+        # Wire the cached .gch into the consumer compile via `-include`.
         pch_include_flags: list[str] = []
         for pch_header in magicflags.get(sz.Str("PCH"), []):
             pch_header_str = str(pch_header)
@@ -2649,7 +2683,16 @@ class BuildBackend(abc.ABC):
                 prerequisites.append(gch_path)
             include_dir = self._pch_include_dirs.get(pch_header_str)
             if include_dir:
-                pch_include_flags.extend(["-I", include_dir])
+                # Must be `-include <cache>/<header>`, NOT `-I <cache>`.
+                # GCC's `#include "header"` resolution searches the
+                # source-file directory before any `-I` dir, so `-I <cache>`
+                # is bypassed whenever the PCH header coexists with the
+                # consumer source — common for private per-TU PCH. The
+                # absolute `-include` form opens <cache>/<header>.gch
+                # unconditionally (PCH lookup is sibling-to-resolved-path).
+                # See examples-features/pch_bypass_bug/.
+                staged_h = os.path.join(include_dir, os.path.basename(pch_header_str))
+                pch_include_flags.extend(["-include", staged_h])
 
         dep_hash = self.namer.compute_dep_hash(deplist)
         macro_state_hash = self.hunter.macro_state_hash(filename, dep_hash=dep_hash)
@@ -3429,13 +3472,73 @@ def _pcm_command_hash(
     return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()[:16]
 
 
+def _stage_pch_header_alongside_gch(source_header: str, staged_path: str) -> None:
+    """Place a copy of *source_header* at *staged_path* so the consumer's
+    ``-include <staged_path>`` directive resolves to a real file on disk
+    even when GCC has to fall back from the cached ``.gch``.
+
+    Background. The consumer compile uses ``-include <cache>/<basename>``
+    (NOT ``-I <cache>``) to force GCC to load the cached precompiled
+    header — see the rationale comment in ``BuildBackend._create_compile_rule``.
+    GCC's ``-include`` semantics are: try ``<path>.gch`` first; if it
+    matches and validates, use it; otherwise open ``<path>`` itself as
+    a regular header. The fallback path is rare (compiler upgrades
+    that don't change ``compiler_identity``, or backends like Bazel
+    whose ``rules_cc`` injects flags the PCH wasn't built with), but
+    when it fires the bare header MUST exist at the cache path or
+    GCC reports ``No such file or directory`` and the build aborts.
+
+    Mechanism. Try ``os.link`` first — atomic, zero disk cost (one
+    inode shared with the original), survives concurrent stagings.
+    Fall back to ``shutil.copy2`` on ``EXDEV`` (cross-filesystem
+    cache) or any other ``OSError``. Idempotent: a successful
+    staging from a peer ct-cake invocation is treated as success.
+
+    Cleanup. ``ct-trim-cache`` already evicts entries by hash-dir,
+    so the staged ``.h`` is reaped together with its sibling ``.gch``
+    and ``manifest.json``.
+    """
+    if os.path.lexists(staged_path):
+        # A peer staging won the race, or this same invocation already
+        # ran (this codepath fires per-PCH-per-build_graph call).
+        return
+    if not os.path.exists(source_header):
+        # No source on disk to stage. In production this means
+        # headerdeps would have already raised; here we silently
+        # no-op so unit tests with mocked hunters that pass synthetic
+        # paths don't crash. The downstream consumer compile will
+        # report a clear error if the bare .h is ever needed.
+        return
+    os.makedirs(os.path.dirname(staged_path), exist_ok=True)
+    try:
+        os.link(source_header, staged_path)
+        return
+    except FileExistsError:
+        return  # Lost a race; the file is now staged.
+    except OSError:
+        # EXDEV (cross-FS), EPERM (no link permission), etc. Fall through.
+        pass
+    # Copy fallback. Use a temp + atomic rename so a concurrent reader
+    # never sees a partial file.
+    tmp_path = f"{staged_path}.staging.{os.getpid()}"
+    try:
+        shutil.copy2(source_header, tmp_path)
+        os.replace(tmp_path, staged_path)
+    except FileExistsError:
+        # Lost a race during rename; clean up the temp.
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 def _gch_path(header: str, pchdir: str | None = None, command_hash: str | None = None) -> str:
     """Return the precompiled header output path for a header file.
 
     When *pchdir* and *command_hash* are provided the .gch is placed under
     ``<pchdir>/<command_hash>/<basename>.gch`` so that GCC can find it via
-    ``-I <pchdir>/<command_hash>/``.  Otherwise falls back to the legacy
-    ``header.gch`` path next to the header.
+    ``-include <pchdir>/<command_hash>/<basename>``.  Otherwise falls back
+    to the legacy ``header.gch`` path next to the header.
     """
     if pchdir and command_hash:
         return os.path.join(pchdir, command_hash, os.path.basename(header) + ".gch")

@@ -253,18 +253,25 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
             assert len(parts[0]) == 16, f"Hash dir should be 16 chars, got: {parts[0]}"
             assert parts[1] == "stdafx.h.gch"
 
-            # Verify source compile command includes -I for the pchdir hash dir
+            # Verify source compile loads the cached PCH via `-include
+            # <pchdir>/<hash>/<basename>` (NOT `-I <pchdir>/<hash>` — see
+            # examples-features/pch_bypass_bug/).
             source_rules = [r for r in compile_rules if not r.output.endswith(".gch")]
             assert source_rules, f"{backend_name}: expected source compile rules"
             source_cmd = source_rules[0].command
             assert source_cmd is not None
-            assert "-I" in source_cmd, f"{backend_name}: source compile should include -I for pchdir"
-            pch_i_indices = [
+            assert "-include" in source_cmd, (
+                f"{backend_name}: source compile should -include the cached PCH; cmd={source_cmd}"
+            )
+            pch_inc_indices = [
                 i
                 for i, tok in enumerate(source_cmd)
-                if tok == "-I" and i + 1 < len(source_cmd) and source_cmd[i + 1].startswith(pchdir + "/")
+                if tok == "-include" and i + 1 < len(source_cmd) and source_cmd[i + 1].startswith(pchdir + "/")
             ]
-            assert pch_i_indices, f"{backend_name}: no -I points to pchdir hash dir; cmd={source_cmd}"
+            assert pch_inc_indices, f"{backend_name}: no -include points under pchdir; cmd={source_cmd}"
+            # Also assert the staged path basename matches the PCH header.
+            staged = source_cmd[pch_inc_indices[0] + 1]
+            assert staged.endswith("/stdafx.h"), staged
 
             os.makedirs(bindir, exist_ok=True)
             _run_backend_build(backend, backend_name, graph, effective_tmp, monkeypatch=monkeypatch, capfd=capfd)

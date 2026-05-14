@@ -892,8 +892,16 @@ class TestBuildGraphPopulation:
         assert len(gch_rules) == 1
         assert gch_rules[0].output == "/src/stdafx.h.gch"
 
-    def test_source_compile_includes_pch_include_dir(self, tmp_path):
-        """Source compile commands get -I <pchdir>/<hash>/ when pchdir is set."""
+    def test_source_compile_includes_pch_via_include_flag(self, tmp_path):
+        """Source compile commands get ``-include <pchdir>/<hash>/<basename>``
+        when pchdir is set.
+
+        Must NOT be ``-I <pchdir>/<hash>``: GCC's quoted-include
+        resolution searches the source-file dir first, so an `-I` flag
+        is bypassed whenever the PCH header coexists with the consumer
+        source. The absolute `-include` form opens the cached `.gch`
+        unconditionally. Regression guard for the bug demonstrated in
+        examples-features/pch_bypass_bug/."""
         import stringzilla as sz
 
         pchdir = str(tmp_path / "pch")
@@ -914,10 +922,20 @@ class TestBuildGraphPopulation:
         source_rules = [r for r in graph.rules if r.output.endswith("main.o")]
         assert len(source_rules) == 1
         cmd = _cmd(source_rules[0])
-        i_idx = cmd.index("-I")
-        include_dir = cmd[i_idx + 1]
-        assert include_dir.startswith(pchdir + "/")
-        assert len(include_dir.split("/")[-1]) == 16  # hash directory
+        inc_idx = cmd.index("-include")
+        staged_h = cmd[inc_idx + 1]
+        assert staged_h.startswith(pchdir + "/"), staged_h
+        hash_dir, basename = staged_h.rsplit("/", 1)
+        assert len(hash_dir.split("/")[-1]) == 16  # 16-char hash directory
+        assert basename == "stdafx.h"
+        # Negative: no PCH-specific -I leak from pre-fix behaviour.
+        pch_i_indices = [
+            i for i, tok in enumerate(cmd) if tok == "-I" and i + 1 < len(cmd) and cmd[i + 1].startswith(pchdir + "/")
+        ]
+        assert not pch_i_indices, (
+            "PCH wiring regressed to `-I <pchdir>` form, which GCC bypasses "
+            f"when the header coexists with the consumer source. cmd={cmd}"
+        )
 
     def test_pchdir_mkdir_rule_created(self, tmp_path):
         """A mkdir rule is created for each PCH hash subdirectory."""
@@ -969,8 +987,9 @@ class TestBuildGraphPopulation:
         basenames = sorted(os.path.basename(r.output) for r in gch_rules)
         assert basenames == ["alpha.h.gch", "beta.h.gch"]
 
-    def test_multiple_pch_headers_source_gets_multiple_include_dirs(self, tmp_path):
-        """Source using multiple PCH headers gets -I for each."""
+    def test_multiple_pch_headers_source_gets_multiple_include_flags(self, tmp_path):
+        """Source using multiple PCH headers gets one ``-include`` per
+        header, each pointing under ``<pchdir>/<hash>/<basename>``."""
         import stringzilla as sz
 
         pchdir = str(tmp_path / "pch")
@@ -992,13 +1011,15 @@ class TestBuildGraphPopulation:
         source_rules = [r for r in graph.rules if r.output.endswith("main.o")]
         assert len(source_rules) == 1
         cmd = _cmd(source_rules[0])
-        i_indices = [i for i, v in enumerate(cmd) if v == "-I"]
-        assert len(i_indices) == 2, f"Expected 2 -I flags, got {len(i_indices)}"
-        include_dirs = [cmd[i + 1] for i in i_indices]
-        assert all(d.startswith(pchdir + "/") for d in include_dirs)
+        inc_indices = [i for i, v in enumerate(cmd) if v == "-include"]
+        assert len(inc_indices) == 2, f"Expected 2 -include flags, got {len(inc_indices)}"
+        staged_paths = [cmd[i + 1] for i in inc_indices]
+        assert all(p.startswith(pchdir + "/") for p in staged_paths), staged_paths
+        basenames = sorted(os.path.basename(p) for p in staged_paths)
+        assert basenames == ["alpha.h", "beta.h"]
 
-    def test_no_pch_include_dir_when_pchdir_unset(self, tmp_path):
-        """When pchdir is None, no -I flags are injected for PCH."""
+    def test_no_pch_include_flag_when_pchdir_unset(self, tmp_path):
+        """When pchdir is None, no PCH-specific ``-include`` is injected."""
         import stringzilla as sz
 
         pch_flags = {
@@ -1017,7 +1038,7 @@ class TestBuildGraphPopulation:
 
         source_rules = [r for r in graph.rules if r.output.endswith("main.o")]
         assert len(source_rules) == 1
-        assert "-I" not in _cmd(source_rules[0])
+        assert "-include" not in _cmd(source_rules[0])
 
 
 class TestCompilerWrapperSplit:

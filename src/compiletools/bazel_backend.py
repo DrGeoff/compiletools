@@ -127,6 +127,11 @@ class BazelBackend(BuildBackend):
 
     def generate(self, graph: BuildGraph, output=None) -> None:
         graph = self._apply_build_only_changed(graph)
+        # Reset the per-build PCH staging plan. Each generate() call
+        # re-walks the graph and may produce a different set of
+        # cas-pchdir → workspace pairs (a PCH source change shifts the
+        # cmd_hash and therefore the rel-under-cache path).
+        self._pch_staging_pairs: list[tuple[str, str]] = []
 
         if output is not None:
             # When writing to a file handle, try to determine the base directory
@@ -263,6 +268,8 @@ class BazelBackend(BuildBackend):
             if extra_hdrs:
                 rel_srcs = sorted(set(rel_srcs) | set(extra_hdrs))
             module_inputs, all_copts = self._bazel_module_inputs_and_copts(rule, all_copts, base_dir)
+            pch_inputs, all_copts = self._bazel_pch_inputs_and_copts(all_copts, base_dir)
+            extra_inputs = sorted(set(module_inputs) | set(pch_inputs))
             self._emit_target(
                 f,
                 kind,
@@ -272,7 +279,7 @@ class BazelBackend(BuildBackend):
                 linkopts,
                 includes=includes if includes else None,
                 linkshared=linkshared,
-                additional_compiler_inputs=module_inputs,
+                additional_compiler_inputs=extra_inputs if extra_inputs else None,
             )
 
     @staticmethod
@@ -512,6 +519,132 @@ class BazelBackend(BuildBackend):
 
         return sorted(set(inputs)), copts
 
+    _BAZEL_PCH_STAGING_DIR = ".ct-bazel-pch"
+    """Workspace-local subdirectory holding hardlinks of cas-pchdir PCH
+    artefacts. Hidden (dot-prefix) so it doesn't pollute target globs;
+    namespaced under ``ct-`` so the origin is obvious to anyone reading
+    a bazel workspace listing."""
+
+    def _bazel_pch_inputs_and_copts(
+        self,
+        all_copts: list[str],
+        base_dir: str | None,
+    ) -> tuple[list[str], list[str]]:
+        """Plan workspace-local PCH staging and rewrite ``-include``
+        flags to be workspace-relative.
+
+        Returns ``(additional_compiler_inputs, rewritten_copts)``.
+
+        The shared ``BuildBackend._create_compile_rule`` emits
+        ``-include <cas-pchdir>/<hash>/<basename>`` to wire the cached
+        PCH into the consumer compile. Bazel's ``CcCompileAction``
+        rejects absolute paths outside the toolchain's
+        ``cxx_builtin_include_directories`` with ``absolute path
+        inclusion(s) found in rule '...'``, and its
+        ``additional_compiler_inputs`` mechanism only accepts
+        workspace-relative labels — so the cas-pchdir absolute path
+        cannot be wired through directly.
+
+        Staging plan. For each ``-include <cas>/<hash>/<basename>`` in
+        copts, register both the ``.h`` and the sibling ``.gch`` for
+        workspace-local hardlinking at
+        ``<workspace>/.ct-bazel-pch/<hash>/<basename>{,.gch}``, and
+        rewrite the copt to that workspace-relative ``.h``. The actual
+        hardlinks are materialised in ``_execute_build`` AFTER
+        ``_prebuild_aux_artefacts`` has populated cas-pchdir — at
+        ``generate()`` time the ``.gch`` doesn't exist yet, so staging
+        eagerly here would silently skip it.
+
+        Bazel symlinks each declared input into the action's exec root
+        at the same workspace-relative path, so the rewritten
+        ``-include .ct-bazel-pch/<hash>/<basename>`` resolves correctly
+        inside the sandbox and gcc finds the sibling ``.gch`` next to
+        it. The staged ``.h`` is what bazel's hermetic check sees; the
+        sibling ``.gch`` is what gcc actually reads (PCH lookup is
+        sibling-to-resolved-path).
+
+        When ``cas_pchdir`` is unset, no PCH ``-include`` is in copts
+        (the shared backend gates emission on the cache being active),
+        so this method is a no-op.
+        """
+        if base_dir is None:
+            return [], all_copts
+        cas_pchdir = getattr(self.args, "cas_pchdir", None)
+        if not cas_pchdir:
+            return [], all_copts
+        cas_prefix = cas_pchdir.rstrip("/") + "/"
+        copts = list(all_copts)
+        inputs: list[str] = []
+        for i, tok in enumerate(copts):
+            if tok != "-include" or i + 1 >= len(copts):
+                continue
+            cas_h_abs = copts[i + 1]
+            if not cas_h_abs.startswith(cas_prefix):
+                continue
+            # rel_under_cache like "<hash>/<basename>".
+            rel_under_cache = cas_h_abs[len(cas_prefix) :]
+            ws_h_rel = os.path.join(self._BAZEL_PCH_STAGING_DIR, rel_under_cache)
+            ws_gch_rel = ws_h_rel + ".gch"
+            cas_gch_abs = cas_h_abs + ".gch"
+            # Record the (cas → workspace) staging pair for
+            # _materialise_pch_stagings to perform at execute time. We
+            # also stage eagerly here for the .h (which already exists
+            # in cas-pchdir from _stage_pch_header_alongside_gch); the
+            # .gch isn't built yet so its eager attempt is a silent
+            # no-op via _stage_into_bazel_workspace's missing-source
+            # guard. The execute-time pass picks it up.
+            self._pch_staging_pairs.append((cas_h_abs, os.path.join(base_dir, ws_h_rel)))
+            self._pch_staging_pairs.append((cas_gch_abs, os.path.join(base_dir, ws_gch_rel)))
+            copts[i + 1] = ws_h_rel
+            inputs.append(ws_h_rel)
+            inputs.append(ws_gch_rel)
+        return sorted(set(inputs)), copts
+
+    def _materialise_pch_stagings(self) -> None:
+        """Run the workspace-local hardlinks queued by
+        ``_bazel_pch_inputs_and_copts``. Called from ``_execute_build``
+        AFTER ``_prebuild_aux_artefacts`` has populated cas-pchdir, so
+        the ``.gch`` source files now exist. Idempotent and safe under
+        concurrent ct-cake invocations targeting the same workspace.
+
+        ``_pch_staging_pairs`` is populated by ``generate()``; unit
+        tests that call ``_execute_build`` directly (without going
+        through generate first) get a no-op via ``getattr``.
+        """
+        for src, dst in getattr(self, "_pch_staging_pairs", ()):
+            self._stage_into_bazel_workspace(src, dst)
+
+    @staticmethod
+    def _stage_into_bazel_workspace(src: str, dst: str) -> None:
+        """Hardlink (with EXDEV-tolerant copy fallback) ``src`` to
+        ``dst``. Idempotent: if ``dst`` already exists from a peer
+        invocation we silently treat it as success. Missing source is
+        also a silent no-op (in production headerdeps would have
+        already raised; we don't want to crash unit tests with mocked
+        hunters that pass synthetic paths).
+        """
+        if os.path.lexists(dst):
+            return
+        if not os.path.exists(src):
+            return
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        try:
+            os.link(src, dst)
+            return
+        except FileExistsError:
+            return
+        except OSError:
+            pass  # EXDEV, EPERM, etc. — fall through to copy.
+        tmp = f"{dst}.staging.{os.getpid()}"
+        try:
+            shutil.copy2(src, tmp)
+            os.replace(tmp, dst)
+        except FileExistsError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
     @staticmethod
     def _workspace_relative(path: str, base_dir: str) -> str | None:
         """Return *path* as a workspace-relative string, or None if outside.
@@ -702,6 +835,13 @@ class BazelBackend(BuildBackend):
         # the importer compiles bazel later spawns find the BMIs via
         # paths that pass bazel's absolute-path-inclusion check.
         self._write_bazel_module_mapper(base_dir)
+        # Same idea for cas-pchdir PCH artefacts: stage hardlinks of
+        # each (.h, .gch) pair into <workspace>/.ct-bazel-pch/<hash>/
+        # so the workspace-relative `-include` flag emitted by
+        # _bazel_pch_inputs_and_copts resolves inside bazel's sandbox.
+        # Must run AFTER _prebuild_aux_artefacts (which builds the
+        # .gch files in cas-pchdir).
+        self._materialise_pch_stagings()
         # Materialise out-of-workspace sources into <base_dir>/ext/ now,
         # immediately before the actual Bazel build. Done here (not in
         # generate()) so that generate() to a StringIO stays a pure file
@@ -782,26 +922,46 @@ class BazelBackend(BuildBackend):
             # -fmodule-mapper= already ensures correct build ordering.
             if self._module_iface_gcm:
                 lines.append("build --cxxopt=-Mno-modules")
-            # Bazel's gcc autoconfig appends `-std=c++17` to all C++ compile
-            # actions. The header-unit precompile that compiletools runs
-            # locally uses gcc's default `-std=` (typically C++20+ on
-            # gcc-14+), producing a C++20-dialect .gcm. The bazel-driven
-            # importer compile then sees `-std=c++17` (autoconfig's
-            # default) and rejects with "language dialect differs 'C++20',
-            # expected 'C++17'". Inject the std actually used by the
-            # precompile so the importer matches. --cxxopt is passed as a
-            # single token; bazel autoconfig's later -std=c++17 appears
-            # too, but per-target/global cxxopts win when re-emitted
-            # after autoconfig (last -std= wins). When the user has
-            # explicitly set a newer standard (-std=c++23 / -std=c++26)
-            # we must NOT downgrade them to c++20 -- modules work on
-            # any C++20+; only inject the c++20 default when no -std=
-            # is present at all.
-            std_flag = next(
-                (str(t) for t in self.args.flags.cxx if str(t).startswith("-std=")),
-                "-std=c++20",
-            )
-            lines.append(f"build --cxxopt={std_flag}")
+        # Align bazel's `-std=` with whatever ct-cake used for prebuilt
+        # artefacts (the local PCH precompile in cas-pchdir, plus the
+        # header-unit / module-interface precompiles when modules are
+        # in play). Without this, bazel's `local_config_cc` autoconfig
+        # appends its own `-std=c++17` default to every C++ action, and
+        # the bytes baked into the prebuilt artefact diverge from what
+        # the bazel-spawned consumer expects:
+        #   * gcc-16's gnu++20-default PCH defines
+        #     `__cpp_impl_three_way_comparison`; a bazel-spawned c++17
+        #     consumer doesn't, so gcc rejects the .gch with
+        #     "PCH not used because '__cpp_impl_three_way_comparison'
+        #     not defined" and the consumer falls back to from-source
+        #     compile — correct but no PCH speedup.
+        #   * Named-module .gcm baked at C++20 fails the importer's
+        #     C++17 dialect check with "language dialect differs
+        #     'C++20', expected 'C++17'", which IS a hard error.
+        # `--cxxopt` is global; per-target/global cxxopts win over
+        # rules_cc's autoconfig because they're re-emitted after it
+        # (last `-std=` wins). When the user has set a `-std=` in
+        # CXXFLAGS we propagate that verbatim; otherwise we query the
+        # compiler for ITS natural default — gcc-16 ships gnu++20,
+        # clang-21 ships gnu++17 — so the bazel-spawned consumer
+        # matches the local PCH/BMI build byte-for-byte. We emit the
+        # `gnu++` mode (not strict `c++`) because both compilers
+        # default to gnu mode and the strict mode would undefine
+        # built-ins like `unix`, `linux`, `__unix__`, again diverging
+        # PCH from consumer ("PCH not used because 'unix' not
+        # defined"). The hardcoded gnu++20 fallback fires only when
+        # the compiler probe itself fails (very rare; would already
+        # have surfaced upstream). Emitted unconditionally rather
+        # than gated on PCH/modules so non-cache builds also get a
+        # coherent dialect across ct-cake-driven and bazel-driven
+        # steps.
+        std_flag = next(
+            (str(t) for t in self.args.flags.cxx if str(t).startswith("-std=")),
+            None,
+        )
+        if std_flag is None:
+            std_flag = compiletools.apptools.compiler_default_cxx_std(self.args.CXX) or "-std=gnu++20"
+        lines.append(f"build --cxxopt={std_flag}")
         # rules_cc 0.2.x defaults to -fuse-ld=lld at the GLOBAL bazel link
         # action, which gcc-only toolchains (e.g. gcc-15.2.0 ships gold, not
         # lld) cannot satisfy. Per-target linkopts (driven by LDFLAGS and magic
