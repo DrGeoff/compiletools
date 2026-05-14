@@ -1,11 +1,16 @@
 import io
+import os
+import shutil
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import compiletools.testhelper as uth
 from compiletools.build_backend import get_backend_class
 from compiletools.build_graph import BuildGraph, BuildRule
+from compiletools.build_timer import BuildTimer
 from compiletools.ninja_backend import NinjaBackend
 
 
@@ -795,3 +800,236 @@ class TestModuleIfaceCompileRule:
         backend.generate(graph, output=buf)
         content = buf.getvalue()
         assert "compile_module_iface_cmd" not in content
+
+
+_ninja_unavailable = shutil.which("ninja") is None
+
+
+@pytest.mark.skipif(_ninja_unavailable, reason="ninja not on PATH")
+class TestNinjaRunsTestsInBuildPhase:
+    """Task 3: NinjaBackend.execute("build") runs test rules natively (via the
+    ``all`` phony), so ninja's scheduler fires each test the moment its exe
+    links — no separate post-build ``runtests`` sweep.
+    """
+
+    def setup_method(self):
+        uth.reset()
+
+    def teardown_method(self):
+        uth.reset()
+
+    def test_capability_flag_is_true(self):
+        """The capability gate must report True so cake.py skips the legacy
+        post-build ``_run_tests`` sweep for the ninja backend."""
+        backend = NinjaBackend(args=SimpleNamespace(), hunter=MagicMock())
+        assert backend._runs_tests_in_build_phase() is True
+
+    def _build_backend(self, tmp_path, sources, *, tests=None, extra_argv=None):
+        """Construct a NinjaBackend + graph from real argv for *sources*, with
+        *tests* passed via ``--tests``. Returns (backend, graph)."""
+        import compiletools.apptools
+        import compiletools.headerdeps
+        import compiletools.hunter
+        import compiletools.magicflags
+        from compiletools.build_context import BuildContext
+
+        objdir = os.path.join(str(tmp_path), "obj")
+        bindir = os.path.join(str(tmp_path), "bin")
+        argv = list(extra_argv or [])
+        argv += ["--include", str(tmp_path), "--cas-objdir", objdir, "--bindir", bindir]
+        for t in tests or []:
+            argv.append("--tests=" + str(t))
+        argv += [str(s) for s in sources]
+
+        cap = compiletools.apptools.create_parser("ninja in-build test", argv=argv)
+        uth.add_backend_arguments(cap)
+        ctx = BuildContext()
+        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
+        headerdeps = compiletools.headerdeps.create(args, context=ctx)
+        magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
+        hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
+        backend = NinjaBackend(args=args, hunter=hunter, context=ctx)
+        graph = backend.build_graph()
+        return backend, graph
+
+    @uth.requires_functional_compiler
+    def test_ninja_runs_tests_in_build(self, tmp_path, monkeypatch):
+        """After execute("build") — NOT execute("runtests") — the test's
+        ``.result`` success marker exists, proving the test ran during the
+        build phase."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
+        test_src = tmp_path / "test_pass.cpp"
+        test_src.write_text('#include "unit_test.hpp"\nint main() { return 0; }\n')
+
+        backend, graph = self._build_backend(tmp_path, [], tests=[test_src])
+        with open(tmp_path / "build.ninja", "w") as f:
+            backend.generate(graph, output=f)
+
+        backend.execute("build")
+
+        results = [os.path.join(dp, fn) for dp, _, files in os.walk(tmp_path) for fn in files if fn.endswith(".result")]
+        assert results, "no .result marker after execute('build') — test did not run during the build phase"
+
+    @uth.requires_functional_compiler
+    def test_ninja_test_failure_halts_build(self, tmp_path, monkeypatch):
+        """A failing no-framework test must make execute("build") raise
+        CalledProcessError, and the failing test's ``.result`` marker must NOT
+        be created (the ``&& touch`` tail only runs on rc==0)."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
+        test_src = tmp_path / "test_fail.cpp"
+        test_src.write_text('#include "unit_test.hpp"\nint main() { return 1; }\n')
+
+        backend, graph = self._build_backend(tmp_path, [], tests=[test_src])
+        with open(tmp_path / "build.ninja", "w") as f:
+            backend.generate(graph, output=f)
+
+        with pytest.raises(subprocess.CalledProcessError):
+            backend.execute("build")
+
+        results = [os.path.join(dp, fn) for dp, _, files in os.walk(tmp_path) for fn in files if fn.endswith(".result")]
+        assert not results, f"failing test left a .result marker (touch ran despite rc!=0): {results}"
+
+    @uth.requires_functional_compiler
+    def test_ninja_framework_test_failure_preserves_xml(self, tmp_path, monkeypatch):
+        """A failing framework-detected test writes its JUnit XML report and
+        *then* exits non-zero. Ninja — unlike make — does not delete a failed
+        rule's output, so no ``.PRECIOUS`` equivalent is needed: the XML must
+        survive the failed build.
+
+        Asserts:
+          - the test rule's ``output`` is the XML path (framework detected),
+          - execute("build") raises CalledProcessError (test failure halts),
+          - the failing test's ``.result`` marker is NOT created,
+          - the JUnit XML file DOES still exist after the failed build.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
+        # Stub gtest header: framework detection trips on the include-path
+        # token "gtest/gtest.h" in the transitive header set, not on any
+        # symbol -- so an empty header is sufficient (mirrors the make
+        # backend's test_make_framework_test_failure_preserves_xml).
+        (tmp_path / "gtest").mkdir()
+        (tmp_path / "gtest" / "gtest.h").write_text("#pragma once\n")
+        # A gtest-flavoured fixture that writes its JUnit XML when handed
+        # --gtest_output=xml:PATH and THEN returns 1. The write-then-fail
+        # ordering is what makes ninja's no-delete-on-failure observable.
+        test_src = tmp_path / "test_fail_gtest.cpp"
+        test_src.write_text(
+            '#include "unit_test.hpp"\n'
+            '#include "gtest/gtest.h"\n'
+            "#include <cstdio>\n"
+            "#include <cstring>\n"
+            "int main(int argc, char** argv) {\n"
+            '    static const char prefix[] = "--gtest_output=xml:";\n'
+            "    const size_t plen = sizeof(prefix) - 1;\n"
+            "    for (int i = 1; i < argc; ++i) {\n"
+            "        if (std::strncmp(argv[i], prefix, plen) == 0) {\n"
+            '            FILE* f = std::fopen(argv[i] + plen, "w");\n'
+            "            if (f != nullptr) {\n"
+            '                std::fputs("<testsuites>\\n", f);\n'
+            '                std::fputs("  <testsuite name=\\"stub\\" tests=\\"1\\" failures=\\"1\\"/>\\n", f);\n'
+            '                std::fputs("</testsuites>\\n", f);\n'
+            "                std::fclose(f);\n"
+            "            }\n"
+            "        }\n"
+            "    }\n"
+            "    return 1;\n"
+            "}\n"
+        )
+
+        xml_dir = tmp_path / "junit"
+        backend, graph = self._build_backend(
+            tmp_path, [], tests=[test_src], extra_argv=["--test-xml-dir=" + str(xml_dir)]
+        )
+
+        # The framework test rule's output must be the XML path (not the
+        # .result marker) for the no-delete-on-failure behaviour to matter.
+        test_rules = [r for r in graph.rules if r.rule_type == "test"]
+        assert len(test_rules) == 1
+        xml_rule = test_rules[0]
+        assert xml_rule.output != xml_rule.success_marker, (
+            "framework was not detected -- test rule output is still the .result marker"
+        )
+        assert xml_rule.output.endswith(".xml")
+        xml_path = xml_rule.output
+
+        with open(tmp_path / "build.ninja", "w") as f:
+            backend.generate(graph, output=f)
+
+        with pytest.raises(subprocess.CalledProcessError):
+            backend.execute("build")
+
+        results = [os.path.join(dp, fn) for dp, _, files in os.walk(tmp_path) for fn in files if fn.endswith(".result")]
+        assert not results, f"failing test left a .result marker (touch ran despite rc!=0): {results}"
+        assert os.path.exists(xml_path), (
+            f"JUnit XML at {xml_path} was deleted by ninja on rule failure -- "
+            f"ninja unexpectedly deletes failed-rule outputs. tmp_path contents: "
+            f"{[os.path.join(dp, fn) for dp, _, files in os.walk(tmp_path) for fn in files]}"
+        )
+        with open(xml_path) as xf:
+            assert "<testsuites>" in xf.read()
+
+
+class TestNinjaLogClassifiesTestRules:
+    """Task 3: record_rules_from_ninja_log consults the BuildGraph so a test
+    rule's .ninja_log entry is classified ``category="test"`` instead of
+    being guessed from the output's file extension (which would mis-bucket a
+    framework test's ``.xml`` output or a no-framework test's ``.result``).
+    """
+
+    def test_ninja_log_classifies_test_rules(self, tmp_path):
+        # Synthetic graph: one compile rule and two test rules — a
+        # no-framework test (output == .result marker) and a framework test
+        # (output == .xml path). Both must classify as "test".
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="obj/foo.o",
+                inputs=["src/foo.cpp"],
+                command=["g++", "-c", "src/foo.cpp", "-o", "obj/foo.o"],
+                rule_type="compile",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="bin/test_plain.result",
+                inputs=["bin/test_plain"],
+                command=["bin/test_plain"],
+                rule_type="test",
+                success_marker="bin/test_plain.result",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="junit/test_gtest.xml",
+                inputs=["bin/test_gtest"],
+                command=["bin/test_gtest", "--gtest_output=xml:junit/test_gtest.xml"],
+                rule_type="test",
+                success_marker="bin/test_gtest.result",
+            )
+        )
+
+        log = tmp_path / ".ninja_log"
+        log.write_text(
+            "# ninja log v5\n"
+            "0\t1500\t0\tobj/foo.o\thash1\n"
+            "1500\t1600\t0\tbin/test_plain.result\thash2\n"
+            "1600\t1800\t0\tjunit/test_gtest.xml\thash3\n"
+        )
+
+        timer = BuildTimer(enabled=True)
+        with timer.phase("build_execution"):
+            timer.record_rules_from_ninja_log(str(log), graph=graph)
+
+        phase = timer._root.children[0]
+        by_target = {r.target: r for r in phase.children}
+        assert by_target["bin/test_plain.result"].category == "test", (
+            "no-framework test output classified by extension instead of graph rule_type"
+        )
+        assert by_target["junit/test_gtest.xml"].category == "test", (
+            "framework test .xml output classified by extension instead of graph rule_type"
+        )
+        # Sanity: the compile rule is still classified correctly.
+        assert by_target["obj/foo.o"].category == "compile"

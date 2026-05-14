@@ -23,6 +23,16 @@ class NinjaBackend(BuildBackend):
     def _honors_use_mtime(self) -> bool:
         return True
 
+    def _runs_tests_in_build_phase(self) -> bool:
+        """Ninja runs test rules natively: ``execute("build")`` targets the
+        ``all`` phony, whose transitive deps include every test rule. Each
+        test rule depends only on its own exe (order-only in CAS mode, an
+        implicit input under ``--use-mtime``), so ninja's scheduler fires the
+        test the moment its link rule completes — no separate post-build
+        ``execute("runtests")`` phase.
+        """
+        return True
+
     @staticmethod
     def name() -> str:
         return "ninja"
@@ -37,6 +47,21 @@ class NinjaBackend(BuildBackend):
 
     def _build_file_path(self) -> str:
         return getattr(self.args, "ninja_filename", "build.ninja")
+
+    def execute(self, target: str = "build") -> None:
+        """Invoke ninja to execute the build.
+
+        Overrides the base template's ``runtests`` handling: rather than
+        delegating to the legacy Python-side ``_run_tests`` sweep, route
+        ``execute("runtests")`` through the generated ``runtests`` phony so
+        standalone test runs use the same native, content-addressed
+        ``.result`` recipes as the in-build path. ``execute("build")`` falls
+        through to ``_execute_build``, which retargets ``build`` -> ``all``.
+        """
+        if target == "runtests":
+            self._execute_build("runtests")
+            return
+        super().execute(target)
 
     def generate(self, graph: BuildGraph, output=None) -> None:
         self._setup_file_locking()
@@ -146,6 +171,14 @@ class NinjaBackend(BuildBackend):
                 elif rule.rule_type in (RuleType.LINK, RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY):
                     cmd_str = self._wrap_link_cmd(rule.command)
                 else:
+                    # RuleType.TEST and friends. A framework-detected test
+                    # rule's ``output`` is its JUnit XML path; a failing
+                    # framework test writes that report and *then* exits
+                    # non-zero. Ninja, unlike make, does not delete outputs on
+                    # rule failure (it only deletes them when interrupted), so
+                    # no ``.PRECIOUS`` equivalent is needed — the XML survives
+                    # a failed build. Verified by
+                    # test_ninja_framework_test_failure_preserves_xml.
                     cmd_str = render_shell_recipe(rule)
                 f.write(f"  cmd = {cmd_str}\n")
             f.write("\n")
@@ -160,13 +193,24 @@ class NinjaBackend(BuildBackend):
         if timer and os.path.exists(ninja_log):
             log_offset = os.path.getsize(ninja_log)
 
+        # ``execute("build")`` must drive the aggregate ``all`` phony, not the
+        # bare ``build`` phony. ``build`` depends only on the link/library
+        # outputs; ``all`` additionally depends on ``runtests`` (-> every test
+        # rule). Each test rule depends solely on its own exe, so ninja's
+        # scheduler runs each test the instant its link rule finishes —
+        # interleaved with continued compilation of unrelated TUs — instead of
+        # in a separate post-build sweep. ``runtests`` and explicit targets
+        # pass through verbatim so the ``execute("runtests")`` contract and
+        # ad-hoc ``ninja <target>`` calls still work.
+        ninja_target = "all" if target == "build" else target
+
         cmd = ["ninja", "-f", filename]
         parallel = getattr(self.args, "parallel", None)
         if parallel:
             cmd.extend(["-j", str(parallel)])
         if self.args.verbose >= 1:
             cmd.append("-v")
-        cmd.append(target)
+        cmd.append(ninja_target)
         # Capture monotonic time immediately before invoking ninja so the
         # build-relative timestamps in .ninja_log can be folded onto this
         # timer's monotonic timeline (required for a coherent Chrome trace

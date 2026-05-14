@@ -94,9 +94,16 @@ class TestCakeBackendDispatch:
                 mock_clean.assert_not_called()
 
     def test_backend_dispatch_runs_tests_when_runtests_in_graph(self):
-        """When args.tests is set and 'runtests' is in graph.outputs, execute('runtests') should be called."""
-        with CakeTestContext("ninja", tests=["test_main.cpp"]) as (cake, _tmpdir):
-            expected_class = get_backend_class("ninja")
+        """When args.tests is set and 'runtests' is in graph.outputs, execute('runtests')
+        should be called for backends that still use the legacy post-build sweep.
+
+        Uses the shake backend: make and ninja have been migrated to in-build test
+        execution (``_runs_tests_in_build_phase() -> True``), so cake.py intentionally
+        does NOT issue a separate execute('runtests') for them — their test rules fire
+        inside execute('build'). shake still relies on the legacy dispatch.
+        """
+        with CakeTestContext("shake", tests=["test_main.cpp"]) as (cake, _tmpdir):
+            expected_class = get_backend_class("shake")
 
             mock_graph = MagicMock()
             mock_graph.outputs = {"build", "all", "runtests"}

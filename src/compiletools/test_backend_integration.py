@@ -426,9 +426,15 @@ class TestBackendBuildHeaderUnits(BaseCompileToolsTestCase):
 
 
 class TestBackendRunTestsDispatch:
-    """Verify each non-make backend dispatches execute('runtests') to _run_tests()."""
+    """Verify each backend that still uses the legacy post-build _run_tests
+    sweep dispatches execute('runtests') to _run_tests().
 
-    @pytest.mark.parametrize("backend_name", ["ninja", "bazel", "cmake", "shake"])
+    Backends migrated to in-build test execution (make, ninja) override
+    execute() to route 'runtests' through their native build file's
+    'runtests' target instead, so they are intentionally excluded here.
+    """
+
+    @pytest.mark.parametrize("backend_name", ["bazel", "cmake", "shake"])
     def test_execute_runtests_calls_run_tests(self, backend_name):
         from unittest.mock import MagicMock, patch
 
