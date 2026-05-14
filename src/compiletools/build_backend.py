@@ -652,10 +652,10 @@ class BuildBackend(abc.ABC):
         """
         return False
 
-    def _test_command_for(self, exe_path: str) -> list[str]:
+    def _test_command_for(self, source: str, exe_path: str) -> list[str]:
         """Return the full argv to invoke a test executable, including TESTPREFIX
         parts and any framework-specific JUnit-XML argv when --test-xml-dir is set.
-        The framework is detected from the test's transitive header set via
+        The framework is detected from *source*'s transitive header set via
         compiletools.test_framework.detect_framework; the per-target lookup is
         cached on self._test_frameworks.
         """
@@ -672,19 +672,13 @@ class BuildBackend(abc.ABC):
         # exe_path, then append the framework-specific XML-emit argv after
         # exe_path so prefix tools forward the trailing argv to the child.
         if exe_path not in self._test_frameworks:
-            framework: TestFramework | None = None
-            for source in self.args.tests or []:
-                source_exe = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
-                if source_exe != exe_path:
-                    continue
-                headers = [str(h) for h in self.hunter.header_dependencies(source)]
-                framework = compiletools.test_framework.detect_framework(headers, source)
-                if framework is None and getattr(self.args, "verbose", 0) >= 1:
-                    print(
-                        f"{source}: no known unit-test framework detected; skipping XML output",
-                        file=sys.stderr,
-                    )
-                break
+            headers = [str(h) for h in self.hunter.header_dependencies(source)]
+            framework = compiletools.test_framework.detect_framework(headers, source)
+            if framework is None and getattr(self.args, "verbose", 0) >= 1:
+                print(
+                    f"{source}: no known unit-test framework detected; skipping XML output",
+                    file=sys.stderr,
+                )
             self._test_frameworks[exe_path] = framework
 
         framework = self._test_frameworks.get(exe_path)
@@ -1394,7 +1388,7 @@ class BuildBackend(abc.ABC):
                     )
                 )
             test_result_paths = []
-            for exe_path in test_exe_paths:
+            for source, exe_path in zip(self.args.tests, test_exe_paths):
                 # In CAS-only mode, place .result next to the CAS exe entry
                 # so success markers are content-addressed: two builds that
                 # produce byte-identical exes share the marker, and the
@@ -1418,7 +1412,7 @@ class BuildBackend(abc.ABC):
                     # Order-only: the XML dir must exist before the test runs,
                     # but its mtime must not retrigger the test.
                     rule_order_only = rule_order_only + [xml_bucket_dir]
-                test_cmd = self._test_command_for(exe_path)
+                test_cmd = self._test_command_for(source, exe_path)
                 # When a framework is detected and --test-xml-dir is set the
                 # test recipe emits a JUnit XML file as a side effect. Make
                 # the XML path the rule's *output* (rather than the .result
@@ -1546,8 +1540,8 @@ class BuildBackend(abc.ABC):
         # way detect_framework runs at most once per target, and the
         # no-framework warning fires inside _test_command_for.
         if xml_dir:
-            for _source, exe_path in test_pairs:
-                self._test_command_for(exe_path)
+            for source, exe_path in test_pairs:
+                self._test_command_for(source, exe_path)
 
             # Pre-create the variant subdirectory so parallel workers don't
             # race in os.makedirs. Lazy: nothing is created when xml_dir is
@@ -1566,7 +1560,7 @@ class BuildBackend(abc.ABC):
         legacy_mtime = getattr(self.args, "use_mtime", False) or self._has_native_cas_exe()
 
         tests_to_run = []
-        for _source, exe_path in test_pairs:
+        for source, exe_path in test_pairs:
             result_file = self._result_marker_path(exe_path)
             if legacy_mtime:
                 result_current = (
@@ -1578,11 +1572,11 @@ class BuildBackend(abc.ABC):
                 # CAS-only: marker is content-addressed, presence is sufficient.
                 result_current = os.path.exists(result_file)
             if not result_current:
-                tests_to_run.append(exe_path)
+                tests_to_run.append((source, exe_path))
                 continue
             if xml_dir and self._test_frameworks.get(exe_path) is not None:
                 if not os.path.exists(self._xml_path_for(exe_path)):
-                    tests_to_run.append(exe_path)
+                    tests_to_run.append((source, exe_path))
                     continue
             if self.args.verbose >= 2:
                 print(f"Skipping up-to-date test: {exe_path}", file=sys.stderr)
@@ -1596,14 +1590,12 @@ class BuildBackend(abc.ABC):
         if getattr(self.args, "serialisetests", False):
             parallel = 1
 
-        testprefix = getattr(self.args, "TESTPREFIX", "")
-
         if parallel > 1:
-            self._run_tests_parallel(tests_to_run, testprefix, parallel)
+            self._run_tests_parallel(tests_to_run, parallel)
         else:
-            self._run_tests_sequential(tests_to_run, testprefix)
+            self._run_tests_sequential(tests_to_run)
 
-    def _run_single_test(self, exe_path: str, testprefix: str) -> tuple[str, int, str, str]:
+    def _run_single_test(self, source: str, exe_path: str) -> tuple[str, int, str, str]:
         """Run a single test executable. Returns (exe_path, returncode, stdout, stderr).
 
         When ``--timing`` is enabled, records a per-test rule on the
@@ -1617,12 +1609,7 @@ class BuildBackend(abc.ABC):
         ``exe_path`` so prefix tools like valgrind / strace -f / taskset
         forward the trailing argv to the child process correctly.
         """
-        # ``testprefix`` is accepted for backward-compatible signature; the
-        # actual prefix is read from ``self.args.TESTPREFIX`` by
-        # ``_test_command_for`` (same value). The framework lookup is the
-        # cache ``_run_tests`` already populated.
-        del testprefix  # TODO(task8): drop param from signature once callers are rewritten
-        cmd = self._test_command_for(exe_path)
+        cmd = self._test_command_for(source, exe_path)
 
         timer = self._timer
         start = time.monotonic() if timer else 0.0
@@ -1639,13 +1626,13 @@ class BuildBackend(abc.ABC):
             )
         return exe_path, result.returncode, result.stdout, result.stderr
 
-    def _run_tests_sequential(self, tests_to_run: list[str], testprefix: str) -> None:
+    def _run_tests_sequential(self, tests_to_run: list[tuple[str, str]]) -> None:
         """Run tests one at a time, printing output immediately."""
         failures = []
-        for exe_path in tests_to_run:
+        for source, exe_path in tests_to_run:
             if self.args.verbose >= 1:
                 print(f"... {exe_path}")
-            exe_path, rc, stdout, stderr = self._run_single_test(exe_path, testprefix)
+            exe_path, rc, stdout, stderr = self._run_single_test(source, exe_path)
             if stdout:
                 print(stdout, end="")
             if stderr:
@@ -1659,14 +1646,14 @@ class BuildBackend(abc.ABC):
         if failures:
             raise RuntimeError(f"Test failures: {', '.join(failures)}")
 
-    def _run_tests_parallel(self, tests_to_run: list[str], testprefix: str, parallel: int) -> None:
+    def _run_tests_parallel(self, tests_to_run: list[tuple[str, str]], parallel: int) -> None:
         """Run tests in parallel, buffering output and printing in order."""
         import concurrent.futures
 
         failures = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as executor:
             futures = {
-                executor.submit(self._run_single_test, exe_path, testprefix): exe_path for exe_path in tests_to_run
+                executor.submit(self._run_single_test, source, exe_path): exe_path for source, exe_path in tests_to_run
             }
             # Collect results as they complete; reorder below to match submission order
             results = []
@@ -1674,7 +1661,7 @@ class BuildBackend(abc.ABC):
                 results.append(future.result())
 
         # Sort by original order and print
-        order = {path: i for i, path in enumerate(tests_to_run)}
+        order = {exe_path: i for i, (_source, exe_path) in enumerate(tests_to_run)}
         results.sort(key=lambda r: order[r[0]])
         for exe_path, rc, stdout, stderr in results:
             if self.args.verbose >= 1:

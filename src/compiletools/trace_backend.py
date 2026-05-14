@@ -798,9 +798,10 @@ class SlurmBackend(ShakeBackend):
         )
 
     def _runs_tests_in_build_phase(self) -> bool:
-        # Slurm still uses the legacy post-build _run_tests() sweep; the in-build
-        # test path is Task 5. Without this override slurm would inherit
-        # ShakeBackend's True and cake.py would skip runtests entirely.
+        # Slurm still uses the legacy post-build _run_tests() sweep; migrating it
+        # to the in-build test path is a later step. Without this override slurm
+        # would inherit ShakeBackend's True and cake.py would skip runtests
+        # entirely.
         return False
 
     # ------------------------------------------------------------------

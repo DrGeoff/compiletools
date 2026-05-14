@@ -46,7 +46,7 @@ def test_gtest_xml_argv_when_xml_dir_set():
             variant="gcc.debug",
         )
         exe = _exe_path(backend, source)
-        cmd = backend._test_command_for(exe)
+        cmd = backend._test_command_for(source, exe)
         expected_xml = os.path.join(xml_dir, "gcc.debug", os.path.basename(exe) + ".xml")
         assert cmd == [exe, f"--gtest_output=xml:{expected_xml}"]
 
@@ -60,7 +60,7 @@ def test_gtest_no_xml_argv_when_xml_dir_unset():
             headers=["/usr/include/gtest/gtest.h"],
         )
         exe = _exe_path(backend, source)
-        assert backend._test_command_for(exe) == [exe]
+        assert backend._test_command_for(source, exe) == [exe]
 
 
 def test_doctest_xml_argv_when_xml_dir_set():
@@ -75,7 +75,7 @@ def test_doctest_xml_argv_when_xml_dir_set():
             variant="gcc.debug",
         )
         exe = _exe_path(backend, source)
-        cmd = backend._test_command_for(exe)
+        cmd = backend._test_command_for(source, exe)
         expected_xml = os.path.join(xml_dir, "gcc.debug", os.path.basename(exe) + ".xml")
         assert cmd == [exe, "--reporters=junit", f"--out={expected_xml}"]
 
@@ -92,7 +92,7 @@ def test_catch2_xml_argv_when_xml_dir_set():
             variant="gcc.debug",
         )
         exe = _exe_path(backend, source)
-        cmd = backend._test_command_for(exe)
+        cmd = backend._test_command_for(source, exe)
         expected_xml = os.path.join(xml_dir, "gcc.debug", os.path.basename(exe) + ".xml")
         assert cmd == [exe, "--reporter", "junit", "--out", expected_xml]
 
@@ -110,7 +110,7 @@ def test_testprefix_parts_prepended():
             TESTPREFIX="valgrind --error-exitcode=1",
         )
         exe = _exe_path(backend, source)
-        cmd = backend._test_command_for(exe)
+        cmd = backend._test_command_for(source, exe)
         expected_xml = os.path.join(xml_dir, "gcc.debug", os.path.basename(exe) + ".xml")
         assert cmd == [
             "valgrind",
@@ -133,7 +133,7 @@ def test_no_framework_no_xml_argv_and_warns_at_verbose1(capsys):
             verbose=1,
         )
         exe = _exe_path(backend, source)
-        cmd = backend._test_command_for(exe)
+        cmd = backend._test_command_for(source, exe)
         assert cmd == [exe]
         captured = capsys.readouterr()
         assert "no known unit-test framework detected" in captured.err
@@ -149,7 +149,7 @@ def test_no_framework_no_warning_when_xml_dir_unset(capsys):
             verbose=1,
         )
         exe = _exe_path(backend, source)
-        assert backend._test_command_for(exe) == [exe]
+        assert backend._test_command_for(source, exe) == [exe]
         captured = capsys.readouterr()
         assert "no known unit-test framework detected" not in captured.err
 
@@ -167,7 +167,7 @@ def test_no_framework_no_warning_when_verbose0(capsys):
             verbose=0,
         )
         exe = _exe_path(backend, source)
-        assert backend._test_command_for(exe) == [exe]
+        assert backend._test_command_for(source, exe) == [exe]
         captured = capsys.readouterr()
         assert "no known unit-test framework detected" not in captured.err
 
@@ -210,10 +210,10 @@ def test_framework_detection_cached_on_test_frameworks():
             variant="gcc.debug",
         )
         exe = _exe_path(backend, source)
-        backend._test_command_for(exe)
+        backend._test_command_for(source, exe)
         assert exe in backend._test_frameworks
         assert backend._test_frameworks[exe] is not None
         # Second call must not re-run header_dependencies (cache hit).
         call_count = backend.hunter.header_dependencies.call_count
-        backend._test_command_for(exe)
+        backend._test_command_for(source, exe)
         assert backend.hunter.header_dependencies.call_count == call_count

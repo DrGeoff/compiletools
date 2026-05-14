@@ -1349,7 +1349,7 @@ class TestMakeTraceEntryGuard:
 
 
 class TestShakeTestRulesExecutedDuringBuild:
-    """Task 4: ShakeBackend walks ``RuleType.TEST`` rules during the build
+    """ShakeBackend walks ``RuleType.TEST`` rules during the build
     phase. ``_do_build`` recurses into a test rule (rather than early-returning)
     and feeds it to ``_execute_rule``, which runs the pure-argv test command
     in-process. The test rule never enters the trace store, so
@@ -1514,10 +1514,10 @@ class TestTraceInputCanonicalization:
 
 
 class TestShakeRunsTestsInBuildPhase:
-    """Task 4 end-to-end: ShakeBackend.execute("build") walks the ``all``
+    """End-to-end: ShakeBackend.execute("build") walks the ``all``
     phony -> ``runtests`` -> every ``RuleType.TEST`` rule, so each test fires
     in-process as soon as its exe's link future resolves. Mirrors the
-    make/ninja Task 2/3 e2e tests.
+    make/ninja e2e tests.
     """
 
     def setup_method(self):

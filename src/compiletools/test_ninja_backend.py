@@ -807,7 +807,7 @@ _ninja_unavailable = shutil.which("ninja") is None
 
 @pytest.mark.skipif(_ninja_unavailable, reason="ninja not on PATH")
 class TestNinjaRunsTestsInBuildPhase:
-    """Task 3: NinjaBackend.execute("build") runs test rules natively (via the
+    """NinjaBackend.execute("build") runs test rules natively (via the
     ``all`` phony), so ninja's scheduler fires each test the moment its exe
     links — no separate post-build ``runtests`` sweep.
     """
@@ -914,7 +914,7 @@ class TestNinjaRunsTestsInBuildPhase:
 
 
 class TestNinjaLogClassifiesTestRules:
-    """Task 3: record_rules_from_ninja_log consults the BuildGraph so a test
+    """record_rules_from_ninja_log consults the BuildGraph so a test
     rule's .ninja_log entry is classified ``category="test"`` instead of
     being guessed from the output's file extension (which would mis-bucket a
     framework test's ``.xml`` output or a no-framework test's ``.result``).

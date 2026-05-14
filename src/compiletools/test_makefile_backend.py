@@ -1322,7 +1322,7 @@ class TestMakefileConcurrency:
 
 
 class TestMakeRunsTestsInBuildPhase:
-    """Task 2: MakefileBackend.execute("build") runs test ``.result`` rules
+    """MakefileBackend.execute("build") runs test ``.result`` rules
     natively (via the ``all`` phony), so make's ``-j`` scheduler fires each
     test the moment its exe links — no separate post-build ``runtests`` sweep.
     """
@@ -1436,8 +1436,8 @@ class TestMakeRunsTestsInBuildPhase:
 
 
 class TestMakefileTestEchoTarget:
-    """Sub-change 4: the TEST-rule echo line must reference the test exe,
-    not ``command[-1]`` — which is now an XML flag when --test-xml-dir is set
+    """The TEST-rule echo line must reference the test exe, not
+    ``command[-1]`` — which is now an XML flag when --test-xml-dir is set
     (``_test_command_for`` appends framework XML argv after the exe)."""
 
     def _make_args(self, **overrides):
