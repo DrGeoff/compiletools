@@ -172,6 +172,32 @@ def test_no_framework_no_warning_when_verbose0(capsys):
         assert "no known unit-test framework detected" not in captured.err
 
 
+def test_touch_result_marker_empty_path_is_noop():
+    with TempDirContextNoChange() as tmpdir:
+        source = "/src/test_foo.cpp"
+        backend, _ = _make_backend(
+            tmpdir,
+            source=source,
+            headers=["/usr/include/gtest/gtest.h"],
+        )
+        # Empty path: no-op, no error raised.
+        backend._touch_result_marker("")
+
+
+def test_touch_result_marker_creates_file():
+    with TempDirContextNoChange() as tmpdir:
+        source = "/src/test_foo.cpp"
+        backend, _ = _make_backend(
+            tmpdir,
+            source=source,
+            headers=["/usr/include/gtest/gtest.h"],
+        )
+        result_path = os.path.join(tmpdir, "test_foo.result")
+        assert not os.path.exists(result_path)
+        backend._touch_result_marker(result_path)
+        assert os.path.exists(result_path)
+
+
 def test_framework_detection_cached_on_test_frameworks():
     with TempDirContextNoChange() as tmpdir:
         source = "/src/test_foo.cpp"

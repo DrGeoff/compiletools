@@ -559,10 +559,7 @@ class BuildBackend(abc.ABC):
         self._gcc_header_unit_resolved: dict[str, list[str]] = {}
         self._build_imports_std_cached: bool | None = None
         self._compile_used_libcxx = False
-        # Per-target test-framework detection cache, keyed by exe_path.
-        # Populated lazily by _test_command_for (and, in the legacy path,
-        # by _run_tests). Created here so pyright knows the attribute
-        # exists on every BuildBackend instance.
+        # Per-target framework cache; declared here so pyright sees it on every instance.
         self._test_frameworks: dict[str, TestFramework | None] = {}
 
         # Warn if the user explicitly opted into legacy mtime semantics
@@ -1488,21 +1485,17 @@ class BuildBackend(abc.ABC):
 
         xml_dir = getattr(self.args, "test_xml_dir", None)
 
-        # Detect framework once per test (only when --test-xml-dir is set).
-        # Cached on self._test_frameworks so _run_single_test can look up
-        # the same TestFramework without re-running detection inside the
-        # parallel worker.
-        self._test_frameworks: dict[str, TestFramework | None] = {}
+        # Framework detection (when --test-xml-dir is set) is owned by
+        # _test_command_for, which detects once per target and caches on
+        # self._test_frameworks. _build_graph already primed that cache for
+        # the legacy path; calling _test_command_for here is idempotent (a
+        # cache hit) for those entries and lazily fills any that are missing
+        # (native-CAS backends that skip _build_graph's test rules). Either
+        # way detect_framework runs at most once per target, and the
+        # no-framework warning fires inside _test_command_for.
         if xml_dir:
-            for source, exe_path in test_pairs:
-                headers = [str(h) for h in self.hunter.header_dependencies(source)]
-                framework = compiletools.test_framework.detect_framework(headers, source)
-                self._test_frameworks[exe_path] = framework
-                if framework is None and self.args.verbose >= 1:
-                    print(
-                        f"{source}: no known unit-test framework detected; skipping XML output",
-                        file=sys.stderr,
-                    )
+            for _source, exe_path in test_pairs:
+                self._test_command_for(exe_path)
 
             # Pre-create the variant subdirectory so parallel workers don't
             # race in os.makedirs. Lazy: nothing is created when xml_dir is
@@ -1576,7 +1569,7 @@ class BuildBackend(abc.ABC):
         # actual prefix is read from ``self.args.TESTPREFIX`` by
         # ``_test_command_for`` (same value). The framework lookup is the
         # cache ``_run_tests`` already populated.
-        del testprefix
+        del testprefix  # TODO(task8): drop param from signature once callers are rewritten
         cmd = self._test_command_for(exe_path)
 
         timer = self._timer
