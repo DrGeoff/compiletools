@@ -1,5 +1,4 @@
 import io
-import os
 from contextlib import redirect_stdout
 
 import compiletools.cppdeps
@@ -16,12 +15,12 @@ def test_cppdeps():
     ):
         output_buffer = io.StringIO()
         with redirect_stdout(output_buffer):
-            compiletools.cppdeps.main([os.path.join(uth.samplesdir(), "numbers/test_direct_include.cpp")])
+            compiletools.cppdeps.main([uth.example_file("numbers/test_direct_include.cpp")])
 
         output = output_buffer.getvalue().strip().split()
         expected_output = [
-            os.path.join(uth.samplesdir(), "numbers/get_double.hpp"),
-            os.path.join(uth.samplesdir(), "numbers/get_int.hpp"),
-            os.path.join(uth.samplesdir(), "numbers/get_numbers.hpp"),
+            uth.example_file("numbers/get_double.hpp"),
+            uth.example_file("numbers/get_int.hpp"),
+            uth.example_file("numbers/get_numbers.hpp"),
         ]
         assert sorted(expected_output) == sorted(output)

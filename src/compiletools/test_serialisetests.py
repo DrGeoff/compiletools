@@ -18,7 +18,7 @@ class TestSerialiseTests:
             # Copy the serialise_tests test files to the temp directory and compile
             # using ct-cake
             tmpserialisetests = os.path.join(tmpdir, "serialise_tests")
-            shutil.copytree(os.path.join(uth.samplesdir(), "serialise_tests"), tmpserialisetests)
+            shutil.copytree(uth.example_path("serialise_tests"), tmpserialisetests)
 
             with uth.DirectoryContext(tmpserialisetests):
                 temp_config_name = uth.create_temp_config(tmpserialisetests)

@@ -275,8 +275,8 @@ _SAMPLE_PLANS: dict[str, SamplePlan] = {
 
 
 def _discover_samples() -> list[str]:
-    """Return every directory name directly under samples/."""
-    samples_root = pathlib.Path(uth.samplesdir())
+    """Return every directory name directly under the e2e examples dir."""
+    samples_root = pathlib.Path(uth.e2e_dir())
     return sorted(p.name for p in samples_root.iterdir() if p.is_dir())
 
 
@@ -317,7 +317,7 @@ def _copy_sample(sample_name: str, dst: pathlib.Path) -> pathlib.Path:
     a .git marker so :func:`compiletools.git_utils.find_git_root` lands
     on the workspace (not on the surrounding pytest tmpdir or the
     test-runner's cwd)."""
-    src = pathlib.Path(uth.samplesdir()) / sample_name
+    src = pathlib.Path(uth.e2e_dir()) / sample_name
     dst.mkdir(parents=True, exist_ok=True)
     for entry in src.iterdir():
         if entry.is_file():
@@ -360,7 +360,7 @@ def _build_env(plan: SamplePlan) -> dict[str, str]:
     for var in ("CXXFLAGS", "CFLAGS", "LDFLAGS", "CPPFLAGS"):
         env.pop(var, None)
     if plan.needs_pkg_config:
-        env["PKG_CONFIG_PATH"] = str(pathlib.Path(uth.samplesdir()) / "pkgs")
+        env["PKG_CONFIG_PATH"] = str(pathlib.Path(uth.example_path("pkgs")))
     env.update(plan.extra_env)
     return env
 

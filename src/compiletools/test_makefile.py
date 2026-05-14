@@ -676,9 +676,6 @@ class TestMakefile:
         origdir = uth.ctdir()
         print("origdir=" + origdir)
         print(tempdir)
-        samplesdir = uth.samplesdir()
-        print("samplesdir=" + samplesdir)
-
         with uth.DirectoryContext(tempdir), uth.TempConfigContext(tempdir=tempdir) as temp_config_name:
             relativepaths = [
                 "numbers/test_direct_include.cpp",
@@ -687,7 +684,7 @@ class TestMakefile:
                 "simple/helloworld_cpp.cpp",
                 "dottypaths/dottypaths.cpp",
             ]
-            realpaths = [os.path.join(samplesdir, filename) for filename in relativepaths]
+            realpaths = [uth.example_file(filename) for filename in relativepaths]
             with uth.ParserContext():
                 compiletools.makefile_backend.main(
                     parallel_argv + ["--config=" + temp_config_name, "--no-file-locking"] + realpaths
@@ -775,7 +772,7 @@ int main() {
         """PCH magic flag generates .gch and the executable links correctly."""
         with uth.TempDirContextWithChange() as tempdir:
             # Copy PCH sample to temp dir
-            pch_sample = os.path.join(uth.samplesdir(), "pch")
+            pch_sample = uth.example_path("pch")
             for f in os.listdir(pch_sample):
                 shutil.copy2(os.path.join(pch_sample, f), tempdir)
 
@@ -835,8 +832,6 @@ def _test_library(static_dynamic):
     """Manually specify what files to turn into the static (or dynamic)
     library and test linkage
     """
-    samplesdir = uth.samplesdir()
-
     with uth.TempDirContextWithChange() as tempdir, uth.TempConfigContext(tempdir=tempdir) as temp_config_name:
         exerelativepath = "numbers/test_library.cpp"
         librelativepaths = [
@@ -844,8 +839,8 @@ def _test_library(static_dynamic):
             "numbers/get_int.cpp",
             "numbers/get_double.cpp",
         ]
-        exerealpath = os.path.join(samplesdir, exerelativepath)
-        librealpaths = [os.path.join(samplesdir, filename) for filename in librelativepaths]
+        exerealpath = uth.example_file(exerelativepath)
+        librealpaths = [uth.example_file(filename) for filename in librelativepaths]
         argv = ["--config=" + temp_config_name, "--no-file-locking", exerealpath, static_dynamic] + librealpaths
         compiletools.makefile_backend.main(argv)
 

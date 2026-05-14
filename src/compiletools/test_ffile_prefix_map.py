@@ -148,7 +148,7 @@ def test_two_checkouts_produce_byte_identical_cas_objdir(backend_name, tmp_path)
     """Build the simple sample under two distinct workspace paths with
     every available backend; assert every .o under cas-objdir is
     byte-identical across the two checkouts."""
-    sample = pathlib.Path(uth.samplesdir()) / "simple"
+    sample = pathlib.Path(uth.example_path("simple"))
     if not sample.is_dir():
         pytest.skip(f"missing sample dir: {sample}")
 
@@ -171,7 +171,7 @@ def test_two_checkouts_produce_byte_identical_cas_exedir(backend_name, tmp_path)
     returns True), so they don't populate cas-exedir at all -- the
     ``_assert_cas_layer_byte_identical`` helper skips when both sides
     are empty."""
-    sample = pathlib.Path(uth.samplesdir()) / "simple"
+    sample = pathlib.Path(uth.example_path("simple"))
     if not sample.is_dir():
         pytest.skip(f"missing sample dir: {sample}")
 
@@ -206,7 +206,7 @@ _PCH_BMI_XFAIL_REASON = (
 def test_two_checkouts_produce_byte_identical_cas_pchdir(backend_name, tmp_path):
     """PCH .gch byte-identity across two checkouts. The pch sample uses
     `//#PCH=stdafx.h` magic so a precompiled header lands in cas-pchdir."""
-    sample = pathlib.Path(uth.samplesdir()) / "pch"
+    sample = pathlib.Path(uth.example_path("pch"))
     if not sample.is_dir():
         pytest.skip(f"missing sample dir: {sample}")
 
@@ -234,7 +234,7 @@ def test_two_checkouts_produce_byte_identical_cas_pcmdir(backend_name, tmp_path)
         _gcc_supports_header_units,
     )
 
-    sample = pathlib.Path(uth.samplesdir()) / "cxx_modules_header_units"
+    sample = pathlib.Path(uth.example_path("cxx_modules_header_units"))
     if not sample.is_dir():
         pytest.skip(f"missing sample dir: {sample}")
 

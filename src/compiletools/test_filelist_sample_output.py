@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import compiletools
-from compiletools.testhelper import samplesdir
+from compiletools.examples_registry import example_path
 
 
 def test_filelist_lists_sample_files_and_imports_dependencies(capsys: Any) -> None:
@@ -18,7 +18,7 @@ def test_filelist_lists_sample_files_and_imports_dependencies(capsys: Any) -> No
     for attr in ("hunter", "headerdeps", "magicflags"):
         assert hasattr(compiletools, attr), f"compiletools.{attr} should be imported"
 
-    sample_dir = Path(samplesdir()) / "simple"
+    sample_dir = Path(example_path("simple"))
     sample_main = sample_dir / "helloworld_cpp.cpp"
 
     exit_code = module.main(["--tests", str(sample_main)])

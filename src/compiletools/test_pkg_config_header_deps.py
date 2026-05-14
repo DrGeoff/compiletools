@@ -40,9 +40,9 @@ class TestPkgConfigHeaderDeps(BaseCompileToolsTestCase):
         self.test_dir = Path(tempfile.mkdtemp(prefix="ct_test_"))
 
         # Copy sample C++ code to temp directory (needed for cache invalidation test)
-        from compiletools.testhelper import samplesdir
+        from compiletools.examples_registry import example_path
 
-        sample_src = Path(samplesdir()) / "pkg_config_header_deps"
+        sample_src = Path(example_path("pkg_config_header_deps"))
 
         # Copy directory structure
         self.src_dir = self.test_dir / "src"

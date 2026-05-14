@@ -117,7 +117,7 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
         Bug: headertree processes conditional.hpp without USE_HASH defined first,
              so the #ifdef USE_HASH fails and dependency.hpp is NOT included
         """
-        main_cpp = Path(uth.samplesdir()) / "empty_macro_bug" / "libs" / "main.cpp"
+        main_cpp = Path(uth.example_file("empty_macro_bug/libs/main.cpp"))
 
         headertree_headers = self._extract_headers_from_headertree(main_cpp)
         uth.delete_existing_parsers()  # Clear parser registry between calls
@@ -169,7 +169,7 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
         Expected: Both should find should_be_included.hpp after #undef
         Bug: If #undef handling is broken, tools might have stale macro state
         """
-        main_cpp = Path(uth.samplesdir()) / "undef_bug" / "main.cpp"
+        main_cpp = Path(uth.example_file("undef_bug/main.cpp"))
 
         headertree_headers = self._extract_headers_from_headertree(main_cpp)
         uth.delete_existing_parsers()  # Clear parser registry between calls
@@ -213,7 +213,7 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
         This test validates that when no file-defined macros affect includes,
         both tools produce consistent results.
         """
-        main_cpp = Path(uth.samplesdir()) / "macro_state_dependency" / "main.cpp"
+        main_cpp = Path(uth.example_file("macro_state_dependency/main.cpp"))
 
         # Test without DEBUG macro (both should agree on baseline)
         headertree_headers = self._extract_headers_from_headertree(main_cpp)

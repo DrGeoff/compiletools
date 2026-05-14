@@ -86,7 +86,7 @@ class TestGetFinalMacroStateHash(tb.BaseCompileToolsTestCase):
 
     def _process(self, parser, sample_rel="simple/helloworld_cpp.cpp"):
         try:
-            sample_path = os.path.join(uth.samplesdir(), sample_rel)
+            sample_path = uth.example_file(sample_rel)
             parser.parse(sample_path)
             return sample_path
         except RuntimeError as e:

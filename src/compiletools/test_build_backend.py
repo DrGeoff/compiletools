@@ -1511,12 +1511,12 @@ class TestPchManifest:
     def test_pch_rule_emission_writes_manifest(self, tmp_path):
         """Building a graph with a PCH header writes the manifest eagerly.
 
-        Uses the real ``samples/pch/`` project with the full
+        Uses the real ``examples-end-to-end/pch/`` project with the full
         Hunter/headerdeps/magicflags chain — same pattern as
         ``test_backend_integration.TestBackendBuildPCH`` — so the test
         exercises the actual rule-emission path end to end.
         """
-        pch_sample = os.path.join(uth.samplesdir(), "pch")
+        pch_sample = uth.example_path("pch")
         for f in os.listdir(pch_sample):
             shutil.copy2(os.path.join(pch_sample, f), tmp_path)
 

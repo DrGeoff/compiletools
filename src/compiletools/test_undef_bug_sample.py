@@ -14,8 +14,8 @@ import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
 from compiletools.build_context import BuildContext
+from compiletools.examples_registry import example_path
 from compiletools.test_base import BaseCompileToolsTestCase
-from compiletools.testhelper import samplesdir
 
 
 class TestUndefBugSample(BaseCompileToolsTestCase):
@@ -38,7 +38,7 @@ class TestUndefBugSample(BaseCompileToolsTestCase):
         Expected: 4 headers (uses_conditional, cleans_up, defines_macro, should_not_see_macro)
         Buggy: 3 headers (missing should_not_see_macro)
         """
-        sample_dir = Path(samplesdir()) / "undef_bug"
+        sample_dir = Path(example_path("undef_bug"))
         main_cpp = sample_dir / "main.cpp"
 
         argv = ["-vvv", f"--INCLUDE={sample_dir}", str(main_cpp)]

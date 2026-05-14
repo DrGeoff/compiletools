@@ -317,8 +317,7 @@ class TestHunterModuleGraph:
         that earlier development hit when ``trim_pchdir``-style scans
         unconditionally raised on any duplicate.
         """
-        # Build a Hunter pointed at the real repo's samples dir.
-        samples = uth.samplesdir()
+        # Build a Hunter pointed at the real repo's e2e examples dir.
         # Use a TU under cxx_modules/ that imports `math` -- this forces
         # the lookup. The bundled sample's math.cppm IS the unique
         # exporter reachable from this importer's project subtree, but
@@ -326,7 +325,7 @@ class TestHunterModuleGraph:
         # current implementation picks the lex-first path; functionally,
         # the test demonstrates the registry build itself does not
         # raise, which is the regression we're guarding against.
-        hunter, _ = self._make_hunter(samples)
+        hunter, _ = self._make_hunter(uth.e2e_dir())
         # Force registry build to verify no exception.
         hunter._module_interface_registry()
         # The full multi-exporter map should record `math` as
@@ -484,7 +483,7 @@ requires_clang_modules = uth.skipif_e2e_unavailable(
 @requires_cxx_modules
 def test_cxx_modules_simple_sample_builds_and_runs(tmp_path, monkeypatch):
     """Build the cxx_modules sample with ct-cake and run the resulting exe."""
-    sample_src = uth.samplesdir() + "/cxx_modules"
+    sample_src = uth.example_path("cxx_modules")
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
 
     # Copy sample into tmp_path so the build artifacts don't pollute the source.
@@ -524,7 +523,7 @@ def _run_sample_with_compiler(sample_name: str, cxx: str, tmp_path, monkeypatch)
     """
     import shutil
 
-    sample_src = os.path.join(uth.samplesdir(), sample_name)
+    sample_src = uth.example_path(sample_name)
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
     workdir = tmp_path / sample_name
     shutil.copytree(sample_src, workdir)
@@ -567,7 +566,7 @@ def _run_partitions_sample_with(cxx: str, tmp_path, monkeypatch):
     ``add(2,3)=5 mul(2,3)=6`` on stdout."""
     import shutil
 
-    sample_src = os.path.join(uth.samplesdir(), "cxx_modules_partitions")
+    sample_src = uth.example_path("cxx_modules_partitions")
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
     workdir = tmp_path / "cxx_modules_partitions"
     shutil.copytree(sample_src, workdir)
@@ -621,7 +620,7 @@ def _run_import_std_sample_with(cxx: str, tmp_path, monkeypatch):
     prints `add(2,3)=5`. Exercises the system-provided std module path."""
     import shutil
 
-    sample_src = os.path.join(uth.samplesdir(), "cxx_modules_import_std")
+    sample_src = uth.example_path("cxx_modules_import_std")
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
     workdir = tmp_path / "cxx_modules_import_std"
     shutil.copytree(sample_src, workdir)
@@ -842,7 +841,7 @@ def _run_header_units_sample_with(cxx: str, tmp_path, monkeypatch):
     `vec_size=5 front=2`."""
     import shutil
 
-    sample_src = os.path.join(uth.samplesdir(), "cxx_modules_header_units")
+    sample_src = uth.example_path("cxx_modules_header_units")
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
     workdir = tmp_path / "cxx_modules_header_units"
     shutil.copytree(sample_src, workdir)
@@ -905,7 +904,7 @@ def test_cas_pcmdir_clang_pcm_survives_rebuild(tmp_path, monkeypatch):
     # Need a real git root for the default cas-pcmdir resolution to land
     # under {git_root}/cas-pcmdir/{variant}/. `git init` in tmp_path is
     # enough; we don't even need a commit.
-    sample_src = os.path.join(uth.samplesdir(), "cxx_modules")
+    sample_src = uth.example_path("cxx_modules")
     workdir = tmp_path / "cxx_modules"
     shutil.copytree(sample_src, workdir)
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
@@ -982,7 +981,7 @@ def test_gcc_mapper_records_partition_names_with_colon(tmp_path, monkeypatch):
     if not cxx or "g++" not in os.path.basename(cxx):
         pytest.skip("no g++ on PATH")
 
-    sample_src = os.path.join(uth.samplesdir(), "cxx_modules_partitions")
+    sample_src = uth.example_path("cxx_modules_partitions")
     workdir = tmp_path / "cxx_modules_partitions"
     shutil.copytree(sample_src, workdir)
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
@@ -1040,7 +1039,7 @@ def test_cas_pcmdir_gcc_gcm_lands_in_cache(tmp_path, monkeypatch):
     if not cxx or "g++" not in os.path.basename(cxx):
         pytest.skip("no g++ on PATH")
 
-    sample_src = os.path.join(uth.samplesdir(), "cxx_modules")
+    sample_src = uth.example_path("cxx_modules")
     workdir = tmp_path / "cxx_modules"
     shutil.copytree(sample_src, workdir)
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
@@ -1099,7 +1098,7 @@ def test_cas_pcmdir_gcc_header_unit_gcm_survives_rebuild(tmp_path, monkeypatch):
     if not cxx or "g++" not in os.path.basename(cxx):
         pytest.skip("no g++ on PATH")
 
-    sample_src = os.path.join(uth.samplesdir(), "cxx_modules_header_units")
+    sample_src = uth.example_path("cxx_modules_header_units")
     workdir = tmp_path / "cxx_modules_header_units"
     shutil.copytree(sample_src, workdir)
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
@@ -1164,7 +1163,7 @@ def test_ct_trim_cache_evicts_old_pcm_entries(tmp_path, monkeypatch):
     cxx = _which("clang++")
     assert cxx, "requires_clang_modules guard should have skipped"
 
-    sample_src = os.path.join(uth.samplesdir(), "cxx_modules")
+    sample_src = uth.example_path("cxx_modules")
     workdir = tmp_path / "cxx_modules"
     shutil.copytree(sample_src, workdir)
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
@@ -1245,7 +1244,7 @@ def test_cas_pcmdir_path_layout_is_content_addressed(tmp_path, monkeypatch):
     cxx = _which("clang++")
     assert cxx, "requires_clang_modules guard should have skipped"
 
-    sample_src = os.path.join(uth.samplesdir(), "cxx_modules")
+    sample_src = uth.example_path("cxx_modules")
     workdir = tmp_path / "cxx_modules"
     shutil.copytree(sample_src, workdir)
     subprocess.run(["git", "init", "-q"], cwd=workdir, check=True)
@@ -1325,7 +1324,7 @@ class TestFindSystemStdModuleSource:
 @requires_cxx_modules
 def test_cxx_modules_split_implementation_unit(tmp_path, monkeypatch):
     """Same as above but with the implementation in a separate `module M;` TU."""
-    sample_src = uth.samplesdir() + "/cxx_modules_split"
+    sample_src = uth.example_path("cxx_modules_split")
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
 
     import shutil

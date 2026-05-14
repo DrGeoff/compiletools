@@ -39,7 +39,7 @@ class TestCake(BaseCompileToolsTestCase):
 
             # Copy a known cpp file to a non-git directory and compile using cake
             relativepaths = ["simple/helloworld_cpp.cpp"]
-            realpaths = [os.path.join(uth.samplesdir(), filename) for filename in relativepaths]
+            realpaths = [uth.example_file(filename) for filename in relativepaths]
             for ff in realpaths:
                 shutil.copy2(ff, self._tmpdir)
 
@@ -93,7 +93,7 @@ class TestCake(BaseCompileToolsTestCase):
 
             # Copy a known cpp file to a non-git directory and compile using cake
             relativepaths = ["simple/helloworld_cpp.cpp"]
-            realpaths = [os.path.join(uth.samplesdir(), filename) for filename in relativepaths]
+            realpaths = [uth.example_file(filename) for filename in relativepaths]
             for ff in realpaths:
                 shutil.copy2(ff, self._tmpdir)
 
@@ -136,7 +136,7 @@ class TestCake(BaseCompileToolsTestCase):
 
             # Copy a known cpp file to a non-git directory and compile using cake
             relativepaths = ["simple/helloworld_cpp.cpp"]
-            realpaths = [os.path.join(uth.samplesdir(), filename) for filename in relativepaths]
+            realpaths = [uth.example_file(filename) for filename in relativepaths]
             for ff in realpaths:
                 shutil.copy2(ff, self._tmpdir)
 
@@ -456,7 +456,7 @@ class TestCake(BaseCompileToolsTestCase):
         with uth.TempDirContext():
             self._tmpdir = os.getcwd()
 
-            sample_dir = os.path.join(uth.samplesdir(), "platform_has_include")
+            sample_dir = uth.example_path("platform_has_include")
             for f in os.listdir(sample_dir):
                 shutil.copy2(os.path.join(sample_dir, f), self._tmpdir)
 

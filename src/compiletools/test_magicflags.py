@@ -607,7 +607,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
     def test_duplicate_flag_deduplication(self):
         """Test that duplicate compiler flags are properly deduplicated using samples"""
         # Use our new duplicate_flags sample
-        sample_file = os.path.join(os.path.dirname(__file__), "samples", "duplicate_flags", "main.cpp")
+        sample_file = uth.example_file("duplicate_flags/main.cpp")
 
         # Test with DirectMagicFlags
         result = self._parse_with_magic("direct", sample_file, [])
@@ -686,7 +686,7 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
     def test_ldflags_and_linkflags_deduplication(self):
         """Test that LDFLAGS and LINKFLAGS are properly deduplicated using samples"""
         # Use our duplicate_flags sample which now includes LDFLAGS/LINKFLAGS
-        sample_file = os.path.join(os.path.dirname(__file__), "samples", "duplicate_flags", "main.cpp")
+        sample_file = uth.example_file("duplicate_flags/main.cpp")
 
         # Test with DirectMagicFlags
         result = self._parse_with_magic("direct", sample_file, [])

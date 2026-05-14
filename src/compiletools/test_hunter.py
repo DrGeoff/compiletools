@@ -48,14 +48,13 @@ class TestHunterModule:
             hntr = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
 
             relativepath = "factory/widget_factory.hpp"
-            realpath = os.path.join(uth.samplesdir(), relativepath)
+            realpath = uth.example_file(relativepath)
             filesfromheader = hntr.required_source_files(realpath)
             filesfromsource = hntr.required_source_files(compiletools.utils.implied_source(realpath))
             assert set(filesfromheader) == set(filesfromsource)
 
     @staticmethod
     def _hunter_is_not_order_dependent(precall):
-        samplesdir = uth.samplesdir()
         relativepaths = [
             "factory/test_factory.cpp",
             "numbers/test_direct_include.cpp",
@@ -63,7 +62,7 @@ class TestHunterModule:
             "simple/helloworld_cpp.cpp",
             "simple/test_cflags.c",
         ]
-        bulkpaths = [os.path.join(samplesdir, filename) for filename in relativepaths]
+        bulkpaths = [uth.example_file(filename) for filename in relativepaths]
         with uth.TempConfigContext() as temp_config:
             argv = ["--config", temp_config, "--include", uth.ctdir()]
             cap = configargparse.ArgumentParser(
@@ -78,7 +77,7 @@ class TestHunterModule:
             magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
             hntr = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
 
-        realpath = os.path.join(samplesdir, "dottypaths/dottypaths.cpp")
+        realpath = uth.example_file("dottypaths/dottypaths.cpp")
         if precall:
             result = hntr.required_source_files(realpath)
             return result
@@ -184,7 +183,7 @@ class TestHunterRequiredFiles:
         """Test required_files returns headers + sources (lines 135, 142, 150, 152)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
             hntr, _args = _make_hunter(temp_config=temp_config)
-            realpath = os.path.join(uth.samplesdir(), "factory/test_factory.cpp")
+            realpath = uth.example_file("factory/test_factory.cpp")
             result = hntr.required_files(realpath)
             # Should contain the file itself plus dependencies
             assert (
@@ -196,7 +195,7 @@ class TestHunterRequiredFiles:
         """Test required_source_files only returns source files (lines 122-126)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
             hntr, _args = _make_hunter(temp_config=temp_config)
-            realpath = os.path.join(uth.samplesdir(), "factory/test_factory.cpp")
+            realpath = uth.example_file("factory/test_factory.cpp")
             sources = hntr.required_source_files(realpath)
             for s in sources:
                 assert compiletools.utils.is_source(s), f"{s} is not a source file"
@@ -205,7 +204,7 @@ class TestHunterRequiredFiles:
         """Test header_dependencies public API (lines 214-223)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
             hntr, _args = _make_hunter(temp_config=temp_config)
-            realpath = os.path.join(uth.samplesdir(), "factory/test_factory.cpp")
+            realpath = uth.example_file("factory/test_factory.cpp")
             headers = hntr.header_dependencies(realpath)
             # Should return a list of header file paths
             assert isinstance(headers, (list, tuple, set))
@@ -217,7 +216,7 @@ class TestHunterRequiredFiles:
         """Test macro_state_hash returns a hash string (line 206)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
             hntr, _args = _make_hunter(temp_config=temp_config)
-            realpath = os.path.join(uth.samplesdir(), "factory/test_factory.cpp")
+            realpath = uth.example_file("factory/test_factory.cpp")
             # Must call magicflags first
             hntr.magicflags(realpath)
             h = hntr.macro_state_hash(realpath)
@@ -229,7 +228,7 @@ class TestHunterRequiredFiles:
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
             hntr, _args = _make_hunter(temp_config=temp_config)
             # widget_factory.cpp has //#SOURCE=a_widget.cpp and //#SOURCE=z_widget.cpp
-            realpath = os.path.join(uth.samplesdir(), "factory/widget_factory.cpp")
+            realpath = uth.example_file("factory/widget_factory.cpp")
             sources = hntr._extractSOURCE(realpath)
             basenames = {os.path.basename(s) for s in sources}
             assert "a_widget.cpp" in basenames
@@ -240,7 +239,7 @@ class TestHunterRequiredFiles:
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
             hntr, _args = _make_hunter(temp_config=temp_config)
             # widget_factory.hpp has implied source widget_factory.cpp
-            realpath = os.path.join(uth.samplesdir(), "factory/widget_factory.hpp")
+            realpath = uth.example_file("factory/widget_factory.hpp")
             headers, _sources = hntr._get_immediate_deps(realpath, frozenset())
             # implied source should be in headers tuple
             implied_basenames = [os.path.basename(h) for h in headers]
@@ -283,7 +282,7 @@ class TestHunterHuntSource:
         """Test huntsource expands filename arg (lines 248-249, 264-276, 288-289)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
             hntr, args = _make_hunter(temp_config=temp_config)
-            realpath = os.path.join(uth.samplesdir(), "simple/helloworld_cpp.cpp")
+            realpath = uth.example_file("simple/helloworld_cpp.cpp")
             args.filename = [realpath]
             hntr.huntsource()
             assert len(hntr._hunted_sources) >= 1
@@ -301,7 +300,7 @@ class TestHunterHuntSource:
         """Test huntsource picks up args.static (lines 244-245)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
             hntr, args = _make_hunter(temp_config=temp_config)
-            realpath = os.path.join(uth.samplesdir(), "simple/helloworld_cpp.cpp")
+            realpath = uth.example_file("simple/helloworld_cpp.cpp")
             args.static = [realpath]
             hntr.huntsource()
             assert len(hntr._hunted_sources) >= 1
@@ -310,7 +309,7 @@ class TestHunterHuntSource:
         """Test huntsource picks up args.dynamic (lines 246-247)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
             hntr, args = _make_hunter(temp_config=temp_config)
-            realpath = os.path.join(uth.samplesdir(), "simple/helloworld_cpp.cpp")
+            realpath = uth.example_file("simple/helloworld_cpp.cpp")
             args.dynamic = [realpath]
             hntr.huntsource()
             assert len(hntr._hunted_sources) >= 1
@@ -335,7 +334,7 @@ class TestHunterHuntSource:
         """Test gettestsources expands test sources (lines 319-330)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
             hntr, args = _make_hunter(temp_config=temp_config)
-            realpath = os.path.join(uth.samplesdir(), "simple/helloworld_cpp.cpp")
+            realpath = uth.example_file("simple/helloworld_cpp.cpp")
             args.tests = [realpath]
             result = hntr.gettestsources()
             assert len(result) >= 1
@@ -352,7 +351,7 @@ class TestHunterHuntSource:
         """Test huntsource picks up args.tests (lines 250-251)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
             hntr, args = _make_hunter(temp_config=temp_config)
-            realpath = os.path.join(uth.samplesdir(), "simple/helloworld_cpp.cpp")
+            realpath = uth.example_file("simple/helloworld_cpp.cpp")
             args.tests = [realpath]
             hntr.huntsource()
             assert len(hntr._hunted_sources) >= 1
@@ -361,7 +360,7 @@ class TestHunterHuntSource:
         """Test huntsource deduplicates across static/dynamic/filename (line 259)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
             hntr, args = _make_hunter(temp_config=temp_config)
-            realpath = os.path.join(uth.samplesdir(), "simple/helloworld_cpp.cpp")
+            realpath = uth.example_file("simple/helloworld_cpp.cpp")
             args.filename = [realpath]
             args.static = [realpath]
             hntr.huntsource()
@@ -391,7 +390,7 @@ class TestHunterVerbose:
             hntr, _args = _make_hunter(
                 argv_extra=["-v", "-v", "-v", "-v", "-v", "-v", "-v", "-v", "-v", "-v"], temp_config=temp_config
             )
-            realpath = os.path.join(uth.samplesdir(), "simple/helloworld_cpp.cpp")
+            realpath = uth.example_file("simple/helloworld_cpp.cpp")
             hntr.required_files(realpath)
             captured = capsys.readouterr()
             assert "Hunter::" in captured.out
@@ -400,7 +399,7 @@ class TestHunterVerbose:
         """Test verbose output in _get_immediate_deps (line 72)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
             hntr, _args = _make_hunter(argv_extra=["-v"] * 10, temp_config=temp_config)
-            realpath = os.path.join(uth.samplesdir(), "simple/helloworld_cpp.cpp")
+            realpath = uth.example_file("simple/helloworld_cpp.cpp")
             hntr._get_immediate_deps(realpath, frozenset())
             captured = capsys.readouterr()
             assert "_get_immediate_deps" in captured.out
@@ -409,7 +408,7 @@ class TestHunterVerbose:
         """Test verbose output in huntsource (lines 240, 256, 261, 272, 279, 292)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
             hntr, args = _make_hunter(argv_extra=["-v"] * 10, temp_config=temp_config)
-            realpath = os.path.join(uth.samplesdir(), "simple/helloworld_cpp.cpp")
+            realpath = uth.example_file("simple/helloworld_cpp.cpp")
             args.filename = [realpath]
             hntr.huntsource()
             captured = capsys.readouterr()
@@ -436,7 +435,7 @@ class TestHunterVerbose:
         """Test verbose output in header_dependencies (lines 215)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
             hntr, _args = _make_hunter(argv_extra=["-v"] * 10, temp_config=temp_config)
-            realpath = os.path.join(uth.samplesdir(), "factory/test_factory.cpp")
+            realpath = uth.example_file("factory/test_factory.cpp")
             hntr.header_dependencies(realpath)
             captured = capsys.readouterr()
             assert "header dependencies" in captured.out
@@ -445,7 +444,7 @@ class TestHunterVerbose:
         """Test verbose output in _extractSOURCE (line 61)."""
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
             hntr, _args = _make_hunter(argv_extra=["-v"] * 10, temp_config=temp_config)
-            realpath = os.path.join(uth.samplesdir(), "factory/widget_factory.cpp")
+            realpath = uth.example_file("factory/widget_factory.cpp")
             hntr._extractSOURCE(realpath)
             captured = capsys.readouterr()
             assert "SOURCE flag" in captured.out

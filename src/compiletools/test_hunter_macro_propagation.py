@@ -46,7 +46,9 @@ def test_hunter_propagates_macros_to_header_dependencies():
     macro_state_key, so both calls return the same (wrong) result.
     """
     # Setup directory - point to sample files
-    sample_dir = Path(__file__).parent / "samples" / "hunter_macro_propagation"
+    from compiletools.examples_registry import example_path
+
+    sample_dir = Path(example_path("hunter_macro_propagation"))
     original_cwd = os.getcwd()
     os.chdir(sample_dir)
 

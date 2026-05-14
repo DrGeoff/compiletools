@@ -63,7 +63,7 @@ class TestSharedCacheLowMtimeResolution(BaseCompileToolsTestCase):
         main_repo.mkdir()
 
         # Copy hunter_macro_propagation sample (includes config.h -> renderer.h chain)
-        sample_dir = Path(uth.samplesdir()) / "hunter_macro_propagation"
+        sample_dir = Path(uth.example_path("hunter_macro_propagation"))
         for src_file in ["app.cpp", "config.h", "renderer.h"]:
             shutil.copy(sample_dir / src_file, main_repo / src_file)
 

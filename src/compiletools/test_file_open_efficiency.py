@@ -70,8 +70,7 @@ class TestFileOpenEfficiency(compiletools.test_base.BaseCompileToolsTestCase):
         optimization issues in the dependency analysis code.
         """
         # Get the sample directory path
-        samples_base = uth.samplesdir()
-        test_dir = os.path.join(samples_base, sample_dir)
+        test_dir = uth.example_path(sample_dir)
 
         if not os.path.exists(test_dir):
             pytest.skip(f"Sample directory not found: {test_dir}")

@@ -14,7 +14,7 @@ from compiletools.build_context import BuildContext
 
 def _make_cppflags_path(relative_path):
     """Helper to construct path within cppflags_macros sample directory."""
-    return os.path.join(uth.samplesdir(), "cppflags_macros", relative_path)
+    return uth.example_file(f"cppflags_macros/{relative_path}")
 
 
 def _make_cppflags_paths(relative_paths):
@@ -36,11 +36,11 @@ def _assert_headers_absent(result_set, forbidden_headers):
 
 
 def _clean_cppflags(cppflags):
-    """Remove -I{samplesdir()} from cppflags since it's handled by --include parameter."""
+    """Remove -I{e2e_dir()} from cppflags since it's handled by --include parameter."""
     if not cppflags:
         return None
     # Remove the include path part since --include handles it
-    include_pattern = f"-I{uth.samplesdir()}"
+    include_pattern = f"-I{uth.e2e_dir()}"
     cleaned = cppflags.replace(include_pattern, "").strip()
     return cleaned if cleaned else None
 
@@ -119,7 +119,6 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
 
         # Use context manager for temp dir lifecycle
         with uth.TempDirContextNoChange() as tempdir:
-            samplesdir = uth.samplesdir()
             relativepaths = [
                 "factory/test_factory.cpp",
                 "numbers/test_direct_include.cpp",
@@ -128,7 +127,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
                 "simple/test_cflags.c",
                 "calculator/main.cpp",
             ]
-            realpaths = [os.path.join(samplesdir, filename) for filename in relativepaths]
+            realpaths = [uth.example_file(filename) for filename in relativepaths]
 
             _directcache, directresults = _generatecache(tempdir, "direct", realpaths, extraargs)
             _cppcache, cppresults = _generatecache(tempdir, "cpp", realpaths, extraargs)
@@ -225,7 +224,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         result_set = uth.headerdeps_result(
             filename,
             "direct",
-            cppflags=f"-I{uth.samplesdir()} -DENABLE_ADVANCED_FEATURES",
+            cppflags=f"-I{uth.e2e_dir()} -DENABLE_ADVANCED_FEATURES",
         )
         assert _make_cppflags_path("advanced_feature.hpp") in result_set
 
@@ -234,7 +233,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         result_set = uth.headerdeps_result(
             filename,
             "direct",
-            cppflags=f"-I{uth.samplesdir()} -DFROM_CPPFLAGS -DFROM_CFLAGS -DFROM_CXXFLAGS",
+            cppflags=f"-I{uth.e2e_dir()} -DFROM_CPPFLAGS -DFROM_CFLAGS -DFROM_CXXFLAGS",
         )
         expected_headers = ["cppflags_feature.hpp", "cflags_feature.hpp", "cxxflags_feature.hpp"]
         _assert_headers_present(result_set, expected_headers)
@@ -292,10 +291,10 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
     def test_elif_matches_cpp_preprocessor(self):
         filename = self._get_sample_path("cppflags_macros/elif_test.cpp")
         scenarios = [
-            ("VERSION_1_defined", f"-I{uth.samplesdir()} -DVERSION_1"),
-            ("VERSION_2_defined", f"-I{uth.samplesdir()} -DVERSION_2"),
-            ("VERSION_3_defined", f"-I{uth.samplesdir()} -DVERSION_3"),
-            ("no_version_defined", f"-I{uth.samplesdir()}"),
+            ("VERSION_1_defined", f"-I{uth.e2e_dir()} -DVERSION_1"),
+            ("VERSION_2_defined", f"-I{uth.e2e_dir()} -DVERSION_2"),
+            ("VERSION_3_defined", f"-I{uth.e2e_dir()} -DVERSION_3"),
+            ("no_version_defined", f"-I{uth.e2e_dir()}"),
         ]
         _run_scenario_test(filename, scenarios)
 
@@ -321,10 +320,10 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
     def test_advanced_preprocessor_matches_cpp_preprocessor(self):
         filename = self._get_sample_path("cppflags_macros/advanced_preprocessor_test.cpp")
         scenarios = [
-            ("FEATURE_A_and_ALT_FORM_TEST", f"-I{uth.samplesdir()} -DFEATURE_A -DALT_FORM_TEST"),
-            ("FEATURE_A_and_FEATURE_B", f"-I{uth.samplesdir()} -DFEATURE_A -DFEATURE_B"),
-            ("FEATURE_C_only", f"-I{uth.samplesdir()} -DFEATURE_C"),
-            ("no_feature_macros", f"-I{uth.samplesdir()}"),
+            ("FEATURE_A_and_ALT_FORM_TEST", f"-I{uth.e2e_dir()} -DFEATURE_A -DALT_FORM_TEST"),
+            ("FEATURE_A_and_FEATURE_B", f"-I{uth.e2e_dir()} -DFEATURE_A -DFEATURE_B"),
+            ("FEATURE_C_only", f"-I{uth.e2e_dir()} -DFEATURE_C"),
+            ("no_feature_macros", f"-I{uth.e2e_dir()}"),
         ]
         _run_scenario_test(filename, scenarios)
 
@@ -334,13 +333,13 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         scenarios = [
             (
                 "level2_linux_threading_numa",
-                f"-I{uth.samplesdir()} -DBUILD_CONFIG=2 -D__linux__ -DUSE_EPOLL=1 -DENABLE_THREADING -DTHREAD_COUNT=4 -DNUMA_SUPPORT=1",
+                f"-I{uth.e2e_dir()} -DBUILD_CONFIG=2 -D__linux__ -DUSE_EPOLL=1 -DENABLE_THREADING -DTHREAD_COUNT=4 -DNUMA_SUPPORT=1",
             ),
             (
                 "level3_expert_mode_with_profiling",
-                f"-I{uth.samplesdir()} -DBUILD_CONFIG=3 -DENABLE_EXPERT_MODE=1 -DCUSTOM_ALLOCATOR -DALLOCATOR_TYPE=2 -DMEMORY_TRACKING=1 -DLEAK_DETECTION=1 -DSTACK_TRACE=1 -DENABLE_PROFILING=1 -DPROFILING_LEVEL=3 -DMEMORY_PROFILING=1 -DCPU_PROFILING=1 -DCACHE_PROFILING=1",
+                f"-I{uth.e2e_dir()} -DBUILD_CONFIG=3 -DENABLE_EXPERT_MODE=1 -DCUSTOM_ALLOCATOR -DALLOCATOR_TYPE=2 -DMEMORY_TRACKING=1 -DLEAK_DETECTION=1 -DSTACK_TRACE=1 -DENABLE_PROFILING=1 -DPROFILING_LEVEL=3 -DMEMORY_PROFILING=1 -DCPU_PROFILING=1 -DCACHE_PROFILING=1",
             ),
-            ("level1_basic_only", f"-I{uth.samplesdir()} -DBUILD_CONFIG=1"),
+            ("level1_basic_only", f"-I{uth.e2e_dir()} -DBUILD_CONFIG=1"),
         ]
 
         # Expected headers for each scenario
@@ -623,7 +622,7 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
 
     def test_generatetree_with_macro_cache_key(self):
         """Test generatetree with a macro_cache_key."""
-        filename = os.path.join(uth.samplesdir(), "simple/helloworld_cpp.cpp")
+        filename = uth.example_file("simple/helloworld_cpp.cpp")
         args = self._make_args()
         ctx = BuildContext()
         deps = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
@@ -632,7 +631,7 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
 
     def test_generatetree_with_nonempty_macro_key(self):
         """Test generatetree with non-empty macro_cache_key initializes macros."""
-        filename = os.path.join(uth.samplesdir(), "simple/helloworld_cpp.cpp")
+        filename = uth.example_file("simple/helloworld_cpp.cpp")
         args = self._make_args()
         ctx = BuildContext()
         deps = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)

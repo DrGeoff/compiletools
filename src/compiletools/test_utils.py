@@ -87,8 +87,8 @@ class TestImpliedSource:
     def test_implied_source(self):
         relativefilename = "dottypaths/d2/d2.hpp"
         basename = os.path.splitext(relativefilename)[0]
-        expected = os.path.join(uth.samplesdir(), basename + ".cpp")
-        result = utils.implied_source(os.path.join(uth.samplesdir(), relativefilename))
+        expected = uth.example_file(basename + ".cpp")
+        result = utils.implied_source(uth.example_file(relativefilename))
         assert expected == result
 
 

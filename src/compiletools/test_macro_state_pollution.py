@@ -21,9 +21,9 @@ def test_sequential_dependency_analysis_consistency():
     sequentially, and macro state changes can affect subsequent analyses.
     """
     # Setup directory and change to sample directory
-    from compiletools.testhelper import samplesdir
+    from compiletools.examples_registry import example_path
 
-    sample_dir = Path(samplesdir()) / "macro_state_dependency"
+    sample_dir = Path(example_path("macro_state_dependency"))
     original_cwd = os.getcwd()
     os.chdir(sample_dir)
 

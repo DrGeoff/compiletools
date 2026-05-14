@@ -39,9 +39,9 @@ class TestEmptyMacroBug(BaseCompileToolsTestCase):
         self.test_dir = Path(tempfile.mkdtemp(prefix="ct_test_empty_macro_"))
 
         # Copy sample C++ code to temp directory
-        from compiletools.testhelper import samplesdir
+        from compiletools.examples_registry import example_path
 
-        sample_src = Path(samplesdir()) / "empty_macro_bug"
+        sample_src = Path(example_path("empty_macro_bug"))
 
         # Copy libs directory
         self.libs_dir = self.test_dir / "libs"
@@ -81,7 +81,7 @@ class TestEmptyMacroBug(BaseCompileToolsTestCase):
 
         This test should FAIL until line 743 of magicflags.py is fixed.
         """
-        # pkgconfig_env fixture already set PKG_CONFIG_PATH to samples/pkgs/
+        # pkgconfig_env fixture already set PKG_CONFIG_PATH to examples-features/pkgs/
 
         # Create hunter
         argv = ["-vvv", f"--INCLUDE={self.test_dir}", str(self.main_cpp)]

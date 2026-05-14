@@ -19,6 +19,15 @@ import pytest
 import compiletools.apptools
 from compiletools.check_venv import cached_venv_mismatch_reason
 
+# Re-exported so test files can use uth.example_path / uth.example_file
+# without an extra import line.
+from compiletools.examples_registry import (
+    e2e_dir,
+    example_file,  # noqa: F401
+    example_path,  # noqa: F401
+    features_dir,  # noqa: F401
+)
+
 # The abbreviation "uth" is often used for this "testhelper"
 
 
@@ -293,10 +302,6 @@ def ctdir():
 
 def cakedir():
     return os.path.realpath(os.path.join(ctdir(), ".."))
-
-
-def samplesdir():
-    return os.path.realpath(os.path.join(ctdir(), "samples"))
 
 
 def ctconfdir():
@@ -676,11 +681,11 @@ def run_headerdeps(kind, filename, cppflags=None, extra_args=None):
             "--config=" + temp_config_name,
             f"--headerdeps={kind}",
             "--include",
-            samplesdir(),
+            e2e_dir(),
         ]
 
         if cppflags:
-            argv.extend(["--CPPFLAGS", f"-I{samplesdir()} {cppflags}"])
+            argv.extend(["--CPPFLAGS", f"-I{e2e_dir()} {cppflags}"])
 
         if extra_args:
             argv.extend(extra_args)
@@ -780,11 +785,11 @@ def headerdeps_result(filename, kind="direct", cppflags=None, include=None, extr
         filename: Path to file to analyse (can be relative; will be realpathed by headerdeps)
         kind: 'direct' or 'cpp'
         cppflags: Raw CPPFLAGS string (pass full string, do NOT auto-prepend -I)
-        include: Directory to use with --include (defaults to samplesdir())
+        include: Directory to use with --include (defaults to e2e_dir())
         extra_args: List of extra CLI args (e.g., ["--something", "value"])
     Returns: set of header paths
     """
-    include = include or samplesdir()
+    include = include or e2e_dir()
     if extra_args is None:
         extra_args = []
     # ``from ... import name`` so the local binding does not shadow

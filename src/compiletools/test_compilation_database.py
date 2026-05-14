@@ -23,12 +23,10 @@ class TestCompilationDatabase:
         """Test basic compilation database creation with simple C++ files"""
 
         with uth.TempDirContext() as _:
-            samplesdir = uth.samplesdir()
-
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
                 # Use existing sample files
                 relativepaths = ["simple/helloworld_cpp.cpp", "simple/helloworld_c.c"]
-                realpaths = [os.path.join(samplesdir, filename) for filename in relativepaths]
+                realpaths = [uth.example_file(filename) for filename in relativepaths]
 
                 with uth.ParserContext():
                     # Create compilation database
@@ -62,11 +60,9 @@ class TestCompilationDatabase:
         """Test compilation database creation with relative paths option"""
 
         with uth.TempDirContext() as _:
-            samplesdir = uth.samplesdir()
-
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
                 relativepaths = ["simple/helloworld_cpp.cpp"]
-                realpaths = [os.path.join(samplesdir, filename) for filename in relativepaths]
+                realpaths = [uth.example_file(filename) for filename in relativepaths]
 
                 with uth.ParserContext():
                     output_file = "compile_commands_rel.json"
@@ -100,12 +96,10 @@ class TestCompilationDatabase:
         """Test the CompilationDatabaseCreator class directly"""
 
         with uth.TempDirContext() as _:
-            samplesdir = uth.samplesdir()
-
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
                 # Create args object by parsing like main() would
                 relativepaths = ["simple/helloworld_cpp.cpp"]
-                realpaths = [os.path.join(samplesdir, filename) for filename in relativepaths]
+                realpaths = [uth.example_file(filename) for filename in relativepaths]
 
                 # Use the module's main function to test integration
                 argv = ["--config=" + temp_config_name, "--compilation-database-output=test_output.json"] + realpaths
@@ -141,11 +135,9 @@ class TestCompilationDatabase:
         """Test that generated JSON is valid and properly formatted"""
 
         with uth.TempDirContext() as _:
-            samplesdir = uth.samplesdir()
-
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
                 relativepaths = ["simple/helloworld_cpp.cpp"]
-                realpaths = [os.path.join(samplesdir, filename) for filename in relativepaths]
+                realpaths = [uth.example_file(filename) for filename in relativepaths]
 
                 with uth.ParserContext():
                     output_file = "format_test.json"
@@ -181,12 +173,10 @@ class TestCompilationDatabase:
         """Test that compilation database generates equivalent commands to Makefile"""
 
         with uth.TempDirContext() as _:
-            samplesdir = uth.samplesdir()
-
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
                 # Use the same test files as the Makefile test
                 relativepaths = ["simple/helloworld_cpp.cpp", "simple/helloworld_c.c"]
-                realpaths = [os.path.join(samplesdir, filename) for filename in relativepaths]
+                realpaths = [uth.example_file(filename) for filename in relativepaths]
 
                 # Generate compilation database
                 comp_db_output = "compile_commands.json"
@@ -216,8 +206,6 @@ class TestCompilationDatabase:
         """Test equivalence with a more complex project having multiple files and dependencies"""
 
         with uth.TempDirContext() as _:
-            samplesdir = uth.samplesdir()
-
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
                 # Use factory sample which has multiple source files with dependencies
                 relativepaths = [
@@ -231,7 +219,7 @@ class TestCompilationDatabase:
                     "numbers/get_int.cpp",
                     "numbers/get_double.cpp",
                 ]
-                realpaths = [os.path.join(samplesdir, filename) for filename in relativepaths]
+                realpaths = [uth.example_file(filename) for filename in relativepaths]
 
                 # Generate compilation database
                 comp_db_output = "compile_commands_complex.json"
@@ -290,13 +278,11 @@ class TestCompilationDatabase:
         """Test compilation database with FindTargets-based auto-discovery like cake --auto"""
 
         with uth.TempDirContext() as _:
-            samplesdir = uth.samplesdir()
-
             # Copy some sample files to the current directory for auto-discovery
             import shutil
 
-            shutil.copy(os.path.join(samplesdir, "simple/helloworld_cpp.cpp"), ".")
-            shutil.copy(os.path.join(samplesdir, "simple/helloworld_c.c"), ".")
+            shutil.copy(uth.example_file("simple/helloworld_cpp.cpp"), ".")
+            shutil.copy(uth.example_file("simple/helloworld_c.c"), ".")
 
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
                 with uth.ParserContext():
@@ -383,14 +369,12 @@ class TestCompilationDatabase:
         """Test that compilation database supports incremental updates without wiping existing entries"""
 
         with uth.TempDirContext() as _:
-            samplesdir = uth.samplesdir()
-
             # Copy multiple sample files for initial build
             import shutil
 
-            shutil.copy(os.path.join(samplesdir, "simple/helloworld_cpp.cpp"), ".")
-            shutil.copy(os.path.join(samplesdir, "simple/helloworld_c.c"), ".")
-            shutil.copy(os.path.join(samplesdir, "factory/test_factory.cpp"), ".")
+            shutil.copy(uth.example_file("simple/helloworld_cpp.cpp"), ".")
+            shutil.copy(uth.example_file("simple/helloworld_c.c"), ".")
+            shutil.copy(uth.example_file("factory/test_factory.cpp"), ".")
 
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
                 comp_db_output = "compile_commands.json"
@@ -765,13 +749,11 @@ class TestCompilationDatabase:
         """Test more complex incremental scenarios: multiple updates, additions, and deletions"""
 
         with uth.TempDirContext() as _:
-            samplesdir = uth.samplesdir()
-
             # Copy initial set of files
             import shutil
 
-            shutil.copy(os.path.join(samplesdir, "simple/helloworld_cpp.cpp"), ".")
-            shutil.copy(os.path.join(samplesdir, "simple/helloworld_c.c"), ".")
+            shutil.copy(uth.example_file("simple/helloworld_cpp.cpp"), ".")
+            shutil.copy(uth.example_file("simple/helloworld_c.c"), ".")
 
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
                 comp_db_output = "compile_commands.json"
@@ -792,7 +774,7 @@ class TestCompilationDatabase:
                 assert len(initial_db) == 2, "Should have 2 initial entries"
 
                 # Step 2: Add a new file
-                shutil.copy(os.path.join(samplesdir, "factory/test_factory.cpp"), ".")
+                shutil.copy(uth.example_file("factory/test_factory.cpp"), ".")
                 with uth.ParserContext():
                     compiletools.compilation_database.main(
                         [
@@ -870,13 +852,11 @@ class TestCompilationDatabase:
         """Test that StringZilla optimizations are working correctly"""
 
         with uth.TempDirContext() as _:
-            samplesdir = uth.samplesdir()
-
             # Copy files for testing
             import shutil
 
-            shutil.copy(os.path.join(samplesdir, "simple/helloworld_cpp.cpp"), ".")
-            shutil.copy(os.path.join(samplesdir, "simple/helloworld_c.c"), ".")
+            shutil.copy(uth.example_file("simple/helloworld_cpp.cpp"), ".")
+            shutil.copy(uth.example_file("simple/helloworld_c.c"), ".")
 
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
                 comp_db_output = "compile_commands.json"
@@ -1059,10 +1039,8 @@ class TestCompilationDatabase:
         """Test that compile_commands.json follows clang specification exactly"""
 
         with uth.TempDirContext() as _:
-            samplesdir = uth.samplesdir()
-
             # Use our duplicate_flags sample to test both format and deduplication
-            duplicate_flags_sample = os.path.join(samplesdir, "duplicate_flags", "main.cpp")
+            duplicate_flags_sample = uth.example_file("duplicate_flags/main.cpp")
 
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
                 # Copy the sample to test directory
@@ -1314,8 +1292,7 @@ class TestConcurrentCompilationDatabase:
                 json.dump(existing_db, f)
 
             # Now create a new entry from a different directory
-            samplesdir = uth.samplesdir()
-            test_file = os.path.join(samplesdir, "simple/helloworld_cpp.cpp")
+            test_file = uth.example_file("simple/helloworld_cpp.cpp")
 
             with uth.TempConfigContext(tempdir=tmpdir) as temp_config_name, uth.ParserContext():
                 # Change to other_dir to make cwd different from existing entries
@@ -1355,10 +1332,8 @@ class TestConcurrentCompilationDatabase:
         and a sibling compile_commands.json symlink points at it."""
 
         with uth.TempDirContext():
-            samplesdir = uth.samplesdir()
-
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
-                src = os.path.join(samplesdir, "simple/helloworld_cpp.cpp")
+                src = uth.example_file("simple/helloworld_cpp.cpp")
 
                 with uth.ParserContext():
                     compiletools.compilation_database.main(["--config=" + temp_config_name, "--variant=gcc.debug", src])
@@ -1385,10 +1360,8 @@ class TestConcurrentCompilationDatabase:
         with both per-variant files preserved."""
 
         with uth.TempDirContext():
-            samplesdir = uth.samplesdir()
-
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
-                src = os.path.join(samplesdir, "simple/helloworld_cpp.cpp")
+                src = uth.example_file("simple/helloworld_cpp.cpp")
 
                 with uth.ParserContext():
                     compiletools.compilation_database.main(["--config=" + temp_config_name, "--variant=gcc.debug", src])
@@ -1415,10 +1388,8 @@ class TestConcurrentCompilationDatabase:
         renaming and no symlink update happens — the literal path is honored."""
 
         with uth.TempDirContext():
-            samplesdir = uth.samplesdir()
-
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
-                src = os.path.join(samplesdir, "simple/helloworld_cpp.cpp")
+                src = uth.example_file("simple/helloworld_cpp.cpp")
                 explicit = "explicit_output.json"
 
                 with uth.ParserContext():
@@ -1445,8 +1416,6 @@ class TestConcurrentCompilationDatabase:
         to it as if it were our merge target."""
 
         with uth.TempDirContext():
-            samplesdir = uth.samplesdir()
-
             cwd = os.getcwd()
             stale_path = os.path.join(cwd, "compile_commands.json")
             # Pre-existing regular file with garbage content
@@ -1455,7 +1424,7 @@ class TestConcurrentCompilationDatabase:
             assert not os.path.islink(stale_path)
 
             with uth.TempConfigContext(tempdir=cwd) as temp_config_name:
-                src = os.path.join(samplesdir, "simple/helloworld_cpp.cpp")
+                src = uth.example_file("simple/helloworld_cpp.cpp")
                 with uth.ParserContext():
                     compiletools.compilation_database.main(["--config=" + temp_config_name, "--variant=gcc.debug", src])
 
@@ -1471,10 +1440,8 @@ class TestConcurrentCompilationDatabase:
         named compile_commands.<canonical>.json with the canonical dotted
         form and the bare-name symlink follows."""
         with uth.TempDirContext():
-            samplesdir = uth.samplesdir()
-
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
-                src = os.path.join(samplesdir, "simple/helloworld_cpp.cpp")
+                src = uth.example_file("simple/helloworld_cpp.cpp")
 
                 with uth.ParserContext():
                     # Comma-separated, non-canonical order: asan,release,mold,gcc.
@@ -1518,10 +1485,8 @@ class TestConcurrentCompilationDatabase:
         """Two different multi-axis composites produce two side-by-side
         per-variant files; the symlink follows the most recent build."""
         with uth.TempDirContext():
-            samplesdir = uth.samplesdir()
-
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
-                src = os.path.join(samplesdir, "simple/helloworld_cpp.cpp")
+                src = uth.example_file("simple/helloworld_cpp.cpp")
 
                 with uth.ParserContext():
                     compiletools.compilation_database.main(
@@ -1635,10 +1600,8 @@ class TestCompilationDatabaseModuleFlags:
     def test_non_module_tu_unchanged(self):
         """A TU with no module activity must NOT pick up module flags."""
         with uth.TempDirContext():
-            samplesdir = uth.samplesdir()
-
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
-                src = os.path.join(samplesdir, "simple/helloworld_cpp.cpp")
+                src = uth.example_file("simple/helloworld_cpp.cpp")
                 with uth.ParserContext():
                     compiletools.compilation_database.main(
                         [

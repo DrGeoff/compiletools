@@ -11,8 +11,6 @@ The load-bearing reproducer is
 ``test_pch_cache_key_unchanged_when_unused_cmdline_macro_changes``.
 """
 
-import os
-
 import configargparse
 import pytest
 
@@ -52,7 +50,7 @@ def _process(hunter, sample_path):
 
 
 def _sample(rel):
-    return os.path.join(uth.samplesdir(), "cache_scoping", rel)
+    return uth.example_file(f"cache_scoping/{rel}")
 
 
 def _setup_method_common():

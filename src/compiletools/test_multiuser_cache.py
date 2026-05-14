@@ -223,7 +223,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         # Copy source file
         import shutil
 
-        src_file = os.path.join(uth.samplesdir(), "simple/helloworld_cpp.cpp")
+        src_file = uth.example_file("simple/helloworld_cpp.cpp")
         shutil.copy2(src_file, str(source_dir / "main.cpp"))
 
         # Create config with file-locking enabled and custom objdir
@@ -305,7 +305,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 source_dir.mkdir()
 
                 # Copy entire source directory for files with dependencies
-                src_parent = Path(uth.samplesdir()) / os.path.dirname(src_name)
+                src_parent = Path(uth.example_path(os.path.dirname(src_name)))
                 for f in src_parent.glob("*"):
                     if f.is_file():
                         shutil.copy2(str(f), str(source_dir))
@@ -893,7 +893,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             # Subproject A: numbers sample
             subproject_a_dir = Path(tmpdir) / "subproject_numbers"
             subproject_a_dir.mkdir()
-            numbers_src = Path(uth.samplesdir()) / "numbers"
+            numbers_src = Path(uth.example_path("numbers"))
             for f in numbers_src.glob("*"):
                 if f.is_file():
                     shutil.copy2(str(f), str(subproject_a_dir))
@@ -908,7 +908,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             # Subproject B: factory sample
             subproject_b_dir = Path(tmpdir) / "subproject_factory"
             subproject_b_dir.mkdir()
-            factory_src = Path(uth.samplesdir()) / "factory"
+            factory_src = Path(uth.example_path("factory"))
             for f in factory_src.glob("*"):
                 if f.is_file():
                     shutil.copy2(str(f), str(subproject_b_dir))
@@ -1074,7 +1074,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
 
         source_dir = Path(tmpdir) / source_name
         source_dir.mkdir(exist_ok=True)
-        sample_dir = os.path.join(uth.samplesdir(), "pch")
+        sample_dir = uth.example_path("pch")
         for fn in ("pch_user.cpp", "stdafx.h"):
             shutil.copy2(os.path.join(sample_dir, fn), str(source_dir / fn))
 

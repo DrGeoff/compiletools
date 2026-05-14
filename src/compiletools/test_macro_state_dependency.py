@@ -17,9 +17,9 @@ def test_macro_state_dependency_is_fixed():
     """Demonstrate that different macro states produce different results"""
 
     # Get the sample directory
-    from compiletools.testhelper import samplesdir
+    from compiletools.examples_registry import example_path
 
-    sample_dir = Path(samplesdir()) / "macro_state_dependency"
+    sample_dir = Path(example_path("macro_state_dependency"))
     test_cpp = sample_dir / "sample.cpp"
 
     print("Testing header dependency macro state dependency fix...")
@@ -109,9 +109,9 @@ def test_hunter_respects_macro_state_changes():
     """
 
     # Get the sample directory
-    from compiletools.testhelper import samplesdir
+    from compiletools.examples_registry import example_path
 
-    sample_dir = Path(samplesdir()) / "macro_state_dependency"
+    sample_dir = Path(example_path("macro_state_dependency"))
     test_cpp = sample_dir / "sample.cpp"
 
     def create_hunter_with_macros(debug_enabled=False):

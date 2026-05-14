@@ -373,7 +373,7 @@ class TestLibrary:
             # Mimic the build.sh and create the library in a 'mylib' subdirectory
             # Copy the sample source files into the test build location
             mylibdir = os.path.join(tmpdir, "mylib")
-            shutil.copytree(os.path.join(uth.samplesdir(), "library/mylib"), mylibdir)
+            shutil.copytree(uth.example_file("library/mylib"), mylibdir)
 
             # Add unique comments to copied files to avoid hash collision with originals
             for root, _dirs, files in os.walk(mylibdir):
@@ -418,7 +418,7 @@ class TestLibrary:
 
             # Copy the main that will link to the library into the test build location
             relativepaths = ["library/main.cpp"]
-            realpaths = [os.path.join(uth.samplesdir(), filename) for filename in relativepaths]
+            realpaths = [uth.example_file(filename) for filename in relativepaths]
             for ff in realpaths:
                 dest = os.path.join(tmpdir, os.path.basename(ff))
                 shutil.copy2(ff, dest)

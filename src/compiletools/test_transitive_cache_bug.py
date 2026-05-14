@@ -38,11 +38,11 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
 
     def _get_sample_file(self, *parts):
         """Helper to get path to file in transitive_cache_bug sample directory."""
-        return os.path.join(uth.samplesdir(), "transitive_cache_bug", *parts)
+        return uth.example_file("/".join(("transitive_cache_bug",) + parts))
 
     def _get_engine_file(self, *parts):
         """Helper to get path to file in the engine sample directory."""
-        return os.path.join(uth.samplesdir(), "transitive_cache_bug", "engine", *parts)
+        return uth.example_file("/".join(("transitive_cache_bug", "engine") + parts))
 
     def test_game_engine_transitive_deps(self):
         """
@@ -67,7 +67,7 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
         compiletools.headerdeps.add_arguments(cap)
         compiletools.apptools.add_common_arguments(cap)
 
-        sample_dir = os.path.join(uth.samplesdir(), "transitive_cache_bug")
+        sample_dir = uth.example_path("transitive_cache_bug")
         engine_dir = os.path.join(sample_dir, "engine")
         argv = ["--headerdeps", "direct", "--INCLUDE", sample_dir, "--INCLUDE", engine_dir, "-q"]
 
@@ -126,7 +126,7 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
         compiletools.headerdeps.add_arguments(cap)
         compiletools.apptools.add_common_arguments(cap)
 
-        sample_dir = os.path.join(uth.samplesdir(), "transitive_cache_bug")
+        sample_dir = uth.example_path("transitive_cache_bug")
         engine_dir = os.path.join(sample_dir, "engine")
         argv = ["--headerdeps", "direct", "--INCLUDE", sample_dir, "--INCLUDE", engine_dir, "-q"]
 
@@ -186,7 +186,7 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
         compiletools.magicflags.add_arguments(cap)
         compiletools.apptools.add_common_arguments(cap)
 
-        sample_dir = os.path.join(uth.samplesdir(), "transitive_cache_bug")
+        sample_dir = uth.example_path("transitive_cache_bug")
         engine_dir = os.path.join(sample_dir, "engine")
         argv = ["--headerdeps", "direct", "--magic", "direct", "--INCLUDE", sample_dir, "--INCLUDE", engine_dir, "-q"]
 
@@ -241,7 +241,7 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
         compiletools.headerdeps.add_arguments(cap)
         compiletools.apptools.add_common_arguments(cap)
 
-        sample_dir = os.path.join(uth.samplesdir(), "transitive_cache_bug")
+        sample_dir = uth.example_path("transitive_cache_bug")
         engine_dir = os.path.join(sample_dir, "engine")
         argv = ["--headerdeps", "direct", "--INCLUDE", sample_dir, "--INCLUDE", engine_dir, "-q"]
         args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
@@ -298,7 +298,7 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
         This is a comprehensive integration test that validates the fix at the
         user-facing level (actual ct-cake --auto usage, not just Makefile generation).
         """
-        sample_dir = os.path.join(uth.samplesdir(), "transitive_cache_bug")
+        sample_dir = uth.example_path("transitive_cache_bug")
         engine_dir = os.path.join(sample_dir, "engine")
 
         # Use temp directory for the build

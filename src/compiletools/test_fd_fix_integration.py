@@ -216,10 +216,12 @@ class TestFileReadingWithRealFiles:
     def test_no_mmap_mode_reads_real_file(self):
         """Test that no_mmap mode actually reads and analyzes real files correctly."""
         import compiletools.wrappedos
-        from compiletools.global_hash_registry import get_file_hash, load_hashes
 
         # Use a simple sample file
-        sample_file = os.path.join(os.path.dirname(__file__), "samples", "simple", "helloworld_cpp.cpp")
+        from compiletools.examples_registry import example_file
+        from compiletools.global_hash_registry import get_file_hash, load_hashes
+
+        sample_file = example_file("simple/helloworld_cpp.cpp")
         sample_file = compiletools.wrappedos.realpath(sample_file)
         assert os.path.exists(sample_file), f"Sample file not found: {sample_file}"
 
@@ -262,9 +264,10 @@ class TestFileReadingWithRealFiles:
     def test_mmap_mode_reads_real_file(self):
         """Test that mmap mode reads and analyzes real files correctly."""
         import compiletools.wrappedos
+        from compiletools.examples_registry import example_file
         from compiletools.global_hash_registry import get_file_hash, load_hashes
 
-        sample_file = os.path.join(os.path.dirname(__file__), "samples", "simple", "helloworld_cpp.cpp")
+        sample_file = example_file("simple/helloworld_cpp.cpp")
         sample_file = compiletools.wrappedos.realpath(sample_file)
         assert os.path.exists(sample_file)
 
@@ -302,9 +305,10 @@ class TestFileReadingWithRealFiles:
     def test_no_use_mmap_mode_reads_real_file(self):
         """Test that --no-use-mmap mode reads and analyzes real files correctly."""
         import compiletools.wrappedos
+        from compiletools.examples_registry import example_file
         from compiletools.global_hash_registry import get_file_hash, load_hashes
 
-        sample_file = os.path.join(os.path.dirname(__file__), "samples", "simple", "helloworld_cpp.cpp")
+        sample_file = example_file("simple/helloworld_cpp.cpp")
         sample_file = compiletools.wrappedos.realpath(sample_file)
         assert os.path.exists(sample_file)
 

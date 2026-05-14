@@ -68,7 +68,7 @@ def _process(hunter, sample_path):
 
 
 def _sample(rel):
-    return os.path.join(uth.samplesdir(), "cache_scoping", rel)
+    return uth.example_file(f"cache_scoping/{rel}")
 
 
 def _scope_dir(diag_root):

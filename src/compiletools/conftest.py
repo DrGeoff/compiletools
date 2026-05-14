@@ -134,13 +134,13 @@ def pkgconfig_env():
     """
     from pathlib import Path
 
-    from compiletools.testhelper import samplesdir
+    from compiletools.examples_registry import example_path
 
     # Save original PKG_CONFIG_PATH
     original_pkg_config_path = os.environ.get("PKG_CONFIG_PATH")
 
     # Set PKG_CONFIG_PATH to shared pkgs directory
-    shared_pkgconfig = Path(samplesdir()) / "pkgs"
+    shared_pkgconfig = Path(example_path("pkgs"))
     os.environ["PKG_CONFIG_PATH"] = str(shared_pkgconfig)
 
     # Yield to test

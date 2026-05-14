@@ -18,8 +18,6 @@ Also covers:
   - ``_transitive_content_hashes`` excludes the TU itself.
 """
 
-import os
-
 import configargparse
 import pytest
 
@@ -69,7 +67,7 @@ def _process(hunter, sample_path):
 
 
 def _sample(rel):
-    return os.path.join(uth.samplesdir(), "cache_scoping", rel)
+    return uth.example_file(f"cache_scoping/{rel}")
 
 
 def _setup_method_common():

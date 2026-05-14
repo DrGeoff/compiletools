@@ -30,7 +30,7 @@ def _setup_backend_for_source(backend_name, tmp_path, src_file="helloworld_cpp.c
 
     Returns (backend, graph, args) with everything ready for generate()/execute().
     """
-    shutil.copy2(os.path.join(uth.samplesdir(), "simple", src_file), tmp_path)
+    shutil.copy2(uth.example_file(f"simple/{src_file}"), tmp_path)
     source_path = os.path.realpath(os.path.join(tmp_path, src_file))
 
     objdir = os.path.join(str(tmp_path), "obj")
@@ -199,7 +199,7 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
         with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp, uth.ParserContext():
             effective_tmp = pathlib.Path(effective_tmp)
             # Copy PCH sample files to temp dir
-            pch_sample = os.path.join(uth.samplesdir(), "pch")
+            pch_sample = uth.example_path("pch")
             for f in os.listdir(pch_sample):
                 shutil.copy2(os.path.join(pch_sample, f), effective_tmp)
 
@@ -335,7 +335,7 @@ class TestBackendBuildHeaderUnits(BaseCompileToolsTestCase):
 
         with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp, uth.ParserContext():
             effective_tmp = pathlib.Path(effective_tmp)
-            sample = os.path.join(uth.samplesdir(), "cxx_modules_header_units")
+            sample = uth.example_path("cxx_modules_header_units")
             for f in os.listdir(sample):
                 shutil.copy2(os.path.join(sample, f), effective_tmp)
 
@@ -445,7 +445,7 @@ class TestBackendBuildGraphWithTests(BaseCompileToolsTestCase):
         """build_graph() with tests should include 'runtests' phony target."""
         with uth.ParserContext():
             # Use helloworld_cpp.cpp as both a regular and test target to verify graph structure
-            shutil.copy2(os.path.join(uth.samplesdir(), "simple", "helloworld_cpp.cpp"), tmp_path)
+            shutil.copy2(uth.example_file("simple/helloworld_cpp.cpp"), tmp_path)
             source_path = os.path.realpath(os.path.join(tmp_path, "helloworld_cpp.cpp"))
 
             objdir = os.path.join(str(tmp_path), "obj")

@@ -85,7 +85,7 @@ def test_object_cache_filenames_match_across_workspace_paths(tmp_path):
     component of the object filename: identical TUs share cache entries
     even when the workspace itself lives at a different absolute path.
     """
-    sample_src = os.path.join(uth.samplesdir(), "factory")
+    sample_src = uth.example_path("factory")
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
 
     ws1 = tmp_path / "ws1" / "factory"
@@ -141,7 +141,7 @@ def test_compile_and_link_skipped_on_rerun_when_sources_touched(tmp_path):
     link-shared rules, so the cached artefact's existence is sufficient
     and the mtime is untouched.
     """
-    sample_src = os.path.join(uth.samplesdir(), "factory")
+    sample_src = uth.example_path("factory")
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
 
     ws = tmp_path / "ws" / "factory"
@@ -197,7 +197,7 @@ def test_use_mtime_true_restores_legacy_rebuild_on_source_touch(tmp_path):
     Without this test, a future refactor could silently render
     ``--use-mtime=True`` a no-op and we'd never know.
     """
-    sample_src = os.path.join(uth.samplesdir(), "factory")
+    sample_src = uth.example_path("factory")
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
 
     ws = tmp_path / "ws" / "factory"
@@ -245,7 +245,7 @@ def test_link_artefact_reused_across_workspaces(tmp_path):
     granularity timestamp; same inode proves the second build did
     NOT do a temp+rename publish, only a hard-link reuse.
     """
-    sample_src = os.path.join(uth.samplesdir(), "factory")
+    sample_src = uth.example_path("factory")
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
 
     ws1 = tmp_path / "ws1" / "factory"
@@ -305,7 +305,7 @@ def test_pch_artefact_reused_across_workspaces(tmp_path):
     reused (proving the second build hit the cache rather than
     re-precompiling and racing for the same path).
     """
-    sample_src = os.path.join(uth.samplesdir(), "pch")
+    sample_src = uth.example_path("pch")
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
 
     ws1 = tmp_path / "ws1" / "pch"
@@ -453,7 +453,7 @@ def test_bundle_with_workspace_relative_wrapper_reuses_cache(tmp_path):
     the multi-axis composition path is what matters here, not the
     specific axes' runtime semantics.
     """
-    sample_src = os.path.join(uth.samplesdir(), "factory")
+    sample_src = uth.example_path("factory")
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
 
     ws1 = tmp_path / "ws1" / "factory"

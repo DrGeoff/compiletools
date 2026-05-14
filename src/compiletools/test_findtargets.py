@@ -105,10 +105,10 @@ class TestFindTargetsModule:
 
         expectedexes = set()
         if not disable_exes:
-            expectedexes = {os.path.realpath(os.path.join(uth.samplesdir(), exe)) for exe in relativeexpectedexes}
+            expectedexes = {os.path.realpath(uth.example_file(exe)) for exe in relativeexpectedexes}
         expectedtests = set()
         if not disable_tests:
-            expectedtests = {os.path.realpath(os.path.join(uth.samplesdir(), tt)) for tt in relativeexpectedtests}
+            expectedtests = {os.path.realpath(uth.example_file(tt)) for tt in relativeexpectedtests}
 
         config_files = compiletools.configutils.config_files_from_variant(exedir=uth.cakedir(), argv=[])
         cap = configargparse.ArgumentParser(

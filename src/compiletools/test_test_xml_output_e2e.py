@@ -36,7 +36,7 @@ pytestmark = uth.skipif_e2e_unavailable(
 def _setup_sample(tmpdir, source_relpath, extra_files=()):
     """Copy a sample source plus any extra header/aux files into tmpdir
     and return the absolute path of the copied source."""
-    src_root = os.path.join(uth.samplesdir(), "test_xml_output")
+    src_root = uth.example_path("test_xml_output")
     target = os.path.join(tmpdir, os.path.basename(source_relpath))
     shutil.copy2(os.path.join(src_root, source_relpath), target)
     for relpath in extra_files:

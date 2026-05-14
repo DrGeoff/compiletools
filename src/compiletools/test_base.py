@@ -78,7 +78,9 @@ class BaseCompileToolsTestCase:
 
     def _get_sample_path(self, relative_path):
         """Helper to get full path for sample file"""
-        return os.path.join(uth.samplesdir(), relative_path)
+        if os.path.isabs(relative_path):
+            return relative_path
+        return uth.example_file(relative_path)
 
 
 def create_magic_parser(extraargs=None, tempdir=None, context=None):
@@ -134,8 +136,7 @@ def compare_direct_cpp_magic(test_case, relativepath, tempdir=None, expected_val
             # If specific tempdir provided, copy current working dir content there
             os.chdir(tempdir)
 
-        samplesdir = uth.samplesdir()
-        realpath = os.path.join(samplesdir, relativepath)
+        realpath = relativepath if os.path.isabs(relativepath) else uth.example_file(relativepath)
 
         # Use provided parsers or create new ones
         if parsers:
