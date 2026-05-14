@@ -132,6 +132,17 @@ class BazelBackend(BuildBackend):
         # cas-pchdir → workspace pairs (a PCH source change shifts the
         # cmd_hash and therefore the rel-under-cache path).
         self._pch_staging_pairs: list[tuple[str, str]] = []
+        # Same for PCM (.gcm/.pcm) artefacts: when cas-pcmdir lives
+        # outside the workspace, every .gcm path is outside too and
+        # bazel's `additional_compiler_inputs` validation rejects it.
+        # _bazel_pcm_workspace_relative records cas → workspace pairs
+        # here for _materialise_pcm_stagings to hardlink at execute time.
+        self._pcm_staging_pairs: list[tuple[str, str]] = []
+        # Same for cas-objdir interface .o artefacts: bazel cc_binary
+        # srcs validation rejects absolute .o paths outside the
+        # workspace, so an external cas-objdir must be staged before
+        # named-module interface .o files can be linked.
+        self._obj_staging_pairs: list[tuple[str, str]] = []
 
         if output is not None:
             # When writing to a file handle, try to determine the base directory
@@ -199,10 +210,13 @@ class BazelBackend(BuildBackend):
         # Prebuilt .o paths for named-module interface units, workspace-relative.
         # These are added to each link/library target's srcs (not compile
         # targets) to ensure the object code is linked without recompilation.
+        # cas-objdir-outside-workspace paths are staged into
+        # <workspace>/.ct-bazel-obj/ via _bazel_obj_workspace_relative so
+        # the link step can find them inside bazel's sandbox.
         _module_iface_obj_rel: list[str] = sorted(
             rel
             for obj_path in _module_iface_obj_paths
-            for rel in [self._workspace_relative(obj_path, base_dir)]
+            for rel in [self._bazel_obj_workspace_relative(obj_path, base_dir)]
             if rel is not None
         )
 
@@ -457,13 +471,18 @@ class BazelBackend(BuildBackend):
         for path in rule.inputs:
             if not path.endswith(_BMI_PCH_ARTEFACT_EXTS):
                 continue
-            rel = self._workspace_relative(path, base_dir)
+            # cas-pcmdir-outside-workspace path? Stage it into
+            # <workspace>/.ct-bazel-pcm/ so bazel can declare it as
+            # additional_compiler_inputs. Pure workspace-relative
+            # paths (in-tree default cas-pcmdir) and PCH .gch paths
+            # short-circuit through the first branch unchanged.
+            rel = self._bazel_pcm_workspace_relative(path, base_dir)
             if rel is None:
-                # Outside the workspace -- bazel can't symlink it via
-                # additional_compiler_inputs (the file path it stores
-                # is workspace-relative). Skip rather than crash; the
-                # importer compile will fail at compile time with a
-                # clearer message naming the missing module.
+                # Truly outside (system module BMI, sibling repo, …) --
+                # bazel can't symlink it via additional_compiler_inputs.
+                # Skip rather than crash; the importer compile will fail
+                # at compile time with a clearer message naming the
+                # missing module.
                 continue
             inputs.append(rel)
         # Walk transitively through any pcm_rule / obj_rule chain so an
@@ -485,7 +504,7 @@ class BazelBackend(BuildBackend):
                 for path in producer.inputs:
                     if not path.endswith(_BMI_PCH_ARTEFACT_EXTS):
                         continue
-                    rel = self._workspace_relative(path, base_dir)
+                    rel = self._bazel_pcm_workspace_relative(path, base_dir)
                     if rel is None or rel in seen:
                         continue
                     seen.add(rel)
@@ -503,7 +522,7 @@ class BazelBackend(BuildBackend):
         # the full post-walk inputs list rather than just the initial direct inputs.
         seen_inputs: set[str] = set(inputs)
         for gcm_path in self._module_iface_gcm.values():
-            rel = self._workspace_relative(gcm_path, base_dir)
+            rel = self._bazel_pcm_workspace_relative(gcm_path, base_dir)
             if rel is not None and rel not in seen_inputs:
                 inputs.append(rel)
                 seen_inputs.add(rel)
@@ -524,6 +543,123 @@ class BazelBackend(BuildBackend):
     artefacts. Hidden (dot-prefix) so it doesn't pollute target globs;
     namespaced under ``ct-`` so the origin is obvious to anyone reading
     a bazel workspace listing."""
+
+    _BAZEL_PCM_STAGING_DIR = ".ct-bazel-pcm"
+    """Workspace-local subdirectory holding hardlinks of cas-pcmdir BMI
+    artefacts (gcc ``.gcm`` and clang ``.pcm``). Same shape and
+    rationale as ``_BAZEL_PCH_STAGING_DIR`` — bazel's
+    ``additional_compiler_inputs`` only accepts workspace-relative
+    paths, so an external cas-pcmdir must be staged inside the
+    workspace before the importer compile can declare the BMI as an
+    input."""
+
+    _BAZEL_OBJ_STAGING_DIR = ".ct-bazel-obj"
+    """Workspace-local subdirectory holding hardlinks of cas-objdir
+    interface-unit ``.o`` artefacts. Same shape and rationale as
+    ``_BAZEL_PCH_STAGING_DIR`` and ``_BAZEL_PCM_STAGING_DIR`` —
+    bazel's cc_binary ``srcs`` validation only accepts workspace-
+    relative paths, so an external cas-objdir must be staged before
+    a named-module interface ``.o`` can be linked into the importer's
+    final binary."""
+
+    def _bazel_cas_workspace_relative(
+        self,
+        cas_path: str,
+        base_dir: str | None,
+        cas_dir: str | None,
+        staging_subdir: str,
+        pair_list: list[tuple[str, str]],
+    ) -> str | None:
+        """Return a workspace-relative path to ``cas_path``, staging it
+        into ``<workspace>/<staging_subdir>/`` if it's under ``cas_dir``.
+
+        Three branches:
+
+          * ``cas_path`` is already under ``base_dir`` → return its
+            workspace-relative form unchanged. No staging.
+          * ``cas_path`` is under ``cas_dir`` → record the staging
+            pair ``(cas_path, <workspace>/<staging_subdir>/<rel>)``
+            in ``pair_list`` for the matching materialise method to
+            hardlink at execute time, and return the workspace-
+            relative staging path.
+          * Otherwise (system header BMI, sibling-repo artefact, …) →
+            return ``None``. The caller decides whether to crash or
+            quietly drop the input.
+
+        ``base_dir`` is the workspace root (the dir holding
+        BUILD.bazel). When unset (StringIO writer for unit tests)
+        every branch returns ``None`` — staging requires a real path
+        on disk to plant the hardlink at.
+
+        Specialised by ``_bazel_pcm_workspace_relative`` for cas-pcmdir
+        BMI artefacts and ``_bazel_obj_workspace_relative`` for
+        cas-objdir interface .o artefacts.
+        """
+        if base_dir is None:
+            return None
+        rel = self._workspace_relative(cas_path, base_dir)
+        if rel is not None:
+            return rel
+        if not cas_dir:
+            return None
+        cas_prefix = cas_dir.rstrip("/") + "/"
+        if not cas_path.startswith(cas_prefix):
+            return None
+        rel_under_cache = cas_path[len(cas_prefix) :]
+        ws_rel = os.path.join(staging_subdir, rel_under_cache)
+        ws_abs = os.path.join(base_dir, ws_rel)
+        # Idempotent append: callers may probe the same path multiple
+        # times during a graph walk. Dedup is by destination since the
+        # cas → ws mapping is 1:1.
+        pair = (cas_path, ws_abs)
+        if pair not in pair_list:
+            pair_list.append(pair)
+        return ws_rel
+
+    def _bazel_pcm_workspace_relative(self, cas_path: str, base_dir: str | None) -> str | None:
+        """cas-pcmdir specialisation of ``_bazel_cas_workspace_relative``."""
+        return self._bazel_cas_workspace_relative(
+            cas_path,
+            base_dir,
+            getattr(self.args, "cas_pcmdir", None),
+            self._BAZEL_PCM_STAGING_DIR,
+            self._pcm_staging_pairs,
+        )
+
+    def _bazel_obj_workspace_relative(self, cas_path: str, base_dir: str | None) -> str | None:
+        """cas-objdir specialisation of ``_bazel_cas_workspace_relative``."""
+        return self._bazel_cas_workspace_relative(
+            cas_path,
+            base_dir,
+            getattr(self.args, "cas_objdir", None),
+            self._BAZEL_OBJ_STAGING_DIR,
+            self._obj_staging_pairs,
+        )
+
+    def _materialise_pcm_stagings(self) -> None:
+        """Run the workspace-local hardlinks queued by
+        ``_bazel_pcm_workspace_relative``. Mirror of
+        ``_materialise_pch_stagings`` for .gcm/.pcm artefacts. Called
+        from ``_execute_build`` AFTER ``_prebuild_aux_artefacts`` has
+        populated cas-pcmdir, so the source files now exist on disk.
+        Idempotent and safe under concurrent ct-cake invocations
+        targeting the same workspace.
+
+        ``_pcm_staging_pairs`` is populated during ``generate()``;
+        unit tests that drive ``_execute_build`` directly without
+        going through generate first get a no-op via ``getattr``.
+        """
+        for src, dst in getattr(self, "_pcm_staging_pairs", ()):
+            self._stage_into_bazel_workspace(src, dst)
+
+    def _materialise_obj_stagings(self) -> None:
+        """Run the workspace-local hardlinks queued by
+        ``_bazel_obj_workspace_relative``. Mirror of
+        ``_materialise_pcm_stagings`` for cas-objdir interface .o
+        artefacts. Called from ``_execute_build`` AFTER
+        ``_prebuild_aux_artefacts`` has populated cas-objdir."""
+        for src, dst in getattr(self, "_obj_staging_pairs", ()):
+            self._stage_into_bazel_workspace(src, dst)
 
     def _bazel_pch_inputs_and_copts(
         self,
@@ -766,7 +902,7 @@ class BazelBackend(BuildBackend):
             return
         lines: list[str] = []
         for name in sorted(self._module_iface_gcm):
-            rel = self._workspace_relative(self._module_iface_gcm[name], base_dir)
+            rel = self._bazel_pcm_workspace_relative(self._module_iface_gcm[name], base_dir)
             if rel is not None:
                 lines.append(f"{name} {rel}")
         for token in sorted(self._gcc_header_unit_resolved):
@@ -774,7 +910,7 @@ class BazelBackend(BuildBackend):
             gcm_path = self._header_unit_artefact.get(token)
             if not gcm_path:
                 continue
-            rel = self._workspace_relative(gcm_path, base_dir)
+            rel = self._bazel_pcm_workspace_relative(gcm_path, base_dir)
             if rel is None:
                 continue
             for abs_path in abs_paths:
@@ -842,6 +978,20 @@ class BazelBackend(BuildBackend):
         # Must run AFTER _prebuild_aux_artefacts (which builds the
         # .gch files in cas-pchdir).
         self._materialise_pch_stagings()
+        # Same idea for cas-pcmdir BMI artefacts (.gcm/.pcm): stage
+        # them into <workspace>/.ct-bazel-pcm/<hash>/ so the
+        # workspace-relative paths recorded by
+        # _bazel_pcm_workspace_relative (in _bazel_module_inputs_and_copts
+        # and _write_bazel_module_mapper) resolve inside bazel's
+        # sandbox. Must run AFTER _prebuild_aux_artefacts (which builds
+        # the .gcm interface BMIs).
+        self._materialise_pcm_stagings()
+        # Same idea for cas-objdir interface .o artefacts: stage them
+        # into <workspace>/.ct-bazel-obj/<hash>/<basename>.o so they
+        # can appear in cc_binary srcs (workspace-relative). Must run
+        # AFTER _prebuild_aux_artefacts (which builds the interface .o
+        # files in cas-objdir as a side effect of the .gcm build).
+        self._materialise_obj_stagings()
         # Materialise out-of-workspace sources into <base_dir>/ext/ now,
         # immediately before the actual Bazel build. Done here (not in
         # generate()) so that generate() to a StringIO stays a pure file

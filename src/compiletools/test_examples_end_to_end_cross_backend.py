@@ -75,12 +75,6 @@ class ExamplePlan:
     skip_for_backends: frozenset[str] = frozenset()
     extra_args: tuple[str, ...] = ()
     extra_env: dict[str, str] = dataclasses.field(default_factory=dict)
-    # Per-(backend, cas_layout) xfail overrides. Documents known bugs
-    # specific to one (backend, cas_layout) combination — these aren't
-    # universal failures (different layouts for the same example
-    # work), so they don't fit ``xfail_reason`` (which is global).
-    # Key: (backend_name, cas_layout); value: reason string.
-    cas_layout_xfail: dict[tuple[str, str], str] = dataclasses.field(default_factory=dict)
 
 
 # Most examples are vanilla --auto builds. Only the awkward ones need
@@ -97,33 +91,6 @@ _VANILLA: ExamplePlan = ExamplePlan()
 # ("test(modules): drop dead _MODULE_FAILING_BACKENDS xfail dispatch"),
 # so that example uses an empty blocklist.
 _CXX_MODULES_NAMED_BACKENDS_BLOCKED = frozenset()
-
-# Known bug surfaced by the cas_layout="outside" axis: bazel + every
-# C++20 modules example fails with `missing input file
-# '//:.module-mapper.bazel.txt'` when cas-pcmdir lives outside the
-# workspace. ``BazelBackend._write_bazel_module_mapper`` calls
-# ``_workspace_relative`` on every .gcm path; when cas-pcmdir is
-# outside the workspace, every .gcm path is also outside →
-# ``_workspace_relative`` returns None for all of them → the mapper
-# file is empty → the writer skips emission entirely → bazel rejects
-# the build (the ``-fmodule-mapper=`` rewrite at line ~514 still
-# references the basename). Mirror of the PCH-staging bug fixed in
-# commit f94cd165 ("fix(pch): consume cached PCH via -include, not
-# -I"), but applied to .gcm artefacts. Fix sketch: stage .gcm files
-# into a workspace-local ``.ct-bazel-pcm/`` dir (analogous to
-# ``_materialise_pch_stagings``) and rewrite the mapper to reference
-# those staged paths. Until that lands, xfail the affected cells so
-# the bug is documented but the matrix is green.
-_BAZEL_OUTSIDE_MODULES_XFAIL: dict[tuple[str, str], str] = {
-    ("bazel", "outside"): (
-        "Bazel cas-pcmdir-outside-workspace not yet wired: "
-        "_write_bazel_module_mapper drops every .gcm whose path is "
-        "not workspace-relative, leaving the build with a "
-        "-fmodule-mapper= flag pointing at a non-existent file. "
-        "Needs a .ct-bazel-pcm/-style staging step analogous to "
-        "_materialise_pch_stagings."
-    ),
-}
 
 _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
     # ----- vanilla --auto, no special setup -----
@@ -186,27 +153,12 @@ _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
         extra_env={"TESTPREFIX": "timeout 5"},
     ),
     # ----- C++20 modules: backend support varies by example shape -----
-    # See _BAZEL_OUTSIDE_MODULES_XFAIL above for the bazel + cas-outside
-    # bug that affects every cxx_modules-* example.
-    "cxx_modules": ExamplePlan(
-        skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED,
-        cas_layout_xfail=_BAZEL_OUTSIDE_MODULES_XFAIL,
-    ),
-    "cxx_modules_split": ExamplePlan(
-        skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED,
-        cas_layout_xfail=_BAZEL_OUTSIDE_MODULES_XFAIL,
-    ),
-    "cxx_modules_partitions": ExamplePlan(
-        skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED,
-        cas_layout_xfail=_BAZEL_OUTSIDE_MODULES_XFAIL,
-    ),
-    "cxx_modules_import_std": ExamplePlan(
-        skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED,
-        cas_layout_xfail=_BAZEL_OUTSIDE_MODULES_XFAIL,
-    ),
-    # Header units: full cross-backend coverage thanks to upstream fix
-    # (modulo the same bazel + cas-outside bug above).
-    "cxx_modules_header_units": ExamplePlan(cas_layout_xfail=_BAZEL_OUTSIDE_MODULES_XFAIL),
+    "cxx_modules": ExamplePlan(skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED),
+    "cxx_modules_split": ExamplePlan(skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED),
+    "cxx_modules_partitions": ExamplePlan(skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED),
+    "cxx_modules_import_std": ExamplePlan(skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED),
+    # Header units: full cross-backend coverage thanks to upstream fix.
+    "cxx_modules_header_units": _VANILLA,
 }
 
 
@@ -434,8 +386,6 @@ def test_example_builds_with_backend(example_name, backend_name, cas_layout, tmp
     if not uth._backend_tool_available(backend_name):
         pytest.skip(f"{backend_name} build tool not on PATH")
 
-    cas_layout_xfail_reason = plan.cas_layout_xfail.get((backend_name, cas_layout))
-
     with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
         workspace = _copy_example(example_name, pathlib.Path(effective_tmp) / "ws")
         cas_root = _resolve_cas_root(workspace, cas_layout)
@@ -445,19 +395,6 @@ def test_example_builds_with_backend(example_name, backend_name, cas_layout, tmp
             if result.returncode == 0:
                 pytest.xfail(f"unexpected build success despite xfail policy: {plan.xfail_reason}")
             return  # expected failure
-
-        if cas_layout_xfail_reason:
-            if result.returncode == 0:
-                # The bug appears fixed — fail loudly so the maintainer
-                # knows to delete the cas_layout_xfail entry.
-                pytest.fail(
-                    f"XPASS: build succeeded for ({example_name}, {backend_name}, {cas_layout}) "
-                    f"but cas_layout_xfail predicted failure. Either the underlying bug is fixed "
-                    f"(delete the cas_layout_xfail entry) or the test is now bypassing the bug. "
-                    f"Reason on file: {cas_layout_xfail_reason}"
-                )
-            # ``pytest.xfail`` raises XFailed → reported as XFAIL.
-            pytest.xfail(cas_layout_xfail_reason)
 
         assert result.returncode == 0, (
             f"ct-cake failed for example={example_name!r} backend={backend_name!r} "
