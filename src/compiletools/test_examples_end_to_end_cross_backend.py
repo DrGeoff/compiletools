@@ -259,7 +259,6 @@ def _build_env(plan: ExamplePlan) -> dict[str, str]:
 
 
 def _run_build(
-    example_name: str,
     backend_name: str,
     workspace: pathlib.Path,
     plan: ExamplePlan,
@@ -317,7 +316,7 @@ def test_example_builds_with_backend(example_name, backend_name, tmp_path):
 
     with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
         workspace = _copy_example(example_name, pathlib.Path(effective_tmp) / "ws")
-        result = _run_build(example_name, backend_name, workspace, plan)
+        result = _run_build(backend_name, workspace, plan)
 
         if plan.xfail_reason:
             if result.returncode == 0:
