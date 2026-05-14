@@ -903,13 +903,6 @@ class TestLocalLink:
         mock_run_local.assert_called_once()
         assert mock_run_local.call_args[0][0] is test_rule
 
-    def test_runs_tests_in_build_phase_is_true(self):
-        """SlurmBackend runs RuleType.TEST rules in the Phase 5 local-rule
-        sweep, so the capability gate reports True and cake.py skips the legacy
-        post-build ``runtests`` sweep."""
-        backend = SlurmBackend.__new__(SlurmBackend)
-        assert backend._runs_tests_in_build_phase() is True
-
     def test_generate_before_execute_required(self):
         args = SimpleNamespace(
             cas_objdir="/tmp",

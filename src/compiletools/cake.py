@@ -326,12 +326,11 @@ class Cake:
             backend.clean()
             self._clean_topbindir()
         else:
+            # Every backend runs its test rules during execute("build") —
+            # test events nest inside build_execution with category="test".
+            # There is no separate test_execution phase.
             with timer.phase("build_execution"):
                 backend.execute("build")
-
-            if self.args.tests and "runtests" in graph.outputs and not backend._runs_tests_in_build_phase():
-                with timer.phase("test_execution"):
-                    backend.execute("runtests")
 
             self._copyexes()
 

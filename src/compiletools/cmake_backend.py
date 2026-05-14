@@ -145,14 +145,6 @@ class CMakeBackend(BuildBackend):
         # never writes there). Use the legacy single-rule shape.
         return True
 
-    def _runs_tests_in_build_phase(self) -> bool:
-        """CMake runs each test as an ``add_custom_command`` build-graph node
-        gathered under a ``runtests ALL`` target, so ``cmake --build`` runs
-        every test concurrently with the rest of the build — cake.py skips the
-        legacy post-build ``runtests`` sweep.
-        """
-        return True
-
     @staticmethod
     def name() -> str:
         return "cmake"
@@ -275,8 +267,10 @@ class CMakeBackend(BuildBackend):
         # post-build phase. The test argv references the freshly built binary
         # via $<TARGET_FILE:...>, not the user-facing exe path, which
         # _copy_built_executables only populates after the build finishes.
+        test_rules = list(graph.rules_by_type(RuleType.TEST))
+        test_outputs_set = {r.output for r in test_rules}
         test_outputs: list[str] = []
-        for rule in graph.rules_by_type(RuleType.TEST):
+        for rule in test_rules:
             if not (rule.inputs and rule.command):
                 continue
             exe_path = rule.inputs[0]
@@ -289,6 +283,13 @@ class CMakeBackend(BuildBackend):
                 list(rule.command[:exe_idx]) + [f"$<TARGET_FILE:{target_name}>"] + list(rule.command[exe_idx + 1 :])
             )
             argv_str = " ".join(f'"{a}"' for a in test_argv)
+            # --serialise-tests chains tests by injecting the previous test
+            # rule's output into this rule's inputs/order_only_deps. Surface
+            # any such chain dep (a sibling test rule's output) as a file
+            # DEPENDS so cmake serialises the custom commands; the exe stays
+            # a target DEPENDS.
+            chain_deps = [d for d in (*rule.inputs[1:], *rule.order_only_deps) if d in test_outputs_set]
+            depends = " ".join([target_name, *(f'"{d}"' for d in chain_deps)])
             f.write("\nadd_custom_command(\n")
             f.write(f'    OUTPUT "{rule.output}"\n')
             # -E make_directory is mkdir -p: a no-op when the dir already
@@ -297,7 +298,7 @@ class CMakeBackend(BuildBackend):
             f.write(f'    COMMAND "${{CMAKE_COMMAND}}" -E make_directory "{os.path.dirname(rule.output)}"\n')
             f.write(f"    COMMAND {argv_str}\n")
             f.write(f'    COMMAND "${{CMAKE_COMMAND}}" -E touch "{rule.success_marker}"\n')
-            f.write(f"    DEPENDS {target_name}\n")
+            f.write(f"    DEPENDS {depends}\n")
             f.write("    VERBATIM\n")
             f.write(")\n")
             test_outputs.append(rule.output)

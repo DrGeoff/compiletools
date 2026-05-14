@@ -232,21 +232,12 @@ class ShakeBackend(BuildBackend):
     def __init__(self, args, hunter, *, context=None):
         super().__init__(args, hunter, context=context)
         self._graph: BuildGraph | None = None
-        # Test rules run in-process during the build phase (see
-        # _runs_tests_in_build_phase). A failing test appends here instead of
-        # raising from inside the rule executor -- raising mid-flight would
-        # abort sibling rules that asyncio.gather already has in flight. The
-        # aggregated list is raised as a single RuntimeError once the top-level
-        # traversal in execute() returns.
+        # Test rules run in-process during the build phase. A failing test
+        # appends here instead of raising from inside the rule executor --
+        # raising mid-flight would abort sibling rules that asyncio.gather
+        # already has in flight. The aggregated list is raised as a single
+        # RuntimeError once the top-level traversal in execute() returns.
         self._test_failures: list[str] = []
-
-    def _runs_tests_in_build_phase(self) -> bool:
-        """Shake walks ``RuleType.TEST`` rules natively during ``execute("build")``:
-        each test runs in-process the moment its exe's link future resolves, in
-        parallel with continued compilation. cake.py therefore skips the legacy
-        post-build ``execute("runtests")`` sweep.
-        """
-        return True
 
     @staticmethod
     def name() -> str:
@@ -300,13 +291,11 @@ class ShakeBackend(BuildBackend):
     def execute(self, target: str = "build") -> None:
         """Run the Shake build engine.
 
-        Overrides the base template's ``runtests`` handling: rather than
-        delegating to the legacy Python-side ``_run_tests`` sweep, route
-        ``execute("runtests")`` through the graph's own ``runtests`` phony so
-        standalone test runs use the same native, in-process ``RuleType.TEST``
-        rules as the in-build path. ``execute("build")`` is retargeted to the
-        ``all`` phony, whose transitive deps include ``runtests`` -> every test
-        rule fires the moment its exe's link future resolves.
+        ``execute("build")`` is retargeted to the ``all`` phony, whose
+        transitive deps include ``runtests`` -> every test rule fires the
+        moment its exe's link future resolves. ``execute("runtests")`` walks
+        the ``runtests`` phony directly so a standalone test run uses the
+        same native, in-process ``RuleType.TEST`` rules as the in-build path.
         """
         if self._graph is None:
             raise RuntimeError("generate() must be called before execute()")
@@ -796,13 +785,6 @@ class SlurmBackend(ShakeBackend):
             "Tune upward on busy clusters where queue waits exceed the default. "
             "Default: 7200.0 (2 hours)",
         )
-
-    def _runs_tests_in_build_phase(self) -> bool:
-        """Slurm runs ``RuleType.TEST`` rules locally as part of the Phase 5
-        local-rule sweep — each test fires as soon as its exe's link rule
-        resolves, so cake.py skips the legacy post-build ``runtests`` sweep.
-        """
-        return True
 
     # ------------------------------------------------------------------
     # Core execute() — overrides ShakeBackend's async engine

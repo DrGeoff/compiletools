@@ -93,16 +93,10 @@ class TestCakeBackendDispatch:
                 mock_realclean.assert_called_once_with(mock_graph)
                 mock_clean.assert_not_called()
 
-    def test_backend_dispatch_runs_tests_when_runtests_in_graph(self):
-        """When args.tests is set and 'runtests' is in graph.outputs, execute('runtests')
-        should be called for backends that still use the legacy post-build sweep.
-
-        Uses the cmake backend: make, ninja, and shake have been migrated to in-build
-        test execution (``_runs_tests_in_build_phase() -> True``), so cake.py
-        intentionally does NOT issue a separate execute('runtests') for them — their
-        test rules fire inside execute('build'). cmake still relies on the legacy
-        dispatch.
-        """
+    def test_backend_dispatch_does_not_issue_separate_runtests(self):
+        """Every backend runs its test rules during execute('build'), so
+        cake.py issues only execute('build') — never a separate
+        execute('runtests') phase."""
         with CakeTestContext("cmake", tests=["test_main.cpp"]) as (cake, _tmpdir):
             expected_class = get_backend_class("cmake")
 
@@ -116,7 +110,7 @@ class TestCakeBackendDispatch:
                 cake.process()
                 calls = [c[0][0] for c in mock_execute.call_args_list]
                 assert "build" in calls
-                assert "runtests" in calls
+                assert "runtests" not in calls
 
     def test_static_flag_allowed_for_make_backend(self):
         """--static should not raise for --backend=make."""

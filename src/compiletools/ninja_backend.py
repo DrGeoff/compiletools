@@ -23,16 +23,6 @@ class NinjaBackend(BuildBackend):
     def _honors_use_mtime(self) -> bool:
         return True
 
-    def _runs_tests_in_build_phase(self) -> bool:
-        """Ninja runs test rules natively: ``execute("build")`` targets the
-        ``all`` phony, whose transitive deps include every test rule. Each
-        test rule depends only on its own exe (order-only in CAS mode, an
-        implicit input under ``--use-mtime``), so ninja's scheduler fires the
-        test the moment its link rule completes — no separate post-build
-        ``execute("runtests")`` phase.
-        """
-        return True
-
     @staticmethod
     def name() -> str:
         return "ninja"

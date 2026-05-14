@@ -470,7 +470,9 @@ class BuildTimer:
 
     # ----------------------------------------------- per-category aggregation
 
-    AGGREGATING_PHASES: ClassVar[frozenset[str]] = frozenset({"build_execution", "test_execution"})
+    # Tests run inside build_execution (category="test"); there is no
+    # separate test_execution phase.
+    AGGREGATING_PHASES: ClassVar[frozenset[str]] = frozenset({"build_execution"})
 
     def aggregate_by_category(self, phase: TimingEvent) -> list[tuple[str, float, float, float, list[TimingEvent]]]:
         """Group a phase's child rules by category and aggregate them.

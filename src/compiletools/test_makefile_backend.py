@@ -1333,12 +1333,6 @@ class TestMakeRunsTestsInBuildPhase:
     def teardown_method(self):
         uth.reset()
 
-    def test_capability_flag_is_true(self):
-        """The capability gate must report True so cake.py skips the legacy
-        post-build ``_run_tests`` sweep for the make backend."""
-        backend = MakefileBackend(args=SimpleNamespace(), hunter=MagicMock())
-        assert backend._runs_tests_in_build_phase() is True
-
     @uth.requires_functional_compiler
     def test_make_runs_tests_in_build(self, tmp_path, monkeypatch):
         """After execute("build") — NOT execute("runtests") — the test's

@@ -3,7 +3,6 @@
 import io
 import shutil
 import subprocess
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -662,10 +661,6 @@ class TestCMakeRunsTestsInBuildPhase:
 
     def teardown_method(self):
         uth.reset()
-
-    def test_capability_flag_is_true(self):
-        backend = CMakeBackend(args=SimpleNamespace(), hunter=MagicMock())
-        assert backend._runs_tests_in_build_phase() is True
 
     @uth.requires_functional_compiler
     def test_cmake_runs_tests_in_build(self, tmp_path, monkeypatch):

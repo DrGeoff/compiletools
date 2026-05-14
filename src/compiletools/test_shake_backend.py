@@ -1356,12 +1356,6 @@ class TestShakeTestRulesExecutedDuringBuild:
     ``_make_trace_entry`` is never asked to hash its (XML or .result) output.
     """
 
-    def test_capability_flag_is_true(self):
-        """The capability gate must report True so cake.py skips the legacy
-        post-build ``_run_tests`` sweep for the shake backend."""
-        backend = ShakeBackend.__new__(ShakeBackend)
-        assert backend._runs_tests_in_build_phase() is True
-
     def test_do_build_executes_test_rules(self, tmp_path):
         import asyncio
 

@@ -73,13 +73,6 @@ class BazelBackend(BuildBackend):
         # bazel's output naming. Use legacy single-rule shape.
         return True
 
-    def _runs_tests_in_build_phase(self) -> bool:
-        """When the graph has tests, the build phase runs ``bazel test //:all``
-        — which builds the non-test targets *and* runs every cc_test — so
-        cake.py skips the legacy post-build ``runtests`` sweep.
-        """
-        return True
-
     @staticmethod
     def name() -> str:
         return "bazel"
@@ -1033,6 +1026,12 @@ class BazelBackend(BuildBackend):
                 cmd.append(f"--run_under={testprefix}")
             # Surface a failing test's own output instead of just "FAILED".
             cmd.append("--test_output=errors")
+            # --serialise-tests: run one test at a time. --local_test_jobs
+            # caps test concurrency only — non-test compile/link actions
+            # still parallelise under --jobs, so tests stay serialised
+            # without serialising the whole build.
+            if getattr(self.args, "serialisetests", False):
+                cmd.append("--local_test_jobs=1")
         cmd.append(bazel_target)
         self._run_bazel(cmd)
         self._publish_bazel_outputs()

@@ -2,7 +2,8 @@
 right argv tokens to make that framework write a JUnit-shaped XML report.
 
 Single source of truth for the gtest / doctest / Catch2 detection table.
-Consumed by ``build_backend._run_tests`` when ``--test-xml-dir`` is set.
+Consumed by ``build_backend._test_command_for`` (when ``--test-xml-dir`` is
+set) to build each test rule's argv.
 """
 
 from __future__ import annotations

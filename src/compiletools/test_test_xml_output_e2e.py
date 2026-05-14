@@ -1,7 +1,7 @@
 """End-to-end coverage of ``--test-xml-dir`` through ``ct-cake``.
 
 Drives the full pipeline (parseargs -> Hunter -> backend.build_graph
--> compile -> link -> _run_tests) on the stub fixtures under
+-> compile -> link -> in-build test rules) on the stub fixtures under
 ``examples-features/test_xml_output/``, then asserts ct-cake passed the right
 framework-specific XML argv to each test executable.
 
@@ -25,7 +25,7 @@ import compiletools.testhelper as uth
 # src tree (subprocess-driven helpers like ct-cas-publish would silently
 # exercise the wrong compiletools install) or (b) ct-cas-publish itself
 # isn't on PATH. ct-cake's link rule shells out to ct-cas-publish, so an
-# unprovisioned venv breaks the build before _run_tests even starts; we'd
+# unprovisioned venv breaks the build before the test rules even run; we'd
 # then report "no XML produced" for the wrong reason.
 pytestmark = uth.skipif_e2e_unavailable(
     lambda: shutil.which("ct-cas-publish") is not None,

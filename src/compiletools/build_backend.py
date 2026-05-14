@@ -17,13 +17,13 @@ from __future__ import annotations
 import abc
 import functools
 import hashlib
+import itertools
 import json
 import os
 import shlex
 import shutil
 import subprocess
 import sys
-import time
 from collections import deque
 from typing import NamedTuple, TypeVar
 
@@ -559,8 +559,6 @@ class BuildBackend(abc.ABC):
         self._gcc_header_unit_resolved: dict[str, list[str]] = {}
         self._build_imports_std_cached: bool | None = None
         self._compile_used_libcxx = False
-        # Per-target framework cache; declared here so pyright sees it on every instance.
-        self._test_frameworks: dict[str, TestFramework | None] = {}
 
         # Warn if the user explicitly opted into legacy mtime semantics
         # but this backend can't deliver them. The flag is a make/ninja
@@ -613,14 +611,10 @@ class BuildBackend(abc.ABC):
         (e.g. ShakeBackend which uses its own build engine).
         """
         if target == "runtests":
-            # Backends that run tests in the build phase route a standalone
-            # ``runtests`` through their own native test rules (via
-            # _execute_build) so it uses the same recipes as the in-build path;
-            # the rest fall back to the legacy Python-side _run_tests sweep.
-            if self._runs_tests_in_build_phase():
-                self._execute_build("runtests")
-            else:
-                self._run_tests()
+            # Every backend runs its test rules during the build phase; a
+            # standalone ``runtests`` request routes through those same native
+            # test rules via _execute_build.
+            self._execute_build("runtests")
             return
         if self._graph is not None and self._all_outputs_current(self._graph):
             return
@@ -643,21 +637,14 @@ class BuildBackend(abc.ABC):
         """
         return "all" if target == "build" else target
 
-    def _runs_tests_in_build_phase(self) -> bool:
-        """Return True if this backend's execute("build") natively runs test rules
-        (i.e. test executables fire as soon as their link rule completes, inside the
-        build phase). When False (default), cake.py orchestrates a separate
-        backend.execute("runtests") post-build phase via the legacy _run_tests path.
-        Subclasses that have been migrated to in-build test execution override to True.
-        """
-        return False
+    def _test_command_for(self, source: str, exe_path: str) -> tuple[list[str], TestFramework | None]:
+        """Return ``(argv, framework)`` for invoking a test executable.
 
-    def _test_command_for(self, source: str, exe_path: str) -> list[str]:
-        """Return the full argv to invoke a test executable, including TESTPREFIX
-        parts and any framework-specific JUnit-XML argv when --test-xml-dir is set.
-        The framework is detected from *source*'s transitive header set via
-        compiletools.test_framework.detect_framework; the per-target lookup is
-        cached on self._test_frameworks.
+        ``argv`` includes TESTPREFIX parts and, when ``--test-xml-dir`` is set
+        and a known unit-test framework is detected from *source*'s transitive
+        header set, the framework-specific JUnit-XML emit argv appended after
+        ``exe_path`` (so prefix tools forward the trailing argv to the child).
+        ``framework`` is the detected ``TestFramework`` or ``None``.
         """
         cmd: list[str] = []
         testprefix = getattr(self.args, "TESTPREFIX", "")
@@ -666,25 +653,20 @@ class BuildBackend(abc.ABC):
         cmd.append(exe_path)
 
         if not getattr(self.args, "test_xml_dir", None):
-            return cmd
+            return cmd, None
 
-        # --test-xml-dir is set: detect (and cache) the framework for this
-        # exe_path, then append the framework-specific XML-emit argv after
-        # exe_path so prefix tools forward the trailing argv to the child.
-        if exe_path not in self._test_frameworks:
-            headers = [str(h) for h in self.hunter.header_dependencies(source)]
-            framework = compiletools.test_framework.detect_framework(headers, source)
-            if framework is None and getattr(self.args, "verbose", 0) >= 1:
+        headers = [str(h) for h in self.hunter.header_dependencies(source)]
+        framework = compiletools.test_framework.detect_framework(headers, source)
+        if framework is None:
+            if getattr(self.args, "verbose", 0) >= 1:
                 print(
                     f"{source}: no known unit-test framework detected; skipping XML output",
                     file=sys.stderr,
                 )
-            self._test_frameworks[exe_path] = framework
+            return cmd, None
 
-        framework = self._test_frameworks.get(exe_path)
-        if framework is not None:
-            cmd.extend(framework.xml_argv(self._xml_path_for(exe_path)))
-        return cmd
+        cmd.extend(framework.xml_argv(self._xml_path_for(exe_path)))
+        return cmd, framework
 
     def _touch_result_marker(self, result_path: str) -> None:
         """Touch a test's success marker. No-op (without error) if result_path
@@ -1370,11 +1352,9 @@ class BuildBackend(abc.ABC):
             cas_only_results = not getattr(self.args, "use_mtime", False) and not self._has_native_cas_exe()
             # When --test-xml-dir is set the test recipes pass
             # ``--gtest_output=xml:<dir>/<exe>.xml`` (etc.) to the test exe.
-            # The legacy _run_tests path used to ``os.makedirs`` that directory
-            # before running; backends that run tests in the build phase no
-            # longer go through _run_tests, so emit an explicit mkdir rule and
-            # hang every test rule off it as an order-only dep. All per-test
-            # XML files share the single ``<xml-dir>/<variant>`` directory.
+            # Emit an explicit mkdir rule for that directory and hang every
+            # test rule off it as an order-only dep. All per-test XML files
+            # share the single ``<xml-dir>/<variant>`` directory.
             xml_bucket_dir = ""
             if getattr(self.args, "test_xml_dir", None):
                 # dir component of _xml_path_for is exe-independent, so [0] is representative
@@ -1388,6 +1368,7 @@ class BuildBackend(abc.ABC):
                     )
                 )
             test_result_paths = []
+            test_rules: list[tuple[str, BuildRule]] = []
             for source, exe_path in zip(self.args.tests, test_exe_paths):
                 # In CAS-only mode, place .result next to the CAS exe entry
                 # so success markers are content-addressed: two builds that
@@ -1412,29 +1393,45 @@ class BuildBackend(abc.ABC):
                     # Order-only: the XML dir must exist before the test runs,
                     # but its mtime must not retrigger the test.
                     rule_order_only = rule_order_only + [xml_bucket_dir]
-                test_cmd = self._test_command_for(source, exe_path)
+                test_cmd, framework = self._test_command_for(source, exe_path)
                 # When a framework is detected and --test-xml-dir is set the
                 # test recipe emits a JUnit XML file as a side effect. Make
                 # the XML path the rule's *output* (rather than the .result
                 # marker) so the native scheduler re-runs the test if the XML
-                # is deleted out from under it -- this reproduces the legacy
-                # _run_tests "rerun iff .result current AND XML present"
-                # predicate using only the build graph. The .result marker
-                # stays the success_marker (touched on rc==0) regardless.
+                # is deleted out from under it. The .result marker stays the
+                # success_marker (touched on rc==0) regardless.
                 rule_output = result_path
-                if xml_bucket_dir and self._test_frameworks.get(exe_path) is not None:
+                if xml_bucket_dir and framework is not None:
                     rule_output = self._xml_path_for(exe_path)
-                graph.add_rule(
-                    BuildRule(
-                        output=rule_output,
-                        inputs=rule_inputs,
-                        command=test_cmd,
-                        rule_type="test",
-                        order_only_deps=rule_order_only,
-                        success_marker=result_path,
-                    )
+                test_rule = BuildRule(
+                    output=rule_output,
+                    inputs=rule_inputs,
+                    command=test_cmd,
+                    rule_type="test",
+                    order_only_deps=rule_order_only,
+                    success_marker=result_path,
                 )
+                graph.add_rule(test_rule)
                 test_result_paths.append(rule_output)
+                test_rules.append((source, test_rule))
+
+            # --serialise-tests: chain the test rules so only one runs at a
+            # time — but still during the build, not after. Each rule (in
+            # source-sorted order) gains a dependency on the previous rule's
+            # ``output``, which every backend's scheduler honours natively.
+            # The dep goes in ``inputs`` under --use-mtime (so the previous
+            # marker's mtime gates the next test) and ``order_only_deps``
+            # otherwise (presence-only — the CAS-only default). The previous
+            # rule's ``output`` is used, not its ``success_marker``: for a
+            # framework test ``output`` is the JUnit XML and only ``output``
+            # is a real graph target the scheduler can resolve.
+            if getattr(self.args, "serialisetests", False) and len(test_rules) > 1:
+                use_mtime = getattr(self.args, "use_mtime", False)
+                chained = sorted(test_rules, key=lambda sr: sr[0])
+                for (_prev_src, prev_rule), (_src, rule) in itertools.pairwise(chained):
+                    dep_list = rule.inputs if use_mtime else rule.order_only_deps
+                    if prev_rule.output not in dep_list:
+                        dep_list.append(prev_rule.output)
 
             graph.add_rule(BuildRule(output="runtests", inputs=test_result_paths, command=None, rule_type="phony"))
             all_deps.append("runtests")
@@ -1475,12 +1472,12 @@ class BuildBackend(abc.ABC):
             if rule is not None and rule.rule_type == RuleType.SYMLINK and rule.inputs:
                 return rule.inputs[0] + ".result"
         # Unexpected fallback: CAS-only mode but no publish-symlink rule
-        # found. In production ``_run_tests`` always runs after
-        # ``build_graph`` populates ``self._graph``, so reaching here means
-        # either the graph wasn't populated (a custom ``execute`` override
-        # in an out-of-tree backend) or the publish rule was filtered out
-        # of the graph. Surface it at verbose>=2 so the silent downgrade
-        # to legacy semantics is at least diagnosable.
+        # found. In production ``build_graph`` always populates
+        # ``self._graph`` before a consumer asks for a marker path, so
+        # reaching here means either the graph wasn't populated (a custom
+        # ``execute`` override in an out-of-tree backend) or the publish rule
+        # was filtered out of the graph. Surface it at verbose>=2 so the
+        # silent downgrade to legacy semantics is at least diagnosable.
         if getattr(self.args, "verbose", 0) >= 2:
             print(
                 f"_result_marker_path: no publish-symlink rule for {exe_path}; "
@@ -1498,185 +1495,6 @@ class BuildBackend(abc.ABC):
         xml_dir = self.args.test_xml_dir
         variant = getattr(self.args, "variant", "") or ""
         return os.path.join(xml_dir, variant, os.path.basename(exe_path) + ".xml")
-
-    def _run_tests(self) -> None:
-        """Run test executables built from args.tests.
-
-        Provides a backend-agnostic way to run tests with:
-        - Result-file markers: skips tests whose marker is current. In
-          CAS-only mode the marker lives next to the content-addressed
-          exe (existence is sufficient — the path is content-keyed so its
-          presence proves this exact exe content was previously tested).
-          In legacy ``--use-mtime`` mode the marker lives next to the
-          published exe and the existing ``mtime(result) >= mtime(exe)``
-          check applies.
-        - Parallel execution: uses ThreadPoolExecutor with args.parallel workers.
-        - Serialisation: when args.serialisetests is set, forces sequential execution.
-        - TESTPREFIX: honours args.TESTPREFIX (e.g., valgrind) by prepending to
-          the test command.
-        - JUnit XML: when ``--test-xml-dir`` is set, detects each test's
-          framework (gtest / doctest / Catch2) from its transitive headers
-          and appends the framework-specific XML-emit argv after exe_path.
-          A test whose .result marker is current but whose XML file is
-          missing is re-run to regenerate the XML; tests with no detected
-          framework keep the legacy skip behaviour.
-        """
-        if not self.args.tests:
-            return
-
-        test_pairs = [
-            (source, self.namer.executable_pathname(compiletools.wrappedos.realpath(source)))
-            for source in self.args.tests
-        ]
-
-        xml_dir = getattr(self.args, "test_xml_dir", None)
-
-        # Framework detection (when --test-xml-dir is set) is owned by
-        # _test_command_for, which detects once per target and caches on
-        # self._test_frameworks. _build_graph already primed that cache for
-        # the legacy path; calling _test_command_for here is idempotent (a
-        # cache hit) for those entries and lazily fills any that are missing
-        # (native-CAS backends that skip _build_graph's test rules). Either
-        # way detect_framework runs at most once per target, and the
-        # no-framework warning fires inside _test_command_for.
-        if xml_dir:
-            for source, exe_path in test_pairs:
-                self._test_command_for(source, exe_path)
-
-            # Pre-create the variant subdirectory so parallel workers don't
-            # race in os.makedirs. Lazy: nothing is created when xml_dir is
-            # unset, and nothing happens here when args.tests is empty
-            # (early return above).
-            variant = getattr(self.args, "variant", "") or ""
-            os.makedirs(os.path.join(xml_dir, variant), exist_ok=True)
-
-        # Marker location and currency rule come from master:
-        # ``_result_marker_path`` resolves the CAS-side marker for cas-exedir
-        # backends (presence-only, content-keyed) and falls back to the
-        # legacy ``<exe>.result`` for ``--use-mtime`` and native-CAS
-        # backends (mtime check). The XML predicate added by --test-xml-dir
-        # composes on top: a test whose result marker is current but whose
-        # XML file is missing must re-run to regenerate the XML.
-        legacy_mtime = getattr(self.args, "use_mtime", False) or self._has_native_cas_exe()
-
-        tests_to_run = []
-        for source, exe_path in test_pairs:
-            result_file = self._result_marker_path(exe_path)
-            if legacy_mtime:
-                result_current = (
-                    os.path.exists(result_file)
-                    and os.path.exists(exe_path)
-                    and os.path.getmtime(result_file) >= os.path.getmtime(exe_path)
-                )
-            else:
-                # CAS-only: marker is content-addressed, presence is sufficient.
-                result_current = os.path.exists(result_file)
-            if not result_current:
-                tests_to_run.append((source, exe_path))
-                continue
-            if xml_dir and self._test_frameworks.get(exe_path) is not None:
-                if not os.path.exists(self._xml_path_for(exe_path)):
-                    tests_to_run.append((source, exe_path))
-                    continue
-            if self.args.verbose >= 2:
-                print(f"Skipping up-to-date test: {exe_path}", file=sys.stderr)
-
-        if not tests_to_run:
-            if self.args.verbose >= 1:
-                print("All tests up-to-date, nothing to run.", file=sys.stderr)
-            return
-
-        parallel = getattr(self.args, "parallel", 1)
-        if getattr(self.args, "serialisetests", False):
-            parallel = 1
-
-        if parallel > 1:
-            self._run_tests_parallel(tests_to_run, parallel)
-        else:
-            self._run_tests_sequential(tests_to_run)
-
-    def _run_single_test(self, source: str, exe_path: str) -> tuple[str, int, str, str]:
-        """Run a single test executable. Returns (exe_path, returncode, stdout, stderr).
-
-        When ``--timing`` is enabled, records a per-test rule on the
-        BuildTimer so the post-build report breaks ``test_execution`` down
-        to individual test wall-clock times.  Recording happens inside the
-        worker (which may be a thread under parallel execution); the
-        timer's lock makes ``record_rule`` thread-safe.
-
-        When ``--test-xml-dir`` is set and the test's framework was
-        detected, appends the framework-specific XML-emit argv *after*
-        ``exe_path`` so prefix tools like valgrind / strace -f / taskset
-        forward the trailing argv to the child process correctly.
-        """
-        cmd = self._test_command_for(source, exe_path)
-
-        timer = self._timer
-        start = time.monotonic() if timer else 0.0
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if timer:
-            elapsed = time.monotonic() - start
-            timer.record_rule(
-                rule_type="test",
-                target=exe_path,
-                source=exe_path,
-                elapsed_s=elapsed,
-                start_s=start,
-                end_s=start + elapsed,
-            )
-        return exe_path, result.returncode, result.stdout, result.stderr
-
-    def _run_tests_sequential(self, tests_to_run: list[tuple[str, str]]) -> None:
-        """Run tests one at a time, printing output immediately."""
-        failures = []
-        for source, exe_path in tests_to_run:
-            if self.args.verbose >= 1:
-                print(f"... {exe_path}")
-            exe_path, rc, stdout, stderr = self._run_single_test(source, exe_path)
-            if stdout:
-                print(stdout, end="")
-            if stderr:
-                print(stderr, end="", file=sys.stderr)
-            if rc != 0:
-                failures.append(exe_path)
-            else:
-                # Touch the .result file to mark success
-                _touch(self._result_marker_path(exe_path))
-
-        if failures:
-            raise RuntimeError(f"Test failures: {', '.join(failures)}")
-
-    def _run_tests_parallel(self, tests_to_run: list[tuple[str, str]], parallel: int) -> None:
-        """Run tests in parallel, buffering output and printing in order."""
-        import concurrent.futures
-
-        failures = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as executor:
-            futures = {
-                executor.submit(self._run_single_test, source, exe_path): exe_path for source, exe_path in tests_to_run
-            }
-            # Collect results as they complete; reorder below to match submission order
-            results = []
-            for future in concurrent.futures.as_completed(futures):
-                results.append(future.result())
-
-        # Sort by original order and print
-        order = {exe_path: i for i, (_source, exe_path) in enumerate(tests_to_run)}
-        results.sort(key=lambda r: order[r[0]])
-        for exe_path, rc, stdout, stderr in results:
-            if self.args.verbose >= 1:
-                print(f"... {exe_path}")
-            if stdout:
-                print(stdout, end="")
-            if stderr:
-                print(stderr, end="", file=sys.stderr)
-            if rc != 0:
-                failures.append(exe_path)
-            else:
-                _touch(self._result_marker_path(exe_path))
-
-        if failures:
-            raise RuntimeError(f"Test failures: {', '.join(failures)}")
 
     def _args_signature(self) -> str:
         """Deterministic ``Namespace(k=v, ...)`` repr for the build-file header.
@@ -1915,15 +1733,14 @@ class BuildBackend(abc.ABC):
                 has_build_rules = True
                 if not os.path.exists(rule.output):
                     return False
-            elif rule.rule_type == RuleType.TEST and self._runs_tests_in_build_phase():
-                # For backends that run tests in the build phase, the test
-                # rule's output (the JUnit XML file when a framework is
-                # detected, else the .result marker) is part of the build's
-                # observable contract. If it's missing — e.g. the user
-                # deleted the XML between runs — the build is not current and
-                # the native scheduler must run; it will re-execute only the
-                # test whose output is absent. Skip when tests still run via
-                # the legacy post-build _run_tests sweep.
+            elif rule.rule_type == RuleType.TEST:
+                # Tests run in the build phase, so a test rule's output (the
+                # JUnit XML file when a framework is detected, else the
+                # .result marker) is part of the build's observable contract.
+                # If it's missing — e.g. the user deleted the XML between
+                # runs — the build is not current and the native scheduler
+                # must run; it re-executes only the test whose output is
+                # absent.
                 has_build_rules = True
                 if not os.path.exists(rule.output):
                     return False

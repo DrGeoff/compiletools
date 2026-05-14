@@ -78,15 +78,6 @@ class MakefileBackend(BuildBackend):
     def _honors_use_mtime(self) -> bool:
         return True
 
-    def _runs_tests_in_build_phase(self) -> bool:
-        """Make runs test rules natively: ``execute("build")`` targets the
-        ``all`` phony, whose transitive deps include every test ``.result``
-        rule. Each test rule depends only on its own exe, so make's ``-j``
-        scheduler fires the test the moment its link rule completes — no
-        separate post-build ``execute("runtests")`` phase.
-        """
-        return True
-
     @staticmethod
     def name() -> str:
         return "make"

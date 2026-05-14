@@ -425,31 +425,6 @@ class TestBackendBuildHeaderUnits(BaseCompileToolsTestCase):
             )
 
 
-class TestBackendRunTestsDispatch:
-    """Verify each backend that still uses the legacy post-build _run_tests
-    sweep dispatches execute('runtests') to _run_tests().
-
-    Backends migrated to in-build test execution (make, ninja, shake) override
-    execute() to route 'runtests' through their native build graph's
-    'runtests' target instead, so they are intentionally excluded here.
-    """
-
-    @pytest.mark.parametrize("backend_name", ["bazel", "cmake"])
-    def test_execute_runtests_calls_run_tests(self, backend_name):
-        from unittest.mock import MagicMock, patch
-
-        BackendClass = get_backend_class(backend_name)
-        args = MagicMock()
-        args.tests = ["/src/test_foo.cpp"]
-        args.verbose = 0
-        hunter = MagicMock()
-        backend = BackendClass(args=args, hunter=hunter, context=BuildContext())
-
-        with patch.object(backend, "_run_tests") as mock_run_tests:
-            backend.execute("runtests")
-            mock_run_tests.assert_called_once()
-
-
 class TestBackendBuildGraphWithTests(BaseCompileToolsTestCase):
     """Verify build_graph() includes test targets for all backends."""
 

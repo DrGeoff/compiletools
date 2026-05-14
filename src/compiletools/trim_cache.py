@@ -794,7 +794,7 @@ class CacheTrimmer:
                 # Sidecar files are best-effort cleanup — don't count
                 # towards bytes_freed (small, ignore failure). The
                 # ``.result`` sidecar is the per-CAS-entry test-success
-                # marker written by ``_run_tests`` in CAS-only mode.
+                # marker touched by the in-build test rules in CAS-only mode.
                 for sidecar_suffix in (".manifest", ".result"):
                     try:
                         os.remove(path + sidecar_suffix)

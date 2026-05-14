@@ -658,20 +658,17 @@ class TestMakefileBackendExecute:
     """Test execute() method."""
 
     def test_execute_runtests_invokes_make_runtests_target(self):
-        """Post-migration, ``execute("runtests")`` no longer delegates to the
-        legacy Python-side ``_run_tests`` sweep — it drives the Makefile's own
-        ``runtests`` phony so standalone runs use the same native,
-        content-addressed ``.result`` recipes as the in-build path."""
+        """``execute("runtests")`` drives the Makefile's own ``runtests`` phony
+        so standalone runs use the same native, content-addressed ``.result``
+        recipes as the in-build path."""
         args = _make_args()
         backend = MakefileBackend(args=args, hunter=MagicMock())
         backend._graph = None
         with (
-            patch.object(backend, "_run_tests") as mock_run_tests,
             patch("compiletools.apptools.tool_version", return_value=(4, 4)),
             patch("compiletools.makefile_backend.subprocess.check_call") as mock_check_call,
         ):
             backend.execute("runtests")
-        mock_run_tests.assert_not_called()
         cmd = mock_check_call.call_args[0][0]
         assert cmd[-1] == "runtests"
 

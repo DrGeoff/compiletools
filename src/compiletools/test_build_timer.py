@@ -504,14 +504,8 @@ class TestChromeTrace:
                             "start_s": origin + 0.06,
                             "end_s": origin + 0.26,
                         },
-                    ],
-                },
-                {
-                    "name": "test_execution",
-                    "elapsed_s": 0.01,
-                    "start_s": origin + 0.27,
-                    "end_s": origin + 0.28,
-                    "rules": [
+                        # Tests run inside build_execution (no separate
+                        # test_execution phase) with category="test".
                         {
                             "name": "test_x",
                             "rule_type": "test",
@@ -533,15 +527,14 @@ class TestChromeTrace:
         # The root sits at ts=0 by construction.
         total = next(e for e in events if e["name"] == "total")
         assert total["ts"] == 0.0
-        # Phases land at their actual offsets within the build.
+        # The build_execution phase lands at its actual offset within the build.
         phases = {e["name"]: e for e in events if e["cat"] == "phase" and e["name"] != "total"}
         assert abs(phases["build_execution"]["ts"] - 10_000.0) < 1.0
-        assert abs(phases["test_execution"]["ts"] - 270_000.0) < 1.0
         # Compile rules show their actual relative parallelism.
         compiles = sorted((e for e in events if e["cat"] == "compile"), key=lambda e: e["ts"])
         assert abs(compiles[0]["ts"] - 10_000.0) < 1.0
         assert abs(compiles[1]["ts"] - 60_000.0) < 1.0
-        # The test rule sits at the start of test_execution.
+        # The test rule runs late inside build_execution.
         test_event = next(e for e in events if e["cat"] == "test")
         assert abs(test_event["ts"] - 270_000.0) < 1.0
 

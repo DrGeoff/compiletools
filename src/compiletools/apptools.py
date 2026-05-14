@@ -2580,9 +2580,9 @@ def _commonsubstitutions(args):
         pass
 
     # Anchor --test-xml-dir to gitroot so the value survives a `cd` into
-    # a subdirectory between parseargs and _run_tests, matching how
+    # a subdirectory between parseargs and the build, matching how
     # cas-objdir / cas-pchdir are anchored. This is a path resolution
-    # only; the directory is created lazily inside _run_tests.
+    # only; the directory is created by the build graph's mkdir rule.
     test_xml_dir = getattr(args, "test_xml_dir", None)
     if test_xml_dir and not os.path.isabs(test_xml_dir):
         git_root = compiletools.git_utils.find_git_root()

@@ -476,10 +476,6 @@ class TestBazelRunsTestsInBuildPhase:
         backend._graph = graph
         return backend
 
-    def test_capability_flag_is_true(self):
-        backend = BazelBackend(args=MagicMock(), hunter=MagicMock())
-        assert backend._runs_tests_in_build_phase() is True
-
     def test_execute_build_uses_bazel_test_when_graph_has_tests(self):
         backend = self._backend_with_test_graph()
         with (
