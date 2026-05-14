@@ -21,8 +21,9 @@ DESCRIPTION
 This utility automates side-by-side profiling of ``ct-cake`` between two
 branches. It creates disposable git worktrees, installs each branch into its
 own virtual environment via ``uv``, runs ``ct-cake`` against representative
-sample projects under ``src/compiletools/samples/``, and captures cumulative
-timings with ``cProfile`` + ``pstats``.
+sample projects under ``src/compiletools/examples-end-to-end/`` and
+``src/compiletools/examples-features/``, and captures cumulative timings
+with ``cProfile`` + ``pstats``.
 
 The workflow never touches your main checkout; all edits occur in temporary
 directories that are removed automatically unless ``--keep-worktrees`` is set.
