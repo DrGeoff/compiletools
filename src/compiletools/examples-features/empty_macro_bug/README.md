@@ -91,10 +91,10 @@ main.cpp
 
 Tests copy the libs directory to a temporary location and use the shared `pkgs/` directory via the `pkgconfig_env` pytest fixture:
 ```python
-from compiletools.testhelper import samplesdir
-sample_src = Path(samplesdir()) / "empty_macro_bug"
+from compiletools.examples_registry import example_path
+sample_src = Path(example_path("empty_macro_bug"))
 shutil.copytree(sample_src / "libs", self.libs_dir)
-# PKG_CONFIG_PATH is set by pkgconfig_env fixture to samples/pkgs/
+# PKG_CONFIG_PATH is set by pkgconfig_env fixture to examples-features/pkgs/
 ```
 
 This maintains test isolation while using version-controlled sample code.

@@ -148,8 +148,8 @@ This structure tests:
 
 Tests copy this sample directory to a temporary location before running:
 ```python
-from compiletools.testhelper import samplesdir
-sample_src = Path(samplesdir()) / "pkg_config_header_deps"
+from compiletools.examples_registry import example_path
+sample_src = Path(example_path("pkg_config_header_deps"))
 
 # Copy entire directory structure
 shutil.copytree(sample_src / "src", self.src_dir)
