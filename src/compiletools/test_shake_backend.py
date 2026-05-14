@@ -1348,29 +1348,32 @@ class TestMakeTraceEntryGuard:
             _make_trace_entry(rule, context)
 
 
-class TestShakeTestRulesNotExecutedDuringBuild:
-    """Test rules carry pure-argv commands (no `&&`/`touch`); their .result
-    marker is touched by the Python test runner via execute("runtests"), not
-    by atomic_link.  If _do_build ever recurses into a test rule and feeds
-    it to _execute_rule, atomic_link would invoke the test exe with no
-    side-effect, and _make_trace_entry would crash trying to hash the
-    never-touched .result file.
-
-    cake.py invokes execute("build") then execute("runtests") separately, so
-    the bug is latent today (build's deps don't include test rules).  This
-    test pins the defensive short-circuit that closes execute("all").
+class TestShakeTestRulesExecutedDuringBuild:
+    """Task 4: ShakeBackend walks ``RuleType.TEST`` rules during the build
+    phase. ``_do_build`` recurses into a test rule (rather than early-returning)
+    and feeds it to ``_execute_rule``, which runs the pure-argv test command
+    in-process. The test rule never enters the trace store, so
+    ``_make_trace_entry`` is never asked to hash its (XML or .result) output.
     """
 
-    def test_do_build_short_circuits_test_rules(self, tmp_path):
+    def test_capability_flag_is_true(self):
+        """The capability gate must report True so cake.py skips the legacy
+        post-build ``_run_tests`` sweep for the shake backend."""
+        backend = ShakeBackend.__new__(ShakeBackend)
+        assert backend._runs_tests_in_build_phase() is True
+
+    def test_do_build_executes_test_rules(self, tmp_path):
         import asyncio
 
+        # A real, instantly-passing test exe so _execute_rule's subprocess.run
+        # succeeds and the .result marker gets touched.
         result_path = str(tmp_path / "test_foo.result")
         graph = BuildGraph()
         graph.add_rule(
             BuildRule(
                 output=result_path,
-                inputs=[str(tmp_path / "test_foo")],
-                command=[str(tmp_path / "test_foo")],
+                inputs=[],
+                command=["/bin/true"],
                 rule_type="test",
                 success_marker=result_path,
             )
@@ -1378,11 +1381,39 @@ class TestShakeTestRulesNotExecutedDuringBuild:
 
         with ShakeBackendTestContext(graph) as (backend, _tmpdir):
             traces = TraceStore(str(tmp_path / ".ct-traces.json"))
-            with mock.patch.object(backend, "_execute_rule") as mock_exec:
-                memo: dict[str, asyncio.Task[bool]] = {}
-                changed = asyncio.run(backend._build_async(result_path, graph, traces, memo, asyncio.Semaphore(1)))
-            mock_exec.assert_not_called()
+            memo: dict[str, asyncio.Task[bool]] = {}
+            changed = asyncio.run(backend._build_async(result_path, graph, traces, memo, asyncio.Semaphore(1)))
+            # Test rules do not participate in early cutoff.
             assert changed is False
+            # The success marker was touched by _touch_result_marker on rc==0.
+            assert os.path.exists(result_path)
+            # The test rule never entered the trace store.
+            assert traces.get(result_path) is None
+            assert not backend._test_failures
+
+    def test_do_build_aggregates_failures(self, tmp_path):
+        import asyncio
+
+        result_path = str(tmp_path / "test_fail.result")
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output=result_path,
+                inputs=[],
+                command=["/bin/false"],
+                rule_type="test",
+                success_marker=result_path,
+            )
+        )
+
+        with ShakeBackendTestContext(graph) as (backend, _tmpdir):
+            traces = TraceStore(str(tmp_path / ".ct-traces.json"))
+            memo: dict[str, asyncio.Task[bool]] = {}
+            asyncio.run(backend._build_async(result_path, graph, traces, memo, asyncio.Semaphore(1)))
+            # Failure aggregated, not raised mid-flight; .result NOT touched.
+            assert backend._test_failures
+            assert result_path in backend._test_failures[0]
+            assert not os.path.exists(result_path)
 
 
 class TestTraceInputCanonicalization:
@@ -1480,3 +1511,175 @@ class TestTraceInputCanonicalization:
                 "Trace written at workspace A must verify at workspace B "
                 "when contents are identical (cross-workspace CAS portability)."
             )
+
+
+class TestShakeRunsTestsInBuildPhase:
+    """Task 4 end-to-end: ShakeBackend.execute("build") walks the ``all``
+    phony -> ``runtests`` -> every ``RuleType.TEST`` rule, so each test fires
+    in-process as soon as its exe's link future resolves. Mirrors the
+    make/ninja Task 2/3 e2e tests.
+    """
+
+    def setup_method(self):
+        uth.reset()
+
+    def teardown_method(self):
+        uth.reset()
+
+    def _build_backend(self, tmp_path, sources, *, tests=None, extra_argv=None):
+        """Construct a ShakeBackend + graph from real argv for *sources*, with
+        *tests* passed via ``--tests``. Returns (backend, graph)."""
+        objdir = os.path.join(str(tmp_path), "obj")
+        bindir = os.path.join(str(tmp_path), "bin")
+        argv = list(extra_argv or [])
+        argv += ["--include", str(tmp_path), "--cas-objdir", objdir, "--bindir", bindir]
+        if tests:
+            # --tests is nargs="*"; a single flag with all values (a repeated
+            # --tests=... flag would let only the last one survive).
+            argv.append("--tests")
+            argv += [str(t) for t in tests]
+        argv += [str(s) for s in sources]
+
+        with uth.ParserContext():
+            cap = compiletools.apptools.create_parser("shake in-build test", argv=argv)
+            uth.add_backend_arguments(cap)
+            ctx = BuildContext()
+            args = compiletools.apptools.parseargs(cap, argv, context=ctx)
+            headerdeps = compiletools.headerdeps.create(args, context=ctx)
+            magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
+            hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
+            backend = ShakeBackend(args=args, hunter=hunter, context=ctx)
+            graph = backend.build_graph()
+        return backend, graph
+
+    @staticmethod
+    def _result_markers(tmp_path):
+        return [os.path.join(dp, fn) for dp, _, files in os.walk(tmp_path) for fn in files if fn.endswith(".result")]
+
+    @uth.requires_functional_compiler
+    def test_shake_runs_tests_in_build(self, tmp_path, monkeypatch):
+        """After execute("build") — NOT execute("runtests") — the test's
+        ``.result`` success marker exists, proving the test ran during the
+        build phase."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
+        test_src = tmp_path / "test_pass.cpp"
+        test_src.write_text('#include "unit_test.hpp"\nint main() { return 0; }\n')
+
+        backend, graph = self._build_backend(tmp_path, [], tests=[test_src])
+        backend.generate(graph)
+        backend.execute("build")
+
+        assert self._result_markers(tmp_path), (
+            "no .result marker after execute('build') — test did not run during the build phase"
+        )
+
+    @uth.requires_functional_compiler
+    def test_shake_test_failure_fails_build(self, tmp_path, monkeypatch):
+        """A deliberately-failing no-framework test must make execute("build")
+        raise, and the failing test's ``.result`` marker must NOT be created
+        (the marker is only touched on rc==0)."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
+        test_src = tmp_path / "test_fail.cpp"
+        test_src.write_text('#include "unit_test.hpp"\nint main() { return 1; }\n')
+
+        backend, graph = self._build_backend(tmp_path, [], tests=[test_src])
+        backend.generate(graph)
+
+        with pytest.raises(RuntimeError, match="test execution failed"):
+            backend.execute("build")
+
+        assert not self._result_markers(tmp_path), "failing test left a .result marker (marker touched despite rc!=0)"
+
+    @uth.requires_functional_compiler
+    def test_shake_aggregates_test_failures(self, tmp_path, monkeypatch):
+        """TWO deliberately-failing tests: BOTH must be reported in the raised
+        error, proving shake aggregates failures (appends to _test_failures and
+        continues) rather than stopping on the first failure."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
+        test_a = tmp_path / "test_fail_a.cpp"
+        test_a.write_text('#include "unit_test.hpp"\nint main() { return 1; }\n')
+        test_b = tmp_path / "test_fail_b.cpp"
+        test_b.write_text('#include "unit_test.hpp"\nint main() { return 2; }\n')
+
+        backend, graph = self._build_backend(tmp_path, [], tests=[test_a, test_b])
+        backend.generate(graph)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            backend.execute("build")
+
+        msg = str(excinfo.value)
+        assert "test_fail_a" in msg, f"first failing test not aggregated: {msg}"
+        assert "test_fail_b" in msg, f"second failing test not aggregated: {msg}"
+        assert not self._result_markers(tmp_path)
+
+    @uth.requires_functional_compiler
+    def test_shake_framework_test_failure_preserves_xml(self, tmp_path, monkeypatch):
+        """A failing framework-detected test writes its JUnit XML report and
+        *then* exits non-zero. The test rule's ``output`` is the XML path, but
+        shake never feeds a test rule to _make_trace_entry, and nothing deletes
+        the XML on failure (shake has no .DELETE_ON_ERROR analogue). Asserts:
+          - execute("build") raises,
+          - the failing test's ``.result`` marker is NOT created,
+          - the JUnit XML file DOES still exist after the failed build.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
+        # Stub gtest header: framework detection trips on the include-path
+        # token "gtest/gtest.h" in the transitive header set, not on any
+        # symbol -- so an empty header is sufficient.
+        (tmp_path / "gtest").mkdir()
+        (tmp_path / "gtest" / "gtest.h").write_text("#pragma once\n")
+        # A gtest-flavoured fixture that writes its JUnit XML when handed
+        # --gtest_output=xml:PATH and THEN returns 1.
+        test_src = tmp_path / "test_fail_gtest.cpp"
+        test_src.write_text(
+            '#include "unit_test.hpp"\n'
+            '#include "gtest/gtest.h"\n'
+            "#include <cstdio>\n"
+            "#include <cstring>\n"
+            "int main(int argc, char** argv) {\n"
+            '    static const char prefix[] = "--gtest_output=xml:";\n'
+            "    const size_t plen = sizeof(prefix) - 1;\n"
+            "    for (int i = 1; i < argc; ++i) {\n"
+            "        if (std::strncmp(argv[i], prefix, plen) == 0) {\n"
+            '            FILE* f = std::fopen(argv[i] + plen, "w");\n'
+            "            if (f != nullptr) {\n"
+            '                std::fputs("<testsuites>\\n", f);\n'
+            '                std::fputs("  <testsuite name=\\"stub\\" tests=\\"1\\" failures=\\"1\\"/>\\n", f);\n'
+            '                std::fputs("</testsuites>\\n", f);\n'
+            "                std::fclose(f);\n"
+            "            }\n"
+            "        }\n"
+            "    }\n"
+            "    return 1;\n"
+            "}\n"
+        )
+
+        xml_dir = tmp_path / "junit"
+        backend, graph = self._build_backend(
+            tmp_path, [], tests=[test_src], extra_argv=["--test-xml-dir=" + str(xml_dir)]
+        )
+
+        # The framework test rule's output must be the XML path (not the
+        # .result marker) for this test to exercise the dual-output shape.
+        test_rules = [r for r in graph.rules if r.rule_type == "test"]
+        assert len(test_rules) == 1
+        xml_rule = test_rules[0]
+        assert xml_rule.output != xml_rule.success_marker, (
+            "framework was not detected -- test rule output is still the .result marker"
+        )
+        assert xml_rule.output.endswith(".xml")
+        xml_path = xml_rule.output
+
+        backend.generate(graph)
+        with pytest.raises(RuntimeError, match="test execution failed"):
+            backend.execute("build")
+
+        assert not self._result_markers(tmp_path), "failing test left a .result marker (marker touched despite rc!=0)"
+        assert os.path.exists(xml_path), (
+            f"JUnit XML at {xml_path} was deleted after the failed shake build -- "
+            "a failed framework test must still leave its report behind"
+        )

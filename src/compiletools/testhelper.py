@@ -1227,6 +1227,10 @@ def ShakeBackendTestContext(graph, **arg_overrides):
         backend.args = args
         backend._graph = graph
         backend.context = BuildContext()
+        # __init__ is bypassed here; tests that drive _build_async/_execute_rule
+        # directly (without going through execute()) still need the aggregation
+        # list that the in-build test-execution path appends to.
+        backend._test_failures = []
         yield backend, tmpdir
 
 

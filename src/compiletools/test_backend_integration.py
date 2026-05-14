@@ -429,12 +429,12 @@ class TestBackendRunTestsDispatch:
     """Verify each backend that still uses the legacy post-build _run_tests
     sweep dispatches execute('runtests') to _run_tests().
 
-    Backends migrated to in-build test execution (make, ninja) override
-    execute() to route 'runtests' through their native build file's
+    Backends migrated to in-build test execution (make, ninja, shake) override
+    execute() to route 'runtests' through their native build graph's
     'runtests' target instead, so they are intentionally excluded here.
     """
 
-    @pytest.mark.parametrize("backend_name", ["bazel", "cmake", "shake"])
+    @pytest.mark.parametrize("backend_name", ["bazel", "cmake"])
     def test_execute_runtests_calls_run_tests(self, backend_name):
         from unittest.mock import MagicMock, patch
 

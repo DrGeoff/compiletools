@@ -232,6 +232,21 @@ class ShakeBackend(BuildBackend):
     def __init__(self, args, hunter, *, context=None):
         super().__init__(args, hunter, context=context)
         self._graph: BuildGraph | None = None
+        # Test rules run in-process during the build phase (see
+        # _runs_tests_in_build_phase). A failing test appends here instead of
+        # raising from inside the rule executor -- raising mid-flight would
+        # abort sibling rules that asyncio.gather already has in flight. The
+        # aggregated list is raised as a single RuntimeError once the top-level
+        # traversal in execute() returns.
+        self._test_failures: list[str] = []
+
+    def _runs_tests_in_build_phase(self) -> bool:
+        """Shake walks ``RuleType.TEST`` rules natively during ``execute("build")``:
+        each test runs in-process the moment its exe's link future resolves, in
+        parallel with continued compilation. cake.py therefore skips the legacy
+        post-build ``execute("runtests")`` sweep.
+        """
+        return True
 
     @staticmethod
     def name() -> str:
@@ -283,12 +298,29 @@ class ShakeBackend(BuildBackend):
         raise NotImplementedError  # pragma: no cover
 
     def execute(self, target: str = "build") -> None:
-        if target == "runtests":
-            self._run_tests()
-            return
+        """Run the Shake build engine.
 
+        Overrides the base template's ``runtests`` handling: rather than
+        delegating to the legacy Python-side ``_run_tests`` sweep, route
+        ``execute("runtests")`` through the graph's own ``runtests`` phony so
+        standalone test runs use the same native, in-process ``RuleType.TEST``
+        rules as the in-build path. ``execute("build")`` is retargeted to the
+        ``all`` phony, whose transitive deps include ``runtests`` -> every test
+        rule fires the moment its exe's link future resolves.
+        """
         if self._graph is None:
             raise RuntimeError("generate() must be called before execute()")
+
+        if target == "runtests":
+            walk_target = "runtests" if self._graph.get_rule("runtests") is not None else target
+        elif target == "build":
+            walk_target = "all" if self._graph.get_rule("all") is not None else target
+        else:
+            walk_target = target
+
+        # Each execute() call is a fresh top-level traversal; clear any
+        # aggregated failures from a prior call on the same backend instance.
+        self._test_failures = []
 
         trace_path = os.path.join(self.args.cas_objdir, self.build_filename())
         traces = TraceStore(trace_path)
@@ -299,9 +331,15 @@ class ShakeBackend(BuildBackend):
         memo: dict[str, asyncio.Task[bool]] = {}
 
         try:
-            asyncio.run(self._build_async(target, self._graph, traces, memo, sem))
+            asyncio.run(self._build_async(walk_target, self._graph, traces, memo, sem))
         finally:
             traces.save()
+
+        # A failed test only appended to _test_failures (so sibling rules
+        # already in flight could finish); surface the aggregate now so a
+        # failing test makes ct-cake exit non-zero.
+        if self._test_failures:
+            raise RuntimeError("test execution failed:\n  " + "\n  ".join(self._test_failures))
 
     async def _build_async(
         self,
@@ -342,10 +380,40 @@ class ShakeBackend(BuildBackend):
             return any(results)
 
         if rule.rule_type == RuleType.TEST:
-            # Test rules are handled by execute("runtests") -> _run_tests();
-            # walking into them here would invoke the test exe with no
-            # success-marker side-effect, leaving the .result file absent
-            # and crashing _make_trace_entry's get_file_hash call.
+            # Build the test's prerequisites first, then run the test
+            # in-process. A test rule's order_only_deps carry the exe path
+            # (produced by a LINK/SYMLINK rule -- recurse into it) plus, when
+            # --test-xml-dir is set, an XML-bucket directory (an MKDIR rule --
+            # just mkdir it; do not walk it, an MKDIR rule has no on-disk file
+            # output and would trip _make_trace_entry). ``inputs`` is populated
+            # in mtime mode (the exe path again) and empty in CAS-only mode.
+            await asyncio.gather(*(self._build_async(inp, graph, traces, memo, sem) for inp in rule.inputs))
+            for dep in rule.order_only_deps:
+                dep_rule = graph.get_rule(dep)
+                if dep_rule is not None and dep_rule.rule_type != RuleType.MKDIR:
+                    await self._build_async(dep, graph, traces, memo, sem)
+                else:
+                    os.makedirs(dep, exist_ok=True)
+            # Rerun-skip predicate (CAS-only mode): a test rule's ``output`` is
+            # the JUnit XML path (framework tests) or the ``.result`` marker
+            # (no-framework tests). When it already exists on disk the test's
+            # exe bytes were tested before -- skip the re-run, mirroring the
+            # make/ninja ``<output>: | <exe>`` order-only-prereq rule and the
+            # ``_all_outputs_current`` RuleType.TEST branch. In ``--use-mtime``
+            # mode the exe path is a real input, so always re-run (the user
+            # opted into "touch to force rebuild" semantics).
+            if not getattr(self.args, "use_mtime", False) and os.path.exists(rule.output):
+                return False
+            assert rule.command is not None, "test rules always carry a command"
+            loop = asyncio.get_running_loop()
+            async with sem:
+                await loop.run_in_executor(None, self._execute_rule, rule, target, list(rule.command))
+            # Test rules never enter the trace store: _execute_rule records the
+            # outcome (success marker touched, or failure appended to
+            # _test_failures) and we deliberately do NOT call _make_trace_entry
+            # here -- a test rule's "output" is a framework XML file or the
+            # .result marker, not a content-addressed build artefact, and a
+            # failed test must not assert its output exists.
             return False
 
         # Ensure order-only deps (bucket directories) exist. Reject
@@ -436,7 +504,22 @@ class ShakeBackend(BuildBackend):
         False — verify-trace already decided the output is stale.
         """
         start = time.monotonic()
-        if rule.rule_type == RuleType.COMPILE:
+        if rule.rule_type == RuleType.TEST:
+            # Pure-argv test invocation -- NOT routed through
+            # execute_compile_rule / execute_link_rule (those are for
+            # lock-guarded build artefacts; a test is neither). flat_cmd
+            # already carries TESTPREFIX + exe + framework XML argv, baked in
+            # at graph-build time by _test_command_for. On success touch the
+            # .result marker (always success_marker, even for framework tests);
+            # on failure append to _test_failures and continue so sibling
+            # rules already in flight can finish -- execute() raises the
+            # aggregate once the traversal returns.
+            result = subprocess.run(flat_cmd)
+            if result.returncode == 0:
+                self._touch_result_marker(rule.success_marker or "")
+            else:
+                self._test_failures.append(f"{target} (exit {result.returncode}): {' '.join(flat_cmd)}")
+        elif rule.rule_type == RuleType.COMPILE:
             execute_compile_rule(target, flat_cmd, self.args, skip_if_exists=True)
         elif rule.rule_type == RuleType.LINK:
             # Link output IS the cas-exe path; the downstream publish-as-symlink
