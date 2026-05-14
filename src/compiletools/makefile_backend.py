@@ -78,6 +78,15 @@ class MakefileBackend(BuildBackend):
     def _honors_use_mtime(self) -> bool:
         return True
 
+    def _runs_tests_in_build_phase(self) -> bool:
+        """Make runs test rules natively: ``execute("build")`` targets the
+        ``all`` phony, whose transitive deps include every test ``.result``
+        rule. Each test rule depends only on its own exe, so make's ``-j``
+        scheduler fires the test the moment its link rule completes — no
+        separate post-build ``execute("runtests")`` phase.
+        """
+        return True
+
     @staticmethod
     def name() -> str:
         return "make"
@@ -125,6 +134,21 @@ class MakefileBackend(BuildBackend):
             help="Pass --shuffle to GNU Make (>= 4.4) to randomize prerequisite ordering. "
             "Useful for CI to detect missing dependencies.",
         )
+
+    def execute(self, target: str = "build") -> None:
+        """Invoke make to execute the build.
+
+        Overrides the base template's ``runtests`` handling: rather than
+        delegating to the legacy Python-side ``_run_tests`` sweep, route
+        ``execute("runtests")`` through the Makefile's own ``runtests`` phony
+        so standalone test runs use the same native, content-addressed
+        ``.result`` recipes as the in-build path. ``execute("build")`` falls
+        through to ``_execute_build``, which retargets ``build`` -> ``all``.
+        """
+        if target == "runtests":
+            self._execute_build("runtests")
+            return
+        super().execute(target)
 
     def generate(self, graph: BuildGraph, output=None) -> None:
         """Write Makefile from BuildGraph.
@@ -229,11 +253,13 @@ class MakefileBackend(BuildBackend):
             echo_prefix = "+@"
         elif rt == RuleType.TEST:
             cmd_str = render_shell_recipe(rule)
-            # ``test_cmd = [*testprefix, exe_path]`` (build_backend._build_graph),
-            # so the exe is always the last command token regardless of
-            # whether the rule shape lives in inputs (legacy mtime mode)
-            # or order_only_deps (CAS-only mode).
-            echo_target = rule.command[-1]
+            # The test exe is the rule's sole real dependency: it lives in
+            # ``inputs`` under legacy mtime mode and in ``order_only_deps``
+            # under CAS-only mode. ``command`` is no longer a reliable
+            # source — ``_test_command_for`` appends framework XML argv
+            # (e.g. ``--gtest_output=xml:...``) after the exe, so
+            # ``command[-1]`` can be an XML flag rather than the exe.
+            echo_target = (rule.inputs or rule.order_only_deps or [rule.output])[0]
             echo_prefix = "@"
         else:
             cmd_str = render_shell_recipe(rule)
@@ -328,6 +354,18 @@ class MakefileBackend(BuildBackend):
             except FileNotFoundError:
                 pass
 
+        # ``execute("build")`` must drive the aggregate ``all`` phony, not the
+        # bare ``build`` phony. ``build`` depends only on the link/library
+        # outputs; ``all`` additionally depends on ``runtests`` (-> every test
+        # ``.result`` rule). Each test ``.result`` rule depends solely on its
+        # own exe, so make's ``-j`` scheduler runs each test the instant its
+        # link rule finishes — interleaved with continued compilation of
+        # unrelated TUs — instead of in a separate post-build sweep.
+        # ``runtests`` and explicit targets pass through verbatim so the
+        # ``execute("runtests")`` contract and ad-hoc ``make <target>`` calls
+        # still work.
+        make_target = "all" if target == "build" else target
+
         make_version = compiletools.apptools.tool_version("make")
         cmd = ["make"]
         if self.args.verbose <= 1:
@@ -340,7 +378,7 @@ class MakefileBackend(BuildBackend):
         if self.args.shuffle and make_version >= (4, 4):
             cmd.append("--shuffle")
         cmd.extend(["-j", str(parallel)])
-        cmd.extend(["-f", self.args.makefilename, target])
+        cmd.extend(["-f", self.args.makefilename, make_target])
         if self.args.verbose >= 1:
             print(" ".join(cmd))
         subprocess.check_call(cmd)

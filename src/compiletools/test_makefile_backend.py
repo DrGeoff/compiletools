@@ -1321,6 +1321,189 @@ class TestMakefileConcurrency:
                     assert rc in range(256), f"iter {iteration}: {exe} did not run cleanly"
 
 
+class TestMakeRunsTestsInBuildPhase:
+    """Task 2: MakefileBackend.execute("build") runs test ``.result`` rules
+    natively (via the ``all`` phony), so make's ``-j`` scheduler fires each
+    test the moment its exe links — no separate post-build ``runtests`` sweep.
+    """
+
+    def setup_method(self):
+        uth.reset()
+
+    def teardown_method(self):
+        uth.reset()
+
+    def test_capability_flag_is_true(self):
+        """The capability gate must report True so cake.py skips the legacy
+        post-build ``_run_tests`` sweep for the make backend."""
+        backend = MakefileBackend(args=SimpleNamespace(), hunter=MagicMock())
+        assert backend._runs_tests_in_build_phase() is True
+
+    def _build_backend(self, tmp_path, sources, *, tests=None, extra_argv=None):
+        """Construct a MakefileBackend + graph from real argv for *sources*,
+        with *tests* passed via ``--tests``. Returns (backend, graph)."""
+        import compiletools.apptools
+        import compiletools.headerdeps
+        import compiletools.hunter
+        import compiletools.magicflags
+        from compiletools.build_context import BuildContext
+
+        objdir = os.path.join(str(tmp_path), "obj")
+        bindir = os.path.join(str(tmp_path), "bin")
+        argv = list(extra_argv or [])
+        argv += ["--include", str(tmp_path), "--cas-objdir", objdir, "--bindir", bindir]
+        for t in tests or []:
+            argv.append("--tests=" + str(t))
+        argv += [str(s) for s in sources]
+
+        cap = compiletools.apptools.create_parser("make in-build test", argv=argv)
+        uth.add_backend_arguments(cap)
+        ctx = BuildContext()
+        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
+        headerdeps = compiletools.headerdeps.create(args, context=ctx)
+        magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
+        hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
+        backend = MakefileBackend(args=args, hunter=hunter, context=ctx)
+        graph = backend.build_graph()
+        return backend, graph
+
+    @uth.requires_functional_compiler
+    def test_make_runs_tests_in_build(self, tmp_path, monkeypatch):
+        """After execute("build") — NOT execute("runtests") — the test's
+        ``.result`` success marker exists, proving the test ran during the
+        build phase."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
+        test_src = tmp_path / "test_pass.cpp"
+        test_src.write_text('#include "unit_test.hpp"\nint main() { return 0; }\n')
+
+        backend, graph = self._build_backend(tmp_path, [], tests=[test_src])
+        makefile = tmp_path / "Makefile"
+        with open(makefile, "w") as f:
+            backend.generate(graph, output=f)
+
+        backend.execute("build")
+
+        results = [os.path.join(dp, fn) for dp, _, files in os.walk(tmp_path) for fn in files if fn.endswith(".result")]
+        assert results, "no .result marker after execute('build') — test did not run during the build phase"
+
+    @uth.requires_functional_compiler
+    def test_make_test_failure_halts_build(self, tmp_path, monkeypatch):
+        """A failing test must make execute("build") raise CalledProcessError,
+        and the failing test's ``.result`` marker must NOT be created (the
+        ``&& touch`` tail only runs on rc==0)."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
+        test_src = tmp_path / "test_fail.cpp"
+        test_src.write_text('#include "unit_test.hpp"\nint main() { return 1; }\n')
+
+        backend, graph = self._build_backend(tmp_path, [], tests=[test_src])
+        makefile = tmp_path / "Makefile"
+        with open(makefile, "w") as f:
+            backend.generate(graph, output=f)
+
+        with pytest.raises(subprocess.CalledProcessError):
+            backend.execute("build")
+
+        results = [os.path.join(dp, fn) for dp, _, files in os.walk(tmp_path) for fn in files if fn.endswith(".result")]
+        assert not results, f"failing test left a .result marker (touch ran despite rc!=0): {results}"
+
+
+class TestMakefileTestEchoTarget:
+    """Sub-change 4: the TEST-rule echo line must reference the test exe,
+    not ``command[-1]`` — which is now an XML flag when --test-xml-dir is set
+    (``_test_command_for`` appends framework XML argv after the exe)."""
+
+    def test_makefile_test_echo_target_is_exe(self):
+        """With a framework XML flag appended after the exe in command, the
+        verbose echo line still names the exe path, not the XML flag."""
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="bin/test_foo.result",
+                inputs=["bin/test_foo"],
+                command=["bin/test_foo", "--gtest_output=xml:/tmp/xml/test_foo.xml"],
+                rule_type="test",
+                success_marker="bin/test_foo.result",
+            )
+        )
+
+        args = SimpleNamespace(
+            verbose=1,
+            cas_objdir="/tmp/obj",
+            bindir="/tmp/bin",
+            git_root="",
+            file_locking=False,
+            makefilename="Makefile",
+            filename=[],
+            tests=[],
+            static=[],
+            dynamic=[],
+            CC="gcc",
+            CXX="g++",
+            CFLAGS="-O2",
+            CXXFLAGS="-O2",
+            LD="g++",
+            LDFLAGS="",
+            serialisetests=False,
+            build_only_changed=None,
+            use_mtime=False,
+        )
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        # Echo line names the exe ...
+        assert "@echo ... bin/test_foo ;" in content
+        # ... and never the XML flag.
+        assert "echo ... --gtest_output" not in content
+
+    def test_echo_target_is_exe_in_cas_order_only_mode(self):
+        """In CAS-only mode the exe lives in ``order_only_deps`` (inputs is
+        empty); the echo target must still resolve to the exe."""
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="cas/ab/test_foo_abc.result",
+                inputs=[],
+                command=["cas/ab/test_foo_abc", "--gtest_output=xml:/tmp/x.xml"],
+                rule_type="test",
+                order_only_deps=["bin/test_foo"],
+                success_marker="cas/ab/test_foo_abc.result",
+            )
+        )
+
+        args = SimpleNamespace(
+            verbose=1,
+            cas_objdir="/tmp/obj",
+            bindir="/tmp/bin",
+            git_root="",
+            file_locking=False,
+            makefilename="Makefile",
+            filename=[],
+            tests=[],
+            static=[],
+            dynamic=[],
+            CC="gcc",
+            CXX="g++",
+            CFLAGS="-O2",
+            CXXFLAGS="-O2",
+            LD="g++",
+            LDFLAGS="",
+            serialisetests=False,
+            build_only_changed=None,
+            use_mtime=False,
+        )
+        backend = MakefileBackend(args=args, hunter=MagicMock())
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        assert "@echo ... bin/test_foo ;" in content
+        assert "echo ... --gtest_output" not in content
+
+
 class TestUseMtime:
     """``args.use_mtime`` controls whether compile rules emit prerequisites.
 

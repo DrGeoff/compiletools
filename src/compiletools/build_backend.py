@@ -1356,6 +1356,24 @@ class BuildBackend(abc.ABC):
         if test_exe_paths:
             # Create per-test execution rules so build files can run tests standalone
             cas_only_results = not getattr(self.args, "use_mtime", False) and not self._has_native_cas_exe()
+            # When --test-xml-dir is set the test recipes pass
+            # ``--gtest_output=xml:<dir>/<exe>.xml`` (etc.) to the test exe.
+            # The legacy _run_tests path used to ``os.makedirs`` that directory
+            # before running; backends that run tests in the build phase no
+            # longer go through _run_tests, so emit an explicit mkdir rule and
+            # hang every test rule off it as an order-only dep. All per-test
+            # XML files share the single ``<xml-dir>/<variant>`` directory.
+            xml_bucket_dir = ""
+            if getattr(self.args, "test_xml_dir", None):
+                xml_bucket_dir = os.path.dirname(self._xml_path_for(test_exe_paths[0]))
+                graph.add_rule(
+                    BuildRule(
+                        output=xml_bucket_dir,
+                        inputs=[],
+                        command=["mkdir", "-p", xml_bucket_dir],
+                        rule_type="mkdir",
+                    )
+                )
             test_result_paths = []
             for exe_path in test_exe_paths:
                 # In CAS-only mode, place .result next to the CAS exe entry
@@ -1377,10 +1395,25 @@ class BuildBackend(abc.ABC):
                     result_path = exe_path + ".result"
                     rule_inputs = [exe_path]
                     rule_order_only = []
+                if xml_bucket_dir:
+                    # Order-only: the XML dir must exist before the test runs,
+                    # but its mtime must not retrigger the test.
+                    rule_order_only = rule_order_only + [xml_bucket_dir]
                 test_cmd = self._test_command_for(exe_path)
+                # When a framework is detected and --test-xml-dir is set the
+                # test recipe emits a JUnit XML file as a side effect. Make
+                # the XML path the rule's *output* (rather than the .result
+                # marker) so the native scheduler re-runs the test if the XML
+                # is deleted out from under it -- this reproduces the legacy
+                # _run_tests "rerun iff .result current AND XML present"
+                # predicate using only the build graph. The .result marker
+                # stays the success_marker (touched on rc==0) regardless.
+                rule_output = result_path
+                if xml_bucket_dir and self._test_frameworks.get(exe_path) is not None:
+                    rule_output = self._xml_path_for(exe_path)
                 graph.add_rule(
                     BuildRule(
-                        output=result_path,
+                        output=rule_output,
                         inputs=rule_inputs,
                         command=test_cmd,
                         rule_type="test",
@@ -1388,7 +1421,7 @@ class BuildBackend(abc.ABC):
                         success_marker=result_path,
                     )
                 )
-                test_result_paths.append(result_path)
+                test_result_paths.append(rule_output)
 
             graph.add_rule(BuildRule(output="runtests", inputs=test_result_paths, command=None, rule_type="phony"))
             all_deps.append("runtests")
@@ -1873,6 +1906,18 @@ class BuildBackend(abc.ABC):
                 # interactive ``rm -rf bin/`` followed by ``make``
                 # would short-circuit (cas-exe still exists) and never
                 # repopulate bin/.
+                has_build_rules = True
+                if not os.path.exists(rule.output):
+                    return False
+            elif rule.rule_type == RuleType.TEST and self._runs_tests_in_build_phase():
+                # For backends that run tests in the build phase, the test
+                # rule's output (the JUnit XML file when a framework is
+                # detected, else the .result marker) is part of the build's
+                # observable contract. If it's missing — e.g. the user
+                # deleted the XML between runs — the build is not current and
+                # the native scheduler must run; it will re-execute only the
+                # test whose output is absent. Skip when tests still run via
+                # the legacy post-build _run_tests sweep.
                 has_build_rules = True
                 if not os.path.exists(rule.output):
                     return False
