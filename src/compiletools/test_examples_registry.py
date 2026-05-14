@@ -61,3 +61,26 @@ def test_e2e_dir_returns_examples_end_to_end():
 def test_features_dir_returns_examples_features():
     assert er.features_dir().endswith("examples-features")
     assert os.path.isabs(er.features_dir())
+
+
+def test_drift_guard_filesystem_matches_registries():
+    """Every directory under examples-features/ and examples-end-to-end/
+    appears in exactly one of the two registries; conversely, every
+    registry entry corresponds to a real directory."""
+    e2e_on_disk = {p for p in os.listdir(er.e2e_dir()) if os.path.isdir(os.path.join(er.e2e_dir(), p))}
+    features_on_disk = {p for p in os.listdir(er.features_dir()) if os.path.isdir(os.path.join(er.features_dir(), p))}
+
+    # Disk → registry: every directory must be registered.
+    missing_e2e = e2e_on_disk - er.EXAMPLES_E2E
+    missing_features = features_on_disk - er.EXAMPLES_FEATURES
+    assert not missing_e2e, f"directories in examples-end-to-end/ not in EXAMPLES_E2E: {sorted(missing_e2e)}"
+    assert not missing_features, (
+        f"directories in examples-features/ not in EXAMPLES_FEATURES: {sorted(missing_features)}"
+    )
+
+    # Registry → disk: every registered name must exist on disk in
+    # the right bucket.
+    stale_e2e = er.EXAMPLES_E2E - e2e_on_disk
+    stale_features = er.EXAMPLES_FEATURES - features_on_disk
+    assert not stale_e2e, f"EXAMPLES_E2E entries with no matching directory: {sorted(stale_e2e)}"
+    assert not stale_features, f"EXAMPLES_FEATURES entries with no matching directory: {sorted(stale_features)}"
