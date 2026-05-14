@@ -1218,19 +1218,17 @@ def ShakeBackendTestContext(graph, **arg_overrides):
         with ShakeBackendTestContext(graph) as (backend, tmpdir):
             backend.execute("build")
     """
-    from compiletools.build_context import BuildContext
     from compiletools.trace_backend import ShakeBackend
 
     with TempDirContextNoChange() as tmpdir:
         args = make_backend_args(tmpdir, **arg_overrides)
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
+        # Run the real __init__ (with a mock hunter) rather than hand-replicating
+        # a subset of init state: every future __init__ attribute would otherwise
+        # be a silent landmine for tests that drive _build_async/_execute_rule
+        # directly. Only _graph is overridden afterwards, since the test supplies
+        # its own pre-built graph instead of going through generate().
+        backend = ShakeBackend(args=args, hunter=make_mock_hunter())
         backend._graph = graph
-        backend.context = BuildContext()
-        # __init__ is bypassed here; tests that drive _build_async/_execute_rule
-        # directly (without going through execute()) still need the aggregation
-        # list that the in-build test-execution path appends to.
-        backend._test_failures = []
         yield backend, tmpdir
 
 

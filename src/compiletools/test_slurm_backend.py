@@ -886,6 +886,15 @@ class TestLocalLink:
 
         mock_run_tests.assert_called_once()
 
+    def test_runs_tests_in_build_phase_is_false(self):
+        """SlurmBackend subclasses ShakeBackend (which returns True), but slurm
+        still uses the legacy post-build ``_run_tests`` sweep — so it must
+        override the capability gate back to False, otherwise cake.py skips
+        ``execute("runtests")`` entirely. Task 5 (the real slurm migration)
+        must consciously flip this pin."""
+        backend = SlurmBackend.__new__(SlurmBackend)
+        assert backend._runs_tests_in_build_phase() is False
+
     def test_generate_before_execute_required(self):
         args = SimpleNamespace(
             cas_objdir="/tmp",

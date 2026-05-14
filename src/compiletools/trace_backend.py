@@ -797,6 +797,12 @@ class SlurmBackend(ShakeBackend):
             "Default: 7200.0 (2 hours)",
         )
 
+    def _runs_tests_in_build_phase(self) -> bool:
+        # Slurm still uses the legacy post-build _run_tests() sweep; the in-build
+        # test path is Task 5. Without this override slurm would inherit
+        # ShakeBackend's True and cake.py would skip runtests entirely.
+        return False
+
     # ------------------------------------------------------------------
     # Core execute() — overrides ShakeBackend's async engine
 
