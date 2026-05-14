@@ -13,6 +13,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from xml.etree import ElementTree
 
 import compiletools.apptools
 import compiletools.filesystem_utils
@@ -70,6 +71,13 @@ class BazelBackend(BuildBackend):
         # its own cc_binary outputs from BUILD.bazel. Threading
         # compiletools' cas-exedir layer through would conflict with
         # bazel's output naming. Use legacy single-rule shape.
+        return True
+
+    def _runs_tests_in_build_phase(self) -> bool:
+        """When the graph has tests, the build phase runs ``bazel test //:all``
+        — which builds the non-test targets *and* runs every cc_test — so
+        cake.py skips the legacy post-build ``runtests`` sweep.
+        """
         return True
 
     @staticmethod
@@ -1004,21 +1012,32 @@ class BazelBackend(BuildBackend):
         # may change between calls.
         self._write_bazelrc(base_dir)
 
-        # The base-class ``execute()`` routes "runtests" through ``_run_tests``
-        # before calling here, so the only targets that reach ``_execute_build``
-        # are "build", "all", or a specific user-named target — all of which
-        # we map to a valid Bazel label.
-        if target in ("build", "all"):
-            bazel_target = "//:all"
-        else:
-            bazel_target = f"//:{target}"
-        # CLI is intentionally minimal — every static-per-build flag lives
-        # in .bazelrc so ``bazel build //:all`` works directly from a
-        # checkout without the compiletools wrapper. Only the target and
-        # the dynamic --jobs override stay on the CLI.
-        cmd = [tool, "build", *self._jobs_args(), bazel_target]
+        # ``build`` / ``all`` / ``runtests`` all drive //:all; a specific
+        # user-named target maps to its own label. When the graph has tests,
+        # //:all is driven with ``bazel test`` — which builds the non-test
+        # targets *and* runs every cc_test — so tests run as part of the build
+        # phase (cake.py skips the legacy post-build runtests sweep).
+        aggregate = target in ("build", "all", "runtests")
+        bazel_target = "//:all" if aggregate else f"//:{target}"
+        has_tests = self._graph is not None and any(self._graph.rules_by_type(RuleType.TEST))
+        run_tests = aggregate and has_tests
+        # CLI is intentionally minimal — every static-per-build flag lives in
+        # .bazelrc so ``bazel build //:all`` works directly from a checkout
+        # without the compiletools wrapper. Only the subcommand, target, the
+        # dynamic --jobs override, and (for test runs) --run_under /
+        # --test_output stay on the CLI.
+        cmd = [tool, "test" if run_tests else "build", *self._jobs_args()]
+        if run_tests:
+            testprefix = getattr(self.args, "TESTPREFIX", "")
+            if testprefix:
+                cmd.append(f"--run_under={testprefix}")
+            # Surface a failing test's own output instead of just "FAILED".
+            cmd.append("--test_output=errors")
+        cmd.append(bazel_target)
         self._run_bazel(cmd)
         self._publish_bazel_outputs()
+        if run_tests:
+            self._publish_test_results()
 
     def _build_bazelrc_content(self) -> str:
         """Compose the .bazelrc body — pure, no I/O.
@@ -1163,16 +1182,63 @@ class BazelBackend(BuildBackend):
         """Copy bazel-bin/ outputs to namer paths and library paths.
 
         Executables land at ``namer.executable_pathname()`` (variant-specific
-        dir like ``bin/<variant>/<name>``) so that ``_run_tests`` can find
-        test executables at the path it computes from ``args.tests``;
-        ``cake._copyexes`` afterwards handles the user-facing copy to
-        ``topbindir`` / ``--output`` for ``args.filename`` targets.
+        dir like ``bin/<variant>/<name>``) so the user-visible ``bin/`` stays
+        in sync and ``_publish_test_results`` can resolve each test's
+        ``.result`` marker path; ``cake._copyexes`` afterwards handles the
+        user-facing copy to ``topbindir`` / ``--output`` for ``args.filename``
+        targets.
         """
         bazel_bin = os.path.join(os.getcwd(), "bazel-bin")
         if not os.path.isdir(bazel_bin):
             return
         self._copy_built_executables(bazel_bin)
         self._copy_bazel_libraries(bazel_bin)
+
+    @staticmethod
+    def _junit_xml_has_failures(xml_path: str) -> bool:
+        """True if a JUnit XML file reports any <testsuite> failures or errors."""
+        try:
+            root = ElementTree.parse(xml_path).getroot()
+        except (ElementTree.ParseError, OSError):
+            return False
+        suites = [root] if root.tag == "testsuite" else root.iter("testsuite")
+        return any(int(s.get("failures", "0")) or int(s.get("errors", "0")) for s in suites)
+
+    def _publish_test_results(self) -> None:
+        """After a successful ``bazel test``, stamp per-test success markers
+        and publish JUnit XML.
+
+        ``bazel test`` already exits non-zero (and ``_run_bazel`` raises) if
+        any test failed, so reaching here means every cc_test passed — fresh
+        or served from bazel's test cache. For each test rule, touch its
+        ``.result`` marker and — when ``--test-xml-dir`` is set — copy bazel's
+        ``bazel-testlogs/<target>/test.xml`` to the per-test XML path. Bazel's
+        test cache may have skipped rerunning an unchanged test; its
+        ``test.xml`` is still the last-known-good result, so it is copied
+        regardless. The per-test XML is parsed as a defensive cross-check
+        before the marker is stamped.
+        """
+        if self._graph is None:
+            return
+        testlogs = os.path.join(os.getcwd(), "bazel-testlogs")
+        xml_dir = getattr(self.args, "test_xml_dir", None)
+        failures: list[str] = []
+        for rule in self._graph.rules_by_type(RuleType.TEST):
+            if not rule.inputs:
+                continue
+            exe_path = rule.inputs[0]
+            target_name = mangle_target_name(os.path.basename(exe_path))
+            test_xml = os.path.join(testlogs, target_name, "test.xml")
+            if os.path.exists(test_xml) and self._junit_xml_has_failures(test_xml):
+                failures.append(exe_path)
+                continue
+            self._touch_result_marker(self._result_marker_path(exe_path))
+            if xml_dir and os.path.exists(test_xml):
+                dest = self._xml_path_for(exe_path)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                compiletools.filesystem_utils.atomic_copy(test_xml, dest)
+        if failures:
+            raise RuntimeError("bazel test reported failures for: " + ", ".join(failures))
 
     @staticmethod
     def _token_picks_linker(tok: str) -> bool:

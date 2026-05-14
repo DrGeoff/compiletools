@@ -1,6 +1,7 @@
 """Unit tests for the Bazel build backend (no compiler required)."""
 
 import io
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -440,33 +441,164 @@ class TestStarlarkStringEscape:
         assert '"weird"src.cpp"' not in out
 
 
-class TestBazelExecuteRuntests:
-    def test_execute_runtests_calls_run_tests(self):
+class TestBazelRunsTestsInBuildPhase:
+    """The build phase runs tests natively: when the graph has RuleType.TEST
+    rules, ``//:all`` is driven with ``bazel test`` (which builds non-test
+    targets AND runs every cc_test), and ``_publish_test_results`` stamps
+    ``.result`` markers / publishes JUnit XML afterwards.
+    """
+
+    @staticmethod
+    def _backend_with_test_graph(*, testprefix="", test_xml_dir=None):
         args = MagicMock()
-        args.tests = ["/src/test_foo.cpp"]
-        args.verbose = 0
-        hunter = MagicMock()
-        backend = BazelBackend(args=args, hunter=hunter)
+        args.parallel = None
+        args.TESTPREFIX = testprefix
+        args.test_xml_dir = test_xml_dir
+        backend = BazelBackend(args=args, hunter=MagicMock())
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="bin/test_foo",
+                inputs=["obj/test_foo.o"],
+                command=["g++", "-o", "bin/test_foo", "obj/test_foo.o"],
+                rule_type="link",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="bin/test_foo.result",
+                inputs=["bin/test_foo"],
+                command=["bin/test_foo"],
+                rule_type="test",
+                success_marker="bin/test_foo.result",
+            )
+        )
+        backend._graph = graph
+        return backend
 
-        with patch.object(backend, "_run_tests") as mock_run_tests:
-            backend.execute("runtests")
-            mock_run_tests.assert_called_once()
+    def test_capability_flag_is_true(self):
+        backend = BazelBackend(args=MagicMock(), hunter=MagicMock())
+        assert backend._runs_tests_in_build_phase() is True
 
-    def test_execute_build_does_not_call_run_tests(self):
-        args = MagicMock()
-        hunter = MagicMock()
-        backend = BazelBackend(args=args, hunter=hunter)
-
+    def test_execute_build_uses_bazel_test_when_graph_has_tests(self):
+        backend = self._backend_with_test_graph()
         with (
-            patch.object(backend, "_run_tests") as mock_run_tests,
-            patch.object(backend, "_run_bazel"),
-            patch.object(backend, "_write_bazelrc"),
-            patch("shutil.which", return_value="/usr/bin/bazel"),
-            patch("os.path.exists", return_value=False),
+            patch("shutil.which", side_effect=lambda n: "/usr/bin/bazel" if n == "bazel" else None),
             patch("os.path.isdir", return_value=False),
+            patch.object(backend, "_run_bazel") as mock_run,
+            patch.object(backend, "_write_bazelrc"),
+            patch.object(backend, "_publish_test_results") as mock_publish,
         ):
             backend.execute("build")
-            mock_run_tests.assert_not_called()
+
+        cmd = mock_run.call_args[0][0]
+        assert cmd[1] == "test", cmd
+        assert cmd[-1] == "//:all", cmd
+        mock_publish.assert_called_once()
+
+    def test_execute_build_uses_bazel_build_when_no_tests(self):
+        args = MagicMock()
+        args.parallel = None
+        backend = BazelBackend(args=args, hunter=MagicMock())
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="bin/app",
+                inputs=["obj/app.o"],
+                command=["g++", "-o", "bin/app", "obj/app.o"],
+                rule_type="link",
+            )
+        )
+        backend._graph = graph
+        with (
+            patch("shutil.which", side_effect=lambda n: "/usr/bin/bazel" if n == "bazel" else None),
+            patch("os.path.isdir", return_value=False),
+            patch.object(backend, "_run_bazel") as mock_run,
+            patch.object(backend, "_write_bazelrc"),
+            patch.object(backend, "_publish_test_results") as mock_publish,
+        ):
+            backend.execute("build")
+
+        assert mock_run.call_args[0][0][1] == "build"
+        mock_publish.assert_not_called()
+
+    def test_run_under_plumbs_testprefix(self):
+        backend = self._backend_with_test_graph(testprefix="valgrind --error-exitcode=1")
+        with (
+            patch("shutil.which", side_effect=lambda n: "/usr/bin/bazel" if n == "bazel" else None),
+            patch("os.path.isdir", return_value=False),
+            patch.object(backend, "_run_bazel") as mock_run,
+            patch.object(backend, "_write_bazelrc"),
+            patch.object(backend, "_publish_test_results"),
+        ):
+            backend.execute("build")
+
+        cmd = mock_run.call_args[0][0]
+        assert "--run_under=valgrind --error-exitcode=1" in cmd, cmd
+
+    def test_publish_test_results_touches_marker_and_copies_xml(self, tmp_path, monkeypatch):
+        """_publish_test_results touches each test's .result marker and copies
+        bazel's bazel-testlogs/<target>/test.xml to the per-test XML path."""
+        monkeypatch.chdir(tmp_path)
+        testlog_dir = tmp_path / "bazel-testlogs" / "test_foo"
+        testlog_dir.mkdir(parents=True)
+        (testlog_dir / "test.xml").write_text('<testsuites><testsuite failures="0" errors="0"/></testsuites>')
+        (tmp_path / "bin").mkdir()
+        exe_path = str(tmp_path / "bin" / "test_foo")
+
+        args = MagicMock()
+        args.test_xml_dir = str(tmp_path / "xmlout")
+        args.variant = "gcc.debug"
+        args.use_mtime = False
+        backend = BazelBackend(args=args, hunter=MagicMock())
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output=exe_path + ".result",
+                inputs=[exe_path],
+                command=[exe_path],
+                rule_type="test",
+                success_marker=exe_path + ".result",
+            )
+        )
+        backend._graph = graph
+
+        backend._publish_test_results()
+
+        assert os.path.exists(exe_path + ".result"), "test .result marker not touched"
+        assert os.path.exists(os.path.join(str(tmp_path / "xmlout"), "gcc.debug", "test_foo.xml")), (
+            "bazel test.xml not published to the per-test XML path"
+        )
+
+    def test_publish_test_results_raises_on_xml_failures(self, tmp_path, monkeypatch):
+        """A test.xml reporting failures makes _publish_test_results raise even
+        though bazel test exited 0 (defensive cross-check)."""
+        monkeypatch.chdir(tmp_path)
+        testlog_dir = tmp_path / "bazel-testlogs" / "test_foo"
+        testlog_dir.mkdir(parents=True)
+        (testlog_dir / "test.xml").write_text('<testsuites><testsuite failures="1" errors="0"/></testsuites>')
+        (tmp_path / "bin").mkdir()
+        exe_path = str(tmp_path / "bin" / "test_foo")
+
+        args = MagicMock()
+        args.test_xml_dir = None
+        args.use_mtime = False
+        backend = BazelBackend(args=args, hunter=MagicMock())
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output=exe_path + ".result",
+                inputs=[exe_path],
+                command=[exe_path],
+                rule_type="test",
+                success_marker=exe_path + ".result",
+            )
+        )
+        backend._graph = graph
+
+        with pytest.raises(RuntimeError, match="reported failures"):
+            backend._publish_test_results()
+        assert not os.path.exists(exe_path + ".result"), "marker stamped despite reported failure"
 
 
 class TestBazelCopyExecutables:
