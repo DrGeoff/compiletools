@@ -329,7 +329,7 @@ class Cake:
             with timer.phase("build_execution"):
                 backend.execute("build")
 
-            if self.args.tests and "runtests" in graph.outputs:
+            if self.args.tests and "runtests" in graph.outputs and not backend._runs_tests_in_build_phase():
                 with timer.phase("test_execution"):
                     backend.execute("runtests")
 

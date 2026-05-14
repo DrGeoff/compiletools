@@ -559,6 +559,11 @@ class BuildBackend(abc.ABC):
         self._gcc_header_unit_resolved: dict[str, list[str]] = {}
         self._build_imports_std_cached: bool | None = None
         self._compile_used_libcxx = False
+        # Per-target test-framework detection cache, keyed by exe_path.
+        # Populated lazily by _test_command_for (and, in the legacy path,
+        # by _run_tests). Created here so pyright knows the attribute
+        # exists on every BuildBackend instance.
+        self._test_frameworks: dict[str, TestFramework | None] = {}
 
         # Warn if the user explicitly opted into legacy mtime semantics
         # but this backend can't deliver them. The flag is a make/ninja
@@ -622,6 +627,63 @@ class BuildBackend(abc.ABC):
     @abc.abstractmethod
     def _execute_build(self, target: str) -> None:
         """Backend-specific build invocation (subprocess call to native tool)."""
+
+    def _runs_tests_in_build_phase(self) -> bool:
+        """Return True if this backend's execute("build") natively runs test rules
+        (i.e. test executables fire as soon as their link rule completes, inside the
+        build phase). When False (default), cake.py orchestrates a separate
+        backend.execute("runtests") post-build phase via the legacy _run_tests path.
+        Subclasses that have been migrated to in-build test execution override to True.
+        """
+        return False
+
+    def _test_command_for(self, exe_path: str) -> list[str]:
+        """Return the full argv to invoke a test executable, including TESTPREFIX
+        parts and any framework-specific JUnit-XML argv when --test-xml-dir is set.
+        The framework is detected from the test's transitive header set via
+        compiletools.test_framework.detect_framework; the per-target lookup is
+        cached on self._test_frameworks.
+        """
+        cmd: list[str] = []
+        testprefix = getattr(self.args, "TESTPREFIX", "")
+        if testprefix:
+            cmd.extend(testprefix.split())
+        cmd.append(exe_path)
+
+        if not getattr(self.args, "test_xml_dir", None):
+            return cmd
+
+        # --test-xml-dir is set: detect (and cache) the framework for this
+        # exe_path, then append the framework-specific XML-emit argv after
+        # exe_path so prefix tools forward the trailing argv to the child.
+        if exe_path not in self._test_frameworks:
+            framework: TestFramework | None = None
+            for source in self.args.tests or []:
+                source_exe = self.namer.executable_pathname(compiletools.wrappedos.realpath(source))
+                if source_exe != exe_path:
+                    continue
+                headers = [str(h) for h in self.hunter.header_dependencies(source)]
+                framework = compiletools.test_framework.detect_framework(headers, source)
+                if framework is None and getattr(self.args, "verbose", 0) >= 1:
+                    print(
+                        f"{source}: no known unit-test framework detected; skipping XML output",
+                        file=sys.stderr,
+                    )
+                break
+            self._test_frameworks[exe_path] = framework
+
+        framework = self._test_frameworks.get(exe_path)
+        if framework is not None:
+            cmd.extend(framework.xml_argv(self._xml_path_for(exe_path)))
+        return cmd
+
+    def _touch_result_marker(self, result_path: str) -> None:
+        """Touch a test's success marker. No-op (without error) if result_path
+        is empty. Used by backends that run tests in-process and need to record
+        success themselves (shake, slurm, bazel post-hoc)."""
+        if not result_path:
+            return
+        _touch(result_path)
 
     def _prebuild_aux_artefacts(self) -> None:
         """Locally execute aux artefact producer rules before the native backend runs.
@@ -1296,10 +1358,6 @@ class BuildBackend(abc.ABC):
 
         if test_exe_paths:
             # Create per-test execution rules so build files can run tests standalone
-            testprefix_parts = []
-            if getattr(self.args, "TESTPREFIX", ""):
-                testprefix_parts = self.args.TESTPREFIX.split()
-
             cas_only_results = not getattr(self.args, "use_mtime", False) and not self._has_native_cas_exe()
             test_result_paths = []
             for exe_path in test_exe_paths:
@@ -1322,7 +1380,7 @@ class BuildBackend(abc.ABC):
                     result_path = exe_path + ".result"
                     rule_inputs = [exe_path]
                     rule_order_only = []
-                test_cmd = testprefix_parts + [exe_path]
+                test_cmd = self._test_command_for(exe_path)
                 graph.add_rule(
                     BuildRule(
                         output=result_path,
@@ -1514,15 +1572,12 @@ class BuildBackend(abc.ABC):
         ``exe_path`` so prefix tools like valgrind / strace -f / taskset
         forward the trailing argv to the child process correctly.
         """
-        cmd = []
-        if testprefix:
-            cmd.extend(testprefix.split())
-        cmd.append(exe_path)
-
-        if getattr(self.args, "test_xml_dir", None):
-            framework = self._test_frameworks.get(exe_path)
-            if framework is not None:
-                cmd.extend(framework.xml_argv(self._xml_path_for(exe_path)))
+        # ``testprefix`` is accepted for backward-compatible signature; the
+        # actual prefix is read from ``self.args.TESTPREFIX`` by
+        # ``_test_command_for`` (same value). The framework lookup is the
+        # cache ``_run_tests`` already populated.
+        del testprefix
+        cmd = self._test_command_for(exe_path)
 
         timer = self._timer
         start = time.monotonic() if timer else 0.0
