@@ -1499,21 +1499,8 @@ class TestMakefileTestEchoTarget:
     not ``command[-1]`` — which is now an XML flag when --test-xml-dir is set
     (``_test_command_for`` appends framework XML argv after the exe)."""
 
-    def test_makefile_test_echo_target_is_exe(self):
-        """With a framework XML flag appended after the exe in command, the
-        verbose echo line still names the exe path, not the XML flag."""
-        graph = BuildGraph()
-        graph.add_rule(
-            BuildRule(
-                output="bin/test_foo.result",
-                inputs=["bin/test_foo"],
-                command=["bin/test_foo", "--gtest_output=xml:/tmp/xml/test_foo.xml"],
-                rule_type="test",
-                success_marker="bin/test_foo.result",
-            )
-        )
-
-        args = SimpleNamespace(
+    def _make_args(self, **overrides):
+        defaults = dict(
             verbose=1,
             cas_objdir="/tmp/obj",
             bindir="/tmp/bin",
@@ -1534,6 +1521,24 @@ class TestMakefileTestEchoTarget:
             build_only_changed=None,
             use_mtime=False,
         )
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    def test_makefile_test_echo_target_is_exe(self):
+        """With a framework XML flag appended after the exe in command, the
+        verbose echo line still names the exe path, not the XML flag."""
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="bin/test_foo.result",
+                inputs=["bin/test_foo"],
+                command=["bin/test_foo", "--gtest_output=xml:/tmp/xml/test_foo.xml"],
+                rule_type="test",
+                success_marker="bin/test_foo.result",
+            )
+        )
+
+        args = self._make_args()
         backend = MakefileBackend(args=args, hunter=MagicMock())
         buf = io.StringIO()
         backend.generate(graph, output=buf)
@@ -1559,27 +1564,7 @@ class TestMakefileTestEchoTarget:
             )
         )
 
-        args = SimpleNamespace(
-            verbose=1,
-            cas_objdir="/tmp/obj",
-            bindir="/tmp/bin",
-            git_root="",
-            file_locking=False,
-            makefilename="Makefile",
-            filename=[],
-            tests=[],
-            static=[],
-            dynamic=[],
-            CC="gcc",
-            CXX="g++",
-            CFLAGS="-O2",
-            CXXFLAGS="-O2",
-            LD="g++",
-            LDFLAGS="",
-            serialisetests=False,
-            build_only_changed=None,
-            use_mtime=False,
-        )
+        args = self._make_args()
         backend = MakefileBackend(args=args, hunter=MagicMock())
         buf = io.StringIO()
         backend.generate(graph, output=buf)

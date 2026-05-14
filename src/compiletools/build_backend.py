@@ -1365,6 +1365,7 @@ class BuildBackend(abc.ABC):
             # XML files share the single ``<xml-dir>/<variant>`` directory.
             xml_bucket_dir = ""
             if getattr(self.args, "test_xml_dir", None):
+                # dir component of _xml_path_for is exe-independent, so [0] is representative
                 xml_bucket_dir = os.path.dirname(self._xml_path_for(test_exe_paths[0]))
                 graph.add_rule(
                     BuildRule(

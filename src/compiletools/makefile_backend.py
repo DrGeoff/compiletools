@@ -275,7 +275,7 @@ class MakefileBackend(BuildBackend):
             # source — ``_test_command_for`` appends framework XML argv
             # (e.g. ``--gtest_output=xml:...``) after the exe, so
             # ``command[-1]`` can be an XML flag rather than the exe.
-            echo_target = (rule.inputs or rule.order_only_deps or [rule.output])[0]
+            echo_target = (rule.inputs or rule.order_only_deps)[0]
             echo_prefix = "@"
         else:
             cmd_str = render_shell_recipe(rule)
