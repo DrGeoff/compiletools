@@ -2,7 +2,7 @@
 
 Drives the full pipeline (parseargs -> Hunter -> backend.build_graph
 -> compile -> link -> _run_tests) on the stub fixtures under
-``samples/test_xml_output/``, then asserts ct-cake passed the right
+``examples-features/test_xml_output/``, then asserts ct-cake passed the right
 framework-specific XML argv to each test executable.
 
 The fixture binaries don't link against real GoogleTest / doctest --

@@ -73,7 +73,7 @@ class TestPkgConfigHeaderDeps(BaseCompileToolsTestCase):
 
         The PKG-CONFIG=testpkg1 directive is properly extracted and included in the flags.
         """
-        # pkgconfig_env fixture already set PKG_CONFIG_PATH to samples/pkgs/
+        # pkgconfig_env fixture already set PKG_CONFIG_PATH to examples-features/pkgs/
 
         # Set up arguments
         argv = ["-vvvv", "--magic=direct", "--headerdeps=direct", f"--INCLUDE={self.test_dir}", str(self.source_file)]
@@ -127,7 +127,7 @@ class TestPkgConfigHeaderDeps(BaseCompileToolsTestCase):
         This caused get_file_hash() to return cached hashes that weren't registered
         in _REVERSE_HASHES, leading to FileNotFoundError in get_filepath_by_hash().
         """
-        # pkgconfig_env fixture already set PKG_CONFIG_PATH to samples/pkgs/
+        # pkgconfig_env fixture already set PKG_CONFIG_PATH to examples-features/pkgs/
 
         # Set up arguments
         argv = ["--magic=direct", "--headerdeps=direct", f"--INCLUDE={self.test_dir}", str(self.source_file)]

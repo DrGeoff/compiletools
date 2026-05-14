@@ -298,7 +298,7 @@ def test_pch_artefact_reused_across_workspaces(tmp_path):
     PCH cache key embedded the absolute header path.
 
     Reproducer mirrors the report's `cp -a workspace1 workspace2`
-    sketch: build the PCH-using ``samples/pch`` project in ws1 and ws2
+    sketch: build the PCH-using ``examples-end-to-end/pch`` project in ws1 and ws2
     (distinct absolute paths) against a single shared ``cas-pchdir``;
     after the second build the shared dir must hold exactly one
     ``cmd_hash`` directory (not two), and the same .gch inode must be

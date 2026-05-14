@@ -30,11 +30,11 @@ echo "User-supplied -ffile-prefix-map (auto-injection skipped):"
 
 # Byte-identity check across two workspaces (manual exercise):
 #
-#   git clone <repo> /tmp/A && cd /tmp/A/src/compiletools/samples/ffile_prefix_map
+#   git clone <repo> /tmp/A && cd /tmp/A/src/compiletools/examples-end-to-end/ffile_prefix_map
 #   ct-cake --auto path_probe.cpp
 #   sha256sum bin/*/path_probe.o.* (or the cas-objdir entry)
 #
-#   git clone <repo> /tmp/B && cd /tmp/B/src/compiletools/samples/ffile_prefix_map
+#   git clone <repo> /tmp/B && cd /tmp/B/src/compiletools/examples-end-to-end/ffile_prefix_map
 #   ct-cake --auto path_probe.cpp
 #   sha256sum bin/*/path_probe.o.*
 #

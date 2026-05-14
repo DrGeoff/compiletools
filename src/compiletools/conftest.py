@@ -115,16 +115,16 @@ def pkgconfig_env():
     """Set PKG_CONFIG_PATH to shared test pkg-config directory.
 
     This fixture provides access to the consolidated test .pc files in
-    samples/pkgs/ for tests that need to validate pkg-config functionality.
+    examples-features/pkgs/ for tests that need to validate pkg-config functionality.
 
     The fixture:
-    1. Sets PKG_CONFIG_PATH to samples/pkgs/ directory
+    1. Sets PKG_CONFIG_PATH to examples-features/pkgs/ directory
     2. Yields control to the test
     3. Restores original PKG_CONFIG_PATH after test completes
 
     Usage in tests:
         def test_something(self, pkgconfig_env):
-            # PKG_CONFIG_PATH now points to samples/pkgs/
+            # PKG_CONFIG_PATH now points to examples-features/pkgs/
             # Test code that uses pkg-config...
 
     Available test packages:

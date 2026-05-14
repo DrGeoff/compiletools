@@ -23,7 +23,7 @@ stale results, causing transitive dependencies to be lost.
 ## To Reproduce
 
 ```bash
-cd samples/transitive_cache_bug
+cd examples-features/transitive_cache_bug
 rm -rf bin
 ct-cake -j1
 ```

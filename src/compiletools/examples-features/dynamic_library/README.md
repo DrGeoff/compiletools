@@ -1,6 +1,6 @@
 # dynamic_library Sample
 
-Mirror of `samples/library/` but exercising `ct-cake --dynamic`
+Mirror of `examples-features/library/` but exercising `ct-cake --dynamic`
 instead of `--static`. The library lives in `mylib/`, the consumer
 in the top-level `main.cpp`.
 

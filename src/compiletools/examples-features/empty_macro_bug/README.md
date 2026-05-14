@@ -34,7 +34,7 @@ Entry point for the test.
 - **Includes**: `conditional.hpp`
 - **Purpose**: Minimal main function to create a compilable source file
 
-### Shared `samples/pkgs/conditional.pc`
+### Shared `examples-features/pkgs/conditional.pc`
 Fake pkg-config file (shared across samples) for testing PKG-CONFIG magic flag extraction.
 - **Cflags**: `-I/usr/local/include/testpkg -DTEST_PKG_ENABLED`
 - **Purpose**: Tests that PKG-CONFIG directives from conditionally-included headers are extracted

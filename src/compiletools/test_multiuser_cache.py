@@ -1067,7 +1067,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
                 assert obj_file.stat().st_size > 0, f"{obj_file.name} is empty"
 
     def _create_pch_source_dir(self, tmpdir, source_name, objdir, pchdir):
-        """Helper: create a build dir using the samples/pch source.
+        """Helper: create a build dir using the examples-end-to-end/pch source.
 
         Returns (source_dir, config_name)."""
         import shutil

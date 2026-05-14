@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 # Build a dynamic (shared) library and link an executable against it.
 #
-# This mirrors samples/library/build.sh but uses --dynamic instead of
+# This mirrors examples-features/library/build.sh but uses --dynamic instead of
 # --static, producing libgreeter.so in mylib/bin/.
 set -e
 

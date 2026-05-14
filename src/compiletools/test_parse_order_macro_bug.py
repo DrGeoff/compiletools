@@ -111,7 +111,7 @@ class TestParseOrderMacroBug(BaseCompileToolsTestCase):
         2. A regression test once the bug is fixed
         3. A framework for future parse-order bug investigations
         """
-        # pkgconfig_env fixture already set PKG_CONFIG_PATH to samples/pkgs/
+        # pkgconfig_env fixture already set PKG_CONFIG_PATH to examples-features/pkgs/
 
         # Test entry point 1: Process common_file directly (should find all headers)
         hunter1, _args1 = self._create_hunter([str(self.entry_point_1_cpp)], parser_name="test_parser_1")

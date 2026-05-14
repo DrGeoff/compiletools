@@ -214,7 +214,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
         """Test that ct.conf.d/pkgconfig/ overrides take priority over system/base .pc files.
 
         Uses the existing pkgconfig_env fixture (which sets PKG_CONFIG_PATH to
-        samples/pkgs/) and layers a project-level override on top.
+        examples-features/pkgs/) and layers a project-level override on top.
         """
         with uth.CompileToolsTestContext() as (tmpdir, _config_path):
             # Create the project override directory
@@ -374,7 +374,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
     def test_prepend_pkg_config_path_via_cli(self, pkgconfig_env):
         """Test that --prepend-PKG-CONFIG-PATH overrides base PKG_CONFIG_PATH.
 
-        The pkgconfig_env fixture sets PKG_CONFIG_PATH to samples/pkgs/ which
+        The pkgconfig_env fixture sets PKG_CONFIG_PATH to examples-features/pkgs/ which
         contains conditional.pc.  We create a CLI-prepended directory with a
         higher-priority conditional.pc and verify its flags win.
         """
