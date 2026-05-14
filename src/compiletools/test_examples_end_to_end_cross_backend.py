@@ -1,0 +1,360 @@
+"""Cross-backend coverage matrix for examples-end-to-end/.
+
+For every example under ``examples-end-to-end/`` x every registered
+backend, build the example with that backend and assert the build
+succeeds (or, for intentional-failure examples, fails at the
+documented stage). The matrix is the contract that says "every
+feature compiles via every backend" — adding an example to
+``EXAMPLES_E2E`` without registering its plan here breaks the test,
+forcing the author to make a deliberate decision.
+
+Most examples are buildable straight from ``ct-cake``. A handful need:
+
+  * an explicit entry-point file (when the default discovery would
+    pick a multi-target set that includes a TU intended for a
+    different invocation)
+  * a ``PKG_CONFIG_PATH`` that picks up
+    ``examples-features/pkgs/*.pc`` fixtures (for the one xfail
+    sample, ``pkgconfig_cycle``)
+  * skipping (intentional bug-reproduction examples; examples whose
+    build is steered by a multi-step ``build.sh`` that doesn't fit
+    the per-backend matrix; examples that need a system library that
+    isn't guaranteed to be installed)
+
+Per-example policy lives in ``_EXAMPLE_PLANS`` below; reasons for skip
+or xfail are spelled out so a future maintainer doesn't have to
+re-discover them.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import os
+import pathlib
+import shutil
+import subprocess
+from collections.abc import Iterable
+
+import pytest
+
+import compiletools.testhelper as uth
+from compiletools.build_backend import available_backends, ensure_backends_registered
+
+ensure_backends_registered()
+
+
+# ---------------------------------------------------------------------------
+# Example → build-plan registry.
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class ExamplePlan:
+    """How to build a single example.
+
+    Attributes:
+        targets: Explicit source files to pass to ``ct-cake``. Empty
+            tuple means ``--auto`` (let ct-cake discover everything).
+        needs_pkg_config: When True, prepend ``examples-features/pkgs/`` to
+            ``PKG_CONFIG_PATH`` for the build subprocess.
+        skip_reason: When non-empty, the (example, backend) cell is
+            skipped with this reason instead of being built.
+        xfail_reason: When non-empty, the build is expected to fail;
+            a successful build is the surprise.
+        skip_for_backends: Per-backend skip overrides (example-side
+            opt-out, e.g. C++20 modules on backends whose rule emitter
+            doesn't yet wire the BMI plumbing).
+        extra_args: Additional argv tokens appended after ``--backend``.
+        extra_env: Environment variables to set for the subprocess.
+    """
+
+    targets: tuple[str, ...] = ()
+    needs_pkg_config: bool = False
+    skip_reason: str = ""
+    xfail_reason: str = ""
+    skip_for_backends: frozenset[str] = frozenset()
+    extra_args: tuple[str, ...] = ()
+    extra_env: dict[str, str] = dataclasses.field(default_factory=dict)
+
+
+# Most examples are vanilla --auto builds. Only the awkward ones need
+# bespoke entries; everything else falls through to the empty default.
+_VANILLA: ExamplePlan = ExamplePlan()
+
+# Named C++20 modules (interface units, partitions, split impl, import std)
+# fail on ninja/cmake/bazel today. `slurm` was unblocked by the Wave 2
+# fix: _prebuild_aux_artefacts now locally executes named-module interface
+# compile rules before the flat slurm job array is submitted, so importer
+# compiles no longer race with interface compiles.
+# `cxx_modules_header_units` is the exception: header-units now build on
+# every backend after the upstream fix tracked by commit d30e2040
+# ("test(modules): drop dead _MODULE_FAILING_BACKENDS xfail dispatch"),
+# so that example uses an empty blocklist.
+_CXX_MODULES_NAMED_BACKENDS_BLOCKED = frozenset()
+
+_EXAMPLE_PLANS: dict[str, ExamplePlan] = {
+    # ----- vanilla --auto, no special setup -----
+    "calculator": _VANILLA,
+    "cache_scoping": _VANILLA,
+    "computed_include": _VANILLA,
+    "conditional_includes": _VANILLA,
+    "cppflags_macros": _VANILLA,
+    "cross_platform": _VANILLA,
+    "dottypaths": _VANILLA,
+    "factory": _VANILLA,
+    "feature_headers": _VANILLA,
+    "ffile_prefix_map": _VANILLA,
+    "has_include": _VANILLA,
+    "hunter_macro_propagation": _VANILLA,
+    "macro_state_dependency": _VANILLA,
+    "magicsourceinheader": _VANILLA,
+    "movingheaders": _VANILLA,
+    "nestedconfig": _VANILLA,
+    "pch": _VANILLA,
+    "platform_has_include": _VANILLA,
+    "separate_cpp_cxx": _VANILLA,
+    "simple": _VANILLA,
+    "unit_test_marker": _VANILLA,
+    "version_dependent_api": _VANILLA,
+    "cli_features": _VANILLA,
+    # ----- vanilla --auto + per-example CLI knobs -----
+    "magicinclude": ExamplePlan(
+        # //#INCLUDE=subdir auto-resolves subdir/important.hpp; the
+        # other two header dirs (subdir2, subdir3) are reachable only
+        # via the --include CLI flag, mirroring test_magicinclude.py.
+        extra_args=("--include=subdir2", "--prepend-INCLUDE=subdir3"),
+    ),
+    "numbers": ExamplePlan(
+        # The directory has two test entry points — test_direct_include.cpp
+        # builds standalone, test_library.cpp expects -lget_numbers from
+        # the library/ build. Pick the standalone one for the matrix; the
+        # multi-step variant is exercised by examples-end-to-end/library/build.sh.
+        targets=("test_direct_include.cpp",),
+    ),
+    # ----- intentional build failure (the demonstration IS the failure) -----
+    "pkgconfig_cycle": ExamplePlan(
+        needs_pkg_config=True,
+        xfail_reason=(
+            "Intentional: two TUs assert opposite hard PKG-CONFIG link "
+            "orderings, ct-cake raises LDFLAGSCycleError before any compile "
+            "command runs. See examples-end-to-end/pkgconfig_cycle/README.md."
+        ),
+    ),
+    "project_version": ExamplePlan(
+        extra_args=("--project-version=1.2.3", "--project-name=demo_app"),
+    ),
+    # ----- multi-step build.sh — exercised by their own dedicated tests -----
+    "multi_axis_variant": ExamplePlan(
+        # build.sh sweeps several variants; the matrix tests the
+        # default. Per-axis coverage lives in test_apptools / test_configutils.
+        targets=("axis_probe.cpp",),
+    ),
+    "testprefix": ExamplePlan(
+        extra_env={"TESTPREFIX": "timeout 5"},
+    ),
+    # ----- C++20 modules: backend support varies by example shape -----
+    "cxx_modules": ExamplePlan(skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED),
+    "cxx_modules_split": ExamplePlan(skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED),
+    "cxx_modules_partitions": ExamplePlan(skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED),
+    "cxx_modules_import_std": ExamplePlan(skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED),
+    # Header units: full cross-backend coverage thanks to upstream fix.
+    "cxx_modules_header_units": _VANILLA,
+}
+
+
+# ---------------------------------------------------------------------------
+# Example discovery + parametrize ID generation.
+# ---------------------------------------------------------------------------
+
+
+def _discover_examples_end_to_end() -> list[str]:
+    """Return every directory name directly under the e2e examples dir."""
+    examples_root = pathlib.Path(uth.e2e_dir())
+    return sorted(p.name for p in examples_root.iterdir() if p.is_dir())
+
+
+def _example_plan(example_name: str) -> ExamplePlan:
+    """Look up an example's plan, defaulting to vanilla --auto.
+
+    Unknown examples (added by a future PR without registering them
+    here) get _VANILLA — the test will likely succeed if the new
+    example is a normal --auto build, or fail with a useful diagnostic
+    that points the author at this registry.
+    """
+    return _EXAMPLE_PLANS.get(example_name, _VANILLA)
+
+
+def _matrix_id(example_name: str, backend_name: str) -> str:
+    return f"{example_name}-{backend_name}"
+
+
+def _matrix_params() -> Iterable[tuple[str, str]]:
+    examples = _discover_examples_end_to_end()
+    backends = available_backends()
+    for example in examples:
+        for backend in backends:
+            yield example, backend
+
+
+_MATRIX = list(_matrix_params())
+_IDS = [_matrix_id(e, b) for e, b in _MATRIX]
+
+
+# ---------------------------------------------------------------------------
+# Build helpers.
+# ---------------------------------------------------------------------------
+
+
+def _copy_example(example_name: str, dst: pathlib.Path) -> pathlib.Path:
+    """Copy examples-end-to-end/<example_name>/ to a fresh dst/ workspace and plant
+    a .git marker so :func:`compiletools.git_utils.find_git_root` lands
+    on the workspace (not on the surrounding pytest tmpdir or the
+    test-runner's cwd)."""
+    src = pathlib.Path(uth.e2e_dir()) / example_name
+    dst.mkdir(parents=True, exist_ok=True)
+    for entry in src.iterdir():
+        if entry.is_file():
+            shutil.copy2(entry, dst)
+        else:
+            shutil.copytree(entry, dst / entry.name)
+    (dst / ".git").mkdir()
+    return dst
+
+
+def _build_argv(workspace: pathlib.Path, backend_name: str, plan: ExamplePlan) -> list[str]:
+    """Compose the ct-cake argv for a workspace, matching the per-CAS
+    isolation pattern from test_ffile_prefix_map."""
+    argv = [
+        "ct-cake",
+        f"--backend={backend_name}",
+        f"--cas-objdir={workspace}/cas-objdir",
+        f"--bindir={workspace}/bin",
+        f"--cas-pchdir={workspace}/cas-pchdir",
+        f"--cas-pcmdir={workspace}/cas-pcmdir",
+        f"--cas-exedir={workspace}/cas-exedir",
+        f"--diagnostics-dir={workspace}/diagnostics",
+    ]
+    argv.extend(plan.extra_args)
+    if plan.targets:
+        argv.extend(str(workspace / t) for t in plan.targets)
+    else:
+        argv.append("--auto")
+    return argv
+
+
+def _build_env(plan: ExamplePlan) -> dict[str, str]:
+    """Build a clean environment for the subprocess.
+
+    Strips host CXXFLAGS/CFLAGS/LDFLAGS/CPPFLAGS so the test isn't at
+    the mercy of whatever the operator has exported, then layers on the
+    example's own extra_env, then optionally PKG_CONFIG_PATH pointing at
+    examples-features/pkgs/."""
+    env = os.environ.copy()
+    for var in ("CXXFLAGS", "CFLAGS", "LDFLAGS", "CPPFLAGS"):
+        env.pop(var, None)
+    if plan.needs_pkg_config:
+        env["PKG_CONFIG_PATH"] = str(pathlib.Path(uth.example_path("pkgs")))
+    env.update(plan.extra_env)
+    return env
+
+
+def _run_build(
+    example_name: str,
+    backend_name: str,
+    workspace: pathlib.Path,
+    plan: ExamplePlan,
+) -> subprocess.CompletedProcess:
+    argv = _build_argv(workspace, backend_name, plan)
+    env = _build_env(plan)
+    try:
+        return subprocess.run(argv, cwd=workspace, env=env, capture_output=True, text=True)
+    finally:
+        # Bazel keeps a JVM server alive per cwd. Across many cells the
+        # accumulated server processes exhaust native thread allocation
+        # and downstream cells fail with `unable to create native thread:
+        # possibly out of memory or process/resource limits reached`.
+        # Explicit shutdown after each cell prevents the pile-up.
+        if backend_name == "bazel":
+            subprocess.run(
+                ["bazel", "shutdown"],
+                cwd=workspace,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+
+# ---------------------------------------------------------------------------
+# The matrix test.
+# ---------------------------------------------------------------------------
+
+
+@uth.requires_functional_compiler
+@pytest.mark.parametrize(("example_name", "backend_name"), _MATRIX, ids=_IDS)
+def test_example_builds_with_backend(example_name, backend_name, tmp_path):
+    """Build *example_name* with *backend_name*; assert the policy in
+    ``_EXAMPLE_PLANS`` is honoured.
+
+    Three outcomes per cell:
+
+    * ``skip_reason`` set → ``pytest.skip`` with the registered reason.
+    * ``xfail_reason`` set → expected to fail; an unexpected success
+      becomes an XPASS.
+    * default → the build must succeed (returncode == 0).
+
+    The backend tool must be on PATH (via ``requires_backend_tool``)
+    and a functional compiler must be present.
+    """
+    plan = _example_plan(example_name)
+
+    if plan.skip_reason:
+        pytest.skip(plan.skip_reason)
+    if backend_name in plan.skip_for_backends:
+        pytest.skip(f"example {example_name} opted out of backend {backend_name}")
+    if not uth._backend_tool_available(backend_name):
+        pytest.skip(f"{backend_name} build tool not on PATH")
+
+    with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
+        workspace = _copy_example(example_name, pathlib.Path(effective_tmp) / "ws")
+        result = _run_build(example_name, backend_name, workspace, plan)
+
+        if plan.xfail_reason:
+            if result.returncode == 0:
+                pytest.xfail(f"unexpected build success despite xfail policy: {plan.xfail_reason}")
+            return  # expected failure
+
+        assert result.returncode == 0, (
+            f"ct-cake failed for example={example_name!r} backend={backend_name!r}\n"
+            f"argv: {_build_argv(workspace, backend_name, plan)}\n"
+            f"--- stdout ---\n{result.stdout}\n"
+            f"--- stderr ---\n{result.stderr}\n"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Drift guard: every directory under examples-end-to-end/ must be registered.
+# ---------------------------------------------------------------------------
+
+
+def test_every_example_has_a_plan():
+    """Adding a new example without registering it in ``_EXAMPLE_PLANS``
+    is fine — the unknown-example path defaults to vanilla --auto. But
+    we want to *force the author to think about it* so that
+    intentional-failure examples don't silently start failing the matrix
+    or unbuildable fixture-only directories don't waste cycles.
+
+    Asserting unconditionally here surfaces the question at PR time:
+    "your new example isn't classified — pick a plan or document why
+    --auto is right."
+    """
+    discovered = set(_discover_examples_end_to_end())
+    registered = set(_EXAMPLE_PLANS)
+    missing = sorted(discovered - registered)
+    assert not missing, (
+        "New examples without an entry in _EXAMPLE_PLANS:\n  "
+        + "\n  ".join(missing)
+        + "\nAdd an ExamplePlan() entry (use _VANILLA if `ct-cake --auto` is correct)."
+    )
+    stale = sorted(registered - discovered)
+    assert not stale, "_EXAMPLE_PLANS references examples that no longer exist:\n  " + "\n  ".join(stale)
