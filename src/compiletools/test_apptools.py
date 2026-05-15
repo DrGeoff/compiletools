@@ -1551,6 +1551,35 @@ class TestHasPrefixMapFlag:
         # flag (the flag syntax is OLD=NEW after the equals).
         assert not _has_prefix_map_flag("-ffile-prefix-map")
 
+    def test_quoted_d_macro_does_not_false_positive(self):
+        """Regression: a ``-D`` macro whose VALUE happens to contain the
+        literal ``-ffile-prefix-map=`` substring (e.g. a build-reason
+        string baked into the binary) must NOT be mistaken for a
+        user-supplied prefix-map flag — silently skipping auto-injection
+        for that slot would cause per-user-divergent ``.o`` bytes for a
+        project that thought it had cross-user CAS sharing. Substring
+        detection on the raw string returned True here; tokenized
+        detection correctly returns False.
+        """
+        from compiletools.apptools import _has_prefix_map_flag
+
+        assert not _has_prefix_map_flag("-DREASON='-ffile-prefix-map=oops='")
+        # And a real prefix-map sitting next to the masquerading -D=
+        # is still detected.
+        assert _has_prefix_map_flag("-DFOO=bar -ffile-prefix-map=/a=/b")
+
+    def test_unbalanced_quote_fallback(self):
+        """An unparseable flag string (shlex raises ValueError on
+        unbalanced quotes) is treated as user-supplied prefix-map —
+        the conservative call: an opaque string is unsafe to interpret
+        either way, so decline auto-injection rather than risk appending
+        a flag the user might already have inside their unparseable
+        text. Pinned explicitly so future changes don't silently flip.
+        """
+        from compiletools.apptools import _has_prefix_map_flag
+
+        assert _has_prefix_map_flag("'unbalanced quote")
+
 
 class TestInjectFfilePrefixMap:
     """``_inject_ffile_prefix_map`` appends
@@ -1636,3 +1665,26 @@ class TestInjectFfilePrefixMap:
         apptools._inject_ffile_prefix_map(args)
         assert first_cxx == args.CXXFLAGS
         assert first_c == args.CFLAGS
+
+    def test_quoted_d_macro_does_not_block_injection(self, monkeypatch):
+        """End-to-end regression: a ``-D`` whose VALUE contains the
+        literal ``-ffile-prefix-map=`` substring previously caused
+        ``_has_prefix_map_flag`` to return True (substring match),
+        so ``_inject_ffile_prefix_map`` skipped auto-injection for that
+        slot. The user thought they had cross-user CAS sharing; they
+        actually got per-user-divergent ``.o`` bytes. After the
+        tokenization fix, auto-injection happens as expected.
+        """
+        import compiletools.apptools as apptools
+
+        monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "/home/alice/proj")
+        args = self._make_args(
+            CXXFLAGS="-O2 -DREASON='-ffile-prefix-map=oops='",
+            CFLAGS="-O2 -DREASON='-ffile-prefix-map=oops='",
+        )
+        apptools._inject_ffile_prefix_map(args)
+        assert "-ffile-prefix-map=/home/alice/proj=." in args.CXXFLAGS
+        assert "-ffile-prefix-map=/home/alice/proj=." in args.CFLAGS
+        # The masquerading -D should still be present, untouched.
+        assert "-DREASON='-ffile-prefix-map=oops='" in args.CXXFLAGS
+        assert "-DREASON='-ffile-prefix-map=oops='" in args.CFLAGS

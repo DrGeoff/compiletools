@@ -1122,16 +1122,29 @@ _PREFIX_MAP_FLAG_PREFIXES: tuple[str, ...] = (
 
 
 def _has_prefix_map_flag(raw_flags: str) -> bool:
-    """Return True if *raw_flags* contains any
+    """Return True if *raw_flags* contains any top-level
     ``-f{file,debug,macro,canon}-prefix-map=`` flag.
 
-    Substring search is sufficient: every recognized prefix ends in
-    ``=``, so lookalikes like ``-fno-omit-frame-pointer`` cannot
-    false-positive. Empty / None / no-match returns False.
+    Tokenizes via ``shlex.split`` and checks ``tok.startswith(prefix)``
+    so that a prefix-map substring nested inside another flag's value
+    (e.g. ``-DREASON='-ffile-prefix-map=oops='``) does NOT false-
+    positive — naive substring search would, and the symptom (silently
+    per-user-divergent ``.o`` bytes for a project that thought it had
+    cross-user CAS sharing) would be hard to diagnose.
+
+    Empty / None returns False. Unparseable flag strings (e.g.
+    unbalanced quotes from a user's CXXFLAGS) return True — the
+    conservative call: an opaque string is unsafe to interpret either
+    way, so decline auto-injection rather than risk appending a flag
+    the user might already have inside their unparseable text.
     """
     if not raw_flags:
         return False
-    return any(prefix in raw_flags for prefix in _PREFIX_MAP_FLAG_PREFIXES)
+    try:
+        tokens = shlex.split(raw_flags)
+    except ValueError:
+        return True
+    return any(tok.startswith(prefix) for tok in tokens for prefix in _PREFIX_MAP_FLAG_PREFIXES)
 
 
 def _inject_ffile_prefix_map(args) -> None:
