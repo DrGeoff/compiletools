@@ -52,6 +52,7 @@ docs/_build/
 # Committing them would bake in a snapshot that drifts from the
 # READMEs as new tools are added or renamed.
 docs/_generated/
+docs/plans/
 cas-objdir/
 cas-pchdir/
 cas-pcmdir/
