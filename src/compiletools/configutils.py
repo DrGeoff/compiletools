@@ -34,7 +34,9 @@ _DEFAULT_VARIANT_CANONICAL_ORDER = (
     "blank",
     # toolchain
     "gcc",
+    "ccache-gcc",
     "clang",
+    "ccache-clang",
     "icc",
     "msvc",
     # language standard (C)

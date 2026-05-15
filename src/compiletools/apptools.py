@@ -2768,9 +2768,13 @@ def _compiler_major_version(compiler_path: str) -> tuple[str, int] | None:
     import re as _re
     import subprocess
 
+    # Tokenize so wrapper invocations like "ccache g++" forward --version
+    # to the real compiler. Feeding the compound string as argv0 raises
+    # OSError and silently degrades the check to "unknown driver, skip".
+    argv = split_command_cached(compiler_path) if " " in compiler_path else [compiler_path]
     try:
         proc = subprocess.run(
-            [compiler_path, "--version"],
+            argv + ["--version"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -2816,9 +2820,14 @@ def _check_resolved_compiler_available(args) -> None:
             # The "unsupplied" sentinel means a later step substitutes a
             # real value (typically CXX itself); skip these.
             continue
+        # Tokenize so wrapper invocations like "ccache g++" resolve their
+        # first token (the actual executable to invoke). Feeding the full
+        # compound string to shutil.which would always return None.
+        tokens = split_command_cached(value) if " " in value else (value,)
+        exe = tokens[0] if tokens else value
         # shutil.which handles both bare names (PATH lookup) and absolute
         # / workspace-relative paths (existence + executability check).
-        if shutil.which(value) is None:
+        if shutil.which(exe) is None:
             raise RuntimeError(
                 f"Resolved {slot}={value!r} is not on PATH and is not an executable file.\n"
                 f"  variant: {variant}\n"

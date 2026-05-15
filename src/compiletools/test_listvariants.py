@@ -69,7 +69,7 @@ def test_none_found():
         # rendering.
         assert "compose via axis conf files" in output
         assert "Canonical token order" in output
-        assert "blank, gcc, clang" in output
+        assert "blank, gcc, ccache-gcc, clang" in output
         # Each searched dir is still listed; the synthetic ones produce "None found".
         for path in (ucd, scd, os.path.join(ecd, "ct", "ct.conf.d")):
             assert path in output

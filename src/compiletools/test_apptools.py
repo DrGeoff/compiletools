@@ -1388,6 +1388,51 @@ class TestResolvedCompilerAvailable:
         )
         apptools._check_resolved_compiler_available(args)
 
+    def test_wrapper_invocation_checks_first_token(self):
+        # Toolchain axes like ccache-gcc.conf set CXX="ccache g++". The
+        # validator must tokenize and resolve the first token (the actual
+        # executable to invoke) instead of feeding the whole string to
+        # shutil.which, which would return None and false-positive raise.
+        import shutil
+        from types import SimpleNamespace
+
+        import compiletools.apptools as apptools
+
+        real_cxx = shutil.which("g++") or shutil.which("clang++") or shutil.which("sh")
+        assert real_cxx, "test environment lacks any usable executable"
+        # Use `env` (POSIX, ubiquitous on PATH) as a stand-in wrapper so
+        # the test doesn't require ccache to be installed.
+        wrapper = shutil.which("env")
+        assert wrapper, "POSIX `env` must be on PATH for this test"
+        args = SimpleNamespace(
+            variant="ccache-gcc.debug",
+            CC=f"env {real_cxx}",
+            CXX=f"env {real_cxx}",
+            LD=f"env {real_cxx}",
+        )
+        # Must not raise — the first token (`env`) is on PATH.
+        apptools._check_resolved_compiler_available(args)
+
+    def test_wrapper_with_missing_first_token_raises(self):
+        # Mirror case: when the wrapper itself isn't on PATH, the validator
+        # must still surface the failure (don't accidentally pass by ignoring
+        # the resolved value).
+        from types import SimpleNamespace
+
+        import compiletools.apptools as apptools
+
+        args = SimpleNamespace(
+            variant="ccache-gcc.debug",
+            CC="this-wrapper-does-not-exist-7f3a g++",
+            CXX="this-wrapper-does-not-exist-7f3a g++",
+            LD="this-wrapper-does-not-exist-7f3a g++",
+        )
+        with pytest.raises(RuntimeError) as excinfo:
+            apptools._check_resolved_compiler_available(args)
+        msg = str(excinfo.value)
+        assert "not on PATH" in msg
+        assert "ccache-gcc.debug" in msg
+
 
 class TestCompilerSupportsRequestedStandard:
     """Static (compiler, version) -> max-std table is the cheap way to
@@ -1478,6 +1523,32 @@ class TestCompilerSupportsRequestedStandard:
         )
         with pytest.raises(RuntimeError, match=r"does not support -std=c\+\+2c"):
             apptools._check_compiler_supports_requested_standard(args)
+
+    def test_compiler_major_version_handles_wrapper(self):
+        # ccache-gcc.conf sets CXX="ccache g++". _compiler_major_version
+        # must tokenize the wrapper invocation rather than feeding it to
+        # subprocess as a single argv0 (which raises OSError and silently
+        # degrades the check to "unknown driver, skip"). Use `env <cxx>`
+        # as a portable stand-in for the ccache wrapper so the test runs
+        # everywhere — `env --version` prints recognisable output, but
+        # `env <gcc>` will forward --version to the real compiler.
+        import shutil
+
+        import compiletools.apptools as apptools
+
+        real_cxx = shutil.which("g++") or shutil.which("clang++")
+        if not real_cxx:
+            pytest.skip("no real C++ compiler on PATH")
+        wrapper = shutil.which("env")
+        assert wrapper, "POSIX `env` must be on PATH"
+
+        bare = apptools._compiler_major_version(real_cxx)
+        wrapped = apptools._compiler_major_version(f"env {real_cxx}")
+        assert wrapped == bare, (
+            f"Wrapper invocation must resolve the same (family, major) as the "
+            f"bare compiler: bare={bare!r}, wrapped={wrapped!r}. A None on the "
+            f"wrapped side means subprocess raised OSError on the compound string."
+        )
 
 
 # ---------------------------------------------------------------------------

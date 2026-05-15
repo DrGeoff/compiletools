@@ -248,11 +248,13 @@ class TestVariant:
                     gitroot=repo_root,
                 )
             axis_names = [a.name for a in resolution.axes]
-            # dev.conf: extends = gcc, cxx26, debug, asan, ubsan, werror
-            assert axis_names == ["gcc", "cxx26", "debug", "asan", "ubsan", "werror", "dev"]
+            # dev.conf: extends = ccache-gcc, cxx26, debug, asan, ubsan, werror
+            # ccache-gcc itself extends gcc, so gcc appears first in the chain.
+            assert axis_names == ["gcc", "ccache-gcc", "cxx26", "debug", "asan", "ubsan", "werror", "dev"]
 
     def test_bundle_production_full_chain(self):
-        # production = gcc, cxx26, release, lto, hardened, pie, strip
+        # production = ccache-gcc, cxx26, release, lto, hardened, pie, strip
+        # ccache-gcc itself extends gcc, so gcc appears first in the chain.
         with uth.TempDirContextNoChange() as repo_root:
             uth.create_temp_ct_conf(repo_root, defaultvariant="production")
             with uth.DirectoryContext(repo_root):
@@ -267,6 +269,7 @@ class TestVariant:
             axis_names = [a.name for a in resolution.axes]
             assert axis_names == [
                 "gcc",
+                "ccache-gcc",
                 "cxx26",
                 "release",
                 "lto",
@@ -823,6 +826,146 @@ class TestVariant:
             msg = matching[0]
             assert "not in canonical order" in msg, msg
             assert "extends = gcc, werror" in msg, msg
+
+    def test_user_axis_extending_known_atoms_resolves_cleanly(self):
+        """A user-defined axis (no entry in canonical_order) that
+        ``extends`` only builtin tokens must resolve without error: the
+        unknown user axis trails after known atoms in canonicalisation,
+        and the resolver walks the chain in declared order.
+
+        This pins the "tokens not in the list trail in user-typed order"
+        contract documented in `canonicalize_variant_tokens`. Users rely
+        on this to add a project axis without redeclaring the whole
+        canonical order.
+        """
+        with uth.TempDirContextNoChange() as repo_root:
+            uth.create_temp_ct_conf(repo_root, defaultvariant="myproj")
+            conf_d = os.path.join(repo_root, "ct.conf.d")
+            os.makedirs(conf_d)
+            with open(os.path.join(conf_d, "myproj.conf"), "w") as fh:
+                fh.write("extends = gcc, debug\nappend-CXXFLAGS = -DMYPROJ=1\n")
+            with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+                fh.write("CC = gcc\nCXX = g++\n")
+            with open(os.path.join(conf_d, "debug.conf"), "w") as fh:
+                fh.write("append-CFLAGS = -g\n")
+
+            with uth.DirectoryContext(repo_root):
+                compiletools.configutils.clear_cache()
+                resolution = compiletools.configutils.resolve_variant(
+                    variant="myproj",
+                    argv=[],
+                    user_config_dir="/var",
+                    system_config_dir="/var",
+                    exedir=uth.cakedir(),
+                    gitroot=repo_root,
+                )
+            axis_names = [a.name for a in resolution.axes]
+            # Walk order is declared-order from `extends`, with myproj
+            # itself last (composite is loaded after its parents).
+            assert axis_names == ["gcc", "debug", "myproj"], axis_names
+
+    def test_user_token_trails_canonical_tokens_in_canonicalisation(self):
+        """Mixing a user-defined token with known builtins: the known
+        tokens sort to canonical positions, the user token(s) trail in
+        the user-typed order they appeared in the input.
+
+        Cases:
+          - one unknown + several knowns:    asan,ccache-clang,myproj
+          - multiple unknowns preserve order: debug,zproj,gcc,myproj
+        """
+        order = compiletools.configutils._DEFAULT_VARIANT_CANONICAL_ORDER
+
+        # Single unknown trails after all knowns (knowns canonicalise).
+        got = compiletools.configutils.canonicalize_variant_tokens(("myproj", "asan", "ccache-clang"), order)
+        assert got == ("ccache-clang", "asan", "myproj"), got
+
+        # Multiple unknowns: knowns canonicalise, unknowns preserve the
+        # left-to-right order of their first appearance in the input.
+        got = compiletools.configutils.canonicalize_variant_tokens(("debug", "zproj", "gcc", "myproj"), order)
+        assert got == ("gcc", "debug", "zproj", "myproj"), got
+
+    def test_user_axis_extending_ccache_wrappers_resolves_cleanly(self):
+        """End-to-end: a user-defined axis can extend the bundled
+        ``ccache-gcc`` / ``ccache-clang`` axes. Their canonical positions
+        sit between the bare toolchain atoms and the rest, so the
+        order-check warning stays silent and the chain resolves cleanly.
+
+        Uses ``system_config_dir=None`` so the bundled package conf
+        directory is consulted (the other hermetic tests pass an
+        explicit ``"/var"`` to block bundled lookup).
+        """
+        with uth.TempDirContextNoChange() as repo_root:
+            uth.create_temp_ct_conf(repo_root, defaultvariant="myproj")
+            conf_d = os.path.join(repo_root, "ct.conf.d")
+            os.makedirs(conf_d)
+            with open(os.path.join(conf_d, "myproj.conf"), "w") as fh:
+                fh.write("extends = ccache-gcc, cxx26, debug\nappend-CXXFLAGS = -DMYPROJ=1\n")
+
+            with uth.DirectoryContext(repo_root):
+                compiletools.configutils.clear_cache()
+                resolution = compiletools.configutils.resolve_variant(
+                    variant="myproj",
+                    argv=[],
+                    user_config_dir="/var",
+                    system_config_dir=None,
+                    exedir=uth.cakedir(),
+                    gitroot=repo_root,
+                )
+            axis_names = [a.name for a in resolution.axes]
+            # ccache-gcc itself extends gcc -> gcc precedes ccache-gcc.
+            assert axis_names == ["gcc", "ccache-gcc", "cxx26", "debug", "myproj"], axis_names
+
+    def test_out_of_order_extends_with_unknown_token_skips_warning(self, caplog):
+        """Documented gotcha: when ``extends`` contains ANY token absent
+        from canonical_order, the runtime order-check returns early
+        without warning (see ``_check_extends_canonical_order``: "unknown
+        axis: skip the order check entirely").
+
+        Why pin this: a user with ``extends = werror, ccache-gcc, myhelper``
+        (werror canonically sorts AFTER ccache-gcc) gets NO warning because
+        ``myhelper`` is unknown — the safety net the other test exercises
+        is bypassed. This is by design (avoids spurious warnings on legit
+        user-defined axes) but is worth pinning so a future change to the
+        unknown-token policy can't silently flip the behaviour.
+        """
+        with uth.TempDirContextNoChange() as repo_root:
+            uth.create_temp_ct_conf(repo_root, defaultvariant="myproj")
+            conf_d = os.path.join(repo_root, "ct.conf.d")
+            os.makedirs(conf_d)
+            # werror (canonical pos 44+) listed BEFORE gcc (pos 1) — would
+            # normally warn. But myhelper is unknown, so the check skips.
+            with open(os.path.join(conf_d, "myproj.conf"), "w") as fh:
+                fh.write("extends = werror, gcc, myhelper\n")
+            with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+                fh.write("CC = gcc\n")
+            with open(os.path.join(conf_d, "werror.conf"), "w") as fh:
+                fh.write("append-CFLAGS = -Werror\n")
+            with open(os.path.join(conf_d, "myhelper.conf"), "w") as fh:
+                fh.write("append-CXXFLAGS = -DMYHELPER=1\n")
+
+            with uth.DirectoryContext(repo_root):
+                compiletools.configutils.clear_cache()
+                with caplog.at_level(logging.WARNING, logger="compiletools.configutils"):
+                    compiletools.configutils.resolve_variant(
+                        variant="myproj",
+                        argv=[],
+                        user_config_dir="/var",
+                        system_config_dir="/var",
+                        exedir=uth.cakedir(),
+                        gitroot=repo_root,
+                    )
+
+            order_warnings = [
+                rec.getMessage()
+                for rec in caplog.records
+                if rec.name == "compiletools.configutils" and "not in canonical order" in rec.getMessage()
+            ]
+            assert not order_warnings, (
+                "extends containing an unknown token must not emit the "
+                "canonical-order warning (the check returns early on the "
+                "first unknown token). Got: "
+                f"{order_warnings!r}"
+            )
 
     def test_resolve_variant_parses_each_conf_at_most_once(self):
         """Regression guard against redundant conf-file parsing.

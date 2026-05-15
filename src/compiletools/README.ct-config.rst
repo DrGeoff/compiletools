@@ -58,9 +58,9 @@ ct.conf defines the following variables:
 
 The canonical token ordering used during variant canonicalization is the
 ``_DEFAULT_VARIANT_CANONICAL_ORDER`` tuple in ``compiletools/configutils.py`` —
-that constant is the single source of truth. To override project-wide,
-set ``variant-canonical-order = <comma-separated tokens>`` in your
-project ``ct.conf``.
+that constant is the single source of truth. See WHY CANONICAL ORDERING
+EXISTS for the motivation and AUTHORING YOUR OWN CANONICAL ORDER for the
+recipe to override it project-wide.
 
 VARIANT COMPOSITION
 ===================
@@ -245,6 +245,92 @@ position.)
 existing ``foo.debug.conf`` literal files during a transition, those keep
 working: a literal composite conf takes precedence over synthesis. You
 can migrate one axis at a time.
+
+WHY CANONICAL ORDERING EXISTS
+=============================
+
+Canonicalising every variant string into one well-defined token order
+serves three concrete purposes:
+
+1. **Cache-key stability.** The canonical name is the on-disk directory
+   that holds build artefacts: ``cas-objdir/<variant>/``,
+   ``cas-pchdir/<variant>/``, ``compile_commands.<variant>.json``,
+   ``bin/<variant>/``. Without canonicalisation, two developers typing
+   the same axes in different orders — ``--variant=gcc,debug`` vs
+   ``--variant=debug,gcc`` — would carve two separate cache trees and
+   neither would benefit from the other's work. Canonicalisation
+   collapses both forms to ``gcc.debug`` so the cache hits.
+
+2. **Flag-layering parity between** ``extends = ...`` **and**
+   ``--variant=...``. The resolver walks parents in *declared* order
+   and ``configargparse`` is last-writer-wins per scalar key, so
+   ``extends = werror, gcc`` produces different flag layering than
+   ``extends = gcc, werror`` (in the first form ``gcc.conf``'s
+   ``CC=gcc`` overwrites whatever ``werror.conf`` set; in the second
+   form it's the other way around). Canonical ordering pins one
+   layering as the reference: a composite ``.conf`` written with parents
+   in canonical order produces the same flags as the CLI form
+   ``--variant=<same tokens>``. Out-of-order ``extends`` triggers a
+   runtime warning (``_check_extends_canonical_order``) naming the
+   recommended reordering.
+
+3. **Deterministic output paths.** Because the canonical name appears
+   in user-facing paths and in ``-vv`` provenance traces, the order
+   must be deterministic across machines. Two CI hosts and a
+   developer's laptop must all agree on the same string for the same
+   set of axes, otherwise build outputs are unfindable and caches
+   diverge silently.
+
+Tokens absent from the canonical order trail at the end of the canonical
+name in user-typed order, so a project can introduce its own axis (e.g.
+``myproject``) without re-declaring the whole order — see the "Custom
+project alias" recipe in UPGRADING FROM VARIANTALIASES above.
+
+AUTHORING YOUR OWN CANONICAL ORDER
+==================================
+
+Two reasons you might want to specify your own canonical order:
+
+1. **You don't like the builtin order.** Maybe your team puts the
+   linker before the toolchain, or sanitizers before optimization,
+   and you want the canonical names to reflect that.
+
+2. **You added project-specific axes and want them to land in a
+   specific position** — not just trail at the end. For example, an
+   ``mlops`` axis that should sort right after the C++ standard so
+   ``mlops.debug`` and ``debug.mlops`` both canonicalise to
+   ``mlops.debug``, and so ``extends = gcc, cxx26, mlops, debug``
+   doesn't trip the out-of-order warning.
+
+The full override hierarchy is documented in CANONICAL-ORDER OVERRIDES
+below (CLI > environment > ct.conf > builtin), but the common case is
+a project-wide pin in your ``ct.conf``. Copy the commented example
+shown in the bundled ``ct.conf`` as a starting point, then edit::
+
+    # In <project-root>/ct.conf or <project-root>/ct.conf.d/ct.conf
+    variant-canonical-order = blank, gcc, ccache-gcc, clang, ccache-clang,
+        c99, c11, c17, c23, cxx11, cxx14, cxx17, cxx20, cxx23, cxx26,
+        mlops,                                     # <-- new project axis
+        ld, gold, mold, wild, m32, m64, native,
+        debug, release, releasewithdebinfo,
+        asan, ubsan, tsan, msan, coverage, lto,
+        pgo-gen, pgo-use, hardened, pie, static, splitdebug, strip,
+        noexceptions, nortti, fastmath, werror, libcxx,
+        cfi, shadow-call-stack, time-trace,
+        dev, ci, production, safety, perf, secure
+
+The value replaces the builtin tuple entirely — you must list every
+token you care about, including the bundled ones. Tokens you omit
+behave the same as user-defined axes: they trail at the end in
+user-typed order. (This is also useful for *narrowing* the order: an
+embedded project that doesn't use ``cfi`` / ``shadow-call-stack`` /
+``time-trace`` can drop them from its order without affecting anything
+else.) The drift-guard unit test ``test_bundled_ct_conf_comment_example_matches_builtin``
+only checks the bundled ``ct.conf`` — your project override is free to
+diverge.
+
+For a one-off experiment without editing any conf file, use the CLI or
+environment forms documented in CANONICAL-ORDER OVERRIDES below.
 
 CANONICAL-ORDER OVERRIDES
 =========================
