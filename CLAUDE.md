@@ -32,7 +32,7 @@ pytest config in `pyproject.toml [tool.pytest.ini_options]`; tests live next to 
 3. **Deps** (`hunter.py`, `headerdeps.py`, `magicflags.py`): walk `#include` graph (factory: `DirectHeaderDeps`/`CppHeaderDeps`); extract `//#` flag annotations; discover implied sources (`foo.h` → `foo.cpp`).
 4. **LDFLAGS merge** (`utils.merge_ldflags_with_topo_sort`): soft edges (single `PKG-CONFIG`) cancel on disagreement; hard edges (multi-package `PKG-CONFIG=a b`) always kept; cycles after cancellation raise `ValueError` naming offenders.
 5. **Backend dispatch** (`build_backend.py`): `--backend` selects from registry; `build_graph()` populates a `BuildGraph` of `BuildRule` objects, `generate()` writes the native build file.
-6. **Execute**: `backend.execute("build")` → native tool; `_run_tests()` for tests; `_copyexes()` to bindir.
+6. **Execute**: `backend.execute("build")` → native tool (drives the `all` aggregate so test rules run inline alongside compile/link via `-j` scheduling); `_copyexes()` to bindir.
 
 ### Magic detection
 `FileAnalyzer.analyze_file()` does a SIMD single-pass scan (stringzilla) returning `FileAnalysisResult`. `SimplePreprocessor.process_structured()` evaluates `#if`/`#ifdef`/`#define`. `PreprocessingCache` is two-tier: invariant (content_hash only, ~80% of files) vs variant (content_hash + macro_state_key for files with conditionals). `MacroState` separates ~388 immutable compiler built-ins from per-file `#define`s and only hashes the variable set.
@@ -83,7 +83,7 @@ Every `ct-*` entry point uses `apptools.create_parser` + `add_base_arguments` (g
 
 ## Test Conventions
 
-- Function-based for simple cases; `BaseCompileToolsTestCase` (`test_base.py`) when cache isolation is needed. Helpers in `testhelper.py` (`TempDirContext`, `create_temp_config()`, `samplesdir()`, `@requires_functional_compiler`) and `conftest.py` (`ensure_lock_helper_in_path`, `pkgconfig_env`).
+- Function-based for simple cases; `BaseCompileToolsTestCase` (`test_base.py`) when cache isolation is needed. Helpers in `testhelper.py` (`TempDirContext`, `create_temp_config()`, `@requires_functional_compiler`), `examples_registry.py` (`example_path()`, `example_file()`), and `conftest.py` (`ensure_lock_helper_in_path`, `pkgconfig_env`).
 - Never hardcode compiler names — use `@requires_functional_compiler` and `apptools.get_functional_cxx_compiler()`.
 - Use `monkeypatch.chdir()` not raw `os.chdir()`. When removing/renaming methods, grep tests for `patch.object(...)`.
 - `BuildRule.rule_type` validated against `VALID_RULE_TYPES` in `build_graph.py` — new type requires updating the frozenset.
