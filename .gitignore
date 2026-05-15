@@ -6,6 +6,8 @@
 *.ct-sig
 bin/
 compile_commands.json
+compile_commands.*.json
+compile_commands.*.json.lock
 
 # Backend build artifacts
 build.ninja
