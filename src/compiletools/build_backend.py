@@ -25,6 +25,8 @@ import shutil
 import subprocess
 import sys
 from collections import deque
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import NamedTuple, TypeVar
 
 import compiletools.apptools
@@ -64,6 +66,17 @@ class ObjInfo(NamedTuple):
 #   - ``^`` has no special meaning to make outside the ``$^`` automatic
 #     variable (which requires the ``$``), so doubled ``^^`` is safe.
 _NAME_ESCAPE = "^^"
+
+
+# Sentinel: read-only empty mapping used as the class-level default for the
+# module-iface dict attrs in ``BuildBackend``. A bare ``= {}`` would alias a
+# single dict across every BuildBackend instance, so a future subclass or
+# test that does ``self._module_iface_obj[k] = v`` BEFORE __init__ runs
+# would silently corrupt state seen by all instances. MappingProxyType makes
+# that mutation attempt raise TypeError instead — production code re-binds
+# the attribute to a per-instance dict in ``__init__``, so writes always
+# target the instance dict, never the shared sentinel.
+_EMPTY_STR_MAP: Mapping[str, str] = MappingProxyType({})
 
 
 # File extensions of build artefacts that compile rules consume but
@@ -511,12 +524,21 @@ class BuildBackend(abc.ABC):
     # fixtures bypassing __init__ via __new__ can still read these without
     # AttributeError, and _prebuild_aux_artefacts can use plain attribute
     # access (matches the invariant documented in __init__).
+    #
+    # The dict-typed module-iface attrs default to a shared empty
+    # MappingProxyType so reads (.values(), .get(), iteration, ``in``)
+    # work on bypass-init test backends, but any attempt to mutate the
+    # default — ``self._module_iface_obj[k] = v`` before __init__ ran —
+    # raises TypeError instead of silently aliasing one dict across every
+    # BuildBackend instance. __init__ re-binds each attribute to a fresh
+    # per-instance ``dict``, so production writes always target the
+    # instance dict.
     _module_compiler_kind: str | None = None
     _module_pcm_cache_root: str | None = None
     _module_pcm_dir: str | None = None
-    _module_iface_obj: dict[str, str] = {}  # noqa: RUF012
-    _module_iface_pcm: dict[str, str] = {}  # noqa: RUF012
-    _module_iface_gcm: dict[str, str] = {}  # noqa: RUF012
+    _module_iface_obj: Mapping[str, str] = _EMPTY_STR_MAP
+    _module_iface_pcm: Mapping[str, str] = _EMPTY_STR_MAP
+    _module_iface_gcm: Mapping[str, str] = _EMPTY_STR_MAP
     _gcc_module_mapper_path: str | None = None
 
     def __init__(self, args, hunter, *, context=None):
@@ -551,9 +573,15 @@ class BuildBackend(abc.ABC):
         self._module_compiler_kind: str | None = None
         self._module_pcm_cache_root: str | None = None
         self._module_pcm_dir: str | None = None
-        self._module_iface_obj: dict[str, str] = {}
-        self._module_iface_pcm: dict[str, str] = {}
-        self._module_iface_gcm: dict[str, str] = {}
+        # Re-bind to per-instance dicts. Declared as Mapping[str, str] at
+        # the class level (with a MappingProxyType sentinel) so writes via
+        # ``self._module_iface_obj[k] = v`` before __init__ ran would raise
+        # TypeError instead of silently aliasing one dict across instances.
+        # Production callers (_create_compile_rule, the bazel/ninja paths,
+        # and test fixtures) write through the instance dict bound here.
+        self._module_iface_obj = {}
+        self._module_iface_pcm = {}
+        self._module_iface_gcm = {}
         self._header_unit_artefact: dict[str, str] = {}
         self._gcc_module_mapper_path: str | None = None
         self._gcc_header_unit_resolved: dict[str, list[str]] = {}
@@ -2043,7 +2071,7 @@ class BuildBackend(abc.ABC):
         #   "no rule to make target <name>.gcm" if the importer
         #   listed the .gcm. The .o has the same wait semantics
         #   (existence implies the .gcm is on disk).
-        target_map: dict[str, str] = self._module_iface_pcm if kind == "clang" else self._module_iface_obj
+        target_map: Mapping[str, str] = self._module_iface_pcm if kind == "clang" else self._module_iface_obj
 
         def _add_dep(target: str | None) -> None:
             """Append *target* to ``rule.inputs`` (deduped, skipping self).
