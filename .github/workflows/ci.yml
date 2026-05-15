@@ -23,9 +23,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config gcc-14 g++-14
+          # cpp is already a master alternative on Ubuntu 24.04, so it cannot
+          # be slaved under gcc -- only g++ is included.
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140 \
-            --slave /usr/bin/g++ g++ /usr/bin/g++-14 \
-            --slave /usr/bin/cpp cpp /usr/bin/cpp-14
+            --slave /usr/bin/g++ g++ /usr/bin/g++-14
           sudo update-alternatives --set gcc /usr/bin/gcc-14
           gcc --version
           g++ --version
