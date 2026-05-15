@@ -359,8 +359,13 @@ def extract_include_paths(command: list[str]) -> list[str]:
     """Extract include-path arguments from a compile command.
 
     Recognized forms (path is returned, flag is dropped):
-      ``-Ipath``, ``-I path``, ``-isystempath``, ``-isystem path``,
-      ``-isystem=path``, ``-iquotepath``, ``-iquote path``, ``-iquote=path``.
+      ``-Ipath``, ``-I path``, ``-I=path``, ``-isystempath``,
+      ``-isystem path``, ``-isystem=path``, ``-iquotepath``,
+      ``-iquote path``, ``-iquote=path``.
+
+    The ``=path`` form is a non-standard variant some build systems emit;
+    all three triad members strip a single leading ``=`` so their
+    behaviour is uniform.
 
     **Scope is intentionally narrow.** This function exists solely to feed
     the Bazel backend's ``cc_*(includes=[...])`` attribute, which Bazel
@@ -370,10 +375,6 @@ def extract_include_paths(command: list[str]) -> list[str]:
 
     * ``-idirafter`` / ``-iframework`` — valid gcc/clang flags but Bazel
       has no propagation channel for them through dep edges.
-    * ``-I=foo`` — non-standard form some build systems emit; not
-      currently produced by compiletools' magicflags or //#INCLUDE=
-      annotation handling, and Bazel's ``includes=[...]`` would not
-      faithfully reproduce its lookup semantics anyway.
 
     For the broader path-bearing flag set used by the cache-key
     canonicalizer (which DOES include ``-idirafter`` because it's
@@ -398,7 +399,7 @@ def extract_include_paths(command: list[str]) -> list[str]:
             include_next = True
             continue
         if arg.startswith("-I") and len(arg) > 2:
-            paths.append(arg[2:])
+            paths.append(arg[2:].lstrip("="))
             continue
         if arg in ("-isystem", "-iquote"):
             include_next = True

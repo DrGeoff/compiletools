@@ -339,6 +339,14 @@ class TestIncludePathsExtraction:
         paths = extract_include_paths(cmd)
         assert paths == ["/abs/path"]
 
+    def test_dash_I_equals_form(self):
+        # Triad consistency: -I=foo strips the leading '=' just like
+        # -isystem=foo and -iquote=foo. Regression: previously returned
+        # the literal "=foo" path, contradicting the docstring.
+        cmd = ["g++", "-c", "-I=foo", "x.cpp", "-o", "x.o"]
+        paths = extract_include_paths(cmd)
+        assert paths == ["foo"]
+
 
 class TestLinkoptsExtraction:
     def test_library_flags(self):
