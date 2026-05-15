@@ -1,6 +1,7 @@
 """Unit tests for the CMake build backend (no compiler required)."""
 
 import io
+import os
 import shutil
 import subprocess
 from unittest.mock import MagicMock, patch
@@ -297,10 +298,14 @@ class TestCMakeGenerate:
         content = buf.getvalue()
 
         assert "add_custom_command(" in content
-        assert 'OUTPUT "bin/test_foo.result"' in content
+        # Graph paths are anchored to ${CMAKE_SOURCE_DIR}: add_custom_command
+        # resolves a relative OUTPUT against the build dir, not the source
+        # tree, which would bury the .result marker inside cmake-build/.
+        assert 'OUTPUT "${CMAKE_SOURCE_DIR}/bin/test_foo.result"' in content
+        assert '-E touch "${CMAKE_SOURCE_DIR}/bin/test_foo.result"' in content
         assert "$<TARGET_FILE:test_foo>" in content
         assert "DEPENDS test_foo" in content
-        assert "add_custom_target(runtests ALL DEPENDS" in content
+        assert 'add_custom_target(runtests ALL DEPENDS "${CMAKE_SOURCE_DIR}/bin/test_foo.result")' in content
         # ctest is no longer involved.
         assert "enable_testing" not in content
         assert "add_test(" not in content
@@ -665,8 +670,9 @@ class TestCMakeRunsTestsInBuildPhase:
     @uth.requires_functional_compiler
     def test_cmake_runs_tests_in_build(self, tmp_path, monkeypatch):
         """After execute("build") — NOT execute("runtests") — the test's
-        ``.result`` success marker exists, proving the test ran during the
-        build phase."""
+        ``.result`` success marker exists at the graph-declared path, proving
+        the test ran during the build phase and the marker landed where the
+        rest of compiletools expects it (not buried inside cmake-build/)."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
         test_src = tmp_path / "test_pass.cpp"
@@ -678,8 +684,19 @@ class TestCMakeRunsTestsInBuildPhase:
 
         backend.execute("build")
 
-        assert uth.find_result_markers(tmp_path), (
-            "no .result marker after execute('build') — test did not run during the build phase"
+        markers = uth.find_result_markers(tmp_path)
+        assert markers, "no .result marker after execute('build') — test did not run during the build phase"
+        # add_custom_command resolves a relative OUTPUT against the build dir;
+        # the marker must be anchored to the source tree, not stranded under
+        # cmake-build/.
+        assert not any("cmake-build" in m for m in markers), (
+            f".result marker landed inside cmake-build/ instead of the graph path: {markers}"
+        )
+        test_rule = next(r for r in graph.rules if r.rule_type == "test")
+        marker = test_rule.success_marker
+        assert marker is not None
+        assert os.path.exists(os.path.join(tmp_path, marker)), (
+            f"marker not at the graph-declared path {marker}; found {markers}"
         )
 
     @uth.requires_functional_compiler

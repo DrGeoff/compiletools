@@ -267,6 +267,17 @@ class CMakeBackend(BuildBackend):
         # post-build phase. The test argv references the freshly built binary
         # via $<TARGET_FILE:...>, not the user-facing exe path, which
         # _copy_built_executables only populates after the build finishes.
+        #
+        # add_custom_command resolves a *relative* OUTPUT / COMMAND-argument
+        # path against the build directory (cmake-build/), not the source
+        # tree — so a gitroot-relative rule.output would land the .result
+        # marker buried inside cmake-build/. Anchor every graph path to
+        # ${CMAKE_SOURCE_DIR} (where the generated CMakeLists.txt lives, =
+        # gitroot) so markers and XML land where the rest of compiletools
+        # expects them.
+        def _src_rel(path: str) -> str:
+            return path if os.path.isabs(path) else f"${{CMAKE_SOURCE_DIR}}/{path}"
+
         test_rules = list(graph.rules_by_type(RuleType.TEST))
         test_outputs_set = {r.output for r in test_rules}
         test_outputs: list[str] = []
@@ -283,25 +294,27 @@ class CMakeBackend(BuildBackend):
                 list(rule.command[:exe_idx]) + [f"$<TARGET_FILE:{target_name}>"] + list(rule.command[exe_idx + 1 :])
             )
             argv_str = " ".join(f'"{a}"' for a in test_argv)
+            rule_output = _src_rel(rule.output)
             # --serialise-tests chains tests by injecting the previous test
             # rule's output into this rule's inputs/order_only_deps. Surface
             # any such chain dep (a sibling test rule's output) as a file
             # DEPENDS so cmake serialises the custom commands; the exe stays
             # a target DEPENDS.
             chain_deps = [d for d in (*rule.inputs[1:], *rule.order_only_deps) if d in test_outputs_set]
-            depends = " ".join([target_name, *(f'"{d}"' for d in chain_deps)])
+            depends = " ".join([target_name, *(f'"{_src_rel(d)}"' for d in chain_deps)])
             f.write("\nadd_custom_command(\n")
-            f.write(f'    OUTPUT "{rule.output}"\n')
+            f.write(f'    OUTPUT "{rule_output}"\n')
             # -E make_directory is mkdir -p: a no-op when the dir already
             # exists, required when rule.output is a JUnit XML file under
             # <xml-dir>/<variant> that no link rule created.
-            f.write(f'    COMMAND "${{CMAKE_COMMAND}}" -E make_directory "{os.path.dirname(rule.output)}"\n')
+            f.write(f'    COMMAND "${{CMAKE_COMMAND}}" -E make_directory "{os.path.dirname(rule_output)}"\n')
             f.write(f"    COMMAND {argv_str}\n")
-            f.write(f'    COMMAND "${{CMAKE_COMMAND}}" -E touch "{rule.success_marker}"\n')
+            marker = rule.success_marker or rule.output
+            f.write(f'    COMMAND "${{CMAKE_COMMAND}}" -E touch "{_src_rel(marker)}"\n')
             f.write(f"    DEPENDS {depends}\n")
             f.write("    VERBATIM\n")
             f.write(")\n")
-            test_outputs.append(rule.output)
+            test_outputs.append(rule_output)
         if test_outputs:
             deps = " ".join(f'"{o}"' for o in test_outputs)
             f.write(f"\nadd_custom_target(runtests ALL DEPENDS {deps})\n")
