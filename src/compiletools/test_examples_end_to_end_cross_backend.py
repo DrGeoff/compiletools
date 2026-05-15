@@ -37,10 +37,27 @@ from collections.abc import Iterable
 
 import pytest
 
+import compiletools.apptools
 import compiletools.testhelper as uth
 from compiletools.build_backend import available_backends, ensure_backends_registered
 
 ensure_backends_registered()
+
+
+def _toolchain_supports_import_std() -> bool:
+    """True iff the local C++ toolchain ships the standard library module source.
+
+    ``import std;`` requires gcc 15+ (which ships ``bits/std.cc``) or a clang
+    install that ships ``share/libc++/v1/std.cppm``. Ubuntu's stock
+    ``build-essential`` (the CI runner's compiler source) is too old, so the
+    matrix has to gate the ``cxx_modules_import_std`` example on the toolchain
+    actually shipping a std-module source rather than blindly building it.
+    """
+    cxx = compiletools.apptools.get_functional_cxx_compiler()
+    if not cxx:
+        return False
+    kind = compiletools.apptools.compiler_kind(cxx)
+    return compiletools.apptools.find_system_std_module_source(cxx, kind) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +402,10 @@ def test_example_builds_with_backend(example_name, backend_name, cas_layout, tmp
         pytest.skip(f"example {example_name} opted out of backend {backend_name}")
     if not uth._backend_tool_available(backend_name):
         pytest.skip(f"{backend_name} build tool not on PATH")
+    if example_name == "cxx_modules_import_std" and not _toolchain_supports_import_std():
+        pytest.skip(
+            "toolchain does not ship a std-module source (needs gcc 15+ for bits/std.cc, or clang+libc++ for std.cppm)"
+        )
 
     with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
         workspace = _copy_example(example_name, pathlib.Path(effective_tmp) / "ws")
