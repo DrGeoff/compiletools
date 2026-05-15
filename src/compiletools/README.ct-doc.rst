@@ -67,6 +67,28 @@ Or for development:
     cd compiletools
     uv pip install -e ".[dev]"
 
+EXAMPLES
+========
+
+Two example trees ship with the package:
+
+* ``src/compiletools/examples-end-to-end/`` — buildable mini-projects
+  exercising the full ``ct-cake --auto`` pipeline (PCH, C++20 modules,
+  static / dynamic libraries, multi-target apps, sanitizer variants,
+  pkg-config, …). Each has a ``README`` describing what it demonstrates;
+  ``cd`` into one and run ``ct-cake`` to see the build flow end-to-end.
+
+* ``src/compiletools/examples-features/`` — focused, fixture-style
+  projects for individual magic-flag annotations and config features
+  (``//#PKG-CONFIG=``, ``//#LDFLAGS=``, ``//#PCH=``, append-style
+  variables, …). Useful as copy-paste templates when adding the same
+  feature to your own project.
+
+The ``examples_registry`` Python module (``example_path()``,
+``example_file()``) maps these trees from test code; tests under
+``src/compiletools/test_*.py`` use them as fixtures, so each example is
+also a worked CI-verified configuration.
+
 KEY FEATURES
 ============
 

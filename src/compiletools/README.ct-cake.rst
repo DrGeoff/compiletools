@@ -562,12 +562,28 @@ to execute the app and return a non-zero exit code on any failure.
 
 Build variants
 ==============
-A variant is a configuration file that specifies various configurable settings
-like the compiler and compiler flags. Common variants are "debug" and "release".
-Build variants are used by specifying the variant name at the command-line as
-follows:
+A variant selects the compiler, optimization level, sanitizers, linker, and
+other build-axis settings. Variants are *composed* from one ``.conf`` file per
+orthogonal axis (toolchain / linker / optimization / instrumentation / …); you
+do not write a conf file per combination. The canonical token order is
+ground-truth and ensures two typings of the same set share caches::
 
-    ``$ ct-cake --variant=release a.cpp``
+    $ ct-cake --variant=release a.cpp                 # one axis
+    $ ct-cake --variant=gcc,debug,asan a.cpp          # toolchain + opt + sanitizer
+    $ ct-cake --variant=clang,mold,cxx20,release,lto  # everything composes
+    $ ct-cake --variant=dev a.cpp                     # opinionated bundle
+
+Comma, dot, and whitespace separators are equivalent. Composed variants are
+synthesized at resolution time from the matching axis ``.conf`` files, then
+optionally tuned by a literal ``<canonical_name>.conf`` (which layers on top
+of the synthesized atoms) or an ``extends = ...`` directive (which replaces
+the atom set entirely). Bundled opinionated bundles include ``dev``, ``ci``,
+``production``, ``safety``, ``perf``, ``secure``.
+
+See ct-config(1) for the full axis catalogue, ``extends`` semantics, the
+canonical-token override hierarchy, and the migration path from the retired
+``variantaliases =`` dict syntax. Run ``ct-list-variants`` to enumerate the
+axes and bundles available in your installation.
 
 Unit Tests
 ==========
@@ -600,6 +616,44 @@ all unit tests with a code purifying tool. For example:
 will cause all unit tests to only pass if they run through valgrind with no
 memory errors.
 
+Test execution scheduling (``--serialise-tests``)
+-------------------------------------------------
+
+Test execution is part of the build graph, not a phase that runs after the
+build finishes. By default (``--no-serialise-tests``), each test runs
+**as soon as its own executable is linked**, even while other translation
+units are still compiling and other tests are running concurrently. This
+is the fastest mode and is what you want for normal development and CI:
+``-j`` scheduling fully overlaps compile, link, and test execution.
+
+Use ``--serialise-tests`` to force test executables to run **one at a
+time**, in source-sorted order. Compilation and linking still parallelise
+under ``-j``; only the test-execution edges are serialised. Reach for it
+when:
+
+* tests contend on a shared resource that isn't isolated per process
+  (a single test database, a fixed TCP port, a GPU, a file-locked fixture),
+* you need deterministic ordering to reproduce a flaky failure in CI, or
+* you're working around a known test-isolation bug while the real fix is
+  in flight.
+
+The flag is **British-spelled only** — ``--serialise-tests`` /
+``--no-serialise-tests`` (no ``--serialize-tests`` alias).
+
+Per-backend mechanism (all behave identically from the user's point of
+view; documented here in case you read generated build files):
+
+* **make / ninja / shake / slurm** — the build graph chains each test
+  rule on the previous one's output. Under ``--no-use-mtime`` (the CAS
+  default) the chain edge goes in ``order_only_deps`` so re-running a
+  passed test doesn't cascade re-runs; under ``--use-mtime`` it goes in
+  ``inputs`` so marker mtimes gate the next test.
+* **bazel** — passes ``--local_test_jobs=1`` to ``bazel test``.
+  Compilation still runs at full ``--jobs``.
+* **cmake** — chains the test custom-command ``DEPENDS`` so cmake
+  serialises execution; the test executables themselves still link in
+  parallel.
+
 Common Options
 ==============
 
@@ -615,6 +669,14 @@ Common Options
 **--disable-exes**
     When ``--auto`` is specified, skip automatic building of executables.
     Useful when you only want to build and run tests.
+
+**--serialise-tests / --no-serialise-tests**
+    Force unit tests to run one at a time in source-sorted order. Default
+    is off — each test runs as soon as its executable is linked, in parallel
+    with other compiles, links, and tests. Enable when tests contend on a
+    shared resource (database, port, GPU, file-locked fixture) or to
+    reproduce a flaky failure deterministically. British spelling only.
+    See *Test execution scheduling* above.
 
 **-o, --output**
     When building a single target, rename the output to this name.

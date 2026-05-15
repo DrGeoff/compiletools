@@ -246,6 +246,38 @@ existing ``foo.debug.conf`` literal files during a transition, those keep
 working: a literal composite conf takes precedence over synthesis. You
 can migrate one axis at a time.
 
+CANONICAL-ORDER OVERRIDES
+=========================
+
+The canonical token order has four override layers, highest priority wins:
+
+1. **Command line** — ``--variant-canonical-order=<comma-separated tokens>``
+   overrides everything for one invocation. Useful for one-off experiments
+   or shell aliases that pin an order without touching project conf::
+
+       ct-cake --variant-canonical-order=blank,gcc,clang,debug,release,asan \
+               --variant=asan,gcc,debug a.cpp
+
+2. **Environment** — ``CT_VARIANT_CANONICAL_ORDER=<comma-separated tokens>``
+   pins the order for a shell session. Useful in CI to enforce the
+   organization-wide order without editing each repo's ct.conf::
+
+       export CT_VARIANT_CANONICAL_ORDER="blank,gcc,clang,icc,msvc,debug,release,asan,ubsan,tsan,coverage,lto"
+
+3. **Conf file** — ``variant-canonical-order = <comma-separated tokens>``
+   in any ``ct.conf`` (highest-priority conf wins, per the standard
+   priority hierarchy). This is the recommended place for a project-wide
+   pin so that all contributors get the same canonicalization.
+
+4. **Builtin** — ``_DEFAULT_VARIANT_CANONICAL_ORDER`` in
+   ``compiletools/configutils.py``. Used when none of the above is set.
+
+The order is consulted very early — at parser-construction time, before
+configargparse processes ``--variant`` — so the CLI form scans ``argv``
+directly. Drift between the builtin tuple and the example shown in the
+bundled ``ct.conf`` is guarded by
+``test_bundled_ct_conf_comment_example_matches_builtin``.
+
 PRIORITY HIERARCHY
 ==================
 

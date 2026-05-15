@@ -74,7 +74,12 @@ Notes:
 * **Libraries** — static and dynamic library targets via ``--static`` /
   ``--dynamic``.  All backends support both; the Slurm backend
   distributes compile rules but always links locally.
-* **Test runner** — ``execute("runtests")`` runs test executables.
+* **Test runner** — test execution is part of the build graph: each test
+  runs as soon as its executable is linked, in parallel with ongoing
+  compiles, links, and other tests. ``--serialise-tests`` forces
+  one-at-a-time execution (graph chaining for make/ninja/shake/slurm,
+  ``--local_test_jobs=1`` for bazel, custom-command ``DEPENDS`` for
+  cmake). See ct-cake(1) *Test execution scheduling*.
 * **CA outputs / Early cutoff** — content-addressable filenames and
   build skipping when an output's bytes are unchanged.  Native to the
   Shake/Slurm builtin engine; Ninja approximates early cutoff via
