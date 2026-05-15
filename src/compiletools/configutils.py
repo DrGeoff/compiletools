@@ -602,7 +602,14 @@ def _parse_extends_directive(conf_path, verbose=0):
 
 # Tracks conf paths we've already warned about so repeated resolve_variant
 # calls within the same process don't emit the same warning multiple times.
-# Cleared by clear_cache() to keep tests independent.
+#
+# TEST AUTHORS: this is process-global mutable state. The first occurrence of
+# a given conf_path within a process emits the warning; subsequent occurrences
+# are skipped. Tests that exercise the warning path (caplog assertions on the
+# "not in canonical order" message) MUST call ``clear_cache()`` before the
+# resolve_variant call, or a prior test in the same process can swallow the
+# warning. The existing test (test_user_conf_with_out_of_order_extends_emits_warning)
+# does this; new tests must follow suit.
 _extends_order_warnings_emitted: set = set()
 
 
