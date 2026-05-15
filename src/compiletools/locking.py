@@ -701,7 +701,7 @@ class FileLock:
         return False  # Don't suppress exceptions
 
 
-def _run_with_signal_forwarding(cmd: list[str]) -> subprocess.CompletedProcess:
+def _run_with_signal_forwarding(cmd: list[str], cwd: str | None = None) -> subprocess.CompletedProcess:
     """Run cmd as a subprocess in a new session, forwarding SIGINT/SIGTERM
     to the child's process group, and reaping the child before returning.
 
@@ -721,8 +721,12 @@ def _run_with_signal_forwarding(cmd: list[str]) -> subprocess.CompletedProcess:
     and SIGTERM are caught and forwarded; on return (normal or abnormal) the
     original handlers are restored and the child is hard-killed if still
     running.
+
+    ``cwd`` (when set) is passed to ``subprocess.Popen`` so the child runs
+    from that directory — used by the PCH precompile rule to keep gcc's
+    PCH path-table workspace-relative. See ``BuildRule.cwd``.
     """
-    proc = subprocess.Popen(cmd, start_new_session=True)
+    proc = subprocess.Popen(cmd, start_new_session=True, cwd=cwd)
 
     def _forward(signum, frame):
         try:
@@ -791,6 +795,7 @@ def atomic_compile(
     compile_cmd: list[str],
     *,
     skip_if_exists: bool = False,
+    cwd: str | None = None,
 ) -> subprocess.CompletedProcess | None:
     """Execute compilation atomically under a lock.
 
@@ -871,7 +876,7 @@ def atomic_compile(
         if skip_if_exists and os.path.exists(target):
             return None
         cmd = list(compile_cmd) + ["-o", tempfile_path]
-        result = _run_with_signal_forwarding(cmd)
+        result = _run_with_signal_forwarding(cmd, cwd=cwd)
         if result.returncode != 0:
             raise subprocess.CalledProcessError(result.returncode, cmd)
 
@@ -980,12 +985,13 @@ def execute_compile_rule(
     args,
     *,
     skip_if_exists: bool = False,
+    cwd: str | None = None,
 ) -> None:
     """Strip ``-o target`` from *cmd* and run it under a target-keyed FileLock.
 
     The ``-o``/target pair is supplied by ``atomic_compile`` via the temp+rename
     pipeline; passing it in *cmd* would race with the atomic rewrite.
-    ``skip_if_exists`` is forwarded to ``atomic_compile``.
+    ``skip_if_exists`` and ``cwd`` are forwarded to ``atomic_compile``.
     """
     try:
         o_idx = cmd.index("-o")
@@ -997,6 +1003,7 @@ def execute_compile_rule(
         target,
         cmd_without_output,
         skip_if_exists=skip_if_exists,
+        cwd=cwd,
     )
 
 

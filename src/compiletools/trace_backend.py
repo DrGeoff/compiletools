@@ -509,7 +509,7 @@ class ShakeBackend(BuildBackend):
             else:
                 self._test_failures.append(f"{target} (exit {result.returncode}): {' '.join(flat_cmd)}")
         elif rule.rule_type == RuleType.COMPILE:
-            execute_compile_rule(target, flat_cmd, self.args, skip_if_exists=True)
+            execute_compile_rule(target, flat_cmd, self.args, skip_if_exists=True, cwd=rule.cwd)
         elif rule.rule_type == RuleType.LINK:
             # Link output IS the cas-exe path; the downstream publish-as-symlink
             # rule materialises bin/<name>. No per-rule CA-then-copy here —

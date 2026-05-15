@@ -778,7 +778,7 @@ class TestAtomicCompile:
 
         mock = MagicMock()
 
-        def fake_run(cmd):
+        def fake_run(cmd, *args, **kwargs):
             if on_run is not None:
                 on_run(cmd)
             return subprocess.CompletedProcess(cmd, returncode, None, None)
@@ -1048,7 +1048,7 @@ class TestAtomicLink:
 
         mock = MagicMock()
 
-        def fake_run(cmd):
+        def fake_run(cmd, *args, **kwargs):
             if on_run is not None:
                 on_run(cmd)
             return subprocess.CompletedProcess(cmd, returncode, None, None)
@@ -1078,7 +1078,7 @@ class TestAtomicLink:
             lock.acquire = tracking_acquire
             lock.release = tracking_release
 
-            def on_run(cmd):
+            def on_run(cmd, *args, **kwargs):
                 call_order.append("run")
                 # Simulate ar producing the temp archive
                 tmp = cmd[cmd.index("rcs") + 1]
@@ -1098,7 +1098,7 @@ class TestAtomicLink:
             args = _make_lock_args()
             lock = CIFSLock(target, args)
 
-            def fake_ar(cmd):
+            def fake_ar(cmd, *args, **kwargs):
                 # The temp path appears where the target used to be
                 tmp = cmd[2]
                 assert tmp.endswith(".tmp"), f"ar should be told to write the .tmp path, got {tmp!r}"
@@ -1124,7 +1124,7 @@ class TestAtomicLink:
             args = _make_lock_args()
             lock = FlockLock(target, args)
 
-            def on_run(cmd):
+            def on_run(cmd, *args, **kwargs):
                 tmp = cmd[2]
                 open(tmp, "w").close()
 
@@ -1159,7 +1159,7 @@ class TestAtomicLink:
             args = _make_lock_args()
             lock = FlockLock(target, args)
 
-            def fake_partial_then_fail(cmd):
+            def fake_partial_then_fail(cmd, *args, **kwargs):
                 # Linker writes a partial output to temp, then fails
                 tmp = cmd[2]
                 with open(tmp, "w") as f:
@@ -1184,7 +1184,7 @@ class TestAtomicLink:
 
             captured = {}
 
-            def fake_ld(cmd):
+            def fake_ld(cmd, *args, **kwargs):
                 captured["cmd"] = list(cmd)
                 tmp = cmd[cmd.index("-o") + 1]
                 open(tmp, "w").close()
@@ -1208,7 +1208,7 @@ class TestAtomicLink:
 
             seen_temp_content = {}
 
-            def fake_ar_append(cmd):
+            def fake_ar_append(cmd, *args, **kwargs):
                 tmp = cmd[2]
                 # ar would read the existing content and append; we just
                 # observe whether it was seeded
@@ -1251,7 +1251,7 @@ class TestAtomicLink:
             args = _make_lock_args(verbose=2)
             lock = FlockLock(target, args)
 
-            def on_run(cmd):
+            def on_run(cmd, *args, **kwargs):
                 tmp = cmd[cmd.index("-o") + 1]
                 open(tmp, "w").close()
 
@@ -1277,7 +1277,7 @@ class TestAtomicLink:
 
             seen_temp_state = {}
 
-            def fake_ar_append(cmd):
+            def fake_ar_append(cmd, *args, **kwargs):
                 tmp = cmd[2]
                 seen_temp_state["existed_before_ar"] = os.path.exists(tmp)
                 # Pretend ar created a fresh archive
@@ -1321,7 +1321,7 @@ class TestAtomicLink:
             args = _make_lock_args()
             lock = FlockLock(target, args)
 
-            def on_run(cmd):
+            def on_run(cmd, *args, **kwargs):
                 tmp = cmd[cmd.index("-o") + 1]
                 with open(tmp, "w") as f:
                     f.write("FRESH")
@@ -1340,7 +1340,7 @@ class TestAtomicLink:
             args = _make_lock_args()
             lock = FlockLock(target, args)
 
-            def on_run(cmd):
+            def on_run(cmd, *args, **kwargs):
                 tmp = cmd[cmd.index("-o") + 1]
                 open(tmp, "w").close()
 

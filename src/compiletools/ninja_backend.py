@@ -140,9 +140,11 @@ class NinjaBackend(BuildBackend):
                         # Skip -MMD -MF: module-interface rules use
                         # -fmodule-mapper= (gcc) or --precompile -o (clang),
                         # which conflict with depfile generation.
-                        cmd_str = self._wrap_compile_cmd(rule.command)
+                        cmd_str = self._wrap_compile_cmd(rule.command, cwd=rule.cwd)
                     else:
-                        cmd_str = self._wrap_compile_cmd(rule.command + ["-MMD", "-MF", rule.output + ".d"])
+                        cmd_str = self._wrap_compile_cmd(
+                            rule.command + ["-MMD", "-MF", rule.output + ".d"], cwd=rule.cwd
+                        )
                 elif rule.rule_type in (RuleType.LINK, RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY):
                     cmd_str = self._wrap_link_cmd(rule.command)
                 else:

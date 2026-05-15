@@ -44,7 +44,7 @@ def _swf_writer(content: bytes = b"\x7fELF fake", returncode: int = 0):
     """
     written: list[str] = []
 
-    def fake(cmd):
+    def fake(cmd, *args, **kwargs):
         output = None
         if "-o" in cmd:
             i = cmd.index("-o")
@@ -575,7 +575,7 @@ class TestTracePersistenceOnFailure:
             monkeypatch.chdir(tmpdir)
             (td / "trace_save_src.txt").write_text("data")
 
-            def fake(cmd):
+            def fake(cmd, *args, **kwargs):
                 if any("bad.txt" in tok for tok in cmd):
                     return subprocess.CompletedProcess(cmd, 1, None, None)
                 if "-o" in cmd:
@@ -635,7 +635,7 @@ class TestParallelExecution:
             thread_ids = []
             barrier = threading.Barrier(2, timeout=5)
 
-            def fake_swf(cmd):
+            def fake_swf(cmd, *args, **kwargs):
                 thread_ids.append(threading.current_thread().ident)
                 # Both compiles must reach the barrier before either proceeds,
                 # proving they run concurrently
@@ -886,7 +886,7 @@ class TestContentAddressableShortCircuit:
             (td / "foo.o").write_bytes(b"\x7fELF fake object")
             os.makedirs(td / "cas-exe" / "aa", exist_ok=True)
 
-            def fake_swf(cmd):
+            def fake_swf(cmd, *args, **kwargs):
                 # atomic_link rewrites -o from rule.output to a temp path
                 # next to it; verify the temp path is sibling to cas_exe.
                 assert "-o" in cmd
@@ -999,7 +999,7 @@ class TestAtomicCompile:
 
         observed_outputs = []
 
-        def spy_run(cmd):
+        def spy_run(cmd, *args, **kwargs):
             if "-o" in cmd:
                 output_idx = cmd.index("-o") + 1
                 observed_outputs.append(cmd[output_idx])
@@ -1122,7 +1122,7 @@ class TestCompileOutputStripping:
 
             seen = []
 
-            def fake(cmd):
+            def fake(cmd, *args, **kwargs):
                 seen.append(list(cmd))
                 if "-o" in cmd:
                     out = cmd[cmd.index("-o") + 1]

@@ -104,6 +104,18 @@ class BuildRule:
             call ``Path(marker).touch()`` after the subprocess returns 0.
             Backends that own their own pass/fail bookkeeping (CMake CTest,
             Bazel cc_test) ignore this field.
+        cwd: Optional working directory the command must execute from. ``None``
+            (default) means "no cwd constraint" — the recipe runs from
+            wherever the backend's invocation happens to be. When set, shell
+            backends prepend ``cd <cwd> && `` to the recipe (placed inside any
+            lock wrapper so the lockfile path stays absolute and cwd-independent);
+            argv-executing backends pass ``cwd=`` to ``subprocess.run``. The
+            primary user is the PCH precompile rule in ``_create_pch_rules``,
+            which sets ``cwd=anchor_root`` to keep gcc's PCH path-table
+            workspace-relative — without that discipline, alice's PCH bakes
+            ``/home/alice/proj/...`` into its DWARF include-dir table, and any
+            consumer (including bob on a shared cas-pchdir) inherits those
+            paths into their .o files.
 
     Equality and hash are by ``output`` only — deliberate so that
     BuildGraph._rules (a dict keyed by output) deduplicates rules. Rules
@@ -118,6 +130,7 @@ class BuildRule:
     order_only_deps: list[str] = field(default_factory=list)
     include_weight: int = 0
     success_marker: str | None = None
+    cwd: str | None = None
 
     def __post_init__(self):
         if self.rule_type not in VALID_RULE_TYPES:

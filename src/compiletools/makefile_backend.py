@@ -236,7 +236,7 @@ class MakefileBackend(BuildBackend):
         """Format a BuildRule's command into a Makefile recipe string."""
         rt = rule.rule_type
         if rt == RuleType.COMPILE:
-            cmd_str = self._wrap_compile_cmd(rule.command)
+            cmd_str = self._wrap_compile_cmd(rule.command, cwd=rule.cwd)
             echo_target = rule.inputs[0] if rule.inputs else rule.output
             echo_prefix = "@"
         elif rt in (RuleType.LINK, RuleType.SHARED_LIBRARY, RuleType.STATIC_LIBRARY):

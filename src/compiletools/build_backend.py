@@ -1001,12 +1001,35 @@ class BuildBackend(abc.ABC):
                 )
 
             pch_deps = [pch_header] + sorted(str(d) for d in self.hunter.header_dependencies(pch_header))
+            # Workspace-relative source path + cwd=anchor_root keeps gcc's PCH
+            # internal path-table free of per-user absolute prefixes. Without
+            # this, the precompiled header records the absolute source path
+            # (e.g. /home/alice/proj/stdafx.h) in its DWARF include-dir table,
+            # and any consumer (including a peer on a shared cas-pchdir) inherits
+            # alice's paths into their .o files via .debug_line_str. Anchor-empty
+            # (no git_root) falls back to the absolute path — N0 in the
+            # design's choice space; cross-user PCH sharing isn't promised
+            # without an anchor. -ffile-prefix-map handles this for the regular
+            # compile path, but does not reach gcc's PCH path-table.
+            #
+            # Only relativize when the header lives UNDER anchor_root —
+            # outside-of-anchor paths (vendored sources, system headers used
+            # as PCH) would relativize to a fragile ``../../...`` chain that
+            # adds no cross-user benefit (the absolute is already shared
+            # across users in those locations) and would break tests that
+            # assert the absolute path round-trips.
+            if self._anchor_root and _is_under(pch_header, self._anchor_root):
+                pch_source_for_cmd = os.path.relpath(pch_header, self._anchor_root)
+                rule_cwd: str | None = self._anchor_root
+            else:
+                pch_source_for_cmd = pch_header
+                rule_cwd = None
             pch_cmd = (
                 compiletools.utils.split_command_cached(self.args.CXX)
                 + list(self.args.flags.cxx)
                 + [str(f) for f in magic_cpp_flags]
                 + [str(f) for f in magic_cxx_flags]
-                + ["-x", "c++-header", pch_header, "-o", gch_path]
+                + ["-x", "c++-header", pch_source_for_cmd, "-o", gch_path]
             )
             order_deps = [os.path.join(pchdir, cmd_hash)] if pchdir and cmd_hash else [self.args.cas_objdir]
             graph.add_rule(
@@ -1016,6 +1039,7 @@ class BuildBackend(abc.ABC):
                     command=pch_cmd,
                     rule_type="compile",
                     order_only_deps=order_deps,
+                    cwd=rule_cwd,
                 )
             )
 
@@ -1636,7 +1660,7 @@ class BuildBackend(abc.ABC):
         self._graph = graph
         return graph
 
-    def _wrap_compile_cmd(self, command: list[str]) -> str:
+    def _wrap_compile_cmd(self, command: list[str], cwd: str | None = None) -> str:
         """Return the command string for a compile rule, lock-wrapped if needed.
 
         Locates ``-o target`` in the command by index (not position) so a
@@ -1650,19 +1674,26 @@ class BuildBackend(abc.ABC):
         ``-fmodule-file=<vector>=...``) survive /bin/sh parsing. The
         rule.command tokens themselves stay shell-naive — argv-executing
         backends rely on that.
+
+        ``cwd`` (when set) is woven into the recipe via ``cd <cwd> && ``
+        placed *inside* the lock wrapper so the lockfile path stays
+        absolute and cwd-independent. The PCH precompile rule sets cwd to
+        keep gcc's PCH path-table workspace-relative; see BuildRule.cwd.
         """
         try:
             o_idx = command.index("-o")
         except ValueError as e:
             raise AssertionError(f"compile rule missing -o flag: {command}") from e
 
+        cd_prefix = f"cd {shlex.quote(cwd)} && " if cwd else ""
+
         if not getattr(self.args, "file_locking", False) or self._filesystem_type is None:
-            return shlex.join(command)
+            return cd_prefix + shlex.join(command)
 
         compile_part = command[:o_idx] + command[o_idx + 2 :]
         target = command[o_idx + 1]
 
-        return wrap_compile_with_lock(shlex.join(compile_part), target, self.args, self._filesystem_type)
+        return wrap_compile_with_lock(cd_prefix + shlex.join(compile_part), target, self.args, self._filesystem_type)
 
     def _wrap_link_cmd(self, command: list[str]) -> str:
         """Return the command string for a link rule, lock-wrapped if needed.
@@ -1858,6 +1889,17 @@ class BuildBackend(abc.ABC):
                 # cache (where the mapper points) for a file that isn't
                 # there.
                 extras.append(f"-fmodule-mapper={mapper}")
+                # Suppress DW_AT_producer flag-string recording so the
+                # absolute mapper path (which lives next to the per-build
+                # makefile, hence outside any -ffile-prefix-map prefix)
+                # doesn't leak into every consumer's .o. Without this,
+                # alice's bindir path ends up in bob's .o via DWARF and
+                # cas-objdir cross-user byte-identity breaks. The cost is
+                # a slightly less informative DW_AT_producer (just the
+                # gcc version + target triple, no flag list) — a fair
+                # trade for cross-user CAS soundness, and only applied
+                # to module-using compiles.
+                extras.append("-gno-record-gcc-switches")
             return extras
         if kind == "clang":
             extras: list[str] = []
@@ -2518,6 +2560,16 @@ class BuildBackend(abc.ABC):
         # importers get.
         partition_flags = self._clang_partition_module_file_flags()
 
+        # Same anchor-relative source + cwd discipline as _create_pch_rules:
+        # without it, clang's .pcm bakes the absolute source path into its
+        # internal path-table, leaking per-user paths into every consumer's
+        # .o via .debug_line_str. See BuildRule.cwd / _create_pch_rules.
+        if self._anchor_root and _is_under(filename, self._anchor_root):
+            pcm_source_for_cmd = os.path.relpath(filename, self._anchor_root)
+            pcm_rule_cwd: str | None = self._anchor_root
+        else:
+            pcm_source_for_cmd = filename
+            pcm_rule_cwd = None
         precompile_cmd = (
             common_cmd
             + partition_flags
@@ -2525,7 +2577,7 @@ class BuildBackend(abc.ABC):
                 "-x",
                 "c++-module",
                 "--precompile",
-                filename,
+                pcm_source_for_cmd,
                 "-o",
                 pcm_path,
             ]
@@ -2538,6 +2590,7 @@ class BuildBackend(abc.ABC):
             command=precompile_cmd,
             rule_type="compile",
             order_only_deps=[pcm_dir],
+            cwd=pcm_rule_cwd,
         )
 
         # Stage 2: compile the .pcm into the linkable .o. The .pcm is the
@@ -3446,6 +3499,23 @@ def _stage_pch_header_alongside_gch(source_header: str, staged_path: str) -> Non
             os.unlink(tmp_path)
         except OSError:
             pass
+
+
+def _is_under(path: str, anchor: str) -> bool:
+    """True iff ``path`` lies inside ``anchor`` (or equals it).
+
+    Uses ``os.path.commonpath`` rather than string-prefix comparison so
+    sibling-prefix cases (e.g. ``/tmp/foo`` vs ``/tmp/foo-other``) don't
+    falsely match. Empty/missing inputs return False — callers gate on
+    a non-empty anchor before relativizing.
+    """
+    if not anchor or not path:
+        return False
+    try:
+        return os.path.commonpath([os.path.abspath(path), os.path.abspath(anchor)]) == os.path.abspath(anchor)
+    except ValueError:
+        # Different drives on Windows; can't be "under".
+        return False
 
 
 def _gch_path(header: str, pchdir: str | None = None, command_hash: str | None = None) -> str:

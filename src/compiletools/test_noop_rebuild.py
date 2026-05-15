@@ -99,10 +99,10 @@ _BUILD_SCRIPT = textwrap.dedent("""\
     call_count = 0
     orig_swf = compiletools.locking._run_with_signal_forwarding
 
-    def counting_swf(cmd):
+    def counting_swf(cmd, *args, **kwargs):
         global call_count
         call_count += 1
-        return orig_swf(cmd)
+        return orig_swf(cmd, *args, **kwargs)
 
     with mock.patch("compiletools.locking._run_with_signal_forwarding", side_effect=counting_swf):
         backend.execute("build")
