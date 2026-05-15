@@ -532,6 +532,39 @@ class TestBazelRunsTestsInBuildPhase:
         cmd = mock_run.call_args[0][0]
         assert "--run_under=valgrind --error-exitcode=1" in cmd, cmd
 
+    def test_serialise_tests_adds_local_test_jobs_flag(self):
+        """--serialise-tests passes ``--local_test_jobs=1`` to bazel so only
+        one test runs at a time while compilation still parallelises freely."""
+        backend = self._backend_with_test_graph()
+        backend.args.serialisetests = True
+        with (
+            patch("shutil.which", side_effect=lambda n: "/usr/bin/bazel" if n == "bazel" else None),
+            patch("os.path.isdir", return_value=False),
+            patch.object(backend, "_run_bazel") as mock_run,
+            patch.object(backend, "_write_bazelrc"),
+            patch.object(backend, "_publish_test_results"),
+        ):
+            backend.execute("build")
+
+        cmd = mock_run.call_args[0][0]
+        assert "--local_test_jobs=1" in cmd, cmd
+
+    def test_no_local_test_jobs_flag_when_not_serialised(self):
+        """Without --serialise-tests, ``--local_test_jobs`` must not appear."""
+        backend = self._backend_with_test_graph()
+        backend.args.serialisetests = False
+        with (
+            patch("shutil.which", side_effect=lambda n: "/usr/bin/bazel" if n == "bazel" else None),
+            patch("os.path.isdir", return_value=False),
+            patch.object(backend, "_run_bazel") as mock_run,
+            patch.object(backend, "_write_bazelrc"),
+            patch.object(backend, "_publish_test_results"),
+        ):
+            backend.execute("build")
+
+        cmd = mock_run.call_args[0][0]
+        assert "--local_test_jobs=1" not in cmd, cmd
+
     def test_publish_test_results_touches_marker_and_copies_xml(self, tmp_path, monkeypatch):
         """_publish_test_results touches each test's .result marker and copies
         bazel's bazel-testlogs/<target>/test.xml to the per-test XML path."""

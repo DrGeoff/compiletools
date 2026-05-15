@@ -805,6 +805,104 @@ class TestBuildGraphPopulation:
         assert all_rule is not None
         assert "runtests" in all_rule.inputs
 
+    def test_serialise_tests_chains_rules_in_source_order(self, tmp_path):
+        """--serialise-tests injects the preceding test rule's output into the
+        next rule's order_only_deps (source-sorted), so each backend's
+        scheduler runs only one test at a time."""
+        args = make_backend_args(
+            tmp_path,
+            filename=[],
+            tests=["/src/test_foo.cpp", "/src/test_bar.cpp"],
+            serialisetests=True,
+        )
+        hunter = make_mock_hunter(sources=["/src/test_foo.cpp", "/src/test_bar.cpp"])
+        backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+
+        graph = backend.build_graph()
+
+        test_rules = graph.rules_by_type("test")
+        assert len(test_rules) == 2
+        all_test_outputs = {r.output for r in test_rules}
+
+        # Exactly one rule must carry a sibling test output in order_only_deps.
+        chained = [r for r in test_rules if all_test_outputs & set(r.order_only_deps)]
+        assert len(chained) == 1, (
+            f"exactly one rule should have a chain dep; "
+            f"test rules: {[(r.output, r.order_only_deps) for r in test_rules]}"
+        )
+        chained_rule = chained[0]
+        predecessor = next(r for r in test_rules if r.output in chained_rule.order_only_deps)
+        # The chain dep must be the predecessor's output, not just its success_marker,
+        # so schedulers that key on rule.output can resolve the dependency.
+        assert predecessor.output in chained_rule.order_only_deps
+        # Sources are sorted alphabetically: "test_bar" < "test_foo", so the
+        # predecessor's exe command must reference the bar source-derived path.
+        assert predecessor is not chained_rule
+
+    def test_serialise_tests_no_chain_with_single_test(self, tmp_path):
+        """--serialise-tests with only one test must not add spurious deps."""
+        args = make_backend_args(tmp_path, filename=[], tests=["/src/test_foo.cpp"], serialisetests=True)
+        hunter = make_mock_hunter(sources=["/src/test_foo.cpp"])
+        backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+
+        graph = backend.build_graph()
+
+        test_rules = graph.rules_by_type("test")
+        assert len(test_rules) == 1
+        # No other test output in order_only_deps or inputs.
+        rule = test_rules[0]
+        assert not any(r.output in rule.order_only_deps for r in test_rules)
+        assert not any(r.output in rule.inputs for r in test_rules)
+
+    def test_serialise_tests_no_chain_when_flag_unset(self, tmp_path):
+        """Without --serialise-tests, test rules must not depend on each other."""
+        args = make_backend_args(
+            tmp_path,
+            filename=[],
+            tests=["/src/test_foo.cpp", "/src/test_bar.cpp"],
+            serialisetests=False,
+        )
+        hunter = make_mock_hunter(sources=["/src/test_foo.cpp", "/src/test_bar.cpp"])
+        backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+
+        graph = backend.build_graph()
+
+        test_rules = graph.rules_by_type("test")
+        all_test_outputs = {r.output for r in test_rules}
+        for rule in test_rules:
+            assert not (all_test_outputs & set(rule.order_only_deps)), (
+                f"test rule {rule.output} has a sibling test dep without --serialise-tests"
+            )
+            assert not (all_test_outputs & set(rule.inputs)), (
+                f"test rule {rule.output} has a sibling test dep in inputs without --serialise-tests"
+            )
+
+    def test_serialise_tests_chain_uses_inputs_in_mtime_mode(self, tmp_path):
+        """Under --use-mtime, the chain dep goes in ``inputs`` (not order_only_deps)
+        so the previous marker's mtime can gate the next test."""
+        args = make_backend_args(
+            tmp_path,
+            filename=[],
+            tests=["/src/test_foo.cpp", "/src/test_bar.cpp"],
+            serialisetests=True,
+            use_mtime=True,
+        )
+        hunter = make_mock_hunter(sources=["/src/test_foo.cpp", "/src/test_bar.cpp"])
+        backend = self._make_backend(tmp_path, args=args, hunter=hunter)
+
+        graph = backend.build_graph()
+
+        test_rules = graph.rules_by_type("test")
+        assert len(test_rules) == 2
+        all_test_outputs = {r.output for r in test_rules}
+        # Under use-mtime the chain dep must be in inputs, not order_only_deps.
+        chained = [r for r in test_rules if all_test_outputs & set(r.inputs)]
+        assert len(chained) == 1, "exactly one rule should carry the chain in inputs"
+        chained_rule = chained[0]
+        assert not (all_test_outputs & set(chained_rule.order_only_deps)), (
+            "chain dep must be in inputs under --use-mtime, not order_only_deps"
+        )
+
     def test_pch_header_creates_gch_compile_rule(self, tmp_path):
         """PCH magic flag creates a compile rule for the .gch file."""
         import stringzilla as sz

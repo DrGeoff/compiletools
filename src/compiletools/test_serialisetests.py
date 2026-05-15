@@ -33,7 +33,7 @@ class TestSerialiseTests:
                 with uth.ParserContext():
                     compiletools.cake.main(argv)
 
-                # Verify test executables were built
+                # Verify test executables were built.
                 built_exes = set()
                 for root, _dirs, files in os.walk(tmpserialisetests):
                     for f in files:
@@ -41,6 +41,13 @@ class TestSerialiseTests:
                             built_exes.add(f)
 
                 assert len(built_exes) >= 2, f"Expected at least 2 test executables, got {built_exes}"
+
+                # Verify tests actually ran — each must have a .result marker.
+                result_markers = uth.find_result_markers(tmpserialisetests)
+                assert result_markers, (
+                    "--serialise-tests build succeeded but no .result markers found; "
+                    "tests may not have run during the build phase"
+                )
 
     def teardown_method(self):
         uth.reset()
