@@ -8,7 +8,7 @@ Verify that the ct-cake on PATH imports the same compiletools as the venv
 
 :Author: drgeoffathome@gmail.com
 :Date:   2026-05-09
-:Version: 9.2.0
+:Version: 10.0.0
 :Manual section: 1
 :Manual group: developers
 
