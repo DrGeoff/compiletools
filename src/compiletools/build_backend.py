@@ -358,11 +358,31 @@ def extract_copts(command: list[str], *, strip_includes: bool = False) -> list[s
 def extract_include_paths(command: list[str]) -> list[str]:
     """Extract include-path arguments from a compile command.
 
-    Returns the path values from -I / -iquote / -isystem (and the
-    two-token "-I path" form). Used by the Bazel backend to re-emit
-    include paths via cc_binary(includes=[...]) since Bazel manages
-    include paths itself and extract_copts(strip_includes=True) drops
-    them.
+    Recognized forms (path is returned, flag is dropped):
+      ``-Ipath``, ``-I path``, ``-isystempath``, ``-isystem path``,
+      ``-isystem=path``, ``-iquotepath``, ``-iquote path``, ``-iquote=path``.
+
+    **Scope is intentionally narrow.** This function exists solely to feed
+    the Bazel backend's ``cc_*(includes=[...])`` attribute, which Bazel
+    expands into ``-isystem`` flags propagated to dependents. The three
+    families above are the ones that ``includes=[...]`` semantically maps
+    to; the following are deliberately NOT recognized:
+
+    * ``-idirafter`` / ``-iframework`` — valid gcc/clang flags but Bazel
+      has no propagation channel for them through dep edges.
+    * ``-I=foo`` — non-standard form some build systems emit; not
+      currently produced by compiletools' magicflags or //#INCLUDE=
+      annotation handling, and Bazel's ``includes=[...]`` would not
+      faithfully reproduce its lookup semantics anyway.
+
+    For the broader path-bearing flag set used by the cache-key
+    canonicalizer (which DOES include ``-idirafter`` because it's
+    correctness-relevant for hashing), see
+    ``apptools._PATH_BEARING_FLAGS``.
+
+    Used by the Bazel backend to re-emit include paths via
+    ``cc_binary(includes=[...])`` since Bazel manages include paths
+    itself and ``extract_copts(strip_includes=True)`` drops them.
     """
     if not command:
         return []
