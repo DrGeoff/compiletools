@@ -128,6 +128,17 @@ def _emit_per_source_x_lang(f, srcs: list[str]) -> None:
             f.write(f'set_source_files_properties("{src}" PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-x;c++")\n')
 
 
+def _cmake_src_rel(path: str) -> str:
+    """Anchor a gitroot-relative path to ``${CMAKE_SOURCE_DIR}``.
+
+    ``add_custom_command`` resolves a relative OUTPUT / COMMAND-argument
+    against the *build* directory (cmake-build/), not the source tree — so a
+    gitroot-relative rule.output would land the .result marker buried inside
+    cmake-build/. Absolute paths pass through unchanged.
+    """
+    return path if os.path.isabs(path) else f"${{CMAKE_SOURCE_DIR}}/{path}"
+
+
 @register_backend
 class CMakeBackend(BuildBackend):
     """Generate and execute CMake build files.
@@ -258,27 +269,12 @@ class CMakeBackend(BuildBackend):
                     quoted = " ".join(f'"{opt}"' for opt in other_opts)
                     f.write(f"target_link_options({target_name} PRIVATE {quoted})\n")
 
-        # Tests are real build-graph nodes: each RuleType.TEST rule becomes an
-        # add_custom_command whose OUTPUT is the rule's output (the JUnit XML
-        # path for framework tests, else the .result marker) and whose COMMAND
-        # runs the test argv then touches the .result success marker. An
-        # aggregate ``runtests ALL`` target makes ``cmake --build`` run every
-        # test concurrently with the rest of the build — no ctest, no separate
-        # post-build phase. The test argv references the freshly built binary
-        # via $<TARGET_FILE:...>, not the user-facing exe path, which
-        # _copy_built_executables only populates after the build finishes.
-        #
-        # add_custom_command resolves a *relative* OUTPUT / COMMAND-argument
-        # path against the build directory (cmake-build/), not the source
-        # tree — so a gitroot-relative rule.output would land the .result
-        # marker buried inside cmake-build/. Anchor every graph path to
-        # ${CMAKE_SOURCE_DIR} (where the generated CMakeLists.txt lives, =
-        # gitroot) so markers and XML land where the rest of compiletools
-        # expects them.
-        def _src_rel(path: str) -> str:
-            return path if os.path.isabs(path) else f"${{CMAKE_SOURCE_DIR}}/{path}"
-
-        test_rules = list(graph.rules_by_type(RuleType.TEST))
+        # Each RuleType.TEST rule becomes an add_custom_command whose OUTPUT is
+        # the rule's output (JUnit XML for framework tests, else the .result
+        # marker). An aggregate ``runtests ALL`` target makes ``cmake --build``
+        # run tests concurrently during the build — no ctest involved. All
+        # graph paths are anchored via _cmake_src_rel (see module level).
+        test_rules = graph.rules_by_type(RuleType.TEST)
         test_outputs_set = {r.output for r in test_rules}
         test_outputs: list[str] = []
         for rule in test_rules:
@@ -294,14 +290,14 @@ class CMakeBackend(BuildBackend):
                 list(rule.command[:exe_idx]) + [f"$<TARGET_FILE:{target_name}>"] + list(rule.command[exe_idx + 1 :])
             )
             argv_str = " ".join(f'"{a}"' for a in test_argv)
-            rule_output = _src_rel(rule.output)
+            rule_output = _cmake_src_rel(rule.output)
             # --serialise-tests chains tests by injecting the previous test
             # rule's output into this rule's inputs/order_only_deps. Surface
             # any such chain dep (a sibling test rule's output) as a file
             # DEPENDS so cmake serialises the custom commands; the exe stays
             # a target DEPENDS.
             chain_deps = [d for d in (*rule.inputs[1:], *rule.order_only_deps) if d in test_outputs_set]
-            depends = " ".join([target_name, *(f'"{_src_rel(d)}"' for d in chain_deps)])
+            depends = " ".join([target_name, *(f'"{_cmake_src_rel(d)}"' for d in chain_deps)])
             f.write("\nadd_custom_command(\n")
             f.write(f'    OUTPUT "{rule_output}"\n')
             # -E make_directory is mkdir -p: a no-op when the dir already
@@ -309,8 +305,11 @@ class CMakeBackend(BuildBackend):
             # <xml-dir>/<variant> that no link rule created.
             f.write(f'    COMMAND "${{CMAKE_COMMAND}}" -E make_directory "{os.path.dirname(rule_output)}"\n')
             f.write(f"    COMMAND {argv_str}\n")
-            marker = rule.success_marker or rule.output
-            f.write(f'    COMMAND "${{CMAKE_COMMAND}}" -E touch "{_src_rel(marker)}"\n')
+            # success_marker is always set for test rules (see _build_graph);
+            # touching rule.output instead would be wrong for framework tests
+            # where output is the JUnit XML, not the .result stamp.
+            assert rule.success_marker is not None, "test rules always carry a success_marker"
+            f.write(f'    COMMAND "${{CMAKE_COMMAND}}" -E touch "{_cmake_src_rel(rule.success_marker)}"\n')
             f.write(f"    DEPENDS {depends}\n")
             f.write("    VERBATIM\n")
             f.write(")\n")

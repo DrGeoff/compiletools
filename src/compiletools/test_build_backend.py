@@ -832,12 +832,19 @@ class TestBuildGraphPopulation:
         )
         chained_rule = chained[0]
         predecessor = next(r for r in test_rules if r.output in chained_rule.order_only_deps)
-        # The chain dep must be the predecessor's output, not just its success_marker,
-        # so schedulers that key on rule.output can resolve the dependency.
+        # The chain dep must be the predecessor's output, not its success_marker:
+        # for a framework test output is the JUnit XML and only output is a real
+        # graph target that schedulers can resolve.
         assert predecessor.output in chained_rule.order_only_deps
-        # Sources are sorted alphabetically: "test_bar" < "test_foo", so the
-        # predecessor's exe command must reference the bar source-derived path.
-        assert predecessor is not chained_rule
+        # Chain is source-sorted: "test_bar" < "test_foo", so the bar-derived
+        # test must be the predecessor (runs first) and the foo-derived test
+        # must be the one with the chain dep.
+        assert "bar" in str(predecessor.command), (
+            f"predecessor should be the test_bar rule (alphabetically first); got command {predecessor.command}"
+        )
+        assert "foo" in str(chained_rule.command), (
+            f"chained_rule should be the test_foo rule (alphabetically second); got command {chained_rule.command}"
+        )
 
     def test_serialise_tests_no_chain_with_single_test(self, tmp_path):
         """--serialise-tests with only one test must not add spurious deps."""
