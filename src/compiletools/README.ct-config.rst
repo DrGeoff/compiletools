@@ -376,7 +376,19 @@ Conf files are read in low-to-high priority order:
 ``ct.conf (bundled→cwd) < axis_1 (bundled→cwd) < axis_2 < ... < composite_override < --config``.
 Scalar keys (``CC``, ``CXX``, …) follow last-writer-wins. Append-style
 keys (``append-CFLAGS``, ``append-CXXFLAGS``, ``append-LDFLAGS``,
-``append-pkg-config-path``, …) accumulate across the stack.
+``append-INCLUDE``, ``append-pkg-config-path``, …) accumulate across the
+entire stack: every contributing conf file's value is preserved, and
+matching ``--append-*`` / ``--prepend-*`` CLI flags accumulate on top
+of the conf-file values (CLI tokens land after conf tokens in the
+joined flag string, so the compiler's "last occurrence wins" rule
+keeps CLI override semantics for conflicting flags like ``-O0``/``-O3``).
+Lower-priority confs appear earlier in the final flag string than
+higher-priority confs, so a higher-priority axis (or composite override)
+can supersede a lower one by emitting a conflicting flag later. The
+accumulation rule is enforced by ``apptools._ComposingArgumentParser``
++ ``_AccumulatingConfigFileParser``; see
+``TestAppendFlagsAccumulateAcrossConfHierarchy`` in ``test_apptools.py``
+for the contract.
 
 If you need to append values rather than replace values, this can be
 done (currently only for environment variables) by specifying

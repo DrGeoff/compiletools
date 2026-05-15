@@ -2,6 +2,8 @@ import argparse
 import contextlib
 import functools
 import importlib.util
+import io
+import json
 import logging
 import os
 import re
@@ -14,6 +16,7 @@ import tempfile
 import textwrap
 import threading
 import warnings
+from collections import OrderedDict
 from collections.abc import Generator, Sequence
 
 # Only used for the verbose print.
@@ -2919,6 +2922,205 @@ def _check_legacy_cas_config_keys(config_files) -> None:
         )
 
 
+class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
+    """Variant of ``DefaultConfigFileParser`` that accumulates duplicate
+    ``append-*`` / ``prepend-*`` keys into a list rather than last-writer-wins.
+
+    Used together with ``_ComposingArgumentParser``, which concatenates the
+    entire conf-file hierarchy into one stream. When several conf files set
+    ``append-CXXFLAGS = ...`` (e.g. ``gcc.conf`` + ``release.conf`` +
+    a user-defined ``extras.conf``), the concatenated stream contains the
+    same key multiple times; this parser collects those into a list so
+    configargparse's ``convert_item_to_command_line_arg`` then emits one
+    ``--append-X=v`` token per value, letting argparse's ``action='append'``
+    accumulate them on ``args.append_*``. All other keys (scalars like
+    ``CXX = g++``) remain last-writer-wins.
+    """
+
+    def parse(self, stream):
+        items = OrderedDict()
+        for i, line in enumerate(stream):
+            line = line.strip()
+            if not line or line[0] in ["#", ";", "["] or line.startswith("---"):
+                continue
+            match = re.match(
+                r"^(?P<key>[^:=;#\s]+)\s*"
+                r'(?:(?P<equal>[:=\s])\s*([\'"]?)(?P<value>.+?)?\3)?'
+                r"\s*(?:\s[;#]\s*(?P<comment>.*?)\s*)?$",
+                line,
+            )
+            if not match:
+                raise configargparse.ConfigFileParserException(
+                    "Unexpected line {} in {}: {}".format(i, getattr(stream, "name", "stream"), line)
+                )
+            key = match.group("key")
+            equal = match.group("equal")
+            value = match.group("value")
+            if value is None and equal is not None and equal != " ":
+                value = ""
+            elif value is None:
+                value = "true"
+            if value.startswith("[") and value.endswith("]"):
+                try:
+                    value = json.loads(value)
+                except Exception:
+                    value = [elem.strip() for elem in value[1:-1].split(",")]
+
+            if key.startswith(("append-", "prepend-")) and key in items:
+                existing = items[key]
+                if not isinstance(existing, list):
+                    existing = [existing]
+                if isinstance(value, list):
+                    existing.extend(value)
+                else:
+                    existing.append(value)
+                items[key] = existing
+            else:
+                items[key] = value
+        return items
+
+
+class _ComposingArgumentParser(configargparse.ArgumentParser):
+    """``configargparse.ArgumentParser`` that lets ``append-*`` / ``prepend-*``
+    keys accumulate across the entire conf-file hierarchy AND across the
+    conf-vs-CLI boundary.
+
+    Stock configargparse uses ``already_on_command_line`` to decide whether
+    to inject a conf-file value, and that check fires for ``action='append'``
+    arguments too — so the first appearance of ``--append-CXXFLAGS`` (CLI
+    or a higher-priority conf) silently suppresses every lower-priority
+    contribution. That breaks compiletools' composition model in two ways:
+
+    1. Multi-conf: ``--variant=gcc,release,extras`` should merge the
+       ``append-CXXFLAGS`` value from each axis conf, but stock behavior
+       keeps only the highest-priority conf's value.
+    2. CLI vs conf: ``--append-CXXFLAGS=-Wfoo`` on the CLI alongside any
+       conf-file ``append-CXXFLAGS = -DBAR`` drops the conf value entirely.
+
+    Fix is in two halves working together:
+
+    * ``_open_config_files`` (multi-conf): concatenate the entire hierarchy
+      into a single stream before configargparse's per-file processing runs.
+      The companion ``_AccumulatingConfigFileParser`` collects duplicate
+      ``append-*`` / ``prepend-*`` keys into lists, which configargparse
+      then turns into multiple ``--key=val`` tokens via
+      ``convert_item_to_command_line_arg`` so argparse's ``action='append'``
+      accumulates them. Scalar keys still see last-writer-wins inside the
+      concatenated stream (matching prior behavior, since
+      ``DefaultConfigFileParser`` overwrites duplicates).
+    * ``parse_known_args`` (CLI vs conf): strip every CLI
+      ``--append-*`` / ``--prepend-*`` token before calling ``super()`` so
+      ``already_on_command_line`` doesn't see them and conf-file values
+      flow through. The stripped CLI values are re-appended to the parsed
+      namespace afterwards, so they still land in
+      ``args.append_*`` / ``args.prepend_*`` (after the conf-file values,
+      preserving "CLI is highest priority" for any conflicting late-wins
+      flag like ``-O3`` vs ``-O0``).
+    """
+
+    def _open_config_files(self, command_line_args):
+        streams = super()._open_config_files(command_line_args)
+        if len(streams) < 2:
+            return streams
+
+        parts = []
+        for stream in streams:
+            try:
+                content = stream.read()
+            finally:
+                with contextlib.suppress(OSError):
+                    stream.close()
+            if content and not content.endswith("\n"):
+                content += "\n"
+            parts.append("# --- {} ---\n{}".format(getattr(stream, "name", "<?>"), content))
+
+        merged = io.StringIO("".join(parts))
+        merged.name = f"<merged: {len(streams)} conf files>"
+        return [merged]
+
+    def _extract_cli_append_prepend(self, args):
+        """Pop ``--append-*`` / ``--prepend-*`` tokens out of *args*.
+
+        Returns ``(clean_args, captured)`` where ``captured`` maps each
+        action's ``dest`` to the list of values seen on the CLI in order.
+        Only the long-form ``--key=value`` and ``--key value`` syntaxes are
+        recognized (which is the only form ``_add_xxpend_argument``
+        registers).
+        """
+        # Build the set of option strings that belong to append/prepend
+        # actions registered on this parser. Done lazily per call rather
+        # than at __init__ because add_argument() is called after
+        # construction in compiletools' two-phase parser-build flow.
+        opt_to_action: dict[str, argparse.Action] = {}
+        for action in self._actions:
+            if not isinstance(action, argparse._AppendAction):
+                continue
+            for opt in action.option_strings:
+                opt_to_action[opt] = action
+
+        if not opt_to_action:
+            return list(args), {}
+
+        clean: list[str] = []
+        captured: dict[str, list[str]] = {}
+        i = 0
+        while i < len(args):
+            tok = args[i]
+            name = tok.split("=", 1)[0] if "=" in tok else tok
+            action = opt_to_action.get(name)
+            if action is None:
+                clean.append(tok)
+                i += 1
+                continue
+            if "=" in tok:
+                value = tok.split("=", 1)[1]
+                i += 1
+            elif i + 1 < len(args):
+                value = args[i + 1]
+                i += 2
+            else:
+                # Malformed: leave it for argparse to complain.
+                clean.append(tok)
+                i += 1
+                continue
+            captured.setdefault(action.dest, []).append(value)
+        return clean, captured
+
+    def parse_known_args(
+        self,
+        args=None,
+        namespace=None,
+        config_file_contents=None,
+        env_vars=os.environ,
+        ignore_help_args=False,
+    ):
+        if args is None:
+            args = sys.argv[1:]
+        elif isinstance(args, str):
+            args = args.split()
+        else:
+            args = list(args)
+
+        clean_args, captured_cli = self._extract_cli_append_prepend(args)
+
+        namespace, unknown = super().parse_known_args(
+            args=clean_args,
+            namespace=namespace,
+            config_file_contents=config_file_contents,
+            env_vars=env_vars,
+            ignore_help_args=ignore_help_args,
+        )
+
+        # Re-attach CLI values AFTER the conf-file values so the CLI tokens
+        # apply last in _do_xxpend (compilers honor the last occurrence of
+        # conflicting flags — CLI override semantics preserved).
+        for dest, values in captured_cli.items():
+            existing = getattr(namespace, dest, None) or []
+            setattr(namespace, dest, list(existing) + values)
+
+        return namespace, unknown
+
+
 def create_parser(description, argv=None, include_config=True, include_write_config=False):
     """Create a standardized parser with consistent compiletools behavior.
 
@@ -2965,10 +3167,11 @@ def create_parser(description, argv=None, include_config=True, include_write_con
             "args_for_setting_config_path": ["-c", "--config"],
             "ignore_unknown_config_file_keys": True,
             "conflict_handler": "resolve",
+            "config_file_parser_class": _AccumulatingConfigFileParser,
         }
         if include_write_config:
             kwargs["args_for_writing_out_config_file"] = ["-w", "--write-out-config-file"]
-        return configargparse.ArgumentParser(**kwargs)
+        return _ComposingArgumentParser(**kwargs)
     else:
         cap = configargparse.ArgumentParser(description=description, conflict_handler="resolve")
         add_base_arguments(cap, argv=argv)

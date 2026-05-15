@@ -1263,6 +1263,370 @@ class TestSetupPkgConfigOverrides:
         assert ctx.pkg_config_overrides_applied is False
 
 
+class TestAppendFlagsAccumulateAcrossConfHierarchy:
+    """Regression tests for the multi-conf ``append-*`` / ``prepend-*`` bug.
+
+    Stock configargparse processes each conf file independently and discards
+    any ``action='append'`` key already injected by a higher-priority conf,
+    so only the highest-priority conf's value reaches ``args.append_cxxflags``.
+    That broke ``--variant=gcc,release,extras`` style compositions: gcc.conf's
+    and release.conf's ``append-CXXFLAGS`` values were silently dropped and
+    only ``extras.conf``'s tokens survived. ``_ComposingArgumentParser`` +
+    ``_AccumulatingConfigFileParser`` in apptools fix this by merging the
+    full conf hierarchy into a single stream and accumulating duplicate
+    append-/prepend- keys into a list.
+    """
+
+    def setup_method(self):
+        import compiletools.testhelper as uth
+
+        uth.reset()
+
+    def _setup_three_axis_conf_tree(self, repo_root):
+        """Create gcc.conf, release.conf, extras.conf with distinct
+        ``append-CXXFLAGS`` markers and a project ct.conf that names
+        ``extras`` as a known axis.
+        """
+        conf_d = os.path.join(repo_root, "ct.conf.d")
+        os.makedirs(conf_d, exist_ok=True)
+        # Project ct.conf appends `extras` to the canonical order so the
+        # resolver treats the third token as an axis rather than an unknown.
+        with open(os.path.join(repo_root, "ct.conf"), "w") as fh:
+            fh.write("variant = gcc.release.extras\n")
+            fh.write("variant-canonical-order = gcc, release, extras\n")
+            fh.write("exemarkers = [main]\n")
+            fh.write("testmarkers = unit_test.hpp\n")
+        with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+            fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+            fh.write("append-CXXFLAGS = -DFROM_GCC_AXIS\n")
+            fh.write("append-CFLAGS   = -DFROM_GCC_AXIS\n")
+        with open(os.path.join(conf_d, "release.conf"), "w") as fh:
+            fh.write("append-CXXFLAGS = -DFROM_RELEASE_AXIS\n")
+            fh.write("append-CFLAGS   = -DFROM_RELEASE_AXIS\n")
+        with open(os.path.join(conf_d, "extras.conf"), "w") as fh:
+            fh.write("append-CXXFLAGS = -DFROM_EXTRAS_AXIS\n")
+            fh.write("append-CFLAGS   = -DFROM_EXTRAS_AXIS\n")
+
+    def test_three_axis_append_cxxflags_all_present(self):
+        """All three axis confs' ``append-CXXFLAGS`` values reach
+        ``args.append_cxxflags`` (and therefore the final ``args.CXXFLAGS``).
+        """
+        import compiletools.apptools as apptools
+        import compiletools.testhelper as uth
+
+        with uth.TempDirContextNoChange() as repo_root:
+            self._setup_three_axis_conf_tree(repo_root)
+            argv = ["--variant=gcc,release,extras", "--no-git-root"]
+            with uth.DirectoryContext(repo_root):
+                cap = apptools.create_parser("regression test", argv=argv)
+                apptools.add_common_arguments(cap, argv=argv)
+                with uth.ParserContext():
+                    args = apptools.parseargs(cap, argv, context=BuildContext())
+
+            for marker in ("-DFROM_GCC_AXIS", "-DFROM_RELEASE_AXIS", "-DFROM_EXTRAS_AXIS"):
+                assert marker in args.CXXFLAGS, (
+                    f"{marker} missing from args.CXXFLAGS={args.CXXFLAGS!r}. "
+                    f"Multi-conf append-CXXFLAGS composition is broken — only "
+                    f"the highest-priority conf's value survived. "
+                    f"args.append_cxxflags={args.append_cxxflags!r}"
+                )
+                assert marker in args.CFLAGS, (
+                    f"{marker} missing from args.CFLAGS={args.CFLAGS!r}; "
+                    f"append-CFLAGS suffers the same bug as append-CXXFLAGS."
+                )
+
+    def test_cli_append_combines_with_conf_append(self):
+        """A ``--append-CXXFLAGS`` token on the CLI accumulates with the conf
+        file's ``append-CXXFLAGS`` rather than replacing it.
+
+        With three conf files contributing append values and one CLI value,
+        all four should reach the final ``args.CXXFLAGS``. (Stock
+        configargparse drops the conf-file values when the CLI flag is
+        present too.)
+        """
+        import compiletools.apptools as apptools
+        import compiletools.testhelper as uth
+
+        with uth.TempDirContextNoChange() as repo_root:
+            self._setup_three_axis_conf_tree(repo_root)
+            argv = [
+                "--variant=gcc,release,extras",
+                "--append-CXXFLAGS=-DFROM_CLI",
+                "--no-git-root",
+            ]
+            with uth.DirectoryContext(repo_root):
+                cap = apptools.create_parser("regression test", argv=argv)
+                apptools.add_common_arguments(cap, argv=argv)
+                with uth.ParserContext():
+                    args = apptools.parseargs(cap, argv, context=BuildContext())
+
+            # The CLI value is always honored. The three conf values are
+            # the regression target: at least one of them MUST survive
+            # alongside the CLI value (this is the user's reported bug).
+            assert "-DFROM_CLI" in args.CXXFLAGS, args.CXXFLAGS
+            for marker in ("-DFROM_GCC_AXIS", "-DFROM_RELEASE_AXIS", "-DFROM_EXTRAS_AXIS"):
+                assert marker in args.CXXFLAGS, (
+                    f"CLI --append-CXXFLAGS swallowed {marker} from the conf "
+                    f"hierarchy. CXXFLAGS={args.CXXFLAGS!r}, "
+                    f"append_cxxflags={args.append_cxxflags!r}"
+                )
+
+    def test_three_axis_append_ldflags_all_present(self):
+        """``append-LDFLAGS`` is registered by ``add_link_arguments`` (not
+        ``add_common_arguments``) but uses the same ``_add_xxpend_argument``
+        machinery. The fix must cover it too. Many bundled axis confs
+        contribute LDFLAGS (gcc.conf ``-Werror -Xlinker --build-id``,
+        gold.conf ``-fuse-ld=gold``, pgo-gen.conf ``-fprofile-generate``)
+        so this is the most exercised flag slot in practice.
+        """
+        import compiletools.apptools as apptools
+        import compiletools.testhelper as uth
+
+        with uth.TempDirContextNoChange() as repo_root:
+            conf_d = os.path.join(repo_root, "ct.conf.d")
+            os.makedirs(conf_d, exist_ok=True)
+            with open(os.path.join(repo_root, "ct.conf"), "w") as fh:
+                fh.write("variant = gcc.release.extras\n")
+                fh.write("variant-canonical-order = gcc, release, extras\n")
+                fh.write("exemarkers = [main]\n")
+                fh.write("testmarkers = unit_test.hpp\n")
+            with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+                fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+                fh.write("append-LDFLAGS = -Wl,--build-id\n")
+            with open(os.path.join(conf_d, "release.conf"), "w") as fh:
+                fh.write("append-LDFLAGS = -Wl,-O1\n")
+            with open(os.path.join(conf_d, "extras.conf"), "w") as fh:
+                fh.write("append-LDFLAGS = -Wl,--as-needed\n")
+
+            argv = ["--variant=gcc,release,extras", "--no-git-root"]
+            with uth.DirectoryContext(repo_root):
+                cap = apptools.create_parser("regression test", argv=argv)
+                apptools.add_common_arguments(cap, argv=argv)
+                apptools.add_link_arguments(cap)
+                with uth.ParserContext():
+                    args = apptools.parseargs(cap, argv, context=BuildContext())
+
+            for marker in ("-Wl,--build-id", "-Wl,-O1", "-Wl,--as-needed"):
+                assert marker in args.LDFLAGS, (
+                    f"{marker} missing from LDFLAGS={args.LDFLAGS!r}; "
+                    f"append-LDFLAGS did not accumulate across the hierarchy. "
+                    f"args.append_ldflags={args.append_ldflags!r}"
+                )
+
+    def test_conf_list_form_syntax_still_works(self):
+        """A conf file using configargparse's native list-form syntax
+        (``append-CXXFLAGS = [-X, -Y]``) must still work and compose with
+        scalar-form values from other confs. The fix's
+        ``_AccumulatingConfigFileParser`` overrides ``parse`` and must
+        preserve the list parsing path (it inherited from
+        ``DefaultConfigFileParser``).
+        """
+        import compiletools.apptools as apptools
+        import compiletools.testhelper as uth
+
+        with uth.TempDirContextNoChange() as repo_root:
+            conf_d = os.path.join(repo_root, "ct.conf.d")
+            os.makedirs(conf_d, exist_ok=True)
+            with open(os.path.join(repo_root, "ct.conf"), "w") as fh:
+                fh.write("variant = gcc.release\n")
+                fh.write("variant-canonical-order = gcc, release\n")
+                fh.write("exemarkers = [main]\n")
+                fh.write("testmarkers = unit_test.hpp\n")
+            with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+                fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+                # Scalar form
+                fh.write("append-CXXFLAGS = -DSCALAR_FROM_GCC\n")
+            with open(os.path.join(conf_d, "release.conf"), "w") as fh:
+                # List form — two values in one assignment
+                fh.write("append-CXXFLAGS = [-DLIST_VAL1, -DLIST_VAL2]\n")
+
+            argv = ["--variant=gcc,release", "--no-git-root"]
+            with uth.DirectoryContext(repo_root):
+                cap = apptools.create_parser("regression test", argv=argv)
+                apptools.add_common_arguments(cap, argv=argv)
+                with uth.ParserContext():
+                    args = apptools.parseargs(cap, argv, context=BuildContext())
+
+            for marker in ("-DSCALAR_FROM_GCC", "-DLIST_VAL1", "-DLIST_VAL2"):
+                assert marker in args.CXXFLAGS, (
+                    f"{marker} missing from CXXFLAGS={args.CXXFLAGS!r}; "
+                    f"list-form syntax may have broken the accumulating "
+                    f"parser. args.append_cxxflags={args.append_cxxflags!r}"
+                )
+
+    def test_append_order_lower_priority_before_higher(self):
+        """Lower-priority axis values must appear BEFORE higher-priority axis
+        values in the merged flag string, so that compilers' "last occurrence
+        wins" rule resolves conflicting flags (e.g. ``-O0`` vs ``-O3``) in
+        favor of the higher-priority axis. With the conf-file hierarchy
+        ``gcc < release < extras``, an ``-O0`` in gcc.conf must end up to
+        the LEFT of an ``-O3`` in release.conf in args.CXXFLAGS.
+        """
+        import compiletools.apptools as apptools
+        import compiletools.testhelper as uth
+
+        with uth.TempDirContextNoChange() as repo_root:
+            conf_d = os.path.join(repo_root, "ct.conf.d")
+            os.makedirs(conf_d, exist_ok=True)
+            with open(os.path.join(repo_root, "ct.conf"), "w") as fh:
+                fh.write("variant = gcc.release.extras\n")
+                fh.write("variant-canonical-order = gcc, release, extras\n")
+                fh.write("exemarkers = [main]\n")
+                fh.write("testmarkers = unit_test.hpp\n")
+            with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+                fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+                fh.write("append-CXXFLAGS = -O0\n")  # lowest priority
+            with open(os.path.join(conf_d, "release.conf"), "w") as fh:
+                fh.write("append-CXXFLAGS = -O3\n")  # mid priority
+            with open(os.path.join(conf_d, "extras.conf"), "w") as fh:
+                fh.write("append-CXXFLAGS = -Os\n")  # highest priority
+
+            argv = ["--variant=gcc,release,extras", "--no-git-root"]
+            with uth.DirectoryContext(repo_root):
+                cap = apptools.create_parser("regression test", argv=argv)
+                apptools.add_common_arguments(cap, argv=argv)
+                with uth.ParserContext():
+                    args = apptools.parseargs(cap, argv, context=BuildContext())
+
+            cxx = args.CXXFLAGS
+            o0 = cxx.find("-O0")
+            o3 = cxx.find("-O3")
+            os_ = cxx.find("-Os")
+            assert -1 not in (o0, o3, os_), (
+                f"Missing one or more markers in CXXFLAGS={cxx!r}: -O0@{o0}, -O3@{o3}, -Os@{os_}"
+            )
+            assert o0 < o3 < os_, (
+                f"Order broken: expected -O0 < -O3 < -Os in CXXFLAGS, "
+                f"got -O0@{o0}, -O3@{o3}, -Os@{os_}. The compiler honors the "
+                f"LAST occurrence of conflicting -O flags, so the higher-"
+                f"priority axis (extras) must come after lower-priority ones "
+                f"(gcc, release). CXXFLAGS={cxx!r}"
+            )
+
+    def test_three_axis_append_include_all_present(self):
+        """``append-include`` follows the same code path as ``append-CXXFLAGS``
+        but registers a different option string (``--append-INCLUDE``). The
+        fix must handle every ``--append-*`` / ``--prepend-*`` option that
+        ``_add_xxpend_arguments`` registers, not just the FLAGS family.
+        ``args.append_include`` reaches the final ``args.INCLUDE`` via
+        ``_do_xxpend('INCLUDE')`` in ``_tier_one_modifications``.
+        """
+        import compiletools.apptools as apptools
+        import compiletools.testhelper as uth
+
+        with uth.TempDirContextNoChange() as repo_root:
+            conf_d = os.path.join(repo_root, "ct.conf.d")
+            os.makedirs(conf_d, exist_ok=True)
+            with open(os.path.join(repo_root, "ct.conf"), "w") as fh:
+                fh.write("variant = gcc.release.extras\n")
+                fh.write("variant-canonical-order = gcc, release, extras\n")
+                fh.write("exemarkers = [main]\n")
+                fh.write("testmarkers = unit_test.hpp\n")
+            inc_a = os.path.join(repo_root, "inc_gcc")
+            inc_b = os.path.join(repo_root, "inc_release")
+            inc_c = os.path.join(repo_root, "inc_extras")
+            for d in (inc_a, inc_b, inc_c):
+                os.makedirs(d, exist_ok=True)
+            with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+                fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+                fh.write(f"append-INCLUDE ={inc_a}\n")
+            with open(os.path.join(conf_d, "release.conf"), "w") as fh:
+                fh.write(f"append-INCLUDE ={inc_b}\n")
+            with open(os.path.join(conf_d, "extras.conf"), "w") as fh:
+                fh.write(f"append-INCLUDE ={inc_c}\n")
+
+            argv = ["--variant=gcc,release,extras", "--no-git-root"]
+            with uth.DirectoryContext(repo_root):
+                cap = apptools.create_parser("regression test", argv=argv)
+                apptools.add_common_arguments(cap, argv=argv)
+                with uth.ParserContext():
+                    args = apptools.parseargs(cap, argv, context=BuildContext())
+
+            for inc_dir in (inc_a, inc_b, inc_c):
+                assert inc_dir in args.INCLUDE, (
+                    f"{inc_dir} missing from args.INCLUDE={args.INCLUDE!r}; "
+                    f"append-include did not accumulate across the hierarchy. "
+                    f"args.append_include={args.append_include!r}"
+                )
+
+    def test_cli_space_separated_append_combines_with_conf(self):
+        """The CLI extractor must handle ``--append-CXXFLAGS <value>`` (space
+        form) as well as ``--append-CXXFLAGS=<value>`` (equals form). Both
+        forms accept exactly one value (the registered action has no
+        ``nargs``), so the next argv token is consumed as the value.
+        """
+        import compiletools.apptools as apptools
+        import compiletools.testhelper as uth
+
+        with uth.TempDirContextNoChange() as repo_root:
+            self._setup_three_axis_conf_tree(repo_root)
+            argv = [
+                "--variant=gcc,release,extras",
+                "--append-CXXFLAGS",  # space form, not '='
+                "-DFROM_CLI_SPACE",
+                "--no-git-root",
+            ]
+            with uth.DirectoryContext(repo_root):
+                cap = apptools.create_parser("regression test", argv=argv)
+                apptools.add_common_arguments(cap, argv=argv)
+                with uth.ParserContext():
+                    args = apptools.parseargs(cap, argv, context=BuildContext())
+
+            assert "-DFROM_CLI_SPACE" in args.CXXFLAGS, args.CXXFLAGS
+            for marker in ("-DFROM_GCC_AXIS", "-DFROM_RELEASE_AXIS", "-DFROM_EXTRAS_AXIS"):
+                assert marker in args.CXXFLAGS, (
+                    f"Space-form CLI --append-CXXFLAGS swallowed {marker}. "
+                    f"args.CXXFLAGS={args.CXXFLAGS!r}, "
+                    f"args.append_cxxflags={args.append_cxxflags!r}"
+                )
+
+    def test_three_axis_prepend_cxxflags_all_present(self):
+        """``prepend-CXXFLAGS`` follows the same accumulation rule as
+        ``append-CXXFLAGS``: when three axis confs each ``prepend-CXXFLAGS``,
+        all three values reach ``args.prepend_cxxflags`` and the final
+        ``args.CXXFLAGS``. ``prepend-*`` uses ``action='append'`` under the
+        hood (same as ``append-*``), so the underlying configargparse bug
+        affects both — and the fix must cover both.
+        """
+        import compiletools.apptools as apptools
+        import compiletools.testhelper as uth
+
+        with uth.TempDirContextNoChange() as repo_root:
+            conf_d = os.path.join(repo_root, "ct.conf.d")
+            os.makedirs(conf_d, exist_ok=True)
+            with open(os.path.join(repo_root, "ct.conf"), "w") as fh:
+                fh.write("variant = gcc.release.extras\n")
+                fh.write("variant-canonical-order = gcc, release, extras\n")
+                fh.write("exemarkers = [main]\n")
+                fh.write("testmarkers = unit_test.hpp\n")
+            with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
+                fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
+                fh.write("prepend-CXXFLAGS = -DPREPEND_GCC\n")
+            with open(os.path.join(conf_d, "release.conf"), "w") as fh:
+                fh.write("prepend-CXXFLAGS = -DPREPEND_RELEASE\n")
+            with open(os.path.join(conf_d, "extras.conf"), "w") as fh:
+                fh.write("prepend-CXXFLAGS = -DPREPEND_EXTRAS\n")
+
+            argv = ["--variant=gcc,release,extras", "--no-git-root"]
+            with uth.DirectoryContext(repo_root):
+                cap = apptools.create_parser("regression test", argv=argv)
+                apptools.add_common_arguments(cap, argv=argv)
+                with uth.ParserContext():
+                    args = apptools.parseargs(cap, argv, context=BuildContext())
+
+            for marker in ("-DPREPEND_GCC", "-DPREPEND_RELEASE", "-DPREPEND_EXTRAS"):
+                assert marker in args.CXXFLAGS, (
+                    f"{marker} missing from args.CXXFLAGS={args.CXXFLAGS!r}. "
+                    f"prepend-CXXFLAGS values are not accumulating across the "
+                    f"conf hierarchy. args.prepend_cxxflags={args.prepend_cxxflags!r}"
+                )
+
+    def teardown_method(self):
+        import compiletools.testhelper as uth
+
+        uth.reset()
+
+
 class TestVariantResolutionRespectsArgv:
     """Regression tests for the substitutions() variant-from-sys.argv bug.
 

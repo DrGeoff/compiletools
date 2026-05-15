@@ -524,7 +524,10 @@ class AxisResolution:
         name: Canonical axis token (e.g. "gcc").
         conf_paths: All conf files matching this axis, in ascending priority
             order (bundled first, project last). configargparse layers them
-            so later files override scalar keys and append- form accumulates.
+            so later files override scalar keys; append-/prepend- keys
+            accumulate across the entire conf hierarchy via
+            ``apptools._ComposingArgumentParser`` (stock configargparse only
+            keeps the highest-priority conf's value for action='append').
         extends: Parents named by the highest-priority conf's `extends = ...`
             directive. Empty tuple if no `extends` is present.
     """
