@@ -18,7 +18,17 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config
+        # gcc-14 is needed because the default variant (gcc.cxx26.debug)
+        # passes -std=c++26, which gcc 13 (ubuntu-latest's default) rejects.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config gcc-14 g++-14
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140 \
+            --slave /usr/bin/g++ g++ /usr/bin/g++-14 \
+            --slave /usr/bin/cpp cpp /usr/bin/cpp-14
+          sudo update-alternatives --set gcc /usr/bin/gcc-14
+          gcc --version
+          g++ --version
 
       - name: Install UV
         run: pip install uv
