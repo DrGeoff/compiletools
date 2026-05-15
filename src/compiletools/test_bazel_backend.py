@@ -843,6 +843,17 @@ class TestBazelExecute:
         assert "build --action_env=CC=/opt/gcc-15/bin/gcc" in content, content
         assert "build --action_env=CXX=/opt/gcc-15/bin/g++" in content, content
 
+    def test_bazelrc_forwards_ld_library_path_to_test_env(self):
+        """bazel test runs each cc_test in a hermetic sandbox that strips
+        client env. Toolchains installed outside /lib64 ship their own
+        libstdc++.so.6 with newer GLIBCXX_ versions; without forwarding
+        LD_LIBRARY_PATH the loader falls back to /lib64 and the binary
+        fails with `version 'GLIBCXX_3.4.NN' not found`."""
+        backend = self._make_backend()
+        with patch("os.path.exists", return_value=False):
+            content = backend._build_bazelrc_content()
+        assert "build --test_env=LD_LIBRARY_PATH" in content, content
+
     def test_execute_passes_minimal_cli_to_run_bazel(self):
         """All static-per-build flags live in .bazelrc; the CLI carries
         only the bazel binary, ``build``, optional ``--jobs=N``, and

@@ -1153,6 +1153,16 @@ class BazelBackend(BuildBackend):
                 continue
             lines.append(f"build --repo_env={var}={resolved}")
             lines.append(f"build --action_env={var}={resolved}")
+        # bazel test runs each cc_test in a hermetic sandbox that strips
+        # client env vars unless explicitly forwarded. Toolchains installed
+        # outside /lib64 (e.g. /opt/gcc-16/lib64) ship their own
+        # libstdc++.so.6 with newer GLIBCXX_ versions than the OS-level one;
+        # without forwarding LD_LIBRARY_PATH the loader inside the sandbox
+        # falls back to /lib64 and the test binary fails to start with
+        # `version 'GLIBCXX_3.4.NN' not found`. The bare `--test_env=VAR`
+        # form (no =value) tells bazel to pass through whatever value is in
+        # the bazel-client env at test time.
+        lines.append("build --test_env=LD_LIBRARY_PATH")
         return "\n".join(lines) + "\n"
 
     def _write_bazelrc(self, base_dir: str) -> None:
