@@ -90,16 +90,16 @@ def _assert_every_production_call_passes_anchor_root(callee: str) -> None:
 
 
 def test_every_production_caller_passes_pch_command_hash_anchor_root():
-    """``_pch_command_hash`` is keyword-required ``anchor_root: str`` after
-    the v9.4 tightening. Production callers that drop the kwarg fail
-    at runtime, but the failure mode used to be a silent
-    ``find_git_root()`` fallback. This grep-guard catches a future
-    refactor that loosens the signature back to ``str | None = None``
-    AND drops a call-site kwarg in the same change."""
+    """``_pch_command_hash`` accepts ``anchor_root`` as a keyword-required
+    ``str``. Production callers that drop the kwarg fail at runtime, but
+    the failure mode used to be a silent ``find_git_root()`` fallback.
+    This grep-guard catches a future refactor that loosens the signature
+    back to ``str | None = None`` AND drops a call-site kwarg in the same
+    change."""
     _assert_every_production_call_passes_anchor_root("_pch_command_hash")
 
 
 def test_every_production_caller_passes_pcm_command_hash_anchor_root():
-    """``_pcm_command_hash`` is keyword-required ``anchor_root: str`` after
-    the v9.4 tightening. See the PCH counterpart above for rationale."""
+    """``_pcm_command_hash`` accepts ``anchor_root`` as a keyword-required
+    ``str``. See the PCH counterpart above for rationale."""
     _assert_every_production_call_passes_anchor_root("_pcm_command_hash")
