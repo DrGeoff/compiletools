@@ -1740,8 +1740,12 @@ class TestPchCommandHash:
         from types import SimpleNamespace
 
         args = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
-        h1 = _pch_command_hash(args, "/src/foo.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash=self._SCOPE_ZERO)
-        h2 = _pch_command_hash(args, "/src/foo.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash=self._SCOPE_ZERO)
+        h1 = _pch_command_hash(
+            args, "/src/foo.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash=self._SCOPE_ZERO, anchor_root=""
+        )
+        h2 = _pch_command_hash(
+            args, "/src/foo.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash=self._SCOPE_ZERO, anchor_root=""
+        )
         assert h1 == h2
 
     def test_differs_for_different_flags(self):
@@ -1749,8 +1753,12 @@ class TestPchCommandHash:
 
         args1 = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
         args2 = SimpleNamespace(CXX="g++", CXXFLAGS="-O3")
-        h1 = _pch_command_hash(args1, "/src/foo.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash=self._SCOPE_ZERO)
-        h2 = _pch_command_hash(args2, "/src/foo.h", [], [], cxxflags_tokens=["-O3"], scope_macro_hash=self._SCOPE_ZERO)
+        h1 = _pch_command_hash(
+            args1, "/src/foo.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash=self._SCOPE_ZERO, anchor_root=""
+        )
+        h2 = _pch_command_hash(
+            args2, "/src/foo.h", [], [], cxxflags_tokens=["-O3"], scope_macro_hash=self._SCOPE_ZERO, anchor_root=""
+        )
         assert h1 != h2
 
     def test_differs_for_different_compiler(self):
@@ -1758,8 +1766,12 @@ class TestPchCommandHash:
 
         args1 = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
         args2 = SimpleNamespace(CXX="clang++", CXXFLAGS="-O2")
-        h1 = _pch_command_hash(args1, "/src/foo.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash=self._SCOPE_ZERO)
-        h2 = _pch_command_hash(args2, "/src/foo.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash=self._SCOPE_ZERO)
+        h1 = _pch_command_hash(
+            args1, "/src/foo.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash=self._SCOPE_ZERO, anchor_root=""
+        )
+        h2 = _pch_command_hash(
+            args2, "/src/foo.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash=self._SCOPE_ZERO, anchor_root=""
+        )
         assert h1 != h2
 
     def test_includes_magic_flags(self):
@@ -1775,8 +1787,11 @@ class TestPchCommandHash:
             [],
             cxxflags_tokens=["-O2"],
             scope_macro_hash=self._SCOPE_ZERO,
+            anchor_root="",
         )
-        h2 = _pch_command_hash(args, "/src/foo.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash=self._SCOPE_ZERO)
+        h2 = _pch_command_hash(
+            args, "/src/foo.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash=self._SCOPE_ZERO, anchor_root=""
+        )
         assert h1 != h2
 
 
@@ -1949,8 +1964,12 @@ class TestPchIncrementalHash:
         args_a = SimpleNamespace(CXX=str(cxx_a), CXXFLAGS="-O2")
         args_b = SimpleNamespace(CXX=str(cxx_b), CXXFLAGS="-O2")
 
-        hash_a = _pch_command_hash(args_a, "/src/stdafx.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash="0" * 16)
-        hash_b = _pch_command_hash(args_b, "/src/stdafx.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash="0" * 16)
+        hash_a = _pch_command_hash(
+            args_a, "/src/stdafx.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash="0" * 16, anchor_root=""
+        )
+        hash_b = _pch_command_hash(
+            args_b, "/src/stdafx.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash="0" * 16, anchor_root=""
+        )
         assert hash_a != hash_b, (
             "Compilers with different binary identity must produce distinct "
             "PCH cache keys to prevent silent cross-user PCH-stamp rejection."
@@ -2000,8 +2019,12 @@ class TestPchIncrementalHash:
         args = SimpleNamespace(CXX="cc", CXXFLAGS="-O2")
         flags_one = [sz.Str('-DFOO="a b"')]
         flags_two = [sz.Str("-DFOO=a"), sz.Str("-Db")]
-        h1 = _pch_command_hash(args, "/src/stdafx.h", [], flags_one, cxxflags_tokens=["-O2"], scope_macro_hash="0" * 16)
-        h2 = _pch_command_hash(args, "/src/stdafx.h", [], flags_two, cxxflags_tokens=["-O2"], scope_macro_hash="0" * 16)
+        h1 = _pch_command_hash(
+            args, "/src/stdafx.h", [], flags_one, cxxflags_tokens=["-O2"], scope_macro_hash="0" * 16, anchor_root=""
+        )
+        h2 = _pch_command_hash(
+            args, "/src/stdafx.h", [], flags_two, cxxflags_tokens=["-O2"], scope_macro_hash="0" * 16, anchor_root=""
+        )
         assert h1 != h2
 
     def test_warns_when_pchdir_not_group_writable(self, tmp_path, capsys):

@@ -2369,6 +2369,7 @@ class BuildBackend(abc.ABC):
             magic_cxx_flags=[],
             extra_flags=[],
             stage="gcc_header_unit",
+            anchor_root=self._anchor_root,
         )
         stem = _header_unit_safe_stem(token)
         gcm_path = _cas_pcm_path(stem + ".gcm", cache_root, cmd_hash)
@@ -3371,7 +3372,8 @@ def _pcm_command_hash(
     magic_cxx_flags: list,
     extra_flags: list[str],
     stage: str,
-    anchor_root: str | None = None,
+    *,
+    anchor_root: str,
 ) -> str:
     """Single content-addressable hash for a PCM cache entry.
 
@@ -3416,11 +3418,10 @@ def _pcm_command_hash(
     # Canonicalize path-bearing flag tokens and the source path against
     # the gitroot anchor so the cache key is decoupled from the absolute
     # workspace path -- two CI runs landing under different attempt
-    # directories share the same PCM cache entries. anchor_root=None
-    # falls back to the cached find_git_root() lookup; an explicit empty
-    # string disables canonicalization (graceful no-op).
-    if anchor_root is None:
-        anchor_root = compiletools.git_utils.find_git_root()
+    # directories share the same PCM cache entries. ``anchor_root`` is
+    # required (matching ``MacroState`` / ``_write_pcm_manifest`` /
+    # ``compiler_identity``); an explicit empty string disables
+    # canonicalization (graceful no-op for tests / out-of-tree usage).
     canonical = {
         "stage": stage,
         "compiler_identity": _compiler_identity(args.CXX, anchor_root=anchor_root),
@@ -3600,7 +3601,8 @@ def _pch_command_hash(
     magic_cxx_flags: list,
     cxxflags_tokens: list[str],
     scope_macro_hash: str,
-    anchor_root: str | None = None,
+    *,
+    anchor_root: str,
 ) -> str:
     """Compute a content-addressable hash for a PCH compile command.
 
@@ -3656,11 +3658,10 @@ def _pch_command_hash(
     # itself are then canonicalized against the gitroot anchor so the
     # cache key is decoupled from the absolute workspace path -- two
     # CI runs landing under different attempt directories share the
-    # same PCH cache entries. anchor_root=None falls back to the
-    # cached find_git_root() lookup; an explicit empty string disables
-    # canonicalization (graceful no-op).
-    if anchor_root is None:
-        anchor_root = compiletools.git_utils.find_git_root()
+    # same PCH cache entries. ``anchor_root`` is required (matching
+    # ``MacroState`` / ``_write_pch_manifest`` / ``compiler_identity``);
+    # an explicit empty string disables canonicalization (graceful
+    # no-op for tests / out-of-tree usage).
     canonical = {
         # In-workspace wrapper scripts (coverage / sccache / distcc) leak
         # the per-checkout absolute path through both fields otherwise.

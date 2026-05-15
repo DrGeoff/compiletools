@@ -88,6 +88,7 @@ def _hash_pch_with_app_name(value, sample_rel):
             magic_cxx_flags=[],
             cxxflags_tokens=cxxflags_tokens,
             scope_macro_hash=scope_macro_hash,
+            anchor_root="",
         )
 
 
@@ -163,6 +164,7 @@ class TestPchCacheKeyNonDFlagsStillMatter:
             magic_cxx_flags=[],
             cxxflags_tokens=tokens_o2,
             scope_macro_hash=scope_zero,
+            anchor_root="",
         )
         h_o3 = _pch_command_hash(
             args_o3,
@@ -171,6 +173,7 @@ class TestPchCacheKeyNonDFlagsStillMatter:
             magic_cxx_flags=[],
             cxxflags_tokens=tokens_o3,
             scope_macro_hash=scope_zero,
+            anchor_root="",
         )
         assert h_o2 != h_o3, (
             "Non-D flag changes (-O2 vs -O3) must still produce distinct "
@@ -206,8 +209,12 @@ class TestPchScopeMacroHashEdgeCases:
 
             # Full pch hash is stable across calls with same inputs.
             tokens = compiletools.apptools.tokenize_compile_flags("", "", hntr.args.CXXFLAGS)[2]
-            h1 = _pch_command_hash(hntr.args, sample, [], [], cxxflags_tokens=tokens, scope_macro_hash=scope_hash)
-            h2 = _pch_command_hash(hntr.args, sample, [], [], cxxflags_tokens=tokens, scope_macro_hash=scope_hash)
+            h1 = _pch_command_hash(
+                hntr.args, sample, [], [], cxxflags_tokens=tokens, scope_macro_hash=scope_hash, anchor_root=""
+            )
+            h2 = _pch_command_hash(
+                hntr.args, sample, [], [], cxxflags_tokens=tokens, scope_macro_hash=scope_hash, anchor_root=""
+            )
             assert h1 == h2
 
     def test_pch_scope_macro_hash_no_referenced_macros_returns_zeros(self):
@@ -271,6 +278,7 @@ def test_pch_cache_key_unchanged_with_w_warning_change():
         magic_cxx_flags=[],
         cxxflags_tokens=_hr(["-O2", "-Wall"]),
         scope_macro_hash="0" * 16,
+        anchor_root="",
     )
     h_wextra = _pch_command_hash(
         args,
@@ -279,6 +287,7 @@ def test_pch_cache_key_unchanged_with_w_warning_change():
         magic_cxx_flags=[],
         cxxflags_tokens=_hr(["-O2", "-Wextra"]),
         scope_macro_hash="0" * 16,
+        anchor_root="",
     )
     assert h_wall == h_wextra
 
@@ -296,6 +305,7 @@ def test_pch_cache_key_unchanged_with_w_warning_in_magic_cxx_flags():
         magic_cxx_flags=["-Wall"],
         cxxflags_tokens=["-O2"],
         scope_macro_hash="0" * 16,
+        anchor_root="",
     )
     h_wextra = _pch_command_hash(
         args,
@@ -304,5 +314,6 @@ def test_pch_cache_key_unchanged_with_w_warning_in_magic_cxx_flags():
         magic_cxx_flags=["-Wextra"],
         cxxflags_tokens=["-O2"],
         scope_macro_hash="0" * 16,
+        anchor_root="",
     )
     assert h_wall == h_wextra
