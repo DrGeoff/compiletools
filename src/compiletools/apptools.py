@@ -2989,7 +2989,7 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
         conf_dir = None
         if stream_name and not stream_name.startswith("<"):
             try:
-                conf_dir = os.path.dirname(os.path.realpath(stream_name))
+                conf_dir = os.path.dirname(compiletools.wrappedos.realpath(stream_name))
             except (OSError, ValueError):
                 conf_dir = None
 
@@ -3112,7 +3112,7 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
             # subsequent values. Emit unconditionally even when the path
             # is unresolvable so a downgraded reader still sees a comment.
             try:
-                conf_dir = os.path.dirname(os.path.realpath(stream_name))
+                conf_dir = os.path.dirname(compiletools.wrappedos.realpath(stream_name))
             except (OSError, ValueError):
                 conf_dir = ""
             parts.append(
