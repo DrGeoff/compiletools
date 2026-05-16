@@ -60,7 +60,7 @@ from compiletools.build_context import BuildContext
 
 
 @pytest.fixture(autouse=True)
-def _clear_apptools_cache():  # noqa: PT004 — autouse, name not referenced
+def _clear_apptools_cache():
     """Reset configargparse parser state and apptools caches around every
     test so PKG_CONFIG_PATH mutations from neighbouring tests can't leak
     in (or out)."""

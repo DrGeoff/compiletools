@@ -3231,9 +3231,7 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
             except (OSError, ValueError):
                 conf_dir = ""
             parts.append(
-                "# --- {} ---\n{}{}\n{}".format(
-                    stream_name, _CONF_DIR_MARKER_PREFIX, conf_dir, content
-                )
+                f"# --- {stream_name} ---\n{_CONF_DIR_MARKER_PREFIX}{conf_dir}\n{content}"
             )
 
         merged = io.StringIO("".join(parts))
