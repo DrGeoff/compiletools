@@ -3035,14 +3035,10 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
 
     def parse(self, stream):
         items = OrderedDict()
-        # Reset provenance for each parse; the parser instance is reused
-        # across configargparse invocations.
+        # Parser instance is reused across configargparse invocations.
         self._provenance = {}
-        # Initial conf-dir / source-file: derived from stream.name when
-        # available (covers the single-file path where _open_config_files
-        # returned the original file stream untouched). Segment headers,
-        # when present, override these per-file as the parser walks the
-        # concatenated stream.
+        # Initial conf-dir from stream.name covers the single-file path
+        # (no concatenation, no segment headers).
         stream_name = getattr(stream, "name", None)
         conf_dir = None
         source_file = "<unknown>"
@@ -3054,9 +3050,8 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
                 conf_dir = None
                 source_file = "<unknown>"
 
-        # Per-segment line counter so provenance line numbers are 1-based
-        # *within the source file*, not within the concatenated stream.
-        # Reset whenever a segment header is consumed.
+        # Provenance line numbers are 1-based within source_file, not the
+        # concatenated stream; reset whenever a segment header is consumed.
         segment_lineno = 0
         for i, line in enumerate(stream):
             stripped = line.strip()
@@ -3067,10 +3062,8 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
                 header_path = stripped[
                     len(_CONF_DIR_SEGMENT_HEADER_PREFIX):-len(_CONF_DIR_SEGMENT_HEADER_SUFFIX)
                 ].strip()
-                # Only treat the line as a real segment header if the
-                # named file exists; this rejects user-authored comments
-                # that happen to match the syntactic shape but point at
-                # fictional paths.
+                # Existence check rejects user-authored comments matching
+                # the header shape but naming fictional paths.
                 if header_path and compiletools.wrappedos.isfile(header_path):
                     source_file = compiletools.wrappedos.realpath(header_path)
                     conf_dir = compiletools.wrappedos.dirname(source_file)

@@ -91,11 +91,8 @@ def test_conf_dir_placeholder_expands_to_conf_file_directory(tmp_path, monkeypat
 
     entries = list(args.prepend_pkg_config_path)
     assert any(os.path.realpath(e) == os.path.realpath(expected_anchored) for e in entries), (
-        f"${{CONF_DIR}} in {_conf_dir()}/flavor-a.conf must expand to "
-        f"{_conf_dir()!r} so the prepend-PKG-CONFIG-PATH entry surfaces as "
-        f"{expected_anchored!r}, but got entries: {entries!r}. The fix "
-        f"injection point is _AccumulatingConfigFileParser.parse() "
-        f"(apptools.py:2940)."
+        f"${{CONF_DIR}} should expand to {expected_anchored!r}; "
+        f"got entries: {entries!r}"
     )
 
 
@@ -109,9 +106,7 @@ def test_unexpanded_conf_dir_placeholder_does_not_survive(tmp_path, monkeypatch)
 
     entries = list(args.prepend_pkg_config_path)
     assert not any("${CONF_DIR}" in e for e in entries), (
-        f"Literal ${{CONF_DIR}} survived onto args.prepend_pkg_config_path: "
-        f"{entries!r}. Expansion in _AccumulatingConfigFileParser.parse() "
-        f"is missing or wrong."
+        f"Literal ${{CONF_DIR}} survived onto args.prepend_pkg_config_path: {entries!r}"
     )
 
 
@@ -137,7 +132,6 @@ def test_conf_dir_placeholder_expansion_is_independent_of_consumer_cwd(
     entries_from_b = sorted(args_from_b.prepend_pkg_config_path)
 
     assert entries_from_a == entries_from_b, (
-        f"args.prepend_pkg_config_path differed across consumer cwds; the "
         f"${{CONF_DIR}} expansion must be cwd-independent. "
         f"From {third_a}: {entries_from_a!r}; from {third_b}: {entries_from_b!r}"
     )
@@ -169,8 +163,7 @@ def test_pkg_config_path_env_contains_anchored_absolute_after_parseargs(
         f"Literal ${{CONF_DIR}} survived into PKG_CONFIG_PATH: {raw!r}"
     )
     assert any(os.path.realpath(e) == os.path.realpath(expected_anchored) for e in entries), (
-        f"PKG_CONFIG_PATH should contain the anchored absolute path "
-        f"{expected_anchored!r}. Got entries: {entries!r}"
+        f"PKG_CONFIG_PATH should contain {expected_anchored!r}; got: {entries!r}"
     )
 
 
@@ -233,11 +226,10 @@ def test_conf_dir_placeholder_works_for_non_path_keys(tmp_path, monkeypatch):
     expanded = f"-I{conf_dir}/include"
     flat = " ".join(args.append_cxxflags) if isinstance(args.append_cxxflags, list) else str(args.append_cxxflags)
     assert expanded in flat, (
-        f"${{CONF_DIR}} in append-CXXFLAGS must expand. Expected token "
-        f"{expanded!r} in append_cxxflags={args.append_cxxflags!r}"
+        f"expected {expanded!r} in append_cxxflags={args.append_cxxflags!r}"
     )
     assert "${CONF_DIR}" not in flat, (
-        f"Literal ${{CONF_DIR}} survived in append_cxxflags={args.append_cxxflags!r}"
+        f"literal ${{CONF_DIR}} survived in append_cxxflags={args.append_cxxflags!r}"
     )
 
 
@@ -290,17 +282,12 @@ def test_bare_relative_paths_are_not_auto_anchored(tmp_path, monkeypatch):
 
     bare_literal = os.path.join("ct.conf.d", "pkgconfig-c")
     assert bare_literal in entries, (
-        f"Bare relative paths in conf files must survive verbatim under "
-        f"Option 1 semantics (no auto-anchor magic). Expected the literal "
-        f"{bare_literal!r} on args.prepend_pkg_config_path, got: {entries!r}. "
-        f"If this assertion fails because the entry got auto-anchored, "
-        f"someone implemented Option 2 instead of Option 1 — check the "
-        f"design decision before proceeding."
+        f"Bare relative paths must survive verbatim (no auto-anchor); "
+        f"got: {entries!r}"
     )
     auto_anchored = str(conf_dir / "ct.conf.d" / "pkgconfig-c")
     assert auto_anchored not in entries, (
-        f"Bare relative was auto-anchored to {auto_anchored!r}. That is "
-        f"Option 2 semantics, not Option 1. Entries: {entries!r}"
+        f"Bare relative was auto-anchored to {auto_anchored!r}; got: {entries!r}"
     )
 
 
@@ -339,13 +326,11 @@ def test_segment_header_in_user_comment_does_not_poison_conf_dir(tmp_path, monke
     expected = str(conf_dir / "pkgconfig")
     entries = list(args.prepend_pkg_config_path)
     assert any(os.path.realpath(e) == os.path.realpath(expected) for e in entries), (
-        f"User comment poisoned conf_dir; expected {expected!r} on "
-        f"prepend_pkg_config_path; got {entries!r}"
+        f"expected {expected!r} on prepend_pkg_config_path; got {entries!r}"
     )
     flat = " ".join(entries)
     assert "/some/fictional/path" not in flat, (
-        f"User-authored # --- /path --- comment was honored as a real "
-        f"segment header; got: {entries!r}"
+        f"user-authored # --- /path --- comment honored as real header; got: {entries!r}"
     )
 
 
@@ -403,14 +388,12 @@ def test_provenance_records_source_file_for_each_conf_value(tmp_path, monkeypatc
         and os.path.realpath(e[1]) == os.path.realpath(flavor_b_conf)
     ]
     assert matched, (
-        f"No provenance entry for value containing {expected_value_substr!r} "
-        f"sourced from {flavor_b_conf!r}. All entries for "
-        f"prepend-PKG-CONFIG-PATH: {entries!r}"
+        f"no provenance entry containing {expected_value_substr!r} "
+        f"sourced from {flavor_b_conf!r}; entries: {entries!r}"
     )
     for value, source_file, lineno in matched:
         assert isinstance(lineno, int) and lineno >= 1, (
-            f"lineno must be a positive int (1-based), got {lineno!r} "
-            f"for ({value!r}, {source_file!r}, ...)"
+            f"lineno must be positive int (1-based); got {lineno!r}"
         )
 
 
@@ -455,14 +438,11 @@ def test_provenance_records_each_list_element_separately(tmp_path, monkeypatch):
     entries = [e for e in all_entries if os.path.realpath(e[1]) == conf_real]
     values = [str(e[0]) for e in entries]
     assert "main" in values and "_start" in values and "entry" in values, (
-        f"Expected list-element provenance entries for 'main', '_start', "
-        f"'entry' sourced from {conf_real!r}; got {entries!r} "
-        f"(all entries: {all_entries!r})"
+        f"expected list-element entries for main/_start/entry from "
+        f"{conf_real!r}; got {entries!r}"
     )
-    # All three entries from this conf must share the same source file
-    # and line number.
+    # All three entries from this conf must share the same source file and lineno.
     sources = {(os.path.realpath(e[1]), e[2]) for e in entries}
     assert len(sources) == 1, (
-        f"Expected all list-element entries from {conf_real!r} to share "
-        f"source_file:lineno; got distinct sources: {sources!r}"
+        f"list-element entries should share source_file:lineno; got: {sources!r}"
     )
