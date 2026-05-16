@@ -580,10 +580,10 @@ consumer cwd (matching the CLI's
 A working fixture lives at
 ``examples-features/conf_dir_relative_pkgconfig/``.
 
-For diagnostics, ``ct-config -vv`` (or any ``ct-*`` tool at ``-vv``)
-prints the source ``conf-file:line`` for every PKG_CONFIG_PATH entry it
-emits, distinguishing conf-file values from CLI flags and
-auto-discovered cwd/gitroot defaults.
+For diagnostics, at high verbosity (``-vvvv``) ``ct-config`` (or any
+``ct-*`` tool) prints the source ``conf-file:line`` for every
+PKG_CONFIG_PATH entry it emits, distinguishing conf-file values from
+CLI flags and auto-discovered cwd/gitroot defaults.
 
 **Common Configuration Options**
 
