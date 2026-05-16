@@ -43,29 +43,28 @@ def _conf_dir() -> str:
     return os.path.join(er.example_path("conf_dir_relative_pkgconfig"), "ct.conf.d")
 
 
-def _parse_with_flavor_conf(flavor: str, third_cwd: str, monkeypatch) -> argparse.Namespace:
-    """Parse the example's ``flavor-<X>.conf`` from ``third_cwd``.
+def _parse_conf(conf_path: str, third_cwd, monkeypatch) -> argparse.Namespace:
+    """Parse a single ``--config=<conf_path>`` from ``third_cwd``.
 
     ``third_cwd`` is the analog of the cas-pchdir/<variant>/<hash>/
     directory that ct-cake-spawned subprocesses run from — neither the
-    conf file's directory nor any ancestor of it. The whole point of
-    ``${CONF_DIR}`` is to make the resulting PKG_CONFIG_PATH entries
-    independent of this cwd.
-
-    ``--no-git-root`` short-circuits ``find_git_root`` so the test is
-    insensitive to whether the temp dir happens to live inside a git
-    checkout.
+    conf file's directory nor any ancestor of it. ``--no-git-root``
+    short-circuits ``find_git_root`` so the test is insensitive to
+    whether the temp dir lives inside a git checkout.
     """
-    monkeypatch.chdir(third_cwd)
+    monkeypatch.chdir(str(third_cwd))
     monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
-
-    flavor_conf = os.path.join(_conf_dir(), f"flavor-{flavor}.conf")
-    argv = ["--config", flavor_conf, "--no-git-root"]
-
+    argv = ["--config", conf_path, "--no-git-root"]
     with uth.ParserContext():
         cap = apptools.create_parser("conf-dir-placeholder-test", argv=argv)
         apptools.add_common_arguments(cap, argv=argv)
         return apptools.parseargs(cap, argv, context=BuildContext())
+
+
+def _parse_with_flavor_conf(flavor: str, third_cwd: str, monkeypatch) -> argparse.Namespace:
+    """Parse the example's ``flavor-<X>.conf`` from ``third_cwd``."""
+    flavor_conf = os.path.join(_conf_dir(), f"flavor-{flavor}.conf")
+    return _parse_conf(flavor_conf, third_cwd, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
@@ -196,17 +195,6 @@ def test_each_flavor_resolves_to_its_own_pkgconfig_dir(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _parse_inline_conf(conf_path: str, monkeypatch, tmp_path) -> argparse.Namespace:
-    """Parse a single bespoke conf file from a neutral third cwd."""
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
-    argv = ["--config", conf_path, "--no-git-root"]
-    with uth.ParserContext():
-        cap = apptools.create_parser("conf-dir-placeholder-inline", argv=argv)
-        apptools.add_common_arguments(cap, argv=argv)
-        return apptools.parseargs(cap, argv, context=BuildContext())
-
-
 def test_conf_dir_placeholder_works_for_non_path_keys(tmp_path, monkeypatch):
     """The placeholder is generic — not pkg-config-specific. A user must
     be able to write ``append-CXXFLAGS = -I${CONF_DIR}/include`` and
@@ -221,7 +209,7 @@ def test_conf_dir_placeholder_works_for_non_path_keys(tmp_path, monkeypatch):
     other_cwd = tmp_path / "other"
     other_cwd.mkdir()
 
-    args = _parse_inline_conf(str(conf), monkeypatch, other_cwd)
+    args = _parse_conf(str(conf), other_cwd, monkeypatch)
 
     expanded = f"-I{conf_dir}/include"
     flat = " ".join(args.append_cxxflags) if isinstance(args.append_cxxflags, list) else str(args.append_cxxflags)
@@ -249,7 +237,7 @@ def test_conf_dir_placeholder_handles_multiple_occurrences_in_one_value(
     other_cwd = tmp_path / "other"
     other_cwd.mkdir()
 
-    args = _parse_inline_conf(str(conf), monkeypatch, other_cwd)
+    args = _parse_conf(str(conf), other_cwd, monkeypatch)
 
     flat = " ".join(args.append_cxxflags) if isinstance(args.append_cxxflags, list) else str(args.append_cxxflags)
     assert f"-I{conf_dir}/include" in flat, flat
@@ -277,7 +265,7 @@ def test_bare_relative_paths_are_not_auto_anchored(tmp_path, monkeypatch):
     other_cwd = tmp_path / "other"
     other_cwd.mkdir()
 
-    args = _parse_inline_conf(str(conf), monkeypatch, other_cwd)
+    args = _parse_conf(str(conf), other_cwd, monkeypatch)
     entries = list(args.prepend_pkg_config_path)
 
     bare_literal = os.path.join("ct.conf.d", "pkgconfig-c")
@@ -426,7 +414,7 @@ def test_provenance_records_each_list_element_separately(tmp_path, monkeypatch):
 
     other_cwd = tmp_path / "other"
     other_cwd.mkdir()
-    args = _parse_inline_conf(str(conf), monkeypatch, other_cwd)
+    args = _parse_conf(str(conf), other_cwd, monkeypatch)
 
     prov = _provenance_for(args)
     all_entries = prov.get("exemarkers") or []
