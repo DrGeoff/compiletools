@@ -18,6 +18,7 @@ import threading
 import warnings
 from collections import OrderedDict
 from collections.abc import Generator, Sequence
+from typing import Literal
 
 # Only used for the verbose print.
 import configargparse
@@ -2013,7 +2014,11 @@ def filter_pkg_config_cflags(cflags_str, verbose=0):
     return " ".join(processed_flags)
 
 
-def _pkg_config_provenance_label(path, origin, provenance):
+def _pkg_config_provenance_label(
+    path,
+    origin: Literal["prepend", "append", "candidate-cwd", "candidate-gitroot"],
+    provenance,
+):
     """Return a parenthetical origin label for a PKG_CONFIG_PATH entry, or
     empty string if no useful attribution is available.
 
