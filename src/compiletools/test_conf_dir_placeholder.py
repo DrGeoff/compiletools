@@ -339,21 +339,22 @@ def test_bare_relative_paths_are_not_auto_anchored(tmp_path, monkeypatch):
     )
 
 
-def test_marker_in_user_comment_does_not_poison_conf_dir(tmp_path, monkeypatch):
-    """Sentinel-marker recognition must be anchored to segment boundaries.
+def test_segment_header_in_user_comment_does_not_poison_conf_dir(tmp_path, monkeypatch):
+    """Segment-header recognition rejects user comments that match the
+    syntactic shape but name a non-existent path.
 
-    A user comment that happens to contain the ``# __ct_conf_dir__=...``
-    marker string must not silently swap the parser's conf-dir for
-    subsequent ``${CONF_DIR}`` expansions. The marker is only honored
-    when it follows a segment header emitted by ``_open_config_files``.
+    A user comment ``# --- /some/fictional/path/conf.conf ---`` must not
+    silently swap the parser's conf-dir for subsequent ``${CONF_DIR}``
+    expansions. The header is only honored when its named path exists
+    on disk.
 
     Uses two conf files so the multi-conf concatenation path runs (the
-    single-file path bypasses marker emission entirely)."""
+    single-file path bypasses segment-header emission entirely)."""
     conf_dir = tmp_path / "axis-confs"
     conf_dir.mkdir()
     first = conf_dir / "first.conf"
     first.write_text(
-        "# __ct_conf_dir__=/some/other/path\n"
+        "# --- /some/fictional/path/conf.conf ---\n"
         "prepend-PKG-CONFIG-PATH = ${CONF_DIR}/pkgconfig\n"
     )
     second = conf_dir / "second.conf"
@@ -366,21 +367,20 @@ def test_marker_in_user_comment_does_not_poison_conf_dir(tmp_path, monkeypatch):
 
     argv = ["--config", str(first), "--config", str(second), "--no-git-root"]
     with uth.ParserContext():
-        cap = apptools.create_parser("marker-poison", argv=argv)
+        cap = apptools.create_parser("segment-header-poison", argv=argv)
         apptools.add_common_arguments(cap, argv=argv)
         args = apptools.parseargs(cap, argv, context=BuildContext())
 
     expected = str(conf_dir / "pkgconfig")
     entries = list(args.prepend_pkg_config_path)
     assert any(os.path.realpath(e) == os.path.realpath(expected) for e in entries), (
-        f"User comment poisoned the conf_dir state. Expected {expected!r} "
-        f"on prepend_pkg_config_path; got {entries!r}"
+        f"User comment poisoned conf_dir; expected {expected!r} on "
+        f"prepend_pkg_config_path; got {entries!r}"
     )
     flat = " ".join(entries)
-    assert "/some/other/path" not in flat, (
-        f"User-authored comment line starting with the marker prefix was "
-        f"honored as a real marker — this is the poisoning bug. Entries: "
-        f"{entries!r}"
+    assert "/some/fictional/path" not in flat, (
+        f"User-authored # --- /path --- comment was honored as a real "
+        f"segment header; got: {entries!r}"
     )
 
 

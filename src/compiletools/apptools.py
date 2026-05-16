@@ -2977,20 +2977,12 @@ def _check_legacy_cas_config_keys(config_files) -> None:
         )
 
 
-# Marker line emitted by ``_ComposingArgumentParser._open_config_files`` at
-# the start of each conf file's contents in the concatenated stream. The
-# accumulating parser recognizes these lines and updates its current
-# ``${CONF_DIR}`` for subsequent values until the next marker. Format chosen
-# to remain a comment (leading ``#``) so any non-aware reader treats it as
-# a no-op, while being structured enough to parse unambiguously.
-#
-# The marker is anchored to a segment header (``# --- <path> ---``) so a
-# user-authored comment line that happens to start with the marker prefix
-# cannot poison the parser's conf-dir state. ``parse()`` only honors the
-# marker on the line immediately following a segment header.
+# Segment header emitted by ``_ComposingArgumentParser._open_config_files``
+# at the start of each conf file's contents in the concatenated stream.
+# ``_AccumulatingConfigFileParser.parse()`` derives the per-file
+# ``${CONF_DIR}`` directly from the segment-header path.
 _CONF_DIR_SEGMENT_HEADER_PREFIX = "# --- "
 _CONF_DIR_SEGMENT_HEADER_SUFFIX = " ---"
-_CONF_DIR_MARKER_PREFIX = "# __ct_conf_dir__="
 _CONF_DIR_PLACEHOLDER = "${CONF_DIR}"
 
 
@@ -2998,10 +2990,7 @@ def _expand_conf_dir(value, conf_dir):
     """Expand ``${CONF_DIR}`` in *value* to *conf_dir* (an absolute path).
 
     Applies to scalar strings and to each element of list values; leaves
-    non-string types untouched. ``conf_dir`` of ``None`` is a no-op so the
-    parser stays robust if a marker hasn't been seen yet (e.g., values
-    appearing before the first file marker in some pathological future
-    stream layout)."""
+    non-string types untouched. ``conf_dir`` of ``None`` is a no-op."""
     if conf_dir is None or _CONF_DIR_PLACEHOLDER not in (value if isinstance(value, str) else ""):
         if isinstance(value, list):
             return [_expand_conf_dir(elem, conf_dir) for elem in value]
@@ -3026,12 +3015,12 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
     ``CXX = g++``) remain last-writer-wins.
 
     ``${CONF_DIR}`` expansion: ``_open_config_files`` injects per-file
-    marker lines (``# __ct_conf_dir__=<abs/dir>``) ahead of each file's
-    content in the concatenated stream; ``parse()`` updates its current
-    conf-dir whenever it sees one and substitutes that value into any
-    ``${CONF_DIR}`` token in subsequent values. For the single-file path
-    (no concatenation) the parser falls back to
-    ``os.path.dirname(os.path.realpath(stream.name))``.
+    segment headers (``# --- <path> ---``) ahead of each file's content
+    in the concatenated stream; ``parse()`` derives the current conf-dir
+    from the header path and substitutes it into any ``${CONF_DIR}``
+    token in subsequent values. For the single-file path (no
+    concatenation) the parser falls back to the dirname of
+    ``stream.name``.
 
     Provenance side channel: every parsed entry is also recorded into
     ``self._provenance`` as ``key -> [(expanded_value, source_file_abspath,
@@ -3060,17 +3049,11 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
         if stream_name and not stream_name.startswith("<"):
             try:
                 source_file = compiletools.wrappedos.realpath(stream_name)
-                conf_dir = os.path.dirname(source_file)
+                conf_dir = compiletools.wrappedos.dirname(source_file)
             except (OSError, ValueError):
                 conf_dir = None
                 source_file = "<unknown>"
 
-        # Segment-header anchoring: a ``# __ct_conf_dir__=...`` line is
-        # only honored when it appears immediately after a segment header
-        # (``# --- <path> ---``) emitted by ``_open_config_files``. This
-        # prevents a user-authored comment that happens to start with the
-        # marker prefix from silently swapping the parser's conf-dir.
-        marker_expected = False
         # Per-segment line counter so provenance line numbers are 1-based
         # *within the source file*, not within the concatenated stream.
         # Reset whenever a segment header is consumed.
@@ -3084,24 +3067,15 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
                 header_path = stripped[
                     len(_CONF_DIR_SEGMENT_HEADER_PREFIX):-len(_CONF_DIR_SEGMENT_HEADER_SUFFIX)
                 ].strip()
-                if header_path:
-                    try:
-                        source_file = compiletools.wrappedos.realpath(header_path)
-                    except (OSError, ValueError):
-                        source_file = "<unknown>"
-                else:
-                    source_file = "<unknown>"
-                marker_expected = True
-                segment_lineno = 0
-                continue
-            if marker_expected and stripped.startswith(_CONF_DIR_MARKER_PREFIX):
-                conf_dir = stripped[len(_CONF_DIR_MARKER_PREFIX):].strip()
-                marker_expected = False
-                # The marker line is part of the synthetic header pair
-                # (segment-header + marker) and doesn't appear in the
-                # original conf file, so don't bump segment_lineno here.
-                continue
-            marker_expected = False
+                # Only treat the line as a real segment header if the
+                # named file exists; this rejects user-authored comments
+                # that happen to match the syntactic shape but point at
+                # fictional paths.
+                if header_path and compiletools.wrappedos.isfile(header_path):
+                    source_file = compiletools.wrappedos.realpath(header_path)
+                    conf_dir = compiletools.wrappedos.dirname(source_file)
+                    segment_lineno = 0
+                    continue
             segment_lineno += 1
             line = stripped
             if not line or line[0] in ["#", ";", "["] or line.startswith("---"):
@@ -3222,17 +3196,10 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
             if content and not content.endswith("\n"):
                 content += "\n"
             stream_name = getattr(stream, "name", "<?>")
-            # The ``# __ct_conf_dir__=...`` marker is consumed by
-            # _AccumulatingConfigFileParser to expand ${CONF_DIR} in
-            # subsequent values. Emit unconditionally even when the path
-            # is unresolvable so a downgraded reader still sees a comment.
-            try:
-                conf_dir = os.path.dirname(compiletools.wrappedos.realpath(stream_name))
-            except (OSError, ValueError):
-                conf_dir = ""
-            parts.append(
-                f"# --- {stream_name} ---\n{_CONF_DIR_MARKER_PREFIX}{conf_dir}\n{content}"
-            )
+            # Segment header demarcates each file's contents in the
+            # concatenated stream; _AccumulatingConfigFileParser derives
+            # the per-file ${CONF_DIR} from the header path.
+            parts.append(f"# --- {stream_name} ---\n{content}")
 
         merged = io.StringIO("".join(parts))
         merged.name = f"<merged: {len(streams)} conf files>"
