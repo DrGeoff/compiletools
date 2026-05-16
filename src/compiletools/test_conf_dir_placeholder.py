@@ -464,3 +464,40 @@ def test_provenance_records_expanded_value_not_literal_placeholder(
     assert not any("${CONF_DIR}" in v for v in values), (
         f"Provenance entries contain unexpanded ${{CONF_DIR}}: {values!r}"
     )
+
+
+def test_provenance_records_each_list_element_separately(tmp_path, monkeypatch):
+    """When a conf-file value is a JSON list (e.g.,
+    ``exemarkers = [main, _start, entry]``), the provenance side channel
+    must record ONE entry per element, all tagged with the same source
+    file and line number."""
+    conf_dir = tmp_path / "axis-confs"
+    conf_dir.mkdir()
+    conf = conf_dir / "extras.conf"
+    conf.write_text("exemarkers = [main, _start, entry]\n")
+
+    other_cwd = tmp_path / "other"
+    other_cwd.mkdir()
+    args = _parse_inline_conf(str(conf), monkeypatch, other_cwd)
+
+    prov = _provenance_for(args)
+    all_entries = prov.get("exemarkers") or []
+    # Bundled ct.conf may also set exemarkers; filter to entries sourced
+    # from the conf this test wrote so the invariant under check (one
+    # provenance entry per list element, all sharing source_file:lineno)
+    # is exercised in isolation.
+    conf_real = os.path.realpath(str(conf))
+    entries = [e for e in all_entries if os.path.realpath(e[1]) == conf_real]
+    values = [str(e[0]) for e in entries]
+    assert "main" in values and "_start" in values and "entry" in values, (
+        f"Expected list-element provenance entries for 'main', '_start', "
+        f"'entry' sourced from {conf_real!r}; got {entries!r} "
+        f"(all entries: {all_entries!r})"
+    )
+    # All three entries from this conf must share the same source file
+    # and line number.
+    sources = {(os.path.realpath(e[1]), e[2]) for e in entries}
+    assert len(sources) == 1, (
+        f"Expected all list-element entries from {conf_real!r} to share "
+        f"source_file:lineno; got distinct sources: {sources!r}"
+    )

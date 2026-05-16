@@ -2977,21 +2977,38 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
     ``${CONF_DIR}`` token in subsequent values. For the single-file path
     (no concatenation) the parser falls back to
     ``os.path.dirname(os.path.realpath(stream.name))``.
+
+    Provenance side channel: every parsed entry is also recorded into
+    ``self._provenance`` as ``key -> [(expanded_value, source_file_abspath,
+    lineno), ...]`` in parse order. Used by ``-vv`` diagnostics to
+    attribute each emitted setting back to its conf-file:line origin
+    without changing any ``args.*`` shape.
     """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._provenance: dict[str, list[tuple[str, str, int]]] = {}
 
     def parse(self, stream):
         items = OrderedDict()
-        # Initial conf-dir: derived from stream.name when available
-        # (covers the single-file path where _open_config_files returned
-        # the original file stream untouched). Marker lines, when present,
-        # override this per-file as the parser walks the concatenated stream.
+        # Reset provenance for each parse; the parser instance is reused
+        # across configargparse invocations.
+        self._provenance = {}
+        # Initial conf-dir / source-file: derived from stream.name when
+        # available (covers the single-file path where _open_config_files
+        # returned the original file stream untouched). Segment headers,
+        # when present, override these per-file as the parser walks the
+        # concatenated stream.
         stream_name = getattr(stream, "name", None)
         conf_dir = None
+        source_file = "<unknown>"
         if stream_name and not stream_name.startswith("<"):
             try:
-                conf_dir = os.path.dirname(compiletools.wrappedos.realpath(stream_name))
+                source_file = compiletools.wrappedos.realpath(stream_name)
+                conf_dir = os.path.dirname(source_file)
             except (OSError, ValueError):
                 conf_dir = None
+                source_file = "<unknown>"
 
         # Segment-header anchoring: a ``# __ct_conf_dir__=...`` line is
         # only honored when it appears immediately after a segment header
@@ -2999,19 +3016,38 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
         # prevents a user-authored comment that happens to start with the
         # marker prefix from silently swapping the parser's conf-dir.
         marker_expected = False
+        # Per-segment line counter so provenance line numbers are 1-based
+        # *within the source file*, not within the concatenated stream.
+        # Reset whenever a segment header is consumed.
+        segment_lineno = 0
         for i, line in enumerate(stream):
             stripped = line.strip()
             if (
                 stripped.startswith(_CONF_DIR_SEGMENT_HEADER_PREFIX)
                 and stripped.endswith(_CONF_DIR_SEGMENT_HEADER_SUFFIX)
             ):
+                header_path = stripped[
+                    len(_CONF_DIR_SEGMENT_HEADER_PREFIX):-len(_CONF_DIR_SEGMENT_HEADER_SUFFIX)
+                ].strip()
+                if header_path:
+                    try:
+                        source_file = compiletools.wrappedos.realpath(header_path)
+                    except (OSError, ValueError):
+                        source_file = "<unknown>"
+                else:
+                    source_file = "<unknown>"
                 marker_expected = True
+                segment_lineno = 0
                 continue
             if marker_expected and stripped.startswith(_CONF_DIR_MARKER_PREFIX):
                 conf_dir = stripped[len(_CONF_DIR_MARKER_PREFIX):].strip()
                 marker_expected = False
+                # The marker line is part of the synthetic header pair
+                # (segment-header + marker) and doesn't appear in the
+                # original conf file, so don't bump segment_lineno here.
                 continue
             marker_expected = False
+            segment_lineno += 1
             line = stripped
             if not line or line[0] in ["#", ";", "["] or line.startswith("---"):
                 continue
@@ -3051,6 +3087,13 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
                 items[key] = existing
             else:
                 items[key] = value
+
+            prov_bucket = self._provenance.setdefault(key, [])
+            if isinstance(value, list):
+                for elem in value:
+                    prov_bucket.append((str(elem), source_file, segment_lineno))
+            else:
+                prov_bucket.append((str(value), source_file, segment_lineno))
         return items
 
 
@@ -3091,6 +3134,21 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
       preserving "CLI is highest priority" for any conflicting late-wins
       flag like ``-O3`` vs ``-O0``).
     """
+
+    def get_conf_file_provenance(self) -> dict[str, list[tuple[str, str, int]]]:
+        """Return a deep copy of the per-conf-file provenance dict from
+        the most recent parse. Keys are conf-file keys as they appeared
+        (e.g. ``'prepend-PKG-CONFIG-PATH'``); values are lists of
+        ``(expanded_value, source_file_abspath, lineno)`` tuples in
+        parse order.
+
+        Used by ``-vv`` diagnostics in
+        ``_setup_pkg_config_overrides_locked`` and ``ct-config`` to
+        attribute each emitted setting back to the conf file (and line)
+        that contributed it.
+        """
+        prov = getattr(self._config_file_parser, "_provenance", None) or {}
+        return {key: list(entries) for key, entries in prov.items()}
 
     def _open_config_files(self, command_line_args):
         streams = super()._open_config_files(command_line_args)
