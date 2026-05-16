@@ -2922,9 +2922,36 @@ def _check_legacy_cas_config_keys(config_files) -> None:
         )
 
 
+# Marker line emitted by ``_ComposingArgumentParser._open_config_files`` at
+# the start of each conf file's contents in the concatenated stream. The
+# accumulating parser recognizes these lines and updates its current
+# ``${CONF_DIR}`` for subsequent values until the next marker. Format chosen
+# to remain a comment (leading ``#``) so any non-aware reader treats it as
+# a no-op, while being structured enough to parse unambiguously.
+_CONF_DIR_MARKER_PREFIX = "# __ct_conf_dir__="
+_CONF_DIR_PLACEHOLDER = "${CONF_DIR}"
+
+
+def _expand_conf_dir(value, conf_dir):
+    """Expand ``${CONF_DIR}`` in *value* to *conf_dir* (an absolute path).
+
+    Applies to scalar strings and to each element of list values; leaves
+    non-string types untouched. ``conf_dir`` of ``None`` is a no-op so the
+    parser stays robust if a marker hasn't been seen yet (e.g., values
+    appearing before the first file marker in some pathological future
+    stream layout)."""
+    if conf_dir is None or _CONF_DIR_PLACEHOLDER not in (value if isinstance(value, str) else ""):
+        if isinstance(value, list):
+            return [_expand_conf_dir(elem, conf_dir) for elem in value]
+        return value
+    return value.replace(_CONF_DIR_PLACEHOLDER, conf_dir)
+
+
 class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
     """Variant of ``DefaultConfigFileParser`` that accumulates duplicate
-    ``append-*`` / ``prepend-*`` keys into a list rather than last-writer-wins.
+    ``append-*`` / ``prepend-*`` keys into a list rather than last-writer-wins,
+    and expands ``${CONF_DIR}`` placeholders in values to the absolute
+    directory of the conf file being parsed.
 
     Used together with ``_ComposingArgumentParser``, which concatenates the
     entire conf-file hierarchy into one stream. When several conf files set
@@ -2935,12 +2962,36 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
     ``--append-X=v`` token per value, letting argparse's ``action='append'``
     accumulate them on ``args.append_*``. All other keys (scalars like
     ``CXX = g++``) remain last-writer-wins.
+
+    ``${CONF_DIR}`` expansion: ``_open_config_files`` injects per-file
+    marker lines (``# __ct_conf_dir__=<abs/dir>``) ahead of each file's
+    content in the concatenated stream; ``parse()`` updates its current
+    conf-dir whenever it sees one and substitutes that value into any
+    ``${CONF_DIR}`` token in subsequent values. For the single-file path
+    (no concatenation) the parser falls back to
+    ``os.path.dirname(os.path.realpath(stream.name))``.
     """
 
     def parse(self, stream):
         items = OrderedDict()
+        # Initial conf-dir: derived from stream.name when available
+        # (covers the single-file path where _open_config_files returned
+        # the original file stream untouched). Marker lines, when present,
+        # override this per-file as the parser walks the concatenated stream.
+        stream_name = getattr(stream, "name", None)
+        conf_dir = None
+        if stream_name and not stream_name.startswith("<"):
+            try:
+                conf_dir = os.path.dirname(os.path.realpath(stream_name))
+            except (OSError, ValueError):
+                conf_dir = None
+
         for i, line in enumerate(stream):
-            line = line.strip()
+            stripped = line.strip()
+            if stripped.startswith(_CONF_DIR_MARKER_PREFIX):
+                conf_dir = stripped[len(_CONF_DIR_MARKER_PREFIX):].strip()
+                continue
+            line = stripped
             if not line or line[0] in ["#", ";", "["] or line.startswith("---"):
                 continue
             match = re.match(
@@ -2965,6 +3016,8 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
                     value = json.loads(value)
                 except Exception:
                     value = [elem.strip() for elem in value[1:-1].split(",")]
+
+            value = _expand_conf_dir(value, conf_dir)
 
             if key.startswith(("append-", "prepend-")) and key in items:
                 existing = items[key]
@@ -3032,7 +3085,20 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
                     stream.close()
             if content and not content.endswith("\n"):
                 content += "\n"
-            parts.append("# --- {} ---\n{}".format(getattr(stream, "name", "<?>"), content))
+            stream_name = getattr(stream, "name", "<?>")
+            # The ``# __ct_conf_dir__=...`` marker is consumed by
+            # _AccumulatingConfigFileParser to expand ${CONF_DIR} in
+            # subsequent values. Emit unconditionally even when the path
+            # is unresolvable so a downgraded reader still sees a comment.
+            try:
+                conf_dir = os.path.dirname(os.path.realpath(stream_name))
+            except (OSError, ValueError):
+                conf_dir = ""
+            parts.append(
+                "# --- {} ---\n{}{}\n{}".format(
+                    stream_name, _CONF_DIR_MARKER_PREFIX, conf_dir, content
+                )
+            )
 
         merged = io.StringIO("".join(parts))
         merged.name = f"<merged: {len(streams)} conf files>"
