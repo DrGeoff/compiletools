@@ -3136,8 +3136,10 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
     """
 
     def get_conf_file_provenance(self) -> dict[str, list[tuple[str, str, int]]]:
-        """Return a deep copy of the per-conf-file provenance dict from
-        the most recent parse. Keys are conf-file keys as they appeared
+        """Return a shallow copy of the per-conf-file provenance dict from
+        the most recent parse (the entry tuples themselves are immutable,
+        so callers cannot mutate the parser's internal state through the
+        returned structure). Keys are conf-file keys as they appeared
         (e.g. ``'prepend-PKG-CONFIG-PATH'``); values are lists of
         ``(expanded_value, source_file_abspath, lineno)`` tuples in
         parse order.
