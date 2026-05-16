@@ -95,6 +95,51 @@ def requires_functional_compiler(func):
     return wrapper
 
 
+@functools.cache
+def _probe_default_variant_std_error() -> str | None:
+    """Return the std-mismatch message if the default variant's ``-std=``
+    exceeds the resolved compiler's support, else ``None``.
+
+    Runs an empty-argv ``parseargs`` so the probe shares the exact code
+    path that production uses (no drift possible). Cached because the
+    probe spawns the compiler for a ``--version`` read.
+    """
+    from compiletools.build_context import BuildContext
+
+    with ParserContext():
+        try:
+            cap = compiletools.apptools.create_parser("std-support probe", argv=[])
+            compiletools.apptools.add_common_arguments(cap, argv=[])
+            compiletools.apptools.parseargs(cap, argv=[], context=BuildContext())
+        except RuntimeError as exc:
+            msg = str(exc)
+            if "does not support -std=" in msg:
+                return msg.splitlines()[0]
+            raise
+    return None
+
+
+def requires_compiler_supports_default_std(func):
+    """Skip when the default variant pins ``-std=c++NN`` beyond the resolved
+    compiler's support.
+
+    ``apptools._check_compiler_supports_requested_standard`` raises
+    ``RuntimeError`` when a variant pins (say) ``-std=c++26`` on a system
+    with only gcc 12. Tests that build via the default variant should
+    skip cleanly on under-spec systems rather than surface that error as
+    a test failure.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        msg = _probe_default_variant_std_error()
+        if msg:
+            pytest.skip(msg)
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
 def requires_lockdir_filesystem(func):
     """Decorator to skip tests that require lockdir-based locking (NFS/Lustre).
 

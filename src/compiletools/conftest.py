@@ -70,6 +70,54 @@ def capped_parallel_argv():
     return ["--parallel", str(capped)]
 
 
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item):
+    """Translate the std-support error into a skip, in-process and out.
+
+    ``apptools._check_compiler_supports_requested_standard`` raises
+    ``RuntimeError`` at parseargs time when the resolved default variant
+    pins (e.g.) ``-std=c++26`` but only an older gcc/clang is on PATH.
+    On under-spec systems this would fail the ~190 tests that exercise
+    the default variant; per-test decorators don't scale, so handle it
+    centrally — same intent as ``uth.requires_compiler_supports_default_std``,
+    just applied to every test that happens to trip the check.
+
+    Tests fall into three flavours, all with the same root cause:
+      * In-process apptools check: ``RuntimeError("...does not support
+        -std=...")`` from the parseargs guard.
+      * Out-of-process apptools check: ``ct-*`` subprocess raises the
+        same RuntimeError; the text reaches us via the AssertionError
+        message that captured stderr.
+      * Out-of-process compiler-level rejection: a variant that bypasses
+        the apptools probe still trips the compiler itself, surfacing as
+        ``g++: error: unrecognized command-line option '-std=c++26'``.
+    """
+    try:
+        return (yield)
+    except (RuntimeError, AssertionError) as exc:
+        reason = _std_skip_reason(str(exc))
+        if reason is not None:
+            pytest.skip(reason)
+        raise
+
+
+def _std_skip_reason(msg: str) -> str | None:
+    """Return the one-line std-mismatch summary if *msg* indicates the
+    resolved compiler can't handle the resolved -std=, else ``None``.
+
+    Recognises the apptools guard text and the gcc/clang driver
+    rejections that surface when a variant bypasses the guard.
+    """
+    for line in msg.splitlines():
+        if "does not support -std=" in line:
+            return line.strip()
+        if "unrecognized command-line option" in line and "-std=c++" in line:
+            return line.strip()
+        if "invalid value" in line and "-std=" in line:
+            return line.strip()
+    return None
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_runtest_logstart(nodeid, location):
     """Append each test nodeid to ``$CT_PYTEST_CHECKPOINT`` (with fsync) before the test runs.

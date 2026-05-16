@@ -139,6 +139,7 @@ class TestBackendBuildApplication(BaseCompileToolsTestCase):
     """
 
     @uth.requires_functional_compiler
+    @uth.requires_compiler_supports_default_std
     @uth.requires_backend_tool()
     @pytest.mark.parametrize("backend_name", available_backends())
     def test_build_helloworld(self, backend_name, tmp_path, monkeypatch, capfd, capped_parallel_argv):

@@ -1634,6 +1634,8 @@ class TestPchManifest:
         manifest = json.loads((manifest_dir / "manifest.json").read_text())
         assert manifest["compiler"] == "clang++"
 
+    @uth.requires_functional_compiler
+    @uth.requires_compiler_supports_default_std
     def test_pch_rule_emission_writes_manifest(self, tmp_path):
         """Building a graph with a PCH header writes the manifest eagerly.
 
