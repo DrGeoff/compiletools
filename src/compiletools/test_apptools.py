@@ -1167,6 +1167,31 @@ class TestSetupPkgConfigOverrides:
             for p in (args.prepend_pkg_config_path or [])
         ), f"prepend value didn't reach args: {args.prepend_pkg_config_path!r}"
 
+    def test_pkg_config_provenance_label_returns_from_cli_for_no_match(self):
+        """When the path isn't in the provenance dict, the label degrades to
+        '(from CLI)'. Covers the lookup-miss branch directly so the
+        user-visible 'from CLI' tag survives any future refactor of the
+        verbose emission loop."""
+        from compiletools.apptools import _pkg_config_provenance_label
+
+        # Empty provenance — any prepend path falls back to CLI.
+        assert _pkg_config_provenance_label("/abs/path", "prepend", {}) == "(from CLI)"
+
+        # Provenance present but no match for this path — still CLI.
+        prov = {"prepend-PKG-CONFIG-PATH": [("/different/path", "/conf/a.conf", 1)]}
+        assert _pkg_config_provenance_label("/abs/path", "prepend", prov) == "(from CLI)"
+
+        # Symmetric for append origin.
+        prov = {"append-PKG-CONFIG-PATH": [("/different/path", "/conf/a.conf", 1)]}
+        assert _pkg_config_provenance_label("/abs/path", "append", prov) == "(from CLI)"
+
+        # Provenance contains a match — labels the conf-file:line.
+        prov = {"prepend-PKG-CONFIG-PATH": [("/abs/path", "/conf/a.conf", 7)]}
+        assert (
+            _pkg_config_provenance_label("/abs/path", "prepend", prov)
+            == "(from /conf/a.conf:7)"
+        )
+
     def test_cwd_pkgconfig_takes_priority_over_gitroot(self, monkeypatch, tmp_path):
         """cwd/ct.conf.d/pkgconfig/ is prepended before gitroot/ct.conf.d/pkgconfig/."""
         repo_root = tmp_path / "repo"
