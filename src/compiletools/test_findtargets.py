@@ -27,6 +27,7 @@ class TestFindTargetsModule:
             "cli_features/gamma.cpp",
             "computed_include/main.cpp",
             "conditional_includes/main.cpp",
+            "conf_dir_relative_pkgconfig/main.cpp",
             "cppflags_macros/advanced_preprocessor_test.cpp",
             "cppflags_macros/compiler_builtin_test.cpp",
             "cppflags_macros/elif_test.cpp",
