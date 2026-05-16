@@ -2014,9 +2014,12 @@ def filter_pkg_config_cflags(cflags_str, verbose=0):
     return " ".join(processed_flags)
 
 
+_PkgConfigOrigin = Literal["prepend", "append", "candidate-cwd", "candidate-gitroot"]
+
+
 def _pkg_config_provenance_label(
     path,
-    origin: Literal["prepend", "append", "candidate-cwd", "candidate-gitroot"],
+    origin: _PkgConfigOrigin,
     provenance,
 ):
     """Return a parenthetical origin label for a PKG_CONFIG_PATH entry, or
@@ -2034,8 +2037,6 @@ def _pkg_config_provenance_label(
         return "(auto-discovered: cwd)"
     if origin == "candidate-gitroot":
         return "(auto-discovered: gitroot)"
-    if origin not in ("prepend", "append"):
-        return ""
     key = "prepend-PKG-CONFIG-PATH" if origin == "prepend" else "append-PKG-CONFIG-PATH"
     try:
         target_real = compiletools.wrappedos.realpath(path)
@@ -2157,19 +2158,20 @@ def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_p
 
     seen: set[str] = set()
     final: list[str] = []
-    for source, label, origin in (
+    emission_passes: list[tuple[list[str], str | None, _PkgConfigOrigin | None]] = [
         (prepend_normd, "Prepended", "prepend"),
         (cwd_candidates, "Prepended", "candidate-cwd"),
         (gitroot_candidates, "Prepended", "candidate-gitroot"),
         (middle, None, None),
         (append_normd, "Appended", "append"),
-    ):
+    ]
+    for source, label, origin in emission_passes:
         for d in source:
             if not d or d in seen:
                 continue
             seen.add(d)
             final.append(d)
-            if label is not None and verbose >= 4:
+            if label is not None and origin is not None and verbose >= 4:
                 attribution = _pkg_config_provenance_label(d, origin, provenance)
                 if attribution:
                     print(f"{label} pkg-config path: {d} {attribution}")
