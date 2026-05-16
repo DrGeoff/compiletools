@@ -2141,8 +2141,14 @@ def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_p
     if args_parser is not None:
         try:
             provenance = args_parser.get_conf_file_provenance()
-        except Exception:
+        except Exception as exc:
             provenance = {}
+            if verbose >= 4:
+                print(
+                    f"warning: pkg-config provenance lookup failed ({type(exc).__name__}: {exc}); "
+                    f"falling back to bare-path output",
+                    file=sys.stderr,
+                )
 
     seen: set[str] = set()
     final: list[str] = []
@@ -2161,7 +2167,7 @@ def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_p
             if label is not None and verbose >= 4:
                 attribution = _pkg_config_provenance_label(d, origin, provenance)
                 if attribution:
-                    print(f"{label} pkg-config path: {d}  {attribution}")
+                    print(f"{label} pkg-config path: {d} {attribution}")
                 else:
                     print(f"{label} pkg-config path: {d}")
 
