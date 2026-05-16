@@ -1,0 +1,6 @@
+Name: flavored
+Description: Flavor B of the "flavored" package, intended to be selected
+ by flavor-b.conf via prepend-PKG-CONFIG-PATH.
+Version: 1.0.0
+Cflags: -DFLAVORED_FLAVOR=B
+Libs: -lflavored_b
