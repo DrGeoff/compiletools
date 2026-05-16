@@ -1,49 +1,14 @@
-"""Spec for the ``${CONF_DIR}`` placeholder + conf-file provenance side
-channel.
+"""Spec / regression tests for the ${CONF_DIR} placeholder + conf-file
+provenance side channel.
 
-Background — the bug this addresses
------------------------------------
+${CONF_DIR} expands at conf-parse time to the absolute directory of the
+conf file the value originated from. The provenance side channel records
+(value, source_file, lineno) per parsed entry, exposed via
+parser.get_conf_file_provenance().
 
-Upstream report (2026-05-15): a project axis conf that uses a *relative*
-path in ``prepend-PKG-CONFIG-PATH = ...`` worked when ``ct-cake`` was
-invoked from the gitroot but silently picked up the *wrong* dependency
-version when ct-cake-spawned subprocesses (notably shared-PCH compiles
-in ``cas-pchdir/<variant>/<hash>/``) ran from a different cwd. The build
-linked and ran but against the wrong library; for ABI- or version-pinned
-dependencies the failure surfaced as a missing transitive header or —
-worse — a successful build against the wrong binary.
-
-Root cause: ``apptools._AccumulatingConfigFileParser.parse()``
-(apptools.py:2940) stored the raw value verbatim;
-``_setup_pkg_config_overrides_locked`` (apptools.py:2066) used
-``os.path.normpath()``, which collapses ``./`` and ``..`` but does NOT
-anchor relatives. The literal relative string survived all the way into
-``os.environ['PKG_CONFIG_PATH']``.
-
-Fix shape — Option 1 + Option 5-lite
-------------------------------------
-
-* **``${CONF_DIR}`` placeholder.** Expanded at conf-parse time inside
-  ``_AccumulatingConfigFileParser.parse()`` to the absolute directory
-  of the conf file being parsed (``os.path.dirname(os.path.realpath(
-  stream.name))``). Generic across **all** keys (works for
-  ``append-INCLUDE``, ``append-CFLAGS = -I${CONF_DIR}/include``, ``LD =
-  ${CONF_DIR}/wrapper.sh``, etc., not just ``PKG-CONFIG-PATH``).
-  Mirrors CMake's ``${CMAKE_CURRENT_LIST_DIR}`` and shell's
-  ``${BASH_SOURCE[0]%/*}``. Opt-in: nothing changes for confs that
-  don't use the placeholder.
-
-* **Provenance side channel.** ``_AccumulatingConfigFileParser`` also
-  records ``(value, source_file, lineno)`` for every parsed entry into
-  a side-channel dict, exposed via the parser. ``args.*`` shapes stay
-  unchanged (``list[str]`` not ``list[tuple[str, str]]``) so consumers
-  outside the diagnostic emitters are unaffected. Lets ``-vv``
-  diagnostics in ``_setup_pkg_config_overrides_locked`` and
-  ``ct-config`` attribute every entry on ``PKG_CONFIG_PATH`` back to
-  the conf file (and line) that contributed it.
-
-The shared fixture lives in
-``examples-features/conf_dir_relative_pkgconfig/``.
+See src/compiletools/CLAUDE.md (architecture) and README.ct-config.rst
+(user-facing) for the full background. Fixture: examples-features/
+conf_dir_relative_pkgconfig/.
 """
 
 from __future__ import annotations
