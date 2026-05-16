@@ -555,6 +555,36 @@ Command-line options automatically map to environment variables by:
     --file-locking       -> FILE_LOCKING=true
     --append-CXXFLAGS    -> APPEND_CXXFLAGS="-O2"
 
+**${CONF_DIR} placeholder**
+
+Inside any conf-file value, ``${CONF_DIR}`` expands at parse time to the
+absolute directory of the conf file that value lives in. Use it to anchor
+path-bearing directives in an axis conf so they keep working regardless
+of the consumer's cwd at compile time:
+
+.. code-block:: ini
+
+    # ct.conf.d/flavor-b.conf
+    prepend-PKG-CONFIG-PATH = ${CONF_DIR}/pkgconfig-b
+    append-INCLUDE          = ${CONF_DIR}/include
+    append-CFLAGS           = -I${CONF_DIR}/include
+    append-CXXFLAGS         = -I${CONF_DIR}/include
+    LD                      = ${CONF_DIR}/wrapper.sh
+    cas-objdir              = ${CONF_DIR}/../shared-cas
+
+The placeholder is generic — it works in every key, not just
+``*-PATH``. Bare relative paths stay bare and resolve against the
+consumer cwd (matching the CLI's
+``--prepend-PKG-CONFIG-PATH=relative/path`` behaviour), so
+``${CONF_DIR}`` is the explicit way to opt into conf-relative anchoring.
+A working fixture lives at
+``examples-features/conf_dir_relative_pkgconfig/``.
+
+For diagnostics, ``ct-config -vv`` (or any ``ct-*`` tool at ``-vv``)
+prints the source ``conf-file:line`` for every PKG_CONFIG_PATH entry it
+emits, distinguishing conf-file values from CLI flags and
+auto-discovered cwd/gitroot defaults.
+
 **Common Configuration Options**
 
 Base configuration (ct.conf):

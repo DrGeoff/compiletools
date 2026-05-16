@@ -49,6 +49,14 @@ For PCH validation to actually succeed, the dialect bazel uses for the consumer 
 
 The flow inside one parseargs invocation: `create_parser` → `extract_variant(argv)` → `resolve_variant(variant, argv)` (consults builtin/conf/env/CLI for canonical_order, resolves axes, returns `VariantResolution`). After configargparse parses, `_commonsubstitutions` re-runs `canonicalize_variant_input(args.variant, argv=args._argv)` and a second `resolve_variant(argv=args._argv)` to populate `args._variant_resolution` for the `-vv` provenance trace. The `_argv` stash on `args` is what lets the second resolve hit the `--config=path` short-circuit branch.
 
+## `${CONF_DIR}` placeholder + conf-file provenance
+
+`${CONF_DIR}` expands at conf-parse time inside `_AccumulatingConfigFileParser.parse()` to the absolute directory of the conf file the value originated from — generic across every key, not just `*-PATH`. Opt-in: bare relatives still pass through verbatim, so the placeholder is the explicit way to anchor a value to its conf file. Closes the 2026-05-15 upstream wrong-flavor bug, where bare-relative `prepend-PKG-CONFIG-PATH` resolved against the consumer's cwd (`cas-pchdir/<variant>/<hash>/`) at compile time instead of the conf-file directory.
+
+Multi-conf concatenation: `_open_config_files` prepends a `# --- <name> ---` + `# __ct_conf_dir__=<abs/dir>` header pair before each file's body. The parser tracks a `marker_expected` flag flipped on by the segment header and consumed by the next non-blank line — so a user comment that happens to contain the marker string mid-file can't poison subsequent expansions.
+
+Provenance side channel: `(expanded_value, source_file, lineno)` per parsed entry, accumulated in `self._provenance` and exposed via `_ComposingArgumentParser.get_conf_file_provenance()` (returns a shallow copy; the inner tuples are immutable). `_setup_pkg_config_overrides_locked` consumes it at `verbose >= 4` to attribute every emitted `Prepended/Appended pkg-config path: ...` with `(from /abs/conf:N)` / `(from CLI)` / `(auto-discovered: cwd|gitroot)`. The `args.*` shapes are unchanged — provenance is a parallel channel, not a wrapping of the parsed values.
+
 ## Workspace-relative compile paths: full Round 3 history
 
 `_inject_ffile_prefix_map` skipped per-slot when the user already supplied any `-f{file,debug,macro,canon}-prefix-map=`. Linker symmetry via `canonicalize_for_command` / `canonicalize_path_for_command` (target substituted, not `<GITROOT>` sentinel); `_create_link_rule` / `_create_shared_library_rule` route LDFLAGS through them so RPATHs and `--version-script` paths under the gitroot are target-prefixed in the argv. `canonicalize_for_cache_key` also rewrites the OLD side of those flag families, otherwise two users' auto-injected tokens would re-leak the gitroot through the very flag meant to scrub it.
