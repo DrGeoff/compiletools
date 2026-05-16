@@ -1075,7 +1075,7 @@ class TestSetupPkgConfigOverrides:
         assert first_value == second_value
 
     def test_verbose_output(self, monkeypatch, tmp_path, capsys):
-        """Verbose >= 4 prints the override path."""
+        """Verbose >= 4 prints the override path with an auto-discovered label."""
         pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
         pkgconfig_dir.mkdir(parents=True)
 
@@ -1089,6 +1089,83 @@ class TestSetupPkgConfigOverrides:
         captured = capsys.readouterr()
         assert "Prepended pkg-config path:" in captured.out
         assert str(pkgconfig_dir) in captured.out
+        # cwd == gitroot here, so the cwd branch fires first and dedup
+        # suppresses the gitroot duplicate. Label must say "cwd".
+        assert "(auto-discovered: cwd)" in captured.out
+        assert "(auto-discovered: gitroot)" not in captured.out
+
+    def test_verbose_output_labels_gitroot_when_cwd_differs(self, monkeypatch, tmp_path, capsys):
+        """When cwd != gitroot and only the gitroot has a pkgconfig dir,
+        the auto-discovered label says 'gitroot'."""
+        repo_root = tmp_path / "repo"
+        project_dir = tmp_path / "repo" / "subproject"
+        repo_pkgconfig = repo_root / "ct.conf.d" / "pkgconfig"
+        repo_pkgconfig.mkdir(parents=True)
+        project_dir.mkdir(parents=True)
+
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(repo_root))
+        monkeypatch.chdir(project_dir)
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+
+        ctx = BuildContext()
+        _setup_pkg_config_overrides(ctx, verbose=4)
+
+        captured = capsys.readouterr()
+        assert str(repo_pkgconfig) in captured.out
+        assert "(auto-discovered: gitroot)" in captured.out
+        assert "(auto-discovered: cwd)" not in captured.out
+
+    def test_setup_pkg_config_overrides_emits_provenance_at_verbose_4(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """A prepend-PKG-CONFIG-PATH set in a conf file produces an
+        attribution line of the form ``(from <abs_conf_path>:<lineno>)``
+        at verbose>=4. Confirms the conf-file provenance side channel
+        is wired through ``_setup_pkg_config_overrides_locked``."""
+        import compiletools.apptools as apptools
+        import compiletools.testhelper as uth
+
+        conf_dir = tmp_path / "ct.conf.d"
+        conf_dir.mkdir(parents=True)
+        # Note the line number we assert on must match the line where
+        # ``prepend-PKG-CONFIG-PATH`` appears in the file.
+        conf_file = conf_dir / "myaxis.conf"
+        conf_file.write_text("prepend-PKG-CONFIG-PATH = ${CONF_DIR}/pkgconfig-foo\n")
+        target_dir = conf_dir / "pkgconfig-foo"
+        target_dir.mkdir()
+
+        # Synthesize a project-level ct.conf that selects the axis, so
+        # the conf-file value flows through configargparse.
+        (tmp_path / "ct.conf").write_text("variant = myaxis\n")
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path))
+
+        # Don't auto-discover ct.conf.d/pkgconfig at gitroot — keep this
+        # test focused on the provenance attribution path.
+        argv = ["--variant=myaxis", "--no-git-root", "-vvvv"]
+        with uth.DirectoryContext(str(tmp_path)):
+            cap = apptools.create_parser("provenance test", argv=argv)
+            apptools.add_common_arguments(cap, argv=argv)
+            with uth.ParserContext():
+                ctx = BuildContext()
+                args = apptools.parseargs(cap, argv, context=ctx)
+
+        captured = capsys.readouterr()
+        # The conf file's prepend value resolved to <conf_dir>/pkgconfig-foo,
+        # and the attribution must name the source conf and the line number.
+        assert "Prepended pkg-config path:" in captured.out
+        assert str(target_dir) in captured.out
+        assert f"(from {conf_file}:1)" in captured.out, (
+            f"Expected attribution '(from {conf_file}:1)' in stdout, "
+            f"got:\n{captured.out!r}"
+        )
+        # Sanity: ensure args propagated the prepend value.
+        assert any(
+            os.path.normpath(p) == str(target_dir)
+            for p in (args.prepend_pkg_config_path or [])
+        ), f"prepend value didn't reach args: {args.prepend_pkg_config_path!r}"
 
     def test_cwd_pkgconfig_takes_priority_over_gitroot(self, monkeypatch, tmp_path):
         """cwd/ct.conf.d/pkgconfig/ is prepended before gitroot/ct.conf.d/pkgconfig/."""

@@ -2013,7 +2013,40 @@ def filter_pkg_config_cflags(cflags_str, verbose=0):
     return " ".join(processed_flags)
 
 
-def _setup_pkg_config_overrides(context, verbose=0, prepend_paths=None, append_paths=None):
+def _pkg_config_provenance_label(path, origin, provenance):
+    """Return a parenthetical origin label for a PKG_CONFIG_PATH entry, or
+    empty string if no useful attribution is available.
+
+    ``origin`` is one of ``'prepend'``, ``'append'``, ``'candidate-cwd'``,
+    or ``'candidate-gitroot'``. The candidate-* origins go straight to the
+    auto-discovered label without consulting ``provenance``. For
+    prepend/append, the matching ``prepend-PKG-CONFIG-PATH`` /
+    ``append-PKG-CONFIG-PATH`` provenance entries are searched for a
+    realpath-equal value; first match wins. Falls back to ``(from CLI)``
+    when no provenance entry matches.
+    """
+    if origin == "candidate-cwd":
+        return "(auto-discovered: cwd)"
+    if origin == "candidate-gitroot":
+        return "(auto-discovered: gitroot)"
+    if origin not in ("prepend", "append"):
+        return ""
+    key = "prepend-PKG-CONFIG-PATH" if origin == "prepend" else "append-PKG-CONFIG-PATH"
+    try:
+        target_real = compiletools.wrappedos.realpath(path)
+    except (OSError, ValueError):
+        target_real = path
+    for value, source_file, lineno in provenance.get(key, []):
+        try:
+            value_real = compiletools.wrappedos.realpath(value)
+        except (OSError, ValueError):
+            value_real = value
+        if value_real == target_real:
+            return f"(from {source_file}:{lineno})"
+    return "(from CLI)"
+
+
+def _setup_pkg_config_overrides(context, verbose=0, prepend_paths=None, append_paths=None, args_parser=None):
     """Apply project-level and CLI-specified pkg-config path overrides to PKG_CONFIG_PATH.
 
     Priority order (highest first):
@@ -2029,6 +2062,12 @@ def _setup_pkg_config_overrides(context, verbose=0, prepend_paths=None, append_p
         verbose: verbosity level for diagnostic output.
         prepend_paths: directories to prepend (from ``--prepend-PKG-CONFIG-PATH``).
         append_paths: directories to append (from ``--append-PKG-CONFIG-PATH``).
+        args_parser: optional ``_ComposingArgumentParser`` whose
+            ``get_conf_file_provenance()`` is consulted at ``verbose >= 4``
+            to attribute each emitted ``Prepended/Appended pkg-config
+            path: ...`` line back to its origin (conf-file:line, CLI, or
+            auto-discovered). Best-effort: if absent or empty the
+            output degrades to bare paths (today's format).
 
     Must be called before any pkg-config subprocess invocation
     (i.e., before _add_flags_from_pkg_config and before magicflags
@@ -2055,7 +2094,7 @@ def _setup_pkg_config_overrides(context, verbose=0, prepend_paths=None, append_p
       undo the mutation. Restore is also single-process / serial.
     """
     with _PKG_CONFIG_OVERRIDE_LOCK:
-        _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_paths)
+        _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_paths, args_parser)
 
 
 # Process-local serialization for the env-mutation in _setup_pkg_config_overrides.
@@ -2063,27 +2102,25 @@ def _setup_pkg_config_overrides(context, verbose=0, prepend_paths=None, append_p
 _PKG_CONFIG_OVERRIDE_LOCK = threading.Lock()
 
 
-def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_paths):
+def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_paths, args_parser=None):
     """Body of _setup_pkg_config_overrides; assumes the module lock is held."""
     if context.pkg_config_overrides_applied:
         return
 
     gitroot = compiletools.git_utils.find_git_root()
 
-    # Collect candidate pkgconfig directories in priority order
-    # (highest priority first).
-    candidates = []
-
+    cwd_candidates = []
     cwd_pkgconfig = os.path.join(os.getcwd(), "ct.conf.d", "pkgconfig")
     if compiletools.wrappedos.isdir(cwd_pkgconfig):
-        candidates.append(os.path.normpath(cwd_pkgconfig))
+        cwd_candidates.append(os.path.normpath(cwd_pkgconfig))
 
+    gitroot_candidates = []
     if gitroot:
         repo_pkgconfig = os.path.join(gitroot, "ct.conf.d", "pkgconfig")
         if compiletools.wrappedos.isdir(repo_pkgconfig):
             repo_pkgconfig = os.path.normpath(repo_pkgconfig)
-            if repo_pkgconfig not in candidates:
-                candidates.append(repo_pkgconfig)
+            if repo_pkgconfig not in cwd_candidates:
+                gitroot_candidates.append(repo_pkgconfig)
 
     existing = os.environ.get("PKG_CONFIG_PATH", "")
     existing_dirs = [os.path.normpath(d) for d in existing.split(os.pathsep)] if existing else []
@@ -2095,19 +2132,26 @@ def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_p
     # being silently dropped — so --prepend-PKG-CONFIG-PATH=/X actually
     # promotes /X to the front when /X was already present.
     prepend_normd = [os.path.normpath(d) for d in (prepend_paths or [])]
-    candidates_normd = [os.path.normpath(d) for d in candidates]
     append_normd = [os.path.normpath(d) for d in (append_paths or [])]
     forced_at_end = set(append_normd)
 
     middle = [d for d in existing_dirs if d not in forced_at_end]
 
+    provenance = {}
+    if args_parser is not None:
+        try:
+            provenance = args_parser.get_conf_file_provenance()
+        except Exception:
+            provenance = {}
+
     seen: set[str] = set()
     final: list[str] = []
-    for source, label in (
-        (prepend_normd, "Prepended"),
-        (candidates_normd, "Prepended"),
-        (middle, None),
-        (append_normd, "Appended"),
+    for source, label, origin in (
+        (prepend_normd, "Prepended", "prepend"),
+        (cwd_candidates, "Prepended", "candidate-cwd"),
+        (gitroot_candidates, "Prepended", "candidate-gitroot"),
+        (middle, None, None),
+        (append_normd, "Appended", "append"),
     ):
         for d in source:
             if not d or d in seen:
@@ -2115,7 +2159,11 @@ def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_p
             seen.add(d)
             final.append(d)
             if label is not None and verbose >= 4:
-                print(f"{label} pkg-config path: {d}")
+                attribution = _pkg_config_provenance_label(d, origin, provenance)
+                if attribution:
+                    print(f"{label} pkg-config path: {d}  {attribution}")
+                else:
+                    print(f"{label} pkg-config path: {d}")
 
     new_value = os.pathsep.join(final) if final else None
 
@@ -2530,6 +2578,7 @@ def _commonsubstitutions(args):
         args.verbose,
         prepend_paths=getattr(args, "prepend_pkg_config_path", None),
         append_paths=getattr(args, "append_pkg_config_path", None),
+        args_parser=getattr(args, "_parser", None),
     )
     _add_flags_from_pkg_config(args)
     _set_project_version(args)
