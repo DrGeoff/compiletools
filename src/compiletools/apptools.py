@@ -2928,6 +2928,13 @@ def _check_legacy_cas_config_keys(config_files) -> None:
 # ``${CONF_DIR}`` for subsequent values until the next marker. Format chosen
 # to remain a comment (leading ``#``) so any non-aware reader treats it as
 # a no-op, while being structured enough to parse unambiguously.
+#
+# The marker is anchored to a segment header (``# --- <path> ---``) so a
+# user-authored comment line that happens to start with the marker prefix
+# cannot poison the parser's conf-dir state. ``parse()`` only honors the
+# marker on the line immediately following a segment header.
+_CONF_DIR_SEGMENT_HEADER_PREFIX = "# --- "
+_CONF_DIR_SEGMENT_HEADER_SUFFIX = " ---"
 _CONF_DIR_MARKER_PREFIX = "# __ct_conf_dir__="
 _CONF_DIR_PLACEHOLDER = "${CONF_DIR}"
 
@@ -2986,11 +2993,25 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
             except (OSError, ValueError):
                 conf_dir = None
 
+        # Segment-header anchoring: a ``# __ct_conf_dir__=...`` line is
+        # only honored when it appears immediately after a segment header
+        # (``# --- <path> ---``) emitted by ``_open_config_files``. This
+        # prevents a user-authored comment that happens to start with the
+        # marker prefix from silently swapping the parser's conf-dir.
+        marker_expected = False
         for i, line in enumerate(stream):
             stripped = line.strip()
-            if stripped.startswith(_CONF_DIR_MARKER_PREFIX):
-                conf_dir = stripped[len(_CONF_DIR_MARKER_PREFIX):].strip()
+            if (
+                stripped.startswith(_CONF_DIR_SEGMENT_HEADER_PREFIX)
+                and stripped.endswith(_CONF_DIR_SEGMENT_HEADER_SUFFIX)
+            ):
+                marker_expected = True
                 continue
+            if marker_expected and stripped.startswith(_CONF_DIR_MARKER_PREFIX):
+                conf_dir = stripped[len(_CONF_DIR_MARKER_PREFIX):].strip()
+                marker_expected = False
+                continue
+            marker_expected = False
             line = stripped
             if not line or line[0] in ["#", ";", "["] or line.startswith("---"):
                 continue
