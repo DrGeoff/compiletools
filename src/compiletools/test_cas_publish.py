@@ -87,6 +87,10 @@ class TestPublishAtomicityVsConcurrency:
         )
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "link"),
+    reason="platform lacks os.link (e.g. Termux/Android); the EXDEV branch can't be exercised",
+)
 class TestPublishExdevFallback:
     def test_exdev_falls_back_to_symlink(self, tmp_path, monkeypatch):
         """I2: cross-filesystem EXDEV from os.link must fall back to symlink."""

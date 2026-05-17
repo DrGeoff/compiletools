@@ -5,6 +5,8 @@ import os
 import time
 import types
 
+import pytest
+
 from compiletools.trim_cache import (
     CacheTrimmer,
     build_current_hash_set,
@@ -1077,6 +1079,10 @@ class TestTrimExedir:
         assert not os.path.exists(c)
         assert stats["removed"] == 1
 
+    @pytest.mark.skipif(
+        not hasattr(os, "link"),
+        reason="platform lacks os.link (e.g. Termux/Android); hard-link protection inapplicable",
+    )
     def test_hard_link_protects_entry_from_eviction(self, tmp_path):
         """``bin/<name>`` is published as a hard link to the cas-exe.
         While that hard link exists (st_nlink > 1), trim must skip the
@@ -1186,6 +1192,10 @@ class TestTrimExedir:
         assert stats["basenames_found"] == 1
         assert not os.path.exists(old)
 
+    @pytest.mark.skipif(
+        not hasattr(os, "link"),
+        reason="platform lacks os.link (e.g. Termux/Android); hard-link race inapplicable",
+    )
     def test_publish_between_scan_and_unlink_protects_entry(self, tmp_path, monkeypatch):
         """I4 TOCTOU: scan sees nlink=1; before the per-entry unlink
         runs under the lock, a peer publish creates a hard-linked

@@ -81,6 +81,10 @@ def atomic_copy(src: str, dst: str) -> None:
     def populate(tmp_path: str) -> None:
         try:
             os.link(src, tmp_path)
+        except AttributeError:
+            # Platform lacks hardlink support entirely (e.g. Termux/Android
+            # bionic doesn't expose os.link). Fall back to copy as for EXDEV.
+            shutil.copy2(src, tmp_path)
         except OSError as e:
             if e.errno != errno.EXDEV:
                 raise

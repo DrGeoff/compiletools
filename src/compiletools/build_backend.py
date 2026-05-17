@@ -3534,8 +3534,9 @@ def _stage_pch_header_alongside_gch(source_header: str, staged_path: str) -> Non
         return
     except FileExistsError:
         return  # Lost a race; the file is now staged.
-    except OSError:
-        # EXDEV (cross-FS), EPERM (no link permission), etc. Fall through.
+    except (OSError, AttributeError):
+        # EXDEV (cross-FS), EPERM (no link permission), or AttributeError
+        # on platforms without os.link (e.g. Termux/Android). Fall through.
         pass
     # Copy fallback. Use a temp + atomic rename so a concurrent reader
     # never sees a partial file.

@@ -66,6 +66,12 @@ def publish(cas_path: str, user_path: str, source_realpath: str | None = None) -
     def populate(tmp_path):
         try:
             os.link(cas_path, tmp_path)
+        except AttributeError:
+            # Platform lacks hardlink support entirely (e.g. Termux/Android
+            # bionic doesn't expose os.link). Degrade to symlink — the
+            # trim_exedir hard-link-protection invariant (nlink >= 2) is
+            # unattainable here, same as the EXDEV branch below.
+            os.symlink(cas_path, tmp_path)
         except OSError as e:
             if e.errno != errno.EXDEV:
                 raise

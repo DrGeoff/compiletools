@@ -770,8 +770,10 @@ class BazelBackend(BuildBackend):
             return
         except FileExistsError:
             return
-        except OSError:
-            pass  # EXDEV, EPERM, etc. — fall through to copy.
+        except (OSError, AttributeError):
+            # EXDEV, EPERM, or AttributeError on platforms without os.link
+            # (e.g. Termux/Android). Fall through to copy.
+            pass
         tmp = f"{dst}.staging.{os.getpid()}"
         try:
             shutil.copy2(src, tmp)
