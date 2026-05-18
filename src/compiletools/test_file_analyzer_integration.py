@@ -314,6 +314,150 @@ int main() { return 0; }"""
         assert "feature_lib" in str(result[sz.Str("LIBS")])
 
 
+class TestSourceFileUnicodeTolerance(tb.BaseCompileToolsTestCase):
+    """Regression: source files containing non-ASCII bytes (em-dash,
+    emoji, accented characters, CJK) in comments must analyze cleanly.
+
+    Two failure modes to guard against:
+    1. The text reader explodes on multi-byte sequences (file_analyzer
+       opens files with explicit utf-8 + errors="ignore"/"replace" so
+       it should not, but we want a regression test).
+    2. The SIMD position math is byte-based, so a multi-byte char that
+       comes BEFORE a ``//#`` magic flag or an ``#include`` shifts the
+       byte offsets of those tokens. Anything that converts byte offsets
+       to "character" offsets via len() of a python str would mis-align;
+       this test pins that bytes-are-bytes for the analyzer.
+    """
+
+    def setup_method(self):
+        super().setup_method()
+        self.temp_dir = tempfile.mkdtemp()
+
+    def teardown_method(self):
+        super().teardown_method()
+        import shutil
+
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def create_test_file(self, filename, content):
+        filepath = os.path.join(self.temp_dir, filename)
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+        return filepath
+
+    def create_headerdeps_instance(self):
+        cap = configargparse.ArgumentParser()
+        compiletools.headerdeps.add_arguments(cap)
+        args = cap.parse_args(["--headerdeps=direct", f"--include={self.temp_dir}"])
+        uth.finalize_flag_state(args)
+        ctx = BuildContext()
+        return compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
+
+    def create_magicflags_instance(self):
+        cap = configargparse.ArgumentParser(conflict_handler="resolve")
+        compiletools.headerdeps.add_arguments(cap)
+        compiletools.magicflags.add_arguments(cap)
+        args = cap.parse_args(
+            [
+                "--headerdeps=direct",
+                "--magic=direct",
+                f"--include={self.temp_dir}",
+            ]
+        )
+        uth.finalize_flag_state(args)
+        ctx = BuildContext()
+        headerdeps = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
+        return compiletools.magicflags.DirectMagicFlags(args, headerdeps, context=ctx)
+
+    def test_read_file_mmap_preserves_emdash_and_emoji(self):
+        from compiletools.file_analyzer import read_file_mmap
+
+        content = "// em-dash — and emoji 🎉 and CJK 漢字\nint main(){}\n"
+        path = self.create_test_file("u.c", content)
+        text, n_bytes, truncated = read_file_mmap(path, 0)
+        assert text == content
+        assert n_bytes == len(content.encode("utf-8"))
+        assert truncated is False
+
+    def test_read_file_traditional_preserves_emdash_and_emoji(self):
+        from compiletools.file_analyzer import read_file_traditional
+
+        content = "// em-dash — and emoji 🎉 and CJK 漢字\nint main(){}\n"
+        path = self.create_test_file("u.c", content)
+        text, n_bytes, truncated = read_file_traditional(path, 0)
+        assert text == content
+        assert n_bytes == len(content.encode("utf-8"))
+        assert truncated is False
+
+    def test_header_deps_find_includes_after_emdash_comment(self):
+        """Multi-byte chars BEFORE the #include shift its byte offset
+        relative to its line. The SIMD pattern matcher must still find
+        and resolve the include."""
+        main_content = dedent("""
+            // Header for the foo subsystem — see ticket #4242 🎯
+            #include "foo.h"
+            // Pulled in for the 漢字 i18n layer
+            #include "bar.h"
+            int main() { return 0; }
+        """).strip()
+        self.create_test_file("foo.h", "void foo();\n")
+        self.create_test_file("bar.h", "void bar();\n")
+        main_path = self.create_test_file("main.c", main_content)
+
+        headerdeps = self.create_headerdeps_instance()
+        includes = headerdeps._create_include_list(main_path)
+        assert "foo.h" in includes
+        assert "bar.h" in includes
+
+    def test_magic_flags_survive_emdash_and_emoji_in_comments(self):
+        """Same concern as above but for ``//#KEY=value`` magic flags.
+        Em-dash + emoji upstream of the magic marker, and inside the
+        value's trailing comment, must not perturb extraction."""
+        main_content = dedent("""
+            // Module — see README 🚀 for rationale
+            //#CXXFLAGS=-DFOO=1
+            #include <stdio.h>
+            // emoji 🎉 before the next magic flag
+            //#LDFLAGS=-lm
+            //#LIBS=pthread
+            int main() { return 0; }
+        """).strip()
+        main_path = self.create_test_file("main.c", main_content)
+
+        magicflags = self.create_magicflags_instance()
+        result = magicflags.parse(main_path)
+
+        import stringzilla as sz
+
+        assert sz.Str("CXXFLAGS") in result
+        assert sz.Str("LDFLAGS") in result
+        assert sz.Str("LIBS") in result
+        assert "-DFOO=1" in str(result[sz.Str("CXXFLAGS")])
+        assert "-lm" in str(result[sz.Str("LDFLAGS")])
+        assert "pthread" in str(result[sz.Str("LIBS")])
+
+    def test_magic_flag_value_with_emdash_and_emoji_passes_through(self):
+        """A magic-flag VALUE containing non-ASCII bytes (e.g. an
+        en-dash in a ``-D`` author/version string) is unusual but legal
+        UTF-8 source. Extraction must not crash; the value round-trips."""
+        main_content = (
+            '//#CXXFLAGS=-DAUTHOR="Émile" -DTAG="rocket 🚀"\n'
+            "int main() { return 0; }\n"
+        )
+        main_path = self.create_test_file("main.c", main_content)
+
+        magicflags = self.create_magicflags_instance()
+        result = magicflags.parse(main_path)
+
+        import stringzilla as sz
+
+        assert sz.Str("CXXFLAGS") in result
+        value = str(result[sz.Str("CXXFLAGS")])
+        assert "Émile" in value
+        assert "🚀" in value
+
+
 class TestFileAnalyzerConfigurationIntegration:
     """Test integration with configuration system."""
 

@@ -25,6 +25,15 @@ _RE_OCT_LITERAL = re.compile(r"\b0[0-7]+\b")
 # Reserved words that should not be treated as macros
 _RESERVED_WORDS = frozenset([sz.Str("and"), sz.Str("or"), sz.Str("not")])
 
+# Byte-set fast-paths for ASCII identifier scanning in ``_expand_macros_sz``.
+# Using ``sz.Str.find_first_of`` skips non-ASCII bytes (e.g. UTF-8 em-dash
+# or emoji in a magic-flag value) in a single vectorized pass — a per-byte
+# ``result[i]`` Python-side check would raise ``UnicodeDecodeError`` on the
+# leading byte of any multi-byte sequence, since ``sz.Str.__getitem__``
+# decodes each byte as UTF-8 in isolation.
+_ID_START_BYTESET = "_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_ID_CONT_BYTESET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+
 # Dispatch table for preprocessor directives (performance optimization)
 # Maps directive type to (handler_method_name, needs_directive_arg)
 _DIRECTIVE_DISPATCH = {
@@ -330,17 +339,16 @@ class SimplePreprocessor:
         result_len = len(result)
 
         while i < result_len:
-            # Skip non-identifier characters (inlined is_alpha_or_underscore_sz for performance)
-            ch = result[i]
-            if not (ch == "_" or ("a" <= ch <= "z") or ("A" <= ch <= "Z")):
-                i += 1
-                continue
+            # Vectorized hop to the next ASCII identifier-start byte. This
+            # also robustly skips any non-ASCII bytes (e.g. UTF-8 multi-byte
+            # sequences from an em-dash or emoji embedded in a macro value),
+            # which cannot begin a C/C++ identifier.
+            identifier_start = result.find_first_of(_ID_START_BYTESET, i)
+            if identifier_start == -1:
+                break
 
             # Find the end of the identifier - vectorized
-            identifier_start = i
-            identifier_end = result.find_first_not_of(
-                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_", identifier_start
-            )
+            identifier_end = result.find_first_not_of(_ID_CONT_BYTESET, identifier_start)
             i = identifier_end if identifier_end != -1 else result_len
 
             # Extract the identifier
