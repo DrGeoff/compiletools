@@ -8,7 +8,7 @@ One-command Make-specific wrapper around ct-findtargets + make
 
 :Author: drgeoffathome@gmail.com
 :Date:   2025-11-26
-:Version: 10.0.3
+:Version: 10.0.4
 :Manual section: 1
 :Manual group: developers
 
