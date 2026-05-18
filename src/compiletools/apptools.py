@@ -509,22 +509,26 @@ def add_target_arguments_ex(cap):
     cap.add_argument(
         "--project-version",
         dest="projectversion",
-        help="Set the CT_PROJECT_VERSION macro to this value",
+        help="DEPRECATED: use --prebuild-script with a generated implementation file "
+        "(see examples-end-to-end/appinfo). Set the CT_PROJECT_VERSION macro to this value.",
     )
     cap.add_argument(
         "--project-version-cmd",
         dest="projectversioncmd",
-        help="Execute this command to determine the CT_PROJECT_VERSION macro",
+        help="DEPRECATED: use --prebuild-script with a generated implementation file "
+        "(see examples-end-to-end/appinfo). Execute this command to determine the CT_PROJECT_VERSION macro.",
     )
     cap.add_argument(
         "--project-name",
         dest="projectname",
-        help="Set the CT_PROJECT_NAME macro to this value",
+        help="DEPRECATED: use --prebuild-script with a generated implementation file "
+        "(see examples-end-to-end/appinfo). Set the CT_PROJECT_NAME macro to this value.",
     )
     cap.add_argument(
         "--project-name-cmd",
         dest="projectnamecmd",
-        help="Execute this command to determine the CT_PROJECT_NAME macro",
+        help="DEPRECATED: use --prebuild-script with a generated implementation file "
+        "(see examples-end-to-end/appinfo). Execute this command to determine the CT_PROJECT_NAME macro.",
     )
 
 
@@ -2252,6 +2256,23 @@ def _batch_pkg_config(packages: list[str], option: str) -> dict[str, str]:
     return out
 
 
+_PROJECT_MACRO_DEPRECATION_MESSAGE = (
+    "ct-cake: --project-version / --project-name (and their *-cmd variants) "
+    "are DEPRECATED. They inject -D macros that defeat object-cache reuse "
+    "for any TU whose transitive headers textually mention the macro name. "
+    "Use --prebuild-script with a generated implementation file instead — "
+    "see examples-end-to-end/appinfo/ and README.ct-cake.rst.\n"
+)
+
+
+def _warn_project_macros_deprecated(args):
+    """Emit the deprecation warning once per process for the project-macro flags."""
+    if getattr(args, "_project_macro_deprecation_warned", False):
+        return
+    sys.stderr.write(_PROJECT_MACRO_DEPRECATION_MESSAGE)
+    args._project_macro_deprecation_warned = True
+
+
 def _set_project_version(args):
     """Inject ``-DCT_PROJECT_VERSION="<value>"`` into CPPFLAGS/CFLAGS/CXXFLAGS,
     but only if the user opted in.
@@ -2264,6 +2285,10 @@ def _set_project_version(args):
     cmdline ``-D`` cache-key noise off TUs that don't ask for it (see the
     "Macro Scope Filter" section of README.ct-cake.rst for why a
     cmdline ``-D`` macro is sticky once introduced).
+
+    DEPRECATED — see ``_warn_project_macros_deprecated``. The
+    generated-implementation-file pattern (``examples-end-to-end/appinfo``)
+    is the supported replacement.
     """
     projectversion = getattr(args, "projectversion", None)
     projectversioncmd = getattr(args, "projectversioncmd", None)
@@ -2294,6 +2319,8 @@ def _set_project_version(args):
 
     if not projectversion:
         return
+
+    _warn_project_macros_deprecated(args)
 
     version_escaped = projectversion.replace("\\", "\\\\").replace('"', '\\"')
 
@@ -2355,6 +2382,8 @@ def _set_project_name(args):
 
     if not projectname:
         return
+
+    _warn_project_macros_deprecated(args)
 
     name_escaped = projectname.replace("\\", "\\\\").replace('"', '\\"')
 

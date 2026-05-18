@@ -180,32 +180,115 @@ build-time macro is enough to defeat that intent and double the cache
 footprint.
 
 The robust fix is to keep the per-app/per-config value out of the
-cmdline ``-D`` set entirely, by emitting a **per-build generated
-header** that exactly one accessor TU includes. The build script
-writes the value into a generated ``.h`` at a known path, exactly one
-TU ``#include``\ s it, and the cmdline ``-D`` injection is dropped.
-With no needle in the cmdline ``-D`` set, the scope filter has
-nothing to match against and prose mentioning the value's name in
-shared headers cannot regress unrelated TUs' cache keys.
+cmdline ``-D`` set entirely. There are two flavours of the
+"generated file" pattern, and one is **strictly better** than the
+other for build-cache reuse:
 
-ct-cake provides two opt-in convenience hooks for the most common
-cases:
+* **Generated implementation file (preferred).** A stable, checked-in
+  header declares ``extern const char* const name;`` (or similar
+  symbol). The build script writes a generated ``.cpp`` that
+  *defines* the symbol with the per-build value. Consumers
+  ``#include`` the stable header and reference the symbol; the
+  linker resolves it. When the value changes:
+
+    * the header is unchanged → ``cas-pchdir`` PCH command hashes
+      and every consumer ``.o``'s ``dep_hash`` stay valid → those
+      cache entries are hits;
+    * only the generated ``.cpp``'s own ``.o`` invalidates;
+    * the final link picks up the new symbol value.
+
+  This is the pattern the ``examples-end-to-end/appinfo`` example
+  demonstrates and is the recommended approach for any
+  string-valued per-build constant.
+
+* **Generated header (works, but worse).** Writing the value into a
+  ``#define`` inside a generated ``.h`` and having one accessor TU
+  ``#include`` it keeps the cmdline ``-D`` clean (so the macro
+  scope filter no longer matches), but the header itself is now in
+  the include graph. Every TU that transitively includes it (and
+  any PCH that pulls it in) inherits the header's ``content_hash``,
+  so a per-value change invalidates every downstream consumer's
+  ``dep_hash``. This is fine for project-wide compile-time
+  constants whose value rarely changes, but for frequently-bumped
+  values (version strings, build timestamps) the impl-file pattern
+  is strictly preferable.
+
+ct-cake previously shipped two opt-in convenience hooks for the most
+common cases:
 
 * ``--project-version`` / ``--project-version-cmd`` →
   ``-DCT_PROJECT_VERSION="<version>"``
 * ``--project-name`` / ``--project-name-cmd`` →
   ``-DCT_PROJECT_NAME="<name>"``
 
-These are **opt-in**: if you do not specify any of them on the CLI,
-in ct.conf, or via env, no macro is injected and the cmdline ``-D``
-set stays clean. They are provided as canonical names so consumers
-don't reinvent the per-app/per-version naming wheel and don't
-collide with widely-used identifiers (``APP_NAME``, ``PROJECT``,
-``MAIN``...). Note that when you do opt in, both are still cmdline
-``-D`` injections and so are still subject to the same
-comment-scanning behavior described above — the generated-header
-pattern remains the right shape for the value to actually buy free
-cache reuse on TUs that don't reference it in code.
+These four flags are **DEPRECATED**. They were ``-D`` injections and
+so subject to the macro scope filter trap described above —
+text-only mentions of ``CT_PROJECT_NAME`` / ``CT_PROJECT_VERSION``
+in any transitive header (including comments documenting the macros
+themselves) silently fork every includer's per-TU cache. Switching
+to the generated-implementation-file pattern via
+``--prebuild-script`` (see ``examples-end-to-end/appinfo``) drops
+the cmdline ``-D`` entirely *and* keeps the per-build value out of
+the include graph, so it's strictly better on both axes. The flags
+still function for backwards compatibility but emit a one-shot
+deprecation warning to stderr when used.
+
+Pre-build and Post-build Script Hooks
+-------------------------------------
+
+For arbitrary code-gen (the generated-implementation-file pattern
+above, pybind11 or SWIG binding generation, ``.proto`` / ``.fbs``
+compilation) or post-build side effects (emitting a launcher script
+that runs the binary in a known environment, packaging, checksum
+manifests), ct-cake supports user-supplied scripts that run around
+the build:
+
+* ``--prebuild-script <cmd>`` runs after target discovery but *before*
+  the build graph is constructed. Generated files (headers AND
+  implementation files) written by a pre-build script are visible to
+  the build that follows: Hunter walks ``#include``\ s at build-graph
+  time and uses ``os.path.isfile`` for implied-source resolution, so
+  a ``.cpp`` generated next to its already-included ``.h`` is picked
+  up automatically by ``--auto`` (see ``examples-end-to-end/appinfo``).
+  Caveat: ``--auto``'s top-level entry-point scan happens *before*
+  pre-build, so a generated ``.cpp`` containing ``main()`` is not
+  discovered as an entry point — list those explicitly.
+* ``--postbuild-script <cmd>`` runs *after* a successful build, but
+  *before* the freshly-built executables are copied to the top-level
+  bindir. A non-zero exit code fails the whole invocation.
+
+Both options accept a **shell command string** (executed via ``/bin/sh
+-c``), run in the ct-cake invocation cwd, with stdout/stderr inherited
+so output appears live. Both abort ct-cake with a non-zero exit on the
+first script that fails. Neither runs on ``--clean`` / ``--realclean``.
+
+Each option may be given multiple times. Like other ``action="append"``
+options, the entries **accumulate** across all configuration layers
+(bundled < system < venv < user < project < cwd < env < CLI) — a
+project's ``ct.conf`` listing one script plus a variant ``.conf``
+listing another yields both, in declaration order.
+
+Worked example (the generated-implementation-file pattern recommended
+above; full runnable version under ``examples-end-to-end/appinfo``)::
+
+    # project ct.conf
+    prebuild-script = ./tools/gen_appinfo.sh appinfo.cpp
+
+    # appinfo.hpp (stable, checked in)
+    namespace appinfo { extern const char* const version; }
+
+    # tools/gen_appinfo.sh (writes appinfo.cpp adjacent to appinfo.hpp)
+    #!/bin/sh
+    cat > "$1" <<EOF
+    #include "appinfo.hpp"
+    namespace appinfo { const char* const version =
+        "$(git describe --always --dirty)"; }
+    EOF
+
+Any TU may ``#include "appinfo.hpp"`` and read ``appinfo::version``.
+The header is stable, so PCH and every consumer ``.o`` stay cached
+across version bumps; only the generated ``.cpp``'s own ``.o``
+invalidates.
 
 Performance
 ===========

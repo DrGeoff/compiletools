@@ -28,26 +28,12 @@ from __future__ import annotations
 
 import os
 import pathlib
-import shutil
 import subprocess
 
 import pytest
 
 import compiletools.testhelper as uth
 from compiletools.examples_registry import example_path
-
-
-def _copy_example(src: pathlib.Path, dst: pathlib.Path) -> None:
-    """Copy the fixture into a fresh workspace and plant a ``.git`` marker
-    so :func:`compiletools.git_utils.find_git_root` resolves the
-    workspace itself (not the surrounding pytest tmpdir)."""
-    dst.mkdir(parents=True, exist_ok=True)
-    for entry in src.iterdir():
-        if entry.is_file():
-            shutil.copy2(entry, dst)
-        else:
-            shutil.copytree(entry, dst / entry.name)
-    (dst / ".git").mkdir()
 
 
 def _find_gch_marker(stderr_text: str, marker_prefix: str) -> list[str]:
@@ -108,7 +94,7 @@ def test_consumer_compile_actually_opens_cached_pch(backend_name, tmp_path):
     with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
         src = pathlib.Path(example_path("pch_bypass_bug"))
         workspace = pathlib.Path(effective_tmp) / "ws"
-        _copy_example(src, workspace)
+        uth.copy_example_workspace(src, workspace)
         cas_pchdir = workspace / "cas-pchdir"
 
         diagnostics_dir = workspace / "diag"

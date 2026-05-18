@@ -18,6 +18,7 @@ class TestFindTargetsModule:
 
     def _find_samples_targets(self, disable_tests, disable_exes=False):
         relativeexpectedexes = {
+            "appinfo/main.cpp",
             "cache_scoping/no_ref.cpp",
             "cache_scoping/tu_via_header.cpp",
             "cache_scoping/with_ref.cpp",
@@ -74,6 +75,8 @@ class TestFindTargetsModule:
             "pkgconfig/main.cpp",
             "pkgconfig_cycle/main.cpp",
             "platform_has_include/platform_main.cpp",
+            "postbuild_script/env_printer.cpp",
+            "prebuild_script/version_banner.cpp",
             "project_pkgconfig_override/main.cpp",
             "project_version/version_banner.cpp",
             "separate_cpp_cxx/main.cpp",

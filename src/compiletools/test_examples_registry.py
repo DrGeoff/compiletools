@@ -10,8 +10,8 @@ from compiletools import examples_registry as er
 
 
 def test_e2e_registry_size():
-    """Spec pins 34 entries in examples-end-to-end."""
-    assert len(er.EXAMPLES_E2E) == 34
+    """Spec pins 37 entries in examples-end-to-end."""
+    assert len(er.EXAMPLES_E2E) == 37
 
 
 def test_features_registry_size():

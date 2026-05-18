@@ -962,6 +962,23 @@ def write_sources(mapping, target_dir=None):
     return paths
 
 
+def copy_example_workspace(src: Path, dst: Path) -> Path:
+    """Copy *src* into a fresh *dst* workspace and plant a ``.git`` marker
+    so :func:`compiletools.git_utils.find_git_root` lands on the
+    workspace (not on the surrounding pytest tmpdir or the test-runner's
+    cwd). Returns *dst*.
+    """
+    src = Path(src)
+    dst.mkdir(parents=True, exist_ok=True)
+    for entry in src.iterdir():
+        if entry.is_file():
+            shutil.copy2(entry, dst)
+        else:
+            shutil.copytree(entry, dst / entry.name)
+    (dst / ".git").mkdir()
+    return dst
+
+
 # ---------------------------------------------------------------------------
 # Slurm / shared-filesystem helpers
 # ---------------------------------------------------------------------------
@@ -1388,6 +1405,8 @@ def CakeTestContext(backend_name="make", **arg_overrides):
             output=None,
             compilation_database=False,
             makefilename="Makefile",
+            prebuild_scripts=[],
+            postbuild_scripts=[],
         )
         cake_defaults.update(arg_overrides)
         args = make_backend_args(tmpdir, **cake_defaults)

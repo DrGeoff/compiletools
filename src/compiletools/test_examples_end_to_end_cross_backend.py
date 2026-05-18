@@ -31,7 +31,6 @@ from __future__ import annotations
 import dataclasses
 import os
 import pathlib
-import shutil
 import subprocess
 from collections.abc import Iterable
 
@@ -111,6 +110,17 @@ _CXX_MODULES_NAMED_BACKENDS_BLOCKED = frozenset()
 
 _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
     # ----- vanilla --auto, no special setup -----
+    "appinfo": ExamplePlan(
+        # Best-practice generated-implementation pattern. The prebuild
+        # writes appinfo.cpp adjacent to appinfo.hpp; ct-cake's implied-
+        # source mechanism (Hunter walks main.cpp's includes, looks for a
+        # .cpp adjacent to each #include'd header) picks it up at
+        # build_graph time without explicit listing. Per-backend matrix
+        # entry just confirms the cross-backend wiring works; the exact
+        # stdout assertion lives in test_appinfo_example.py.
+        extra_args=("--prebuild-script=./gen_appinfo.sh appinfo.cpp",),
+        extra_env={"APP_NAME": "demo_app", "APP_VERSION": "1.2.3"},
+    ),
     "calculator": _VANILLA,
     "cache_scoping": _VANILLA,
     "computed_include": _VANILLA,
@@ -159,6 +169,21 @@ _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
     ),
     "project_version": ExamplePlan(
         extra_args=("--project-version=1.2.3", "--project-name=demo_app"),
+    ),
+    "prebuild_script": ExamplePlan(
+        # The prebuild script generates build/version.h before the build
+        # graph walks the include graph. The .sh path is relative to the
+        # workspace cwd that _run_build passes to subprocess.run.
+        extra_args=("--prebuild-script=./gen_version.sh build/version.h",),
+    ),
+    "postbuild_script": ExamplePlan(
+        # The postbuild script sets DEMO_ENV_VAR and execs the built
+        # binary, printing its stdout into ct-cake's output stream.
+        # Content of that stdout is asserted by
+        # test_postbuild_script_example.py; this matrix entry just
+        # confirms the example builds (and the hook runs cleanly) on
+        # every backend.
+        extra_args=("--postbuild-script=./run_with_env.sh",),
     ),
     # ----- multi-step build.sh — exercised by their own dedicated tests -----
     "multi_axis_variant": ExamplePlan(
@@ -274,20 +299,6 @@ def _resolve_cas_root(workspace: pathlib.Path, cas_layout: str) -> pathlib.Path:
 # ---------------------------------------------------------------------------
 
 
-def _copy_example(example_name: str, dst: pathlib.Path) -> pathlib.Path:
-    """Copy examples-end-to-end/<example_name>/ to a fresh dst/ workspace and plant
-    a .git marker so :func:`compiletools.git_utils.find_git_root` lands
-    on the workspace (not on the surrounding pytest tmpdir or the
-    test-runner's cwd)."""
-    src = pathlib.Path(uth.e2e_dir()) / example_name
-    dst.mkdir(parents=True, exist_ok=True)
-    for entry in src.iterdir():
-        if entry.is_file():
-            shutil.copy2(entry, dst)
-        else:
-            shutil.copytree(entry, dst / entry.name)
-    (dst / ".git").mkdir()
-    return dst
 
 
 def _build_argv(
@@ -408,7 +419,10 @@ def test_example_builds_with_backend(example_name, backend_name, cas_layout, tmp
         )
 
     with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
-        workspace = _copy_example(example_name, pathlib.Path(effective_tmp) / "ws")
+        workspace = uth.copy_example_workspace(
+            pathlib.Path(uth.e2e_dir()) / example_name,
+            pathlib.Path(effective_tmp) / "ws",
+        )
         cas_root = _resolve_cas_root(workspace, cas_layout)
         result = _run_build(backend_name, workspace, plan, cas_root)
 

@@ -27,6 +27,7 @@ _FEATURES_SUBDIR = "examples-features"
 
 EXAMPLES_E2E: frozenset[str] = frozenset(
     {
+        "appinfo",
         "calculator",
         "cache_scoping",
         "cli_features",
@@ -55,6 +56,8 @@ EXAMPLES_E2E: frozenset[str] = frozenset(
         "pch",
         "pkgconfig_cycle",
         "platform_has_include",
+        "postbuild_script",
+        "prebuild_script",
         "project_version",
         "separate_cpp_cxx",
         "simple",

@@ -205,6 +205,42 @@ class Cake:
             ),
         )
 
+        cap.add_argument(
+            "--prebuild-script",
+            dest="prebuild_scripts",
+            action="append",
+            default=[],
+            help=(
+                "Shell command string to run before the build graph is "
+                "constructed, so generated headers and other build inputs "
+                "produced by the script are visible to headerdeps. May be "
+                "given multiple times on the CLI, and accumulates across "
+                "ct.conf layers (bundled < system < user < project < variant < "
+                "env < CLI). Each entry is executed via /bin/sh in the ct-cake "
+                "invocation cwd; non-zero exit aborts the build. Note: runs "
+                "AFTER --auto target discovery, so generated source files "
+                "(.cpp/.c) are NOT picked up by --auto — list those targets "
+                "explicitly if you need them. Skipped on --clean / --realclean."
+            ),
+        )
+        cap.add_argument(
+            "--postbuild-script",
+            dest="postbuild_scripts",
+            action="append",
+            default=[],
+            help=(
+                "Shell command string to run after a successful build but "
+                "before executables are copied to the top-level bindir. May "
+                "be given multiple times on the CLI, and accumulates across "
+                "ct.conf layers. Each entry is executed via /bin/sh in the "
+                "ct-cake invocation cwd; non-zero exit aborts ct-cake with "
+                "a non-zero return code. Use for emitting launcher scripts "
+                "that invoke the built binary in a known environment, "
+                "packaging, checksum manifests, etc. Skipped on --clean / "
+                "--realclean."
+            ),
+        )
+
     def _callfilelist(self):
         assert self.hunter is not None
         filelist = compiletools.filelist.Filelist(self.args, self.hunter, style="flat")
@@ -300,6 +336,26 @@ class Cake:
                 except OSError:
                     pass
 
+    def _run_hook_scripts(self, scripts, phase):
+        """Execute a list of shell-command-string hooks; abort on non-zero exit.
+
+        Each script is run via /bin/sh in the ct-cake invocation cwd (captured
+        once so a misbehaving earlier script that chdirs cannot relocate
+        subsequent ones). stdout/stderr inherit the parent's fds so the user
+        sees output live.
+        """
+        if not scripts:
+            return
+        invocation_cwd = os.getcwd()
+        for script in scripts:
+            if self.args.verbose >= 1:
+                print(f"[{phase}] {script}")
+            result = subprocess.run(script, shell=True, cwd=invocation_cwd)
+            if result.returncode != 0:
+                raise SystemExit(
+                    f"ct-cake {phase} script failed (exit {result.returncode}): {script}"
+                )
+
     def _call_backend(self):
         """Dispatch to the selected build backend."""
         assert self.namer is not None
@@ -309,6 +365,15 @@ class Cake:
         backend_name = getattr(self.args, "backend", "make")
         BackendClass = get_backend_class(backend_name)
         backend = BackendClass(args=self.args, hunter=self.hunter, context=self.context)
+
+        # Pre-build scripts run before build_graph() — generated headers
+        # and other build inputs must exist before headerdeps walks the
+        # include graph, otherwise they are invisible to the build. Skip
+        # entirely on clean/realclean (no fresh build is being produced).
+        is_cleaning = self.args.realclean or self.args.clean
+        if not is_cleaning:
+            with timer.phase("prebuild_scripts"):
+                self._run_hook_scripts(self.args.prebuild_scripts, "prebuild")
 
         with timer.phase("build_graph"):
             graph = backend.build_graph()
@@ -331,6 +396,9 @@ class Cake:
             # There is no separate test_execution phase.
             with timer.phase("build_execution"):
                 backend.execute("build")
+
+            with timer.phase("postbuild_scripts"):
+                self._run_hook_scripts(self.args.postbuild_scripts, "postbuild")
 
             self._copyexes()
 
