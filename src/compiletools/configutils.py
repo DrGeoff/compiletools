@@ -154,7 +154,7 @@ def _parse_conf_file_cached(path):
     only stores successful returns), so transient errors don't get pinned.
     """
     fileparser = CfgFileParser()
-    with open(path) as cfg:
+    with open(path, encoding="utf-8", errors="replace") as cfg:
         return types.MappingProxyType(fileparser.parse(cfg))
 
 

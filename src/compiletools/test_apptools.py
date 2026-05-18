@@ -2225,3 +2225,111 @@ class TestInjectFfilePrefixMap:
         # The masquerading -D should still be present, untouched.
         assert "-DREASON='-ffile-prefix-map=oops='" in args.CXXFLAGS
         assert "-DREASON='-ffile-prefix-map=oops='" in args.CFLAGS
+
+
+class TestConfFileEncodingTolerance:
+    """Regression: conf-file readers must tolerate non-ASCII bytes (e.g.
+    em-dash U+2014 = 0xE2 0x80 0x94 in a comment) even when Python's
+    default text encoding is ASCII.
+
+    A user hit ``UnicodeDecodeError: 'ascii' codec can't decode byte 0xe2``
+    from ct-cake after editing a ct.conf comment with an em-dash. The bug
+    is that conf readers called ``open(path)`` without an explicit
+    encoding, so when the process was launched under ``PYTHONUTF8=0`` +
+    ``LC_ALL=C`` (or any non-UTF-8 locale) Python decoded the file as
+    ASCII and the em-dash byte sequence killed the parser.
+
+    These tests simulate that environment by forcing ``builtins.open`` to
+    default to ASCII whenever a caller omits ``encoding=`` for text mode.
+    Each conf-file reader must succeed regardless.
+    """
+
+    @pytest.fixture
+    def ascii_default_open(self, monkeypatch):
+        """Make every ``open()`` that doesn't specify ``encoding=`` default
+        to ASCII for text mode. Mirrors PYTHONUTF8=0 + LC_ALL=C."""
+        import builtins
+
+        real_open = builtins.open
+
+        def open_with_ascii_default(*args, **kwargs):
+            mode = kwargs.get("mode")
+            if mode is None and len(args) > 1:
+                mode = args[1]
+            if mode is None:
+                mode = "r"
+            if "b" not in mode and "encoding" not in kwargs:
+                kwargs["encoding"] = "ascii"
+            return real_open(*args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", open_with_ascii_default)
+        return real_open
+
+    def test_parse_conf_file_cached_tolerates_emdash_in_comment(
+        self, ascii_default_open, tmp_path
+    ):
+        import compiletools.configutils as cu
+
+        conf = tmp_path / "ct.conf"
+        with ascii_default_open(str(conf), "w", encoding="utf-8") as f:
+            f.write("# Comment with em-dash — like this\n")
+            f.write("variant = gcc.debug\n")
+
+        cu.clear_cache()
+        try:
+            items = cu._parse_conf_file_cached(str(conf))
+        finally:
+            cu.clear_cache()
+        assert dict(items).get("variant") == "gcc.debug"
+
+    def test_check_legacy_variant_keys_tolerates_emdash_in_comment(
+        self, ascii_default_open, tmp_path
+    ):
+        from compiletools.apptools import _check_legacy_variant_config_keys
+
+        conf = tmp_path / "ct.conf"
+        with ascii_default_open(str(conf), "w", encoding="utf-8") as f:
+            f.write("# Author note — reminds us why this exists\n")
+            f.write("variant = gcc.debug\n")
+
+        # Must not raise UnicodeDecodeError. The function only raises
+        # RuntimeError when it finds an actual `variantaliases = {...}`
+        # key, which this conf does not contain.
+        _check_legacy_variant_config_keys([str(conf)])
+
+    def test_check_legacy_cas_keys_tolerates_emdash_in_comment(
+        self, ascii_default_open, tmp_path
+    ):
+        from compiletools.apptools import _check_legacy_cas_config_keys
+
+        conf = tmp_path / "ct.conf"
+        with ascii_default_open(str(conf), "w", encoding="utf-8") as f:
+            f.write("# Why we picked this dir — see README\n")
+            f.write("cas-objdir = /tmp/objs\n")
+
+        # Must not raise UnicodeDecodeError. The function only raises
+        # RuntimeError when it finds legacy `objdir`/`pchdir` keys.
+        _check_legacy_cas_config_keys([str(conf)])
+
+    def test_composing_parser_opens_emdash_conf_via_configargparse(
+        self, ascii_default_open, tmp_path
+    ):
+        """End-to-end: ``_ComposingArgumentParser`` resolves a conf file
+        with an em-dash comment via configargparse's own file-open path.
+        This is the path ct-cake actually traverses on every invocation.
+        """
+        from compiletools.apptools import _AccumulatingConfigFileParser, _ComposingArgumentParser
+
+        conf = tmp_path / "ct.conf"
+        with ascii_default_open(str(conf), "w", encoding="utf-8") as f:
+            f.write("# Pinned to gcc.debug — see ticket #4242\n")
+            f.write("variant = gcc.debug\n")
+
+        parser = _ComposingArgumentParser(
+            default_config_files=[str(conf)],
+            config_file_parser_class=_AccumulatingConfigFileParser,
+            ignore_unknown_config_file_keys=True,
+        )
+        parser.add_argument("--variant", default="")
+        args, _ = parser.parse_known_args([])
+        assert args.variant == "gcc.debug"

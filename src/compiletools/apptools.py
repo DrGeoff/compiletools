@@ -2784,7 +2784,7 @@ def _check_legacy_variant_config_keys(config_files) -> None:
     offenders = []
     for path in config_files:
         try:
-            with open(path) as fh:
+            with open(path, encoding="utf-8", errors="replace") as fh:
                 text = fh.read()
         except OSError:
             continue
@@ -2995,7 +2995,7 @@ def _check_legacy_cas_config_keys(config_files) -> None:
     offenders = []
     for path in config_files:
         try:
-            with open(path) as fh:
+            with open(path, encoding="utf-8", errors="replace") as fh:
                 text = fh.read()
         except OSError:
             continue
@@ -3020,6 +3020,19 @@ def _check_legacy_cas_config_keys(config_files) -> None:
 _CONF_DIR_SEGMENT_HEADER_PREFIX = "# --- "
 _CONF_DIR_SEGMENT_HEADER_SUFFIX = " ---"
 _CONF_DIR_PLACEHOLDER = "${CONF_DIR}"
+
+
+def _open_conf_file_utf8(path, *args, **kwargs):
+    """Open a conf file as UTF-8, replacing any invalid bytes.
+
+    Passed as ``config_file_open_func`` to ``_ComposingArgumentParser``
+    so configargparse no longer falls back to ``locale.getpreferredencoding``
+    when reading conf files. See ``_ComposingArgumentParser.__init__`` for
+    the failure mode this prevents.
+    """
+    kwargs.setdefault("encoding", "utf-8")
+    kwargs.setdefault("errors", "replace")
+    return open(path, *args, **kwargs)
 
 
 def _expand_conf_dir(value, conf_dir):
@@ -3192,6 +3205,19 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
       preserving "CLI is highest priority" for any conflicting late-wins
       flag like ``-O3`` vs ``-O0``).
     """
+
+    def __init__(self, *args, **kwargs):
+        # configargparse defaults to plain ``open(path)``, which honors
+        # ``locale.getpreferredencoding(False)`` — that resolves to ASCII
+        # under ``PYTHONUTF8=0`` + a ``C``/POSIX locale, and any non-ASCII
+        # byte in a conf-file comment (e.g. an em-dash, U+2014 →
+        # 0xE2 0x80 0x94) then dies with ``UnicodeDecodeError`` before the
+        # parser ever sees the line. Conf files are author-controlled text
+        # and overwhelmingly UTF-8; pin the encoding and replace any stray
+        # invalid bytes so the parser is robust regardless of process
+        # locale. Matches the discipline of ``safe_read_text_file``.
+        kwargs.setdefault("config_file_open_func", _open_conf_file_utf8)
+        super().__init__(*args, **kwargs)
 
     def get_conf_file_provenance(self) -> dict[str, list[tuple[str, str, int]]]:
         """Return a shallow copy of the per-conf-file provenance dict from
