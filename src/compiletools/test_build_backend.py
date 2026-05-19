@@ -2578,3 +2578,395 @@ class TestLinkOrderCorrectness:
 
         with pytest.raises(ValueError, match="cycle"):
             backend.build_graph()
+
+
+class TestToposortRules:
+    """`_toposort_rules` orders module-interface compile rules so partitions
+    precede their importers. Both halves are exercised by the production
+    flow, but cycle detection only fires on malformed graphs and so needs
+    a direct unit test."""
+
+    def test_orders_dependents_after_their_inputs(self):
+        from compiletools.build_backend import _toposort_rules
+
+        rule_a = BuildRule(output="a.pcm", inputs=[], command=["c"], rule_type="compile")
+        rule_b = BuildRule(output="b.pcm", inputs=["a.pcm"], command=["c"], rule_type="compile")
+        rule_c = BuildRule(output="c.pcm", inputs=["b.pcm"], command=["c"], rule_type="compile")
+        ordered = _toposort_rules({"c.pcm": rule_c, "b.pcm": rule_b, "a.pcm": rule_a})
+        assert [r.output for r in ordered] == ["a.pcm", "b.pcm", "c.pcm"]
+
+    def test_ignores_inputs_not_in_rules_dict(self):
+        """Edges to external artefacts (source files) must not be treated
+        as ordering constraints, otherwise the only-modules subset would
+        block on prerequisites that aren't part of the toposort scope."""
+        from compiletools.build_backend import _toposort_rules
+
+        rule = BuildRule(output="m.pcm", inputs=["/external/src.cpp"], command=["c"], rule_type="compile")
+        ordered = _toposort_rules({"m.pcm": rule})
+        assert [r.output for r in ordered] == ["m.pcm"]
+
+    def test_raises_on_cycle(self):
+        from compiletools.build_backend import _toposort_rules
+
+        rule_a = BuildRule(output="a.pcm", inputs=["b.pcm"], command=["c"], rule_type="compile")
+        rule_b = BuildRule(output="b.pcm", inputs=["a.pcm"], command=["c"], rule_type="compile")
+        with pytest.raises(ValueError, match="cycle detected"):
+            _toposort_rules({"a.pcm": rule_a, "b.pcm": rule_b})
+
+
+class TestModuleHelperUtilities:
+    """Free-function helpers used by the modules path."""
+
+    def test_module_pcm_filename_escapes_partition_separator(self):
+        from compiletools.build_backend import _NAME_ESCAPE, _module_pcm_filename
+
+        assert _module_pcm_filename("math") == "math.pcm"
+        assert _module_pcm_filename("math:basic") == f"math{_NAME_ESCAPE}basic.pcm"
+
+    def test_header_unit_arg_strips_angles_and_quotes(self):
+        from compiletools.build_backend import _header_unit_arg
+
+        assert _header_unit_arg("<vector>") == "vector"
+        assert _header_unit_arg('"my.h"') == "my.h"
+        # Bare token (already stripped, or some other shape) passes through.
+        assert _header_unit_arg("vector") == "vector"
+        assert _header_unit_arg("<>") == ""
+
+    def test_header_unit_safe_stem_escapes_slash_and_colon(self):
+        from compiletools.build_backend import _NAME_ESCAPE, _header_unit_safe_stem
+
+        assert _header_unit_safe_stem("<vector>") == "vector"
+        assert _header_unit_safe_stem("<sys/socket.h>") == f"sys{_NAME_ESCAPE}socket.h"
+
+    def test_read_link_sig_returns_none_when_missing(self, tmp_path):
+        from compiletools.build_backend import _read_link_sig
+
+        assert _read_link_sig(str(tmp_path / "does_not_exist")) is None
+
+
+class TestDetectAvailableBackends:
+    """`detect_available_backends` filters a requested list to those whose
+    external tool is installed; the warning print path runs when a backend
+    is unavailable."""
+
+    def test_unknown_backend_reports_unavailable(self):
+        from compiletools.build_backend import backend_tool_command, is_backend_available
+
+        assert is_backend_available("definitely_not_a_backend") is False
+        assert backend_tool_command("definitely_not_a_backend") is None
+
+    def test_self_executing_backend_reports_available(self):
+        """A backend whose tool_command() returns None has no external
+        dependency and so always reports available."""
+        from compiletools.build_backend import (
+            BuildBackend,
+            _REGISTRY,
+            is_backend_available,
+            register_backend,
+        )
+
+        class _SelfExec(BuildBackend):
+            def generate(self, graph, output=None):
+                pass
+
+            def execute(self, target="build"):
+                pass
+
+            def _execute_build(self, target):
+                pass
+
+            @staticmethod
+            def name():
+                return "self_exec_backend_test"
+
+            @staticmethod
+            def build_filename():
+                return "SelfExecfile"
+
+        register_backend(_SelfExec)
+        try:
+            assert is_backend_available("self_exec_backend_test") is True
+        finally:
+            _REGISTRY.pop("self_exec_backend_test", None)
+
+    def test_detect_filters_missing_tool_with_warning(self, capsys):
+        """Inject a fake backend that claims a non-existent binary so we
+        exercise the print + filter path without depending on the host's
+        installed tooling."""
+        from compiletools.build_backend import (
+            BuildBackend,
+            _REGISTRY,
+            backend_tool_command,
+            detect_available_backends,
+            is_backend_available,
+            register_backend,
+        )
+
+        class _Fake(BuildBackend):
+            def generate(self, graph, output=None):
+                pass
+
+            def execute(self, target="build"):
+                pass
+
+            def _execute_build(self, target):
+                pass
+
+            @staticmethod
+            def name():
+                return "fake_missing_tool"
+
+            @staticmethod
+            def build_filename():
+                return "Fakefile"
+
+            @staticmethod
+            def tool_command():
+                return "ct_test_tool_not_on_path_xyzzy"
+
+        register_backend(_Fake)
+        try:
+            assert backend_tool_command("fake_missing_tool") == "ct_test_tool_not_on_path_xyzzy"
+            assert is_backend_available("fake_missing_tool") is False
+            kept = detect_available_backends(["fake_missing_tool"])
+        finally:
+            _REGISTRY.pop("fake_missing_tool", None)
+        out = capsys.readouterr().out
+        assert kept == []
+        assert "Skipping backend 'fake_missing_tool'" in out
+        assert "ct_test_tool_not_on_path_xyzzy" in out
+
+    def test_backend_tool_command_returns_first_of_tuple(self):
+        """When tool_command() returns a tuple of alternates, the canonical
+        name is the first element."""
+        from compiletools.build_backend import (
+            BuildBackend,
+            _REGISTRY,
+            backend_tool_command,
+            register_backend,
+        )
+
+        class _Alts(BuildBackend):
+            def generate(self, graph, output=None):
+                pass
+
+            def execute(self, target="build"):
+                pass
+
+            def _execute_build(self, target):
+                pass
+
+            @staticmethod
+            def name():
+                return "alts_backend_test"
+
+            @staticmethod
+            def build_filename():
+                return "Altsfile"
+
+            @staticmethod
+            def tool_command():
+                return ("primary", "fallback")
+
+        register_backend(_Alts)
+        try:
+            assert backend_tool_command("alts_backend_test") == "primary"
+        finally:
+            _REGISTRY.pop("alts_backend_test", None)
+
+
+class TestResolveSystemHeaderAbsPath:
+    """`_resolve_system_header_abs_path` is the single-path wrapper around
+    the all-spellings probe; it returns the first canonical spelling or
+    None when no probe succeeded."""
+
+    def test_returns_none_when_compiler_missing(self):
+        from compiletools.build_backend import _resolve_system_header_abs_path
+
+        # The cache key folds in `cxx`; use a unique value so this test
+        # never hits a memoised entry from a prior successful probe.
+        result = _resolve_system_header_abs_path(
+            "/nonexistent/compiler_xyzzy_definitely_missing",
+            "<vector>",
+        )
+        assert result is None
+
+    def test_returns_first_path_when_probe_succeeds(self, monkeypatch):
+        """Stub _resolve_system_header_abs_paths so we can exercise the
+        wrapper's first-of-list selection without touching a real compiler."""
+        import compiletools.build_backend as bb
+
+        monkeypatch.setattr(
+            bb,
+            "_resolve_system_header_abs_paths",
+            lambda *a, **kw: ["/canonical/vector", "/noncanonical/../vector"],
+        )
+        assert bb._resolve_system_header_abs_path("g++", "<vector>") == "/canonical/vector"
+
+
+def _make_clang_module_backend(tmp_path, *, cas_pcmdir=None, with_anchor=False):
+    """Backend wired to emit clang named-module interface rules. Provides
+    just enough state for ``_clang_module_pcm_destination`` /
+    ``_create_clang_module_interface_rules`` to run end-to-end without a
+    real compiler."""
+    args = make_backend_args(
+        tmp_path,
+        CXX="clang++",
+        cas_pcmdir=str(cas_pcmdir) if cas_pcmdir else None,
+    )
+    hunter = make_mock_hunter(sources=[])
+    # Hunter contract used by the precompile path. Magicflags is empty so
+    # the command stays predictable; deps are empty (no header walk).
+    hunter.magicflags = MagicMock(return_value={})
+    hunter.header_dependencies = MagicMock(return_value=[])
+    StubClass = make_stub_backend_class()
+    backend = StubClass(args=args, hunter=hunter)
+    backend.namer = make_mock_namer(args)
+    backend._module_compiler_kind = "clang"
+    backend._module_pcm_dir = str(tmp_path / "flat-pcm")
+    if cas_pcmdir is not None:
+        backend._module_pcm_cache_root = str(cas_pcmdir)
+    if with_anchor:
+        backend._anchor_root = str(tmp_path)
+    else:
+        backend._anchor_root = ""
+    return backend
+
+
+class TestModulePcmDestinations:
+    """`_clang_module_pcm_destination` and `_gcc_module_gcm_destination`
+    drive the on-disk layout of the modules CAS. Both have a cache-off
+    fallback and a cache-on branch that writes a sidecar manifest --
+    coverage of the cache-on branch is what's currently missing."""
+
+    def test_clang_cache_off_returns_flat_dir_path(self, tmp_path):
+        backend = _make_clang_module_backend(tmp_path, cas_pcmdir=None)
+        pcm_path, pcm_dir = backend._clang_module_pcm_destination("/src/math.cppm", "math")
+        assert pcm_dir == backend._module_pcm_dir
+        assert pcm_path == os.path.join(backend._module_pcm_dir, "math.pcm")
+
+    def test_clang_cache_on_returns_per_hash_dir_and_writes_manifest(self, tmp_path):
+        cache_root = tmp_path / "cas-pcmdir"
+        backend = _make_clang_module_backend(tmp_path, cas_pcmdir=cache_root)
+        # Source must exist on disk because the hash computation calls
+        # global_hash_registry.get_file_hash; a missing path is tolerated
+        # via the FileNotFoundError fallback inside _compute_pcm_command_hash.
+        source = tmp_path / "math.cppm"
+        source.write_text("export module math;\n")
+        pcm_path, pcm_dir = backend._clang_module_pcm_destination(str(source), "math")
+        # Layout: <cache_root>/<command_hash>/math.pcm
+        assert pcm_path.startswith(str(cache_root) + os.sep)
+        assert pcm_path.endswith(os.sep + "math.pcm")
+        assert pcm_dir == os.path.dirname(pcm_path)
+        # The matching manifest.json is written so trim_cache can reason
+        # about reachability without needing a successful build first.
+        manifest = os.path.join(pcm_dir, "manifest.json")
+        assert os.path.isfile(manifest)
+        data = json.loads(open(manifest).read())
+        assert data["stage"] == "clang_module_interface"
+        assert data["bucket_key"].endswith("math.cppm")
+
+    def test_clang_partition_separator_escaped_in_pcm_filename(self, tmp_path):
+        from compiletools.build_backend import _NAME_ESCAPE
+
+        backend = _make_clang_module_backend(tmp_path, cas_pcmdir=None)
+        pcm_path, _ = backend._clang_module_pcm_destination("/src/m.cppm", "math:basic")
+        assert os.path.basename(pcm_path) == f"math{_NAME_ESCAPE}basic.pcm"
+
+    def test_gcc_module_gcm_destination_returns_cache_path_and_writes_manifest(self, tmp_path):
+        cache_root = tmp_path / "cas-pcmdir"
+        args = make_backend_args(tmp_path, CXX="g++", cas_pcmdir=str(cache_root))
+        hunter = make_mock_hunter(sources=[])
+        hunter.magicflags = MagicMock(return_value={})
+        hunter.header_dependencies = MagicMock(return_value=[])
+        StubClass = make_stub_backend_class()
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        backend._module_compiler_kind = "gcc"
+        backend._module_pcm_cache_root = str(cache_root)
+        backend._anchor_root = ""
+        source = tmp_path / "math.cppm"
+        source.write_text("export module math;\n")
+
+        gcm_path, gcm_dir = backend._gcc_module_gcm_destination(str(source), "math")
+        assert gcm_path.endswith(os.sep + "math.gcm"), gcm_path
+        assert gcm_path.startswith(str(cache_root) + os.sep)
+        assert gcm_dir == os.path.dirname(gcm_path)
+        manifest = json.loads((tmp_path / "cas-pcmdir").rglob("manifest.json").__next__().read_text())
+        assert manifest["stage"] == "gcc_module_interface"
+
+    def test_compute_pcm_command_hash_tolerates_missing_source(self, tmp_path):
+        """`global_hash_registry.get_file_hash` raises FileNotFoundError on
+        a path it hasn't ingested; the hash routine downgrades to empty
+        source_hash so the cache key is still computable. Without this
+        fallback, `_clang_module_pcm_destination` on a synthetic path
+        from a test fixture would explode."""
+        cache_root = tmp_path / "cas-pcmdir"
+        backend = _make_clang_module_backend(tmp_path, cas_pcmdir=cache_root)
+        # /src/math.cppm does not exist on disk -- exercises the
+        # FileNotFoundError/OSError except branch.
+        h = backend._compute_pcm_command_hash(
+            "/src/math.cppm", stage="clang_module_interface", extra_flags=[]
+        )
+        assert isinstance(h, str) and len(h) >= 8
+
+
+class TestClangModuleInterfaceRules:
+    """`_create_clang_module_interface_rules` emits the two-stage
+    precompile (source -> .pcm) + compile (.pcm -> .o) pair clang requires
+    for named-module interface units."""
+
+    def test_emits_two_rules_with_pcm_as_obj_input(self, tmp_path):
+        cache_root = tmp_path / "cas-pcmdir"
+        backend = _make_clang_module_backend(tmp_path, cas_pcmdir=cache_root)
+        source = tmp_path / "math.cppm"
+        source.write_text("export module math;\n")
+        # The pre-pass populates _module_iface_pcm before this call in
+        # production; replicate that wiring.
+        pcm_path, _ = backend._clang_module_pcm_destination(str(source), "math")
+        backend._module_iface_pcm["math"] = pcm_path
+
+        pcm_rule, obj_rule = backend._create_clang_module_interface_rules(str(source), "math")
+
+        # Stage 1: precompile produces the .pcm.
+        assert pcm_rule.output == pcm_path
+        cmd = _cmd(pcm_rule)
+        assert "--precompile" in cmd
+        assert "c++-module" in cmd
+        # Stage 2: compile consumes the .pcm (its only graph input) and
+        # produces the standard object-cache .o path. The mock namer's
+        # path-shaper does its own basename munging; check that the rule
+        # uses the namer's output (i.e. doesn't shadow it with the pcm
+        # path) and writes via -o.
+        assert obj_rule.inputs == [pcm_path]
+        obj_cmd = _cmd(obj_rule)
+        assert pcm_path in obj_cmd
+        assert obj_cmd[obj_cmd.index(pcm_path) - 1] == "-c"
+        # `-o <obj_rule.output>` -- the rule's named output is what the
+        # compiler writes to, distinct from the .pcm being consumed.
+        assert obj_cmd[-1] == obj_rule.output
+        assert obj_cmd[-2] == "-o"
+        assert obj_rule.output != pcm_path
+
+    def test_relativises_source_under_anchor_root(self, tmp_path):
+        """The precompile must reference the source by anchor-relative
+        path (and set BuildRule.cwd = anchor_root) so the .pcm doesn't
+        bake per-user absolute paths into its internal path table. This
+        is what makes the downstream .o byte-identical across workspaces
+        sharing cas-pcmdir."""
+        cache_root = tmp_path / "cas-pcmdir"
+        backend = _make_clang_module_backend(tmp_path, cas_pcmdir=cache_root, with_anchor=True)
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        source = src_dir / "math.cppm"
+        source.write_text("export module math;\n")
+        pcm_path, _ = backend._clang_module_pcm_destination(str(source), "math")
+        backend._module_iface_pcm["math"] = pcm_path
+
+        pcm_rule, _obj_rule = backend._create_clang_module_interface_rules(str(source), "math")
+
+        assert pcm_rule.cwd == str(tmp_path)
+        # The source argument should appear as a relative path, not absolute.
+        rel = os.path.relpath(str(source), str(tmp_path))
+        assert rel in _cmd(pcm_rule)
+        assert str(source) not in _cmd(pcm_rule)
