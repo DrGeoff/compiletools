@@ -707,20 +707,22 @@ def get_cache_stats(context) -> dict:
     var_c = context.variant_preprocessing_cache
     st = context.preprocessing_stats
 
+    # sys.getsizeof always raises TypeError on PyPy unless a default is supplied;
+    # memory_bytes is documented as approximate, so 0 is fine as the fallback.
     total_size = 0
     for result in inv_c.values():
-        total_size += sys.getsizeof(result.active_lines)
-        total_size += sys.getsizeof(result.active_includes)
-        total_size += sys.getsizeof(result.active_magic_flags)
-        total_size += sys.getsizeof(result.active_defines)
-        total_size += sys.getsizeof(result.updated_macros)
+        total_size += sys.getsizeof(result.active_lines, 0)
+        total_size += sys.getsizeof(result.active_includes, 0)
+        total_size += sys.getsizeof(result.active_magic_flags, 0)
+        total_size += sys.getsizeof(result.active_defines, 0)
+        total_size += sys.getsizeof(result.updated_macros, 0)
 
     for result in var_c.values():
-        total_size += sys.getsizeof(result.active_lines)
-        total_size += sys.getsizeof(result.active_includes)
-        total_size += sys.getsizeof(result.active_magic_flags)
-        total_size += sys.getsizeof(result.active_defines)
-        total_size += sys.getsizeof(result.updated_macros)
+        total_size += sys.getsizeof(result.active_lines, 0)
+        total_size += sys.getsizeof(result.active_includes, 0)
+        total_size += sys.getsizeof(result.active_magic_flags, 0)
+        total_size += sys.getsizeof(result.active_defines, 0)
+        total_size += sys.getsizeof(result.updated_macros, 0)
 
     hit_rate = 0.0
     if st["total_calls"] > 0:
