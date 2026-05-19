@@ -82,6 +82,7 @@ def test_relative_path_passes_through():
         "-B",
         "-include",
         "-include-pch",
+        "-L",
     ],
 )
 def test_each_flag_family_recognized_attached(flag):
@@ -100,6 +101,7 @@ def test_each_flag_family_recognized_attached(flag):
         "-B",
         "-include",
         "-include-pch",
+        "-L",
     ],
 )
 def test_each_flag_family_recognized_detached(flag):

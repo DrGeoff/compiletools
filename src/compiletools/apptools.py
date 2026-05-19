@@ -1102,6 +1102,7 @@ _PATH_BEARING_FLAGS: tuple[str, ...] = (
     "-iquote",
     "-include",
     "-I",
+    "-L",
     "-F",
     "-B",
 )
