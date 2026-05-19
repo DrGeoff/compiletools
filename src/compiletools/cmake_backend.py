@@ -149,12 +149,14 @@ class CMakeBackend(BuildBackend):
     """
 
     @classmethod
-    def _has_native_cas_exe(cls) -> bool:
+    def _self_manages_exe_placement(cls) -> bool:
         # CMake builds out-of-source under cas-objdir/cmake-build/ and
-        # then post-build copies binaries to topbindir(). Cmake's own
-        # incremental tracking is the CAS-equivalent here; routing
+        # then post-build copies binaries to topbindir(). Routing
         # through compiletools' cas-exedir would just dangle (cmake
         # never writes there). Use the legacy single-rule shape.
+        # NB: cmake's incremental rebuild is mtime/depgraph based, not
+        # content-addressable — this predicate is about who manages
+        # exe placement, not about whether the backend has a CAS.
         return True
 
     @staticmethod

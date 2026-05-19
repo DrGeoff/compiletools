@@ -67,7 +67,7 @@ class BazelBackend(BuildBackend):
     _BAZELRC_FILENAME = ".bazelrc"
 
     @classmethod
-    def _has_native_cas_exe(cls) -> bool:
+    def _self_manages_exe_placement(cls) -> bool:
         # Bazel has its own content-addressable action cache and emits
         # its own cc_binary outputs from BUILD.bazel. Threading
         # compiletools' cas-exedir layer through would conflict with

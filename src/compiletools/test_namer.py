@@ -615,11 +615,12 @@ def test_create_link_rule_returns_cas_link_plus_publish_pair():
         uth.reset()
 
 
-def test_create_link_rule_legacy_shape_when_backend_has_native_cas():
-    """Backends that already have their own CAS layer (cmake/bazel)
-    override ``_has_native_cas_exe`` to return True; ``_create_link_rule``
-    then emits a single classical link rule whose output IS the
-    user-facing bin/<name> path (no compiletools-side cas-exedir wrapping)."""
+def test_create_link_rule_legacy_shape_when_backend_self_manages_exe():
+    """Backends that manage their own exe placement (cmake/bazel)
+    override ``_self_manages_exe_placement`` to return True;
+    ``_create_link_rule`` then emits a single classical link rule whose
+    output IS the user-facing bin/<name> path (no compiletools-side
+    cas-exedir wrapping)."""
     import tempfile
 
     import compiletools.testhelper as uth
@@ -636,7 +637,7 @@ def test_create_link_rule_legacy_shape_when_backend_has_native_cas():
 
             class _LegacyBackend(BuildBackend):
                 @classmethod
-                def _has_native_cas_exe(cls):
+                def _self_manages_exe_placement(cls):
                     return True
 
                 @staticmethod

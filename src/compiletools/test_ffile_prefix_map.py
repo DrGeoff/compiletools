@@ -43,10 +43,10 @@ def _skip_if_backend_bypasses_cas_layer(backend_name: str, cas_layer: str) -> No
     surfaces the structural reason at collection time.
     """
     backend_cls = get_backend_class(backend_name)
-    if cas_layer == "cas-exedir" and backend_cls._has_native_cas_exe():
+    if cas_layer == "cas-exedir" and backend_cls._self_manages_exe_placement():
         pytest.skip(
-            f"backend {backend_name!r} has native CAS for linker artefacts "
-            f"(_has_native_cas_exe=True); cas-exedir is empty by design"
+            f"backend {backend_name!r} self-manages exe placement "
+            f"(_self_manages_exe_placement=True); cas-exedir is empty by design"
         )
     if cas_layer == "cas-objdir" and backend_cls._has_native_cas_obj():
         pytest.skip(
@@ -197,7 +197,7 @@ def test_two_checkouts_produce_byte_identical_cas_objdir(backend_name, tmp_path)
 @pytest.mark.parametrize("backend_name", available_backends())
 def test_two_checkouts_produce_byte_identical_cas_exedir(backend_name, tmp_path):
     """Linker artefact byte-identity across two checkouts. Bazel and
-    cmake have their own native CAS layers (``_has_native_cas_exe``
+    cmake self-manage exe placement (``_self_manages_exe_placement``
     returns True), so they don't populate cas-exedir at all -- the
     pre-skip below short-circuits before doing a wasted build."""
     _skip_if_backend_bypasses_cas_layer(backend_name, "cas-exedir")

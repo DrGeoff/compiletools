@@ -67,7 +67,7 @@ Variants compose O(N+M+K) axis confs on-the-fly. `extends = ...` is DFS-resolved
 
 ### Module notes (only what filenames don't tell you)
 - `flags.py` — frozen `Flags` dataclass, built once per `parseargs` as `args.flags`; `hash_relevant`, `existing_include_paths`, `append_include`.
-- `build_backend.py` — `BuildBackend` ABC + registry; `build_graph()`, PCH/PCM/link-key hashing, `_has_native_cas_exe` dispatch.
+- `build_backend.py` — `BuildBackend` ABC + registry; `build_graph()`, PCH/PCM/link-key hashing, `_self_manages_exe_placement` dispatch (formerly `_has_native_cas_exe` — the predicate gates whether to wrap a backend in compiletools' cas-exedir layer; cmake's incremental tree isn't actually a CAS).
 - `trace_backend.py` — both Shake and Slurm backends (self-executing verifying traces).
 - `trim_cache.py` / `cache_report.py` — share on-disk format helpers so format drift is impossible; `trim_exedir` re-stats `nlink` under lock to close scan-to-unlink TOCTOU.
 - `test_framework.py` — single source for `--test-xml-dir` framework table (gtest/doctest/Catch2); multi-match raises, no-match warns at verbose ≥ 1.

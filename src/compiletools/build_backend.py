@@ -1422,7 +1422,7 @@ class BuildBackend(abc.ABC):
 
         if test_exe_paths:
             # Create per-test execution rules so build files can run tests standalone
-            cas_only_results = not getattr(self.args, "use_mtime", False) and not self._has_native_cas_exe()
+            cas_only_results = not getattr(self.args, "use_mtime", False) and not self._self_manages_exe_placement()
             # When --test-xml-dir is set the test recipes pass
             # ``--gtest_output=xml:<dir>/<exe>.xml`` (etc.) to the test exe.
             # Emit an explicit mkdir rule for that directory and hang every
@@ -1522,13 +1522,15 @@ class BuildBackend(abc.ABC):
         the marker is keyed by exe content and survives the inode-mtime
         confusion introduced by the hard-link publish.
 
-        In legacy mode (``--use-mtime=True``) or for native-CAS backends
-        (cmake/bazel, where ``_has_native_cas_exe()`` is True and there
-        is no separate publish-symlink rule), falls back to
+        In legacy mode (``--use-mtime=True``) or for backends that
+        self-manage exe placement (cmake/bazel, where
+        ``_self_manages_exe_placement()`` is True and there is no
+        separate publish-symlink rule), falls back to
         ``<exe_path>.result`` — bit-identical to the pre-fix behaviour.
 
-        .. note:: Native-CAS backends (cmake / bazel) currently fall
-           back to legacy ``<exe_path>.result`` semantics by *omission*,
+        .. note:: Self-managed-placement backends (cmake / bazel)
+           currently fall back to legacy ``<exe_path>.result`` semantics
+           by *omission*,
            not by design intent — they don't emit a separate
            publish-symlink rule that ``_result_marker_path`` could resolve
            through. A future change could add an equivalent content-keyed
@@ -1537,7 +1539,7 @@ class BuildBackend(abc.ABC):
            require it because the bug being fixed (hard-link inode mtime
            confusion) is specific to the cas-exedir publish path.
         """
-        if getattr(self.args, "use_mtime", False) or self._has_native_cas_exe():
+        if getattr(self.args, "use_mtime", False) or self._self_manages_exe_placement():
             return exe_path + ".result"
         graph = self._graph
         if graph is not None:
@@ -1830,31 +1832,31 @@ class BuildBackend(abc.ABC):
         """Persist a content-addressable signature for every link/library
         rule whose output exists on disk.
 
-        Backends with a native CAS layer (cmake/bazel — see
-        ``_has_native_cas_exe``) write their actual binaries to a tool-
-        managed location (``cmake-build/``, ``bazel-bin/``, FUSE-tracked
-        path) rather than the graph-declared ``rule.output``. For those,
-        a missing ``rule.output`` is expected and benign — silently
-        skip.
+        Backends that self-manage exe placement (cmake/bazel — see
+        ``_self_manages_exe_placement``) write their actual binaries to
+        a tool-managed location (``cmake-build/``, ``bazel-bin/``,
+        FUSE-tracked path) rather than the graph-declared ``rule.output``.
+        For those, a missing ``rule.output`` is expected and benign —
+        silently skip.
 
-        For backends without a native CAS layer (the make/ninja/shake/
-        slurm common case), a missing ``rule.output`` after the build
-        completed is a SYMPTOM, not normal: either the link command
-        silently failed without a non-zero exit, or some downstream
-        publish stage moved the file. Either way the next build's
-        ``_all_outputs_current`` check then fails (no linksig present
-        → False) and the link recipe re-fires — diagnostic, not silent.
-        Log at ``verbose>=1`` so operators can spot it instead of
-        chasing a "build keeps relinking" mystery (I5).
+        For backends that use compiletools' cas-exedir layer (the
+        make/ninja/shake/slurm common case), a missing ``rule.output``
+        after the build completed is a SYMPTOM, not normal: either the
+        link command silently failed without a non-zero exit, or some
+        downstream publish stage moved the file. Either way the next
+        build's ``_all_outputs_current`` check then fails (no linksig
+        present → False) and the link recipe re-fires — diagnostic,
+        not silent. Log at ``verbose>=1`` so operators can spot it
+        instead of chasing a "build keeps relinking" mystery (I5).
         """
-        native_cas = self._has_native_cas_exe()
+        self_managed = self._self_manages_exe_placement()
         for rule in graph.rules:
             if rule.rule_type in (RuleType.LINK, RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY):
                 if not os.path.exists(rule.output):
-                    if not native_cas and getattr(self.args, "verbose", 0) >= 1:
-                        # I5: surface the unexpected case where a non-
-                        # native-CAS backend's link rule has no on-disk
-                        # output at sig-recording time.
+                    if not self_managed and getattr(self.args, "verbose", 0) >= 1:
+                        # I5: surface the unexpected case where a
+                        # cas-exedir-using backend's link rule has no
+                        # on-disk output at sig-recording time.
                         print(
                             f"  WARN: link rule output missing at signature time: {rule.output} "
                             f"(rule_type={rule.rule_type}). Next build will re-link.",
@@ -2872,14 +2874,13 @@ class BuildBackend(abc.ABC):
         return self.namer.object_pathname(source, macro_state_hash, dep_hash)
 
     @classmethod
-    def _has_native_cas_exe(cls) -> bool:
-        """Whether this backend already has its own content-addressable
-        cache for linker artefacts (executables, static libraries,
-        shared libraries) and so should NOT be wrapped in compiletools'
-        cas-exedir layer.
+    def _self_manages_exe_placement(cls) -> bool:
+        """Whether this backend manages its own linker-artefact placement
+        (executables, static libraries, shared libraries) and so should
+        NOT be wrapped in compiletools' cas-exedir layer.
 
-        False (default) — backend has no native CAS for linker
-        artefacts; compiletools' cas-exedir layer applies. The producer
+        False (default) — backend writes whatever path the graph IR
+        names, so compiletools' cas-exedir layer applies. The producer
         rule (link / static_library / shared_library) writes to a
         content-addressable ``<cas-exedir>/<shard>/<name>_<key>.<ext>``
         with ``<ext>`` ∈ ``{.exe, .a, .so}``, paired with a downstream
@@ -2887,11 +2888,21 @@ class BuildBackend(abc.ABC):
         as a hard link (with symlink fallback) to the cached artefact.
         This is the case for Make/Ninja/Shake/Slurm.
 
-        True — backend already maintains a CAS-equivalent layer
-        (cmake's out-of-source tree, bazel's action cache). All three
-        rule types write directly to their user-facing paths (legacy
-        single-rule shape) so the graph IR doesn't impose a competing
-        cache layout on top of the backend's own.
+        True — backend writes binaries to a tool-managed location
+        (cmake's out-of-source build tree, bazel's sandboxed action-
+        cache output) and post-build-copies / publishes them to the
+        user-facing path itself. Routing through cas-exedir would just
+        dangle because the backend never writes there. All three rule
+        types use the legacy single-rule shape that writes directly to
+        the user-facing path.
+
+        Note: this is a *placement-management* predicate, not a claim
+        of content-addressability. Bazel does back it with a real CAS
+        (action cache keyed by input hashes); cmake does not — cmake's
+        incremental rebuild is mtime-and-depgraph based. Both qualify
+        for the same dispatch because both reasons (real CAS, or
+        tool-owned out-of-source tree) make the cas-exedir wrapper
+        wrong, not because both have a CAS.
         """
         return False
 
@@ -2905,9 +2916,9 @@ class BuildBackend(abc.ABC):
         compiletools' cas-objdir (the path-canonical CAS key keyed by
         file_hash + dep_hash + macro_state_hash). Make/Ninja/Shake/Slurm
         all populate cas-objdir for every TU. CMake also returns False
-        here even though ``_has_native_cas_exe()`` is True: cmake uses
-        ``cas-objdir/cmake-build/`` as its out-of-source build tree, so
-        ``.o`` files do land under cas-objdir.
+        here even though ``_self_manages_exe_placement()`` is True:
+        cmake uses ``cas-objdir/cmake-build/`` as its out-of-source
+        build tree, so ``.o`` files do land under cas-objdir.
 
         True — backend has its own action cache for compiles and only
         writes to cas-objdir for the narrow set of artefacts that must
@@ -3009,8 +3020,8 @@ class BuildBackend(abc.ABC):
     def _create_link_rule(self, source: str, library_outputs: list[str] | None = None) -> list[BuildRule]:
         """Build the link rule(s) for an executable target.
 
-        When ``_has_native_cas_exe()`` returns False (the default for
-        Make/Ninja/Shake/Slurm), returns a two-element list:
+        When ``_self_manages_exe_placement()`` returns False (the
+        default for Make/Ninja/Shake/Slurm), returns a two-element list:
           [0] The link rule whose output is the content-addressable
               ``<cas-exedir>/<shard>/<name>_<linkkey>.exe``. ``linkkey``
               hashes the canonicalized link command and the linker
@@ -3022,9 +3033,9 @@ class BuildBackend(abc.ABC):
               See ``_build_publish_rule`` for the publish recipe and
               its race semantics.
 
-        When ``_has_native_cas_exe()`` returns True (cmake/bazel),
-        returns a single-element list with the legacy ``bin/<name>``
-        link rule.
+        When ``_self_manages_exe_placement()`` returns True
+        (cmake/bazel), returns a single-element list with the legacy
+        ``bin/<name>`` link rule.
 
         .. note:: Signature change from earlier compiletools versions:
            previously returned a single ``BuildRule``. The two-element
@@ -3083,7 +3094,7 @@ class BuildBackend(abc.ABC):
             extra_link_argv, self._anchor_root, target=ffile_prefix_map_target
         )
 
-        if self._has_native_cas_exe():
+        if self._self_manages_exe_placement():
             # Backend already has its own CAS layer — emit the legacy
             # single-rule shape that writes directly to bin/<name>.
             link_cmd = (
@@ -3185,8 +3196,8 @@ class BuildBackend(abc.ABC):
     def _create_static_library_rule(self) -> list[BuildRule]:
         """Build the static-library rule(s) for ``args.static``.
 
-        When ``_has_native_cas_exe()`` returns False (the default for
-        Make/Ninja/Shake/Slurm), returns a two-element list:
+        When ``_self_manages_exe_placement()`` returns False (the
+        default for Make/Ninja/Shake/Slurm), returns a two-element list:
           [0] The ``ar`` rule whose output is the content-addressable
               ``<cas-exedir>/<shard>/lib<name>_<libkey>.a``. ``libkey``
               hashes the canonicalized object set + ar argv, so two
@@ -3196,7 +3207,7 @@ class BuildBackend(abc.ABC):
               ``bin/<variant>/lib<name>.a`` as a hard link (with
               symlink fallback) to the cas-static-library entry.
 
-        When ``_has_native_cas_exe()`` returns True, returns a
+        When ``_self_manages_exe_placement()`` returns True, returns a
         single-element list with the legacy direct-output shape.
 
         Same lift-to-order-only treatment in make/ninja backends as
@@ -3206,7 +3217,7 @@ class BuildBackend(abc.ABC):
         object_names, _ = self._get_library_object_names(self.args.static)
         lib_path = self.namer.staticlibrary_pathname(sourcefilename)
 
-        if self._has_native_cas_exe():
+        if self._self_manages_exe_placement():
             lib_cmd = ["ar", "-src", lib_path] + list(object_names)
             return [
                 BuildRule(
@@ -3250,7 +3261,7 @@ class BuildBackend(abc.ABC):
         """Build the shared-library rule(s) for ``args.dynamic``.
 
         Symmetric with ``_create_link_rule`` — see that docstring for
-        the ``_has_native_cas_exe`` decision and the publish-symlink
+        the ``_self_manages_exe_placement`` decision and the publish-symlink
         contract. The CAS path is
         ``<cas-exedir>/<shard>/lib<name>_<libkey>.so``; ``libkey`` is
         derived from the same payload as the executable link key
@@ -3278,7 +3289,7 @@ class BuildBackend(abc.ABC):
             ld_extra, self._anchor_root, target=ffile_prefix_map_target
         )
 
-        if self._has_native_cas_exe():
+        if self._self_manages_exe_placement():
             lib_cmd = (
                 ld_argv + ["-shared", "-o", lib_path] + list(object_names) + merged_ldflags_for_cmd + ld_extra_for_cmd
             )
