@@ -15,6 +15,7 @@ Helper for file locking during concurrent compilation
 SYNOPSIS
 ========
 ct-lock-helper compile --target=OUTPUT --strategy=STRATEGY -- COMMAND
+ct-lock-helper link --target=OUTPUT --strategy=STRATEGY -- COMMAND
 
 DESCRIPTION
 ===========
@@ -25,8 +26,8 @@ file creation and prevent race conditions in multi-user or parallel build
 environments.
 
 The helper is a Python entry point that delegates to ``locking.py``'s
-``atomic_compile()`` function, reusing the same tested locking algorithms
-used by the Shake backend.
+``atomic_compile()`` and ``atomic_link()`` functions, reusing the same tested
+locking algorithms used by the Shake backend.
 
 The helper implements four locking strategies automatically selected based on
 the target filesystem type:
@@ -40,12 +41,14 @@ Usage
 -----
 
 ct-lock-helper is invoked automatically by ``ct-cake`` when using ``--file-locking``
-with the Make or Ninja backends.
+with the Make or Ninja backends. On local filesystems, those backends may use a
+native ``flock`` fast path instead of starting Python for each rule.
 You typically don't call it directly, but it's useful to understand for debugging.
 
 Basic command format::
 
     ct-lock-helper compile --target=OUTPUT.o --strategy=STRATEGY -- COMPILE_COMMAND
+    ct-lock-helper link --target=OUTPUT --strategy=STRATEGY -- LINK_COMMAND
 
 Example::
 
@@ -54,9 +57,16 @@ Example::
 The helper will:
 
 1. Acquire lock based on strategy
-2. For fcntl/flock: compile directly to target (no temp file)
-   For others: compile to temp file (``file.o.PID.RANDOM.tmp``), then rename to target
-3. Release lock
+2. For ``compile``: run the compiler with ``-o OUTPUT.PID.RANDOM.tmp``, then
+   atomically replace ``OUTPUT`` with the completed temp file
+3. For ``link``: rewrite a recognized ``-o OUTPUT`` or ``ar ... OUTPUT ...``
+   command to write ``OUTPUT.PID.RANDOM.tmp``, then atomically replace
+   ``OUTPUT`` with the completed temp file
+4. Release lock
+
+If ``atomic_link()`` cannot find the target in the link command, it runs the
+command unchanged and, at verbose level 2 or higher, prints a warning that
+temp-and-rename atomicity could not be provided for that command shape.
 
 Configuration
 -------------
@@ -121,7 +131,7 @@ Uses ``mkdir`` for atomic lock acquisition. Works on all POSIX filesystems.
 ::
 
     target.o.lockdir/
-        pid              # Contains "hostname:12345"
+        pid              # Contains "hostname:pid" or "hostname:pid:start_time"
 
 **Stale lock handling:**
 
@@ -141,18 +151,19 @@ need for polling and stale lock detection.
 - Cross-node mutual exclusion via kernel-managed record locks
 - No polling: ``lockf(LOCK_EX)`` blocks in the kernel
 - No stale detection: kernel releases locks automatically on process death
-- Locks the target ``.o`` file directly — no sidecar ``.lock`` file
-- Compiles directly to target (no temp file, no rename)
+- Locks a sidecar ``<target>.lock`` file, not the target itself
+- Compile and helper-wrapped link rules still use temp-and-rename output
+- The sidecar lock file is not removed on release
 
 **Lock structure:**
 
 ::
 
-    target.o             # Locked directly via fcntl (no sidecar files)
+    target.o.lock        # Locked via fcntl.lockf(); persists after release
 
-The fcntl advisory lock is placed on the target file itself. Since gcc opens
-the output with ``O_WRONLY|O_CREAT|O_TRUNC``, which preserves the inode, the
-lock held by the build process remains valid throughout compilation.
+The fcntl advisory lock is placed on the sidecar file. Locking the target
+itself would create an empty target before the compile runs, which can make a
+peer ``make`` process treat that empty file as up-to-date.
 
 cifs (CIFS/SMB)
 ^^^^^^^^^^^^^^^
@@ -163,8 +174,8 @@ Uses exclusive file creation (``O_CREAT|O_EXCL``) for CIFS compatibility.
 
 ::
 
-    target.o.lock        # Base lockfile
-    target.o.lock.excl   # Exclusive marker
+    target.o.lock        # Base lockfile; persists after release
+    target.o.lock.excl   # Exclusive marker; removed on release
 
 flock (Local filesystems)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -176,19 +187,24 @@ filesystems (ext4/xfs/btrfs) where ``flock()`` is always available.
 
 - Kernel-managed blocking: ``flock(LOCK_EX)`` blocks until acquired
 - Automatic release on process death
-- Locks the target ``.o`` file directly — no sidecar ``.lock`` file
-- Compiles directly to target (no temp file, no rename)
+- Locks a sidecar ``<target>.lock`` file, not the target itself
+- Helper compile and helper link rules use temp-and-rename output
+- The sidecar lock file is not removed on release
 
 **Lock structure:**
 
 ::
 
-    target.o             # Locked directly via flock (no sidecar files)
+    target.o.lock        # Locked via flock(); persists after release
 
-The flock advisory lock is placed on the target file itself. Since gcc opens
-the output with ``O_WRONLY|O_CREAT|O_TRUNC``, which preserves the inode, the
-lock held by the build process remains valid throughout compilation. Same
-reasoning as the fcntl strategy.
+The flock advisory lock is placed on the sidecar file. Locking the target
+itself would create an empty target before the compile or link command runs,
+which can make a peer ``make`` process treat that empty file as up-to-date.
+
+When Make or Ninja use the native ``flock`` fast path, compile commands lock
+``<target>.lock``, write ``<target>.compiletools.tmp``, then ``mv -f`` the temp
+file into place. Native ``flock`` link commands lock ``<target>.lock`` and run
+the link command unchanged; they do not rewrite the link output to a temp file.
 
 Performance
 -----------
@@ -302,20 +318,31 @@ ct-lock-helper (Make/Ninja backends) and the Shake backend:
 
 1. **Acquire:**
 
-   - Try ``mkdir`` (lockdir), ``fcntl.lockf`` (fcntl), or exclusive create (cifs/flock)
+   - Try ``mkdir`` (lockdir), ``fcntl.lockf`` on ``<target>.lock`` (fcntl),
+     exclusive create of ``<target>.lock.excl`` (cifs), or ``flock`` on
+     ``<target>.lock`` (flock)
    - For lockdir: if fails, check if stale (same-host process check), remove and retry
    - For fcntl: kernel handles blocking and deadlock avoidance
+   - For cifs: same-host stale ``.lock.excl`` holders are removed; cross-host holders wait
    - If not stale, wait with periodic warnings
-   - Write hostname:pid to lock
+   - Write hostname:pid:start-time holder info for lockdir and CIFS locks
 
 2. **Execute:**
 
-   - For fcntl/flock: compile directly to target (advisory lock protects target)
-   - For others: compile to temporary file, then rename to target (atomic)
+   - Helper ``compile`` always writes ``<target>.<pid>.<random>.tmp`` and
+     atomically replaces the target after the compiler succeeds
+   - Helper ``link`` / ``ar`` uses the same temp-and-replace pattern when the
+     target appears in a recognized command form
+   - Native ``flock`` compile fast path writes ``<target>.compiletools.tmp``
+     and moves it into place
+   - Native ``flock`` link fast path only locks ``<target>.lock`` and runs the
+     link command unchanged
 
 3. **Release:**
 
-   - Remove lock files (except fcntl/flock, which lock the target directly)
+   - lockdir removes its pid file and lock directory
+   - cifs removes ``<target>.lock.excl`` and leaves ``<target>.lock``
+   - fcntl/flock unlock and close ``<target>.lock``; the sidecar file remains
    - Cleanup via signal handlers on SIGINT/SIGTERM
 
 Examples
