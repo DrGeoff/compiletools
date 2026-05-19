@@ -24,11 +24,36 @@ import subprocess
 import pytest
 
 import compiletools.testhelper as uth
-from compiletools.build_backend import available_backends, ensure_backends_registered
+from compiletools.build_backend import available_backends, ensure_backends_registered, get_backend_class
 
 # Trigger @register_backend across all backend modules so available_backends()
 # returns the full list at parametrization time.
 ensure_backends_registered()
+
+
+def _skip_if_backend_bypasses_cas_layer(backend_name: str, cas_layer: str) -> None:
+    """Short-circuit tests whose CAS layer is empty by design for this backend.
+
+    Some backends own a native CAS for some artefact classes and never
+    populate compiletools' corresponding ``cas-*dir`` (bazel for both
+    ``.o`` and exe artefacts; cmake for exe artefacts only). The post-
+    build empty-tree skip in :func:`_assert_cas_layer_byte_identical`
+    catches these cases, but only after a wasteful two-checkout build.
+    Pre-skipping here saves ~10-15s per skipped parametrisation and
+    surfaces the structural reason at collection time.
+    """
+    backend_cls = get_backend_class(backend_name)
+    if cas_layer == "cas-exedir" and backend_cls._has_native_cas_exe():
+        pytest.skip(
+            f"backend {backend_name!r} has native CAS for linker artefacts "
+            f"(_has_native_cas_exe=True); cas-exedir is empty by design"
+        )
+    if cas_layer == "cas-objdir" and backend_cls._has_native_cas_obj():
+        pytest.skip(
+            f"backend {backend_name!r} has native CAS for compile artefacts "
+            f"(_has_native_cas_obj=True); cas-objdir stays empty unless the "
+            f"sample exports named modules"
+        )
 
 
 def _hash_tree(root: pathlib.Path, suffixes: tuple[str, ...]) -> dict[str, str]:
@@ -129,7 +154,11 @@ def _assert_cas_layer_byte_identical(
     alice_hashes = _hash_tree(alice / cas_layer, suffixes=suffixes)
     bob_hashes = _hash_tree(bob / cas_layer, suffixes=suffixes)
     if not alice_hashes and not bob_hashes:
-        pytest.skip(f"sample doesn't populate {cas_layer} with {suffixes}")
+        pytest.skip(
+            f"backend produced no {suffixes} artefacts under {cas_layer} "
+            f"(either backend has native CAS for these artefacts, or the "
+            f"sample doesn't exercise this layer)"
+        )
     alice_content = set(alice_hashes.values())
     bob_content = set(bob_hashes.values())
     assert alice_content == bob_content, (
@@ -148,6 +177,7 @@ def test_two_checkouts_produce_byte_identical_cas_objdir(backend_name, tmp_path)
     """Build the simple sample under two distinct workspace paths with
     every available backend; assert every .o under cas-objdir is
     byte-identical across the two checkouts."""
+    _skip_if_backend_bypasses_cas_layer(backend_name, "cas-objdir")
     sample = pathlib.Path(uth.example_path("simple"))
     if not sample.is_dir():
         pytest.skip(f"missing sample dir: {sample}")
@@ -169,8 +199,8 @@ def test_two_checkouts_produce_byte_identical_cas_exedir(backend_name, tmp_path)
     """Linker artefact byte-identity across two checkouts. Bazel and
     cmake have their own native CAS layers (``_has_native_cas_exe``
     returns True), so they don't populate cas-exedir at all -- the
-    ``_assert_cas_layer_byte_identical`` helper skips when both sides
-    are empty."""
+    pre-skip below short-circuits before doing a wasted build."""
+    _skip_if_backend_bypasses_cas_layer(backend_name, "cas-exedir")
     sample = pathlib.Path(uth.example_path("simple"))
     if not sample.is_dir():
         pytest.skip(f"missing sample dir: {sample}")
@@ -266,6 +296,7 @@ def test_two_checkouts_produce_byte_identical_o_with_shared_cas_pchdir(backend_n
     source paths + cwd=anchor_root discipline (see _create_pch_rules in
     build_backend.py).
     """
+    _skip_if_backend_bypasses_cas_layer(backend_name, "cas-objdir")
     sample = pathlib.Path(uth.example_path("pch"))
     if not sample.is_dir():
         pytest.skip(f"missing sample dir: {sample}")
@@ -292,6 +323,7 @@ def test_two_checkouts_produce_byte_identical_o_with_shared_cas_pcmdir(backend_n
     .pcm/.gcm bytes themselves diverge across users (gcc/clang BMI layout
     is cwd-sensitive), but consumed-into-.o is stable.
     """
+    _skip_if_backend_bypasses_cas_layer(backend_name, "cas-objdir")
     from compiletools.test_cxx_modules import (
         _clang_supports_header_units,
         _detected_gcc_supports_modules,

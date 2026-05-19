@@ -2871,7 +2871,8 @@ class BuildBackend(abc.ABC):
         macro_state_hash = self.hunter.macro_state_hash(source, dep_hash=dep_hash)
         return self.namer.object_pathname(source, macro_state_hash, dep_hash)
 
-    def _has_native_cas_exe(self) -> bool:
+    @classmethod
+    def _has_native_cas_exe(cls) -> bool:
         """Whether this backend already has its own content-addressable
         cache for linker artefacts (executables, static libraries,
         shared libraries) and so should NOT be wrapped in compiletools'
@@ -2891,6 +2892,29 @@ class BuildBackend(abc.ABC):
         rule types write directly to their user-facing paths (legacy
         single-rule shape) so the graph IR doesn't impose a competing
         cache layout on top of the backend's own.
+        """
+        return False
+
+    @classmethod
+    def _has_native_cas_obj(cls) -> bool:
+        """Whether this backend already has its own content-addressable
+        cache for compile artefacts (``.o`` files) and so does NOT route
+        every compile through compiletools' cas-objdir layer.
+
+        False (default) — every compile produces a ``.o`` under
+        compiletools' cas-objdir (the path-canonical CAS key keyed by
+        file_hash + dep_hash + macro_state_hash). Make/Ninja/Shake/Slurm
+        all populate cas-objdir for every TU. CMake also returns False
+        here even though ``_has_native_cas_exe()`` is True: cmake uses
+        ``cas-objdir/cmake-build/`` as its out-of-source build tree, so
+        ``.o`` files do land under cas-objdir.
+
+        True — backend has its own action cache for compiles and only
+        writes to cas-objdir for the narrow set of artefacts that must
+        cross the action-cache boundary (e.g. bazel's C++20 named-module
+        interface ``.o`` staging via ``_bazel_obj_workspace_relative``).
+        Samples without named-module exports will leave cas-objdir
+        empty under such a backend.
         """
         return False
 

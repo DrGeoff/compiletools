@@ -635,7 +635,8 @@ def test_create_link_rule_legacy_shape_when_backend_has_native_cas():
             )
 
             class _LegacyBackend(BuildBackend):
-                def _has_native_cas_exe(self):
+                @classmethod
+                def _has_native_cas_exe(cls):
                     return True
 
                 @staticmethod

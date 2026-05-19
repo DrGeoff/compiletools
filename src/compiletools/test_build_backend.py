@@ -2659,8 +2659,8 @@ class TestDetectAvailableBackends:
         """A backend whose tool_command() returns None has no external
         dependency and so always reports available."""
         from compiletools.build_backend import (
-            BuildBackend,
             _REGISTRY,
+            BuildBackend,
             is_backend_available,
             register_backend,
         )
@@ -2694,8 +2694,8 @@ class TestDetectAvailableBackends:
         exercise the print + filter path without depending on the host's
         installed tooling."""
         from compiletools.build_backend import (
-            BuildBackend,
             _REGISTRY,
+            BuildBackend,
             backend_tool_command,
             detect_available_backends,
             is_backend_available,
@@ -2740,8 +2740,8 @@ class TestDetectAvailableBackends:
         """When tool_command() returns a tuple of alternates, the canonical
         name is the first element."""
         from compiletools.build_backend import (
-            BuildBackend,
             _REGISTRY,
+            BuildBackend,
             backend_tool_command,
             register_backend,
         )
@@ -2843,6 +2843,7 @@ class TestModulePcmDestinations:
         backend = _make_clang_module_backend(tmp_path, cas_pcmdir=None)
         pcm_path, pcm_dir = backend._clang_module_pcm_destination("/src/math.cppm", "math")
         assert pcm_dir == backend._module_pcm_dir
+        assert backend._module_pcm_dir is not None
         assert pcm_path == os.path.join(backend._module_pcm_dir, "math.pcm")
 
     def test_clang_cache_on_returns_per_hash_dir_and_writes_manifest(self, tmp_path):
@@ -2862,7 +2863,8 @@ class TestModulePcmDestinations:
         # about reachability without needing a successful build first.
         manifest = os.path.join(pcm_dir, "manifest.json")
         assert os.path.isfile(manifest)
-        data = json.loads(open(manifest).read())
+        with open(manifest) as f:
+            data = json.loads(f.read())
         assert data["stage"] == "clang_module_interface"
         assert data["bucket_key"].endswith("math.cppm")
 
@@ -2905,9 +2907,7 @@ class TestModulePcmDestinations:
         backend = _make_clang_module_backend(tmp_path, cas_pcmdir=cache_root)
         # /src/math.cppm does not exist on disk -- exercises the
         # FileNotFoundError/OSError except branch.
-        h = backend._compute_pcm_command_hash(
-            "/src/math.cppm", stage="clang_module_interface", extra_flags=[]
-        )
+        h = backend._compute_pcm_command_hash("/src/math.cppm", stage="clang_module_interface", extra_flags=[])
         assert isinstance(h, str) and len(h) >= 8
 
 
@@ -2924,6 +2924,7 @@ class TestClangModuleInterfaceRules:
         # The pre-pass populates _module_iface_pcm before this call in
         # production; replicate that wiring.
         pcm_path, _ = backend._clang_module_pcm_destination(str(source), "math")
+        assert isinstance(backend._module_iface_pcm, dict)
         backend._module_iface_pcm["math"] = pcm_path
 
         pcm_rule, obj_rule = backend._create_clang_module_interface_rules(str(source), "math")
@@ -2961,6 +2962,7 @@ class TestClangModuleInterfaceRules:
         source = src_dir / "math.cppm"
         source.write_text("export module math;\n")
         pcm_path, _ = backend._clang_module_pcm_destination(str(source), "math")
+        assert isinstance(backend._module_iface_pcm, dict)
         backend._module_iface_pcm["math"] = pcm_path
 
         pcm_rule, _obj_rule = backend._create_clang_module_interface_rules(str(source), "math")

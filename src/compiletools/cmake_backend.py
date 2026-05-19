@@ -148,7 +148,8 @@ class CMakeBackend(BuildBackend):
     file locking would conflict with its internal coordination.
     """
 
-    def _has_native_cas_exe(self) -> bool:
+    @classmethod
+    def _has_native_cas_exe(cls) -> bool:
         # CMake builds out-of-source under cas-objdir/cmake-build/ and
         # then post-build copies binaries to topbindir(). Cmake's own
         # incremental tracking is the CAS-equivalent here; routing

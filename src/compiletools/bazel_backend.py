@@ -66,11 +66,23 @@ class BazelBackend(BuildBackend):
     _RULES_CC_VERSION = "0.1.5"
     _BAZELRC_FILENAME = ".bazelrc"
 
-    def _has_native_cas_exe(self) -> bool:
+    @classmethod
+    def _has_native_cas_exe(cls) -> bool:
         # Bazel has its own content-addressable action cache and emits
         # its own cc_binary outputs from BUILD.bazel. Threading
         # compiletools' cas-exedir layer through would conflict with
         # bazel's output naming. Use legacy single-rule shape.
+        return True
+
+    @classmethod
+    def _has_native_cas_obj(cls) -> bool:
+        # Bazel routes every regular compile through its sandboxed
+        # action cache (.o files land in bazel-bin, not cas-objdir).
+        # cas-objdir is only used for the narrow case of staging C++20
+        # named-module interface .o artefacts so they can re-enter a
+        # bazel cc_binary srcs= list (see _bazel_obj_workspace_relative).
+        # Samples without named-module exports therefore leave
+        # cas-objdir empty under bazel.
         return True
 
     @staticmethod
