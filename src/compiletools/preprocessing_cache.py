@@ -69,8 +69,11 @@ class MacroState:
     preprocessing cache keys (include_core=False) because the compiler and flags
     are constant per-process.
 
-    Acts as a dict-like container that can be used as a drop-in replacement for
-    plain macro dictionaries, but with optimized caching behavior.
+    Not a dict: callers that want to read macros must do so through the explicit
+    attributes (``.core``, ``.variable``) or ``all_macros()`` for the merged view.
+    The narrow API surface keeps the immutability story tight and avoids tempting
+    callers to mutate or hash macros without going through ``get_cache_key()`` /
+    ``get_hash()``.
 
     Attributes:
         core: Static macros (compiler built-ins + cmdline -D flags). ~388 macros.
@@ -266,41 +269,6 @@ class MacroState:
             compiler_identity=self.compiler_identity,
             anchor_root=self.anchor_root,
         )
-
-    # Dict-like interface for easy drop-in replacement
-    def __len__(self) -> int:
-        """Return total number of macros (core + variable)."""
-        return len(self.core) + len(self.variable)
-
-    def __getitem__(self, key):
-        """Get macro value by key. Variable overrides core."""
-        if key in self.variable:
-            return self.variable[key]
-        return self.core[key]
-
-    def __contains__(self, key) -> bool:
-        """Check if macro key exists in either core or variable."""
-        return key in self.variable or key in self.core
-
-    def get(self, key, default=None):
-        """Get macro value with optional default."""
-        if key in self.variable:
-            return self.variable[key]
-        return self.core.get(key, default)
-
-    def keys(self):
-        """Return all macro keys (core + variable)."""
-        all_keys = set(self.core.keys())
-        all_keys.update(self.variable.keys())
-        return all_keys
-
-    def items(self):
-        """Return all macro items (core + variable, variable overrides)."""
-        return self.all_macros().items()
-
-    def values(self):
-        """Return all macro values (core + variable)."""
-        return self.all_macros().values()
 
     def copy(self) -> "MacroState":
         """Return self since MacroState is immutable."""

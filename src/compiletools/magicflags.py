@@ -1118,8 +1118,8 @@ class DirectMagicFlags(MagicFlagsBase):
                     f"MACRO STATE CORRUPTION DETECTED in {context} for file {filename}!\n"
                     f"Converged key: {converged_key}\n"
                     f"Current key:   {current_key}\n"
-                    f"Converged macros: {set(converged_macro_state.keys())}\n"
-                    f"Current macros:   {set(self.defined_macros.keys())}"
+                    f"Converged macros: {set(converged_macro_state.variable.keys())}\n"
+                    f"Current macros:   {set(self.defined_macros.variable.keys())}"
                 )
 
     def parse(self, filename):

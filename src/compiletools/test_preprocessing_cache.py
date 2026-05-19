@@ -336,11 +336,11 @@ class TestPreprocessingCache:
         result = get_or_compute_preprocessing(file_result, initial_macros, 0, context=self.ctx)
 
         # Verify NEW_MACRO is in updated_macros
-        assert sz.Str("NEW_MACRO") in result.updated_macros
-        assert result.updated_macros[sz.Str("NEW_MACRO")] == sz.Str("42")
+        assert sz.Str("NEW_MACRO") in result.updated_macros.variable
+        assert result.updated_macros.variable[sz.Str("NEW_MACRO")] == sz.Str("42")
 
         # Verify initial_macros is unchanged (immutable input)
-        assert sz.Str("NEW_MACRO") not in initial_macros
+        assert sz.Str("NEW_MACRO") not in initial_macros.variable
 
     @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
     def test_invariant_cache_honors_undef(self):
@@ -380,11 +380,13 @@ class TestPreprocessingCache:
 
         # First call computes result and should drop REMOVED_MACRO from updated macros
         result1 = get_or_compute_preprocessing(file_result, initial_macros, 0, context=self.ctx)
-        assert sz.Str("REMOVED_MACRO") not in result1.updated_macros, "#undef should remove macro on initial processing"
+        assert sz.Str("REMOVED_MACRO") not in result1.updated_macros.variable, (
+            "#undef should remove macro on initial processing"
+        )
 
         # Second call hits invariant cache but must preserve the removal semantics
         result2 = get_or_compute_preprocessing(file_result, initial_macros, 0, context=self.ctx)
-        assert sz.Str("REMOVED_MACRO") not in result2.updated_macros, (
+        assert sz.Str("REMOVED_MACRO") not in result2.updated_macros.variable, (
             "Invariant cache should not reintroduce macros removed via #undef"
         )
 
@@ -607,3 +609,311 @@ class TestMacroStateImmutability:
 
         assert not hasattr(state, "update"), "update method should not exist"
         assert not hasattr(state, "get_version"), "get_version method should not exist"
+
+    def test_with_updates_incremental_cache_key_on_pure_addition(self):
+        """Pure-addition fast path must produce a cache key equal to a full rebuild.
+
+        The optimization at lines 242-245 sets new_state._cache_key via
+        frozenset union when no overwrites are involved. The invariant
+        (incremental key == recomputed key) is documented but not currently
+        pinned by a test, so a refactor could silently break it.
+        """
+        state = MacroState(
+            core={}, variable={sz.Str("A"): sz.Str("1")}, anchor_root=""
+        )
+        # Materialize the cache key so the incremental path engages.
+        baseline_key = state.get_cache_key()
+        assert baseline_key == frozenset({(sz.Str("A"), sz.Str("1"))})
+
+        # Pure addition (B is new, A unchanged).
+        new_state = state.with_updates({sz.Str("B"): sz.Str("2")})
+        assert new_state is not state
+
+        # The incremental key cached on new_state must equal a full rebuild.
+        cached_key = new_state.get_cached_key_if_available()
+        rebuilt_key = frozenset(new_state.variable.items())
+        assert cached_key is not None, "pure-addition fast path should populate _cache_key"
+        assert cached_key == rebuilt_key
+
+        # Overwrite path must NOT pre-populate the incremental key.
+        overwrite_state = state.with_updates({sz.Str("A"): sz.Str("9")})
+        assert overwrite_state.get_cached_key_if_available() is None
+
+
+class TestGetHashVariableOnly:
+    """Tests for the default include_core=False path of MacroState.get_hash().
+
+    This is the hot path used for preprocessing-cache convergence detection;
+    the scoping test file only exercises include_core=True.
+    """
+
+    def test_variable_only_hash_changes_with_variable(self):
+        s1 = MacroState({}, {sz.Str("V"): sz.Str("1")}, anchor_root="")
+        s2 = MacroState({}, {sz.Str("V"): sz.Str("2")}, anchor_root="")
+        assert s1.get_hash() != s2.get_hash()
+
+    def test_variable_only_hash_ignores_core_and_build_context(self):
+        """Variable-only path must NOT include core or build context."""
+        s_plain = MacroState({}, {sz.Str("V"): sz.Str("1")}, anchor_root="")
+        s_with_extras = MacroState(
+            core={sz.Str("__GNUC__"): sz.Str("13")},
+            variable={sz.Str("V"): sz.Str("1")},
+            compiler_path="gcc",
+            cppflags="-I/usr/include",
+            cflags="-O2",
+            cxxflags="-std=c++17",
+            anchor_root="",
+        )
+        assert s_plain.get_hash() == s_with_extras.get_hash()
+
+    def test_variable_only_hash_memoised(self):
+        """Repeat calls must return the cached value (line 382-383 early return)."""
+        state = MacroState({}, {sz.Str("V"): sz.Str("1")}, anchor_root="")
+        h1 = state.get_hash()
+        # Mutate the underlying variable dict to prove a recompute would
+        # produce a different hash — but the cached value must be returned.
+        state.variable[sz.Str("V")] = sz.Str("CHANGED")
+        h2 = state.get_hash()
+        assert h1 == h2
+
+    def test_variable_only_empty_variable_hash_is_zero(self):
+        """Empty variable produces the all-zeros XOR result."""
+        state = MacroState({}, {}, anchor_root="")
+        assert state.get_hash() == "0000000000000000"
+
+
+class TestCacheHitMacroReconstruction:
+    """Regression tests for the anti-pollution invariant: cache hits must
+    rebuild updated_macros from the *current* caller's input, not from the
+    first caller's context that produced the cached entry.
+    """
+
+    def setup_method(self):
+        self.ctx = BuildContext()
+        clear_cache(self.ctx)
+        self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
+        self.mock = self.patcher.start()
+        self.mock.return_value = "<test-file>"
+
+    def teardown_method(self):
+        self.patcher.stop()
+
+    def _file_with_define(self, content_hash: str) -> FileAnalysisResult:
+        """File with one #define and no conditionals (invariant)."""
+        directive = PreprocessorDirective(
+            line_num=0,
+            byte_pos=0,
+            directive_type="define",
+            continuation_lines=0,
+            condition=None,
+            macro_name=sz.Str("LOCAL_DEF"),
+            macro_value=sz.Str("42"),
+        )
+        return FileAnalysisResult(
+            line_count=1,
+            line_byte_offsets=[0],
+            include_positions=[],
+            magic_positions=[],
+            directive_positions={"define": [0]},
+            directives=[directive],
+            directive_by_line={0: directive},
+            bytes_analyzed=18,
+            was_truncated=False,
+            includes=[],
+            defines=[{"line_num": 0, "name": sz.Str("LOCAL_DEF"), "value": sz.Str("42"), "is_function_like": False}],
+            magic_flags=[],
+            content_hash=content_hash,
+            include_guard=None,
+            conditional_macros=frozenset(),
+        )
+
+    def test_invariant_cache_hit_reapplies_file_defines(self):
+        """Invariant cache hit must merge cached file_defines into the
+        *current* caller's input macros, not return the first caller's state.
+        """
+        file_result = self._file_with_define("hash_inv_defines")
+
+        # First caller: empty input. LOCAL_DEF will be captured as a file_define.
+        first_input = MacroState({}, {}, anchor_root="")
+        first_result = get_or_compute_preprocessing(file_result, first_input, 0, context=self.ctx)
+        assert sz.Str("LOCAL_DEF") in first_result.updated_macros.variable
+        assert sz.Str("LOCAL_DEF") in first_result.file_defines
+
+        # Second caller: brings its own pre-existing macro OTHER. Cache hits
+        # but must combine OTHER (from input) + LOCAL_DEF (from cached file_defines).
+        second_input = MacroState({}, {sz.Str("OTHER"): sz.Str("99")}, anchor_root="")
+        second_result = get_or_compute_preprocessing(file_result, second_input, 0, context=self.ctx)
+
+        stats = get_cache_stats(self.ctx)
+        assert stats["invariant_hits"] == 1, "second call should hit invariant cache"
+
+        # Both inputs and file-defined macros must be present.
+        merged = second_result.updated_macros.variable
+        assert merged[sz.Str("OTHER")] == sz.Str("99")
+        assert merged[sz.Str("LOCAL_DEF")] == sz.Str("42")
+
+    def test_variant_cache_hit_reapplies_file_defines(self):
+        """Variant cache hit must also merge cached file_defines into the
+        current caller's input (lines 601, 603 in preprocessing_cache.py).
+        """
+        # File: #ifdef GATE / #define LOCAL_DEF 42 / #endif
+        # Variant (has conditional), define becomes active when GATE is set.
+        define_directive = PreprocessorDirective(
+            line_num=1,
+            byte_pos=14,
+            directive_type="define",
+            continuation_lines=0,
+            condition=None,
+            macro_name=sz.Str("LOCAL_DEF"),
+            macro_value=sz.Str("42"),
+        )
+        ifdef_directive = PreprocessorDirective(
+            line_num=0,
+            byte_pos=0,
+            directive_type="ifdef",
+            continuation_lines=0,
+            condition=None,
+            macro_name=sz.Str("GATE"),
+            macro_value=None,
+        )
+        endif_directive = PreprocessorDirective(
+            line_num=2,
+            byte_pos=32,
+            directive_type="endif",
+            continuation_lines=0,
+            condition=None,
+            macro_name=None,
+            macro_value=None,
+        )
+        file_result = FileAnalysisResult(
+            line_count=3,
+            line_byte_offsets=[0, 14, 32],
+            include_positions=[],
+            magic_positions=[],
+            directive_positions={"ifdef": [0], "define": [14], "endif": [32]},
+            directives=[ifdef_directive, define_directive, endif_directive],
+            directive_by_line={0: ifdef_directive, 1: define_directive, 2: endif_directive},
+            bytes_analyzed=40,
+            was_truncated=False,
+            includes=[],
+            defines=[{"line_num": 1, "name": sz.Str("LOCAL_DEF"), "value": sz.Str("42"), "is_function_like": False}],
+            magic_flags=[],
+            content_hash="hash_var_defines",
+            include_guard=None,
+            conditional_macros=frozenset({sz.Str("GATE")}),
+        )
+
+        # First caller: GATE set so #define becomes active.
+        first_input = MacroState({}, {sz.Str("GATE"): sz.Str("1")}, anchor_root="")
+        first_result = get_or_compute_preprocessing(file_result, first_input, 0, context=self.ctx)
+        assert sz.Str("LOCAL_DEF") in first_result.file_defines
+        assert sz.Str("LOCAL_DEF") in first_result.updated_macros.variable
+
+        # Second caller: same relevant key (GATE=1) plus an extra unrelated
+        # variable macro that DOES NOT appear in conditional_macros, so the
+        # variant cache key matches and we hit.
+        second_input = MacroState(
+            {},
+            {sz.Str("GATE"): sz.Str("1"), sz.Str("OTHER"): sz.Str("99")},
+            anchor_root="",
+        )
+        second_result = get_or_compute_preprocessing(file_result, second_input, 0, context=self.ctx)
+
+        stats = get_cache_stats(self.ctx)
+        assert stats["variant_hits"] == 1, "second call should hit variant cache"
+
+        # OTHER preserved from caller; LOCAL_DEF reapplied from cached file_defines.
+        merged = second_result.updated_macros.variable
+        assert merged[sz.Str("OTHER")] == sz.Str("99")
+        assert merged[sz.Str("LOCAL_DEF")] == sz.Str("42")
+        assert merged[sz.Str("GATE")] == sz.Str("1")
+
+
+class TestClearVariantCache:
+    """clear_variant_cache must purge variant entries but preserve invariant
+    entries. Used in two-pass header discovery convergence."""
+
+    def setup_method(self):
+        self.ctx = BuildContext()
+        clear_cache(self.ctx)
+        self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
+        self.mock = self.patcher.start()
+        self.mock.return_value = "<test-file>"
+
+    def teardown_method(self):
+        self.patcher.stop()
+
+    def test_clear_variant_cache_preserves_invariant_entries(self):
+        from compiletools.preprocessing_cache import clear_variant_cache
+
+        # Invariant entry: file with no conditionals.
+        invariant_file = FileAnalysisResult(
+            line_count=1,
+            line_byte_offsets=[0],
+            include_positions=[],
+            magic_positions=[],
+            directive_positions={},
+            directives=[],
+            directive_by_line={},
+            bytes_analyzed=18,
+            was_truncated=False,
+            includes=[],
+            defines=[],
+            magic_flags=[],
+            content_hash="hash_inv",
+            include_guard=None,
+            conditional_macros=frozenset(),
+        )
+
+        # Variant entry: file with an #ifdef referencing a defined macro.
+        ifdef_directive = PreprocessorDirective(
+            line_num=0,
+            byte_pos=0,
+            directive_type="ifdef",
+            continuation_lines=0,
+            condition=None,
+            macro_name=sz.Str("GATE"),
+            macro_value=None,
+        )
+        endif_directive = PreprocessorDirective(
+            line_num=1,
+            byte_pos=14,
+            directive_type="endif",
+            continuation_lines=0,
+            condition=None,
+            macro_name=None,
+            macro_value=None,
+        )
+        variant_file = FileAnalysisResult(
+            line_count=2,
+            line_byte_offsets=[0, 14],
+            include_positions=[],
+            magic_positions=[],
+            directive_positions={"ifdef": [0], "endif": [14]},
+            directives=[ifdef_directive, endif_directive],
+            directive_by_line={0: ifdef_directive, 1: endif_directive},
+            bytes_analyzed=22,
+            was_truncated=False,
+            includes=[],
+            defines=[],
+            magic_flags=[],
+            content_hash="hash_var",
+            include_guard=None,
+            conditional_macros=frozenset({sz.Str("GATE")}),
+        )
+
+        empty = MacroState({}, {}, anchor_root="")
+        with_gate = MacroState({}, {sz.Str("GATE"): sz.Str("1")}, anchor_root="")
+
+        get_or_compute_preprocessing(invariant_file, empty, 0, context=self.ctx)
+        get_or_compute_preprocessing(variant_file, with_gate, 0, context=self.ctx)
+
+        before = get_cache_stats(self.ctx)
+        assert before["invariant_entries"] == 1
+        assert before["variant_entries"] == 1
+
+        clear_variant_cache(self.ctx)
+
+        after = get_cache_stats(self.ctx)
+        assert after["invariant_entries"] == 1, "invariant cache must be preserved"
+        assert after["variant_entries"] == 0, "variant cache must be cleared"
