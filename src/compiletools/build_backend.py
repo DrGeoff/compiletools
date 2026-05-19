@@ -1816,15 +1816,15 @@ class BuildBackend(abc.ABC):
                 if not os.path.exists(rule.output):
                     return False
             elif rule.rule_type == RuleType.TEST:
-                # Tests run in the build phase, so a test rule's output (the
-                # JUnit XML file when a framework is detected, else the
-                # .result marker) is part of the build's observable contract.
-                # If it's missing — e.g. the user deleted the XML between
-                # runs — the build is not current and the native scheduler
-                # must run; it re-executes only the test whose output is
-                # absent.
+                # Tests run in the build phase. A framework-detected test with
+                # --test-xml-dir has two observable success conditions: the XML
+                # report exists and the .result marker was touched. Failed XML
+                # reports are intentionally preserved, so XML alone is not
+                # enough to short-circuit a later build.
                 has_build_rules = True
                 if not os.path.exists(rule.output):
+                    return False
+                if rule.success_marker and not os.path.exists(rule.success_marker):
                     return False
         return has_build_rules
 

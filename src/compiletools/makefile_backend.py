@@ -181,6 +181,19 @@ class MakefileBackend(BuildBackend):
             for rule in graph.rules
             if rule.rule_type == RuleType.TEST and rule.output != rule.success_marker
         ]
+        framework_test_success_markers = [
+            rule.success_marker
+            for rule in graph.rules
+            if rule.rule_type == RuleType.TEST and rule.output != rule.success_marker and rule.success_marker
+        ]
+        # Grouped-target syntax (``a b &: deps``) ships in GNU Make 4.3+
+        # and runs the recipe once to produce both targets. On older Make,
+        # fall back to the multi-target form (``a b: deps``), which is
+        # parsed as two independent rules sharing one recipe. The test
+        # recipe is idempotent so a double-run is harmless, but the
+        # grouped form is preferred when available so the contract holds
+        # even if a future recipe edit breaks idempotency.
+        grouped_target_supported = compiletools.apptools.tool_version("make") >= (4, 3)
         if precious_xml:
             f.write(".PRECIOUS: " + " ".join(precious_xml) + "\n\n")
         f.write("MAKEFLAGS += -rR\n\n")
@@ -209,13 +222,33 @@ class MakefileBackend(BuildBackend):
             if rule.rule_type == RuleType.PHONY:
                 f.write(f".PHONY: {rule.output}\n")
 
+            outputs = rule.output
+            target_separator = ":"
+            if rule.rule_type == RuleType.TEST and rule.output != rule.success_marker and rule.success_marker:
+                # Framework tests with --test-xml-dir produce two observable
+                # files on success: the JUnit XML report and the .result stamp.
+                # The XML is .PRECIOUS so failed reports survive, but a later
+                # make must still re-run the test when only that failed XML
+                # exists. Emitting both targets lets runtests depend on both
+                # without creating a separate recipe for the stamp.
+                outputs = f"{rule.output} {rule.success_marker}"
+                if grouped_target_supported:
+                    target_separator = " &:"
+
+            inputs = list(rule.inputs)
+            if rule.rule_type == RuleType.PHONY and rule.output == "runtests":
+                # See the multi-target TEST rule above: the phony aggregate must
+                # require the success stamps as well as XML reports, otherwise
+                # a preserved failed XML file would satisfy runtests.
+                inputs.extend(m for m in framework_test_success_markers if m not in inputs)
+
             if cas_only and rule.rule_type in CAS_PRODUCER_TYPES:
                 ordering = list(rule.order_only_deps) + cas_demoted_order_only(rule)
-                line = f"{rule.output}:"
+                line = f"{outputs}{target_separator}"
                 if ordering:
                     line += f" | {' '.join(ordering)}"
             else:
-                line = f"{rule.output}: {' '.join(rule.inputs)}"
+                line = f"{outputs}{target_separator} {' '.join(inputs)}"
                 if rule.order_only_deps:
                     line += f" | {' '.join(rule.order_only_deps)}"
             f.write(line + "\n")

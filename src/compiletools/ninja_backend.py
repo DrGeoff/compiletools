@@ -108,19 +108,40 @@ class NinjaBackend(BuildBackend):
             f.write("  restat = 1\n")
             f.write("\n")
 
+        # Framework-detected test rules have a JUnit XML report as ``output``
+        # and a ``.result`` stamp as ``success_marker``. Both are produced by
+        # the same recipe and ninja's ``build out1 out2: rule deps`` form lets
+        # one action declare both. Without the stamp as an explicit output a
+        # preserved failed XML satisfies ninja's up-to-date check on later
+        # ``ninja runtests`` invocations, silently skipping the re-run.
+        framework_test_success_markers = [
+            rule.success_marker
+            for rule in graph.rules
+            if rule.rule_type == RuleType.TEST and rule.output != rule.success_marker and rule.success_marker
+        ]
+
         cas_only = not self.args.use_mtime
         for rule in graph.rules:
             if rule.rule_type == RuleType.PHONY:
-                f.write(f"build {rule.output}: phony {' '.join(rule.inputs)}\n")
+                inputs = list(rule.inputs)
+                if rule.output == "runtests":
+                    # See the multi-output TEST rule below: the phony aggregate
+                    # must require the success stamps as well as XML reports,
+                    # otherwise a preserved failed XML would satisfy runtests.
+                    inputs.extend(m for m in framework_test_success_markers if m not in inputs)
+                f.write(f"build {rule.output}: phony {' '.join(inputs)}\n")
             elif rule.command:
                 is_module_iface = rule.rule_type == RuleType.COMPILE and rule.output in module_iface_outputs
                 ninja_rule = "compile_module_iface_cmd" if is_module_iface else f"{rule.rule_type}_cmd"
+                outputs = rule.output
+                if rule.rule_type == RuleType.TEST and rule.output != rule.success_marker and rule.success_marker:
+                    outputs = f"{rule.output} {rule.success_marker}"
                 if cas_only and rule.rule_type in CAS_PRODUCER_TYPES:
                     # CAS-only: producer's cached path encodes the cache
                     # key, so inputs become order-only — ninja builds
                     # them first but does not retrigger the producer on
                     # their mtime change.
-                    line = f"build {rule.output}: {ninja_rule}"
+                    line = f"build {outputs}: {ninja_rule}"
                     ordering = list(rule.order_only_deps) + cas_demoted_order_only(rule)
                     if ordering:
                         line += f" || {' '.join(ordering)}"
@@ -128,7 +149,7 @@ class NinjaBackend(BuildBackend):
                     # First input is the primary source, rest are implicit deps
                     primary = rule.inputs[0] if rule.inputs else ""
                     implicit = rule.inputs[1:] if len(rule.inputs) > 1 else []
-                    line = f"build {rule.output}: {ninja_rule} {primary}"
+                    line = f"build {outputs}: {ninja_rule} {primary}"
                     if implicit:
                         line += f" | {' '.join(implicit)}"
                     if rule.order_only_deps:

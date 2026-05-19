@@ -1344,13 +1344,20 @@ class TestMakeRunsTestsInBuildPhase:
         test_src.write_text('#include "unit_test.hpp"\nint main() { return 0; }\n')
 
         backend, graph = uth.build_real_backend(MakefileBackend, tmp_path, [], tests=[test_src])
+        test_rule = next(r for r in graph.rules if r.rule_type == "test")
+        assert test_rule.success_marker is not None
+        try:
+            os.remove(test_rule.success_marker)
+        except FileNotFoundError:
+            pass
+
         makefile = tmp_path / "Makefile"
         with open(makefile, "w") as f:
             backend.generate(graph, output=f)
 
         backend.execute("build")
 
-        assert uth.find_result_markers(tmp_path), (
+        assert os.path.exists(test_rule.success_marker), (
             "no .result marker after execute('build') — test did not run during the build phase"
         )
 
@@ -1427,6 +1434,43 @@ class TestMakeRunsTestsInBuildPhase:
         )
         with open(xml_path) as xf:
             assert "<testsuites>" in xf.read()
+
+    @uth.requires_functional_compiler
+    def test_make_framework_test_failure_reruns_when_only_failed_xml_exists(self, tmp_path, monkeypatch):
+        """A preserved failed JUnit XML file is not a passing test marker.
+
+        The framework XML target is intentionally ``.PRECIOUS`` so the report
+        survives a failing test. A later build must still re-run that test when
+        the XML exists but the ``.result`` success marker does not.
+        """
+        monkeypatch.chdir(tmp_path)
+        test_src = uth.write_failing_gtest_fixture(tmp_path)
+
+        xml_dir = tmp_path / "junit"
+        backend, graph = uth.build_real_backend(
+            MakefileBackend,
+            tmp_path,
+            [],
+            tests=[test_src],
+            extra_argv=["--test-xml-dir=" + str(xml_dir)],
+        )
+
+        test_rule = next(r for r in graph.rules if r.rule_type == "test")
+        assert test_rule.output != test_rule.success_marker
+        assert test_rule.success_marker is not None
+
+        makefile = tmp_path / "Makefile"
+        with open(makefile, "w") as f:
+            backend.generate(graph, output=f)
+
+        with pytest.raises(subprocess.CalledProcessError):
+            backend.execute("build")
+
+        assert os.path.exists(test_rule.output)
+        assert not os.path.exists(test_rule.success_marker)
+
+        with pytest.raises(subprocess.CalledProcessError):
+            backend.execute("build")
 
 
 class TestMakefileTestEchoTarget:

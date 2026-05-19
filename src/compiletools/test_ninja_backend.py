@@ -906,6 +906,44 @@ class TestNinjaRunsTestsInBuildPhase:
         with open(xml_path) as xf:
             assert "<testsuites>" in xf.read()
 
+    @uth.requires_functional_compiler
+    def test_ninja_framework_test_failure_reruns_when_only_failed_xml_exists(self, tmp_path, monkeypatch):
+        """A preserved failed JUnit XML file must not satisfy ninja's up-to-date check.
+
+        The framework XML output survives a failing test (ninja does not
+        delete failed-rule outputs). A later ``ninja runtests`` must still
+        re-run that test when the XML exists but the ``.result`` success
+        marker does not — which means the rule must declare both files as
+        outputs so ninja's existence check considers the missing stamp.
+        """
+        monkeypatch.chdir(tmp_path)
+        test_src = uth.write_failing_gtest_fixture(tmp_path)
+
+        xml_dir = tmp_path / "junit"
+        backend, graph = uth.build_real_backend(
+            NinjaBackend,
+            tmp_path,
+            [],
+            tests=[test_src],
+            extra_argv=["--test-xml-dir=" + str(xml_dir)],
+        )
+
+        test_rule = next(r for r in graph.rules if r.rule_type == "test")
+        assert test_rule.output != test_rule.success_marker
+        assert test_rule.success_marker is not None
+
+        with open(tmp_path / "build.ninja", "w") as f:
+            backend.generate(graph, output=f)
+
+        with pytest.raises(subprocess.CalledProcessError):
+            backend.execute("build")
+
+        assert os.path.exists(test_rule.output)
+        assert not os.path.exists(test_rule.success_marker)
+
+        with pytest.raises(subprocess.CalledProcessError):
+            backend.execute("build")
+
 
 class TestNinjaLogClassifiesTestRules:
     """record_rules_from_ninja_log consults the BuildGraph so a test
