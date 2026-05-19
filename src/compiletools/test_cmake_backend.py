@@ -654,6 +654,127 @@ class TestCppmPerSourceProperties:
         assert "set_source_files_properties" not in content
 
 
+class TestCMakeNamedModuleIfaceLinkWiring:
+    """Named-module interface units (.cppm) are pre-compiled locally by
+    ``_prebuild_aux_artefacts`` before cmake runs. They MUST be excluded
+    from ``add_executable`` srcs and instead supplied to the linker as
+    prebuilt object files.
+
+    Race rationale: the interface compile command writes the BMI (.gcm)
+    to a fixed mapper-resolved path inside cas-pcmdir. If cmake re-compiles
+    the .cppm file (because it appears in add_executable srcs), the gcc
+    invocation truncates and rewrites that .gcm path while a peer importer
+    compile in the same cmake --parallel invocation may simultaneously
+    open it for reading. Race symptom (observed on CI gcc-14.2.0 / make
+    generator): ``math: error: failed to read compiled module: No such
+    file or directory``. The prebuild already produced the .o + .gcm;
+    cmake must consume them, not re-produce them.
+    """
+
+    def _make_backend(self):
+        args = MagicMock()
+        hunter = MagicMock()
+        return CMakeBackend(args=args, hunter=hunter)
+
+    def _build_graph_with_module_iface(self) -> BuildGraph:
+        """Importer main.cpp + named-module interface math.cppm linked together."""
+        graph = BuildGraph()
+        graph.add_rule(
+            BuildRule(
+                output="/abs/cas-objdir/ab/math_abcd.o",
+                inputs=["/abs/ws/math.cppm"],
+                command=[
+                    "g++",
+                    "-std=c++20",
+                    "-fmodules-ts",
+                    "-c",
+                    "-x",
+                    "c++",
+                    "/abs/ws/math.cppm",
+                    "-o",
+                    "/abs/cas-objdir/ab/math_abcd.o",
+                ],
+                rule_type="compile",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="/abs/cas-objdir/cd/main_efgh.o",
+                inputs=["/abs/ws/main.cpp"],
+                command=[
+                    "g++",
+                    "-std=c++20",
+                    "-fmodules-ts",
+                    "-c",
+                    "/abs/ws/main.cpp",
+                    "-o",
+                    "/abs/cas-objdir/cd/main_efgh.o",
+                ],
+                rule_type="compile",
+            )
+        )
+        graph.add_rule(
+            BuildRule(
+                output="bin/main",
+                inputs=["/abs/cas-objdir/ab/math_abcd.o", "/abs/cas-objdir/cd/main_efgh.o"],
+                command=["g++", "-o", "bin/main", "/abs/cas-objdir/ab/math_abcd.o", "/abs/cas-objdir/cd/main_efgh.o"],
+                rule_type="link",
+            )
+        )
+        return graph
+
+    def test_cppm_not_in_add_executable_srcs(self):
+        """The .cppm source must NOT appear in add_executable srcs."""
+        graph = self._build_graph_with_module_iface()
+        backend = self._make_backend()
+        # Mark math.cppm's .o as a named-module interface producer; the
+        # backend must keep that .o out of the compile target's srcs.
+        backend._module_iface_obj = {"math": "/abs/cas-objdir/ab/math_abcd.o"}
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        # main.cpp is a regular importer, still compiled by cmake.
+        assert "/abs/ws/main.cpp" in content
+        # math.cppm is a named-module interface — already compiled by the
+        # prebuild step; cmake must not list it as a source.
+        assert "math.cppm" not in content, (
+            "math.cppm leaked into the cmake target srcs; cmake will re-compile "
+            "it and race with the prebuild-produced .gcm"
+        )
+
+    def test_prebuilt_module_iface_obj_linked_in(self):
+        """The prebuilt interface .o must be passed to the linker so the
+        module's definitions are present in the final binary."""
+        graph = self._build_graph_with_module_iface()
+        backend = self._make_backend()
+        backend._module_iface_obj = {"math": "/abs/cas-objdir/ab/math_abcd.o"}
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        # The prebuilt .o path must be supplied to the linker. cmake
+        # passes absolute paths in target_link_libraries directly to ld.
+        assert "/abs/cas-objdir/ab/math_abcd.o" in content, (
+            "prebuilt named-module interface .o is not wired into the linker; "
+            "the executable would link without the module's definitions and "
+            "fail with 'undefined reference'"
+        )
+
+    def test_no_module_iface_obj_leaves_graph_unchanged(self):
+        """Backends without named-module producers (the common case) must
+        keep their previous behaviour: .cppm sources stay in add_executable
+        srcs and no spurious prebuilt-object link entries appear."""
+        graph = self._build_graph_with_module_iface()
+        backend = self._make_backend()
+        # Empty _module_iface_obj — no named modules.
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        content = buf.getvalue()
+
+        assert "math.cppm" in content
+
+
 @pytest.mark.skipif(shutil.which("cmake") is None, reason="cmake not on PATH")
 class TestCMakeRunsTestsInBuildPhase:
     """CMakeBackend.execute("build") runs each test via its runtests-target

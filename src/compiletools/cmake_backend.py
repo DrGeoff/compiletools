@@ -204,9 +204,30 @@ class CMakeBackend(BuildBackend):
 
         obj_info = build_obj_info(graph)
 
+        # Named-module interface .o files (e.g. math.cppm → math.o) are
+        # pre-compiled locally by ``_prebuild_aux_artefacts`` before cmake
+        # runs. They MUST be excluded from cmake's compile targets — if
+        # the .cppm source appears in ``add_executable`` srcs, cmake's
+        # ``--parallel`` build re-issues the interface compile command,
+        # which truncates and rewrites the BMI (.gcm / .pcm) at the
+        # mapper-resolved path while a peer importer compile in the same
+        # build may simultaneously open it for reading. Race symptom
+        # (observed on CI gcc-14.2.0 / make generator):
+        #   math: error: failed to read compiled module: No such file or directory
+        # Strip those .o entries from obj_info so ``aggregate_rule_sources``
+        # drops the .cppm from srcs (and drops the per-rule orphan ``-x``
+        # that would otherwise bleed into target_compile_options for a
+        # target that no longer compiles any .cppm). The prebuilt .o paths
+        # are added back as ``target_link_libraries`` entries — cmake
+        # passes absolute path-like items in target_link_libraries
+        # directly to the linker, so the module's definitions are still
+        # linked into the final binary.
+        module_iface_obj_paths: frozenset[str] = frozenset(self._module_iface_obj.values())
+        cmake_obj_info = {obj: info for obj, info in obj_info.items() if obj not in module_iface_obj_paths}
+
         for lib_type in (RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY):
             for rule in graph.rules_by_type(lib_type):
-                srcs, all_copts = aggregate_rule_sources(rule, obj_info)
+                srcs, all_copts = aggregate_rule_sources(rule, cmake_obj_info)
                 target_name = mangle_target_name(os.path.basename(rule.output))
                 # Filter orphan -x flags from the global copts; .cppm sources
                 # will receive -x c++ via set_source_files_properties instead.
@@ -222,9 +243,13 @@ class CMakeBackend(BuildBackend):
 
                 _emit_per_source_x_lang(f, rel_srcs)
                 self._emit_compile_attrs(f, target_name, remaining_copts, include_dirs)
+                prebuilt_objs = sorted(set(rule.inputs) & module_iface_obj_paths)
+                if prebuilt_objs:
+                    quoted = " ".join(f'"{p}"' for p in prebuilt_objs)
+                    f.write(f"target_link_libraries({target_name} PRIVATE {quoted})\n")
 
         for rule in graph.rules_by_type(RuleType.LINK):
-            srcs, all_copts = aggregate_rule_sources(rule, obj_info)
+            srcs, all_copts = aggregate_rule_sources(rule, cmake_obj_info)
             object_files = set(rule.inputs)
             linkopts = extract_linkopts(rule.command, object_files) if rule.command else []
             target_name = mangle_target_name(os.path.basename(rule.output))
@@ -241,6 +266,11 @@ class CMakeBackend(BuildBackend):
 
             _emit_per_source_x_lang(f, rel_srcs)
             self._emit_compile_attrs(f, target_name, remaining_copts, include_dirs)
+
+            prebuilt_objs = sorted(set(rule.inputs) & module_iface_obj_paths)
+            if prebuilt_objs:
+                quoted = " ".join(f'"{p}"' for p in prebuilt_objs)
+                f.write(f"target_link_libraries({target_name} PRIVATE {quoted})\n")
 
             if linkopts:
                 # Split linkopts into CMake-native directives:
