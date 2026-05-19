@@ -219,6 +219,33 @@ class TestSimplePreprocessor:
         assert self.processor._evaluate_expression_sz(sz.Str("(1 << 3) == 8")) == 1
         assert self.processor._evaluate_expression_sz(sz.Str("(8 >> 2) == 2")) == 1
 
+    def test_expression_evaluation_uses_c_integer_division_sz(self):
+        """Preprocessor division is integer division, not Python float division."""
+        import stringzilla as sz
+
+        assert self.processor._evaluate_expression_sz(sz.Str("4 / 2")) == 2
+        assert self.processor._evaluate_expression_sz(sz.Str("5 / 2 == 2")) == 1
+
+    def test_expression_evaluation_uses_c_truncated_modulo_sz(self):
+        """C99 truncates modulo toward zero; Python floor-mods toward -inf.
+
+        The eval()-based predecessor returned Python's floor-mod (e.g.
+        ``-7 % 2 == 1``); the C-precedence parser truncates so ``-7 % 2 == -1``.
+        """
+        import stringzilla as sz
+
+        assert self.processor._evaluate_expression_sz(sz.Str("(-7) % 2")) == -1
+        assert self.processor._evaluate_expression_sz(sz.Str("7 % (-2)")) == 1
+        assert self.processor._evaluate_expression_sz(sz.Str("(-7) / 2")) == -3
+        assert self.processor._evaluate_expression_sz(sz.Str("(-7) % 2 == -1")) == 1
+
+    def test_expression_evaluation_uses_c_bitwise_precedence_sz(self):
+        """C equality binds tighter than bitwise AND/OR/XOR in #if expressions."""
+        import stringzilla as sz
+
+        assert self.processor._evaluate_expression_sz(sz.Str("1 & 2 == 0")) == 0
+        assert self.processor._evaluate_expression_sz(sz.Str("1 | 0 == 0")) == 1
+
     def test_recursive_macro_expansion_sz(self):
         """Test recursive macro expansion functionality with StringZilla"""
         import stringzilla as sz

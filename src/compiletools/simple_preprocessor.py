@@ -15,7 +15,6 @@ if TYPE_CHECKING:
 _RE_BACKSLASH_WHITESPACE = re.compile(r"\\\s*")
 _RE_MALFORMED_NUMBERS = re.compile(r"(\d+)\s*\(\s*(\d+)\s*\)")
 _RE_INTEGER_SUFFIXES = re.compile(r"(\d+)[LlUu]+\b")
-_RE_SAFE_EXPR = re.compile(r"^[0-9\s\+\-\*\/\%\(\)\<\>\=\!&\|\^~andortnot ]+$")
 
 # Precompiled regex patterns for _normalize_numeric_literals
 _RE_HEX_LITERAL = re.compile(r"\b0[xX][0-9A-Fa-f]+\b")
@@ -53,6 +52,151 @@ _stats: dict[str, Any] = {
     "files_processed": Counter(),
     "call_contexts": Counter(),
 }
+
+
+_CExprToken = int | str
+
+
+class _CExpressionParser:
+    """Evaluate the integer subset used by C preprocessor expressions."""
+
+    def __init__(self, tokens: list[_CExprToken]) -> None:
+        self.tokens = tokens
+        self.pos = 0
+
+    def parse(self) -> int:
+        value = self._parse_logical_or()
+        if self._peek() != "EOF":
+            raise SyntaxError("trailing tokens")
+        return value
+
+    def _peek(self) -> _CExprToken:
+        return self.tokens[self.pos]
+
+    def _match(self, *ops: str) -> str | None:
+        token = self._peek()
+        if isinstance(token, str) and token in ops:
+            self.pos += 1
+            return token
+        return None
+
+    def _parse_logical_or(self) -> int:
+        value = self._parse_logical_and()
+        while self._match("||"):
+            rhs = self._parse_logical_and()
+            value = 1 if value != 0 or rhs != 0 else 0
+        return value
+
+    def _parse_logical_and(self) -> int:
+        value = self._parse_bitwise_or()
+        while self._match("&&"):
+            rhs = self._parse_bitwise_or()
+            value = 1 if value != 0 and rhs != 0 else 0
+        return value
+
+    def _parse_bitwise_or(self) -> int:
+        value = self._parse_bitwise_xor()
+        while self._match("|"):
+            value |= self._parse_bitwise_xor()
+        return value
+
+    def _parse_bitwise_xor(self) -> int:
+        value = self._parse_bitwise_and()
+        while self._match("^"):
+            value ^= self._parse_bitwise_and()
+        return value
+
+    def _parse_bitwise_and(self) -> int:
+        value = self._parse_equality()
+        while self._match("&"):
+            value &= self._parse_equality()
+        return value
+
+    def _parse_equality(self) -> int:
+        value = self._parse_relational()
+        while op := self._match("==", "!="):
+            rhs = self._parse_relational()
+            if op == "==":
+                value = 1 if value == rhs else 0
+            else:
+                value = 1 if value != rhs else 0
+        return value
+
+    def _parse_relational(self) -> int:
+        value = self._parse_shift()
+        while op := self._match("<", "<=", ">", ">="):
+            rhs = self._parse_shift()
+            if op == "<":
+                value = 1 if value < rhs else 0
+            elif op == "<=":
+                value = 1 if value <= rhs else 0
+            elif op == ">":
+                value = 1 if value > rhs else 0
+            else:
+                value = 1 if value >= rhs else 0
+        return value
+
+    def _parse_shift(self) -> int:
+        value = self._parse_additive()
+        while op := self._match("<<", ">>"):
+            rhs = self._parse_additive()
+            if op == "<<":
+                value <<= rhs
+            else:
+                value >>= rhs
+        return value
+
+    def _parse_additive(self) -> int:
+        value = self._parse_multiplicative()
+        while op := self._match("+", "-"):
+            rhs = self._parse_multiplicative()
+            if op == "+":
+                value += rhs
+            else:
+                value -= rhs
+        return value
+
+    def _parse_multiplicative(self) -> int:
+        value = self._parse_unary()
+        while op := self._match("*", "/", "%"):
+            rhs = self._parse_unary()
+            if op == "*":
+                value *= rhs
+            elif op == "/":
+                value = self._c_trunc_div(value, rhs)
+            else:
+                value = value - self._c_trunc_div(value, rhs) * rhs
+        return value
+
+    def _parse_unary(self) -> int:
+        if self._match("+"):
+            return +self._parse_unary()
+        if self._match("-"):
+            return -self._parse_unary()
+        if self._match("!"):
+            return 0 if self._parse_unary() else 1
+        if self._match("~"):
+            return ~self._parse_unary()
+        return self._parse_primary()
+
+    def _parse_primary(self) -> int:
+        token = self._peek()
+        if isinstance(token, int):
+            self.pos += 1
+            return token
+        if self._match("("):
+            value = self._parse_logical_or()
+            if not self._match(")"):
+                raise SyntaxError("missing closing parenthesis")
+            return value
+        raise SyntaxError("expected integer or parenthesized expression")
+
+    @staticmethod
+    def _c_trunc_div(lhs: int, rhs: int) -> int:
+        if rhs == 0:
+            raise ZeroDivisionError("integer division by zero")
+        quotient = abs(lhs) // abs(rhs)
+        return -quotient if (lhs < 0) != (rhs < 0) else quotient
 
 
 class SimplePreprocessor:
@@ -663,42 +807,75 @@ class SimplePreprocessor:
         # Normalize C-style numeric literals to Python ints (hex, bin, octal)
         expr = self._normalize_numeric_literals(expr)
 
-        # Convert C operators to Python equivalents
-        # Handle comparison operators first (before replacing ! with not)
-        # Use temporary placeholders to protect != from being affected by ! replacement
-        expr = expr.replace("!=", "__NE__")  # Temporarily replace != with placeholder
-        expr = expr.replace(">=", "__GE__")  # Also protect >= from > replacement
-        expr = expr.replace("<=", "__LE__")  # Also protect <= from < replacement
-
-        # Now handle logical operators (! is safe to replace now)
-        expr = expr.replace("&&", " and ")
-        expr = expr.replace("||", " or ")
-        expr = expr.replace("!", " not ")
-
-        # Now restore comparison operators as Python equivalents
-        expr = expr.replace("__NE__", "!=")
-        expr = expr.replace("__GE__", ">=")
-        expr = expr.replace("__LE__", "<=")
-        # Note: ==, >, < are already correct for Python and need no conversion
-
-        # Clean up any remaining whitespace issues
-        expr = expr.strip()
-
-        # Only allow safe characters and words
-        # Allow bitwise ops (&, |, ^, ~), shifts (<<, >>) and letters for 'and', 'or', 'not'
-        if not _RE_SAFE_EXPR.match(expr):
-            raise ValueError(f"Unsafe expression: {expr}")
-
         try:
-            # Use eval with a restricted environment
-            allowed_names = {"__builtins__": {}}
-            result = eval(expr, allowed_names, {})
-            return int(result) if isinstance(result, (int, bool)) else 0
+            tokens = self._tokenize_c_expression(expr)
+            return _CExpressionParser(tokens).parse()
+        except ValueError:
+            # ValueError from _tokenize_c_expression signals an unsafe
+            # expression (unrecognized identifier or non-arithmetic character).
+            # The legacy contract surfaces it to the #if/#elif caller so the
+            # verbose-8 log identifies which directive failed; other failures
+            # (SyntaxError, ZeroDivisionError) degrade to 0 silently.
+            raise
         except Exception as e:
             # If evaluation fails, return 0
             if self.verbose >= 8:
                 print(f"SimplePreprocessor: Expression evaluation failed for '{expr}': {e}")
             return 0
+
+    @staticmethod
+    def _tokenize_c_expression(expr: str) -> list[_CExprToken]:
+        """Tokenize the safe integer expression subset accepted by _safe_eval."""
+        tokens: list[_CExprToken] = []
+        i = 0
+        multi_ops = ("&&", "||", "<<", ">>", "==", "!=", "<=", ">=")
+        single_ops = set("()+-*/%<>!&|^~")
+        word_ops = {"and": "&&", "or": "||", "not": "!"}
+
+        while i < len(expr):
+            ch = expr[i]
+            if ch.isspace():
+                i += 1
+                continue
+
+            if ch.isdigit():
+                start = i
+                i += 1
+                while i < len(expr) and expr[i].isdigit():
+                    i += 1
+                tokens.append(int(expr[start:i]))
+                continue
+
+            matched_op = None
+            for op in multi_ops:
+                if expr.startswith(op, i):
+                    matched_op = op
+                    break
+            if matched_op is not None:
+                tokens.append(matched_op)
+                i += len(matched_op)
+                continue
+
+            if ch in single_ops:
+                tokens.append(ch)
+                i += 1
+                continue
+
+            if ch.isalpha() or ch == "_":
+                start = i
+                i += 1
+                while i < len(expr) and (expr[i].isalnum() or expr[i] == "_"):
+                    i += 1
+                word = expr[start:i]
+                if word in word_ops:
+                    tokens.append(word_ops[word])
+                    continue
+                raise ValueError(f"Unsafe expression: {expr}")
+
+            raise ValueError(f"Unsafe expression: {expr}")
+
+        tokens.append("EOF")
+        return tokens
 
     def _normalize_numeric_literals(self, expr: str) -> str:
         """Convert C-style numeric literals (hex, bin, oct) to decimal strings.
