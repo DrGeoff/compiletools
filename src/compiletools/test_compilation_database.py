@@ -1620,3 +1620,245 @@ class TestCompilationDatabaseModuleFlags:
                 args = cpp_entries[0]["arguments"]
                 for flag in ("-fmodules-ts", "-fmodules", "-stdlib=libc++"):
                     assert flag not in args, f"non-module TU should not have {flag}; args={args!r}"
+
+    def test_no_module_activity_returns_empty(self):
+        """A TU with no module exports/imports must yield no module flags.
+
+        Complements test_non_module_tu_unchanged (end-to-end) with a unit-level
+        assertion that the no-activity short-circuit in _module_kind_flags
+        fires regardless of compiler kind."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
+            compiletools.compilation_database.CompilationDatabaseCreator
+        )
+        creator.args = SimpleNamespace(CXX="g++")
+        creator.hunter = MagicMock()
+        creator.hunter._file_analysis_result = MagicMock(
+            return_value=SimpleNamespace(
+                module_exports=(),
+                module_implements=(),
+                module_imports=(),
+                module_header_imports=(),
+            )
+        )
+
+        assert creator._module_kind_flags("/src/main.cpp") == []
+
+    def test_unknown_compiler_kind_returns_empty(self):
+        """A module-importing TU compiled with a non-gcc/non-clang toolchain
+        (e.g. icpx, msvc) must yield no module flags rather than emit the
+        wrong compiler's syntax. compiler_kind returns 'unknown' for such
+        binaries; the final return [] is the safety net."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
+            compiletools.compilation_database.CompilationDatabaseCreator
+        )
+        creator.args = SimpleNamespace(CXX="icpx")
+        creator.hunter = MagicMock()
+        creator.hunter._file_analysis_result = MagicMock(
+            return_value=SimpleNamespace(
+                module_exports=(),
+                module_implements=(),
+                module_imports=("math",),
+                module_header_imports=(),
+            )
+        )
+
+        assert creator._module_kind_flags("/src/main.cpp") == []
+
+    def test_missing_file_analysis_result_returns_empty(self):
+        """If hunter has no FileAnalysisResult cached for a source (e.g. a
+        synthetic file added after the analysis sweep), _module_kind_flags
+        must degrade to [] rather than crash with AttributeError."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
+            compiletools.compilation_database.CompilationDatabaseCreator
+        )
+        creator.args = SimpleNamespace(CXX="g++")
+        creator.hunter = MagicMock()
+        creator.hunter._file_analysis_result = MagicMock(return_value=None)
+
+        assert creator._module_kind_flags("/src/main.cpp") == []
+
+    def test_file_analysis_exception_returns_empty(self):
+        """If _file_analysis_result raises, _module_kind_flags must swallow
+        and return [] — module-flag emission is best-effort augmentation and
+        must never break compile_commands.json generation."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
+            compiletools.compilation_database.CompilationDatabaseCreator
+        )
+        creator.args = SimpleNamespace(CXX="g++")
+        creator.hunter = MagicMock()
+        creator.hunter._file_analysis_result = MagicMock(side_effect=RuntimeError("analyzer down"))
+
+        assert creator._module_kind_flags("/src/main.cpp") == []
+
+
+class TestCompilationDatabaseDefensivePaths:
+    """Unit-level coverage of defensive / error-recovery paths in
+    CompilationDatabaseCreator that are awkward to exercise end-to-end."""
+
+    def setup_method(self):
+        uth.reset()
+
+    def test_add_arguments_is_idempotent(self):
+        """add_arguments must be safe to call repeatedly on the same parser.
+
+        Callers like the cake.py entry-point parser construction wire multiple
+        argument sources, and a second add_arguments call after another tool
+        already added --compilation-database-output would raise
+        argparse.ArgumentError without the early-return guard."""
+        cap = compiletools.apptools.create_parser("test", argv=[])
+        compiletools.compilation_database.CompilationDatabaseCreator.add_arguments(cap)
+        # Second call must not raise.
+        compiletools.compilation_database.CompilationDatabaseCreator.add_arguments(cap)
+
+        # Sanity: the option is still registered exactly once.
+        assert compiletools.apptools._parser_has_option(cap, "--compilation-database-output")
+
+    def test_empty_cxx_yields_no_arguments(self):
+        """If args.CXX is empty for a C++ source, _get_compiler_command must
+        return [] rather than emit a CDB entry with no compiler — clangd
+        treats an empty arguments[0] as an opaque command and reports the
+        entire TU as unparseable."""
+        from types import SimpleNamespace
+
+        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
+            compiletools.compilation_database.CompilationDatabaseCreator
+        )
+        creator.args = SimpleNamespace(
+            CXX="", CC="gcc", CPPFLAGS="", CXXFLAGS="", CFLAGS="",
+            compilation_database_relative=False, verbose=0,
+        )
+
+        assert creator._get_compiler_command("/src/main.cpp") == []
+
+    def test_create_command_object_skips_empty_arguments(self):
+        """When _get_compiler_command returns [] (e.g. missing CXX),
+        _create_command_object must return None so the caller drops the
+        entry from the CDB."""
+        from types import SimpleNamespace
+
+        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
+            compiletools.compilation_database.CompilationDatabaseCreator
+        )
+        creator.args = SimpleNamespace(
+            CXX="", CC="", CPPFLAGS="", CXXFLAGS="", CFLAGS="",
+            compilation_database_relative=False, verbose=0,
+        )
+
+        assert creator._create_command_object("/src/main.cpp") is None
+
+    def test_corrupt_existing_database_is_recovered(self):
+        """A malformed existing compile_commands.json must not abort the
+        write — the producer logs and proceeds with an empty existing list
+        so the user's next build silently heals the file."""
+        with uth.TempDirContext():
+            cwd = os.getcwd()
+            output_file = os.path.join(cwd, "compile_commands.json")
+            # Pre-existing garbage that json.loads will reject.
+            with open(output_file, "w") as f:
+                f.write("not valid json{{")
+
+            creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
+                compiletools.compilation_database.CompilationDatabaseCreator
+            )
+            creator.args = types.SimpleNamespace(verbose=0)
+
+            file_a = os.path.join(cwd, "a.cpp")
+            commands = [{"directory": cwd, "file": file_a, "arguments": ["c++", "-c", file_a]}]
+
+            # Must not raise.
+            creator._write_database_impl(output_file, commands)
+
+            # File is now valid JSON containing only the new entry.
+            with open(output_file) as f:
+                merged = json.load(f)
+            assert merged == commands
+
+    def test_missing_output_directory_is_created(self):
+        """When the explicit --compilation-database-output points into a
+        subdirectory that doesn't yet exist, the producer must mkdir -p the
+        parent rather than crash with FileNotFoundError on the temp-file
+        write inside atomic_write_if_changed."""
+        with uth.TempDirContext():
+            cwd = os.getcwd()
+            output_file = os.path.join(cwd, "nested", "deeper", "compile_commands.json")
+            assert not os.path.exists(os.path.dirname(output_file))
+
+            creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
+                compiletools.compilation_database.CompilationDatabaseCreator
+            )
+            creator.args = types.SimpleNamespace(verbose=0)
+
+            file_a = os.path.join(cwd, "a.cpp")
+            commands = [{"directory": cwd, "file": file_a, "arguments": ["c++", "-c", file_a]}]
+
+            creator._write_database_impl(output_file, commands)
+
+            assert os.path.exists(output_file)
+            with open(output_file) as f:
+                assert json.load(f) == commands
+
+    def test_update_symlink_refuses_to_replace_directory(self):
+        """If a real directory sits at the symlink path (user error or odd
+        pre-existing state), _update_symlink must leave it alone — clobbering
+        a directory the user created could destroy unrelated data.
+        Regression guard for the IsADirectoryError branch."""
+        with uth.TempDirContext():
+            cwd = os.getcwd()
+            symlink_path = os.path.join(cwd, "compile_commands.json")
+            target_path = os.path.join(cwd, "compile_commands.gcc.debug.json")
+            with open(target_path, "w") as f:
+                f.write("[]")
+            os.makedirs(symlink_path)
+            # Drop a sentinel so we can prove the directory wasn't clobbered.
+            sentinel = os.path.join(symlink_path, "do_not_delete")
+            with open(sentinel, "w") as f:
+                f.write("keep me")
+
+            creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
+                compiletools.compilation_database.CompilationDatabaseCreator
+            )
+            creator.args = types.SimpleNamespace(verbose=0)
+
+            # Must not raise; must not turn the directory into a symlink.
+            creator._update_symlink(symlink_path, target_path)
+
+            assert os.path.isdir(symlink_path), (
+                "Directory at symlink_path must be preserved, not replaced with a symlink"
+            )
+            assert not os.path.islink(symlink_path)
+            assert os.path.exists(sentinel), "Sentinel file inside the directory must survive"
+            # And no orphan tmp symlink left lying around.
+            for entry in os.listdir(cwd):
+                assert not entry.startswith("compile_commands.json.tmp."), (
+                    f"Orphan tmp symlink left behind: {entry}"
+                )
+
+    def test_huntsource_exception_yields_empty_database(self):
+        """If Hunter.huntsource() raises (e.g. corrupt project state),
+        create_compilation_database must catch and return [] rather than
+        propagate — the producer can then write an empty CDB and the next
+        build heals it. Without this guard a single bad file would lock
+        the user out of regenerating compile_commands.json entirely."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
+            compiletools.compilation_database.CompilationDatabaseCreator
+        )
+        creator.args = SimpleNamespace(verbose=0, compilation_database_relative=False)
+        creator.hunter = MagicMock()
+        creator.hunter.huntsource = MagicMock(side_effect=RuntimeError("project on fire"))
+
+        assert creator.create_compilation_database() == []
