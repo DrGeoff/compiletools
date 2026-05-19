@@ -711,6 +711,17 @@ def _make_minimal_link_backend(tmpdir, *, sources=None, env=None):
     return backend
 
 
+def _make_workspace_link_backend(root, *, ldflags=""):
+    """Build a link-key backend whose paths are rooted under *root*."""
+    source = os.path.join(root, "src", "main.cpp")
+    backend = _make_minimal_link_backend(root, sources=[source])
+    backend._anchor_root = root
+    backend.args.LDFLAGS = ldflags
+    uth.finalize_flag_state(backend.args)
+    backend._object_pathname_for_source = lambda _source: os.path.join(root, "obj", "main.o")  # type: ignore[method-assign]
+    return backend, source
+
+
 def test_link_key_changes_with_source_date_epoch(monkeypatch):
     """C3: SOURCE_DATE_EPOCH affects build-id baked into the binary.
     Two builds at different epochs MUST produce different cas-exe
@@ -761,6 +772,81 @@ def test_link_key_changes_with_library_path(monkeypatch):
             rules2 = backend._create_link_rule("/src/main.cpp")
 
             assert rules1[0].output != rules2[0].output, "LIBRARY_PATH must participate in the link-key payload"
+    finally:
+        uth.reset()
+
+
+def test_link_key_canonicalizes_workspace_rooted_ld_extra(monkeypatch, tmp_path):
+    """Workspace-rooted command-line LDFLAGS should not split link CAS keys.
+
+    The emitted command already rewrites ``-Wl,-rpath,<gitroot>/lib`` to the
+    configured prefix-map target. The cache-key payload must use the same
+    workspace-stable representation rather than hashing the raw checkout path.
+    """
+    uth.reset()
+    try:
+        for var in ("SOURCE_DATE_EPOCH", "LD_LIBRARY_PATH", "LIBRARY_PATH", "LD_PRELOAD"):
+            monkeypatch.delenv(var, raising=False)
+
+        ws1 = str(tmp_path / "alice")
+        ws2 = str(tmp_path / "bob")
+        backend1, source1 = _make_workspace_link_backend(ws1, ldflags=f"-Wl,-rpath,{ws1}/lib")
+        backend2, source2 = _make_workspace_link_backend(ws2, ldflags=f"-Wl,-rpath,{ws2}/lib")
+
+        rule1 = backend1._create_link_rule(source1)[0]
+        rule2 = backend2._create_link_rule(source2)[0]
+
+        assert rule1.command is not None
+        assert rule2.command is not None
+        assert "-Wl,-rpath,./lib" in rule1.command
+        assert "-Wl,-rpath,./lib" in rule2.command
+        assert os.path.basename(rule1.output) == os.path.basename(rule2.output)
+    finally:
+        uth.reset()
+
+
+def test_link_key_canonicalizes_workspace_rooted_extra_link_argv(monkeypatch, tmp_path):
+    """Library-search argv synthesized from the workspace bindir is portable."""
+    uth.reset()
+    try:
+        for var in ("SOURCE_DATE_EPOCH", "LD_LIBRARY_PATH", "LIBRARY_PATH", "LD_PRELOAD"):
+            monkeypatch.delenv(var, raising=False)
+
+        ws1 = str(tmp_path / "alice")
+        ws2 = str(tmp_path / "bob")
+        backend1, source1 = _make_workspace_link_backend(ws1)
+        backend2, source2 = _make_workspace_link_backend(ws2)
+
+        rule1 = backend1._create_link_rule(source1, library_outputs=[os.path.join(ws1, "bin", "libdep.a")])[0]
+        rule2 = backend2._create_link_rule(source2, library_outputs=[os.path.join(ws2, "bin", "libdep.a")])[0]
+
+        assert os.path.basename(rule1.output) == os.path.basename(rule2.output)
+    finally:
+        uth.reset()
+
+
+def test_shared_library_key_canonicalizes_workspace_rooted_ld_extra(monkeypatch, tmp_path):
+    """Shared-library CAS keys use canonicalized command-line LDFLAGS too."""
+    uth.reset()
+    try:
+        for var in ("SOURCE_DATE_EPOCH", "LD_LIBRARY_PATH", "LIBRARY_PATH", "LD_PRELOAD"):
+            monkeypatch.delenv(var, raising=False)
+
+        ws1 = str(tmp_path / "alice")
+        ws2 = str(tmp_path / "bob")
+        backend1, source1 = _make_workspace_link_backend(ws1, ldflags=f"-Wl,-rpath,{ws1}/lib")
+        backend2, source2 = _make_workspace_link_backend(ws2, ldflags=f"-Wl,-rpath,{ws2}/lib")
+        backend1.args.dynamic = [source1]
+        backend2.args.dynamic = [source2]
+
+        rule1 = backend1._create_shared_library_rule()[0]
+        rule2 = backend2._create_shared_library_rule()[0]
+
+        assert rule1.command is not None
+        assert rule2.command is not None
+        assert "-Wl,-rpath,./lib" in rule1.command
+        assert "-Wl,-rpath,./lib" in rule2.command
+        assert os.path.basename(rule1.output) == os.path.basename(rule2.output)
     finally:
         uth.reset()
 

@@ -3132,11 +3132,11 @@ class BuildBackend(abc.ABC):
             "ld_argv": compiletools.apptools.canonicalize_paths_for_cache_key(ld_argv, anchor_root),
             "objects": sorted(compiletools.apptools.canonicalize_paths_for_cache_key(object_names, anchor_root)),
             "merged_ldflags": compiletools.apptools.canonicalize_for_cache_key(list(merged_ldflags), anchor_root),
-            "extra_link_argv": extra_link_argv,
+            "extra_link_argv": compiletools.apptools.canonicalize_for_cache_key(extra_link_argv, anchor_root),
             "library_outputs": sorted(
                 compiletools.apptools.canonicalize_paths_for_cache_key(library_outputs or [], anchor_root)
             ),
-            "ld_extra": ld_extra,
+            "ld_extra": compiletools.apptools.canonicalize_for_cache_key(ld_extra, anchor_root),
             # canonical_bindir: full anchor-relative bindir, not just the
             # basename. The original ``bindir_basename`` defence (C5) was
             # wrong-headed in two ways: (1) ``$ORIGIN``-relative RPATH is
@@ -3310,7 +3310,7 @@ class BuildBackend(abc.ABC):
             "shared": True,
             "objects": sorted(compiletools.apptools.canonicalize_paths_for_cache_key(object_names, anchor_root)),
             "merged_ldflags": compiletools.apptools.canonicalize_for_cache_key(list(merged_ldflags), anchor_root),
-            "ld_extra": ld_extra,
+            "ld_extra": compiletools.apptools.canonicalize_for_cache_key(ld_extra, anchor_root),
             "canonical_bindir": compiletools.apptools.canonicalize_path_for_cache_key(
                 self.namer.executable_dir(), anchor_root
             ),
