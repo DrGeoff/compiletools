@@ -1,9 +1,13 @@
 """Unit tests for apptools.py utility functions."""
 
+import builtins
 import io
 import os
+import shlex
+import shutil
 import subprocess
 import tempfile
+import warnings
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -11,14 +15,27 @@ import configargparse
 import pytest
 import stringzilla as sz
 
+import compiletools.apptools as apptools
+import compiletools.compilation_database as cdb
+import compiletools.configutils as cu
+import compiletools.hunter
+import compiletools.testhelper as uth
 from compiletools.apptools import (
+    _AccumulatingConfigFileParser,
     _add_include_paths_to_flags,
     _add_xxpend_argument,
     _add_xxpend_arguments,
+    _check_legacy_cas_config_keys,
+    _check_legacy_variant_config_keys,
+    _ComposingArgumentParser,
     _deduplicate_all_flags,
     _do_xxpend,
     _flatten_variables,
+    _has_prefix_map_flag,
+    _pkg_config_provenance_label,
     _safely_unquote_string,
+    _set_project_name,
+    _set_project_version,
     _setup_pkg_config_overrides,
     _strip_quotes,
     _substitute_CXX_for_missing,
@@ -32,6 +49,7 @@ from compiletools.apptools import (
     add_target_arguments_ex,
     cached_pkg_config,
     clear_cache,
+    compiler_default_cxx_std,
     derive_c_compiler_from_cxx,
     extract_command_line_macros,
     extract_command_line_macros_sz,
@@ -47,6 +65,7 @@ from compiletools.apptools import (
     verboseprintconfig,
 )
 from compiletools.build_context import BuildContext
+from compiletools.utils import split_command_cached
 
 
 class TestExtractCommandLineMacrosSz:
@@ -455,7 +474,6 @@ class TestFlattenVariables:
         round-trip is lossless.  Cousin fix to commit 5cd77781 which patched the same
         pattern in ``_unify_cpp_cxx_flags`` and ``_deduplicate_all_flags``.
         """
-        import shlex
 
         args = SimpleNamespace(
             CPPFLAGS=["-DFOO=bar baz", "-Wall"],
@@ -516,7 +534,6 @@ class TestTerminalColumns:
 class TestClearCache:
     def test_clear_cache_runs(self):
         # Populate the cache with a dummy call
-        import warnings
 
         with patch("subprocess.run", return_value=MagicMock(returncode=1)):
             with warnings.catch_warnings():
@@ -535,10 +552,10 @@ class TestCallbackSystem:
         called = []
         registercallback(lambda args: called.append(True))
         resetcallbacks()
-        # After reset, only _commonsubstitutions should remain
-        from compiletools.apptools import _substitutioncallbacks
-
-        assert len(_substitutioncallbacks) == 1
+        # After reset, only _commonsubstitutions should remain. Read via the
+        # module attribute since resetcallbacks() rebinds it; a module-level
+        # `from ... import` snapshot would still see the pre-reset list.
+        assert len(apptools._substitutioncallbacks) == 1
 
     def test_substitutions_calls_callbacks(self):
         resetcallbacks()
@@ -547,7 +564,6 @@ class TestCallbackSystem:
         args = SimpleNamespace(verbose=0)
         # _commonsubstitutions will fail without full args, so just test
         # with our own callback only
-        from compiletools import apptools
 
         saved = apptools._substitutioncallbacks[:]
         try:
@@ -672,7 +688,6 @@ class TestProjectVersionAndNameOptIn:
         return args
 
     def test_no_injection_when_neither_flag_set_version(self):
-        from compiletools.apptools import _set_project_version
 
         args = self._make_args()
         _set_project_version(args)
@@ -681,7 +696,6 @@ class TestProjectVersionAndNameOptIn:
         assert "-DCT_PROJECT_VERSION" not in args.CXXFLAGS
 
     def test_no_injection_when_neither_flag_set_name(self):
-        from compiletools.apptools import _set_project_name
 
         args = self._make_args()
         _set_project_name(args)
@@ -690,7 +704,6 @@ class TestProjectVersionAndNameOptIn:
         assert "-DCT_PROJECT_NAME" not in args.CXXFLAGS
 
     def test_explicit_version_injects(self):
-        from compiletools.apptools import _set_project_version
 
         args = self._make_args(**{"project-version": "1.2.3"})
         _set_project_version(args)
@@ -699,7 +712,6 @@ class TestProjectVersionAndNameOptIn:
         assert "-DCT_PROJECT_VERSION='\"1.2.3\"'" in args.CXXFLAGS
 
     def test_explicit_name_injects(self):
-        from compiletools.apptools import _set_project_name
 
         args = self._make_args(**{"project-name": "myapp"})
         _set_project_name(args)
@@ -708,7 +720,6 @@ class TestProjectVersionAndNameOptIn:
         assert "-DCT_PROJECT_NAME='\"myapp\"'" in args.CXXFLAGS
 
     def test_version_cmd_alone_injects(self):
-        from compiletools.apptools import _set_project_version
 
         args = self._make_args(**{"project-version-cmd": "echo from-cmd-1.0"})
         _set_project_version(args)
@@ -716,14 +727,12 @@ class TestProjectVersionAndNameOptIn:
         assert "-DCT_PROJECT_VERSION='\"from-cmd-1.0\"'" in args.CPPFLAGS
 
     def test_name_cmd_alone_injects(self):
-        from compiletools.apptools import _set_project_name
 
         args = self._make_args(**{"project-name-cmd": "echo cmd-named-app"})
         _set_project_name(args)
         assert "-DCT_PROJECT_NAME='\"cmd-named-app\"'" in args.CPPFLAGS
 
     def test_explicit_version_takes_precedence_over_cmd(self):
-        from compiletools.apptools import _set_project_version
 
         args = self._make_args(**{"project-version": "explicit-1.0", "project-version-cmd": "echo from-cmd"})
         _set_project_version(args)
@@ -731,7 +740,6 @@ class TestProjectVersionAndNameOptIn:
         assert "from-cmd" not in args.CPPFLAGS
 
     def test_idempotent_when_macro_already_present(self):
-        from compiletools.apptools import _set_project_name
 
         args = self._make_args(**{"project-name": "newvalue"})
         args.CPPFLAGS = '-DCT_PROJECT_NAME="oldvalue"'
@@ -758,8 +766,6 @@ class TestProjectVersionAndNameOptIn:
         in the tokenized flag list must have literal double-quote characters (the C
         string-literal delimiters).
         """
-        from compiletools.apptools import _set_project_version, _unify_cpp_cxx_flags
-        from compiletools.utils import split_command_cached
 
         args = self._make_args(**{"project-version": "1.2.3"})
         args.separate_flags_CPP_CXX = False  # default; unify will run
@@ -790,8 +796,6 @@ class TestProjectVersionAndNameOptIn:
 
     def test_project_name_token_is_argv_safe(self):
         """Mirror of test_project_version_token_is_argv_safe for CT_PROJECT_NAME."""
-        from compiletools.apptools import _set_project_name, _unify_cpp_cxx_flags
-        from compiletools.utils import split_command_cached
 
         args = self._make_args(**{"project-name": "myapp"})
         args.separate_flags_CPP_CXX = False
@@ -837,7 +841,6 @@ class TestCachedPkgConfig:
         clear_cache()
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1)
-            import warnings
 
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
@@ -913,18 +916,15 @@ class TestCompilerDefaultCxxStd:
     consumer compiles inside bazel's sandbox."""
 
     def test_returns_none_for_empty_input(self):
-        from compiletools.apptools import compiler_default_cxx_std
 
         assert compiler_default_cxx_std(None) is None
         assert compiler_default_cxx_std("") is None
 
     def test_returns_none_for_nonexistent_compiler(self):
-        from compiletools.apptools import compiler_default_cxx_std
 
         assert compiler_default_cxx_std("nonexistent_compiler_xyz_999") is None
 
     def test_returns_none_when_compiler_exits_nonzero(self):
-        from compiletools.apptools import clear_cache, compiler_default_cxx_std
 
         clear_cache()
         with patch(
@@ -935,7 +935,6 @@ class TestCompilerDefaultCxxStd:
         clear_cache()
 
     def test_returns_none_when_macro_missing(self):
-        from compiletools.apptools import clear_cache, compiler_default_cxx_std
 
         clear_cache()
         # Compiler ran but its -dM output didn't include __cplusplus
@@ -966,7 +965,6 @@ class TestCompilerDefaultCxxStd:
         default to gnu mode and switching to strict mode would
         undefine non-ISO built-ins (``unix``, ``linux``) and invalidate
         any prebuilt PCH that recorded them."""
-        from compiletools.apptools import clear_cache, compiler_default_cxx_std
 
         clear_cache()
         with patch(
@@ -984,7 +982,6 @@ class TestCompilerDefaultCxxStd:
         (e.g. a hypothetical c++29 with value 202902) falls back to
         the closest known value below — ``gnu++NN`` is forward-
         compatible with future minor revisions."""
-        from compiletools.apptools import clear_cache, compiler_default_cxx_std
 
         clear_cache()
         with patch(
@@ -1122,8 +1119,6 @@ class TestSetupPkgConfigOverrides:
         attribution line of the form ``(from <abs_conf_path>:<lineno>)``
         at verbose>=4. Confirms the conf-file provenance side channel
         is wired through ``_setup_pkg_config_overrides_locked``."""
-        import compiletools.apptools as apptools
-        import compiletools.testhelper as uth
 
         conf_dir = tmp_path / "ct.conf.d"
         conf_dir.mkdir(parents=True)
@@ -1172,7 +1167,6 @@ class TestSetupPkgConfigOverrides:
         '(from CLI)'. Covers the lookup-miss branch directly so the
         user-visible 'from CLI' tag survives any future refactor of the
         verbose emission loop."""
-        from compiletools.apptools import _pkg_config_provenance_label
 
         # Empty provenance — any prepend path falls back to CLI.
         assert _pkg_config_provenance_label("/abs/path", "prepend", {}) == "(from CLI)"
@@ -1380,7 +1374,6 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
     """
 
     def setup_method(self):
-        import compiletools.testhelper as uth
 
         uth.reset()
 
@@ -1413,8 +1406,6 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
         """All three axis confs' ``append-CXXFLAGS`` values reach
         ``args.append_cxxflags`` (and therefore the final ``args.CXXFLAGS``).
         """
-        import compiletools.apptools as apptools
-        import compiletools.testhelper as uth
 
         with uth.TempDirContextNoChange() as repo_root:
             self._setup_three_axis_conf_tree(repo_root)
@@ -1446,8 +1437,6 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
         configargparse drops the conf-file values when the CLI flag is
         present too.)
         """
-        import compiletools.apptools as apptools
-        import compiletools.testhelper as uth
 
         with uth.TempDirContextNoChange() as repo_root:
             self._setup_three_axis_conf_tree(repo_root)
@@ -1481,8 +1470,6 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
         gold.conf ``-fuse-ld=gold``, pgo-gen.conf ``-fprofile-generate``)
         so this is the most exercised flag slot in practice.
         """
-        import compiletools.apptools as apptools
-        import compiletools.testhelper as uth
 
         with uth.TempDirContextNoChange() as repo_root:
             conf_d = os.path.join(repo_root, "ct.conf.d")
@@ -1523,8 +1510,6 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
         preserve the list parsing path (it inherited from
         ``DefaultConfigFileParser``).
         """
-        import compiletools.apptools as apptools
-        import compiletools.testhelper as uth
 
         with uth.TempDirContextNoChange() as repo_root:
             conf_d = os.path.join(repo_root, "ct.conf.d")
@@ -1564,8 +1549,6 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
         ``gcc < release < extras``, an ``-O0`` in gcc.conf must end up to
         the LEFT of an ``-O3`` in release.conf in args.CXXFLAGS.
         """
-        import compiletools.apptools as apptools
-        import compiletools.testhelper as uth
 
         with uth.TempDirContextNoChange() as repo_root:
             conf_d = os.path.join(repo_root, "ct.conf.d")
@@ -1613,8 +1596,6 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
         ``args.append_include`` reaches the final ``args.INCLUDE`` via
         ``_do_xxpend('INCLUDE')`` in ``_tier_one_modifications``.
         """
-        import compiletools.apptools as apptools
-        import compiletools.testhelper as uth
 
         with uth.TempDirContextNoChange() as repo_root:
             conf_d = os.path.join(repo_root, "ct.conf.d")
@@ -1657,8 +1638,6 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
         forms accept exactly one value (the registered action has no
         ``nargs``), so the next argv token is consumed as the value.
         """
-        import compiletools.apptools as apptools
-        import compiletools.testhelper as uth
 
         with uth.TempDirContextNoChange() as repo_root:
             self._setup_three_axis_conf_tree(repo_root)
@@ -1690,8 +1669,6 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
         hood (same as ``append-*``), so the underlying configargparse bug
         affects both — and the fix must cover both.
         """
-        import compiletools.apptools as apptools
-        import compiletools.testhelper as uth
 
         with uth.TempDirContextNoChange() as repo_root:
             conf_d = os.path.join(repo_root, "ct.conf.d")
@@ -1724,7 +1701,6 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
                 )
 
     def teardown_method(self):
-        import compiletools.testhelper as uth
 
         uth.reset()
 
@@ -1740,17 +1716,12 @@ class TestVariantResolutionRespectsArgv:
     """
 
     def setup_method(self):
-        import compiletools.testhelper as uth
 
         uth.reset()
 
     def test_argv_variant_preserved_when_not_aliased(self):
         """A --variant=<canonical-name> in argv survives substitutions even
         when sys.argv does not contain that flag."""
-        import compiletools.apptools as apptools
-        import compiletools.compilation_database as cdb
-        import compiletools.hunter
-        import compiletools.testhelper as uth
 
         with uth.TempDirContext():
             uth.create_temp_ct_conf(os.getcwd())  # defines dbg/rls aliases
@@ -1775,10 +1746,6 @@ class TestVariantResolutionRespectsArgv:
         """A composite --variant on the CLI (comma/space separated) is
         canonicalized to its dotted form by _commonsubstitutions, so
         downstream consumers see the canonical name in args.variant."""
-        import compiletools.apptools as apptools
-        import compiletools.compilation_database as cdb
-        import compiletools.hunter
-        import compiletools.testhelper as uth
 
         with uth.TempDirContext():
             uth.create_temp_ct_conf(os.getcwd())
@@ -1808,9 +1775,7 @@ class TestResolvedCompilerAvailable:
     """
 
     def test_missing_binary_raises_with_variant_hint(self):
-        from types import SimpleNamespace
 
-        import compiletools.apptools as apptools
 
         args = SimpleNamespace(
             variant="gcc.debug",
@@ -1825,10 +1790,7 @@ class TestResolvedCompilerAvailable:
         assert "gcc.debug" in msg  # variant must appear in the diagnostic
 
     def test_existing_binary_passes_silently(self):
-        import shutil
-        from types import SimpleNamespace
 
-        import compiletools.apptools as apptools
 
         real_cxx = shutil.which("g++") or shutil.which("clang++") or shutil.which("sh")
         assert real_cxx, "test environment lacks any usable executable"
@@ -1840,10 +1802,7 @@ class TestResolvedCompilerAvailable:
         # The "unsupplied_implies_use_CXX" sentinel means a downstream
         # substitution replaces this with a real CXX value — the check
         # must not flag it as a missing binary.
-        import shutil
-        from types import SimpleNamespace
 
-        import compiletools.apptools as apptools
 
         real_cxx = shutil.which("g++") or shutil.which("clang++") or shutil.which("sh")
         args = SimpleNamespace(
@@ -1859,10 +1818,7 @@ class TestResolvedCompilerAvailable:
         # validator must tokenize and resolve the first token (the actual
         # executable to invoke) instead of feeding the whole string to
         # shutil.which, which would return None and false-positive raise.
-        import shutil
-        from types import SimpleNamespace
 
-        import compiletools.apptools as apptools
 
         real_cxx = shutil.which("g++") or shutil.which("clang++") or shutil.which("sh")
         assert real_cxx, "test environment lacks any usable executable"
@@ -1883,9 +1839,7 @@ class TestResolvedCompilerAvailable:
         # Mirror case: when the wrapper itself isn't on PATH, the validator
         # must still surface the failure (don't accidentally pass by ignoring
         # the resolved value).
-        from types import SimpleNamespace
 
-        import compiletools.apptools as apptools
 
         args = SimpleNamespace(
             variant="ccache-gcc.debug",
@@ -1906,9 +1860,7 @@ class TestCompilerSupportsRequestedStandard:
     with no pointer at the variant chain."""
 
     def test_too_old_for_requested_std_raises(self, monkeypatch):
-        from types import SimpleNamespace
 
-        import compiletools.apptools as apptools
 
         monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: ("gcc", 11))
         args = SimpleNamespace(
@@ -1925,9 +1877,7 @@ class TestCompilerSupportsRequestedStandard:
         assert "gcc >= 14" in msg
 
     def test_recent_compiler_passes(self, monkeypatch):
-        from types import SimpleNamespace
 
-        import compiletools.apptools as apptools
 
         monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: ("gcc", 14))
         args = SimpleNamespace(
@@ -1941,9 +1891,7 @@ class TestCompilerSupportsRequestedStandard:
         apptools._check_compiler_supports_requested_standard(args)
 
     def test_unknown_driver_skips_silently(self, monkeypatch):
-        from types import SimpleNamespace
 
-        import compiletools.apptools as apptools
 
         monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: None)
         args = SimpleNamespace(
@@ -1957,9 +1905,7 @@ class TestCompilerSupportsRequestedStandard:
         apptools._check_compiler_supports_requested_standard(args)
 
     def test_no_std_flag_skips_silently(self, monkeypatch):
-        from types import SimpleNamespace
 
-        import compiletools.apptools as apptools
 
         monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: ("gcc", 4))
         args = SimpleNamespace(
@@ -1975,9 +1921,7 @@ class TestCompilerSupportsRequestedStandard:
     def test_alt_spelling_cxx2c_normalised_to_cxx26(self, monkeypatch):
         # gcc <14 / clang <18 spelled C++26 as -std=c++2c. The check should
         # normalise that to c++26 for the version lookup.
-        from types import SimpleNamespace
 
-        import compiletools.apptools as apptools
 
         monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: ("gcc", 11))
         args = SimpleNamespace(
@@ -1998,9 +1942,7 @@ class TestCompilerSupportsRequestedStandard:
         # as a portable stand-in for the ccache wrapper so the test runs
         # everywhere — `env --version` prints recognisable output, but
         # `env <gcc>` will forward --version to the real compiler.
-        import shutil
 
-        import compiletools.apptools as apptools
 
         real_cxx = shutil.which("g++") or shutil.which("clang++")
         if not real_cxx:
@@ -2034,7 +1976,6 @@ class TestFfilePrefixMapTargetArg:
 
     def _build_parser(self):
         cap = configargparse.ArgParser(default_config_files=[])
-        import compiletools.apptools as apptools
 
         # add_common_arguments is where compile/link-related flags live
         # (--CXXFLAGS / --CFLAGS / --git-root / --ffile-prefix-map-target).
@@ -2065,7 +2006,6 @@ class TestHasPrefixMapFlag:
     """
 
     def test_detects_all_four_aliases(self):
-        from compiletools.apptools import _has_prefix_map_flag
 
         for prefix in (
             "-ffile-prefix-map",
@@ -2077,7 +2017,6 @@ class TestHasPrefixMapFlag:
             assert _has_prefix_map_flag(f"{prefix}=/foo=.")
 
     def test_negative_cases(self):
-        from compiletools.apptools import _has_prefix_map_flag
 
         assert not _has_prefix_map_flag("-O2 -g -Wall")
         assert not _has_prefix_map_flag("")
@@ -2098,7 +2037,6 @@ class TestHasPrefixMapFlag:
         detection on the raw string returned True here; tokenized
         detection correctly returns False.
         """
-        from compiletools.apptools import _has_prefix_map_flag
 
         assert not _has_prefix_map_flag("-DREASON='-ffile-prefix-map=oops='")
         # And a real prefix-map sitting next to the masquerading -D=
@@ -2113,7 +2051,6 @@ class TestHasPrefixMapFlag:
         a flag the user might already have inside their unparseable
         text. Pinned explicitly so future changes don't silently flip.
         """
-        from compiletools.apptools import _has_prefix_map_flag
 
         assert _has_prefix_map_flag("'unbalanced quote")
 
@@ -2128,7 +2065,6 @@ class TestInjectFfilePrefixMap:
     """
 
     def _make_args(self, **overrides):
-        from types import SimpleNamespace
 
         defaults = dict(
             ffile_prefix_map_target=".",
@@ -2140,7 +2076,6 @@ class TestInjectFfilePrefixMap:
         return SimpleNamespace(**defaults)
 
     def test_appends_when_absent(self, monkeypatch):
-        import compiletools.apptools as apptools
 
         monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "/home/alice/proj")
         args = self._make_args()
@@ -2151,7 +2086,6 @@ class TestInjectFfilePrefixMap:
     def test_respects_user_override_per_slot(self, monkeypatch):
         """User-set ``-fdebug-prefix-map`` in CXXFLAGS suppresses injection
         for CXXFLAGS only; CFLAGS still gets the default."""
-        import compiletools.apptools as apptools
 
         monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "/home/alice/proj")
         args = self._make_args(CXXFLAGS="-O2 -fdebug-prefix-map=/user/set=foo")
@@ -2164,7 +2098,6 @@ class TestInjectFfilePrefixMap:
     def test_no_op_when_git_root_falsy(self, monkeypatch):
         """An empty / falsy gitroot is the identity -- no anchor to
         canonicalize against, so injection is silently skipped."""
-        import compiletools.apptools as apptools
 
         monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "")
         args = self._make_args(CXXFLAGS="-O2", CFLAGS="-O2")
@@ -2173,7 +2106,6 @@ class TestInjectFfilePrefixMap:
         assert args.CFLAGS == "-O2"
 
     def test_honors_custom_target(self, monkeypatch):
-        import compiletools.apptools as apptools
 
         monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "/home/alice/proj")
         args = self._make_args(ffile_prefix_map_target="/__ct__/", CFLAGS="")
@@ -2182,7 +2114,6 @@ class TestInjectFfilePrefixMap:
 
     def test_handles_empty_initial_flag_string(self, monkeypatch):
         """No leading whitespace when the slot starts empty."""
-        import compiletools.apptools as apptools
 
         monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "/repo")
         args = self._make_args(CXXFLAGS="", CFLAGS="")
@@ -2192,7 +2123,6 @@ class TestInjectFfilePrefixMap:
 
     def test_idempotent(self, monkeypatch):
         """Second call detects its own injection and skips."""
-        import compiletools.apptools as apptools
 
         monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "/repo")
         args = self._make_args()
@@ -2212,7 +2142,6 @@ class TestInjectFfilePrefixMap:
         actually got per-user-divergent ``.o`` bytes. After the
         tokenization fix, auto-injection happens as expected.
         """
-        import compiletools.apptools as apptools
 
         monkeypatch.setattr(apptools.compiletools.git_utils, "find_git_root", lambda: "/home/alice/proj")
         args = self._make_args(
@@ -2248,7 +2177,6 @@ class TestConfFileEncodingTolerance:
     def ascii_default_open(self, monkeypatch):
         """Make every ``open()`` that doesn't specify ``encoding=`` default
         to ASCII for text mode. Mirrors PYTHONUTF8=0 + LC_ALL=C."""
-        import builtins
 
         real_open = builtins.open
 
@@ -2268,7 +2196,6 @@ class TestConfFileEncodingTolerance:
     def test_parse_conf_file_cached_tolerates_emdash_in_comment(
         self, ascii_default_open, tmp_path
     ):
-        import compiletools.configutils as cu
 
         conf = tmp_path / "ct.conf"
         with ascii_default_open(str(conf), "w", encoding="utf-8") as f:
@@ -2285,7 +2212,6 @@ class TestConfFileEncodingTolerance:
     def test_check_legacy_variant_keys_tolerates_emdash_in_comment(
         self, ascii_default_open, tmp_path
     ):
-        from compiletools.apptools import _check_legacy_variant_config_keys
 
         conf = tmp_path / "ct.conf"
         with ascii_default_open(str(conf), "w", encoding="utf-8") as f:
@@ -2300,7 +2226,6 @@ class TestConfFileEncodingTolerance:
     def test_check_legacy_cas_keys_tolerates_emdash_in_comment(
         self, ascii_default_open, tmp_path
     ):
-        from compiletools.apptools import _check_legacy_cas_config_keys
 
         conf = tmp_path / "ct.conf"
         with ascii_default_open(str(conf), "w", encoding="utf-8") as f:
@@ -2318,7 +2243,6 @@ class TestConfFileEncodingTolerance:
         with an em-dash comment via configargparse's own file-open path.
         This is the path ct-cake actually traverses on every invocation.
         """
-        from compiletools.apptools import _AccumulatingConfigFileParser, _ComposingArgumentParser
 
         conf = tmp_path / "ct.conf"
         with ascii_default_open(str(conf), "w", encoding="utf-8") as f:
