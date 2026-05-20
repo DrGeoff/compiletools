@@ -13,6 +13,7 @@ the per-TU cache-key pollution fix:
 
 from types import SimpleNamespace
 
+import pytest
 import stringzilla as sz
 
 from compiletools.apptools import cmdline_d_macro_names, strip_d_u_tokens, tokenize_compile_flags
@@ -73,37 +74,27 @@ class TestCmdlineDMacroNames:
 
 
 class TestTokenizeCompileFlags:
-    def test_tokenize_strips_attached_d(self):
-        cpp = tokenize_compile_flags("-O2 -DFOO -Wall", "", "")[0]
-        assert cpp == ["-O2", "-Wall"]
-
-    def test_tokenize_strips_attached_d_with_value(self):
-        cpp = tokenize_compile_flags("-O2 -DFOO=bar -Wall", "", "")[0]
-        assert cpp == ["-O2", "-Wall"]
-
-    def test_tokenize_strips_attached_u(self):
-        cpp = tokenize_compile_flags("-UFOO -Wall", "", "")[0]
-        assert cpp == ["-Wall"]
-
-    def test_tokenize_strips_detached_d(self):
-        cpp = tokenize_compile_flags("-O2 -D FOO -Wall", "", "")[0]
-        assert cpp == ["-O2", "-Wall"]
-
-    def test_tokenize_strips_detached_d_with_value(self):
-        cpp = tokenize_compile_flags("-O2 -D FOO=bar -Wall", "", "")[0]
-        assert cpp == ["-O2", "-Wall"]
-
-    def test_tokenize_strips_detached_u(self):
-        cpp = tokenize_compile_flags("-O2 -U FOO -Wall", "", "")[0]
-        assert cpp == ["-O2", "-Wall"]
-
-    def test_tokenize_dangling_detached_d_at_end(self):
-        cpp = tokenize_compile_flags("-O2 -D", "", "")[0]
-        assert cpp == ["-O2"]
-
-    def test_tokenize_keeps_other_flags(self):
-        cpp = tokenize_compile_flags("-O2 -Iinclude -std=c++20 -Wall -fPIC", "", "")[0]
-        assert cpp == ["-O2", "-Iinclude", "-std=c++20", "-Wall", "-fPIC"]
+    @pytest.mark.parametrize(
+        ("cppflags", "expected"),
+        [
+            pytest.param("-O2 -DFOO -Wall", ["-O2", "-Wall"], id="attached-d"),
+            pytest.param("-O2 -DFOO=bar -Wall", ["-O2", "-Wall"], id="attached-d-value"),
+            pytest.param("-UFOO -Wall", ["-Wall"], id="attached-u"),
+            pytest.param("-O2 -D FOO -Wall", ["-O2", "-Wall"], id="detached-d"),
+            pytest.param("-O2 -D FOO=bar -Wall", ["-O2", "-Wall"], id="detached-d-value"),
+            pytest.param("-O2 -U FOO -Wall", ["-O2", "-Wall"], id="detached-u"),
+            pytest.param("-O2 -D", ["-O2"], id="dangling-d"),
+            pytest.param(
+                "-O2 -Iinclude -std=c++20 -Wall -fPIC",
+                ["-O2", "-Iinclude", "-std=c++20", "-Wall", "-fPIC"],
+                id="keep-other-flags",
+            ),
+            pytest.param("-I/usr/include -D FOO", ["-I/usr/include"], id="keep-capital-i"),
+        ],
+    )
+    def test_tokenize_cpp_flags(self, cppflags, expected):
+        cpp = tokenize_compile_flags(cppflags, "", "")[0]
+        assert cpp == expected
 
     def test_tokenize_returns_three_lists(self):
         result = tokenize_compile_flags("-O2", "-g", "-Wall")
@@ -117,10 +108,6 @@ class TestTokenizeCompileFlags:
     def test_tokenize_accepts_list_input(self):
         cpp = tokenize_compile_flags(["-O2", "-DFOO", "-Wall"], "", "")[0]
         assert cpp == ["-O2", "-Wall"]
-
-    def test_tokenize_does_not_strip_i_capital(self):
-        cpp = tokenize_compile_flags("-I/usr/include -D FOO", "", "")[0]
-        assert cpp == ["-I/usr/include"]
 
     def test_tokenize_handles_empty_strings(self):
         cpp, c, cxx = tokenize_compile_flags("", "", "")
@@ -161,30 +148,21 @@ class TestStripDUTokens:
     and just need the -D/-U entries removed.
     """
 
-    def test_strip_d_u_tokens_attached(self):
-        assert strip_d_u_tokens(["-O2", "-DFOO", "-Wall"]) == ["-O2", "-Wall"]
-
-    def test_strip_d_u_tokens_attached_with_value(self):
-        assert strip_d_u_tokens(["-O2", "-DFOO=bar", "-Wall"]) == ["-O2", "-Wall"]
-
-    def test_strip_d_u_tokens_detached(self):
-        assert strip_d_u_tokens(["-O2", "-D", "FOO", "-Wall"]) == ["-O2", "-Wall"]
-
-    def test_strip_d_u_tokens_detached_u(self):
-        assert strip_d_u_tokens(["-O2", "-U", "FOO", "-Wall"]) == ["-O2", "-Wall"]
-
-    def test_strip_d_u_tokens_dangling(self):
-        assert strip_d_u_tokens(["-O2", "-D"]) == ["-O2"]
-
-    def test_strip_d_u_tokens_keeps_other_flags(self):
-        assert strip_d_u_tokens(["-O2", "-Iinclude", "-Wall"]) == ["-O2", "-Iinclude", "-Wall"]
-
-    def test_strip_d_u_tokens_empty(self):
-        assert strip_d_u_tokens([]) == []
-
-    def test_strip_d_u_tokens_does_not_strip_capital_i(self):
-        """-I shares a prefix letter with neither -D nor -U; must be preserved."""
-        assert strip_d_u_tokens(["-I/usr/include", "-DFOO"]) == ["-I/usr/include"]
+    @pytest.mark.parametrize(
+        ("tokens", "expected"),
+        [
+            pytest.param(["-O2", "-DFOO", "-Wall"], ["-O2", "-Wall"], id="attached-d"),
+            pytest.param(["-O2", "-DFOO=bar", "-Wall"], ["-O2", "-Wall"], id="attached-d-value"),
+            pytest.param(["-O2", "-D", "FOO", "-Wall"], ["-O2", "-Wall"], id="detached-d"),
+            pytest.param(["-O2", "-U", "FOO", "-Wall"], ["-O2", "-Wall"], id="detached-u"),
+            pytest.param(["-O2", "-D"], ["-O2"], id="dangling-d"),
+            pytest.param(["-O2", "-Iinclude", "-Wall"], ["-O2", "-Iinclude", "-Wall"], id="keep-other-flags"),
+            pytest.param([], [], id="empty"),
+            pytest.param(["-I/usr/include", "-DFOO"], ["-I/usr/include"], id="keep-capital-i"),
+        ],
+    )
+    def test_strip_d_u_tokens(self, tokens, expected):
+        assert strip_d_u_tokens(tokens) == expected
 
 
 class TestArgsTokensAfterParseargs:

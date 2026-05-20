@@ -14,6 +14,8 @@ _add_include_paths_to_flags) and _add_include_paths_to_flags itself:
 
 from types import SimpleNamespace
 
+import pytest
+
 from compiletools.apptools import _add_include_paths_to_flags
 from compiletools.flags import Flags
 from compiletools.utils import split_command_cached
@@ -28,63 +30,39 @@ def _existing_include_paths(flags_str: str) -> set[str]:
     return Flags(cpp=tuple(split_command_cached(flags_str))).existing_include_paths("cpp")
 
 
-def test_existing_include_paths_attached_form():
-    assert _existing_include_paths("-I/usr/include -O2") == {"/usr/include"}
+@pytest.mark.parametrize(
+    ("flags_str", "expected"),
+    [
+        pytest.param("-I/usr/include -O2", {"/usr/include"}, id="attached"),
+        pytest.param("-I /usr/include -O2", {"/usr/include"}, id="detached"),
+        pytest.param("-I/a -I /b -I/c", {"/a", "/b", "/c"}, id="mixed"),
+        pytest.param("-DFOO=/usr/include -Wall", set(), id="ignore-d-value"),
+        pytest.param("-isystem /opt/inc", set(), id="ignore-isystem"),
+        pytest.param("-O2 -I", set(), id="dangling-dash-i"),
+        pytest.param("", set(), id="empty"),
+    ],
+)
+def test_existing_include_paths(flags_str, expected):
+    assert _existing_include_paths(flags_str) == expected
 
 
-def test_existing_include_paths_detached_form():
-    assert _existing_include_paths("-I /usr/include -O2") == {"/usr/include"}
-
-
-def test_existing_include_paths_mixed_forms():
-    assert _existing_include_paths("-I/a -I /b -I/c") == {"/a", "/b", "/c"}
-
-
-def test_existing_include_paths_ignores_d_with_path_value():
-    assert _existing_include_paths("-DFOO=/usr/include -Wall") == set()
-
-
-def test_existing_include_paths_ignores_other_dash_i_like_tokens():
-    # -isystem looks like it starts with "-i" (lowercase), not "-I"
-    # (uppercase). The helper is for -I only.
-    assert _existing_include_paths("-isystem /opt/inc") == set()
-
-
-def test_existing_include_paths_dangling_dash_I():
-    # "-I" with no following token must not crash.
-    assert _existing_include_paths("-O2 -I") == set()
-
-
-def test_existing_include_paths_empty():
-    assert _existing_include_paths("") == set()
-
-
-def test_add_include_paths_skips_when_already_attached():
+@pytest.mark.parametrize(
+    "existing_flags",
+    [
+        pytest.param("-I/usr/include", id="attached"),
+        pytest.param("-I /usr/include", id="detached"),
+    ],
+)
+def test_add_include_paths_skips_when_already_present(existing_flags):
     args = SimpleNamespace(
         INCLUDE="/usr/include",
-        CPPFLAGS="-I/usr/include",
-        CFLAGS="-I/usr/include",
-        CXXFLAGS="-I/usr/include",
+        CPPFLAGS=existing_flags,
+        CFLAGS=existing_flags,
+        CXXFLAGS=existing_flags,
         verbose=0,
     )
     _add_include_paths_to_flags(args)
-    assert args.CPPFLAGS == "-I/usr/include"
-    assert args.CFLAGS == "-I/usr/include"
-    assert args.CXXFLAGS == "-I/usr/include"
-
-
-def test_add_include_paths_skips_when_already_detached():
-    args = SimpleNamespace(
-        INCLUDE="/usr/include",
-        CPPFLAGS="-I /usr/include",
-        CFLAGS="-I /usr/include",
-        CXXFLAGS="-I /usr/include",
-        verbose=0,
-    )
-    _add_include_paths_to_flags(args)
-    assert args.CPPFLAGS == "-I /usr/include"
-    assert args.CFLAGS == "-I /usr/include"
-    assert args.CXXFLAGS == "-I /usr/include"
+    assert (existing_flags,) * 3 == (args.CPPFLAGS, args.CFLAGS, args.CXXFLAGS)
 
 
 def test_add_include_paths_does_not_skip_when_only_in_other_path_flag():

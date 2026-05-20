@@ -3,14 +3,16 @@ import pytest
 import compiletools.testhelper as uth
 
 
-def test_skip_if_bazel_env_error_skips_on_certificate():
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        pytest.param("ERROR: TLS Certificate verification failed", id="tls-certificate"),
+        pytest.param("link: Operation not supported", id="operation-not-supported"),
+    ],
+)
+def test_skip_if_bazel_env_error_skips_on_environment_failures(stderr):
     with pytest.raises(pytest.skip.Exception):
-        uth.skip_if_bazel_env_error("ERROR: TLS Certificate verification failed")
-
-
-def test_skip_if_bazel_env_error_skips_on_operation_not_supported():
-    with pytest.raises(pytest.skip.Exception):
-        uth.skip_if_bazel_env_error("link: Operation not supported")
+        uth.skip_if_bazel_env_error(stderr)
 
 
 def test_skip_if_bazel_env_error_noop_on_unrelated_stderr():

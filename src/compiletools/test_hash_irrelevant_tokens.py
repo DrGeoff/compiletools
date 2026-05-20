@@ -11,47 +11,35 @@ warning to an error CAN change the build outcome, so it must remain
 hash-relevant.
 """
 
+import pytest
+
 from compiletools.apptools import filter_hash_irrelevant_tokens
 
 
-def test_filter_strips_w_warnings():
-    assert filter_hash_irrelevant_tokens(["-Wall", "-O2", "-Wextra"]) == ["-O2"]
-
-
-def test_filter_keeps_werror():
-    assert filter_hash_irrelevant_tokens(["-Wall", "-Werror", "-O2"]) == ["-Werror", "-O2"]
-
-
-def test_filter_keeps_werror_with_value():
-    assert filter_hash_irrelevant_tokens(["-Werror=unused-variable", "-O2"]) == [
-        "-Werror=unused-variable",
-        "-O2",
-    ]
-
-
-def test_filter_strips_fdiagnostics_color():
-    assert filter_hash_irrelevant_tokens(["-fdiagnostics-color=always", "-O2"]) == ["-O2"]
-
-
-def test_filter_strips_fmessage_length():
-    assert filter_hash_irrelevant_tokens(["-fmessage-length=80", "-O2"]) == ["-O2"]
-
-
-def test_filter_strips_pipe():
-    assert filter_hash_irrelevant_tokens(["-pipe", "-O2"]) == ["-O2"]
-
-
-def test_filter_strips_v_and_verbose():
-    assert filter_hash_irrelevant_tokens(["-v", "-O2", "--verbose"]) == ["-O2"]
-
-
-def test_filter_keeps_other_flags():
-    tokens = ["-O2", "-std=c++20", "-fPIC", "-DFOO", "-Iinclude"]
-    assert filter_hash_irrelevant_tokens(tokens) == tokens
-
-
-def test_filter_empty_input():
-    assert filter_hash_irrelevant_tokens([]) == []
+@pytest.mark.parametrize(
+    ("tokens", "expected"),
+    [
+        pytest.param(["-Wall", "-O2", "-Wextra"], ["-O2"], id="strip-warnings"),
+        pytest.param(["-Wall", "-Werror", "-O2"], ["-Werror", "-O2"], id="keep-werror"),
+        pytest.param(
+            ["-Werror=unused-variable", "-O2"],
+            ["-Werror=unused-variable", "-O2"],
+            id="keep-werror-value",
+        ),
+        pytest.param(["-fdiagnostics-color=always", "-O2"], ["-O2"], id="strip-diagnostics-color"),
+        pytest.param(["-fmessage-length=80", "-O2"], ["-O2"], id="strip-message-length"),
+        pytest.param(["-pipe", "-O2"], ["-O2"], id="strip-pipe"),
+        pytest.param(["-v", "-O2", "--verbose"], ["-O2"], id="strip-verbose"),
+        pytest.param(
+            ["-O2", "-std=c++20", "-fPIC", "-DFOO", "-Iinclude"],
+            ["-O2", "-std=c++20", "-fPIC", "-DFOO", "-Iinclude"],
+            id="keep-other-flags",
+        ),
+        pytest.param([], [], id="empty"),
+    ],
+)
+def test_filter_hash_irrelevant_tokens(tokens, expected):
+    assert filter_hash_irrelevant_tokens(tokens) == expected
 
 
 def test_filter_does_not_mutate_input():
