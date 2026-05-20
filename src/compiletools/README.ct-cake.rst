@@ -432,6 +432,20 @@ headers, sibling repos, and already-relative paths pass through
 unchanged. The compiler still receives the real absolute paths --
 canonicalization only affects what the cache hashes.
 
+After gitroot rewriting, cache-key paths additionally run through
+``os.path.normpath`` to collapse ``..`` segments, redundant separators,
+and ``./`` prefixes. Two conf-driven include paths that resolve to the
+same directory but are spelled differently
+(``${CONF_DIR}/../shared/src/include`` from a sibling conf vs.
+``${CONF_DIR}/shared/src/include`` from the parent) therefore hash to
+the same cache key instead of forking ``macro_state_hash`` on
+semantically-equivalent ``-I`` tokens. Normalization is purely
+lexical (no symlink resolution) so cross-worktree CAS sharing through
+symlinked module directories continues to work. The emitted compile
+command preserves the original lexical form -- only the hash input is
+normalised -- so lexical ``..`` collapse never changes what gcc
+resolves through symlinked intermediates.
+
 Linker-artefact caching (cas-exedir)
 ------------------------------------
 
