@@ -1,3 +1,4 @@
+import contextlib
 import glob
 import json
 import os
@@ -35,6 +36,19 @@ class TestCake(BaseCompileToolsTestCase):
             extraargv = []
         uth.reset()
         compiletools.cake.main(self._create_argv() + extraargv)
+
+    @contextlib.contextmanager
+    def _tmpdir_with_config(self):
+        """Enter a fresh TempDirContext, populate self._tmpdir/_config_name,
+        and write a default ct.conf that names the temp config as the variant."""
+        with uth.TempDirContext():
+            self._tmpdir = os.getcwd()
+            self._config_name = uth.create_temp_config(self._tmpdir)
+            uth.create_temp_ct_conf(
+                tempdir=self._tmpdir,
+                defaultvariant=os.path.basename(self._config_name)[:-5],
+            )
+            yield self._tmpdir
 
     @uth.requires_functional_compiler
     def test_no_git_root(self):
@@ -485,27 +499,16 @@ class TestCake(BaseCompileToolsTestCase):
 
     def test_main_nothing_to_do(self):
         """Test that main() returns 0 when there's nothing to do."""
-        with uth.TempDirContext():
-            self._tmpdir = os.getcwd()
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+        with self._tmpdir_with_config():
             # Explicitly disable --auto and provide no filenames → "Nothing for cake to do"
+            assert self._config_name is not None
             result = compiletools.cake.main(["--config=" + self._config_name, "--no-auto"])
             assert result == 0
 
     def test_main_oserror(self):
         """Test that main() handles OSError and returns 1."""
 
-        with uth.TempDirContext():
-            self._tmpdir = os.getcwd()
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+        with self._tmpdir_with_config():
             with patch("compiletools.cake.Cake.process", side_effect=OSError(2, "No such file", "missing.cpp")):
                 result = compiletools.cake.main(self._create_argv())
                 assert result == 1
@@ -513,13 +516,7 @@ class TestCake(BaseCompileToolsTestCase):
     def test_main_generic_exception(self):
         """Test that main() handles generic exceptions and returns 1."""
 
-        with uth.TempDirContext():
-            self._tmpdir = os.getcwd()
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+        with self._tmpdir_with_config():
             with patch("compiletools.cake.Cake.process", side_effect=RuntimeError("something broke")):
                 result = compiletools.cake.main(self._create_argv())
                 assert result == 1
@@ -527,13 +524,7 @@ class TestCake(BaseCompileToolsTestCase):
     def test_main_oserror_verbose_reraises(self):
         """Test that main() re-raises OSError when verbose >= 2."""
 
-        with uth.TempDirContext():
-            self._tmpdir = os.getcwd()
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+        with self._tmpdir_with_config():
 
             with pytest.raises(OSError):
                 with patch(
@@ -545,13 +536,7 @@ class TestCake(BaseCompileToolsTestCase):
     def test_main_generic_exception_verbose_reraises(self):
         """Test that main() re-raises generic exceptions when verbose >= 2."""
 
-        with uth.TempDirContext():
-            self._tmpdir = os.getcwd()
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+        with self._tmpdir_with_config():
 
             with pytest.raises(RuntimeError, match="something broke"):
                 with patch(
@@ -563,13 +548,7 @@ class TestCake(BaseCompileToolsTestCase):
     def test_main_called_process_error(self, capsys):
         """Test that main() handles subprocess.CalledProcessError and returns 1."""
 
-        with uth.TempDirContext():
-            self._tmpdir = os.getcwd()
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+        with self._tmpdir_with_config():
             cpe = subprocess.CalledProcessError(
                 returncode=2,
                 cmd=["g++", "-c", "foo.cpp"],
@@ -586,13 +565,7 @@ class TestCake(BaseCompileToolsTestCase):
     def test_main_called_process_error_verbose_reraises(self):
         """Test that main() re-raises subprocess.CalledProcessError when verbose >= 2."""
 
-        with uth.TempDirContext():
-            self._tmpdir = os.getcwd()
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+        with self._tmpdir_with_config():
 
             cpe = subprocess.CalledProcessError(
                 returncode=2,
@@ -607,13 +580,7 @@ class TestCake(BaseCompileToolsTestCase):
     def test_main_called_process_error_string_cmd(self, capsys):
         """Test that main() handles CalledProcessError with a plain-string cmd (output-only branch)."""
 
-        with uth.TempDirContext():
-            self._tmpdir = os.getcwd()
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+        with self._tmpdir_with_config():
             cpe = subprocess.CalledProcessError(
                 returncode=3,
                 cmd="g++ -c foo.cpp",
@@ -636,13 +603,7 @@ class TestCake(BaseCompileToolsTestCase):
 
     def test_hide_makefilename_moves_makefile(self):
         """Test that _hide_makefilename moves the makefile into executable_dir."""
-        with uth.TempDirContext():
-            self._tmpdir = os.getcwd()
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+        with self._tmpdir_with_config():
             args = self._make_cake_args()
             # Set verbose > 4 to cover the print branch
             args.verbose = 5
@@ -667,13 +628,7 @@ class TestCake(BaseCompileToolsTestCase):
 
     def test_copyexes_with_output_filename(self):
         """Test _copyexes when args.output is set with a filename target."""
-        with uth.TempDirContext():
-            self._tmpdir = os.getcwd()
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+        with self._tmpdir_with_config():
             args = self._make_cake_args()
             args.output = os.path.join(self._tmpdir, "myexe")
             args.filename = ["test.cpp"]
@@ -696,13 +651,7 @@ class TestCake(BaseCompileToolsTestCase):
 
     def test_copyexes_with_output_static(self):
         """Test _copyexes when args.output is set with a static library."""
-        with uth.TempDirContext():
-            self._tmpdir = os.getcwd()
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+        with self._tmpdir_with_config():
             args = self._make_cake_args()
             args.output = os.path.join(self._tmpdir, "mylib.a")
             args.filename = None
@@ -724,13 +673,7 @@ class TestCake(BaseCompileToolsTestCase):
 
     def test_copyexes_with_output_dynamic(self):
         """Test _copyexes when args.output is set with a dynamic library."""
-        with uth.TempDirContext():
-            self._tmpdir = os.getcwd()
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+        with self._tmpdir_with_config():
             args = self._make_cake_args()
             args.output = os.path.join(self._tmpdir, "mylib.so")
             args.filename = None
@@ -752,13 +695,7 @@ class TestCake(BaseCompileToolsTestCase):
 
     def test_copyexes_no_output_static(self):
         """Test _copyexes without output but with static library."""
-        with uth.TempDirContext():
-            self._tmpdir = os.getcwd()
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+        with self._tmpdir_with_config():
             args = self._make_cake_args()
             args.output = None
             args.filename = None
@@ -783,13 +720,7 @@ class TestCake(BaseCompileToolsTestCase):
 
     def test_copyexes_no_output_dynamic(self):
         """Test _copyexes without output but with dynamic library."""
-        with uth.TempDirContext():
-            self._tmpdir = os.getcwd()
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+        with self._tmpdir_with_config():
             args = self._make_cake_args()
             args.output = None
             args.filename = None
@@ -831,13 +762,7 @@ class TestCake(BaseCompileToolsTestCase):
 
     def test_call_compilation_database_skipped_on_clean(self):
         """Test that _call_compilation_database returns early when clean is True."""
-        with uth.TempDirContext():
-            self._tmpdir = os.getcwd()
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+        with self._tmpdir_with_config():
             args = self._make_cake_args()
             args.clean = True
 
@@ -852,13 +777,7 @@ class TestCake(BaseCompileToolsTestCase):
         compile_commands.json immediately before nuking the bin/obj
         dirs is wasted work and confuses tooling."""
 
-        with uth.TempDirContext():
-            self._tmpdir = os.getcwd()
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+        with self._tmpdir_with_config():
             args = self._make_cake_args()
             args.realclean = True
             args.clean = False
