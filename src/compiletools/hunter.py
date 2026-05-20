@@ -309,7 +309,7 @@ class Hunter:
         if isinstance(include_dirs, str):
             include_dirs = [include_dirs]
         for inc in include_dirs:
-            if isinstance(inc, str) and os.path.isdir(inc):
+            if isinstance(inc, str) and compiletools.wrappedos.isdir(inc):
                 roots.append(compiletools.wrappedos.realpath(inc))
         # ``.`` is the last-resort fallback for non-git builds with no
         # ``--include``. Skip it when the git registry already has

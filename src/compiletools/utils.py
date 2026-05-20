@@ -142,7 +142,7 @@ def is_source(filename: str) -> bool:
 
 
 def is_executable(filename: str) -> bool:
-    return os.path.isfile(filename) and os.access(filename, os.X_OK)
+    return compiletools.wrappedos.isfile(filename) and os.access(filename, os.X_OK)
 
 
 def _find_file_with_extensions(filename: str, extensions: frozenset[str]) -> str | None:
