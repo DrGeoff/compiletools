@@ -1,5 +1,7 @@
 """Tests for tree module."""
 
+import pytest
+
 from compiletools.tree import InTree, depth_first_traverse, dicts, flatten, tree
 
 
@@ -48,15 +50,9 @@ def test_depth_first_traverse_named_args():
     assert results == [("root", 0), ("child", 1)]
 
 
-def test_in_tree_present():
+@pytest.mark.parametrize("query,expected", [("b", True), ("z", False)], ids=["present", "absent"])
+def test_in_tree(query, expected):
     t = tree()
     t["a"]["b"]["c"]
     in_tree = InTree(t)
-    assert in_tree("b") is True
-
-
-def test_in_tree_absent():
-    t = tree()
-    t["a"]["b"]
-    in_tree = InTree(t)
-    assert in_tree("z") is False
+    assert in_tree(query) is expected

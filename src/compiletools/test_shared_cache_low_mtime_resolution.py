@@ -18,10 +18,10 @@ This is a real issue on:
 import os
 import shutil
 import subprocess
-import tempfile
 import time
 from pathlib import Path
 
+import compiletools.cake
 import compiletools.testhelper as uth
 from compiletools.test_base import BaseCompileToolsTestCase
 
@@ -97,8 +97,6 @@ class TestSharedCacheLowMtimeResolution(BaseCompileToolsTestCase):
 
     def _run_cake_build(self, work_dir, config_name):
         """Run ct-cake in the given directory."""
-        import compiletools.cake
-
         os.chdir(work_dir)
         argv = [
             "--exemarkers=main",
@@ -124,113 +122,113 @@ class TestSharedCacheLowMtimeResolution(BaseCompileToolsTestCase):
         - NFS with coarse timestamps
         - Fast builds completing in < 1 second
         """
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cas_objdir = Path(tmpdir) / "cas_objdir"
-            cas_objdir.mkdir(mode=0o2775)
+        tmpdir = self._tmpdir
+        cas_objdir = Path(tmpdir) / "cas_objdir"
+        cas_objdir.mkdir(mode=0o2775)
 
-            main_repo, worktree, config_name = self._create_worktree_test_env(tmpdir, cas_objdir)
+        main_repo, worktree, config_name = self._create_worktree_test_env(tmpdir, cas_objdir)
 
-            # Pick a specific timestamp for our simulation
-            base_timestamp = int(time.time())
+        # Pick a specific timestamp for our simulation
+        base_timestamp = int(time.time())
 
-            # Set all source files to the same timestamp
-            for repo_dir in [main_repo, worktree]:
-                for src_file in ["app.cpp", "config.h", "renderer.h"]:
-                    set_mtime_to_second(os.path.join(repo_dir, src_file), base_timestamp)
+        # Set all source files to the same timestamp
+        for repo_dir in [main_repo, worktree]:
+            for src_file in ["app.cpp", "config.h", "renderer.h"]:
+                set_mtime_to_second(os.path.join(repo_dir, src_file), base_timestamp)
 
-            # User A: Initial build
-            self._run_cake_build(main_repo, config_name)
+        # User A: Initial build
+        self._run_cake_build(main_repo, config_name)
 
-            # Capture object files BEFORE header change
-            obj_files_before = list(cas_objdir.glob("**/*.o"))
-            assert len(obj_files_before) == 1, f"Expected 1 object file, found {len(obj_files_before)}"
+        # Capture object files BEFORE header change
+        obj_files_before = list(cas_objdir.glob("**/*.o"))
+        assert len(obj_files_before) == 1, f"Expected 1 object file, found {len(obj_files_before)}"
 
-            obj_file_before = obj_files_before[0]
-            obj_name_before = obj_file_before.name
-            obj_size_before = obj_file_before.stat().st_size
-            assert obj_size_before > 0, "Object file should not be empty"
+        obj_file_before = obj_files_before[0]
+        obj_name_before = obj_file_before.name
+        obj_size_before = obj_file_before.stat().st_size
+        assert obj_size_before > 0, "Object file should not be empty"
 
-            # CRITICAL: Set object mtime to same timestamp as sources
-            # This simulates low-resolution filesystem or fast build
-            set_mtime_to_second(obj_file_before, base_timestamp)
-            obj_mtime = os.path.getmtime(obj_file_before)
+        # CRITICAL: Set object mtime to same timestamp as sources
+        # This simulates low-resolution filesystem or fast build
+        set_mtime_to_second(obj_file_before, base_timestamp)
+        obj_mtime = os.path.getmtime(obj_file_before)
 
-            # User B: Edit renderer.h
-            renderer_h = Path(worktree) / "renderer.h"
-            original_content = renderer_h.read_text()
+        # User B: Edit renderer.h
+        renderer_h = Path(worktree) / "renderer.h"
+        original_content = renderer_h.read_text()
 
-            # Modify the file
-            with open(renderer_h, "a") as f:
-                f.write("\nvoid new_function();  // This change will be missed!\n")
+        # Modify the file
+        with open(renderer_h, "a") as f:
+            f.write("\nvoid new_function();  // This change will be missed!\n")
 
-            modified_content = renderer_h.read_text()
-            assert original_content != modified_content, "File should be modified"
+        modified_content = renderer_h.read_text()
+        assert original_content != modified_content, "File should be modified"
 
-            # CRITICAL: Set renderer.h mtime to SAME timestamp as object
-            # On low-resolution FS, this happens when edit is in same second as build
-            set_mtime_to_second(renderer_h, base_timestamp)
-            header_mtime = os.path.getmtime(renderer_h)
+        # CRITICAL: Set renderer.h mtime to SAME timestamp as object
+        # On low-resolution FS, this happens when edit is in same second as build
+        set_mtime_to_second(renderer_h, base_timestamp)
+        header_mtime = os.path.getmtime(renderer_h)
 
-            # Verify timestamps are equal
-            assert int(obj_mtime) == int(header_mtime), "Object and header mtimes should be equal"
+        # Verify timestamps are equal
+        assert int(obj_mtime) == int(header_mtime), "Object and header mtimes should be equal"
 
-            # Commit the change in worktree
-            subprocess.run(["git", "add", "renderer.h"], cwd=worktree, capture_output=True, check=True)
-            subprocess.run(["git", "commit", "-m", "Edit renderer.h"], cwd=worktree, capture_output=True, check=True)
+        # Commit the change in worktree
+        subprocess.run(["git", "add", "renderer.h"], cwd=worktree, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "Edit renderer.h"], cwd=worktree, capture_output=True, check=True)
 
-            # Verify content actually changed
-            hash_main = subprocess.run(
-                ["git", "hash-object", "renderer.h"], cwd=main_repo, capture_output=True, text=True
-            ).stdout.strip()
-            hash_worktree = subprocess.run(
-                ["git", "hash-object", "renderer.h"], cwd=worktree, capture_output=True, text=True
-            ).stdout.strip()
-            assert hash_main != hash_worktree, "renderer.h content should differ"
+        # Verify content actually changed
+        hash_main = subprocess.run(
+            ["git", "hash-object", "renderer.h"], cwd=main_repo, capture_output=True, text=True
+        ).stdout.strip()
+        hash_worktree = subprocess.run(
+            ["git", "hash-object", "renderer.h"], cwd=worktree, capture_output=True, text=True
+        ).stdout.strip()
+        assert hash_main != hash_worktree, "renderer.h content should differ"
 
-            # User B: Build after editing renderer.h
-            self._run_cake_build(worktree, config_name)
+        # User B: Build after editing renderer.h
+        self._run_cake_build(worktree, config_name)
 
-            # Capture object files AFTER rebuild
-            obj_files_after = list(cas_objdir.glob("**/*.o"))
+        # Capture object files AFTER rebuild
+        obj_files_after = list(cas_objdir.glob("**/*.o"))
 
-            # The test: Was a NEW object created with different name?
-            new_obj_files = [f for f in obj_files_after if f.name != obj_name_before]
+        # The test: Was a NEW object created with different name?
+        new_obj_files = [f for f in obj_files_after if f.name != obj_name_before]
 
-            if not new_obj_files:
-                # BUG NOT FIXED: Still using old object name
-                assert False, (
-                    f"BUG: No new object created despite header change!\n"
-                    f"Old object: {obj_name_before}\n"
-                    f"All objects: {[f.name for f in obj_files_after]}\n"
-                    f"Expected: New object with different dependency hash\n"
-                )
+        if not new_obj_files:
+            # BUG NOT FIXED: Still using old object name
+            assert False, (
+                f"BUG: No new object created despite header change!\n"
+                f"Old object: {obj_name_before}\n"
+                f"All objects: {[f.name for f in obj_files_after]}\n"
+                f"Expected: New object with different dependency hash\n"
+            )
 
-            # SUCCESS: New object created
-            assert len(new_obj_files) == 1, f"Expected 1 new object, found {len(new_obj_files)}"
-            new_obj = new_obj_files[0]
+        # SUCCESS: New object created
+        assert len(new_obj_files) == 1, f"Expected 1 new object, found {len(new_obj_files)}"
+        new_obj = new_obj_files[0]
 
-            # Verify new object has different hash in middle position (dep_hash changed)
-            old_parts = obj_name_before.replace(".o", "").split("_")
-            new_parts = new_obj.name.replace(".o", "").split("_")
+        # Verify new object has different hash in middle position (dep_hash changed)
+        old_parts = obj_name_before.replace(".o", "").split("_")
+        new_parts = new_obj.name.replace(".o", "").split("_")
 
-            # Both should have new format (4 parts) since our fix is already applied
-            assert len(old_parts) == 4, f"Should have 4 parts: {old_parts}"
-            assert len(new_parts) == 4, f"Should have 4 parts: {new_parts}"
+        # Both should have new format (4 parts) since our fix is already applied
+        assert len(old_parts) == 4, f"Should have 4 parts: {old_parts}"
+        assert len(new_parts) == 4, f"Should have 4 parts: {new_parts}"
 
-            assert new_parts[0] == old_parts[0], "Basename should match"
-            assert new_parts[1] == old_parts[1], "File hash should match (source unchanged)"
-            # The key test: dep_hash (middle position) should be DIFFERENT
-            assert new_parts[2] != old_parts[2], f"Dep hash should differ: {old_parts[2]} vs {new_parts[2]}"
-            assert len(new_parts[2]) == 14, f"Dep hash should be 14 chars: {new_parts[2]}"
-            assert new_parts[2] != "00000000000000", "Dep hash should not be zero (has dependencies)"
+        assert new_parts[0] == old_parts[0], "Basename should match"
+        assert new_parts[1] == old_parts[1], "File hash should match (source unchanged)"
+        # The key test: dep_hash (middle position) should be DIFFERENT
+        assert new_parts[2] != old_parts[2], f"Dep hash should differ: {old_parts[2]} vs {new_parts[2]}"
+        assert len(new_parts[2]) == 14, f"Dep hash should be 14 chars: {new_parts[2]}"
+        assert new_parts[2] != "00000000000000", "Dep hash should not be zero (has dependencies)"
 
-            # Additional verification: Ensure hashes are valid hex (algorithm correctness)
-            try:
-                int(old_parts[2], 16)
-                int(new_parts[2], 16)
-            except ValueError as e:
-                assert False, f"Dep hash must be valid hex: {e}"
+        # Additional verification: Ensure hashes are valid hex (algorithm correctness)
+        try:
+            int(old_parts[2], 16)
+            int(new_parts[2], 16)
+        except ValueError as e:
+            assert False, f"Dep hash must be valid hex: {e}"
 
-            # Both objects should coexist in shared cache
-            assert len(obj_files_after) == 2, f"Expected both old and new objects, found {len(obj_files_after)}"
-            assert obj_file_before in obj_files_after, "Old object should still exist"
+        # Both objects should coexist in shared cache
+        assert len(obj_files_after) == 2, f"Expected both old and new objects, found {len(obj_files_after)}"
+        assert obj_file_before in obj_files_after, "Old object should still exist"
