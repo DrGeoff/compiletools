@@ -39,9 +39,3 @@ Run the pytest test to verify the bug is exposed:
 ```bash
 pytest -xvs test_hunter_macro_propagation.py
 ```
-
-Or run directly:
-
-```bash
-python test_hunter_macro_propagation.py
-```
