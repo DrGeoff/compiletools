@@ -1,6 +1,7 @@
 """Unit tests for apptools.py utility functions."""
 
 import builtins
+import contextlib
 import io
 import os
 import shlex
@@ -74,6 +75,24 @@ def parsers_reset():
     uth.reset()
     yield
     uth.reset()
+
+
+@contextlib.contextmanager
+def _temp_repo_with_ct_conf(variant, canonical_order):
+    """Enter a TempDirContextNoChange + create `ct.conf.d/` + write a
+    project `ct.conf` naming `variant` and `canonical_order`. The
+    `exemarkers = [main]` + `testmarkers = unit_test.hpp` lines are
+    common to all TestAppendFlagsAccumulateAcrossConfHierarchy fixtures
+    and are baked in. Yields (repo_root, conf_d)."""
+    with uth.TempDirContextNoChange() as repo_root:
+        conf_d = os.path.join(repo_root, "ct.conf.d")
+        os.makedirs(conf_d, exist_ok=True)
+        with open(os.path.join(repo_root, "ct.conf"), "w") as fh:
+            fh.write(f"variant = {variant}\n")
+            fh.write(f"variant-canonical-order = {canonical_order}\n")
+            fh.write("exemarkers = [main]\n")
+            fh.write("testmarkers = unit_test.hpp\n")
+        yield repo_root, conf_d
 
 
 def _parseargs_for_variant(repo_root, argv, *, add_link=False):
@@ -1391,12 +1410,11 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
     def _setup_three_axis_conf_tree(self, repo_root):
         """Create gcc.conf, release.conf, extras.conf with distinct
         ``append-CXXFLAGS`` markers and a project ct.conf that names
-        ``extras`` as a known axis.
+        ``extras`` as a known axis (so the resolver treats the third
+        token as an axis rather than an unknown).
         """
         conf_d = os.path.join(repo_root, "ct.conf.d")
         os.makedirs(conf_d, exist_ok=True)
-        # Project ct.conf appends `extras` to the canonical order so the
-        # resolver treats the third token as an axis rather than an unknown.
         with open(os.path.join(repo_root, "ct.conf"), "w") as fh:
             fh.write("variant = gcc.release.extras\n")
             fh.write("variant-canonical-order = gcc, release, extras\n")
@@ -1474,14 +1492,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
         so this is the most exercised flag slot in practice.
         """
 
-        with uth.TempDirContextNoChange() as repo_root:
-            conf_d = os.path.join(repo_root, "ct.conf.d")
-            os.makedirs(conf_d, exist_ok=True)
-            with open(os.path.join(repo_root, "ct.conf"), "w") as fh:
-                fh.write("variant = gcc.release.extras\n")
-                fh.write("variant-canonical-order = gcc, release, extras\n")
-                fh.write("exemarkers = [main]\n")
-                fh.write("testmarkers = unit_test.hpp\n")
+        with _temp_repo_with_ct_conf("gcc.release.extras", "gcc, release, extras") as (repo_root, conf_d):
             with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
                 fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
                 fh.write("append-LDFLAGS = -Wl,--build-id\n")
@@ -1509,14 +1520,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
         ``DefaultConfigFileParser``).
         """
 
-        with uth.TempDirContextNoChange() as repo_root:
-            conf_d = os.path.join(repo_root, "ct.conf.d")
-            os.makedirs(conf_d, exist_ok=True)
-            with open(os.path.join(repo_root, "ct.conf"), "w") as fh:
-                fh.write("variant = gcc.release\n")
-                fh.write("variant-canonical-order = gcc, release\n")
-                fh.write("exemarkers = [main]\n")
-                fh.write("testmarkers = unit_test.hpp\n")
+        with _temp_repo_with_ct_conf("gcc.release", "gcc, release") as (repo_root, conf_d):
             with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
                 fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
                 # Scalar form
@@ -1544,14 +1548,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
         the LEFT of an ``-O3`` in release.conf in args.CXXFLAGS.
         """
 
-        with uth.TempDirContextNoChange() as repo_root:
-            conf_d = os.path.join(repo_root, "ct.conf.d")
-            os.makedirs(conf_d, exist_ok=True)
-            with open(os.path.join(repo_root, "ct.conf"), "w") as fh:
-                fh.write("variant = gcc.release.extras\n")
-                fh.write("variant-canonical-order = gcc, release, extras\n")
-                fh.write("exemarkers = [main]\n")
-                fh.write("testmarkers = unit_test.hpp\n")
+        with _temp_repo_with_ct_conf("gcc.release.extras", "gcc, release, extras") as (repo_root, conf_d):
             with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
                 fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
                 fh.write("append-CXXFLAGS = -O0\n")  # lowest priority
@@ -1587,14 +1584,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
         ``_do_xxpend('INCLUDE')`` in ``_tier_one_modifications``.
         """
 
-        with uth.TempDirContextNoChange() as repo_root:
-            conf_d = os.path.join(repo_root, "ct.conf.d")
-            os.makedirs(conf_d, exist_ok=True)
-            with open(os.path.join(repo_root, "ct.conf"), "w") as fh:
-                fh.write("variant = gcc.release.extras\n")
-                fh.write("variant-canonical-order = gcc, release, extras\n")
-                fh.write("exemarkers = [main]\n")
-                fh.write("testmarkers = unit_test.hpp\n")
+        with _temp_repo_with_ct_conf("gcc.release.extras", "gcc, release, extras") as (repo_root, conf_d):
             inc_a = os.path.join(repo_root, "inc_gcc")
             inc_b = os.path.join(repo_root, "inc_release")
             inc_c = os.path.join(repo_root, "inc_extras")
@@ -1652,14 +1642,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
         affects both — and the fix must cover both.
         """
 
-        with uth.TempDirContextNoChange() as repo_root:
-            conf_d = os.path.join(repo_root, "ct.conf.d")
-            os.makedirs(conf_d, exist_ok=True)
-            with open(os.path.join(repo_root, "ct.conf"), "w") as fh:
-                fh.write("variant = gcc.release.extras\n")
-                fh.write("variant-canonical-order = gcc, release, extras\n")
-                fh.write("exemarkers = [main]\n")
-                fh.write("testmarkers = unit_test.hpp\n")
+        with _temp_repo_with_ct_conf("gcc.release.extras", "gcc, release, extras") as (repo_root, conf_d):
             with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
                 fh.write("CC = gcc\nCXX = g++\nLD = g++\n")
                 fh.write("prepend-CXXFLAGS = -DPREPEND_GCC\n")
