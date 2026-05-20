@@ -14,17 +14,17 @@ The bug has been fixed — this test now passes, verifying the fix works correct
 """
 
 import shutil
-import tempfile
 from pathlib import Path
 
 import pytest
+import stringzilla as sz
 
 import compiletools.apptools
 import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
-import compiletools.wrappedos
 from compiletools.build_context import BuildContext
+from compiletools.examples_registry import example_path
 from compiletools.test_base import BaseCompileToolsTestCase
 
 
@@ -32,34 +32,19 @@ class TestEmptyMacroBug(BaseCompileToolsTestCase):
     """Test that reproduces the empty macro state bug in initial header discovery."""
 
     def setup_method(self):
-        """Set up test environment matching the real bug scenario."""
+        """Copy sample C++ code into the per-test tmp dir provided by the base class."""
         super().setup_method()
-
-        # Set up temporary directory for test execution
-        self.test_dir = Path(tempfile.mkdtemp(prefix="ct_test_empty_macro_"))
-
-        # Copy sample C++ code to temp directory
-        from compiletools.examples_registry import example_path
-
+        self.test_dir = Path(self._tmpdir)
         sample_src = Path(example_path("empty_macro_bug"))
-
-        # Copy libs directory
         self.libs_dir = self.test_dir / "libs"
         shutil.copytree(sample_src / "libs", self.libs_dir)
-
-        # Set up file references (paths now point to copied files)
         self.base_hpp = self.libs_dir / "base.hpp"
         self.conditional_hpp = self.libs_dir / "conditional.hpp"
         self.dependency_hpp = self.libs_dir / "dependency.hpp"
         self.main_cpp = self.libs_dir / "main.cpp"
 
-    def teardown_method(self):
-        """Clean up test environment."""
-        if hasattr(self, "test_dir") and self.test_dir.exists():
-            shutil.rmtree(self.test_dir)
-        super().teardown_method()
-
-    def test_empty_macro_state_causes_missing_headers(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_empty_macro_state_causes_missing_headers(self):
         """FAILING TEST: Demonstrates that empty macro state in initial header discovery causes missing headers.
 
         Expected flow WITH macros:
@@ -81,9 +66,6 @@ class TestEmptyMacroBug(BaseCompileToolsTestCase):
 
         This test should FAIL until line 743 of magicflags.py is fixed.
         """
-        # pkgconfig_env fixture already set PKG_CONFIG_PATH to examples-features/pkgs/
-
-        # Create hunter
         argv = ["-vvv", f"--INCLUDE={self.test_dir}", str(self.main_cpp)]
 
         cap = compiletools.apptools.create_parser("test_empty_macro", argv=argv)
@@ -98,76 +80,39 @@ class TestEmptyMacroBug(BaseCompileToolsTestCase):
         magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
         hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
 
-        print("\n=== Testing Empty Macro Bug ===")
-
-        # Get header dependencies for main.cpp
         main_deps = hunter.header_dependencies(str(self.main_cpp))
-
         has_conditional = any("conditional.hpp" in str(h) for h in main_deps)
         has_base = any("base.hpp" in str(h) for h in main_deps)
         has_dependency = any("dependency.hpp" in str(h) for h in main_deps)
 
-        print(f"\nHeaders found for main.cpp: {len(main_deps)}")
-        print(f"  conditional.hpp: {has_conditional}")
-        print(f"  base.hpp: {has_base}")
-        print(f"  dependency.hpp: {has_dependency}")
-
-        # Get magic flags to check PKG-CONFIG
         magic_flags = hunter.magicflags(str(self.main_cpp))
-        import stringzilla as sz
-
-        pkg_config_key = sz.Str("PKG-CONFIG")
-        pkg_configs = [str(f) for f in magic_flags.get(pkg_config_key, [])]
-
-        print(f"\nPKG-CONFIG flags found: {pkg_configs}")
+        pkg_configs = [str(f) for f in magic_flags.get(sz.Str("PKG-CONFIG"), [])]
         has_conditional_pkg = "conditional" in pkg_configs
 
         # Check that CPPFLAGS were added from conditional.pc
-        cppflags_key = sz.Str("CPPFLAGS")
-        cppflags = [str(f) for f in magic_flags.get(cppflags_key, [])]
+        cppflags = [str(f) for f in magic_flags.get(sz.Str("CPPFLAGS"), [])]
         cppflags_str = " ".join(cppflags)
         has_conditional_cflags = "/usr/local/include/testpkg" in cppflags_str or "TEST_PKG_ENABLED" in cppflags_str
-
-        print(f"CPPFLAGS: {cppflags_str}")
-        print(f"Has conditional Cflags: {has_conditional_cflags}")
-
-        print("\n=== Analysis ===")
-        if has_dependency and has_conditional_pkg and has_conditional_cflags:
-            print("✓ PASS: dependency.hpp found and PKG-CONFIG extracted with correct flags")
-            print("        The bug has been FIXED!")
-        elif not has_dependency and not has_conditional_pkg:
-            print("✗ FAIL: dependency.hpp NOT found and PKG-CONFIG NOT extracted")
-            print("        ROOT CAUSE: Initial header discovery uses frozenset() (empty macros)")
-            print("        LOCATION: magicflags.py line 743")
-            print("        FIX NEEDED: Use current macro state instead of frozenset()")
-        else:
-            print(
-                f"? PARTIAL: dependency.hpp={has_dependency}, PKG-CONFIG={has_conditional_pkg}, Cflags={has_conditional_cflags}"
-            )
-            print("           Unexpected state - investigate further")
 
         # EXPECTED: dependency.hpp should be found because:
         # - conditional.hpp includes base.hpp which defines USE_HASH
         # - Then #ifdef USE_HASH should succeed
         # - dependency.hpp should be included
         # - PKG-CONFIG=conditional should be extracted
-
-        assert has_conditional, "conditional.hpp should always be found (direct include)"
-        assert has_base, "base.hpp should be found (included by conditional.hpp)"
+        assert has_conditional, f"conditional.hpp should always be found (direct include); deps={main_deps}"
+        assert has_base, f"base.hpp should be found (included by conditional.hpp); deps={main_deps}"
         assert has_dependency, (
             "BUG: dependency.hpp NOT found! Initial header discovery used empty macro state.\n"
             "     When g++ -MM processed conditional.hpp without USE_HASH defined,\n"
             "     the #ifdef USE_HASH failed and dependency.hpp was not included.\n"
-            "     FIX: magicflags.py line 743 should use current macro state, not frozenset()"
+            "     FIX: magicflags.py line 743 should use current macro state, not frozenset().\n"
+            f"     deps={main_deps}"
         )
         assert has_conditional_pkg, (
-            "BUG: PKG-CONFIG=conditional NOT found! dependency.hpp was not discovered, so its magic flags were not extracted."
+            "BUG: PKG-CONFIG=conditional NOT found! dependency.hpp was not discovered, "
+            f"so its magic flags were not extracted. pkg_configs={pkg_configs}"
         )
         assert has_conditional_cflags, (
-            f"BUG: conditional Cflags NOT found in CPPFLAGS! PKG-CONFIG=conditional was not processed correctly.\n"
+            "BUG: conditional Cflags NOT found in CPPFLAGS! PKG-CONFIG=conditional was not processed correctly.\n"
             f"     Expected to find '/usr/local/include/testpkg' or 'TEST_PKG_ENABLED' in: {cppflags_str}"
         )
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-s"])

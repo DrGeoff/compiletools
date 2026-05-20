@@ -17,7 +17,6 @@ Actual behavior (buggy): Entry point 2 produces fewer dependencies due to incomp
 """
 
 import shutil
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -27,8 +26,8 @@ import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
 import compiletools.testhelper as uth
-import compiletools.wrappedos
 from compiletools.build_context import BuildContext
+from compiletools.examples_registry import example_path
 from compiletools.test_base import BaseCompileToolsTestCase
 
 
@@ -36,22 +35,12 @@ class TestParseOrderMacroBug(BaseCompileToolsTestCase):
     """Test that parse order doesn't affect macro-dependent header resolution."""
 
     def setup_method(self):
-        """Set up test environment with files mimicking the real bug scenario."""
+        """Copy sample C++ code into the per-test tmp dir provided by the base class."""
         super().setup_method()
-
-        # Set up temporary directory for test execution
-        self.test_dir = Path(tempfile.mkdtemp(prefix="ct_test_parse_order_"))
-
-        # Copy sample C++ code to temp directory
-        from compiletools.examples_registry import example_path
-
+        self.test_dir = Path(self._tmpdir)
         sample_src = Path(example_path("parse_order_macro_bug"))
-
-        # Copy libs directory
         self.libs_dir = self.test_dir / "libs"
         shutil.copytree(sample_src / "libs", self.libs_dir)
-
-        # Set up file references
         self.hash_map_hpp = self.libs_dir / "hash_map.hpp"
         self.conditional_include_hpp = self.libs_dir / "conditional_include.hpp"
         self.hash_utility_hpp = self.libs_dir / "hash_utility.hpp"
@@ -59,12 +48,6 @@ class TestParseOrderMacroBug(BaseCompileToolsTestCase):
         self.entry_point_1_cpp = self.libs_dir / "entry_point_1.cpp"
         self.intermediate_cpp = self.libs_dir / "intermediate.cpp"
         self.entry_point_2_cpp = self.libs_dir / "entry_point_2.cpp"
-
-    def teardown_method(self):
-        """Clean up test environment."""
-        if hasattr(self, "test_dir") and self.test_dir.exists():
-            shutil.rmtree(self.test_dir)
-        super().teardown_method()
 
     def _create_hunter(self, source_files, parser_name="test"):
         """Create a Hunter instance for the given source files."""
@@ -84,7 +67,8 @@ class TestParseOrderMacroBug(BaseCompileToolsTestCase):
 
         return hunter, args
 
-    def test_parse_order_affects_macro_state(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_parse_order_affects_macro_state(self):
         """Test that parse order doesn't affect macro state and dependencies.
 
         This test documents the EXPECTED behavior where the same file (common_file.cpp)
@@ -111,75 +95,40 @@ class TestParseOrderMacroBug(BaseCompileToolsTestCase):
         2. A regression test once the bug is fixed
         3. A framework for future parse-order bug investigations
         """
-        # pkgconfig_env fixture already set PKG_CONFIG_PATH to examples-features/pkgs/
-
-        # Test entry point 1: Process common_file directly (should find all headers)
-        hunter1, _args1 = self._create_hunter([str(self.entry_point_1_cpp)], parser_name="test_parser_1")
-
+        # Entry point 1: Process common_file directly (should find all headers)
+        hunter1, _ = self._create_hunter([str(self.entry_point_1_cpp)], parser_name="test_parser_1")
         common_file_deps_1 = hunter1.header_dependencies(str(self.common_file_cpp))
         common_file_macro_key_1 = hunter1.macro_state_key(str(self.common_file_cpp))
-
-        # Check what was found via entry point 1
         has_hash_utility_1 = any("hash_utility.hpp" in str(h) for h in common_file_deps_1)
-        has_hash_map_1 = any("hash_map.hpp" in str(h) for h in common_file_deps_1)
-        has_conditional_1 = any("conditional_include.hpp" in str(h) for h in common_file_deps_1)
-
-        print("\n=== Entry Point 1 (direct) ===")
-        print(f"common_file.cpp dependencies: {len(common_file_deps_1)}")
-        print(f"  hash_map.hpp: {has_hash_map_1}")
-        print(f"  conditional_include.hpp: {has_conditional_1}")
-        print(f"  hash_utility.hpp: {has_hash_utility_1}")
-        print(f"  macro_key length: {len(common_file_macro_key_1)}")
-        print(f"  Has HASH_MAP_NAME: {any('HASH_MAP_NAME' in str(k) for k, v in common_file_macro_key_1)}")
 
         # Clear parsers between tests to avoid configargparse conflicts
         uth.delete_existing_parsers()
         compiletools.apptools.resetcallbacks()
 
-        # Test entry point 2: Process via intermediate (may find different headers due to parse order)
-        hunter2, _args2 = self._create_hunter([str(self.entry_point_2_cpp)], parser_name="test_parser_2")
-
+        # Entry point 2: Process via intermediate (may find different headers due to parse order)
+        hunter2, _ = self._create_hunter([str(self.entry_point_2_cpp)], parser_name="test_parser_2")
         common_file_deps_2 = hunter2.header_dependencies(str(self.common_file_cpp))
         common_file_macro_key_2 = hunter2.macro_state_key(str(self.common_file_cpp))
-
-        # Check what was found via entry point 2
         has_hash_utility_2 = any("hash_utility.hpp" in str(h) for h in common_file_deps_2)
-        has_hash_map_2 = any("hash_map.hpp" in str(h) for h in common_file_deps_2)
-        has_conditional_2 = any("conditional_include.hpp" in str(h) for h in common_file_deps_2)
 
-        print("\n=== Entry Point 2 (via intermediate) ===")
-        print(f"common_file.cpp dependencies: {len(common_file_deps_2)}")
-        print(f"  hash_map.hpp: {has_hash_map_2}")
-        print(f"  conditional_include.hpp: {has_conditional_2}")
-        print(f"  hash_utility.hpp: {has_hash_utility_2}")
-        print(f"  macro_key length: {len(common_file_macro_key_2)}")
-        print(f"  Has HASH_MAP_NAME: {any('HASH_MAP_NAME' in str(k) for k, v in common_file_macro_key_2)}")
-
-        # EXPECTED BEHAVIOR: Both entry points should produce identical results
-        # The same file should have the same dependencies regardless of how it's reached
-
+        # EXPECTED BEHAVIOR: Both entry points should produce identical results.
+        # The same file should have the same dependencies regardless of how it's reached.
         # These assertions will FAIL with the current buggy implementation
-        # because entry point 2 processes common_file.cpp before hash_map.hpp is discovered
+        # because entry point 2 processes common_file.cpp before hash_map.hpp is discovered.
         assert len(common_file_deps_1) == len(common_file_deps_2), (
-            f"Dependency count differs: entry1={len(common_file_deps_1)}, entry2={len(common_file_deps_2)}"
+            f"Dependency count differs: "
+            f"entry1={len(common_file_deps_1)} deps with {len(common_file_macro_key_1)} macros, "
+            f"entry2={len(common_file_deps_2)} deps with {len(common_file_macro_key_2)} macros\n"
+            f"entry1 deps={common_file_deps_1}\nentry2 deps={common_file_deps_2}"
         )
-
         assert has_hash_utility_1 == has_hash_utility_2, (
             f"hash_utility.hpp presence differs: entry1={has_hash_utility_1}, entry2={has_hash_utility_2}"
         )
-
         assert common_file_macro_key_1 == common_file_macro_key_2, (
-            f"Macro keys differ:\nentry1 ({len(common_file_macro_key_1)} macros)={common_file_macro_key_1}\nentry2 ({len(common_file_macro_key_2)} macros)={common_file_macro_key_2}"
+            f"Macro keys differ:\n"
+            f"entry1 ({len(common_file_macro_key_1)} macros)={common_file_macro_key_1}\n"
+            f"entry2 ({len(common_file_macro_key_2)} macros)={common_file_macro_key_2}"
         )
-
         # Verify that hash_utility.hpp IS found in both cases (it should be!)
         assert has_hash_utility_1, "hash_utility.hpp should be found via entry point 1"
         assert has_hash_utility_2, "hash_utility.hpp should be found via entry point 2"
-
-        print("\n=== SUCCESS ===")
-        print("Both entry points produced identical results - parse order did not affect macro state!")
-        print("This is the expected behavior and confirms that the test framework is correct.")
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-s"])
