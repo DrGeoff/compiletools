@@ -813,16 +813,12 @@ class TestBazelExecute:
         assert "trustStore=" in content, f"Expected trustStore in {content!r}"
         assert "trustStorePassword=" in content, f"Expected trustStorePassword in {content!r}"
 
-    @patch("os.path.exists", return_value=False)
-    def test_bazelrc_omits_tls_workaround_when_no_cacerts(self, mock_exists):
-        backend = self._make_backend()
-        content = backend._build_bazelrc_content()
+    def test_bazelrc_omits_tls_workaround_when_no_cacerts(self):
+        content = _bazelrc_content(self._make_backend())
         assert "trustStore" not in content, f"Unexpected trustStore in {content!r}"
 
-    @patch("os.path.exists", return_value=False)
-    def test_bazelrc_includes_spawn_strategy_and_action_env(self, mock_exists):
-        backend = self._make_backend()
-        content = backend._build_bazelrc_content()
+    def test_bazelrc_includes_spawn_strategy_and_action_env(self):
+        content = _bazelrc_content(self._make_backend())
         assert "build --spawn_strategy=local" in content
         assert "build --action_env=PATH" in content
 
@@ -830,15 +826,11 @@ class TestBazelExecute:
         """args.CC / args.CXX must be passed to bazel so its autoconfig
         toolchain doesn't fall back to /bin/gcc (which on RHEL 8 is gcc 8
         and rejects -std=c++20)."""
-        args = MagicMock()
-        args.LDFLAGS = ""  # explicit: prod always provides a str
-        args.CC = "/opt/gcc-15/bin/gcc"
-        args.CXX = "/opt/gcc-15/bin/g++"
-        args.parallel = 4
-        backend = BazelBackend(args=args, hunter=MagicMock())
+        backend = _make_bazelrc_backend(parallel=4)
+        backend.args.CC = "/opt/gcc-15/bin/gcc"
+        backend.args.CXX = "/opt/gcc-15/bin/g++"
 
-        with patch("os.path.exists", return_value=False):
-            content = backend._build_bazelrc_content()
+        content = _bazelrc_content(backend)
 
         assert "build --repo_env=CC=/opt/gcc-15/bin/gcc" in content, content
         assert "build --repo_env=CXX=/opt/gcc-15/bin/g++" in content, content
@@ -851,9 +843,7 @@ class TestBazelExecute:
         libstdc++.so.6 with newer GLIBCXX_ versions; without forwarding
         LD_LIBRARY_PATH the loader falls back to /lib64 and the binary
         fails with `version 'GLIBCXX_3.4.NN' not found`."""
-        backend = self._make_backend()
-        with patch("os.path.exists", return_value=False):
-            content = backend._build_bazelrc_content()
+        content = _bazelrc_content(self._make_backend())
         assert "build --test_env=LD_LIBRARY_PATH" in content, content
 
     def test_execute_passes_minimal_cli_to_run_bazel(self):
