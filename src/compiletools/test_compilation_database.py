@@ -1505,6 +1505,26 @@ class TestCompilationDatabaseModuleFlags:
     so clangd / clang-tidy can resolve `import M;` / `import <h>;` lookups.
     Without them, IDEs report module imports as undefined."""
 
+    @staticmethod
+    def _make_creator(*, cxx="g++", module_exports=(), module_implements=(),
+                      module_imports=(), module_header_imports=()):
+        """Build a CompilationDatabaseCreator with hunter stubbed to return a
+        synthetic FileAnalysisResult shaped only enough for ``_module_kind_flags``."""
+        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
+            compiletools.compilation_database.CompilationDatabaseCreator
+        )
+        creator.args = SimpleNamespace(CXX=cxx)
+        creator.hunter = MagicMock()
+        creator.hunter._file_analysis_result = MagicMock(
+            return_value=SimpleNamespace(
+                module_exports=module_exports,
+                module_implements=module_implements,
+                module_imports=module_imports,
+                module_header_imports=module_header_imports,
+            )
+        )
+        return creator
+
     def test_gcc_module_importer_gets_fmodules_ts(self):
         """A TU with `import math;` compiled under gcc must carry -fmodules-ts
         in its compile_commands.json entry; without it clangd / clang-tidy
@@ -1514,21 +1534,7 @@ class TestCompilationDatabaseModuleFlags:
         Avoiding the end-to-end path is deliberate: the CDB-on-disk variant
         only worked when get_functional_cxx_compiler() returned a g++ that
         accepted -std=c++20, which is environment-dependent."""
-
-        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
-            compiletools.compilation_database.CompilationDatabaseCreator
-        )
-        creator.args = SimpleNamespace(CXX="g++")
-        creator.hunter = MagicMock()
-        creator.hunter._file_analysis_result = MagicMock(
-            return_value=SimpleNamespace(
-                module_exports=(),
-                module_implements=(),
-                module_imports=("math",),
-                module_header_imports=(),
-            )
-        )
-
+        creator = self._make_creator(cxx="g++", module_imports=("math",))
         flags = creator._module_kind_flags("/src/main.cpp")
         assert "-fmodules-ts" in flags, f"gcc TU with import math; needs -fmodules-ts, got {flags!r}"
 
@@ -1538,42 +1544,14 @@ class TestCompilationDatabaseModuleFlags:
         as an unknown header unit. Unit-level test (no compiler required):
         constructs a CompilationDatabaseCreator and stubs the file-analysis
         result for a clang CXX."""
-
-        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
-            compiletools.compilation_database.CompilationDatabaseCreator
-        )
-        creator.args = SimpleNamespace(CXX="clang++")
-        creator.hunter = MagicMock()
-        creator.hunter._file_analysis_result = MagicMock(
-            return_value=SimpleNamespace(
-                module_exports=(),
-                module_implements=(),
-                module_imports=(),
-                module_header_imports=("<vector>",),
-            )
-        )
-
+        creator = self._make_creator(cxx="clang++", module_header_imports=("<vector>",))
         flags = creator._module_kind_flags("/src/main.cpp")
         assert "-fmodules" in flags, f"clang TU with import <vector>; needs -fmodules, got {flags!r}"
 
     def test_clang_import_std_gets_stdlib_libcxx(self):
         """`import std;` under clang requires -stdlib=libc++; the system std
         module is libc++-shipped today."""
-
-        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
-            compiletools.compilation_database.CompilationDatabaseCreator
-        )
-        creator.args = SimpleNamespace(CXX="clang++")
-        creator.hunter = MagicMock()
-        creator.hunter._file_analysis_result = MagicMock(
-            return_value=SimpleNamespace(
-                module_exports=(),
-                module_implements=(),
-                module_imports=("std",),
-                module_header_imports=(),
-            )
-        )
-
+        creator = self._make_creator(cxx="clang++", module_imports=("std",))
         flags = creator._module_kind_flags("/src/main.cpp")
         assert "-stdlib=libc++" in flags, f"clang TU with import std; needs -stdlib=libc++, got {flags!r}"
 
@@ -1608,21 +1586,7 @@ class TestCompilationDatabaseModuleFlags:
         Complements test_non_module_tu_unchanged (end-to-end) with a unit-level
         assertion that the no-activity short-circuit in _module_kind_flags
         fires regardless of compiler kind."""
-
-        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
-            compiletools.compilation_database.CompilationDatabaseCreator
-        )
-        creator.args = SimpleNamespace(CXX="g++")
-        creator.hunter = MagicMock()
-        creator.hunter._file_analysis_result = MagicMock(
-            return_value=SimpleNamespace(
-                module_exports=(),
-                module_implements=(),
-                module_imports=(),
-                module_header_imports=(),
-            )
-        )
-
+        creator = self._make_creator(cxx="g++")
         assert creator._module_kind_flags("/src/main.cpp") == []
 
     def test_unknown_compiler_kind_returns_empty(self):
@@ -1630,21 +1594,7 @@ class TestCompilationDatabaseModuleFlags:
         (e.g. icpx, msvc) must yield no module flags rather than emit the
         wrong compiler's syntax. compiler_kind returns 'unknown' for such
         binaries; the final return [] is the safety net."""
-
-        creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
-            compiletools.compilation_database.CompilationDatabaseCreator
-        )
-        creator.args = SimpleNamespace(CXX="icpx")
-        creator.hunter = MagicMock()
-        creator.hunter._file_analysis_result = MagicMock(
-            return_value=SimpleNamespace(
-                module_exports=(),
-                module_implements=(),
-                module_imports=("math",),
-                module_header_imports=(),
-            )
-        )
-
+        creator = self._make_creator(cxx="icpx", module_imports=("math",))
         assert creator._module_kind_flags("/src/main.cpp") == []
 
     def test_missing_file_analysis_result_returns_empty(self):
