@@ -6,10 +6,6 @@ properly isolates macro state between different file analyses. Uses a simple
 ENABLE_FEATURE macro to test conditional header inclusion.
 """
 
-import os
-import shutil
-import tempfile
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -19,40 +15,35 @@ from compiletools.build_context import BuildContext
 
 
 @pytest.fixture
-def temp_sample_dir():
-    """Create a temporary directory with test files for macro state testing"""
-    temp_dir = Path(tempfile.mkdtemp())
-
+def temp_sample_dir(tmp_path):
+    """Populate a pytest tmp_path with test files for macro state testing."""
     # File that defines a macro
-    (temp_dir / "with_macro.cpp").write_text("""#define ENABLE_FEATURE
+    (tmp_path / "with_macro.cpp").write_text("""#define ENABLE_FEATURE
 #include "feature.h"
 int main() { return 0; }
 """)
 
     # File that does NOT define the macro
-    (temp_dir / "without_macro.cpp").write_text("""// ENABLE_FEATURE not defined
+    (tmp_path / "without_macro.cpp").write_text("""// ENABLE_FEATURE not defined
 #include "feature.h"
 int main() { return 0; }
 """)
 
     # Header with conditional inclusion
-    (temp_dir / "feature.h").write_text("""#ifdef ENABLE_FEATURE
+    (tmp_path / "feature.h").write_text("""#ifdef ENABLE_FEATURE
 #include "enabled_feature.h"
 #endif
 """)
 
     # Header that should only be included when macro is defined
-    (temp_dir / "enabled_feature.h").write_text("""// Only included when ENABLE_FEATURE is defined
+    (tmp_path / "enabled_feature.h").write_text("""// Only included when ENABLE_FEATURE is defined
 void feature_function();
 """)
 
-    yield temp_dir
-
-    # Cleanup
-    shutil.rmtree(temp_dir)
+    return tmp_path
 
 
-def test_macro_state_isolation_with_temp_files(temp_sample_dir):
+def test_macro_state_isolation_with_temp_files(temp_sample_dir, monkeypatch):
     """
     Test macro state isolation using temporary isolated test files.
 
@@ -62,8 +53,6 @@ def test_macro_state_isolation_with_temp_files(temp_sample_dir):
     This test should FAIL when the bug is present (macro state pollution)
     and PASS when the bug is fixed (proper macro state isolation).
     """
-
-    # Setup DirectHeaderDeps
     args = SimpleNamespace()
     args.verbose = 0
     args.headerdeps = "direct"
@@ -73,40 +62,27 @@ def test_macro_state_isolation_with_temp_files(temp_sample_dir):
     args.CXXFLAGS = ""
     args.CXX = "g++"
 
-    original_cwd = os.getcwd()
-    os.chdir(temp_sample_dir)
+    monkeypatch.chdir(temp_sample_dir)
 
-    try:
-        # Create single DirectHeaderDeps instance
-        # This is where macro state pollution occurs
-        ctx = BuildContext()
-        headerdeps = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
+    # Create single DirectHeaderDeps instance
+    # This is where macro state pollution occurs
+    ctx = BuildContext()
+    headerdeps = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
 
-        # First analysis: file WITH macro
-        # Should include enabled_feature.h
-        with_macro_deps = headerdeps.process("with_macro.cpp", frozenset())
-        has_feature_with_macro = any("enabled_feature.h" in dep for dep in with_macro_deps)
+    # First analysis: file WITH macro -- should include enabled_feature.h.
+    with_macro_deps = headerdeps.process("with_macro.cpp", frozenset())
+    has_feature_with_macro = any("enabled_feature.h" in dep for dep in with_macro_deps)
 
-        # Second analysis: file WITHOUT macro
-        # Should NOT include enabled_feature.h
-        # But macro state pollution might cause incorrect inclusion
-        without_macro_deps = headerdeps.process("without_macro.cpp", frozenset())
-        has_feature_without_macro = any("enabled_feature.h" in dep for dep in without_macro_deps)
+    # Second analysis: file WITHOUT macro -- should NOT include enabled_feature.h.
+    # Macro state pollution might cause incorrect inclusion.
+    without_macro_deps = headerdeps.process("without_macro.cpp", frozenset())
+    has_feature_without_macro = any("enabled_feature.h" in dep for dep in without_macro_deps)
 
-        # Debug output
-        print("\nDependency analysis results:")
-        print(f"  with_macro.cpp deps: {with_macro_deps}")
-        print(f"  without_macro.cpp deps: {without_macro_deps}")
-        print(f"  with_macro includes enabled_feature.h: {has_feature_with_macro}")
-        print(f"  without_macro includes enabled_feature.h: {has_feature_without_macro}")
-
-        # Assertions that expose the bug
-        assert has_feature_with_macro, "with_macro.cpp should include enabled_feature.h (defines ENABLE_FEATURE)"
-
-        assert not has_feature_without_macro, (
-            "without_macro.cpp should NOT include enabled_feature.h (no ENABLE_FEATURE defined). "
-            "If this fails, it indicates macro state pollution between analyses."
-        )
-
-    finally:
-        os.chdir(original_cwd)
+    assert has_feature_with_macro, (
+        f"with_macro.cpp should include enabled_feature.h (defines ENABLE_FEATURE); got deps={with_macro_deps}"
+    )
+    assert not has_feature_without_macro, (
+        "without_macro.cpp should NOT include enabled_feature.h (no ENABLE_FEATURE defined). "
+        "If this fails, it indicates macro state pollution between analyses. "
+        f"deps={without_macro_deps}"
+    )
