@@ -1,6 +1,7 @@
 import os
 
 import configargparse
+import pytest
 
 import compiletools.apptools
 import compiletools.headerdeps
@@ -13,6 +14,24 @@ import compiletools.wrappedos
 from compiletools.build_context import BuildContext
 
 
+@pytest.fixture(autouse=True)
+def _reset_parser_state():
+    """Wipe global configargparse parser cache around every test in this
+    module. Each class historically also constructed a throwaway
+    ArgumentParser in setup_method to re-seed the registry; preserved here
+    in the fixture for behavioural equivalence."""
+    uth.reset()
+    configargparse.ArgumentParser(
+        conflict_handler="resolve",
+        description="Configargparser in test code",
+        formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+        args_for_setting_config_path=["-c", "--config"],
+        ignore_unknown_config_file_keys=True,
+    )
+    yield
+    uth.reset()
+
+
 def callprocess(headerobj, filenames):
     result = set()
     for filename in filenames:
@@ -22,16 +41,6 @@ def callprocess(headerobj, filenames):
 
 
 class TestHunterModule:
-    def setup_method(self):
-        uth.reset()
-        configargparse.ArgumentParser(
-            conflict_handler="resolve",
-            description="Configargparser in test code",
-            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-
     def test_hunter_follows_source_files_from_header(self):
         with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
             argv = ["-c", temp_config, "--include", uth.ctdir()]
@@ -98,9 +107,6 @@ class TestHunterModule:
             assert set(result3) == set(result2)
             assert set(result4) == set(result2)
 
-    def teardown_method(self):
-        uth.reset()
-
 
 def _make_hunter(argv_extra=None, temp_config=None):
     """Helper to create a Hunter with standard setup."""
@@ -122,19 +128,6 @@ def _make_hunter(argv_extra=None, temp_config=None):
 
 class TestHunterClearCache:
     """Tests for cache clearing methods."""
-
-    def setup_method(self):
-        uth.reset()
-        configargparse.ArgumentParser(
-            conflict_handler="resolve",
-            description="Configargparser in test code",
-            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-
-    def teardown_method(self):
-        uth.reset()
 
     def test_clear_cache_static(self):
         """Test Hunter.clear_cache() clears module-level caches (lines 157-159)."""
@@ -165,19 +158,6 @@ class TestHunterClearCache:
 
 class TestHunterRequiredFiles:
     """Tests for required_files, required_source_files, header_dependencies."""
-
-    def setup_method(self):
-        uth.reset()
-        configargparse.ArgumentParser(
-            conflict_handler="resolve",
-            description="Configargparser in test code",
-            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-
-    def teardown_method(self):
-        uth.reset()
 
     def test_required_files_returns_all_deps(self):
         """Test required_files returns headers + sources (lines 135, 142, 150, 152)."""
@@ -248,19 +228,6 @@ class TestHunterRequiredFiles:
 
 class TestHunterHuntSource:
     """Tests for huntsource, getsources, gettestsources."""
-
-    def setup_method(self):
-        uth.reset()
-        configargparse.ArgumentParser(
-            conflict_handler="resolve",
-            description="Configargparser in test code",
-            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-
-    def teardown_method(self):
-        uth.reset()
 
     def test_huntsource_no_initial_sources(self):
         """Test huntsource with no initial sources (lines 253-257)."""
@@ -370,19 +337,6 @@ class TestHunterHuntSource:
 
 class TestHunterVerbose:
     """Tests for verbose output paths."""
-
-    def setup_method(self):
-        uth.reset()
-        configargparse.ArgumentParser(
-            conflict_handler="resolve",
-            description="Configargparser in test code",
-            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-
-    def teardown_method(self):
-        uth.reset()
 
     def test_required_files_verbose(self, capsys):
         """Test verbose output in required_files and _required_files_impl (lines 106, 112, 123, 135, 150)."""
