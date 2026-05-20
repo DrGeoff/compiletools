@@ -19,6 +19,25 @@ from compiletools.build_context import BuildContext
 # the tests due to memoized results.
 
 
+def _make_mock_args(config_path):
+    """Build a minimal args namespace for magicflags + headerdeps construction."""
+    class MockArgs:
+        def __init__(self):
+            self.config_file = config_path
+            self.variant = "debug"
+            self.verbose = 0
+            self.quiet = True
+            self.magic = "direct"
+            self.headerdeps = "direct"
+            self.CPPFLAGS = ""
+            self.CFLAGS = ""
+            self.CXXFLAGS = ""
+            self.max_file_read_size = 0
+            self.CXX = compiletools.apptools.get_functional_cxx_compiler() or "g++"
+
+    return MockArgs()
+
+
 class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
     @uth.requires_functional_compiler
     @uth.requires_pkg_config("zlib")
@@ -78,22 +97,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
             shutil.copytree(self._get_sample_path("magicpkgconfig_fake"), tmpmagicpkgconfig)
 
             with uth.DirectoryContext(tmpmagicpkgconfig):
-                # Create a minimal args object for testing
-                # Use a simpler approach - create args from scratch like other tests
-                class MockArgs:
-                    def __init__(self):
-                        self.config_file = config_path
-                        self.variant = "debug"
-                        self.verbose = 0
-                        self.quiet = True
-                        self.magic = "direct"
-                        self.headerdeps = "direct"
-                        self.CPPFLAGS = ""
-                        self.CFLAGS = ""
-                        self.CXXFLAGS = ""
-                        self.CXX = compiletools.apptools.get_functional_cxx_compiler() or "g++"
-
-                args = MockArgs()
+                args = _make_mock_args(config_path)
                 uth.finalize_flag_state(args)
 
                 # Create magicflags parser
@@ -148,22 +152,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
             tmpmagicpkgconfig = os.path.join(tmpdir, "magicpkgconfig_fake")
             shutil.copytree(self._get_sample_path("magicpkgconfig_fake"), tmpmagicpkgconfig)
 
-            # Create minimal args object
-            class MockArgs:
-                def __init__(self):
-                    self.config_file = config_path
-                    self.variant = "debug"
-                    self.verbose = 0
-                    self.quiet = True
-                    self.magic = "direct"
-                    self.headerdeps = "direct"
-                    self.CPPFLAGS = ""
-                    self.CFLAGS = ""
-                    self.CXXFLAGS = ""
-                    self.max_file_read_size = 0
-                    self.CXX = compiletools.apptools.get_functional_cxx_compiler() or "g++"
-
-            args = MockArgs()
+            args = _make_mock_args(config_path)
             uth.finalize_flag_state(args)
 
             # Create magicflags parser
@@ -219,7 +208,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
         Uses the existing pkgconfig_env fixture (which sets PKG_CONFIG_PATH to
         examples-features/pkgs/) and layers a project-level override on top.
         """
-        with uth.CompileToolsTestContext() as (tmpdir, _config_path):
+        with uth.CompileToolsTestContext() as (tmpdir, _):
             # Create the project override directory
             project_pkgconfig = os.path.join(tmpdir, "ct.conf.d", "pkgconfig")
             os.makedirs(project_pkgconfig)
@@ -385,7 +374,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
         contains conditional.pc.  We create a CLI-prepended directory with a
         higher-priority conditional.pc and verify its flags win.
         """
-        with uth.CompileToolsTestContext() as (tmpdir, _config_path):
+        with uth.CompileToolsTestContext() as (tmpdir, _):
             # Create a CLI-prepended directory with a conditional.pc override
             cli_pkgconfig = os.path.join(tmpdir, "cli-pkgconfig")
             os.makedirs(cli_pkgconfig)
@@ -429,7 +418,7 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
         Creates both a project-level override (ct.conf.d/pkgconfig/) and a
         CLI-prepended override, verifying the CLI override wins.
         """
-        with uth.CompileToolsTestContext() as (tmpdir, _config_path):
+        with uth.CompileToolsTestContext() as (tmpdir, _):
             # Create the project override directory with a .pc file
             project_pkgconfig = os.path.join(tmpdir, "ct.conf.d", "pkgconfig")
             os.makedirs(project_pkgconfig)
