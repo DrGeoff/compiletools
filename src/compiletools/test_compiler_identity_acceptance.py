@@ -68,6 +68,18 @@ def two_workspaces(tmp_path):
     return (ws_a, bin_a), (ws_b, bin_b)
 
 
+def _hash_both(two_workspaces, fn):
+    """Run ``fn(prefix, binary)`` for both workspaces with
+    ``compiler_identity.cache_clear()`` between them, defeating lru_cache
+    reuse (mirrors separate ct-cake invocations)."""
+    (ws_a, bin_a), (ws_b, bin_b) = two_workspaces
+    compiler_identity.cache_clear()
+    h_a = fn(ws_a, bin_a)
+    compiler_identity.cache_clear()
+    h_b = fn(ws_b, bin_b)
+    return h_a, h_b
+
+
 # ---------------------------------------------------------------------------
 # _pch_command_hash — both compiler_identity AND raw cxx_command field
 # ---------------------------------------------------------------------------
@@ -78,8 +90,6 @@ def test_pch_hash_stable_with_workspace_relative_compiler(two_workspaces):
     cache key. Reproducer: report Part 1 (``coverage-cc-wrapper.sh``
     inside the workspace, two CI checkouts under different attempts)."""
     from compiletools.build_backend import _pch_command_hash
-
-    (ws_a, bin_a), (ws_b, bin_b) = two_workspaces
 
     def _hash(prefix, binary):
         args = SimpleNamespace(CXX=str(binary))
@@ -93,11 +103,7 @@ def test_pch_hash_stable_with_workspace_relative_compiler(two_workspaces):
             anchor_root=str(prefix),
         )
 
-    compiler_identity.cache_clear()
-    h_a = _hash(ws_a, bin_a)
-    compiler_identity.cache_clear()
-    h_b = _hash(ws_b, bin_b)
-
+    h_a, h_b = _hash_both(two_workspaces, _hash)
     assert h_a == h_b, (
         f"PCH cache hash leaks workspace path through compiler_identity / cxx_command:\n  WS-A: {h_a}\n  WS-B: {h_b}"
     )
@@ -110,8 +116,6 @@ def test_pch_hash_stable_with_workspace_relative_compiler(two_workspaces):
 
 def test_pcm_hash_stable_with_workspace_relative_compiler(two_workspaces):
     from compiletools.build_backend import _pcm_command_hash
-
-    (ws_a, bin_a), (ws_b, bin_b) = two_workspaces
 
     def _hash(prefix, binary):
         args = SimpleNamespace(CXX=str(binary))
@@ -127,11 +131,7 @@ def test_pcm_hash_stable_with_workspace_relative_compiler(two_workspaces):
             anchor_root=str(prefix),
         )
 
-    compiler_identity.cache_clear()
-    h_a = _hash(ws_a, bin_a)
-    compiler_identity.cache_clear()
-    h_b = _hash(ws_b, bin_b)
-
+    h_a, h_b = _hash_both(two_workspaces, _hash)
     assert h_a == h_b, (
         f"PCM cache hash leaks workspace path through compiler_identity / cxx_command:\n  WS-A: {h_a}\n  WS-B: {h_b}"
     )
@@ -148,8 +148,6 @@ def test_macro_state_hash_stable_with_workspace_relative_compiler_path(two_works
     A workspace-relative compiler path makes the per-TU object cache
     cold across workspaces."""
     from compiletools.preprocessing_cache import MacroState
-
-    (ws_a, bin_a), (ws_b, bin_b) = two_workspaces
 
     def _hash(prefix, binary):
         identity = compiler_identity(str(binary), anchor_root=str(prefix))
@@ -169,11 +167,7 @@ def test_macro_state_hash_stable_with_workspace_relative_compiler_path(two_works
         )
         return state.get_hash(include_core=True)
 
-    compiler_identity.cache_clear()
-    h_a = _hash(ws_a, bin_a)
-    compiler_identity.cache_clear()
-    h_b = _hash(ws_b, bin_b)
-
+    h_a, h_b = _hash_both(two_workspaces, _hash)
     assert h_a == h_b, (
         f"Per-TU object cache hash leaks workspace path through MacroState.compiler_path:\n  WS-A: {h_a}\n  WS-B: {h_b}"
     )
@@ -200,8 +194,6 @@ def test_link_key_stable_with_workspace_relative_linker(two_workspaces):
     the resulting sha256 is workspace-portable."""
     from compiletools.apptools import canonicalize_paths_for_cache_key
 
-    (ws_a, bin_a), (ws_b, bin_b) = two_workspaces
-
     def _key(prefix, binary):
         anchor = str(prefix)
         ld_argv = [str(binary), "-pthread"]
@@ -213,11 +205,7 @@ def test_link_key_stable_with_workspace_relative_linker(two_workspaces):
         }
         return _artefact_key(payload)
 
-    compiler_identity.cache_clear()
-    k_a = _key(ws_a, bin_a)
-    compiler_identity.cache_clear()
-    k_b = _key(ws_b, bin_b)
-
+    k_a, k_b = _hash_both(two_workspaces, _key)
     assert k_a == k_b, (
         f"Link cache key leaks workspace path through linker_identity / ld_argv:\n  WS-A: {k_a}\n  WS-B: {k_b}"
     )
@@ -227,8 +215,6 @@ def test_ar_key_stable_with_workspace_relative_archiver(two_workspaces):
     """Static-library key payload (build_backend.py:2519) must
     canonicalise both ``ar_identity`` and ``ar_argv_prefix``."""
     from compiletools.apptools import canonicalize_paths_for_cache_key
-
-    (ws_a, bin_a), (ws_b, bin_b) = two_workspaces
 
     def _key(prefix, binary):
         anchor = str(prefix)
@@ -241,11 +227,7 @@ def test_ar_key_stable_with_workspace_relative_archiver(two_workspaces):
         }
         return _artefact_key(payload)
 
-    compiler_identity.cache_clear()
-    k_a = _key(ws_a, bin_a)
-    compiler_identity.cache_clear()
-    k_b = _key(ws_b, bin_b)
-
+    k_a, k_b = _hash_both(two_workspaces, _key)
     assert k_a == k_b, (
         f"ar cache key leaks workspace path through ar_identity / ar_argv_prefix:\n  WS-A: {k_a}\n  WS-B: {k_b}"
     )
