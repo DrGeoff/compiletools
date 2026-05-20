@@ -154,6 +154,25 @@ def _sbatch_calls(mock_check_output):
     return [c for c in mock_check_output.call_args_list if c[0][0][0] == "sbatch"]
 
 
+def _run_sbatch_build(graph, *, return_value="42\n", side_effect=None, **ctx_kwargs):
+    """Build `graph` under a standard sbatch + _wait_for_arrays mock.
+
+    Enters SlurmBackendTestContext(graph, **ctx_kwargs), patches
+    subprocess.check_output (with `return_value` or `side_effect`) and
+    backend._wait_for_arrays, calls backend.execute("build"), and returns
+    the mock_sbatch object for post-hoc assertion. The mock's recorded
+    call_args remain valid after the patch context exits.
+    """
+    if side_effect is not None:
+        check_patch = patch("subprocess.check_output", side_effect=side_effect)
+    else:
+        check_patch = patch("subprocess.check_output", return_value=return_value)
+    with SlurmBackendTestContext(graph, **ctx_kwargs) as (backend, _tmpdir):
+        with check_patch as mock_sbatch, patch.object(backend, "_wait_for_arrays", return_value=[]):
+            backend.execute("build")
+            return mock_sbatch
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
@@ -203,12 +222,7 @@ class TestSbatchSubmission:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [rule.output]))
 
-        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
-            with (
-                patch("subprocess.check_output", return_value="12345\n") as mock_sbatch,
-                patch.object(backend, "_wait_for_arrays", return_value=[]),
-            ):
-                backend.execute("build")
+        mock_sbatch = _run_sbatch_build(graph, return_value="12345\n")
 
         # One sbatch call (the array submission)
         assert len(_sbatch_calls(mock_sbatch)) == 1
@@ -224,22 +238,17 @@ class TestSbatchSubmission:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [rule.output]))
 
-        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
-            with (
-                patch("subprocess.check_output", return_value="42\n") as mock_sbatch,
-                patch.object(backend, "_wait_for_arrays", return_value=[]),
-            ):
-                backend.execute("build")
+        mock_sbatch = _run_sbatch_build(graph)
 
-            cmd = mock_sbatch.call_args[0][0]
-            wrap_idx = cmd.index("--wrap")
-            wrap_value = cmd[wrap_idx + 1]
-            assert "sed" in wrap_value
-            assert "SLURM_ARRAY_TASK_ID" in wrap_value
-            # Wrap must reference the per-invocation cmds file.
+        cmd = mock_sbatch.call_args[0][0]
+        wrap_idx = cmd.index("--wrap")
+        wrap_value = cmd[wrap_idx + 1]
+        assert "sed" in wrap_value
+        assert "SLURM_ARRAY_TASK_ID" in wrap_value
+        # Wrap must reference the per-invocation cmds file.
 
-            m = re.search(r"\.ct-slurm-cmds-[\w\-.]+-0\.txt", wrap_value)
-            assert m, f"wrap missing cmds file pattern: {wrap_value}"
+        m = re.search(r"\.ct-slurm-cmds-[\w\-.]+-0\.txt", wrap_value)
+        assert m, f"wrap missing cmds file pattern: {wrap_value}"
 
     def test_partition_added_when_specified(self, tmp_path):
         graph = BuildGraph()
@@ -247,12 +256,7 @@ class TestSbatchSubmission:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [rule.output]))
 
-        with SlurmBackendTestContext(graph, slurm_partition="gpu") as (backend, _tmpdir):
-            with (
-                patch("subprocess.check_output", return_value="7\n") as mock_sbatch,
-                patch.object(backend, "_wait_for_arrays", return_value=[]),
-            ):
-                backend.execute("build")
+        mock_sbatch = _run_sbatch_build(graph, return_value="7\n", slurm_partition="gpu")
 
         cmd = mock_sbatch.call_args[0][0]
         assert "--partition" in cmd
@@ -264,12 +268,7 @@ class TestSbatchSubmission:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [rule.output]))
 
-        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
-            with (
-                patch("subprocess.check_output", return_value="7\n") as mock_sbatch,
-                patch.object(backend, "_wait_for_arrays", return_value=[]),
-            ):
-                backend.execute("build")
+        mock_sbatch = _run_sbatch_build(graph, return_value="7\n")
 
         cmd = mock_sbatch.call_args[0][0]
         assert "--partition" not in cmd
@@ -280,12 +279,7 @@ class TestSbatchSubmission:
         graph.add_rule(rule)
         graph.add_rule(make_phony_rule("build", [rule.output]))
 
-        with SlurmBackendTestContext(graph, slurm_account="myproject") as (backend, _tmpdir):
-            with (
-                patch("subprocess.check_output", return_value="9\n") as mock_sbatch,
-                patch.object(backend, "_wait_for_arrays", return_value=[]),
-            ):
-                backend.execute("build")
+        mock_sbatch = _run_sbatch_build(graph, return_value="9\n", slurm_account="myproject")
 
         cmd = mock_sbatch.call_args[0][0]
         assert "--account" in cmd
@@ -300,12 +294,7 @@ class TestSbatchSubmission:
         graph.add_rule(r2)
         graph.add_rule(make_phony_rule("build", [r1.output, r2.output]))
 
-        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
-            with (
-                patch("subprocess.check_output", return_value="55\n") as mock_sbatch,
-                patch.object(backend, "_wait_for_arrays", return_value=[]),
-            ):
-                backend.execute("build")
+        mock_sbatch = _run_sbatch_build(graph, return_value="55\n")
 
         # Both rules in one sbatch call with --array=0-1
         assert len(_sbatch_calls(mock_sbatch)) == 1
@@ -326,31 +315,28 @@ class TestSbatchSubmission:
             rules.append(r)
         graph.add_rule(make_phony_rule("build", [r.output for r in rules]))
 
-        sbatch_ids = iter(["10\n", "20\n", "30\n"])
+        mock_sbatch = _run_sbatch_build(
+            graph,
+            side_effect=iter(["10\n", "20\n", "30\n"]),
+            slurm_max_array=2,
+        )
 
-        with SlurmBackendTestContext(graph, slurm_max_array=2) as (backend, _tmpdir):
-            with (
-                patch("subprocess.check_output", side_effect=sbatch_ids) as mock_sbatch,
-                patch.object(backend, "_wait_for_arrays", return_value=[]),
-            ):
-                backend.execute("build")
+        # 5 rules / max_array=2 → ceil(5/2) = 3 sbatch calls
+        assert mock_sbatch.call_count == 3
 
-            # 5 rules / max_array=2 → ceil(5/2) = 3 sbatch calls
-            assert mock_sbatch.call_count == 3
+        # Each sbatch call's wrap script must reference a distinct cmds file
+        # (per-invocation prefix + per-chunk suffix prevents collisions).
+        wrap_files = []
+        for c in _sbatch_calls(mock_sbatch):
+            cmd = c[0][0]
+            wrap_idx = cmd.index("--wrap")
+            wrap = cmd[wrap_idx + 1]
+            # Extract the cmds-file path from the wrap script
 
-            # Each sbatch call's wrap script must reference a distinct cmds file
-            # (per-invocation prefix + per-chunk suffix prevents collisions).
-            wrap_files = []
-            for c in _sbatch_calls(mock_sbatch):
-                cmd = c[0][0]
-                wrap_idx = cmd.index("--wrap")
-                wrap = cmd[wrap_idx + 1]
-                # Extract the cmds-file path from the wrap script
-
-                m = re.search(r"\.ct-slurm-cmds-[\w\-.]+\.txt", wrap)
-                assert m
-                wrap_files.append(m.group(0))
-            assert len(set(wrap_files)) == 3, f"Expected 3 unique cmds filenames, got: {wrap_files}"
+            m = re.search(r"\.ct-slurm-cmds-[\w\-.]+\.txt", wrap)
+            assert m
+            wrap_files.append(m.group(0))
+        assert len(set(wrap_files)) == 3, f"Expected 3 unique cmds filenames, got: {wrap_files}"
 
 
 # ---------------------------------------------------------------------------
