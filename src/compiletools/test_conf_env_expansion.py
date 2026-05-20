@@ -191,3 +191,46 @@ def test_bare_relative_not_touched_by_env_expansion(tmp_path, monkeypatch):
 
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
     assert args.cas_objdir == "relative/subdir/x", args.cas_objdir
+
+
+def test_dollar_escape_protects_literal_dollar(tmp_path, monkeypatch):
+    """`$$HOME` in a conf value must produce literal `$HOME` in the
+    output — HOME is not expanded.
+
+    Sentinel-swap implementation: os.path.expandvars does NOT honor $$
+    natively, so the helper must protect $$ before calling expandvars
+    and restore after."""
+    monkeypatch.setenv("HOME", "/test/home")
+    conf_dir = tmp_path / "axis-confs"
+    conf_dir.mkdir()
+    conf = conf_dir / "extras.conf"
+    conf.write_text("append-CXXFLAGS = -DDOLLAR=$$HOME\n")
+
+    other_cwd = tmp_path / "other"
+    other_cwd.mkdir()
+
+    args = _parse_conf(str(conf), other_cwd, monkeypatch)
+    values = args.append_cxxflags if isinstance(args.append_cxxflags, list) else [args.append_cxxflags]
+    flat = " ".join(values)
+    assert "-DDOLLAR=$HOME" in flat, flat
+    assert "/test/home" not in flat, flat
+
+
+def test_dollar_escape_multiple_in_one_value(tmp_path, monkeypatch):
+    """Multiple `$$` tokens in one value must all restore to literal `$`,
+    independent of any real $VAR expansion in the same value."""
+    monkeypatch.setenv("HOME", "/test/home")
+    conf_dir = tmp_path / "axis-confs"
+    conf_dir.mkdir()
+    conf = conf_dir / "extras.conf"
+    conf.write_text("append-CXXFLAGS = -DA=$$ -DB=$$HOME -DC=$HOME\n")
+
+    other_cwd = tmp_path / "other"
+    other_cwd.mkdir()
+
+    args = _parse_conf(str(conf), other_cwd, monkeypatch)
+    values = args.append_cxxflags if isinstance(args.append_cxxflags, list) else [args.append_cxxflags]
+    flat = " ".join(values)
+    assert "-DA=$" in flat, flat
+    assert "-DB=$HOME" in flat, flat
+    assert "-DC=/test/home" in flat, flat
