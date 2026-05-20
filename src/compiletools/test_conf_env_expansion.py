@@ -16,6 +16,7 @@ the full contract. Mirrors the shape of test_conf_dir_placeholder.py.
 from __future__ import annotations
 
 import argparse
+import os
 
 import pytest
 
@@ -234,3 +235,98 @@ def test_dollar_escape_multiple_in_one_value(tmp_path, monkeypatch):
     assert "-DA=$" in flat, flat
     assert "-DB=$HOME" in flat, flat
     assert "-DC=/test/home" in flat, flat
+
+
+# ---------------------------------------------------------------------------
+# Provenance side channel: pre-expansion literal as 4th tuple element.
+# ---------------------------------------------------------------------------
+
+PROVENANCE_GETTER_NAME = "get_conf_file_provenance"
+
+
+def _provenance_for(args: argparse.Namespace) -> dict:
+    """Pull the provenance dict off args._parser; pytest.fail with a
+    pointed message if the implementation didn't expose it. Mirrors the
+    same helper in test_conf_dir_placeholder.py."""
+    parser = getattr(args, "_parser", None)
+    if parser is None:
+        pytest.fail("args._parser is None")
+    getter = getattr(parser, PROVENANCE_GETTER_NAME, None)
+    if getter is None:
+        pytest.fail(f"Parser missing {PROVENANCE_GETTER_NAME}()")
+    return getter()
+
+
+def test_provenance_tuple_includes_pre_expansion_literal(tmp_path, monkeypatch):
+    """Each provenance entry is a 4-tuple
+    (expanded_value, source_file, lineno, pre_expansion_literal). When
+    expansion happened, literal != expanded; when nothing was expanded,
+    literal == expanded. This lets -vv diagnostics show 'why did $HOME
+    resolve to /tmp on the CI host'."""
+    monkeypatch.setenv("HOME", "/test/home")
+    conf_dir = tmp_path / "axis-confs"
+    conf_dir.mkdir()
+    conf = conf_dir / "extras.conf"
+    conf.write_text("cas-objdir = $HOME/x\n")
+
+    other_cwd = tmp_path / "other"
+    other_cwd.mkdir()
+    args = _parse_conf(str(conf), other_cwd, monkeypatch)
+
+    prov = _provenance_for(args)
+    entries = prov.get("cas-objdir") or []
+    assert entries, f"no provenance for cas-objdir; keys: {sorted(prov.keys())!r}"
+    entry = entries[-1]
+    assert len(entry) == 4, f"expected 4-tuple, got {len(entry)}-tuple: {entry!r}"
+    expanded, source_file, lineno, literal = entry
+    assert expanded == "/test/home/x", expanded
+    assert literal == "$HOME/x", literal
+    assert os.path.realpath(source_file) == os.path.realpath(str(conf))
+    assert isinstance(lineno, int) and lineno >= 1
+
+
+def test_provenance_literal_equals_expanded_when_no_expansion(tmp_path, monkeypatch):
+    """When the conf value has no $ or ~ to expand, the 4th tuple
+    element equals the 1st — same string. Lets a consumer cheaply test
+    'did expansion happen here' via expanded != literal."""
+    conf_dir = tmp_path / "axis-confs"
+    conf_dir.mkdir()
+    conf = conf_dir / "extras.conf"
+    conf.write_text("cas-objdir = /absolute/no/expansion\n")
+
+    other_cwd = tmp_path / "other"
+    other_cwd.mkdir()
+    args = _parse_conf(str(conf), other_cwd, monkeypatch)
+
+    prov = _provenance_for(args)
+    entries = prov.get("cas-objdir") or []
+    assert entries, f"no provenance for cas-objdir; keys: {sorted(prov.keys())!r}"
+    entry = entries[-1]
+    assert len(entry) == 4, entry
+    expanded, _source, _lineno, literal = entry
+    assert expanded == "/absolute/no/expansion", expanded
+    assert literal == expanded, (literal, expanded)
+
+
+def test_provenance_literal_for_list_value(tmp_path, monkeypatch):
+    """For an accumulated list (append-CXXFLAGS), each element has its
+    own 4-tuple with its own pre-expansion literal."""
+    monkeypatch.setenv("HOME", "/test/home")
+    conf_dir = tmp_path / "axis-confs"
+    conf_dir.mkdir()
+    conf = conf_dir / "extras.conf"
+    conf.write_text(
+        "append-CXXFLAGS = -I$HOME/a\n"
+        "append-CXXFLAGS = -I/bare/b\n"
+    )
+
+    other_cwd = tmp_path / "other"
+    other_cwd.mkdir()
+    args = _parse_conf(str(conf), other_cwd, monkeypatch)
+
+    prov = _provenance_for(args)
+    entries = prov.get("append-CXXFLAGS") or []
+    assert len(entries) >= 2, entries
+    expanded_to_literal = {str(e[0]): str(e[3]) for e in entries if len(e) == 4}
+    assert expanded_to_literal.get("-I/test/home/a") == "-I$HOME/a", expanded_to_literal
+    assert expanded_to_literal.get("-I/bare/b") == "-I/bare/b", expanded_to_literal
