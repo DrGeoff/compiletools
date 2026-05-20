@@ -56,6 +56,18 @@ class TestNinjaGenerate:
         defaults.update(overrides)
         return SimpleNamespace(**defaults)
 
+    def _generate(self, graph, args=None):
+        """Run NinjaBackend.generate on *graph* with a mocked hunter; return content."""
+        if args is None:
+            args = self._make_args()
+        hunter = MagicMock()
+        hunter.huntsource = MagicMock()
+        hunter.getsources = MagicMock(return_value=[])
+        backend = NinjaBackend(args=args, hunter=hunter)
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        return buf.getvalue()
+
     def test_generate_writes_ninja_syntax(self):
         graph = BuildGraph()
         graph.add_rule(
@@ -84,15 +96,7 @@ class TestNinjaGenerate:
             )
         )
 
-        args = self._make_args()
-        hunter = MagicMock()
-        hunter.huntsource = MagicMock()
-        hunter.getsources = MagicMock(return_value=[])
-        backend = NinjaBackend(args=args, hunter=hunter)
-
-        buf = io.StringIO()
-        backend.generate(graph, output=buf)
-        content = buf.getvalue()
+        content = self._generate(graph)
 
         # Default policy is CAS-only (use_mtime=False): both compile and
         # link rules drop primary/implicit deps because their outputs
@@ -119,14 +123,7 @@ class TestNinjaGenerate:
             )
         )
 
-        args = self._make_args()
-        hunter = MagicMock()
-        hunter.huntsource = MagicMock()
-        backend = NinjaBackend(args=args, hunter=hunter)
-
-        buf = io.StringIO()
-        backend.generate(graph, output=buf)
-        content = buf.getvalue()
+        content = self._generate(graph)
 
         assert "'bin/dir with space/test_foo'" in content
 
@@ -143,14 +140,7 @@ class TestNinjaGenerate:
             )
         )
 
-        args = self._make_args()
-        hunter = MagicMock()
-        hunter.huntsource = MagicMock()
-        backend = NinjaBackend(args=args, hunter=hunter)
-
-        buf = io.StringIO()
-        backend.generate(graph, output=buf)
-        content = buf.getvalue()
+        content = self._generate(graph)
 
         assert "&& touch 'bin/dir with space/test_foo.result'" in content
 
@@ -172,14 +162,7 @@ class TestNinjaGenerate:
             )
         )
 
-        args = self._make_args()
-        hunter = MagicMock()
-        hunter.huntsource = MagicMock()
-        backend = NinjaBackend(args=args, hunter=hunter)
-
-        buf = io.StringIO()
-        backend.generate(graph, output=buf)
-        content = buf.getvalue()
+        content = self._generate(graph)
 
         assert "build bin/test_foo.result: test_cmd bin/test_foo" in content
         assert "cmd = bin/test_foo && touch bin/test_foo.result" in content
@@ -199,14 +182,7 @@ class TestNinjaGenerate:
                 rule_type="mkdir",
             )
         )
-        args = self._make_args()
-        hunter = MagicMock()
-        hunter.huntsource = MagicMock()
-        backend = NinjaBackend(args=args, hunter=hunter)
-
-        buf = io.StringIO()
-        backend.generate(graph, output=buf)
-        content = buf.getvalue()
+        content = self._generate(graph)
 
         # Find the mkdir_cmd rule definition block and ensure no restat=1
         # appears inside it (between "rule mkdir_cmd" and the next blank
@@ -235,14 +211,7 @@ class TestNinjaGenerate:
                 rule_type="compile",
             )
         )
-        args = self._make_args()
-        hunter = MagicMock()
-        hunter.huntsource = MagicMock()
-        backend = NinjaBackend(args=args, hunter=hunter)
-
-        buf = io.StringIO()
-        backend.generate(graph, output=buf)
-        content = buf.getvalue()
+        content = self._generate(graph)
 
         # Within the compile_cmd rule block, restat=1 must appear.
         lines = content.splitlines()
@@ -273,15 +242,7 @@ class TestNinjaGenerate:
             )
         )
 
-        args = self._make_args()
-        hunter = MagicMock()
-        hunter.huntsource = MagicMock()
-        hunter.getsources = MagicMock(return_value=[])
-        backend = NinjaBackend(args=args, hunter=hunter)
-
-        buf = io.StringIO()
-        backend.generate(graph, output=buf)
-        content = buf.getvalue()
+        content = self._generate(graph)
 
         # Should define a Ninja rule with command variable
         assert "rule compile_cmd" in content
