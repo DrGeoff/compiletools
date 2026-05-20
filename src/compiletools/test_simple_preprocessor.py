@@ -4,12 +4,84 @@ import sys
 from textwrap import dedent
 from unittest.mock import patch
 
+import pytest
+import stringzilla as sz
+
 # Add the parent directory to sys.path so we can import ct modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+from compiletools.build_context import BuildContext
 from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
-from compiletools.preprocessing_cache import MacroState
+from compiletools.preprocessing_cache import MacroState, get_or_compute_preprocessing
 from compiletools.simple_preprocessor import SimplePreprocessor
+
+
+def _make_file_analysis_result(text):
+    """Build a FileAnalysisResult from raw source text (test helper)."""
+    lines = text.split("\n")
+
+    line_byte_offsets = []
+    offset = 0
+    for line in lines:
+        line_byte_offsets.append(offset)
+        offset += len(line.encode("utf-8")) + 1  # +1 for \n
+
+    directives = []
+    directive_by_line = {}
+    directive_positions = {}
+
+    for line_num, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            match = re.match(r"^\s*#\s*([a-zA-Z_]+)(?:\s+(.*))?", stripped)
+            if match:
+                directive_type = match.group(1)
+                rest = match.group(2) or ""
+
+                condition = None
+                macro_name = None
+                macro_value = None
+
+                if directive_type in ["if", "elif"]:
+                    condition = sz.Str(rest.strip())
+                elif directive_type in ["ifdef", "ifndef"]:
+                    macro_name = sz.Str(rest.strip())
+                elif directive_type == "define":
+                    parts = rest.split(None, 1)
+                    macro_name = sz.Str(parts[0]) if parts else sz.Str("")
+                    macro_value = sz.Str(parts[1]) if len(parts) > 1 else sz.Str("1")
+                    if "(" in str(macro_name):
+                        macro_name = sz.Str(str(macro_name).split("(")[0])
+                elif directive_type == "undef":
+                    macro_name = sz.Str(rest.strip())
+
+                directive = PreprocessorDirective(
+                    line_num=line_num,
+                    byte_pos=line_byte_offsets[line_num],
+                    directive_type=directive_type,
+                    continuation_lines=0,
+                    condition=condition,
+                    macro_name=macro_name,
+                    macro_value=macro_value,
+                )
+                directives.append(directive)
+                directive_by_line[line_num] = directive
+                directive_positions.setdefault(directive_type, []).append(line_byte_offsets[line_num])
+
+    return FileAnalysisResult(
+        line_count=len(lines),
+        line_byte_offsets=line_byte_offsets,
+        include_positions=[],
+        magic_positions=[],
+        directive_positions=directive_positions,
+        directives=directives,
+        directive_by_line=directive_by_line,
+        bytes_analyzed=len(text.encode("utf-8")),
+        was_truncated=False,
+        includes=[],
+        defines=[],
+        magic_flags=[],
+    )
 
 
 class TestSimplePreprocessor:
@@ -17,10 +89,6 @@ class TestSimplePreprocessor:
 
     def setup_method(self):
         """Set up test fixtures before each test method."""
-        import stringzilla as sz
-
-        from compiletools.build_context import BuildContext
-
         self.ctx = BuildContext()
 
         # Mock get_filepath_by_hash since tests don't have real files in registry
@@ -40,96 +108,8 @@ class TestSimplePreprocessor:
         """Clean up after each test method."""
         self.patcher.stop()
 
-    @staticmethod
-    def _create_file_analysis_result(text):
-        """Helper to create FileAnalysisResult for testing"""
-        lines = text.split("\n")
-
-        # Create line_byte_offsets
-        line_byte_offsets = []
-        offset = 0
-        for line in lines:
-            line_byte_offsets.append(offset)
-            offset += len(line.encode("utf-8")) + 1  # +1 for \n
-
-        # Parse preprocessor directives
-        directives = []
-        directive_by_line = {}
-        directive_positions = {}
-
-        for line_num, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.startswith("#"):
-                # Parse directive
-                match = re.match(r"^\s*#\s*([a-zA-Z_]+)(?:\s+(.*))?", stripped)
-                if match:
-                    directive_type = match.group(1)
-                    rest = match.group(2) or ""
-
-                    # Determine directive-specific fields
-                    condition = None
-                    macro_name = None
-                    macro_value = None
-
-                    if directive_type in ["if", "elif"]:
-                        import stringzilla as sz
-
-                        condition = sz.Str(rest.strip())
-                    elif directive_type in ["ifdef", "ifndef"]:
-                        import stringzilla as sz
-
-                        macro_name = sz.Str(rest.strip())
-                    elif directive_type == "define":
-                        import stringzilla as sz
-
-                        parts = rest.split(None, 1)
-                        macro_name = sz.Str(parts[0]) if parts else sz.Str("")
-                        macro_value = sz.Str(parts[1]) if len(parts) > 1 else sz.Str("1")
-                        # Handle function-like macros
-                        if "(" in str(macro_name):
-                            macro_name = sz.Str(str(macro_name).split("(")[0])
-                    elif directive_type == "undef":
-                        import stringzilla as sz
-
-                        macro_name = sz.Str(rest.strip())
-
-                    directive = PreprocessorDirective(
-                        line_num=line_num,
-                        byte_pos=line_byte_offsets[line_num],
-                        directive_type=directive_type,
-                        continuation_lines=0,
-                        condition=condition,
-                        macro_name=macro_name,
-                        macro_value=macro_value,
-                    )
-
-                    directives.append(directive)
-                    directive_by_line[line_num] = directive
-
-                    # Track positions by type for compatibility
-                    if directive_type not in directive_positions:
-                        directive_positions[directive_type] = []
-                    directive_positions[directive_type].append(line_byte_offsets[line_num])
-
-        return FileAnalysisResult(
-            line_count=len(lines),
-            line_byte_offsets=line_byte_offsets,
-            include_positions=[],
-            magic_positions=[],
-            directive_positions=directive_positions,
-            directives=directives,
-            directive_by_line=directive_by_line,
-            bytes_analyzed=len(text.encode("utf-8")),
-            was_truncated=False,
-            includes=[],
-            defines=[],
-            magic_flags=[],
-        )
-
     def test_expression_evaluation_basic_sz(self):
         """Test basic expression evaluation with StringZilla"""
-        import stringzilla as sz
-
         # Test simple numeric expressions
         assert self.processor._evaluate_expression_sz(sz.Str("1")) == 1
         assert self.processor._evaluate_expression_sz(sz.Str("0")) == 0
@@ -137,8 +117,6 @@ class TestSimplePreprocessor:
 
     def test_expression_evaluation_comparisons_sz(self):
         """Test comparison operators with StringZilla"""
-        import stringzilla as sz
-
         # Test == operator
         assert self.processor._evaluate_expression_sz(sz.Str("1 == 1")) == 1
         assert self.processor._evaluate_expression_sz(sz.Str("1 == 0")) == 0
@@ -153,8 +131,6 @@ class TestSimplePreprocessor:
 
     def test_expression_evaluation_logical_sz(self):
         """Test logical operators with StringZilla"""
-        import stringzilla as sz
-
         # Test && operator
         assert self.processor._evaluate_expression_sz(sz.Str("1 && 1")) == 1
         assert self.processor._evaluate_expression_sz(sz.Str("1 && 0")) == 0
@@ -167,8 +143,6 @@ class TestSimplePreprocessor:
 
     def test_expression_evaluation_complex_sz(self):
         """Test complex expressions combining operators with StringZilla"""
-        import stringzilla as sz
-
         # Test combinations
         assert self.processor._evaluate_expression_sz(sz.Str("1 != 0 && 2 > 1")) == 1
         assert self.processor._evaluate_expression_sz(sz.Str("1 == 0 || 2 == 2")) == 1
@@ -176,8 +150,6 @@ class TestSimplePreprocessor:
 
     def test_macro_expansion_sz(self):
         """Test macro expansion in expressions with StringZilla"""
-        import stringzilla as sz
-
         # Test simple macro expansion
         assert self.processor._evaluate_expression_sz(sz.Str("TEST_MACRO")) == 1
         assert self.processor._evaluate_expression_sz(sz.Str("VERSION")) == 3
@@ -189,8 +161,6 @@ class TestSimplePreprocessor:
 
     def test_defined_expressions_sz(self):
         """Test defined() expressions with StringZilla"""
-        import stringzilla as sz
-
         # Test defined() function
         assert self.processor._evaluate_expression_sz(sz.Str("defined(TEST_MACRO)")) == 1
         assert self.processor._evaluate_expression_sz(sz.Str("defined(UNDEFINED_MACRO)")) == 0
@@ -201,8 +171,6 @@ class TestSimplePreprocessor:
 
     def test_numeric_literal_parsing_sz(self):
         """Test hex, binary, and octal numeric literals in expressions with StringZilla"""
-        import stringzilla as sz
-
         assert self.processor._evaluate_expression_sz(sz.Str("0x10 == 16")) == 1
         assert self.processor._evaluate_expression_sz(sz.Str("0b1010 == 10")) == 1
         assert self.processor._evaluate_expression_sz(sz.Str("010 == 8")) == 1  # octal
@@ -210,8 +178,6 @@ class TestSimplePreprocessor:
 
     def test_bitwise_operators_sz(self):
         """Test bitwise and shift operators in expressions with StringZilla"""
-        import stringzilla as sz
-
         assert self.processor._evaluate_expression_sz(sz.Str("1 & 1")) == 1
         assert self.processor._evaluate_expression_sz(sz.Str("1 | 0")) == 1
         assert self.processor._evaluate_expression_sz(sz.Str("1 ^ 1")) == 0
@@ -221,8 +187,6 @@ class TestSimplePreprocessor:
 
     def test_expression_evaluation_uses_c_integer_division_sz(self):
         """Preprocessor division is integer division, not Python float division."""
-        import stringzilla as sz
-
         assert self.processor._evaluate_expression_sz(sz.Str("4 / 2")) == 2
         assert self.processor._evaluate_expression_sz(sz.Str("5 / 2 == 2")) == 1
 
@@ -232,8 +196,6 @@ class TestSimplePreprocessor:
         The eval()-based predecessor returned Python's floor-mod (e.g.
         ``-7 % 2 == 1``); the C-precedence parser truncates so ``-7 % 2 == -1``.
         """
-        import stringzilla as sz
-
         assert self.processor._evaluate_expression_sz(sz.Str("(-7) % 2")) == -1
         assert self.processor._evaluate_expression_sz(sz.Str("7 % (-2)")) == 1
         assert self.processor._evaluate_expression_sz(sz.Str("(-7) / 2")) == -3
@@ -241,15 +203,11 @@ class TestSimplePreprocessor:
 
     def test_expression_evaluation_uses_c_bitwise_precedence_sz(self):
         """C equality binds tighter than bitwise AND/OR/XOR in #if expressions."""
-        import stringzilla as sz
-
         assert self.processor._evaluate_expression_sz(sz.Str("1 & 2 == 0")) == 0
         assert self.processor._evaluate_expression_sz(sz.Str("1 | 0 == 0")) == 1
 
     def test_recursive_macro_expansion_sz(self):
         """Test recursive macro expansion functionality with StringZilla"""
-        import stringzilla as sz
-
         # Test simple case
         result = self.processor._recursive_expand_macros_sz(sz.Str("VERSION"))
         assert result == "3"
@@ -274,8 +232,6 @@ class TestSimplePreprocessor:
         expression must emit a warning at verbose>=1, not silently return
         a truncated result. Pathological recursive macros otherwise hide
         broken user definitions."""
-        import stringzilla as sz
-
         # A <-> B forms a 2-cycle that never converges
         processor = SimplePreprocessor(
             {sz.Str("A"): sz.Str("B"), sz.Str("B"): sz.Str("A")},
@@ -288,8 +244,6 @@ class TestSimplePreprocessor:
 
     def test_recursive_expansion_no_warn_when_converged(self, capsys):
         """Convergence within the iteration cap must NOT emit a warning."""
-        import stringzilla as sz
-
         processor = SimplePreprocessor(
             {sz.Str("A"): sz.Str("B"), sz.Str("B"): sz.Str("C"), sz.Str("C"): sz.Str("42")},
             verbose=9,
@@ -301,8 +255,6 @@ class TestSimplePreprocessor:
 
     def test_recursive_expansion_truncation_silent_when_quiet(self, capsys):
         """At verbose=0 the truncation warning is suppressed."""
-        import stringzilla as sz
-
         processor = SimplePreprocessor(
             {sz.Str("A"): sz.Str("B"), sz.Str("B"): sz.Str("A")},
             verbose=0,
@@ -313,8 +265,6 @@ class TestSimplePreprocessor:
 
     def test_comment_stripping_sz(self):
         """Test C/C++ style comment stripping from StringZilla expressions"""
-        import stringzilla as sz
-
         # Test basic line comment stripping
         result = self.processor._strip_comments_sz(sz.Str("1 + 1 // this is a comment"))
         assert result == "1 + 1"
@@ -338,7 +288,7 @@ class TestSimplePreprocessor:
             #include "test.h"
             #endif
         """).strip()
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
         active_lines = self.processor.process_structured(file_result, self.ctx)
         # Line 1 contains '#include "test.h"'
         assert 1 in active_lines
@@ -350,7 +300,7 @@ class TestSimplePreprocessor:
             #include "test.h"
             #endif
         """).strip()
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
         active_lines = self.processor.process_structured(file_result, self.ctx)
         # Line 1 contains '#include "test.h"'
         assert 1 in active_lines
@@ -362,7 +312,7 @@ class TestSimplePreprocessor:
             #include "version3.h"
             #endif
         """).strip()
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
         active_lines = self.processor.process_structured(file_result, self.ctx)
         # Line 1 contains '#include "version3.h"'
         assert 1 in active_lines
@@ -374,7 +324,7 @@ class TestSimplePreprocessor:
             #include "advanced.h"
             #endif
         """).strip()
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
         active_lines = self.processor.process_structured(file_result, self.ctx)
         # Line 1 contains '#include "advanced.h"'
         assert 1 in active_lines
@@ -386,7 +336,7 @@ class TestSimplePreprocessor:
             #include "nonzero.h"
             #endif
         """).strip()
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
         active_lines = self.processor.process_structured(file_result, self.ctx)
         # Line 1 contains '#include "nonzero.h"'
         assert 1 in active_lines
@@ -400,7 +350,7 @@ class TestSimplePreprocessor:
                 #endif
             #endif
         """).strip()
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
         active_lines = self.processor.process_structured(file_result, self.ctx)
         # Line 2 contains '#include "test_v3.h"'
         assert 2 in active_lines
@@ -414,7 +364,7 @@ class TestSimplePreprocessor:
             #include "defined.h"
             #endif
         """).strip()
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
         active_lines = self.processor.process_structured(file_result, self.ctx)
         # Line 3 contains '#include "defined.h"', line 1 should not be active
         assert 3 in active_lines
@@ -433,7 +383,7 @@ class TestSimplePreprocessor:
             #include "default.h"
             #endif
         """).strip()
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
         active_lines = self.processor.process_structured(file_result, self.ctx)
         # Line 5 contains '#include "version3.h"', others should not be active
         assert 5 in active_lines
@@ -449,7 +399,7 @@ class TestSimplePreprocessor:
             #include "forty_two.h"
             #endif
         """).strip()
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
         active_lines = self.processor.process_structured(file_result, self.ctx)
         # Line 0 contains #define, line 2 contains '#include "forty_two.h"'
         assert 0 in active_lines
@@ -466,7 +416,7 @@ class TestSimplePreprocessor:
             #include "after_undef.h"
             #endif
         """).strip()
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
         active_lines = self.processor.process_structured(file_result, self.ctx)
         # Line 1 should be active, line 3 has #undef, line 5 should not be active
         assert 1 in active_lines
@@ -475,8 +425,6 @@ class TestSimplePreprocessor:
 
     def test_failing_scenario_use_epoll(self):
         """Test the exact scenario that's failing in the nested macros test"""
-        import stringzilla as sz
-
         # Set up macros exactly as in the failing test
         failing_macros = {
             sz.Str("BUILD_CONFIG"): sz.Str("2"),
@@ -503,7 +451,7 @@ class TestSimplePreprocessor:
                 #endif
             #endif
         """).strip()
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
         active_lines = processor.process_structured(file_result, self.ctx)
 
         # These should be included (lines 3 and 6)
@@ -516,8 +464,6 @@ class TestSimplePreprocessor:
         # and doesn't add platform macros without a compiler,
         # we'll test both with and without a compiler
         # Test 1: Without compiler (empty path)
-        import stringzilla as sz
-
         import compiletools.compiler_macros
 
         macros_empty_raw = compiletools.compiler_macros.get_compiler_macros("", verbose=0)
@@ -541,8 +487,6 @@ class TestSimplePreprocessor:
             processor = SimplePreprocessor(macros, verbose=0)
 
             # Verify the mocked macros are present
-            import stringzilla as sz
-
             assert sz.Str("__linux__") in processor.macros
             assert processor.macros[sz.Str("__linux__")] == sz.Str("1")
             assert sz.Str("__GNUC__") in processor.macros
@@ -555,7 +499,7 @@ class TestSimplePreprocessor:
                 included_line
             #endif
         """).strip()
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
         active_lines = self.processor.process_structured(file_result, self.ctx)
         assert 1 in active_lines
 
@@ -566,7 +510,7 @@ class TestSimplePreprocessor:
             ok
             #endif
         """).strip()
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
         active_lines = self.processor.process_structured(file_result, self.ctx)
         assert 1 in active_lines
 
@@ -575,10 +519,6 @@ class TestExpandHasFunctions:
     """Tests for __has_* preprocessor function expansion (Cycles 4-5)."""
 
     def setup_method(self):
-        import stringzilla as sz
-
-        from compiletools.build_context import BuildContext
-
         self.ctx = BuildContext()
 
         self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
@@ -592,8 +532,6 @@ class TestExpandHasFunctions:
 
     def test_basic_has_include_expands_to_1(self):
         """__has_include(<iostream>) should expand to '1' when compiler says true."""
-        import stringzilla as sz
-
         processor = SimplePreprocessor(self.macros, compiler_path="gcc")
 
         with patch("compiletools.compiler_macros.query_has_function", return_value=1):
@@ -602,8 +540,6 @@ class TestExpandHasFunctions:
 
     def test_basic_has_include_expands_to_0(self):
         """__has_include(<nonexistent.h>) should expand to '0' when compiler says false."""
-        import stringzilla as sz
-
         processor = SimplePreprocessor(self.macros, compiler_path="gcc")
 
         with patch("compiletools.compiler_macros.query_has_function", return_value=0):
@@ -612,8 +548,6 @@ class TestExpandHasFunctions:
 
     def test_mixed_multiple_has_include(self):
         """Both __has_include calls should be expanded in a compound expression."""
-        import stringzilla as sz
-
         processor = SimplePreprocessor(self.macros, compiler_path="gcc")
 
         def mock_query(compiler, call_str, cppflags="", verbose=0):
@@ -629,8 +563,6 @@ class TestExpandHasFunctions:
 
     def test_quoted_header(self):
         """__has_include("local.h") should preserve the quoted argument."""
-        import stringzilla as sz
-
         processor = SimplePreprocessor(self.macros, compiler_path="gcc")
 
         with patch("compiletools.compiler_macros.query_has_function", return_value=1) as mock_query:
@@ -641,8 +573,6 @@ class TestExpandHasFunctions:
 
     def test_has_builtin(self):
         """__has_builtin(__builtin_expect) should work for non-include __has_* functions."""
-        import stringzilla as sz
-
         processor = SimplePreprocessor(self.macros, compiler_path="gcc")
 
         with patch("compiletools.compiler_macros.query_has_function", return_value=1):
@@ -651,8 +581,6 @@ class TestExpandHasFunctions:
 
     def test_no_compiler_evaluates_to_0(self):
         """With no compiler_path, __has_* calls should evaluate to 0 (backward compat)."""
-        import stringzilla as sz
-
         processor = SimplePreprocessor(self.macros, compiler_path="")
 
         result = processor._expand_has_functions_sz(sz.Str("__has_include(<iostream>)"))
@@ -660,8 +588,6 @@ class TestExpandHasFunctions:
 
     def test_not_a_function_call_left_unchanged(self):
         """Identifiers starting with __has_ but without parens should be left unchanged."""
-        import stringzilla as sz
-
         processor = SimplePreprocessor(self.macros, compiler_path="gcc")
 
         result = processor._expand_has_functions_sz(sz.Str("__has_value"))
@@ -669,8 +595,6 @@ class TestExpandHasFunctions:
 
     def test_has_in_larger_identifier_left_unchanged(self):
         """__has_ as part of a larger identifier (preceded by alpha/underscore) left unchanged."""
-        import stringzilla as sz
-
         processor = SimplePreprocessor(self.macros, compiler_path="gcc")
 
         result = processor._expand_has_functions_sz(sz.Str("my__has_include(<x>)"))
@@ -681,8 +605,6 @@ class TestExpandHasFunctions:
 
     def test_evaluate_expression_with_has_include_and_defined(self):
         """__has_include and defined() should both work in a single expression."""
-        import stringzilla as sz
-
         processor = SimplePreprocessor(self.macros, compiler_path="gcc")
 
         with patch("compiletools.compiler_macros.query_has_function", return_value=1):
@@ -691,8 +613,6 @@ class TestExpandHasFunctions:
 
     def test_evaluate_expression_has_include_false(self):
         """When __has_include is false, expression should evaluate to 0."""
-        import stringzilla as sz
-
         processor = SimplePreprocessor(self.macros, compiler_path="gcc")
 
         with patch("compiletools.compiler_macros.query_has_function", return_value=0):
@@ -703,8 +623,6 @@ class TestExpandHasFunctions:
 
     def test_process_structured_has_include_true(self):
         """#if __has_include(<iostream>) should include content when compiler says true."""
-        from textwrap import dedent
-
         text = dedent("""\
             #if __has_include(<iostream>)
             #include <special.h>
@@ -712,7 +630,7 @@ class TestExpandHasFunctions:
 
         processor = SimplePreprocessor(self.macros, compiler_path="gcc")
 
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
 
         with patch("compiletools.compiler_macros.query_has_function", return_value=1):
             active_lines = processor.process_structured(file_result, self.ctx)
@@ -721,8 +639,6 @@ class TestExpandHasFunctions:
 
     def test_process_structured_has_include_false(self):
         """#if __has_include(<nonexistent>) should exclude content when compiler says false."""
-        from textwrap import dedent
-
         text = dedent("""\
             #if __has_include(<nonexistent.h>)
             #include <special.h>
@@ -730,7 +646,7 @@ class TestExpandHasFunctions:
 
         processor = SimplePreprocessor(self.macros, compiler_path="gcc")
 
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
 
         with patch("compiletools.compiler_macros.query_has_function", return_value=0):
             active_lines = processor.process_structured(file_result, self.ctx)
@@ -741,12 +657,8 @@ class TestExpandHasFunctions:
 
     def test_get_or_compute_preprocessing_with_compiler(self):
         """get_or_compute_preprocessing should read compiler_path from MacroState."""
-        import stringzilla as sz
-
-        from compiletools.preprocessing_cache import MacroState, get_or_compute_preprocessing
-
         text = "#if __has_include(<iostream>)\n#include <special.h>\n#endif"
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
 
         core = {sz.Str("__GNUC__"): sz.Str("11")}
         macros = MacroState(core, compiler_path="gcc", cppflags="-I/usr/include", anchor_root="")
@@ -757,12 +669,8 @@ class TestExpandHasFunctions:
 
     def test_get_or_compute_preprocessing_without_compiler(self):
         """Without compiler_path on MacroState, __has_include should evaluate to 0."""
-        import stringzilla as sz
-
-        from compiletools.preprocessing_cache import MacroState, get_or_compute_preprocessing
-
         text = "#if __has_include(<iostream>)\n#include <special.h>\n#endif"
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
 
         core = {sz.Str("__GNUC__"): sz.Str("11")}
         macros = MacroState(core, anchor_root="")
@@ -770,92 +678,11 @@ class TestExpandHasFunctions:
         result = get_or_compute_preprocessing(file_result, macros, verbose=0, context=self.ctx)
         assert 1 not in result.active_lines
 
-    def _create_file_analysis_result(self, text):
-        """Helper to create FileAnalysisResult for testing."""
-        import re
-
-        from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
-
-        lines = text.split("\n")
-
-        line_byte_offsets = []
-        offset = 0
-        for line in lines:
-            line_byte_offsets.append(offset)
-            offset += len(line.encode("utf-8")) + 1
-
-        directives = []
-        directive_by_line = {}
-        directive_positions = {}
-
-        for line_num, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.startswith("#"):
-                match = re.match(r"^\s*#\s*([a-zA-Z_]+)(?:\s+(.*))?", stripped)
-                if match:
-                    import stringzilla as sz
-
-                    directive_type = match.group(1)
-                    rest = match.group(2) or ""
-
-                    condition = None
-                    macro_name = None
-                    macro_value = None
-
-                    if directive_type in ["if", "elif"]:
-                        condition = sz.Str(rest.strip())
-                    elif directive_type in ["ifdef", "ifndef"]:
-                        macro_name = sz.Str(rest.strip())
-                    elif directive_type == "define":
-                        parts = rest.split(None, 1)
-                        macro_name = sz.Str(parts[0]) if parts else sz.Str("")
-                        macro_value = sz.Str(parts[1]) if len(parts) > 1 else sz.Str("1")
-                        if "(" in str(macro_name):
-                            macro_name = sz.Str(str(macro_name).split("(")[0])
-                    elif directive_type == "undef":
-                        macro_name = sz.Str(rest.strip())
-
-                    directive = PreprocessorDirective(
-                        line_num=line_num,
-                        byte_pos=line_byte_offsets[line_num],
-                        directive_type=directive_type,
-                        continuation_lines=0,
-                        condition=condition,
-                        macro_name=macro_name,
-                        macro_value=macro_value,
-                    )
-
-                    directives.append(directive)
-                    directive_by_line[line_num] = directive
-
-                    if directive_type not in directive_positions:
-                        directive_positions[directive_type] = []
-                    directive_positions[directive_type].append(line_byte_offsets[line_num])
-
-        return FileAnalysisResult(
-            line_count=len(lines),
-            line_byte_offsets=line_byte_offsets,
-            include_positions=[],
-            magic_positions=[],
-            directive_positions=directive_positions,
-            directives=directives,
-            directive_by_line=directive_by_line,
-            bytes_analyzed=len(text.encode("utf-8")),
-            was_truncated=False,
-            includes=[],
-            defines=[],
-            magic_flags=[],
-        )
-
 
 class TestSimplePreprocessorEdgeCases:
     """Tests for uncovered edge cases in SimplePreprocessor."""
 
     def setup_method(self):
-        import stringzilla as sz
-
-        from compiletools.build_context import BuildContext
-
         self.ctx = BuildContext()
 
         self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
@@ -871,22 +698,14 @@ class TestSimplePreprocessorEdgeCases:
     def teardown_method(self):
         self.patcher.stop()
 
-    def _create_file_analysis_result(self, text):
-        """Reuse helper from TestSimplePreprocessor."""
-        return TestSimplePreprocessor._create_file_analysis_result(text)
-
     def test_unclosed_block_comment(self):
         """Unclosed /* comment should skip the rest of the expression."""
-        import stringzilla as sz
-
         result = self.processor._strip_comments_sz(sz.Str("1 + /* unclosed"))
         assert "unclosed" not in str(result)
         assert "1 +" in str(result)
 
     def test_defined_space_form(self):
         """'defined MACRO' (without parens) should work."""
-        import stringzilla as sz
-
         result = self.processor._expand_defined_sz(sz.Str("defined DEFINED_MACRO"))
         assert str(result) == "1"
 
@@ -895,45 +714,33 @@ class TestSimplePreprocessorEdgeCases:
 
     def test_defined_space_form_in_expression(self):
         """'defined MACRO' should evaluate correctly in full expression."""
-        import stringzilla as sz
-
         result = self.processor._evaluate_expression_sz(sz.Str("defined DEFINED_MACRO && 1"))
         assert result == 1
 
     def test_defined_as_part_of_identifier_prefix(self):
         """'defined' preceded by alpha should not be treated as keyword."""
-        import stringzilla as sz
-
         # 'predefined' contains 'defined' but shouldn't be treated as keyword
         result = self.processor._expand_defined_sz(sz.Str("predefined"))
         assert str(result) == "predefined"
 
     def test_defined_as_part_of_identifier_suffix(self):
         """'defined' followed by alpha (no space/paren) should not be treated as keyword."""
-        import stringzilla as sz
-
         result = self.processor._expand_defined_sz(sz.Str("definedX"))
         assert "definedX" in str(result)
 
     def test_defined_at_end_of_string(self):
         """'defined' at end with no macro after it."""
-        import stringzilla as sz
-
         result = self.processor._expand_defined_sz(sz.Str("defined"))
         assert "defined" in str(result)
 
     def test_defined_with_whitespace_only_after(self):
         """'defined  ' with only whitespace after."""
-        import stringzilla as sz
-
         result = self.processor._expand_defined_sz(sz.Str("defined   "))
         # Should not crash, keeps original text
         assert "defined" in str(result)
 
     def test_safe_eval_unsafe_expression(self):
         """_safe_eval should raise ValueError for unsafe expressions."""
-        import pytest
-
         with pytest.raises(ValueError, match="Unsafe expression"):
             self.processor._safe_eval("__import__('os')")
 
@@ -945,15 +752,13 @@ class TestSimplePreprocessorEdgeCases:
 
     def test_verbose_debug_output(self, capsys):
         """Verbose mode prints debug info for directive handling."""
-        import stringzilla as sz
-
         verbose_proc = SimplePreprocessor({sz.Str("X"): sz.Str("1")}, verbose=9)
         text = dedent("""
             #ifdef X
             line
             #endif
         """).strip()
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
         verbose_proc.process_structured(file_result, self.ctx)
         out = capsys.readouterr().out
         assert "#ifdef" in out
@@ -967,7 +772,7 @@ class TestSimplePreprocessorEdgeCases:
             #define FOO 42
             #undef FOO
         """).strip()
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
         verbose_proc.process_structured(file_result, self.ctx)
         out = capsys.readouterr().out
         assert "defined macro FOO" in out
@@ -982,15 +787,13 @@ class TestSimplePreprocessorEdgeCases:
             line
             #endif
         """).strip()
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
         verbose_proc.process_structured(file_result, self.ctx)
         out = capsys.readouterr().out
         assert "#ifndef" in out
 
     def test_verbose_if_elif_else(self, capsys):
         """Verbose mode prints debug for #if, #elif, #else."""
-        import stringzilla as sz
-
         verbose_proc = SimplePreprocessor({sz.Str("V"): sz.Str("2")}, verbose=9)
         text = dedent("""
             #if V == 1
@@ -1001,7 +804,7 @@ class TestSimplePreprocessorEdgeCases:
             c
             #endif
         """).strip()
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
         verbose_proc.process_structured(file_result, self.ctx)
         out = capsys.readouterr().out
         assert "#if" in out
@@ -1018,7 +821,7 @@ class TestSimplePreprocessorEdgeCases:
             #endif
         """).strip()
         # __has_cpp_attribute isn't a known function, will fail to eval
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
         active_lines = processor.process_structured(file_result, self.ctx)
         assert 1 not in active_lines  # 'included' line should not be active
 
@@ -1035,15 +838,13 @@ class TestSimplePreprocessorEdgeCases:
             c
             #endif
         """).strip()
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
         active_lines = processor.process_structured(file_result, self.ctx)
         assert 3 not in active_lines  # 'b' should not be active
         assert 5 in active_lines  # 'c' should be active
 
     def test_if_no_condition(self):
         """#if with no condition should assume false."""
-        from compiletools.file_analyzer import PreprocessorDirective
-
         directive = PreprocessorDirective(
             line_num=0,
             byte_pos=0,
@@ -1059,8 +860,6 @@ class TestSimplePreprocessorEdgeCases:
 
     def test_elif_no_condition(self):
         """#elif with no condition should assume false."""
-        from compiletools.file_analyzer import PreprocessorDirective
-
         directive = PreprocessorDirective(
             line_num=0,
             byte_pos=0,
@@ -1076,10 +875,6 @@ class TestSimplePreprocessorEdgeCases:
 
     def test_continuation_lines(self):
         """Directives with continuation_lines should include continuation in active_lines."""
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
-
         # Simulate a #define with a continuation line
         directive = PreprocessorDirective(
             line_num=0,
@@ -1111,8 +906,6 @@ class TestSimplePreprocessorEdgeCases:
 
     def test_include_guard_skipped(self):
         """Include guard macro should not be added to macro state."""
-        import stringzilla as sz
-
         processor = SimplePreprocessor({}, verbose=9)
         text = dedent("""
             #ifndef MY_HEADER_H
@@ -1120,15 +913,13 @@ class TestSimplePreprocessorEdgeCases:
             content
             #endif
         """).strip()
-        file_result = self._create_file_analysis_result(text)
+        file_result = _make_file_analysis_result(text)
         file_result.include_guard = sz.Str("MY_HEADER_H")
         processor.process_structured(file_result, self.ctx)
         assert sz.Str("MY_HEADER_H") not in processor.macros
 
     def test_unknown_directive_verbose(self, capsys):
         """Unknown directive with verbose >= 8 prints debug."""
-
-        from compiletools.file_analyzer import PreprocessorDirective
 
         verbose_proc = SimplePreprocessor({}, verbose=8)
         directive = PreprocessorDirective(
@@ -1148,23 +939,17 @@ class TestSimplePreprocessorEdgeCases:
 
     def test_block_comment_with_content_after(self):
         """Block comment followed by expression should work."""
-        import stringzilla as sz
-
         result = self.processor._strip_comments_sz(sz.Str("/* comment */ 42"))
         assert "42" in str(result)
         assert "comment" not in str(result)
 
     def test_multiple_block_comments(self):
         """Multiple block comments in one expression."""
-        import stringzilla as sz
-
         result = self.processor._strip_comments_sz(sz.Str("1 /* a */ + /* b */ 2"))
         assert str(result) == "1 + 2"
 
     def test_empty_block_comment_result(self):
         """Block comment that leaves nothing."""
-        import stringzilla as sz
-
         result = self.processor._strip_comments_sz(sz.Str("/* everything is a comment */"))
         assert str(result) == ""
 
@@ -1192,8 +977,6 @@ class TestMacroHashConsistency:
 
     def test_hash_determinism(self):
         """Verify same macro state always produces same hash."""
-        import stringzilla as sz
-
         core = {}
         variable = {sz.Str("FOO"): sz.Str("1"), sz.Str("BAR"): sz.Str("value"), sz.Str("BAZ"): sz.Str("0x100")}
         macros = MacroState(core, variable, anchor_root="")
@@ -1207,8 +990,6 @@ class TestMacroHashConsistency:
 
     def test_hash_ordering_independence(self):
         """Verify hash is same regardless of insertion order."""
-        import stringzilla as sz
-
         core = {}
         # Create dicts with different insertion orders
         variable1 = {sz.Str("A"): sz.Str("1"), sz.Str("B"): sz.Str("2"), sz.Str("C"): sz.Str("3")}
@@ -1225,8 +1006,6 @@ class TestMacroHashConsistency:
 
     def test_hash_sensitivity_to_changes(self):
         """Verify different macro states produce different hashes."""
-        import stringzilla as sz
-
         core = {}
         macros1 = MacroState(core, {sz.Str("FOO"): sz.Str("1")}, anchor_root="")
         macros2 = MacroState(core, {sz.Str("FOO"): sz.Str("2")}, anchor_root="")  # Different value
@@ -1262,8 +1041,6 @@ class TestMacroHashConsistency:
 
     def test_hash_with_special_characters(self):
         """Verify hash handles special characters in macro values."""
-        import stringzilla as sz
-
         core = {}
         macros1 = MacroState(
             core,
@@ -1289,8 +1066,6 @@ class TestMacroHashConsistency:
 
     def test_hash_cross_module_consistency(self):
         """Verify hash computation is consistent and accessible."""
-        import stringzilla as sz
-
         core = {}
         variable = {sz.Str("LINUX"): sz.Str("1"), sz.Str("DEBUG"): sz.Str("1"), sz.Str("VERSION"): sz.Str("100")}
         macros = MacroState(core, variable, anchor_root="")
@@ -1317,8 +1092,6 @@ class TestMacroStateBuildContextHash:
 
     def test_macro_state_hash_differs_with_different_cflags(self):
         """Object hash must change when compile flags change (e.g., -O0 vs -O2)."""
-        import stringzilla as sz
-
         core = {sz.Str("__GNUC__"): sz.Str("12")}
         ms1 = MacroState(core, {}, compiler_path="g++", cppflags="", cflags="-O0", cxxflags="", anchor_root="")
         ms2 = MacroState(core, {}, compiler_path="g++", cppflags="", cflags="-O2", cxxflags="", anchor_root="")
@@ -1326,8 +1099,6 @@ class TestMacroStateBuildContextHash:
 
     def test_macro_state_hash_differs_with_different_cxxflags(self):
         """Object hash must change when C++ standard changes."""
-        import stringzilla as sz
-
         core = {sz.Str("__GNUC__"): sz.Str("12")}
         ms1 = MacroState(core, {}, compiler_path="g++", cppflags="", cflags="", cxxflags="-std=c++17", anchor_root="")
         ms2 = MacroState(core, {}, compiler_path="g++", cppflags="", cflags="", cxxflags="-std=c++20", anchor_root="")
@@ -1335,8 +1106,6 @@ class TestMacroStateBuildContextHash:
 
     def test_macro_state_hash_differs_with_different_cppflags(self):
         """Object hash must change when include paths change (e.g., different library version)."""
-        import stringzilla as sz
-
         core = {sz.Str("__GNUC__"): sz.Str("12")}
         ms1 = MacroState(core, {}, compiler_path="g++", cppflags="-I/opt/libfoo/v1/include", anchor_root="")
         ms2 = MacroState(core, {}, compiler_path="g++", cppflags="-I/opt/libfoo/v2/include", anchor_root="")
@@ -1344,8 +1113,6 @@ class TestMacroStateBuildContextHash:
 
     def test_macro_state_hash_differs_with_different_compiler(self):
         """Object hash must change when compiler changes."""
-        import stringzilla as sz
-
         core = {sz.Str("__GNUC__"): sz.Str("12")}
         ms1 = MacroState(core, {}, compiler_path="g++", anchor_root="")
         ms2 = MacroState(core, {}, compiler_path="clang++", anchor_root="")
@@ -1353,8 +1120,6 @@ class TestMacroStateBuildContextHash:
 
     def test_macro_state_hash_without_core_ignores_build_context(self):
         """Preprocessing cache key (include_core=False) must NOT be affected by build flags."""
-        import stringzilla as sz
-
         core = {sz.Str("__GNUC__"): sz.Str("12")}
         ms1 = MacroState(
             core, {}, compiler_path="g++", cppflags="-I/a", cflags="-O0", cxxflags="-std=c++17", anchor_root=""
@@ -1366,8 +1131,6 @@ class TestMacroStateBuildContextHash:
 
     def test_with_updates_propagates_build_context(self):
         """with_updates must carry cflags/cxxflags to the new MacroState."""
-        import stringzilla as sz
-
         core = {sz.Str("X"): sz.Str("1")}
         ms = MacroState(
             core, {}, compiler_path="g++", cppflags="-I/foo", cflags="-O2", cxxflags="-std=c++17", anchor_root=""
@@ -1380,8 +1143,6 @@ class TestMacroStateBuildContextHash:
 
     def test_without_keys_propagates_build_context(self):
         """without_keys must carry cflags/cxxflags to the new MacroState."""
-        import stringzilla as sz
-
         core = {sz.Str("X"): sz.Str("1")}
         var = {sz.Str("Y"): sz.Str("2")}
         ms = MacroState(
