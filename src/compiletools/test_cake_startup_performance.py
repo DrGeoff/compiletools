@@ -204,6 +204,63 @@ def test_fast_backend_metadata_matches_loaded_backend_registry():
     assert data["loaded_available"] == data["registered"]
 
 
+def test_every_builtin_backend_with_add_arguments_has_a_cli_registration_helper():
+    """Guard: a future add_arguments on ninja/cmake/etc. must not be silently dropped.
+
+    register_backend_cli_arguments() registers CLI flags for built-in backends without
+    importing their modules, by calling per-backend _register_<name>_cli_arguments
+    helpers and *skipping* the generic ``adder = cls.add_arguments`` path for any
+    name in _BUILTIN_BACKEND_MODULES. So if a maintainer adds an add_arguments static
+    method to a built-in backend that lacks a _register_*_cli_arguments helper, those
+    flags will silently never reach the parser — re-introducing the v8.0.2 bug.
+    """
+    src_dir = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(src_dir) + os.pathsep + env.get("PYTHONPATH", "")
+    code = textwrap.dedent(
+        """
+        import json
+
+        from compiletools import build_backend
+
+        build_backend.ensure_backends_registered()
+
+        unguarded = []
+        for name in sorted(build_backend._BUILTIN_BACKEND_MODULES):
+            cls = build_backend._REGISTRY.get(name)
+            if cls is None:
+                continue
+            adder = cls.__dict__.get("add_arguments")
+            if adder is None:
+                continue
+            helper = getattr(build_backend, f"_register_{name}_cli_arguments", None)
+            if helper is None:
+                unguarded.append(name)
+
+        print(json.dumps({"unguarded": unguarded}))
+        """
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert data["unguarded"] == [], (
+        "Built-in backend(s) define add_arguments but have no "
+        "_register_<name>_cli_arguments helper in build_backend.py — their flags "
+        f"will be silently dropped: {data['unguarded']}. "
+        "Either add the helper (and call it from register_backend_cli_arguments) "
+        "or remove the unused add_arguments method."
+    )
+
+
 def test_ninja_backend_choice_does_not_import_ninja_backend():
     """--backend=ninja should parse from metadata without importing the backend module."""
     src_dir = Path(__file__).resolve().parents[1]
