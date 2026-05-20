@@ -14,6 +14,8 @@ untouched.
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import stringzilla as sz
@@ -89,8 +91,16 @@ def test_compiler_builtins_always_hashed():
     assert h_v13 != h_empty
 
 
-def test_cmdline_macro_in_filter_is_hashed():
-    """A cmdline-origin macro whose name IS in the scope filter is hashed."""
+@pytest.mark.parametrize(
+    "scope_filter,hashes_match",
+    [
+        (frozenset({sz.Str("FOO")}), False),  # FOO in filter -> values hashed -> different hashes
+        (frozenset(), True),  # FOO excluded by empty filter -> values irrelevant
+    ],
+    ids=["foo_in_filter", "foo_excluded"],
+)
+def test_cmdline_macro_scope_filter(scope_filter, hashes_match):
+    """cmdline-origin macros are hashed iff their name is in scope_filter."""
     s1 = _make_state(
         core={sz.Str("FOO"): sz.Str("1")},
         cmdline_origin=frozenset({sz.Str("FOO")}),
@@ -99,22 +109,9 @@ def test_cmdline_macro_in_filter_is_hashed():
         core={sz.Str("FOO"): sz.Str("2")},
         cmdline_origin=frozenset({sz.Str("FOO")}),
     )
-    flt = frozenset({sz.Str("FOO")})
-    assert s1.get_hash(include_core=True, scope_filter=flt) != s2.get_hash(include_core=True, scope_filter=flt)
-
-
-def test_cmdline_macro_not_in_filter_is_excluded():
-    """A cmdline-origin macro whose name is NOT in the filter is excluded."""
-    s1 = _make_state(
-        core={sz.Str("FOO"): sz.Str("1")},
-        cmdline_origin=frozenset({sz.Str("FOO")}),
-    )
-    s2 = _make_state(
-        core={sz.Str("FOO"): sz.Str("2")},
-        cmdline_origin=frozenset({sz.Str("FOO")}),
-    )
-    flt = frozenset()
-    assert s1.get_hash(include_core=True, scope_filter=flt) == s2.get_hash(include_core=True, scope_filter=flt)
+    h1 = s1.get_hash(include_core=True, scope_filter=scope_filter)
+    h2 = s2.get_hash(include_core=True, scope_filter=scope_filter)
+    assert (h1 == h2) is hashes_match
 
 
 def test_filter_does_not_affect_compiler_builtins():
@@ -191,49 +188,39 @@ def test_raw_strings_and_pretokenized_hash_identically():
     assert h_raw == h_tokens
 
 
-def test_with_updates_propagates_cmdline_origin():
-    """with_updates() must forward cmdline_origin to the new state."""
-    state = _make_state(
-        core={sz.Str("X"): sz.Str("1")},
-        cmdline_origin=frozenset({sz.Str("X")}),
-    )
-    new_state = state.with_updates({sz.Str("Y"): sz.Str("2")})
-    assert new_state.cmdline_origin == frozenset({sz.Str("X")})
+# Each mutator must produce an *effective* change so MacroState constructs a
+# new instance via the forwarding path (with_updates short-circuits to self on
+# no-op updates). with_updates adds a fresh key Z; without_keys removes Y.
+_MUTATORS = [
+    pytest.param(lambda s: s.with_updates({sz.Str("Z"): sz.Str("3")}), id="with_updates"),
+    pytest.param(lambda s: s.without_keys([sz.Str("Y")]), id="without_keys"),
+]
 
 
-def test_with_updates_propagates_tokens():
-    """with_updates() must forward all *_tokens fields."""
-    state = _make_state(
-        cppflags_tokens=["-O2"],
-        cflags_tokens=["-Wall"],
-        cxxflags_tokens=["-std=c++17"],
-    )
-    new_state = state.with_updates({sz.Str("Y"): sz.Str("2")})
-    assert new_state.cppflags_tokens == ["-O2"]
-    assert new_state.cflags_tokens == ["-Wall"]
-    assert new_state.cxxflags_tokens == ["-std=c++17"]
-
-
-def test_without_keys_propagates_cmdline_origin():
-    """without_keys() must forward cmdline_origin to the new state."""
+@pytest.mark.parametrize("mutator", _MUTATORS)
+def test_state_mutator_propagates_cmdline_origin(mutator):
+    """with_updates() and without_keys() both forward cmdline_origin to the new state."""
     state = _make_state(
         core={sz.Str("X"): sz.Str("1")},
         variable={sz.Str("Y"): sz.Str("2")},
         cmdline_origin=frozenset({sz.Str("X")}),
     )
-    new_state = state.without_keys([sz.Str("Y")])
+    new_state = mutator(state)
+    assert new_state is not state, "mutator must construct a new state, not short-circuit"
     assert new_state.cmdline_origin == frozenset({sz.Str("X")})
 
 
-def test_without_keys_propagates_tokens():
-    """without_keys() must forward all *_tokens fields."""
+@pytest.mark.parametrize("mutator", _MUTATORS)
+def test_state_mutator_propagates_tokens(mutator):
+    """with_updates() and without_keys() both forward all *_tokens fields."""
     state = _make_state(
         variable={sz.Str("Y"): sz.Str("2")},
         cppflags_tokens=["-O2"],
         cflags_tokens=["-Wall"],
         cxxflags_tokens=["-std=c++17"],
     )
-    new_state = state.without_keys([sz.Str("Y")])
+    new_state = mutator(state)
+    assert new_state is not state, "mutator must construct a new state, not short-circuit"
     assert new_state.cppflags_tokens == ["-O2"]
     assert new_state.cflags_tokens == ["-Wall"]
     assert new_state.cxxflags_tokens == ["-std=c++17"]
