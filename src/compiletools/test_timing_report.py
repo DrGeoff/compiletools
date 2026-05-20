@@ -7,30 +7,35 @@ import os
 import sys
 import types
 
+import pytest
+
 import compiletools.timing_report as tr
 from compiletools.build_timer import BuildTimer
 from compiletools.timing_report import _find_timing_file, _format_pct, _resolve_and_load, _styled, main
 
 
 class TestFindTimingFile:
+    @pytest.fixture(autouse=True)
+    def _chdir_to_tmp(self, monkeypatch, tmp_path):
+        """Every test in this class operates from a fresh tmp_path cwd so
+        _find_timing_file's auto-discovery probes don't see stray cwd entries."""
+        monkeypatch.chdir(tmp_path)
+
     def test_explicit_path(self):
         assert _find_timing_file("/some/path.json") == "/some/path.json"
 
-    def test_auto_detect_cwd(self, tmp_path, monkeypatch):
+    def test_auto_detect_cwd(self, tmp_path):
         timing = tmp_path / "timing.json"
         timing.write_text("{}")
-        monkeypatch.chdir(tmp_path)
         assert _find_timing_file(None) == "timing.json"
 
-    def test_auto_detect_none_when_missing(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+    def test_auto_detect_none_when_missing(self):
         assert _find_timing_file(None) is None
 
-    def test_auto_detect_bindir_diagnostics_newest(self, tmp_path, monkeypatch):
+    def test_auto_detect_bindir_diagnostics_newest(self, tmp_path):
         """With the new diagnostics-dir layout, look up the newest invocation
         subdir under <bindir>/diagnostics/ by lex sort and return its
         timing.json."""
-        monkeypatch.chdir(tmp_path)
         bindir = tmp_path / "bin"
         diag = bindir / "diagnostics"
         older = diag / "20260506T120000-100"
@@ -41,11 +46,10 @@ class TestFindTimingFile:
         result = _find_timing_file(None, bindir=str(bindir))
         assert result == str(newer / "timing.json")
 
-    def test_auto_detect_sort_is_pid_numeric_within_same_second(self, tmp_path, monkeypatch):
+    def test_auto_detect_sort_is_pid_numeric_within_same_second(self, tmp_path):
         """Within the same wall-clock second, PIDs of different string widths
         must sort numerically. '20260506T120000-1000' is newer than
         '20260506T120000-999' but lex sort would invert that."""
-        monkeypatch.chdir(tmp_path)
         bindir = tmp_path / "bin"
         diag = bindir / "diagnostics"
         older = diag / "20260506T120000-999"
@@ -56,10 +60,9 @@ class TestFindTimingFile:
         result = _find_timing_file(None, bindir=str(bindir))
         assert result == str(newer / "timing.json")
 
-    def test_auto_detect_diagnostics_dir_overrides_bindir(self, tmp_path, monkeypatch):
+    def test_auto_detect_diagnostics_dir_overrides_bindir(self, tmp_path):
         """An explicit ``diagnostics_dir`` is used directly even if it lives
         outside any ``bindir``."""
-        monkeypatch.chdir(tmp_path)
         bindir = tmp_path / "bin"
         bindir.mkdir()  # exists but contains no diagnostics
         diag = tmp_path / "elsewhere" / "diag"
@@ -70,17 +73,15 @@ class TestFindTimingFile:
         result = _find_timing_file(None, bindir=str(bindir), diagnostics_dir=str(diag))
         assert result == str(timing)
 
-    def test_auto_detect_nonexistent_diagnostics_dir_returns_none(self, tmp_path, monkeypatch):
+    def test_auto_detect_nonexistent_diagnostics_dir_returns_none(self, tmp_path):
         """If diagnostics-dir doesn't exist and no other fallback hits,
         return None rather than raising."""
-        monkeypatch.chdir(tmp_path)
         assert _find_timing_file(None, diagnostics_dir=str(tmp_path / "does-not-exist")) is None
 
-    def test_auto_detect_ignores_non_invocation_entries(self, tmp_path, monkeypatch):
+    def test_auto_detect_ignores_non_invocation_entries(self, tmp_path):
         """Stray files or non-matching directories under diagnostics-dir
         must not confuse the lex sort; only entries matching the
         ``YYYYMMDDTHHMMSS-PID`` pattern count."""
-        monkeypatch.chdir(tmp_path)
         bindir = tmp_path / "bin"
         diag = bindir / "diagnostics"
         diag.mkdir(parents=True)
@@ -95,10 +96,9 @@ class TestFindTimingFile:
         result = _find_timing_file(None, bindir=str(bindir))
         assert result == str(real / "timing.json")
 
-    def test_auto_detect_empty_diagnostics_dir_returns_none(self, tmp_path, monkeypatch):
+    def test_auto_detect_empty_diagnostics_dir_returns_none(self, tmp_path):
         """An existing-but-empty diagnostics-dir returns None rather than
         a bogus path."""
-        monkeypatch.chdir(tmp_path)
         bindir = tmp_path / "bin"
         diag = bindir / "diagnostics"
         diag.mkdir(parents=True)  # empty
@@ -106,25 +106,26 @@ class TestFindTimingFile:
 
 
 class TestMainCLI:
-    def test_diagnostics_dir_accepted_on_argv(self, tmp_path, monkeypatch):
+    @pytest.fixture(autouse=True)
+    def _chdir_to_tmp(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+
+    def test_diagnostics_dir_accepted_on_argv(self, tmp_path):
         """ct-timing-report's parser must accept --diagnostics-dir on the
         CLI so users / orchestrators can direct the auto-discovery."""
-        monkeypatch.chdir(tmp_path)
         # No timing file anywhere -> exits 1, but the parser must accept
         # the flag without erroring out at parse time.
         rc = main(["--summary", "--diagnostics-dir", str(tmp_path / "nonexistent")])
         assert rc == 1
 
-    def test_bindir_accepted_on_argv(self, tmp_path, monkeypatch):
+    def test_bindir_accepted_on_argv(self, tmp_path):
         """ct-timing-report's parser must accept --bindir on the CLI."""
-        monkeypatch.chdir(tmp_path)
         rc = main(["--summary", "--bindir", str(tmp_path / "bin")])
         assert rc == 1
 
-    def test_diagnostics_dir_routes_to_correct_file(self, tmp_path, monkeypatch):
+    def test_diagnostics_dir_routes_to_correct_file(self, tmp_path):
         """End-to-end: --diagnostics-dir on the CLI should make ct-timing-report
         find the timing.json under <diag>/<invocation-id>/."""
-        monkeypatch.chdir(tmp_path)
         diag = tmp_path / "diag"
         invocation = diag / "20260506T143022-200"
         invocation.mkdir(parents=True)
