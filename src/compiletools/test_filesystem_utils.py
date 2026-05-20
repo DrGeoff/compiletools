@@ -22,6 +22,13 @@ from compiletools.filesystem_utils import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_filesystem_type_cache():
+    """Reset get_filesystem_type's lru_cache so each test sees a fresh probe."""
+    get_filesystem_type.cache_clear()
+    yield
+
+
 def test_get_filesystem_type_returns_string():
     """Filesystem type should always return a non-empty string."""
     fstype = get_filesystem_type("/")
@@ -181,8 +188,6 @@ def test_get_filesystem_type_proc_mounts_unavailable(monkeypatch):
             raise FileNotFoundError("no /proc/mounts")
         return real_open(path, *args, **kwargs)
 
-    # Clear cache so we get a fresh call
-    get_filesystem_type.cache_clear()
     monkeypatch.setattr(builtins, "open", fake_open)
 
     # Also mock subprocess to return something
@@ -201,7 +206,6 @@ def test_get_filesystem_type_proc_mounts_unavailable(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
     fstype = get_filesystem_type("/tmp/test_fallback_path")
     assert fstype == "ext4"
-    get_filesystem_type.cache_clear()
 
 
 def test_get_filesystem_type_all_fallbacks_fail(monkeypatch):
@@ -213,7 +217,6 @@ def test_get_filesystem_type_all_fallbacks_fail(monkeypatch):
             raise FileNotFoundError("no /proc/mounts")
         return real_open(path, *args, **kwargs)
 
-    get_filesystem_type.cache_clear()
     monkeypatch.setattr(builtins, "open", fake_open)
 
     def fake_run(cmd, *args, **kwargs):
@@ -222,7 +225,6 @@ def test_get_filesystem_type_all_fallbacks_fail(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
     fstype = get_filesystem_type("/tmp/test_unknown_path")
     assert fstype == "unknown"
-    get_filesystem_type.cache_clear()
 
 
 def test_get_filesystem_type_stat_nonzero_returncode(monkeypatch):
@@ -234,7 +236,6 @@ def test_get_filesystem_type_stat_nonzero_returncode(monkeypatch):
             raise PermissionError("denied")
         return real_open(path, *args, **kwargs)
 
-    get_filesystem_type.cache_clear()
     monkeypatch.setattr(builtins, "open", fake_open)
 
     orig_run = subprocess.run
@@ -252,7 +253,6 @@ def test_get_filesystem_type_stat_nonzero_returncode(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
     fstype = get_filesystem_type("/tmp/test_stat_fail_path")
     assert fstype == "unknown"
-    get_filesystem_type.cache_clear()
 
 
 def test_atomic_write_creates_directory(tmp_path):
