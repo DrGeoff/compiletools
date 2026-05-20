@@ -3048,6 +3048,23 @@ def _expand_conf_dir(value, conf_dir):
     return value.replace(_CONF_DIR_PLACEHOLDER, conf_dir)
 
 
+def _expand_env_and_user(value):
+    """Expand $VAR, ${VAR}, and ~ in conf-file values.
+
+    Applies to scalar strings and to each element of list values; leaves
+    non-string types untouched. Order: env vars first, then ~ expansion
+    (so $HOME and ~ agree). Unknown env vars are left as the literal
+    placeholder, matching os.path.expandvars semantics. Cheap
+    short-circuit when the value contains neither $ nor ~."""
+    if isinstance(value, list):
+        return [_expand_env_and_user(elem) for elem in value]
+    if not isinstance(value, str):
+        return value
+    if "$" not in value and "~" not in value:
+        return value
+    return os.path.expanduser(os.path.expandvars(value))
+
+
 class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
     """Variant of ``DefaultConfigFileParser`` that accumulates duplicate
     ``append-*`` / ``prepend-*`` keys into a list rather than last-writer-wins,
@@ -3147,6 +3164,7 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
                     value = [elem.strip() for elem in value[1:-1].split(",")]
 
             value = _expand_conf_dir(value, conf_dir)
+            value = _expand_env_and_user(value)
 
             if key.startswith(("append-", "prepend-")) and key in items:
                 existing = items[key]
