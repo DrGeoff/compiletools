@@ -3,6 +3,7 @@ import tempfile
 from unittest.mock import patch
 
 import configargparse
+import pytest
 
 import compiletools.apptools
 import compiletools.configutils
@@ -10,6 +11,15 @@ import compiletools.findtargets
 import compiletools.testhelper as uth
 import compiletools.utils
 from compiletools.build_context import BuildContext
+
+
+@pytest.fixture(autouse=True)
+def _reset_parser_state():
+    """Wipe global configargparse parser cache around every test in this
+    module so the FindTargets / apptools parsers don't leak across tests."""
+    uth.reset()
+    yield
+    uth.reset()
 
 
 def _make_findtargets(description, *extra_argv, exedir=None):
@@ -32,9 +42,6 @@ def _make_findtargets(description, *extra_argv, exedir=None):
 
 
 class TestFindTargetsModule:
-    def setup_method(self):
-        uth.reset()
-
     def _find_samples_targets(self, disable_tests, disable_exes=False):
         relativeexpectedexes = {
             "appinfo/main.cpp",
@@ -153,9 +160,6 @@ class TestFindTargetsModule:
     def test_tests_only(self):
         self._find_samples_targets(disable_tests=False, disable_exes=True)
 
-    def teardown_method(self):
-        uth.reset()
-
 
 class TestFindTargetsStyles:
     """Test output formatting styles."""
@@ -216,12 +220,6 @@ class TestFindTargetsStyles:
 class TestFindTargetsProcess:
     """Test FindTargets.process method."""
 
-    def setup_method(self):
-        uth.reset()
-
-    def teardown_method(self):
-        uth.reset()
-
     def test_process_populates_args(self):
         """Test that process() adds targets to args.filename and args.tests."""
         args, findtargets = _make_findtargets("TestFindTargetsProcess")
@@ -246,12 +244,6 @@ class TestFindTargetsProcess:
 class TestFindTargetsNoExemarkers:
     """Test FindTargets behavior when exemarkers is None."""
 
-    def setup_method(self):
-        uth.reset()
-
-    def teardown_method(self):
-        uth.reset()
-
     def test_no_exemarkers_exits(self):
         """Test that None exemarkers causes sys.exit(1)."""
         args, findtargets = _make_findtargets("TestNoExemarkers")
@@ -265,12 +257,6 @@ class TestFindTargetsNoExemarkers:
 
 class TestFindTargetsOsWalkFallback:
     """Test FindTargets os.walk fallback for non-git directories."""
-
-    def setup_method(self):
-        uth.reset()
-
-    def teardown_method(self):
-        uth.reset()
 
     def test_walk_fallback(self):
         """Test the os.walk fallback when get_tracked_files returns empty."""
@@ -291,12 +277,6 @@ class TestFindTargetsOsWalkFallback:
 
 class TestFindTargetsMain:
     """Test findtargets.main() entry point."""
-
-    def setup_method(self):
-        uth.reset()
-
-    def teardown_method(self):
-        uth.reset()
 
     def test_main_runs(self):
         """Test main() runs without error."""
