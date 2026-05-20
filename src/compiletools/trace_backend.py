@@ -74,18 +74,6 @@ from compiletools.build_backend import (
     _register_slurm_cli_arguments,
     register_backend,
 )
-from compiletools.build_backend import (
-    _slurm_max_wait_arg as _backend_slurm_max_wait_arg,
-)
-from compiletools.build_backend import (
-    _slurm_mem_arg as _backend_slurm_mem_arg,
-)
-from compiletools.build_backend import (
-    _slurm_mem_tiers_arg as _backend_slurm_mem_tiers_arg,
-)
-from compiletools.build_backend import (
-    _slurm_time_arg as _backend_slurm_time_arg,
-)
 from compiletools.build_graph import BuildGraph, BuildRule, RuleType
 from compiletools.global_hash_registry import get_file_hash
 from compiletools.locking import execute_compile_rule, execute_link_rule
@@ -93,12 +81,6 @@ from compiletools.locking import execute_compile_rule, execute_link_rule
 logger = logging.getLogger(__name__)
 
 TRACE_VERSION = 1
-
-_parse_mem_str = _parse_slurm_mem
-_slurm_max_wait_arg = _backend_slurm_max_wait_arg
-_slurm_mem_arg = _backend_slurm_mem_arg
-_slurm_mem_tiers_arg = _backend_slurm_mem_tiers_arg
-_slurm_time_arg = _backend_slurm_time_arg
 
 @dataclass
 class TraceEntry:
@@ -1348,7 +1330,7 @@ class SlurmBackend(ShakeBackend):
     @staticmethod
     def _parse_mem(mem_str: str) -> int:
         """Parse a Slurm memory string (e.g. '4G', '512M') to megabytes."""
-        return _parse_mem_str(mem_str)
+        return _parse_slurm_mem(mem_str)
 
     @staticmethod
     def _format_mem(mb: int) -> str:

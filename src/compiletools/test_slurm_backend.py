@@ -15,20 +15,20 @@ import pytest
 
 import compiletools.diagnostics
 import compiletools.trace_backend  # ensure registered
-from compiletools.build_backend import available_backends, get_backend_class, is_backend_available
-from compiletools.build_context import BuildContext
-from compiletools.build_graph import BuildGraph, BuildRule
-from compiletools.testhelper import TempDirContextNoChange, make_backend_args
-from compiletools.trace_backend import (
+from compiletools.build_backend import (
     _DEFAULT_SLURM_EXPORT,
-    SlurmBackend,
-    TraceStore,
-    _make_trace_entry,
     _slurm_max_wait_arg,
     _slurm_mem_arg,
     _slurm_mem_tiers_arg,
     _slurm_time_arg,
+    available_backends,
+    get_backend_class,
+    is_backend_available,
 )
+from compiletools.build_context import BuildContext
+from compiletools.build_graph import BuildGraph, BuildRule
+from compiletools.testhelper import TempDirContextNoChange, make_backend_args
+from compiletools.trace_backend import SlurmBackend, TraceStore, _make_trace_entry
 
 
 class _ScancelMock:
