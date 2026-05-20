@@ -330,3 +330,37 @@ def test_provenance_literal_for_list_value(tmp_path, monkeypatch):
     expanded_to_literal = {str(e[0]): str(e[3]) for e in entries if len(e) == 4}
     assert expanded_to_literal.get("-I/test/home/a") == "-I$HOME/a", expanded_to_literal
     assert expanded_to_literal.get("-I/bare/b") == "-I/bare/b", expanded_to_literal
+
+
+# ---------------------------------------------------------------------------
+# -vvvv attribution: show pre-expansion literal when it differs from expanded.
+# ---------------------------------------------------------------------------
+
+
+def test_pkg_config_provenance_label_includes_literal_when_expanded():
+    """When -vvvv attribution renders a pkg-config path and the matching
+    provenance entry had its value expanded from $VAR or ~, the rendered
+    label includes 'literal: <pre-expansion form>'. When literal ==
+    expanded, no literal segment appears (keeps today's output for the
+    non-expanded common case)."""
+    from compiletools.apptools import _pkg_config_provenance_label
+
+    # Expanded != literal: literal appears in the rendered label.
+    prov_expanded = {
+        "prepend-PKG-CONFIG-PATH": [
+            ("/test/home/cache/pkgconfig", "/etc/ct/site.conf", 12, "$HOME/cache/pkgconfig"),
+        ],
+    }
+    label = _pkg_config_provenance_label("/test/home/cache/pkgconfig", "prepend", prov_expanded)
+    assert "/etc/ct/site.conf:12" in label, label
+    assert "literal: $HOME/cache/pkgconfig" in label, label
+
+    # Expanded == literal: no literal segment.
+    prov_bare = {
+        "prepend-PKG-CONFIG-PATH": [
+            ("/abs/pkgconfig", "/etc/ct/site.conf", 12, "/abs/pkgconfig"),
+        ],
+    }
+    label = _pkg_config_provenance_label("/abs/pkgconfig", "prepend", prov_bare)
+    assert "/etc/ct/site.conf:12" in label, label
+    assert "literal" not in label, label

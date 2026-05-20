@@ -1155,10 +1155,16 @@ class TestSetupPkgConfigOverrides:
         captured = capsys.readouterr()
         # The conf file's prepend value resolved to <conf_dir>/pkgconfig-foo,
         # and the attribution must name the source conf and the line number.
+        # Because ${CONF_DIR} was expanded, the label also includes the
+        # pre-expansion literal — check for the two parts independently.
         assert "Prepended pkg-config path:" in captured.out
         assert str(target_dir) in captured.out
-        assert f"(from {conf_file}:1)" in captured.out, (
-            f"Expected attribution '(from {conf_file}:1)' in stdout, "
+        assert f"from {conf_file}:1" in captured.out, (
+            f"Expected attribution 'from {conf_file}:1' in stdout, "
+            f"got:\n{captured.out!r}"
+        )
+        assert "literal: ${CONF_DIR}/pkgconfig-foo" in captured.out, (
+            f"Expected 'literal: ${{CONF_DIR}}/pkgconfig-foo' in stdout, "
             f"got:\n{captured.out!r}"
         )
         # Sanity: ensure args propagated the prepend value.

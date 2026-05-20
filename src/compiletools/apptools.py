@@ -2049,11 +2049,14 @@ def _pkg_config_provenance_label(
         target_real = path
     for entry in provenance.get(key, []):
         value, source_file, lineno = entry[0], entry[1], entry[2]
+        literal = entry[3] if len(entry) >= 4 else value
         try:
             value_real = compiletools.wrappedos.realpath(value)
         except (OSError, ValueError):
             value_real = value
         if value_real == target_real:
+            if literal != value:
+                return f"(from {source_file}:{lineno}, literal: {literal})"
             return f"(from {source_file}:{lineno})"
     return "(from CLI)"
 
