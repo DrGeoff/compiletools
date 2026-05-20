@@ -16,6 +16,17 @@ from compiletools.preprocessing_cache import MacroState, get_or_compute_preproce
 from compiletools.simple_preprocessor import SimplePreprocessor
 
 
+@pytest.fixture(autouse=True)
+def _stub_filepath_by_hash(monkeypatch):
+    """Stub get_filepath_by_hash for every test so SimplePreprocessor's
+    reverse-lookup of the synthesized content hash doesn't hit the global
+    registry (which is empty in unit tests)."""
+    monkeypatch.setattr(
+        "compiletools.global_hash_registry.get_filepath_by_hash",
+        lambda *_a, **_kw: "<test-file>",
+    )
+
+
 def _make_file_analysis_result(text):
     """Build a FileAnalysisResult from raw source text (test helper)."""
     lines = text.split("\n")
@@ -90,12 +101,6 @@ class TestSimplePreprocessor:
     def setup_method(self):
         """Set up test fixtures before each test method."""
         self.ctx = BuildContext()
-
-        # Mock get_filepath_by_hash since tests don't have real files in registry
-        self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
-        self.mock_get_filepath = self.patcher.start()
-        self.mock_get_filepath.return_value = "<test-file>"
-
         self.macros = {
             sz.Str("TEST_MACRO"): sz.Str("1"),
             sz.Str("FEATURE_A"): sz.Str("1"),
@@ -103,10 +108,6 @@ class TestSimplePreprocessor:
             sz.Str("COUNT"): sz.Str("5"),
         }
         self.processor = SimplePreprocessor(self.macros, verbose=0)
-
-    def teardown_method(self):
-        """Clean up after each test method."""
-        self.patcher.stop()
 
     def test_expression_evaluation_basic_sz(self):
         """Test basic expression evaluation with StringZilla"""
@@ -520,15 +521,7 @@ class TestExpandHasFunctions:
 
     def setup_method(self):
         self.ctx = BuildContext()
-
-        self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
-        self.mock_get_filepath = self.patcher.start()
-        self.mock_get_filepath.return_value = "<test-file>"
-
         self.macros = {sz.Str("TEST_MACRO"): sz.Str("1")}
-
-    def teardown_method(self):
-        self.patcher.stop()
 
     def test_basic_has_include_expands_to_1(self):
         """__has_include(<iostream>) should expand to '1' when compiler says true."""
@@ -684,19 +677,11 @@ class TestSimplePreprocessorEdgeCases:
 
     def setup_method(self):
         self.ctx = BuildContext()
-
-        self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
-        self.mock_get_filepath = self.patcher.start()
-        self.mock_get_filepath.return_value = "<test-file>"
-
         self.macros = {
             sz.Str("DEFINED_MACRO"): sz.Str("1"),
             sz.Str("VERSION"): sz.Str("3"),
         }
         self.processor = SimplePreprocessor(self.macros, verbose=0)
-
-    def teardown_method(self):
-        self.patcher.stop()
 
     def test_unclosed_block_comment(self):
         """Unclosed /* comment should skip the rest of the expression."""
