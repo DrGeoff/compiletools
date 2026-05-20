@@ -88,3 +88,15 @@ After `apptools.parseargs` returns, `args.flags` is a frozen `Flags` dataclass. 
 ## Startup guards
 
 Two startup-time guards in `apptools` catch common misconfigurations early: (a) `_check_resolved_compiler_available` — toolchain axis pinned a compiler that isn't on PATH; (b) `_check_compiler_supports_requested_standard` — `-std=c++NN` exceeds the resolved compiler's major version per `_STD_MIN_COMPILER_VERSION`. Both name the variant chain in the diagnostic so the user knows which axis to swap.
+
+## `wrappedos` preference and the documented skip cases
+
+Prefer `compiletools.wrappedos.<fn>` over `os.path.<fn>` whenever the wrapper exists. The wrapped surface is `realpath`, `dirname`, `basename`, `getmtime`, `isfile`, `isdir`, `isabs`, `getsize`, `join`, `normpath` (plus `_sz` StringZilla variants for the same set minus `normpath`). All are `@functools.cache`'d on the input string; on hot paths that re-stat the same source/header thousands of times (dep walks, cache-key canonicalisation, object-file deduping) this turns the repeat work into a dict lookup. `join` and `normpath` are pure string ops where the wrapper exists mainly for API uniformity, but the cache is still free and removes a "well it's just normpath, who cares" temptation footgun.
+
+Skip the wrapper — and use `os.path.<fn>` directly — only when caching would be **wrong**. Three patterns recur:
+
+1. **Lock/cleanup loops** where the filesystem object is expected to appear/disappear during the call sequence. `locking.py:434` and `lock_utils.py:34` have inline `CRITICAL` comments explaining why; replicate that pattern (comment + uncached call) anywhere a lock file or sidecar is the target of the stat.
+2. **Build-output existence checks** that happen AFTER the rule that produces the output has run. Examples: `build_backend.clean()/realclean()`, `trace_backend._make_trace_entry` (post-execute output check), `ninja_backend` (post-build log read), `trim_cache` / `cache_report` (post-build cache directory walks). The cached "missing" answer from a pre-build call would be stale once the build finished.
+3. **Relative-path inputs subject to chdir.** `bazel_backend.py:113-117` has the cardinal example: `BUILD.bazel` resolved at module import would lock in the import-time cwd via `@functools.cache`, and any later `chdir` would silently return the wrong absolute path. The fix is `os.path.realpath` direct; only cache absolute paths.
+
+Functions NOT in the wrappedos surface — `os.path.{expandvars, expanduser, exists, commonpath}`, `os.environ`, `os.getcwd`, `os.walk`, `os.listdir`, `os.makedirs`, `os.symlink`, `os.unlink`, `os.replace`, `os.readlink`, `os.getpid`, `os.access`, `os.X_OK` — MUST be called as `os.<fn>` directly. Adding a wrapper is a one-line `@functools.cache` decoration in `wrappedos.py` plus a `clear_cache()` registration; do it when a function lands in a hot path with stable inputs (the bar that `normpath` cleared in commit `ed405353`).
