@@ -140,6 +140,24 @@ def make_phony_rule(name="build", inputs=()):
     return BuildRule(output=name, inputs=list(inputs), command=None, rule_type="phony")
 
 
+def _expect_sbatch_failure(graph, *, sbatch_id, state):
+    """Run `backend.execute("build")` under a SlurmBackendTestContext with
+    subprocess.check_output mocked to return `sbatch_id` then a sacct row
+    `(<id>_0, state)`. Asserts the resulting RuntimeError matches the
+    "Slurm compile jobs failed" pattern. Used by 3 TestJobFailures cases
+    that differ only in the (sbatch_id, state) pair."""
+    with SlurmBackendTestContext(graph) as (backend, _tmpdir):
+        with patch(
+            "subprocess.check_output",
+            side_effect=[
+                f"{sbatch_id}\n",
+                _sacct_output((f"{sbatch_id}_0", state)),
+            ],
+        ):
+            with pytest.raises(RuntimeError, match="Slurm compile jobs failed"):
+                backend.execute("build")
+
+
 def _single_compile_graph(output, src="src/foo.cpp"):
     """Build a graph with one compile rule + a 'build' phony aggregator.
     Returns (graph, rule). Most TestSbatchSubmission / TestJobFailures
@@ -430,53 +448,20 @@ class TestJobFailures:
     def test_failed_job_raises_runtime_error(self, tmp_path):
         out = str(tmp_path / "foo.o")
         graph, _rule = _single_compile_graph(out)
-
-        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
-            with patch(
-                "subprocess.check_output",
-                side_effect=[
-                    "99\n",  # sbatch returns array job ID
-                    _sacct_output(("99_0", "FAILED")),  # sacct for array task
-                ],
-            ):
-                with pytest.raises(RuntimeError, match="Slurm compile jobs failed"):
-                    backend.execute("build")
+        _expect_sbatch_failure(graph, sbatch_id="99", state="FAILED")
 
     def test_cancelled_job_raises_runtime_error(self, tmp_path):
         out = str(tmp_path / "foo.o")
         graph, _rule = _single_compile_graph(out)
-
-        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
-            with patch(
-                "subprocess.check_output",
-                side_effect=[
-                    "88\n",
-                    _sacct_output(("88_0", "CANCELLED")),
-                ],
-            ):
-                with pytest.raises(RuntimeError, match="Slurm compile jobs failed"):
-                    backend.execute("build")
+        _expect_sbatch_failure(graph, sbatch_id="88", state="CANCELLED")
 
     def test_failed_job_deletes_corrupt_output_file(self, tmp_path):
         """_wait_for_arrays removes the output file when a task fails (monitoring layer)."""
         out = str(tmp_path / "foo.o")
         open(out, "w").close()  # simulate corrupt artifact from prior crash
 
-        rule = make_compile_rule(output=out)
-        graph = BuildGraph()
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [out]))
-
-        with SlurmBackendTestContext(graph) as (backend, _tmpdir):
-            with patch(
-                "subprocess.check_output",
-                side_effect=[
-                    "99\n",
-                    _sacct_output(("99_0", "FAILED")),
-                ],
-            ):
-                with pytest.raises(RuntimeError, match="Slurm compile jobs failed"):
-                    backend.execute("build")
+        graph, _rule = _single_compile_graph(out)
+        _expect_sbatch_failure(graph, sbatch_id="99", state="FAILED")
 
         # Monitoring layer must delete the corrupt file on failure
         assert not os.path.exists(out)
