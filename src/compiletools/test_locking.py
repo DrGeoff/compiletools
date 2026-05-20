@@ -2,16 +2,26 @@
 
 import os
 import shutil
+import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
+import textwrap
+import time
+import unittest.mock as mock
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 import compiletools.apptools
+from compiletools.lock_utils import (
+    _PID_REUSE_TOLERANCE_SECONDS,
+    get_process_start_time,
+    is_process_alive_local,
+)
 from compiletools.locking import CIFSLock, FcntlLock, FileLock, FlockLock, LockdirLock, atomic_compile, atomic_link
 from compiletools.testhelper import requires_functional_compiler
 
@@ -78,7 +88,6 @@ class TestLockdirLock:
     def test_pid_file_includes_process_start_time(self, lock):
         """Regression: pid file format must be host:pid:starttime so we
         can detect PID reuse on busy build hosts."""
-        from compiletools.lock_utils import get_process_start_time
 
         lock.acquire()
         try:
@@ -104,7 +113,6 @@ class TestLockdirLock:
     def test_stale_detection_rejects_pid_reuse(self, lock):
         """If the pid in the file matches a live process but with a
         different start_time, the lock is stale (PID reuse)."""
-        from compiletools.lock_utils import get_process_start_time
 
         os.mkdir(lock.lockdir)
         os.chmod(lock.lockdir, 0o775)
@@ -133,7 +141,6 @@ class TestLockdirLock:
         and our pid-file write, the pid write must fail (so we retry the
         whole acquire) rather than silently re-creating the lockdir via
         os.makedirs and writing a pid file into a directory nobody owns."""
-        import unittest.mock as _mock
 
         with tempfile.TemporaryDirectory() as tmpdir:
             target = os.path.join(tmpdir, "test.o")
@@ -162,8 +169,8 @@ class TestLockdirLock:
             # Limit the retry loop so the test cannot run forever if the
             # acquire happens to keep racing.
             with (
-                _mock.patch("os.mkdir", side_effect=racy_mkdir),
-                _mock.patch("os.makedirs", side_effect=tracking_makedirs),
+                mock.patch("os.mkdir", side_effect=racy_mkdir),
+                mock.patch("os.makedirs", side_effect=tracking_makedirs),
             ):
                 try:
                     lock.acquire()
@@ -451,7 +458,6 @@ class TestFcntlLock:
         """Issue #2 regression: lock file must be group/other writable so a
         second user can reopen+lock the same inode. With umask 0o022 the
         os.open(..., 0o666) yields a 0o644 file unless we explicitly fchmod."""
-        import stat as _stat
 
         old_umask = os.umask(0o022)
         try:
@@ -461,7 +467,7 @@ class TestFcntlLock:
                 lock = FcntlLock(target, args)
                 lock.acquire()
                 try:
-                    mode = _stat.S_IMODE(os.stat(lock.lockfile).st_mode)
+                    mode = stat.S_IMODE(os.stat(lock.lockfile).st_mode)
                     assert mode == 0o666, f"Expected 0o666, got {oct(mode)}"
                 finally:
                     lock.release()
@@ -517,7 +523,6 @@ class TestFlockLock:
     def test_acquire_sets_0o666_regardless_of_umask(self):
         """Issue #2 regression: same as FcntlLock — defeat umask so a
         second user can reopen+lock the same inode."""
-        import stat as _stat
 
         old_umask = os.umask(0o022)
         try:
@@ -527,7 +532,7 @@ class TestFlockLock:
                 lock = FlockLock(target, args)
                 lock.acquire()
                 try:
-                    mode = _stat.S_IMODE(os.stat(lock.lockfile).st_mode)
+                    mode = stat.S_IMODE(os.stat(lock.lockfile).st_mode)
                     assert mode == 0o666, f"Expected 0o666, got {oct(mode)}"
                 finally:
                     lock.release()
@@ -575,7 +580,6 @@ class TestCIFSLock:
     def test_excl_holder_format_is_host_pid_starttime(self, lock):
         """Issue #4 prerequisite: excl file carries host:pid:start_time so
         peers can detect dead local holders."""
-        from compiletools.lock_utils import get_process_start_time
 
         lock.acquire()
         try:
@@ -711,7 +715,6 @@ class TestAtomicCompile:
         and atomic_link delegate to) with a mock. on_run is called with the
         cmd list before returning so tests can simulate side effects (like
         creating the -o output file). Returns the patcher's mock object."""
-        from unittest.mock import MagicMock
 
         mock = MagicMock()
 
@@ -981,7 +984,6 @@ class TestAtomicLink:
 
     @staticmethod
     def _patch_runner(returncode=0, on_run=None):
-        from unittest.mock import MagicMock
 
         mock = MagicMock()
 
@@ -1376,11 +1378,9 @@ class TestPidReuseTolerance:
     Linux (0.1s) where /proc/[pid]/stat is fine-grained, looser elsewhere."""
 
     def test_tolerance_constant_linux_is_0_1s(self):
-        import sys as _sys
 
-        from compiletools.lock_utils import _PID_REUSE_TOLERANCE_SECONDS
 
-        if _sys.platform.startswith("linux"):
+        if sys.platform.startswith("linux"):
             assert _PID_REUSE_TOLERANCE_SECONDS == 0.1
         else:
             assert _PID_REUSE_TOLERANCE_SECONDS == 1.0
@@ -1393,12 +1393,10 @@ class TestPidReuseTolerance:
         get_process_start_time returns ticks-since-boot in seconds (from
         /proc/[pid]/stat field 22), so a 0.5s offset in either format is
         still 0.5s — the arithmetic is unchanged."""
-        import sys as _sys
 
-        if not _sys.platform.startswith("linux"):
+        if not sys.platform.startswith("linux"):
             pytest.skip("Tighter tolerance is Linux-only")
 
-        from compiletools.lock_utils import get_process_start_time, is_process_alive_local
 
         recorded_start = get_process_start_time(os.getpid())
         assert recorded_start is not None, "Linux test environment must expose /proc/[pid]/stat"
@@ -1411,7 +1409,6 @@ class TestPidReuseTolerance:
 
     def test_exact_match_still_alive(self):
         """Sanity: matching start_time still resolves to ACTIVE."""
-        from compiletools.lock_utils import get_process_start_time, is_process_alive_local
 
         st = get_process_start_time(os.getpid())
         assert is_process_alive_local(os.getpid(), st) is True
@@ -1501,9 +1498,6 @@ class TestSubprocessSafety:
         must appear (proving the child received TERM via process-group
         forwarding), and the done-marker must NOT appear (proving the child
         did not run to completion as an orphan)."""
-        import signal as _signal
-        import textwrap
-        import time as _time
 
         target = tmp_path / "test.o"
         worker_script = tmp_path / "worker.py"
@@ -1549,19 +1543,19 @@ class TestSubprocessSafety:
             start_new_session=True,
         )
         try:
-            deadline = _time.time() + 15
-            while not ready_marker.exists() and _time.time() < deadline:
-                _time.sleep(0.05)
+            deadline = time.time() + 15
+            while not ready_marker.exists() and time.time() < deadline:
+                time.sleep(0.05)
             assert ready_marker.exists(), "Worker never reached ready state"
-            _time.sleep(0.5)
+            time.sleep(0.5)
 
-            proc.send_signal(_signal.SIGTERM)
+            proc.send_signal(signal.SIGTERM)
             try:
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 # Hard cleanup of worker AND any orphan children
                 try:
-                    os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                 except (OSError, ProcessLookupError):
                     pass
                 proc.wait()
@@ -1569,7 +1563,7 @@ class TestSubprocessSafety:
         finally:
             if proc.poll() is None:
                 try:
-                    os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                 except (OSError, ProcessLookupError):
                     pass
                 proc.wait()
@@ -1577,7 +1571,7 @@ class TestSubprocessSafety:
         # Wait briefly for orphan child (if any) to either write the marker or
         # not — long enough that DONE_MARKER would be created if the bug exists
         # (sleep 5 in the child) but bounded so the test is fast.
-        _time.sleep(6.0)
+        time.sleep(6.0)
 
         assert trap_marker.exists(), (
             "Child shell never received SIGTERM — signal was not forwarded to the child process group"

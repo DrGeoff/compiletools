@@ -7,6 +7,7 @@ import compiletools.headerdeps
 import compiletools.magicflags
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
+import compiletools.utils
 from compiletools.build_context import BuildContext
 from compiletools.magicflags import _HARD_ORDERINGS_KEY
 
@@ -19,7 +20,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
     def _check_flags(self, result, flag_type, expected_flags, unexpected_flags):
         """Helper to verify flags of given type contain expected flags and not unexpected ones"""
-        import stringzilla as sz
 
         flag_key = sz.Str(flag_type) if isinstance(flag_type, str) else flag_type
         flags_str = " ".join(str(flag) for flag in result[flag_key])
@@ -68,7 +68,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         result = self._parse_with_magic("cpp", "lotsofmagic/lotsofmagic.cpp")
 
         # Check that basic magic flags are present
-        import stringzilla as sz
 
         assert sz.Str("F1") in result and str(result[sz.Str("F1")]) == str([sz.Str("1")])
         assert sz.Str("F2") in result and str(result[sz.Str("F2")]) == str([sz.Str("2")])
@@ -640,7 +639,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
     def test_mixed_flag_forms_deduplication(self):
         """Test that mixed forms like '-I/path' and '-I path' are properly deduplicated"""
-        import compiletools.utils
 
         # Test mixed -I forms
         flags = ["-I/usr/include/test", "-I", "/usr/include/test", "-I/usr/include/other", "-I", "/usr/include/other"]
@@ -737,7 +735,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
     def test_cache_invalidates_on_header_magic_change(self):
         """Verify cache invalidates when header magic flags change."""
-        import stringzilla as sz
 
         # Clear all caches for test isolation
         compiletools.magicflags.MagicFlagsBase.clear_cache()
@@ -769,7 +766,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
     def test_cache_invalidates_on_readmacros_change(self):
         """Verify cache invalidates when READMACROS file changes."""
-        import stringzilla as sz
 
         # Clear all caches for test isolation
         compiletools.magicflags.MagicFlagsBase.clear_cache()
@@ -805,7 +801,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
     def test_cache_hit_when_deps_unchanged(self):
         """Verify cache hits when source and dependencies unchanged."""
-        import stringzilla as sz
 
         # Clear all caches for test isolation
         compiletools.magicflags.MagicFlagsBase.clear_cache()
@@ -1109,7 +1104,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
     @uth.requires_functional_compiler
     def test_pch_header_resolves_flag_value(self):
         """PCH stores resolved path from flag value, not the containing file."""
-        import stringzilla as sz
 
         files = uth.write_sources(
             {
@@ -1129,7 +1123,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
     def test_pch_header_from_sample(self):
         """PCH is correctly parsed from the pch sample."""
-        import stringzilla as sz
 
         source = self._get_sample_path("pch/pch_user.cpp")
         result = self._parse_with_magic("direct", source)

@@ -13,10 +13,17 @@ the per-TU cache-key pollution fix:
 
 from types import SimpleNamespace
 
+import configargparse
 import pytest
 import stringzilla as sz
 
+import compiletools.apptools
+import compiletools.apptools as apptools
+import compiletools.configutils
+import compiletools.testhelper as uth
+import compiletools.utils as utils
 from compiletools.apptools import cmdline_d_macro_names, strip_d_u_tokens, tokenize_compile_flags
+from compiletools.build_context import BuildContext
 
 
 def _make_args(cppflags="", cflags="", cxxflags=""):
@@ -177,12 +184,7 @@ class TestArgsTokensAfterParseargs:
         Mirrors create_magic_parser but skips the magicflags surface,
         which we don't need for these tests.
         """
-        import configargparse
 
-        import compiletools.apptools
-        import compiletools.configutils
-        import compiletools.testhelper as uth
-        from compiletools.build_context import BuildContext
 
         extra_args = extra_args or []
         temp_config_name = uth.create_temp_config(tempdir)
@@ -202,9 +204,6 @@ class TestArgsTokensAfterParseargs:
         return compiletools.apptools.parseargs(cap, argv, context=BuildContext())
 
     def test_args_get_tokens_after_parseargs(self, tmp_path):
-        import compiletools.apptools as apptools
-        import compiletools.testhelper as uth
-        import compiletools.utils as utils
 
         uth.delete_existing_parsers()
         apptools.resetcallbacks()
@@ -229,8 +228,6 @@ class TestArgsTokensAfterParseargs:
 
     def test_args_tokens_reflect_appended_cppflags(self, tmp_path):
         """append-CPPFLAGS contributions must appear in the token list."""
-        import compiletools.apptools as apptools
-        import compiletools.testhelper as uth
 
         uth.delete_existing_parsers()
         apptools.resetcallbacks()
