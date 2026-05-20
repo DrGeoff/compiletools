@@ -65,25 +65,25 @@ class TestLockdirLock:
 
         assert lock._is_lock_stale() is True
 
-    def test_permissions_error_handled(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args(verbose=3)
-            lock = LockdirLock(target, args)
+    def test_permissions_error_handled(self, tmp_path):
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args(verbose=3)
+        lock = LockdirLock(target, args)
 
-            # Acquire to create lockdir, then test permissions
-            lock.acquire()
-            # _set_lockdir_permissions runs during acquire, just verify no crash
-            lock.release()
+        # Acquire to create lockdir, then test permissions
+        lock.acquire()
+        # _set_lockdir_permissions runs during acquire, just verify no crash
+        lock.release()
 
-    def test_auto_detect_sleep_interval(self):
+    def test_auto_detect_sleep_interval(self, tmp_path):
         """When sleep_interval_lockdir is None, auto-detect from filesystem."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args(sleep_interval_lockdir=None)
-            lock = LockdirLock(target, args)
-            # Should have auto-detected a sleep interval
-            assert lock.sleep_interval > 0
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args(sleep_interval_lockdir=None)
+        lock = LockdirLock(target, args)
+        # Should have auto-detected a sleep interval
+        assert lock.sleep_interval > 0
 
     def test_pid_file_includes_process_start_time(self, lock):
         """Regression: pid file format must be host:pid:starttime so we
@@ -189,38 +189,38 @@ class TestLockdirLock:
                     "lockdir, not a makedirs-bearing helper."
                 )
 
-    def test_auto_detect_sleep_interval_fallback_on_error(self):
+    def test_auto_detect_sleep_interval_fallback_on_error(self, tmp_path):
         """When filesystem detection fails, fall back to 0.05."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args(sleep_interval_lockdir=None)
-            with patch("compiletools.filesystem_utils.get_filesystem_type", side_effect=RuntimeError("fail")):
-                lock = LockdirLock(target, args)
-                assert lock.sleep_interval == 0.05
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args(sleep_interval_lockdir=None)
+        with patch("compiletools.filesystem_utils.get_filesystem_type", side_effect=RuntimeError("fail")):
+            lock = LockdirLock(target, args)
+            assert lock.sleep_interval == 0.05
 
-    def test_set_lockdir_permissions_chown_permission_error(self):
+    def test_set_lockdir_permissions_chown_permission_error(self, tmp_path):
         """PermissionError on chown is handled gracefully."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            # Create the target file so chown path is reached
-            with open(target, "w") as f:
-                f.write("x")
-            args = _make_lock_args()
-            lock = LockdirLock(target, args)
-            os.mkdir(lock.lockdir)
-            with patch("os.chown", side_effect=PermissionError("not allowed")):
-                lock._set_lockdir_permissions()  # Should not raise
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        # Create the target file so chown path is reached
+        with open(target, "w") as f:
+            f.write("x")
+        args = _make_lock_args()
+        lock = LockdirLock(target, args)
+        os.mkdir(lock.lockdir)
+        with patch("os.chown", side_effect=PermissionError("not allowed")):
+            lock._set_lockdir_permissions()  # Should not raise
 
-    def test_set_lockdir_permissions_oserror_verbose(self, capsys):
+    def test_set_lockdir_permissions_oserror_verbose(self, capsys, tmp_path):
         """OSError during chmod prints warning when verbose >= 2."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args(verbose=2)
-            lock = LockdirLock(target, args)
-            os.mkdir(lock.lockdir)
-            with patch("os.chmod", side_effect=OSError("perm denied")):
-                lock._set_lockdir_permissions()
-            assert "Could not set lockdir permissions" in capsys.readouterr().err
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args(verbose=2)
+        lock = LockdirLock(target, args)
+        os.mkdir(lock.lockdir)
+        with patch("os.chmod", side_effect=OSError("perm denied")):
+            lock._set_lockdir_permissions()
+        assert "Could not set lockdir permissions" in capsys.readouterr().err
 
     def test_is_lock_stale_no_pid_fresh(self, lock):
         """Lock without PID file within grace period is NOT stale."""
@@ -228,26 +228,26 @@ class TestLockdirLock:
         # Fresh lock (age < grace period) => not stale
         assert lock._is_lock_stale() is False
 
-    def test_is_lock_stale_no_pid_old(self):
+    def test_is_lock_stale_no_pid_old(self, tmp_path):
         """Lock without PID file older than cross_host_timeout IS stale."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args(lock_cross_host_timeout=1, lock_creation_grace_period=0)
-            lock = LockdirLock(target, args)
-            os.mkdir(lock.lockdir)
-            # Make the lock appear old
-            with patch.object(lock, "_get_lock_age_seconds", return_value=10):
-                assert lock._is_lock_stale() is True
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args(lock_cross_host_timeout=1, lock_creation_grace_period=0)
+        lock = LockdirLock(target, args)
+        os.mkdir(lock.lockdir)
+        # Make the lock appear old
+        with patch.object(lock, "_get_lock_age_seconds", return_value=10):
+            assert lock._is_lock_stale() is True
 
-    def test_is_lock_stale_no_pid_middle(self):
+    def test_is_lock_stale_no_pid_middle(self, tmp_path):
         """Lock without PID in middle ground (past grace, before timeout) is NOT stale."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args(lock_cross_host_timeout=300, lock_creation_grace_period=2)
-            lock = LockdirLock(target, args)
-            os.mkdir(lock.lockdir)
-            with patch.object(lock, "_get_lock_age_seconds", return_value=10):
-                assert lock._is_lock_stale() is False
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args(lock_cross_host_timeout=300, lock_creation_grace_period=2)
+        lock = LockdirLock(target, args)
+        os.mkdir(lock.lockdir)
+        with patch.object(lock, "_get_lock_age_seconds", return_value=10):
+            assert lock._is_lock_stale() is False
 
     def test_is_lock_stale_cross_host(self, lock):
         """Cross-host lock is NOT stale (can't verify remote process)."""
@@ -256,18 +256,18 @@ class TestLockdirLock:
             f.write("otherhost.example.com:12345\n")
         assert lock._is_lock_stale() is False
 
-    def test_remove_stale_lock_success(self, capsys):
+    def test_remove_stale_lock_success(self, capsys, tmp_path):
         """Successfully removes a stale lock."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args(verbose=1)
-            lock = LockdirLock(target, args)
-            os.mkdir(lock.lockdir)
-            with open(lock.pid_file, "w") as f:
-                f.write(f"{lock.hostname}:99999999\n")
-            assert lock._remove_stale_lock() is True
-            assert not os.path.exists(lock.lockdir)
-            assert "Removed stale lock" in capsys.readouterr().err
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args(verbose=1)
+        lock = LockdirLock(target, args)
+        os.mkdir(lock.lockdir)
+        with open(lock.pid_file, "w") as f:
+            f.write(f"{lock.hostname}:99999999\n")
+        assert lock._remove_stale_lock() is True
+        assert not os.path.exists(lock.lockdir)
+        assert "Removed stale lock" in capsys.readouterr().err
 
     def test_remove_stale_lock_permission_error(self, lock):
         """Raises PermissionError when lock cannot be removed."""
@@ -300,39 +300,39 @@ class TestLockdirLock:
         assert os.path.isdir(lock.lockdir)
         lock.release()
 
-    def test_acquire_creates_parent_dir(self):
+    def test_acquire_creates_parent_dir(self, tmp_path):
         """Acquire creates parent directory if missing."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "subdir", "test.o")
-            args = _make_lock_args()
-            lock = LockdirLock(target, args)
-            lock.acquire()
-            assert os.path.isdir(lock.lockdir)
-            lock.release()
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "subdir", "test.o")
+        args = _make_lock_args()
+        lock = LockdirLock(target, args)
+        lock.acquire()
+        assert os.path.isdir(lock.lockdir)
+        lock.release()
 
-    def test_acquire_filenotfounderror_retry(self):
+    def test_acquire_filenotfounderror_retry(self, tmp_path):
         """FileNotFoundError during pid write triggers retry."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args(verbose=1)
-            lock = LockdirLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args(verbose=1)
+        lock = LockdirLock(target, args)
 
-            call_count = 0
-            real_mkdir = os.mkdir
+        call_count = 0
+        real_mkdir = os.mkdir
 
-            def flaky_mkdir(path, *a, **kw):
-                nonlocal call_count
-                call_count += 1
-                real_mkdir(path, *a, **kw)
-                if call_count == 1:
-                    # Simulate lockdir disappearing during pid write
-                    shutil.rmtree(path)
-                    raise FileNotFoundError("lockdir vanished")
+        def flaky_mkdir(path, *a, **kw):
+            nonlocal call_count
+            call_count += 1
+            real_mkdir(path, *a, **kw)
+            if call_count == 1:
+                # Simulate lockdir disappearing during pid write
+                shutil.rmtree(path)
+                raise FileNotFoundError("lockdir vanished")
 
-            with patch("os.mkdir", side_effect=flaky_mkdir):
-                lock.acquire()
-            assert os.path.isdir(lock.lockdir)
-            lock.release()
+        with patch("os.mkdir", side_effect=flaky_mkdir):
+            lock.acquire()
+        assert os.path.isdir(lock.lockdir)
+        lock.release()
 
     def test_acquire_filenotfounderror_max_retries(self, lock):
         """RuntimeError after 3 failed attempts."""
@@ -346,16 +346,16 @@ class TestLockdirLock:
             with pytest.raises(RuntimeError, match="Failed to acquire lock after 3 attempts"):
                 lock.acquire()
 
-    def test_release_oserror_verbose(self, capsys):
+    def test_release_oserror_verbose(self, capsys, tmp_path):
         """Release OSError prints warning when verbose >= 2."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args(verbose=2)
-            lock = LockdirLock(target, args)
-            # Don't actually acquire - lockdir doesn't exist, release should handle it
-            lock.release()
-            # rmdir on non-existent dir raises OSError, caught with verbose warning
-            assert "Failed to release lock" in capsys.readouterr().err
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args(verbose=2)
+        lock = LockdirLock(target, args)
+        # Don't actually acquire - lockdir doesn't exist, release should handle it
+        lock.release()
+        # rmdir on non-existent dir raises OSError, caught with verbose warning
+        assert "Failed to release lock" in capsys.readouterr().err
 
     def test_get_lock_age_seconds(self, lock):
         """_get_lock_age_seconds delegates to lock_utils."""
@@ -401,25 +401,25 @@ class TestFcntlLock:
         # Lock file is intentionally NOT removed
         assert os.path.exists(lock.lockfile)
 
-    def test_creates_parent_dir(self):
+    def test_creates_parent_dir(self, tmp_path):
         """Acquire creates parent directory if missing."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "subdir", "test.o")
-            args = _make_lock_args()
-            lock = FcntlLock(target, args)
-            lock.acquire()
-            assert os.path.exists(lock.lockfile)
-            lock.release()
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "subdir", "test.o")
+        args = _make_lock_args()
+        lock = FcntlLock(target, args)
+        lock.acquire()
+        assert os.path.exists(lock.lockfile)
+        lock.release()
 
-    def test_release_error_handled(self, capsys):
+    def test_release_error_handled(self, capsys, tmp_path):
         """Release handles errors gracefully."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args(verbose=2)
-            lock = FcntlLock(target, args)
-            lock.fd = None
-            # Release without acquire — should not crash
-            lock.release()
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args(verbose=2)
+        lock = FcntlLock(target, args)
+        lock.fd = None
+        # Release without acquire — should not crash
+        lock.release()
 
     def test_locks_sidecar_not_target(self):
         """FcntlLock.lockfile should be ``<target>.lock`` sidecar, never the
@@ -558,24 +558,24 @@ class TestCIFSLock:
         # window does not have its base file deleted underneath it.
         assert os.path.exists(lock.lockfile)
 
-    def test_acquire_creates_parent_dir(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "subdir", "test.o")
-            args = _make_lock_args()
-            lock = CIFSLock(target, args)
-            lock.acquire()
-            lock.release()
+    def test_acquire_creates_parent_dir(self, tmp_path):
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "subdir", "test.o")
+        args = _make_lock_args()
+        lock = CIFSLock(target, args)
+        lock.acquire()
+        lock.release()
 
-    def test_release_oserror_verbose(self, capsys):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args(verbose=2)
-            lock = CIFSLock(target, args)
-            lock.fd = None
-            # Release without acquire - should handle gracefully
-            with patch("os.path.exists", return_value=True), patch("os.unlink", side_effect=OSError("fail")):
-                lock.release()
-            assert "Failed to release CIFS lock" in capsys.readouterr().err
+    def test_release_oserror_verbose(self, capsys, tmp_path):
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args(verbose=2)
+        lock = CIFSLock(target, args)
+        lock.fd = None
+        # Release without acquire - should handle gracefully
+        with patch("os.path.exists", return_value=True), patch("os.unlink", side_effect=OSError("fail")):
+            lock.release()
+        assert "Failed to release CIFS lock" in capsys.readouterr().err
 
     def test_excl_holder_format_is_host_pid_starttime(self, lock):
         """Issue #4 prerequisite: excl file carries host:pid:start_time so
@@ -629,16 +629,16 @@ class TestCIFSLock:
             finally:
                 holder.release()
 
-    def test_acquire_does_not_remove_cross_host_holder(self):
+    def test_acquire_does_not_remove_cross_host_holder(self, tmp_path):
         """Cross-host holders cannot be verified; we must not evict them."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args(sleep_interval_cifs=0.01, lock_cross_host_timeout=600)
-            lock = CIFSLock(target, args)
-            with open(lock.lockfile_excl, "w") as f:
-                f.write("some.other.host.example.com:12345:1.0\n")
-            # is_excl_stale should be False (cross-host)
-            assert lock._is_excl_stale() is False
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args(sleep_interval_cifs=0.01, lock_cross_host_timeout=600)
+        lock = CIFSLock(target, args)
+        with open(lock.lockfile_excl, "w") as f:
+            f.write("some.other.host.example.com:12345:1.0\n")
+        # is_excl_stale should be False (cross-host)
+        assert lock._is_excl_stale() is False
 
     def test_release_does_not_unlink_base_lockfile(self, lock):
         """Issue #3: release must leave self.lockfile in place so a peer who
@@ -656,15 +656,15 @@ class TestCIFSLock:
 class TestFlockLockRelease:
     """Additional FlockLock tests."""
 
-    def test_release_without_acquire(self):
+    def test_release_without_acquire(self, tmp_path):
         """Release without acquire should not crash."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args(verbose=2)
-            lock = FlockLock(target, args)
-            lock.fd = None
-            # Release without acquire — should not crash
-            lock.release()
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args(verbose=2)
+        lock = FlockLock(target, args)
+        lock.fd = None
+        # Release without acquire — should not crash
+        lock.release()
 
     def test_acquire_creates_parent_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -678,19 +678,19 @@ class TestFlockLockRelease:
 class TestDirectCompileProperty:
     """Test that non-fcntl lock classes have direct_compile = False."""
 
-    def test_lockdir_direct_compile_false(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = LockdirLock(target, args)
-            assert lock.direct_compile is False
+    def test_lockdir_direct_compile_false(self, tmp_path):
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        lock = LockdirLock(target, args)
+        assert lock.direct_compile is False
 
-    def test_flock_direct_compile_true(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
-            assert lock.direct_compile is True
+    def test_flock_direct_compile_true(self, tmp_path):
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
+        assert lock.direct_compile is True
 
     def test_cifs_direct_compile_false(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -995,39 +995,39 @@ class TestAtomicLink:
         mock.side_effect = fake_run
         return patch("compiletools.locking._run_with_signal_forwarding", new=mock), mock
 
-    def test_atomic_link_runs_command_under_lock(self):
+    def test_atomic_link_runs_command_under_lock(self, tmp_path):
         """Lock is acquired before command runs and released after."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.a")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.a")
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
 
-            call_order = []
-            orig_acquire = lock.acquire
-            orig_release = lock.release
+        call_order = []
+        orig_acquire = lock.acquire
+        orig_release = lock.release
 
-            def tracking_acquire():
-                call_order.append("acquire")
-                return orig_acquire()
+        def tracking_acquire():
+            call_order.append("acquire")
+            return orig_acquire()
 
-            def tracking_release():
-                call_order.append("release")
-                return orig_release()
+        def tracking_release():
+            call_order.append("release")
+            return orig_release()
 
-            lock.acquire = tracking_acquire
-            lock.release = tracking_release
+        lock.acquire = tracking_acquire
+        lock.release = tracking_release
 
-            def on_run(cmd, *args, **kwargs):
-                call_order.append("run")
-                # Simulate ar producing the temp archive
-                tmp = cmd[cmd.index("rcs") + 1]
-                open(tmp, "w").close()
+        def on_run(cmd, *args, **kwargs):
+            call_order.append("run")
+            # Simulate ar producing the temp archive
+            tmp = cmd[cmd.index("rcs") + 1]
+            open(tmp, "w").close()
 
-            patcher, _ = self._patch_runner(on_run=on_run)
-            with patcher:
-                atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
+        patcher, _ = self._patch_runner(on_run=on_run)
+        with patcher:
+            atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
 
-            assert call_order == ["acquire", "run", "release"]
+        assert call_order == ["acquire", "run", "release"]
 
     def test_atomic_link_writes_to_temp_then_renames(self):
         """atomic_link writes to a .tmp file and renames to target — never
@@ -1056,37 +1056,37 @@ class TestAtomicLink:
             for f in os.listdir(tmpdir):
                 assert ".tmp" not in f
 
-    def test_atomic_link_returns_zero_on_success(self):
+    def test_atomic_link_returns_zero_on_success(self, tmp_path):
         """Successful link returns 0."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.a")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.a")
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
 
-            def on_run(cmd, *args, **kwargs):
-                tmp = cmd[2]
-                open(tmp, "w").close()
+        def on_run(cmd, *args, **kwargs):
+            tmp = cmd[2]
+            open(tmp, "w").close()
 
-            patcher, _ = self._patch_runner(on_run=on_run)
-            with patcher:
-                result = atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
-                assert result == 0
+        patcher, _ = self._patch_runner(on_run=on_run)
+        with patcher:
+            result = atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
+            assert result == 0
 
-    def test_atomic_link_raises_on_failure(self):
+    def test_atomic_link_raises_on_failure(self, tmp_path):
         """Failed link raises CalledProcessError and releases lock."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.a")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.a")
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
 
-            patcher, _ = self._patch_runner(returncode=1)
-            with patcher, pytest.raises(subprocess.CalledProcessError) as exc_info:
-                atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
-            assert exc_info.value.returncode == 1
+        patcher, _ = self._patch_runner(returncode=1)
+        with patcher, pytest.raises(subprocess.CalledProcessError) as exc_info:
+            atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
+        assert exc_info.value.returncode == 1
 
-            lock2 = FlockLock(target, args)
-            lock2.acquire()
-            lock2.release()
+        lock2 = FlockLock(target, args)
+        lock2.acquire()
+        lock2.release()
 
     def test_atomic_link_no_torn_target_when_link_fails(self):
         """If the linker dies, the target is NOT replaced — peers see the
@@ -1114,26 +1114,26 @@ class TestAtomicLink:
             for f in os.listdir(tmpdir):
                 assert ".tmp" not in f
 
-    def test_atomic_link_ld_o_form_uses_temp(self):
+    def test_atomic_link_ld_o_form_uses_temp(self, tmp_path):
         """ld/cc -o form: the path after -o is rewritten to the .tmp path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "myexe")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "myexe")
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
 
-            captured = {}
+        captured = {}
 
-            def fake_ld(cmd, *args, **kwargs):
-                captured["cmd"] = list(cmd)
-                tmp = cmd[cmd.index("-o") + 1]
-                open(tmp, "w").close()
+        def fake_ld(cmd, *args, **kwargs):
+            captured["cmd"] = list(cmd)
+            tmp = cmd[cmd.index("-o") + 1]
+            open(tmp, "w").close()
 
-            patcher, _ = self._patch_runner(on_run=fake_ld)
-            with patcher:
-                atomic_link(lock, target, ["c++", "foo.o", "bar.o", "-o", target])
+        patcher, _ = self._patch_runner(on_run=fake_ld)
+        with patcher:
+            atomic_link(lock, target, ["c++", "foo.o", "bar.o", "-o", target])
 
-            assert captured["cmd"][captured["cmd"].index("-o") + 1].endswith(".tmp")
-            assert os.path.exists(target)
+        assert captured["cmd"][captured["cmd"].index("-o") + 1].endswith(".tmp")
+        assert os.path.exists(target)
 
     def test_atomic_link_ar_append_seeds_temp_with_existing_archive(self):
         """ar with mutating mode (r/q/m) seeds the temp file with the
@@ -1183,23 +1183,23 @@ class TestAtomicLink:
             assert "atomic_link could not find target" in err
             assert "no temp+rename atomicity" in err
 
-    def test_atomic_link_no_warning_when_rewrite_succeeds(self, capsys):
+    def test_atomic_link_no_warning_when_rewrite_succeeds(self, capsys, tmp_path):
         """Sanity: when -o target is present, no warning is emitted."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.bin")
-            args = _make_lock_args(verbose=2)
-            lock = FlockLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.bin")
+        args = _make_lock_args(verbose=2)
+        lock = FlockLock(target, args)
 
-            def on_run(cmd, *args, **kwargs):
-                tmp = cmd[cmd.index("-o") + 1]
-                open(tmp, "w").close()
+        def on_run(cmd, *args, **kwargs):
+            tmp = cmd[cmd.index("-o") + 1]
+            open(tmp, "w").close()
 
-            patcher, _ = self._patch_runner(on_run=on_run)
-            with patcher:
-                atomic_link(lock, target, ["c++", "-o", target, "foo.o"])
+        patcher, _ = self._patch_runner(on_run=on_run)
+        with patcher:
+            atomic_link(lock, target, ["c++", "-o", target, "foo.o"])
 
-            err = capsys.readouterr().err
-            assert "atomic_link could not find target" not in err
+        err = capsys.readouterr().err
+        assert "atomic_link could not find target" not in err
 
     def test_atomic_link_skips_seed_for_empty_target(self):
         """An empty (0-byte) target is the lock-file artifact left by
@@ -1232,46 +1232,46 @@ class TestAtomicLink:
             with open(target) as f:
                 assert f.read() == "FRESH_ARCHIVE"
 
-    def test_atomic_link_skip_if_exists_returns_none_without_link(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.exe")
-            with open(target, "w") as f:
-                f.write("PEER_PRODUCED")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
+    def test_atomic_link_skip_if_exists_returns_none_without_link(self, tmp_path):
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.exe")
+        with open(target, "w") as f:
+            f.write("PEER_PRODUCED")
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
 
-            patcher, mock_run = self._patch_runner()
-            with patcher:
-                result = atomic_link(lock, target, ["cc", "-o", target, "foo.o"], skip_if_exists=True)
+        patcher, mock_run = self._patch_runner()
+        with patcher:
+            result = atomic_link(lock, target, ["cc", "-o", target, "foo.o"], skip_if_exists=True)
 
-            assert result is None
-            mock_run.assert_not_called()
-            with open(target) as f:
-                assert f.read() == "PEER_PRODUCED"
-            for f in os.listdir(tmpdir):
-                assert ".tmp" not in f
+        assert result is None
+        mock_run.assert_not_called()
+        with open(target) as f:
+            assert f.read() == "PEER_PRODUCED"
+        for f in os.listdir(tmpdir):
+            assert ".tmp" not in f
 
-    def test_atomic_link_skip_if_exists_false_links_even_if_present(self):
+    def test_atomic_link_skip_if_exists_false_links_even_if_present(self, tmp_path):
         # Required by trace_backend's else branch where verify-trace failed.
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.exe")
-            with open(target, "w") as f:
-                f.write("STALE")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.exe")
+        with open(target, "w") as f:
+            f.write("STALE")
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
 
-            def on_run(cmd, *args, **kwargs):
-                tmp = cmd[cmd.index("-o") + 1]
-                with open(tmp, "w") as f:
-                    f.write("FRESH")
+        def on_run(cmd, *args, **kwargs):
+            tmp = cmd[cmd.index("-o") + 1]
+            with open(tmp, "w") as f:
+                f.write("FRESH")
 
-            patcher, mock_run = self._patch_runner(on_run=on_run)
-            with patcher:
-                atomic_link(lock, target, ["cc", "-o", target, "foo.o"])
+        patcher, mock_run = self._patch_runner(on_run=on_run)
+        with patcher:
+            atomic_link(lock, target, ["cc", "-o", target, "foo.o"])
 
-            mock_run.assert_called_once()
-            with open(target) as f:
-                assert f.read() == "FRESH"
+        mock_run.assert_called_once()
+        with open(target) as f:
+            assert f.read() == "FRESH"
 
     def test_atomic_link_skip_if_exists_no_target_links(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1305,65 +1305,65 @@ class TestFileLock:
         with FileLock("/some/file.o", args):
             pass  # Should not crash
 
-    def test_detection_error_defaults_to_flock(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args(verbose=3)
-            with patch("compiletools.filesystem_utils.get_filesystem_type", side_effect=RuntimeError("fail")):
-                lock = FileLock(target, args)
-                assert isinstance(lock.lock, FlockLock)
+    def test_detection_error_defaults_to_flock(self, tmp_path):
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args(verbose=3)
+        with patch("compiletools.filesystem_utils.get_filesystem_type", side_effect=RuntimeError("fail")):
+            lock = FileLock(target, args)
+            assert isinstance(lock.lock, FlockLock)
 
-    def test_unknown_fs_defaults_to_flock(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            with (
-                patch("compiletools.filesystem_utils.get_filesystem_type", return_value="unknown"),
-                patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"),
-            ):
-                lock = FileLock(target, args)
-                assert isinstance(lock.lock, FlockLock)
+    def test_unknown_fs_defaults_to_flock(self, tmp_path):
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        with (
+            patch("compiletools.filesystem_utils.get_filesystem_type", return_value="unknown"),
+            patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"),
+        ):
+            lock = FileLock(target, args)
+            assert isinstance(lock.lock, FlockLock)
 
-    def test_lockdir_strategy_selected(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            with (
-                patch("compiletools.filesystem_utils.get_filesystem_type", return_value="nfs"),
-                patch("compiletools.filesystem_utils.get_lock_strategy", return_value="lockdir"),
-            ):
-                lock = FileLock(target, args)
-                assert isinstance(lock.lock, LockdirLock)
+    def test_lockdir_strategy_selected(self, tmp_path):
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        with (
+            patch("compiletools.filesystem_utils.get_filesystem_type", return_value="nfs"),
+            patch("compiletools.filesystem_utils.get_lock_strategy", return_value="lockdir"),
+        ):
+            lock = FileLock(target, args)
+            assert isinstance(lock.lock, LockdirLock)
 
-    def test_fcntl_strategy_selected(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            with (
-                patch("compiletools.filesystem_utils.get_filesystem_type", return_value="gpfs"),
-                patch("compiletools.filesystem_utils.get_lock_strategy", return_value="fcntl"),
-            ):
-                lock = FileLock(target, args)
-                assert isinstance(lock.lock, FcntlLock)
+    def test_fcntl_strategy_selected(self, tmp_path):
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        with (
+            patch("compiletools.filesystem_utils.get_filesystem_type", return_value="gpfs"),
+            patch("compiletools.filesystem_utils.get_lock_strategy", return_value="fcntl"),
+        ):
+            lock = FileLock(target, args)
+            assert isinstance(lock.lock, FcntlLock)
 
-    def test_cifs_strategy_selected(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            with (
-                patch("compiletools.filesystem_utils.get_filesystem_type", return_value="cifs"),
-                patch("compiletools.filesystem_utils.get_lock_strategy", return_value="cifs"),
-            ):
-                lock = FileLock(target, args)
-                assert isinstance(lock.lock, CIFSLock)
+    def test_cifs_strategy_selected(self, tmp_path):
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        with (
+            patch("compiletools.filesystem_utils.get_filesystem_type", return_value="cifs"),
+            patch("compiletools.filesystem_utils.get_lock_strategy", return_value="cifs"),
+        ):
+            lock = FileLock(target, args)
+            assert isinstance(lock.lock, CIFSLock)
 
-    def test_context_manager_acquires_and_releases(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            with FileLock(target, args) as fl:
-                # Lock should be acquired
-                assert fl.lock is not None
+    def test_context_manager_acquires_and_releases(self, tmp_path):
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        with FileLock(target, args) as fl:
+            # Lock should be acquired
+            assert fl.lock is not None
 
     def test_creates_parent_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1475,13 +1475,13 @@ class TestSubprocessSafety:
             lock = CIFSLock(target, args)
             self._assert_popen_used_with_new_session(lambda: atomic_compile(lock, target, ["c++", "-c", "test.c"]))
 
-    def test_atomic_compile_direct_starts_new_session(self):
+    def test_atomic_compile_direct_starts_new_session(self, tmp_path):
         """Direct compile path must also use start_new_session=True."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
-            self._assert_popen_used_with_new_session(lambda: atomic_compile(lock, target, ["c++", "-c", "test.c"]))
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
+        self._assert_popen_used_with_new_session(lambda: atomic_compile(lock, target, ["c++", "-c", "test.c"]))
 
     def test_atomic_link_starts_new_session(self):
         """atomic_link must use start_new_session=True for signal forwarding."""
