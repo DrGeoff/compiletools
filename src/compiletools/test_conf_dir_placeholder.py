@@ -67,6 +67,19 @@ def _parse_with_flavor_conf(flavor: str, third_cwd: str, monkeypatch) -> argpars
     return _parse_conf(flavor_conf, third_cwd, monkeypatch)
 
 
+def _write_conf(tmp_path, content: str, conf_subdir: str = "axis-confs", conf_name: str = "extras.conf"):
+    """Write ``content`` to a fresh conf file under ``tmp_path/<conf_subdir>/<conf_name>``
+    and return ``(conf_path, conf_dir, other_cwd)`` for the canonical 3-line setup.
+    """
+    conf_dir = tmp_path / conf_subdir
+    conf_dir.mkdir()
+    conf = conf_dir / conf_name
+    conf.write_text(content)
+    other_cwd = tmp_path / "other"
+    other_cwd.mkdir()
+    return conf, conf_dir, other_cwd
+
+
 # ---------------------------------------------------------------------------
 # Option 1: ${CONF_DIR} expansion at parse time.
 # ---------------------------------------------------------------------------
@@ -201,42 +214,22 @@ def test_conf_dir_placeholder_works_for_non_path_keys(tmp_path, monkeypatch):
     have the include-dir resolve correctly. Locks in the generality
     that makes Option 1 (placeholder) preferable to Option 2 (auto-
     anchor `*-PATH`-suffixed keys only)."""
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
-    conf.write_text("append-CXXFLAGS = -I${CONF_DIR}/include\n")
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
-
+    conf, conf_dir, other_cwd = _write_conf(tmp_path, "append-CXXFLAGS = -I${CONF_DIR}/include\n")
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
 
     expanded = f"-I{conf_dir}/include"
     flat = " ".join(args.append_cxxflags) if isinstance(args.append_cxxflags, list) else str(args.append_cxxflags)
-    assert expanded in flat, (
-        f"expected {expanded!r} in append_cxxflags={args.append_cxxflags!r}"
-    )
-    assert "${CONF_DIR}" not in flat, (
-        f"literal ${{CONF_DIR}} survived in append_cxxflags={args.append_cxxflags!r}"
-    )
+    assert expanded in flat, f"expected {expanded!r} in append_cxxflags={args.append_cxxflags!r}"
+    assert "${CONF_DIR}" not in flat, f"literal ${{CONF_DIR}} survived in append_cxxflags={args.append_cxxflags!r}"
 
 
-def test_conf_dir_placeholder_handles_multiple_occurrences_in_one_value(
-    tmp_path, monkeypatch
-):
+def test_conf_dir_placeholder_handles_multiple_occurrences_in_one_value(tmp_path, monkeypatch):
     """Multiple ``${CONF_DIR}`` tokens in the same value must all expand.
     Guards against an implementation that uses ``.replace`` with
     ``count=1`` or similar."""
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
-    conf.write_text(
-        "append-CXXFLAGS = -I${CONF_DIR}/include -L${CONF_DIR}/lib\n"
+    conf, conf_dir, other_cwd = _write_conf(
+        tmp_path, "append-CXXFLAGS = -I${CONF_DIR}/include -L${CONF_DIR}/lib\n"
     )
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
-
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
 
     flat = " ".join(args.append_cxxflags) if isinstance(args.append_cxxflags, list) else str(args.append_cxxflags)
@@ -257,26 +250,14 @@ def test_bare_relative_paths_are_not_auto_anchored(tmp_path, monkeypatch):
     cwd-relative, which is broken from a non-conf-dir cwd, but that
     matches the CLI's own behavior for ``--prepend-PKG-CONFIG-PATH=
     relative/path``."""
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
-    conf.write_text("prepend-PKG-CONFIG-PATH = ct.conf.d/pkgconfig-c\n")
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
-
+    conf, conf_dir, other_cwd = _write_conf(tmp_path, "prepend-PKG-CONFIG-PATH = ct.conf.d/pkgconfig-c\n")
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
     entries = list(args.prepend_pkg_config_path)
 
     bare_literal = os.path.join("ct.conf.d", "pkgconfig-c")
-    assert bare_literal in entries, (
-        f"Bare relative paths must survive verbatim (no auto-anchor); "
-        f"got: {entries!r}"
-    )
+    assert bare_literal in entries, f"Bare relative paths must survive verbatim (no auto-anchor); got: {entries!r}"
     auto_anchored = str(conf_dir / "ct.conf.d" / "pkgconfig-c")
-    assert auto_anchored not in entries, (
-        f"Bare relative was auto-anchored to {auto_anchored!r}; got: {entries!r}"
-    )
+    assert auto_anchored not in entries, f"Bare relative was auto-anchored to {auto_anchored!r}; got: {entries!r}"
 
 
 def test_segment_header_in_user_comment_does_not_poison_conf_dir(tmp_path, monkeypatch):
@@ -407,13 +388,7 @@ def test_provenance_records_each_list_element_separately(tmp_path, monkeypatch):
     ``exemarkers = [main, _start, entry]``), the provenance side channel
     must record ONE entry per element, all tagged with the same source
     file and line number."""
-    conf_dir = tmp_path / "axis-confs"
-    conf_dir.mkdir()
-    conf = conf_dir / "extras.conf"
-    conf.write_text("exemarkers = [main, _start, entry]\n")
-
-    other_cwd = tmp_path / "other"
-    other_cwd.mkdir()
+    conf, _, other_cwd = _write_conf(tmp_path, "exemarkers = [main, _start, entry]\n")
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
 
     prov = _provenance_for(args)
