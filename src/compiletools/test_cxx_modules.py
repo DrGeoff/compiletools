@@ -5,20 +5,31 @@ See docs/superpowers/specs/2026-05-07-cxx-modules-design.md
 """
 
 import functools
+import json
 import os
+import re
+import shutil
 import subprocess
 import tempfile
+import time
 
+import configargparse
 import pytest
 import stringzilla as sz
 
+import compiletools.apptools
+import compiletools.headerdeps
+import compiletools.hunter
+import compiletools.magicflags
 import compiletools.testhelper as uth
+from compiletools.apptools import compiler_kind
+from compiletools.build_context import BuildContext
+from compiletools.file_analyzer import FileAnalysisResult
 
 # ---------------------------------------------------------------------------
 # Unit tests: pure helper for module-declaration extraction.
 # These run without any compiler.
 # ---------------------------------------------------------------------------
-
 
 class TestExtractModuleDeclarations:
     """Test _extract_module_declarations on hand-crafted source strings."""
@@ -136,65 +147,53 @@ class TestExtractModuleDeclarations:
         assert result["import"] == ["math"]
         assert result["header_import"] == ["<vector>", '"x.h"']
 
-
 # ---------------------------------------------------------------------------
 # FileAnalysisResult exposes the new fields.
 # ---------------------------------------------------------------------------
-
 
 class TestCompilerKindClassification:
     """apptools.compiler_kind classifies common compiler invocations."""
 
     def test_bare_gpp(self):
-        from compiletools.apptools import compiler_kind
 
         # Even if g++ doesn't resolve, fallback should still recognize the name.
         assert compiler_kind("g++") == "gcc"
 
     def test_bare_gcc(self):
-        from compiletools.apptools import compiler_kind
 
         assert compiler_kind("gcc") == "gcc"
 
     def test_versioned_clangpp(self):
-        from compiletools.apptools import compiler_kind
 
         assert compiler_kind("/opt/llvm/bin/clang++-22.1.3") == "clang"
 
     def test_versioned_gpp(self):
-        from compiletools.apptools import compiler_kind
 
         assert compiler_kind("/usr/bin/g++-15") == "gcc"
 
     def test_ccache_wrapper_gcc(self):
-        from compiletools.apptools import compiler_kind
 
         # Pre-resolution string has the toolchain hint; the helper should
         # see it via the raw-string fallback.
         assert compiler_kind("ccache g++") == "gcc"
 
     def test_ccache_wrapper_clang(self):
-        from compiletools.apptools import compiler_kind
 
         assert compiler_kind("ccache clang++") == "clang"
 
     def test_empty_or_none(self):
-        from compiletools.apptools import compiler_kind
 
         assert compiler_kind(None) == "unknown"
         assert compiler_kind("") == "unknown"
 
     def test_unknown_basename(self):
-        from compiletools.apptools import compiler_kind
 
         assert compiler_kind("/usr/bin/some-shim") == "unknown"
-
 
 class TestFileAnalysisResultModuleFields:
     """Test that the new module-related fields land on FileAnalysisResult."""
 
     def test_default_fields_empty(self):
-        from compiletools.file_analyzer import FileAnalysisResult
 
         result = FileAnalysisResult(
             line_count=0,
@@ -212,26 +211,17 @@ class TestFileAnalysisResultModuleFields:
         assert result.module_imports == ()
         assert result.module_header_imports == ()
 
-
 # ---------------------------------------------------------------------------
 # Hunter-level tests: module-name -> interface-file lookup, and that an
 # importer's `import M;` pulls in the interface unit as a source dep.
 # These don't require a working compiler.
 # ---------------------------------------------------------------------------
 
-
 class TestHunterModuleGraph:
     """Verify Hunter discovers module interfaces and treats them as deps."""
 
     def _make_hunter(self, workdir):
         """Build a fully-wired Hunter rooted at `workdir`."""
-        import configargparse
-
-        import compiletools.apptools
-        import compiletools.headerdeps
-        import compiletools.hunter
-        import compiletools.magicflags
-        from compiletools.build_context import BuildContext
 
         argv = ["--include", str(workdir)]
         cap = configargparse.ArgumentParser(
@@ -355,25 +345,20 @@ class TestHunterModuleGraph:
         sources = hunter.required_source_files(str(tmp_path / "main.cpp"))
         assert "main.cpp" in os.path.basename(sources[0])
 
-
 # ---------------------------------------------------------------------------
 # End-to-end tests: build and run the cxx_modules sample(s).
 # Skipped automatically if the toolchain doesn't support C++20 modules.
 # ---------------------------------------------------------------------------
 
-
 def _which(name: str) -> str | None:
     """Locate `name` on PATH, or return None if not present."""
-    import shutil as _shutil
 
-    return _shutil.which(name)
-
+    return shutil.which(name)
 
 # Six requires_* markers below compose ``uth.skipif_e2e_unavailable``
 # (which gates on venv-mismatch first, then the feature probe). See
 # ``compiletools.testhelper.skipif_e2e_unavailable`` and
 # ``compiletools.check_venv`` for the underlying machinery.
-
 
 @functools.lru_cache(maxsize=16)
 def _probe_modules_support(cxx: str | None, kind: str) -> bool:
@@ -449,16 +434,13 @@ def _probe_modules_support(cxx: str | None, kind: str) -> bool:
             return False
     return r.returncode == 0
 
-
 def _detected_gcc_supports_modules() -> bool:
     """Probe modules support against the auto-detected functional g++."""
-    import compiletools.apptools
 
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     if not cxx or "g++" not in os.path.basename(cxx):
         return False
     return _probe_modules_support(cxx, "gcc")
-
 
 def _clang_path_for_modules() -> str | None:
     """Return a clang++ on PATH that accepts C++20 modules, or None."""
@@ -466,7 +448,6 @@ def _clang_path_for_modules() -> str | None:
     if cand and _probe_modules_support(cand, "clang"):
         return cand
     return None
-
 
 requires_cxx_modules = uth.skipif_e2e_unavailable(
     _detected_gcc_supports_modules,
@@ -479,7 +460,6 @@ requires_clang_modules = uth.skipif_e2e_unavailable(
     "(clang 13 accepts --precompile but rejects partitions; need clang >=16)",
 )
 
-
 @requires_cxx_modules
 def test_cxx_modules_simple_sample_builds_and_runs(tmp_path, monkeypatch):
     """Build the cxx_modules sample with ct-cake and run the resulting exe."""
@@ -487,7 +467,6 @@ def test_cxx_modules_simple_sample_builds_and_runs(tmp_path, monkeypatch):
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
 
     # Copy sample into tmp_path so the build artifacts don't pollute the source.
-    import shutil
 
     workdir = tmp_path / "cxx_modules"
     shutil.copytree(sample_src, workdir)
@@ -511,7 +490,6 @@ def test_cxx_modules_simple_sample_builds_and_runs(tmp_path, monkeypatch):
     assert run.returncode == 0, f"executable returned {run.returncode}:\n{run.stdout}\n{run.stderr}"
     assert "add(2,3)=5" in run.stdout, f"unexpected output: {run.stdout!r}"
 
-
 def _run_sample_with_compiler(sample_name: str, cxx: str, tmp_path, monkeypatch):
     """Copy a sample into tmp_path, run ct-cake --auto with CXX overridden,
     and assert the produced exe runs and prints the expected message.
@@ -521,7 +499,6 @@ def _run_sample_with_compiler(sample_name: str, cxx: str, tmp_path, monkeypatch)
     a config that pins the compiler. ``uth.CompilerEnvContext`` documents
     why all three must move together.
     """
-    import shutil
 
     sample_src = uth.example_path(sample_name)
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
@@ -544,14 +521,12 @@ def _run_sample_with_compiler(sample_name: str, cxx: str, tmp_path, monkeypatch)
     assert run.returncode == 0, f"executable returned {run.returncode} (CXX={cxx}):\n{run.stdout}\n{run.stderr}"
     assert "add(2,3)=5" in run.stdout, f"unexpected output: {run.stdout!r}"
 
-
 @requires_clang_modules
 def test_cxx_modules_simple_sample_builds_with_clang(tmp_path, monkeypatch):
     """Same as the gcc simple test but force CXX=clang++."""
     cxx = _clang_path_for_modules()
     assert cxx, "requires_clang_modules guard should have skipped"
     _run_sample_with_compiler("cxx_modules", cxx, tmp_path, monkeypatch)
-
 
 @requires_clang_modules
 def test_cxx_modules_split_sample_builds_with_clang(tmp_path, monkeypatch):
@@ -560,11 +535,9 @@ def test_cxx_modules_split_sample_builds_with_clang(tmp_path, monkeypatch):
     assert cxx, "requires_clang_modules guard should have skipped"
     _run_sample_with_compiler("cxx_modules_split", cxx, tmp_path, monkeypatch)
 
-
 def _run_partitions_sample_with(cxx: str, tmp_path, monkeypatch):
     """Build the cxx_modules_partitions sample and assert
     ``add(2,3)=5 mul(2,3)=6`` on stdout."""
-    import shutil
 
     sample_src = uth.example_path("cxx_modules_partitions")
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
@@ -591,16 +564,13 @@ def _run_partitions_sample_with(cxx: str, tmp_path, monkeypatch):
     assert "add(2,3)=5" in run.stdout, f"add() missing/wrong: {run.stdout!r}"
     assert "mul(2,3)=6" in run.stdout, f"mul() missing/wrong: {run.stdout!r}"
 
-
 @requires_cxx_modules
 def test_cxx_modules_partitions_sample_builds_with_gcc(tmp_path, monkeypatch):
     """End-to-end build of the partitions sample under gcc."""
-    import compiletools.apptools
 
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     assert cxx is not None, "requires_cxx_modules should have skipped without a working compiler"
     _run_partitions_sample_with(cxx, tmp_path, monkeypatch)
-
 
 @requires_clang_modules
 def test_cxx_modules_partitions_sample_builds_with_clang(tmp_path, monkeypatch):
@@ -609,16 +579,13 @@ def test_cxx_modules_partitions_sample_builds_with_clang(tmp_path, monkeypatch):
     assert cxx, "requires_clang_modules guard should have skipped"
     _run_partitions_sample_with(cxx, tmp_path, monkeypatch)
 
-
 # ---------------------------------------------------------------------------
 # Phase 4: `import std;` end-to-end
 # ---------------------------------------------------------------------------
 
-
 def _run_import_std_sample_with(cxx: str, tmp_path, monkeypatch):
     """Build the cxx_modules_import_std sample and assert the program
     prints `add(2,3)=5`. Exercises the system-provided std module path."""
-    import shutil
 
     sample_src = uth.example_path("cxx_modules_import_std")
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
@@ -641,14 +608,12 @@ def _run_import_std_sample_with(cxx: str, tmp_path, monkeypatch):
     assert run.returncode == 0, f"{run.stdout}\n{run.stderr}"
     assert "add(2,3)=5" in run.stdout, f"unexpected output: {run.stdout!r}"
 
-
 def _gcc_supports_import_std() -> bool:
     """Probe the auto-detected g++ for `import std;` capability.
 
     Compiles ``<gcc-include>/c++/<ver>/bits/std.cc`` if present; returns
     True only when both the source exists and the compile succeeds.
     """
-    import compiletools.apptools
 
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     if not cxx or "g++" not in os.path.basename(cxx):
@@ -672,10 +637,8 @@ def _gcc_supports_import_std() -> bool:
             return False
     return r.returncode == 0
 
-
 def _clang_supports_import_std() -> bool:
     """Probe the clang++ on PATH for `import std;` capability via libc++."""
-    import compiletools.apptools
 
     cxx = _which("clang++")
     if not cxx:
@@ -704,7 +667,6 @@ def _clang_supports_import_std() -> bool:
             return False
     return r.returncode == 0
 
-
 requires_gcc_import_std = uth.skipif_e2e_unavailable(
     _gcc_supports_import_std,
     "`import std;` not supported by detected g++ (no bits/std.cc)",
@@ -715,16 +677,13 @@ requires_clang_import_std = uth.skipif_e2e_unavailable(
     "`import std;` not supported by detected clang++ (no libc++ std.cppm)",
 )
 
-
 @requires_gcc_import_std
 def test_cxx_modules_import_std_builds_with_gcc(tmp_path, monkeypatch):
     """End-to-end `import std;` build with gcc."""
-    import compiletools.apptools
 
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     assert cxx is not None, "requires_cxx_modules should have skipped without a working compiler"
     _run_import_std_sample_with(cxx, tmp_path, monkeypatch)
-
 
 @requires_clang_import_std
 def test_cxx_modules_import_std_builds_with_clang(tmp_path, monkeypatch):
@@ -733,15 +692,12 @@ def test_cxx_modules_import_std_builds_with_clang(tmp_path, monkeypatch):
     assert cxx, "requires_clang_import_std should have skipped"
     _run_import_std_sample_with(cxx, tmp_path, monkeypatch)
 
-
 # ---------------------------------------------------------------------------
 # Phase 5: header units (`import <vector>;`)
 # ---------------------------------------------------------------------------
 
-
 def _gcc_supports_header_units() -> bool:
     """Probe the auto-detected g++ for header-unit precompile support."""
-    import compiletools.apptools
 
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     if not cxx or "g++" not in os.path.basename(cxx):
@@ -759,7 +715,6 @@ def _gcc_supports_header_units() -> bool:
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
     return r.returncode == 0
-
 
 def _clang_supports_header_units() -> bool:
     """Probe clang++ on PATH for header-unit precompile *and consume* support.
@@ -824,7 +779,6 @@ def _clang_supports_header_units() -> bool:
             return False
     return r.returncode == 0
 
-
 requires_gcc_header_units = uth.skipif_e2e_unavailable(
     _gcc_supports_header_units,
     "header units (-fmodules + -x c++-system-header) not supported by detected g++",
@@ -835,11 +789,9 @@ requires_clang_header_units = uth.skipif_e2e_unavailable(
     "header units (--precompile -xc++-system-header) not supported by detected clang++",
 )
 
-
 def _run_header_units_sample_with(cxx: str, tmp_path, monkeypatch):
     """Build the cxx_modules_header_units sample and assert it prints
     `vec_size=5 front=2`."""
-    import shutil
 
     sample_src = uth.example_path("cxx_modules_header_units")
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
@@ -863,16 +815,13 @@ def _run_header_units_sample_with(cxx: str, tmp_path, monkeypatch):
     assert "vec_size=5" in run.stdout, f"vector size missing/wrong: {run.stdout!r}"
     assert "front=2" in run.stdout, f"front element missing/wrong: {run.stdout!r}"
 
-
 @requires_gcc_header_units
 def test_cxx_modules_header_units_builds_with_gcc(tmp_path, monkeypatch):
     """End-to-end header-unit build with gcc."""
-    import compiletools.apptools
 
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     assert cxx is not None, "requires_gcc_header_units should have skipped without a working compiler"
     _run_header_units_sample_with(cxx, tmp_path, monkeypatch)
-
 
 @requires_clang_header_units
 def test_cxx_modules_header_units_builds_with_clang(tmp_path, monkeypatch):
@@ -881,11 +830,9 @@ def test_cxx_modules_header_units_builds_with_clang(tmp_path, monkeypatch):
     assert cxx, "requires_clang_header_units should have skipped"
     _run_header_units_sample_with(cxx, tmp_path, monkeypatch)
 
-
 # ---------------------------------------------------------------------------
 # Phase 6: cas-pcmdir cache hit on rebuild
 # ---------------------------------------------------------------------------
-
 
 @requires_clang_modules
 def test_cas_pcmdir_clang_pcm_survives_rebuild(tmp_path, monkeypatch):
@@ -896,7 +843,6 @@ def test_cas_pcmdir_clang_pcm_survives_rebuild(tmp_path, monkeypatch):
     (source content + compiler + flags) maps to the same on-disk path,
     and make's mtime check then skips the precompile.
     """
-    import shutil
 
     cxx = _which("clang++")
     assert cxx, "requires_clang_modules guard should have skipped"
@@ -961,7 +907,6 @@ def test_cas_pcmdir_clang_pcm_survives_rebuild(tmp_path, monkeypatch):
     run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
     assert "add(2,3)=5" in run.stdout
 
-
 @requires_cxx_modules
 def test_gcc_mapper_records_partition_names_with_colon(tmp_path, monkeypatch):
     """The gcc -fmodule-mapper file maps module names verbatim, so
@@ -973,9 +918,6 @@ def test_gcc_mapper_records_partition_names_with_colon(tmp_path, monkeypatch):
     Regression: an earlier draft applied the ``^^`` escape on both
     sides, which broke gcc's lookup for partitions.
     """
-    import shutil
-
-    import compiletools.apptools
 
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     if not cxx or "g++" not in os.path.basename(cxx):
@@ -1017,7 +959,6 @@ def test_gcc_mapper_records_partition_names_with_colon(tmp_path, monkeypatch):
             stem = name.replace(":", "^^")
             assert stem in path, f"path {path!r} should reference escaped stem {stem!r} for mapper line {line!r}"
 
-
 @requires_cxx_modules
 def test_cas_pcmdir_gcc_gcm_lands_in_cache(tmp_path, monkeypatch):
     """With gcc + cas-pcmdir, named-module .gcm artefacts land under
@@ -1031,9 +972,6 @@ def test_cas_pcmdir_gcc_gcm_lands_in_cache(tmp_path, monkeypatch):
     clang -- variant switches don't mutually evict, and the trim tool
     can reason about both compilers' caches uniformly.
     """
-    import shutil
-
-    import compiletools.apptools
 
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     if not cxx or "g++" not in os.path.basename(cxx):
@@ -1080,7 +1018,6 @@ def test_cas_pcmdir_gcc_gcm_lands_in_cache(tmp_path, monkeypatch):
     run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
     assert "add(2,3)=5" in run.stdout
 
-
 @requires_cxx_modules
 def test_cas_pcmdir_gcc_header_unit_gcm_survives_rebuild(tmp_path, monkeypatch):
     """gcc header-unit .gcm survives a wipe of bin/ + cas-objdir/.
@@ -1090,9 +1027,6 @@ def test_cas_pcmdir_gcc_header_unit_gcm_survives_rebuild(tmp_path, monkeypatch):
     artefact is independent of cas-objdir. Removing cas-objdir doesn't
     trigger a header-unit re-precompile -- the cached .gcm is enough.
     """
-    import shutil
-
-    import compiletools.apptools
 
     cxx = compiletools.apptools.get_functional_cxx_compiler()
     if not cxx or "g++" not in os.path.basename(cxx):
@@ -1147,7 +1081,6 @@ def test_cas_pcmdir_gcc_header_unit_gcm_survives_rebuild(tmp_path, monkeypatch):
     run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
     assert "vec_size=5" in run.stdout
 
-
 @requires_clang_modules
 def test_ct_trim_cache_evicts_old_pcm_entries(tmp_path, monkeypatch):
     """ct-trim-cache --cas-pcmdir-only evicts older cmd_hash dirs while
@@ -1158,7 +1091,6 @@ def test_ct_trim_cache_evicts_old_pcm_entries(tmp_path, monkeypatch):
     correctly, so a faked-old cmd_hash dir gets dropped without
     touching the current build's cache.
     """
-    import shutil
 
     cxx = _which("clang++")
     assert cxx, "requires_clang_modules guard should have skipped"
@@ -1190,7 +1122,6 @@ def test_ct_trim_cache_evicts_old_pcm_entries(tmp_path, monkeypatch):
 
         # Plant a fake stale cmd_hash dir, same bucket via manifest, aged
         # so the keep_count=1 policy retains the real entry over the fake.
-        import time
 
         fake = pcmdir_root / ("0" * 16)
         fake.mkdir()
@@ -1202,7 +1133,6 @@ def test_ct_trim_cache_evicts_old_pcm_entries(tmp_path, monkeypatch):
             "compiler_identity": "fake|0|0",
             "transitive_hashes": {},
         }
-        import json
 
         (fake / "manifest.json").write_text(json.dumps(fake_manifest))
         old_mtime = time.time() - 86400  # one day old
@@ -1223,7 +1153,6 @@ def test_ct_trim_cache_evicts_old_pcm_entries(tmp_path, monkeypatch):
         f"older cmd_hash dir in same bucket should have been evicted: {fake}\ntrim output:\n{r.stdout}"
     )
 
-
 @requires_clang_modules
 def test_cas_pcmdir_path_layout_is_content_addressed(tmp_path, monkeypatch):
     """cas-pcmdir uses single-command_hash layout, mirroring cas-pchdir.
@@ -1238,8 +1167,6 @@ def test_cas_pcmdir_path_layout_is_content_addressed(tmp_path, monkeypatch):
     hypothetical 64-bit collision degrades to a slow re-precompile,
     never a miscompile. See ``_pcm_command_hash`` for the rationale.
     """
-    import re
-    import shutil
 
     cxx = _which("clang++")
     assert cxx, "requires_clang_modules guard should have skipped"
@@ -1274,13 +1201,11 @@ def test_cas_pcmdir_path_layout_is_content_addressed(tmp_path, monkeypatch):
         _variant, cmd_hash, _name = parts
         assert cmd_hash_re.match(cmd_hash), f"command_hash component {cmd_hash!r} for {p} isn't 16 hex chars"
 
-
 class TestFindSystemStdModuleSource:
     """apptools.find_system_std_module_source returns a real file or None."""
 
     def test_gcc_finds_bits_std_cc(self):
         """If a g++ is available and ships bits/std.cc, the helper finds it."""
-        import compiletools.apptools
 
         cxx = compiletools.apptools.get_functional_cxx_compiler()
         if not cxx or "g++" not in os.path.basename(cxx):
@@ -1301,7 +1226,6 @@ class TestFindSystemStdModuleSource:
         cxx = _which("clang++")
         if not cxx:
             pytest.skip("no clang++ on PATH")
-        import compiletools.apptools
 
         path = compiletools.apptools.find_system_std_module_source(cxx, "clang")
         if path is None:
@@ -1315,19 +1239,15 @@ class TestFindSystemStdModuleSource:
         assert "module std" in content, f"expected std module declaration in {path}"
 
     def test_returns_none_for_unknown_kind(self):
-        import compiletools.apptools
 
         assert compiletools.apptools.find_system_std_module_source("/bin/false", "msvc") is None
         assert compiletools.apptools.find_system_std_module_source(None, "gcc") is None
-
 
 @requires_cxx_modules
 def test_cxx_modules_split_implementation_unit(tmp_path, monkeypatch):
     """Same as above but with the implementation in a separate `module M;` TU."""
     sample_src = uth.example_path("cxx_modules_split")
     assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
-
-    import shutil
 
     workdir = tmp_path / "cxx_modules_split"
     shutil.copytree(sample_src, workdir)
