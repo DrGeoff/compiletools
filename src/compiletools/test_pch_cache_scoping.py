@@ -242,6 +242,22 @@ class _StubArgs:
         self.CXX = cxx
 
 
+def _pch_hash(args, *, cxx_tokens=("-O2",), magic_cxx=()):
+    """Call `_pch_command_hash` with dummy fixed args (pch_header,
+    magic_cpp_flags=[], scope_macro_hash, anchor_root) and only the
+    varying `cxxflags_tokens` / `magic_cxx_flags` exposed. Shared by
+    the 2 PCH warning-filter tests below."""
+    return _pch_command_hash(
+        args,
+        pch_header="/tmp/header.hpp",
+        magic_cpp_flags=[],
+        magic_cxx_flags=list(magic_cxx),
+        cxxflags_tokens=list(cxx_tokens),
+        scope_macro_hash="0" * 16,
+        anchor_root="",
+    )
+
+
 def test_pch_cache_key_unchanged_with_w_warning_change():
     """Two ``_pch_command_hash`` invocations differing only in
     ``-Wall`` vs ``-Wextra`` inside ``cxxflags_tokens`` must produce
@@ -256,24 +272,8 @@ def test_pch_cache_key_unchanged_with_w_warning_change():
         return compiletools.apptools.filter_hash_irrelevant_tokens(compiletools.apptools.strip_d_u_tokens(tokens))
 
     args = _StubArgs()
-    h_wall = _pch_command_hash(
-        args,
-        pch_header="/tmp/header.hpp",
-        magic_cpp_flags=[],
-        magic_cxx_flags=[],
-        cxxflags_tokens=_hr(["-O2", "-Wall"]),
-        scope_macro_hash="0" * 16,
-        anchor_root="",
-    )
-    h_wextra = _pch_command_hash(
-        args,
-        pch_header="/tmp/header.hpp",
-        magic_cpp_flags=[],
-        magic_cxx_flags=[],
-        cxxflags_tokens=_hr(["-O2", "-Wextra"]),
-        scope_macro_hash="0" * 16,
-        anchor_root="",
-    )
+    h_wall = _pch_hash(args, cxx_tokens=_hr(["-O2", "-Wall"]))
+    h_wextra = _pch_hash(args, cxx_tokens=_hr(["-O2", "-Wextra"]))
     assert h_wall == h_wextra
 
 
@@ -281,22 +281,6 @@ def test_pch_cache_key_unchanged_with_w_warning_in_magic_cxx_flags():
     """Magic-flag warnings (``//#CXXFLAGS=-Wall``) must also be
     filtered from the PCH cache key."""
     args = _StubArgs()
-    h_wall = _pch_command_hash(
-        args,
-        pch_header="/tmp/header.hpp",
-        magic_cpp_flags=[],
-        magic_cxx_flags=["-Wall"],
-        cxxflags_tokens=["-O2"],
-        scope_macro_hash="0" * 16,
-        anchor_root="",
-    )
-    h_wextra = _pch_command_hash(
-        args,
-        pch_header="/tmp/header.hpp",
-        magic_cpp_flags=[],
-        magic_cxx_flags=["-Wextra"],
-        cxxflags_tokens=["-O2"],
-        scope_macro_hash="0" * 16,
-        anchor_root="",
-    )
+    h_wall = _pch_hash(args, magic_cxx=["-Wall"])
+    h_wextra = _pch_hash(args, magic_cxx=["-Wextra"])
     assert h_wall == h_wextra
