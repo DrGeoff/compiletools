@@ -28,6 +28,17 @@ def _reset_parser_state():
     uth.reset()
 
 
+def _write_makefile(backend, graph, tmp_path):
+    """Write `backend.generate(graph)` to `<tmp_path>/Makefile` and return
+    the resulting Path. Used by TestMakeRunsTestsInBuildPhase tests that
+    each repeat the same 3-line `tmp_path / "Makefile"` + open + generate
+    incantation."""
+    makefile = tmp_path / "Makefile"
+    with open(makefile, "w") as f:
+        backend.generate(graph, output=f)
+    return makefile
+
+
 def _default_makefile_args(**overrides):
     """Standard SimpleNamespace `args` for MakefileBackend tests. The body
     of this helper was duplicated 4-fold across TestMakefileGenerate,
@@ -1111,9 +1122,7 @@ class TestMakeRunsTestsInBuildPhase:
         except FileNotFoundError:
             pass
 
-        makefile = tmp_path / "Makefile"
-        with open(makefile, "w") as f:
-            backend.generate(graph, output=f)
+        _write_makefile(backend, graph, tmp_path)
 
         backend.execute("build")
 
@@ -1131,9 +1140,7 @@ class TestMakeRunsTestsInBuildPhase:
         test_src.write_text('#include "unit_test.hpp"\nint main() { return 1; }\n')
 
         backend, graph = uth.build_real_backend(MakefileBackend, tmp_path, [], tests=[test_src])
-        makefile = tmp_path / "Makefile"
-        with open(makefile, "w") as f:
-            backend.generate(graph, output=f)
+        _write_makefile(backend, graph, tmp_path)
 
         with pytest.raises(subprocess.CalledProcessError):
             backend.execute("build")
@@ -1172,9 +1179,7 @@ class TestMakeRunsTestsInBuildPhase:
         assert xml_rule.output.endswith(".xml")
         xml_path = xml_rule.output
 
-        makefile = tmp_path / "Makefile"
-        with open(makefile, "w") as f:
-            backend.generate(graph, output=f)
+        makefile = _write_makefile(backend, graph, tmp_path)
         # The makefile must mark the XML target .PRECIOUS.
         assert f".PRECIOUS: {xml_path}" in makefile.read_text() or any(
             xml_path in line for line in makefile.read_text().splitlines() if line.startswith(".PRECIOUS:")
@@ -1216,9 +1221,7 @@ class TestMakeRunsTestsInBuildPhase:
         assert test_rule.output != test_rule.success_marker
         assert test_rule.success_marker is not None
 
-        makefile = tmp_path / "Makefile"
-        with open(makefile, "w") as f:
-            backend.generate(graph, output=f)
+        _write_makefile(backend, graph, tmp_path)
 
         with pytest.raises(subprocess.CalledProcessError):
             backend.execute("build")
