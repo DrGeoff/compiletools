@@ -402,7 +402,12 @@ def add_cas_directory_arguments(cap, variant):
         default_cas_objdir = "".join(["bin/", variant, "/obj"])
     cap.add_argument(
         "--cas-objdir",
-        help="Output directory for object files (content-addressable store)",
+        help=(
+            "Output directory for object files (content-addressable store). "
+            "If the supplied path does not already end in /<variant>, the "
+            "active variant is appended automatically so the layer stays "
+            "separated per variant."
+        ),
         default=default_cas_objdir,
     )
     if git_root:
@@ -411,7 +416,12 @@ def add_cas_directory_arguments(cap, variant):
         default_cas_pchdir = os.path.join("bin", variant, "pch")
     cap.add_argument(
         "--cas-pchdir",
-        help="Output directory for precompiled header cache (content-addressable store)",
+        help=(
+            "Output directory for precompiled header cache (content-addressable store). "
+            "If the supplied path does not already end in /<variant>, the "
+            "active variant is appended automatically so the layer stays "
+            "separated per variant."
+        ),
         default=default_cas_pchdir,
     )
     if git_root:
@@ -420,7 +430,12 @@ def add_cas_directory_arguments(cap, variant):
         default_cas_pcmdir = os.path.join("bin", variant, "pcm")
     cap.add_argument(
         "--cas-pcmdir",
-        help="Output directory for precompiled C++20 module cache (content-addressable store)",
+        help=(
+            "Output directory for precompiled C++20 module cache (content-addressable store). "
+            "If the supplied path does not already end in /<variant>, the "
+            "active variant is appended automatically so the layer stays "
+            "separated per variant."
+        ),
         default=default_cas_pcmdir,
     )
     if git_root:
@@ -435,7 +450,9 @@ def add_cas_directory_arguments(cap, variant):
             "the user-facing bin/<variant>/<name> is a hard link (with symlink "
             "fallback for cross-filesystem cases) to that file. Sharing this "
             "directory across CI runners makes link rules reusable across "
-            "fresh checkouts."
+            "fresh checkouts. If the supplied path does not already end in "
+            "/<variant>, the active variant is appended automatically so the "
+            "layer stays separated per variant."
         ),
         default=default_cas_exedir,
     )
