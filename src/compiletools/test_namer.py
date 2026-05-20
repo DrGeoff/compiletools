@@ -1,5 +1,4 @@
 import os
-import tempfile
 
 import configargparse
 import pytest
@@ -208,7 +207,7 @@ def test_dep_hash_handles_missing_generated_headers(tmp_path):
     assert hash_missing_only == "00000000000000", "Hash of only missing files should be zero"
 
 
-def test_object_pathname_is_sharded_by_file_hash():
+def test_object_pathname_is_sharded_by_file_hash(tmp_path):
     """``object_pathname`` returns ``<objdir>/<file_hash[:2]>/<basename>_<...>.o``.
 
     Sharding splits writes/renames across 256 directory inodes so that
@@ -224,150 +223,148 @@ def test_object_pathname_is_sharded_by_file_hash():
     build, so an empty private cache stays empty until the first
     compile lands.
     """
-    with tempfile.TemporaryDirectory() as srcdir:
-        src = uth.write_sources(
-            {"shardme.cpp": "int main() { return 0; }\n"},
-            target_dir=srcdir,
-        )
-        source_file = str(src["shardme.cpp"])
+    src = uth.write_sources(
+        {"shardme.cpp": "int main() { return 0; }\n"},
+        target_dir=str(tmp_path),
+    )
+    source_file = str(src["shardme.cpp"])
 
-        args, namer = _make_namer("TestNamerSharding")
+    args, namer = _make_namer("TestNamerSharding")
 
-        dep_hash = namer.compute_dep_hash([])
-        obj_path = namer.object_pathname(source_file, "0123456789abcdef", dep_hash)
+    dep_hash = namer.compute_dep_hash([])
+    obj_path = namer.object_pathname(source_file, "0123456789abcdef", dep_hash)
 
+    obj_filename = os.path.basename(obj_path)
+    parsed = parse_object_filename(obj_filename)
+    assert parsed is not None, f"object filename should still parse: {obj_filename}"
+    _basename, file_hash, _dep, _macro = parsed
+    expected_bucket = file_hash[:2]
 
-        obj_filename = os.path.basename(obj_path)
-        parsed = parse_object_filename(obj_filename)
-        assert parsed is not None, f"object filename should still parse: {obj_filename}"
-        _basename, file_hash, _dep, _macro = parsed
-        expected_bucket = file_hash[:2]
+    bucket_dir = os.path.basename(os.path.dirname(obj_path))
+    assert bucket_dir == expected_bucket, (
+        f"Expected sharded bucket dir {expected_bucket!r} (file_hash[:2]); "
+        f"got {bucket_dir!r}. Full path: {obj_path}"
+    )
 
-        bucket_dir = os.path.basename(os.path.dirname(obj_path))
-        assert bucket_dir == expected_bucket, (
-            f"Expected sharded bucket dir {expected_bucket!r} (file_hash[:2]); "
-            f"got {bucket_dir!r}. Full path: {obj_path}"
-        )
+    objdir_root = os.path.dirname(os.path.dirname(obj_path))
+    assert objdir_root == args.cas_objdir, (
+        f"Bucket dir should sit directly under args.cas_objdir={args.cas_objdir!r}; "
+        f"got grandparent={objdir_root!r}"
+    )
 
-        objdir_root = os.path.dirname(os.path.dirname(obj_path))
-        assert objdir_root == args.cas_objdir, (
-            f"Bucket dir should sit directly under args.cas_objdir={args.cas_objdir!r}; "
-            f"got grandparent={objdir_root!r}"
-        )
-
-        # object_dir(sourcefilename) with no file_hash must still return the
-        # bare objdir so realclean()/clean() can rmtree the whole cache root.
-        assert namer.object_dir() == args.cas_objdir
-        # And the explicit form must return the same bucket dir as
-        # object_pathname picks, so build_backend can use it for
-        # ``order_only_deps`` without recomputing the join.
-        assert namer.object_dir(source_file, file_hash) == os.path.join(args.cas_objdir, expected_bucket)
+    # object_dir(sourcefilename) with no file_hash must still return the
+    # bare objdir so realclean()/clean() can rmtree the whole cache root.
+    assert namer.object_dir() == args.cas_objdir
+    # And the explicit form must return the same bucket dir as
+    # object_pathname picks, so build_backend can use it for
+    # ``order_only_deps`` without recomputing the join.
+    assert namer.object_dir(source_file, file_hash) == os.path.join(args.cas_objdir, expected_bucket)
 
 
 @uth.requires_functional_compiler
-def test_source_magic_produces_different_hash_with_different_flags():
+def test_source_magic_produces_different_hash_with_different_flags(tmp_path):
     """Regression: //#SOURCE= expanded files must get different macro_state_hash when flags differ.
 
     This guards against a regression in hunter._extractSOURCE where calling
     get_structured_data() instead of magicflags() would skip _parse() and leave
     _final_macro_states unpopulated for SOURCE-expanded files.
     """
-    with tempfile.TemporaryDirectory() as srcdir:
-        src = uth.write_sources(
-            {
-                "main.cpp": "//#SOURCE=helper.cpp\nint main() { return 0; }\n",
-                "helper.cpp": "void helper() {}\n",
-            },
-            target_dir=srcdir,
+    src = uth.write_sources(
+        {
+            "main.cpp": "//#SOURCE=helper.cpp\nint main() { return 0; }\n",
+            "helper.cpp": "void helper() {}\n",
+        },
+        target_dir=str(tmp_path),
+    )
+    main_file = str(src["main.cpp"])
+    helper_file = str(src["helper.cpp"])
+
+    def create_hunter_with_cppflags(cppflags_value):
+        """Create a Hunter instance with specific CPPFLAGS."""
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
         )
-        main_file = str(src["main.cpp"])
-        helper_file = str(src["helper.cpp"])
+        compiletools.hunter.add_arguments(cap)
+        argv = [f"--append-CPPFLAGS={cppflags_value}", "-q"]
+        ctx = BuildContext()
+        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
+        hdeps = compiletools.headerdeps.create(args, context=ctx)
+        magic = compiletools.magicflags.create(args, hdeps, context=ctx)
+        return compiletools.hunter.Hunter(args, hdeps, magic, context=ctx), magic
 
-        def create_hunter_with_cppflags(cppflags_value):
-            """Create a Hunter instance with specific CPPFLAGS."""
-            cap = configargparse.ArgumentParser(
-                conflict_handler="resolve",
-                args_for_setting_config_path=["-c", "--config"],
-                ignore_unknown_config_file_keys=True,
-            )
-            compiletools.hunter.add_arguments(cap)
-            argv = [f"--append-CPPFLAGS={cppflags_value}", "-q"]
-            ctx = BuildContext()
-            args = compiletools.apptools.parseargs(cap, argv, context=ctx)
-            hdeps = compiletools.headerdeps.create(args, context=ctx)
-            magic = compiletools.magicflags.create(args, hdeps, context=ctx)
-            return compiletools.hunter.Hunter(args, hdeps, magic, context=ctx), magic
+    # Config 1: trigger _extractSOURCE via required_source_files
+    hunter1, magic1 = create_hunter_with_cppflags("-I/opt/libfoo/v1/include")
+    sources1 = hunter1.required_source_files(main_file)
+    assert any(f.endswith("helper.cpp") for f in sources1), (
+        f"Hunter should expand //#SOURCE=helper.cpp, got: {sources1}"
+    )
+    hash1_main = magic1.get_final_macro_state_hash(main_file)
+    hash1_helper = magic1.get_final_macro_state_hash(helper_file)
 
-        # Config 1: trigger _extractSOURCE via required_source_files
-        hunter1, magic1 = create_hunter_with_cppflags("-I/opt/libfoo/v1/include")
-        sources1 = hunter1.required_source_files(main_file)
-        assert any(f.endswith("helper.cpp") for f in sources1), (
-            f"Hunter should expand //#SOURCE=helper.cpp, got: {sources1}"
-        )
-        hash1_main = magic1.get_final_macro_state_hash(main_file)
-        hash1_helper = magic1.get_final_macro_state_hash(helper_file)
+    # Clear class-level caches between configurations
+    compiletools.hunter.Hunter.clear_cache()
 
-        # Clear class-level caches between configurations
-        compiletools.hunter.Hunter.clear_cache()
+    # Config 2: same files, different CPPFLAGS
+    hunter2, magic2 = create_hunter_with_cppflags("-I/opt/libfoo/v2/include")
+    hunter2.required_source_files(main_file)
+    hash2_main = magic2.get_final_macro_state_hash(main_file)
+    hash2_helper = magic2.get_final_macro_state_hash(helper_file)
 
-        # Config 2: same files, different CPPFLAGS
-        hunter2, magic2 = create_hunter_with_cppflags("-I/opt/libfoo/v2/include")
-        hunter2.required_source_files(main_file)
-        hash2_main = magic2.get_final_macro_state_hash(main_file)
-        hash2_helper = magic2.get_final_macro_state_hash(helper_file)
-
-        assert hash1_main != hash2_main, (
-            f"Different CPPFLAGS must produce different hash for main: {hash1_main} vs {hash2_main}"
-        )
-        assert hash1_helper != hash2_helper, (
-            f"Different CPPFLAGS must produce different hash for SOURCE-expanded helper: "
-            f"{hash1_helper} vs {hash2_helper}"
-        )
+    assert hash1_main != hash2_main, (
+        f"Different CPPFLAGS must produce different hash for main: {hash1_main} vs {hash2_main}"
+    )
+    assert hash1_helper != hash2_helper, (
+        f"Different CPPFLAGS must produce different hash for SOURCE-expanded helper: "
+        f"{hash1_helper} vs {hash2_helper}"
+    )
 
 
 @uth.requires_functional_compiler
-def test_different_cppflags_produce_different_object_names():
+def test_different_cppflags_produce_different_object_names(tmp_path):
     """Full chain: different CPPFLAGS -> different macro_state_hash -> different object names."""
-    # Create a source file in a temp directory
-    with tempfile.TemporaryDirectory() as srcdir:
-        src = uth.write_sources(
-            {"test_objname.cpp": "int main() { return 0; }\n"},
-            target_dir=srcdir,
-        )
-        source_file = str(src["test_objname.cpp"])
+    srcdir = tmp_path / "src"
+    srcdir.mkdir()
+    src = uth.write_sources(
+        {"test_objname.cpp": "int main() { return 0; }\n"},
+        target_dir=str(srcdir),
+    )
+    source_file = str(src["test_objname.cpp"])
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Build two magicflag parsers with different CPPFLAGS
-            parser1 = tb.create_magic_parser(
-                ["--magic=direct", "--append-CPPFLAGS=-I/opt/libfoo/v1/include"],
-                tempdir=tmpdir,
-                context=BuildContext(),
-            )
-            parser1.parse(source_file)
-            hash1 = parser1.get_final_macro_state_hash(source_file)
+    parser_tmp = tmp_path / "parser"
+    parser_tmp.mkdir()
+    # Build two magicflag parsers with different CPPFLAGS
+    parser1 = tb.create_magic_parser(
+        ["--magic=direct", "--append-CPPFLAGS=-I/opt/libfoo/v1/include"],
+        tempdir=str(parser_tmp),
+        context=BuildContext(),
+    )
+    parser1.parse(source_file)
+    hash1 = parser1.get_final_macro_state_hash(source_file)
 
-            parser2 = tb.create_magic_parser(
-                ["--magic=direct", "--append-CPPFLAGS=-I/opt/libfoo/v2/include"],
-                tempdir=tmpdir,
-                context=BuildContext(),
-            )
-            parser2.parse(source_file)
-            hash2 = parser2.get_final_macro_state_hash(source_file)
+    parser2 = tb.create_magic_parser(
+        ["--magic=direct", "--append-CPPFLAGS=-I/opt/libfoo/v2/include"],
+        tempdir=str(parser_tmp),
+        context=BuildContext(),
+    )
+    parser2.parse(source_file)
+    hash2 = parser2.get_final_macro_state_hash(source_file)
 
-            assert hash1 != hash2, f"Different CPPFLAGS must produce different macro_state_hash: {hash1} vs {hash2}"
+    assert hash1 != hash2, f"Different CPPFLAGS must produce different macro_state_hash: {hash1} vs {hash2}"
 
-        # Reset parser state before creating namer's parser
-        uth.reset()
+    # Reset parser state before creating namer's parser
+    uth.reset()
 
-        # Setup namer
-        _args, namer = _make_namer("TestNamerCPPFLAGS")
+    # Setup namer
+    _args, namer = _make_namer("TestNamerCPPFLAGS")
 
-        dep_hash = namer.compute_dep_hash([])
+    dep_hash = namer.compute_dep_hash([])
 
-        obj1 = namer.object_pathname(source_file, hash1, dep_hash)
-        obj2 = namer.object_pathname(source_file, hash2, dep_hash)
+    obj1 = namer.object_pathname(source_file, hash1, dep_hash)
+    obj2 = namer.object_pathname(source_file, hash2, dep_hash)
 
-        assert obj1 != obj2, f"Different CPPFLAGS must produce different object paths: {obj1} vs {obj2}"
+    assert obj1 != obj2, f"Different CPPFLAGS must produce different object paths: {obj1} vs {obj2}"
 
 
 def test_cas_exe_pathname_is_sharded_by_link_key_hash():
