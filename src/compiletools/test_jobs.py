@@ -1,4 +1,15 @@
+import pytest
+
+import compiletools.apptools
 import compiletools.jobs as jobs
+import compiletools.testhelper as uth
+
+
+@pytest.fixture
+def clean_parsers():
+    """Reset module-level argparse state before exercising jobs.main()."""
+    uth.delete_existing_parsers()
+    yield
 
 
 def test_cpu_count_uses_process_cpu_count_when_available(monkeypatch):
@@ -9,8 +20,6 @@ def test_cpu_count_uses_process_cpu_count_when_available(monkeypatch):
 
 def test_cpu_count_process_cpu_count_none_raises(monkeypatch):
     """When os.process_cpu_count() returns None, _cpu_count raises RuntimeError."""
-    import pytest
-
     monkeypatch.setattr(jobs.os, "process_cpu_count", lambda: None, raising=False)
     with pytest.raises(RuntimeError, match="process_cpu_count"):
         jobs._cpu_count()
@@ -45,8 +54,6 @@ def test_cpu_count_no_process_no_sched(monkeypatch):
 
 def test_cpu_count_all_apis_none_raises(monkeypatch):
     """When every API returns None and process/sched paths are unavailable, raise."""
-    import pytest
-
     monkeypatch.delattr(jobs.os, "process_cpu_count", raising=False)
     monkeypatch.delattr(jobs.os, "sched_getaffinity", raising=False)
     monkeypatch.setattr(jobs.os, "cpu_count", lambda: None)
@@ -63,40 +70,32 @@ def test_cpu_count_success():
 
 def test_add_arguments():
     """add_arguments adds -j/--jobs to a parser."""
-    import compiletools.apptools
-
     cap = compiletools.apptools.create_parser("test", argv=[], include_config=False)
     jobs.add_arguments(cap)
     args = cap.parse_args(["-j", "7"])
     assert args.parallel == 7
 
 
+@pytest.mark.usefixtures("clean_parsers")
 def test_main_default(capsys):
     """main([]) prints the CPU count."""
-    import compiletools.testhelper as uth
-
-    uth.delete_existing_parsers()
     ret = jobs.main([])
     assert ret == 0
     out = capsys.readouterr().out.strip()
     assert int(out) > 0
 
 
+@pytest.mark.usefixtures("clean_parsers")
 def test_main_with_jobs_flag(capsys):
     """main with -j flag prints that value."""
-    import compiletools.testhelper as uth
-
-    uth.delete_existing_parsers()
     ret = jobs.main(["-j", "42"])
     assert ret == 0
     assert capsys.readouterr().out.strip() == "42"
 
 
+@pytest.mark.usefixtures("clean_parsers")
 def test_main_verbose(capsys):
     """main with -vv prints args and the count."""
-    import compiletools.testhelper as uth
-
-    uth.delete_existing_parsers()
     ret = jobs.main(["-vv", "-j", "3"])
     assert ret == 0
     out = capsys.readouterr().out
