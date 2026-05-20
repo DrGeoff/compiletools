@@ -1256,8 +1256,8 @@ def _canonicalize_one_path_to_target(path: str, anchor_prefix: str, target: str)
     target configurable).
 
     Cache-key flavour additionally collapses ``..`` segments, redundant
-    separators, and ``./`` prefixes via :func:`os.path.normpath` so that
-    textually distinct but semantically identical paths
+    separators, and ``./`` prefixes via :func:`compiletools.wrappedos.normpath`
+    so that textually distinct but semantically identical paths
     (``<GITROOT>/lib/../src/include`` vs ``<GITROOT>/src/include``)
     produce the same cache key. Emitted-command flavour skips normpath because
     lexical ``..`` collapse changes what the compiler resolves through
@@ -1267,11 +1267,11 @@ def _canonicalize_one_path_to_target(path: str, anchor_prefix: str, target: str)
     cache-side rationale.
     """
     if target == _GITROOT_SENTINEL and _GITROOT_SENTINEL in path:
-        return os.path.normpath(path)
+        return compiletools.wrappedos.normpath(path)
     if path.startswith(anchor_prefix):
         rewritten = target + "/" + path[len(anchor_prefix) :]
         if target == _GITROOT_SENTINEL:
-            return os.path.normpath(rewritten)
+            return compiletools.wrappedos.normpath(rewritten)
         return rewritten
     return path
 
@@ -2023,7 +2023,7 @@ def filter_pkg_config_cflags(cflags_str, verbose=0):
     system_include_paths = set(["/usr/include"])
     prefix = os.environ.get("PREFIX")
     if prefix:
-        system_include_paths.add(os.path.normpath(os.path.join(prefix, "include")))
+        system_include_paths.add(compiletools.wrappedos.normpath(os.path.join(prefix, "include")))
 
     # Use shlex to correctly handle quoted paths in flags
     try:
@@ -2051,7 +2051,7 @@ def filter_pkg_config_cflags(cflags_str, verbose=0):
                 path = flag[2:]
 
             # Normalize and check
-            normalized_path = os.path.normpath(path)
+            normalized_path = compiletools.wrappedos.normpath(path)
             is_system = normalized_path in system_include_paths
 
             if is_system:
@@ -2176,18 +2176,18 @@ def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_p
     cwd_candidates = []
     cwd_pkgconfig = os.path.join(os.getcwd(), "ct.conf.d", "pkgconfig")
     if compiletools.wrappedos.isdir(cwd_pkgconfig):
-        cwd_candidates.append(os.path.normpath(cwd_pkgconfig))
+        cwd_candidates.append(compiletools.wrappedos.normpath(cwd_pkgconfig))
 
     gitroot_candidates = []
     if gitroot:
         repo_pkgconfig = os.path.join(gitroot, "ct.conf.d", "pkgconfig")
         if compiletools.wrappedos.isdir(repo_pkgconfig):
-            repo_pkgconfig = os.path.normpath(repo_pkgconfig)
+            repo_pkgconfig = compiletools.wrappedos.normpath(repo_pkgconfig)
             if repo_pkgconfig not in cwd_candidates:
                 gitroot_candidates.append(repo_pkgconfig)
 
     existing = os.environ.get("PKG_CONFIG_PATH", "")
-    existing_dirs = [os.path.normpath(d) for d in existing.split(os.pathsep)] if existing else []
+    existing_dirs = [compiletools.wrappedos.normpath(d) for d in existing.split(os.pathsep)] if existing else []
 
     # Build the final path with explicit precedence:
     #   prepend_paths (highest) > candidates > middle (existing) > append_paths
@@ -2195,8 +2195,8 @@ def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_p
     # PKG_CONFIG_PATH gets *moved* to the requested position rather than
     # being silently dropped — so --prepend-PKG-CONFIG-PATH=/X actually
     # promotes /X to the front when /X was already present.
-    prepend_normd = [os.path.normpath(d) for d in (prepend_paths or [])]
-    append_normd = [os.path.normpath(d) for d in (append_paths or [])]
+    prepend_normd = [compiletools.wrappedos.normpath(d) for d in (prepend_paths or [])]
+    append_normd = [compiletools.wrappedos.normpath(d) for d in (append_paths or [])]
     forced_at_end = set(append_normd)
 
     middle = [d for d in existing_dirs if d not in forced_at_end]

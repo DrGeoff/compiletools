@@ -419,14 +419,14 @@ def extract_linkopts(command: list[str], object_files: set[str]) -> list[str]:
     """Extract linker flags from a link command.
 
     Strips the linker binary, -o, output executable, and object file paths.
-    Object-file matching is normalised via ``os.path.normpath`` on both
-    sides so that ``./obj/foo.o`` and ``obj/foo.o`` are treated as the
-    same file — without this, the divergent form would leak into
+    Object-file matching is normalised via ``wrappedos.normpath`` on
+    both sides so that ``./obj/foo.o`` and ``obj/foo.o`` are treated as
+    the same file — without this, the divergent form would leak into
     linkopts and break Bazel/CMake link rules.
     """
     if not command:
         return []
-    normalised_objects = {os.path.normpath(o) for o in object_files}
+    normalised_objects = {compiletools.wrappedos.normpath(o) for o in object_files}
     args = split_compound_args(command[1:])
     linkopts = []
     skip_next = False
@@ -437,7 +437,7 @@ def extract_linkopts(command: list[str], object_files: set[str]) -> list[str]:
         if arg == "-o":
             skip_next = True
             continue
-        if os.path.normpath(arg) in normalised_objects:
+        if compiletools.wrappedos.normpath(arg) in normalised_objects:
             continue
         linkopts.append(arg)
     return linkopts

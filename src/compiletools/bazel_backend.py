@@ -805,7 +805,7 @@ class BazelBackend(BuildBackend):
     @staticmethod
     def _absolute_workspace_path(rel: str, base_dir: str) -> str:
         """Inverse of ``_workspace_relative`` — used to look up rules in the graph."""
-        return os.path.normpath(os.path.join(base_dir, rel))
+        return compiletools.wrappedos.normpath(os.path.join(base_dir, rel))
 
     @staticmethod
     def _resolve_linkopts(linkopts: list[str]) -> list[str]:

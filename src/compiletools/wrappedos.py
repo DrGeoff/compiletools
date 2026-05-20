@@ -70,6 +70,12 @@ def join(path: str, *paths: str) -> str:
     return os.path.join(path, *paths)
 
 
+@functools.cache
+def normpath(path: str) -> str:
+    """Cached os.path.normpath for Python strings."""
+    return os.path.normpath(path)
+
+
 # StringZilla API - cached directly, leverages shared Python str caches
 @functools.cache
 def realpath_sz(path: sz.Str) -> sz.Str:
@@ -135,6 +141,7 @@ def clear_cache() -> None:
     isdir.cache_clear()
     isabs.cache_clear()
     getsize.cache_clear()
+    normpath.cache_clear()
 
     # StringZilla API caches
     realpath_sz.cache_clear()
