@@ -29,17 +29,19 @@ def _capture_handlers(*signums):
     return {sig: signal.getsignal(sig) for sig in signums}
 
 
+def _noop_handler(signum, frame):  # pragma: no cover - never invoked in these tests
+    """Sentinel handler used by tests that only care about install/restore behavior."""
+    pass
+
+
 def test_handlers_restored_after_normal_exit():
     """Happy path: with-block exits cleanly, original handler comes back."""
     before = _capture_handlers(signal.SIGINT, signal.SIGTERM)
 
-    def my_handler(signum, frame):  # pragma: no cover - never invoked in this test
-        pass
-
-    with apptools.graceful_shutdown(my_handler):
+    with apptools.graceful_shutdown(_noop_handler):
         # Inside the block, the handler is ours.
-        assert signal.getsignal(signal.SIGINT) is my_handler
-        assert signal.getsignal(signal.SIGTERM) is my_handler
+        assert signal.getsignal(signal.SIGINT) is _noop_handler
+        assert signal.getsignal(signal.SIGTERM) is _noop_handler
 
     after = _capture_handlers(signal.SIGINT, signal.SIGTERM)
     assert before == after
@@ -49,14 +51,11 @@ def test_handlers_restored_when_body_raises():
     """The whole point of the helper: restoration is guaranteed."""
     before = _capture_handlers(signal.SIGINT, signal.SIGTERM)
 
-    def my_handler(signum, frame):  # pragma: no cover
-        pass
-
     class Boom(Exception):
         pass
 
     with pytest.raises(Boom):
-        with apptools.graceful_shutdown(my_handler):
+        with apptools.graceful_shutdown(_noop_handler):
             raise Boom()
 
     after = _capture_handlers(signal.SIGINT, signal.SIGTERM)
@@ -65,24 +64,17 @@ def test_handlers_restored_when_body_raises():
 
 def test_default_signums_are_sigint_and_sigterm():
     """No-args form covers the common ``Ctrl-C / kill`` pair."""
-
-    def my_handler(signum, frame):  # pragma: no cover
-        pass
-
-    with apptools.graceful_shutdown(my_handler):
-        assert signal.getsignal(signal.SIGINT) is my_handler
-        assert signal.getsignal(signal.SIGTERM) is my_handler
+    with apptools.graceful_shutdown(_noop_handler):
+        assert signal.getsignal(signal.SIGINT) is _noop_handler
+        assert signal.getsignal(signal.SIGTERM) is _noop_handler
 
 
 def test_explicit_signums_only_install_those():
     """Caller can target a subset (e.g. just SIGTERM)."""
     before_int = signal.getsignal(signal.SIGINT)
 
-    def my_handler(signum, frame):  # pragma: no cover
-        pass
-
-    with apptools.graceful_shutdown(my_handler, signal.SIGTERM):
-        assert signal.getsignal(signal.SIGTERM) is my_handler
+    with apptools.graceful_shutdown(_noop_handler, signal.SIGTERM):
+        assert signal.getsignal(signal.SIGTERM) is _noop_handler
         # SIGINT was NOT in the signums list — it must be untouched.
         assert signal.getsignal(signal.SIGINT) is before_int
 
@@ -93,17 +85,12 @@ def test_explicit_signums_only_install_those():
 def test_off_main_thread_is_silent_noop():
     """``signal.signal`` raises ValueError off the main thread; the
     helper swallows that and yields without installing anything."""
-    handler_invocations = []
-
-    def my_handler(signum, frame):  # pragma: no cover
-        handler_invocations.append(signum)
-
     body_ran = threading.Event()
     body_saw_unchanged_handlers = []
     main_thread_before = signal.getsignal(signal.SIGINT)
 
     def worker():
-        with apptools.graceful_shutdown(my_handler):
+        with apptools.graceful_shutdown(_noop_handler):
             # On a non-main thread, the install was skipped, so the
             # main thread's view of the handler should be unchanged.
             body_saw_unchanged_handlers.append(signal.getsignal(signal.SIGINT))
@@ -124,17 +111,14 @@ def test_unknown_signum_is_ignored():
     not a real signal on any supported platform."""
     bogus_signum = 12345
 
-    def my_handler(signum, frame):  # pragma: no cover
-        pass
-
     # The body runs cleanly even though the install of the bogus signum
     # silently failed.
-    with apptools.graceful_shutdown(my_handler, bogus_signum, signal.SIGTERM):
+    with apptools.graceful_shutdown(_noop_handler, bogus_signum, signal.SIGTERM):
         # The valid signum was still installed.
-        assert signal.getsignal(signal.SIGTERM) is my_handler
+        assert signal.getsignal(signal.SIGTERM) is _noop_handler
 
     # And restoration of the valid signum still works.
-    assert signal.getsignal(signal.SIGTERM) is not my_handler
+    assert signal.getsignal(signal.SIGTERM) is not _noop_handler
 
 
 def test_nested_blocks_restore_in_reverse_order():
@@ -170,11 +154,8 @@ def test_duplicate_signums_restore_to_original():
     """
     original = signal.getsignal(signal.SIGINT)
 
-    def my_handler(signum, frame):  # pragma: no cover
-        pass
-
-    with apptools.graceful_shutdown(my_handler, signal.SIGINT, signal.SIGINT):
-        assert signal.getsignal(signal.SIGINT) is my_handler
+    with apptools.graceful_shutdown(_noop_handler, signal.SIGINT, signal.SIGINT):
+        assert signal.getsignal(signal.SIGINT) is _noop_handler
 
     assert signal.getsignal(signal.SIGINT) is original, (
         "duplicate signums leaked the body's handler past the with-block exit"
