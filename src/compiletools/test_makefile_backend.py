@@ -297,119 +297,61 @@ class TestMakefileExecute:
         defaults.update(overrides)
         return SimpleNamespace(**defaults)
 
-    @patch("compiletools.apptools.tool_version", return_value=(4, 4))
-    @patch("compiletools.makefile_backend.subprocess.check_call")
-    def test_output_sync_with_parallel(self, mock_check_call, _mock_ver):
-        """--output-sync=target should be added when parallel > 1 and make >= 4.0."""
-        args = self._make_args(parallel=4)
-        hunter = MagicMock()
-        backend = MakefileBackend(args=args, hunter=hunter)
+    def _execute_and_capture_cmd(self, *, version=(4, 4), **arg_overrides):
+        """Construct a MakefileBackend with the given args, mock make version
+        + subprocess.check_call, run execute('build'), and return the cmd
+        passed to check_call."""
+        args = self._make_args(**arg_overrides)
+        backend = MakefileBackend(args=args, hunter=MagicMock())
         backend._graph = None
+        with (
+            patch("compiletools.apptools.tool_version", return_value=version),
+            patch("compiletools.makefile_backend.subprocess.check_call") as mock_check_call,
+        ):
+            backend.execute("build")
+        return mock_check_call.call_args[0][0]
 
-        backend.execute("build")
-
-        cmd = mock_check_call.call_args[0][0]
+    def test_output_sync_with_parallel(self):
+        """--output-sync=target should be added when parallel > 1 and make >= 4.0."""
+        cmd = self._execute_and_capture_cmd(parallel=4)
         assert "--output-sync=target" in cmd
         assert "-j" in cmd
         idx = cmd.index("-j")
         assert cmd[idx + 1] == "4"
 
-    @patch("compiletools.apptools.tool_version", return_value=(4, 4))
-    @patch("compiletools.makefile_backend.subprocess.check_call")
-    def test_no_output_sync_with_single_job(self, mock_check_call, _mock_ver):
+    def test_no_output_sync_with_single_job(self):
         """--output-sync should not be added when parallel = 1."""
-        args = self._make_args(parallel=1)
-        hunter = MagicMock()
-        backend = MakefileBackend(args=args, hunter=hunter)
-        backend._graph = None
-
-        backend.execute("build")
-
-        cmd = mock_check_call.call_args[0][0]
+        cmd = self._execute_and_capture_cmd(parallel=1)
         assert "--output-sync=target" not in cmd
 
-    @patch("compiletools.apptools.tool_version", return_value=(3, 81))
-    @patch("compiletools.makefile_backend.subprocess.check_call")
-    def test_no_output_sync_on_old_make(self, mock_check_call, _mock_ver):
+    def test_no_output_sync_on_old_make(self):
         """--output-sync should not be added on make < 4.0."""
-        args = self._make_args(parallel=4)
-        hunter = MagicMock()
-        backend = MakefileBackend(args=args, hunter=hunter)
-        backend._graph = None
-
-        backend.execute("build")
-
-        cmd = mock_check_call.call_args[0][0]
+        cmd = self._execute_and_capture_cmd(version=(3, 81), parallel=4)
         assert "--output-sync=target" not in cmd
 
-    @patch("compiletools.apptools.tool_version", return_value=(4, 4))
-    @patch("compiletools.makefile_backend.subprocess.check_call")
-    def test_trace_on_verbose(self, mock_check_call, _mock_ver):
+    def test_trace_on_verbose(self):
         """--trace should be added when verbose >= 4 and make >= 4.0."""
-        args = self._make_args(verbose=4)
-        hunter = MagicMock()
-        backend = MakefileBackend(args=args, hunter=hunter)
-        backend._graph = None
-
-        backend.execute("build")
-
-        cmd = mock_check_call.call_args[0][0]
+        cmd = self._execute_and_capture_cmd(verbose=4)
         assert "--trace" in cmd
 
-    @patch("compiletools.apptools.tool_version", return_value=(3, 81))
-    @patch("compiletools.makefile_backend.subprocess.check_call")
-    def test_no_trace_on_old_make(self, mock_check_call, _mock_ver):
+    def test_no_trace_on_old_make(self):
         """--trace should not be added on make < 4.0 even if verbose."""
-        args = self._make_args(verbose=4)
-        hunter = MagicMock()
-        backend = MakefileBackend(args=args, hunter=hunter)
-        backend._graph = None
-
-        backend.execute("build")
-
-        cmd = mock_check_call.call_args[0][0]
+        cmd = self._execute_and_capture_cmd(version=(3, 81), verbose=4)
         assert "--trace" not in cmd
 
-    @patch("compiletools.apptools.tool_version", return_value=(4, 4))
-    @patch("compiletools.makefile_backend.subprocess.check_call")
-    def test_shuffle_when_enabled(self, mock_check_call, _mock_ver):
+    def test_shuffle_when_enabled(self):
         """--shuffle should be added when enabled and make >= 4.4."""
-        args = self._make_args(shuffle=True)
-        hunter = MagicMock()
-        backend = MakefileBackend(args=args, hunter=hunter)
-        backend._graph = None
-
-        backend.execute("build")
-
-        cmd = mock_check_call.call_args[0][0]
+        cmd = self._execute_and_capture_cmd(shuffle=True)
         assert "--shuffle" in cmd
 
-    @patch("compiletools.apptools.tool_version", return_value=(4, 0))
-    @patch("compiletools.makefile_backend.subprocess.check_call")
-    def test_no_shuffle_on_old_make(self, mock_check_call, _mock_ver):
+    def test_no_shuffle_on_old_make(self):
         """--shuffle should not be added on make < 4.4."""
-        args = self._make_args(shuffle=True)
-        hunter = MagicMock()
-        backend = MakefileBackend(args=args, hunter=hunter)
-        backend._graph = None
-
-        backend.execute("build")
-
-        cmd = mock_check_call.call_args[0][0]
+        cmd = self._execute_and_capture_cmd(version=(4, 0), shuffle=True)
         assert "--shuffle" not in cmd
 
-    @patch("compiletools.apptools.tool_version", return_value=(4, 4))
-    @patch("compiletools.makefile_backend.subprocess.check_call")
-    def test_no_shuffle_when_disabled(self, mock_check_call, _mock_ver):
+    def test_no_shuffle_when_disabled(self):
         """--shuffle should not be added when not requested."""
-        args = self._make_args(shuffle=False)
-        hunter = MagicMock()
-        backend = MakefileBackend(args=args, hunter=hunter)
-        backend._graph = None
-
-        backend.execute("build")
-
-        cmd = mock_check_call.call_args[0][0]
+        cmd = self._execute_and_capture_cmd(shuffle=False)
         assert "--shuffle" not in cmd
 
 
