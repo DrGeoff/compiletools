@@ -1054,10 +1054,16 @@ class TestVerbosePrintConfig:
 class TestSetupPkgConfigOverrides:
     """Tests for _setup_pkg_config_overrides()."""
 
-    def test_prepends_when_override_dir_exists(self, monkeypatch, tmp_path):
+    @pytest.fixture
+    def pkgconfig_dir(self, tmp_path):
+        """`<tmp_path>/ct.conf.d/pkgconfig/` with parents created. Used by
+        the 8 tests that exercise the gitroot/cwd auto-discovery path."""
+        d = tmp_path / "ct.conf.d" / "pkgconfig"
+        d.mkdir(parents=True)
+        return d
+
+    def test_prepends_when_override_dir_exists(self, monkeypatch, tmp_path, pkgconfig_dir):
         """When ct.conf.d/pkgconfig/ exists at gitroot, it is prepended to PKG_CONFIG_PATH."""
-        pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
-        pkgconfig_dir.mkdir(parents=True)
 
         _stub_gitroot_and_chdir(monkeypatch, tmp_path)
         monkeypatch.setenv("PKG_CONFIG_PATH", "/existing/path")
@@ -1079,10 +1085,8 @@ class TestSetupPkgConfigOverrides:
 
         assert os.environ["PKG_CONFIG_PATH"] == "/original/path"
 
-    def test_works_when_pkg_config_path_unset(self, monkeypatch, tmp_path):
+    def test_works_when_pkg_config_path_unset(self, monkeypatch, tmp_path, pkgconfig_dir):
         """When PKG_CONFIG_PATH is not set, sets it to just the override dir."""
-        pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
-        pkgconfig_dir.mkdir(parents=True)
 
         _stub_gitroot_and_chdir(monkeypatch, tmp_path)
         monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
@@ -1092,10 +1096,8 @@ class TestSetupPkgConfigOverrides:
 
         assert os.environ["PKG_CONFIG_PATH"] == str(pkgconfig_dir)
 
-    def test_idempotency(self, monkeypatch, tmp_path):
+    def test_idempotency(self, monkeypatch, tmp_path, pkgconfig_dir):
         """Calling twice does not duplicate the path in PKG_CONFIG_PATH."""
-        pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
-        pkgconfig_dir.mkdir(parents=True)
 
         _stub_gitroot_and_chdir(monkeypatch, tmp_path)
         monkeypatch.setenv("PKG_CONFIG_PATH", "/existing/path")
@@ -1109,10 +1111,8 @@ class TestSetupPkgConfigOverrides:
 
         assert first_value == second_value
 
-    def test_verbose_output(self, monkeypatch, tmp_path, capsys):
+    def test_verbose_output(self, monkeypatch, tmp_path, capsys, pkgconfig_dir):
         """Verbose >= 4 prints the override path with an auto-discovered label."""
-        pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
-        pkgconfig_dir.mkdir(parents=True)
 
         _stub_gitroot_and_chdir(monkeypatch, tmp_path)
         monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
@@ -1258,10 +1258,8 @@ class TestSetupPkgConfigOverrides:
 
         assert os.environ["PKG_CONFIG_PATH"] == str(cwd_pkgconfig)
 
-    def test_dedup_when_cwd_equals_gitroot(self, monkeypatch, tmp_path):
+    def test_dedup_when_cwd_equals_gitroot(self, monkeypatch, tmp_path, pkgconfig_dir):
         """When cwd is the git root, only one entry is prepended."""
-        pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
-        pkgconfig_dir.mkdir(parents=True)
 
         _stub_gitroot_and_chdir(monkeypatch, tmp_path)
         monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
@@ -1320,12 +1318,10 @@ class TestSetupPkgConfigOverrides:
             "Flag must remain False if the function failed; otherwise the caller has no way to retry."
         )
 
-    def test_restore_pkg_config_path_undoes_mutation(self, monkeypatch, tmp_path):
+    def test_restore_pkg_config_path_undoes_mutation(self, monkeypatch, tmp_path, pkgconfig_dir):
         """Regression: BuildContext must expose a way to undo the
         global env mutation, so long-lived processes / tests using
         multiple sequential contexts don't leak PKG_CONFIG_PATH state."""
-        pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
-        pkgconfig_dir.mkdir(parents=True)
         _stub_gitroot_and_chdir(monkeypatch, tmp_path)
         monkeypatch.setenv("PKG_CONFIG_PATH", "/original/path")
 
@@ -1341,10 +1337,8 @@ class TestSetupPkgConfigOverrides:
             "After restore, the flag should be reset so a future apply works."
         )
 
-    def test_restore_when_pkg_config_path_was_unset(self, monkeypatch, tmp_path):
+    def test_restore_when_pkg_config_path_was_unset(self, monkeypatch, tmp_path, pkgconfig_dir):
         """Restore must remove PKG_CONFIG_PATH if it was originally unset."""
-        pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
-        pkgconfig_dir.mkdir(parents=True)
         _stub_gitroot_and_chdir(monkeypatch, tmp_path)
         monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
 
@@ -1356,13 +1350,11 @@ class TestSetupPkgConfigOverrides:
 
         assert "PKG_CONFIG_PATH" not in os.environ
 
-    def test_restore_runs_after_subprocess_exception(self, monkeypatch, tmp_path):
+    def test_restore_runs_after_subprocess_exception(self, monkeypatch, tmp_path, pkgconfig_dir):
         """Regression: restore_pkg_config_path() must cleanly undo the
         env mutation even when a downstream pkg-config subprocess raises
         between apply and restore. Long-lived processes / tests rely on
         this for cleanup-by-context-manager / try/finally patterns."""
-        pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
-        pkgconfig_dir.mkdir(parents=True)
         _stub_gitroot_and_chdir(monkeypatch, tmp_path)
         monkeypatch.setenv("PKG_CONFIG_PATH", "/original/path")
 
