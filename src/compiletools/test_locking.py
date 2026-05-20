@@ -7,7 +7,6 @@ import socket
 import stat
 import subprocess
 import sys
-import tempfile
 import textwrap
 import time
 import unittest.mock as mock
@@ -375,15 +374,14 @@ class TestLockdirLock:
         lock = LockdirLock(target, args)
         assert lock.hostname == "node01.cluster.example.com"
 
-    def test_hostname_falls_back_to_gethostname_when_fqdn_empty(self, monkeypatch):
+    def test_hostname_falls_back_to_gethostname_when_fqdn_empty(self, monkeypatch, tmp_path):
         """If getfqdn returns empty string we fall back to gethostname."""
         monkeypatch.setattr(socket, "getfqdn", lambda *a, **kw: "")
         monkeypatch.setattr(socket, "gethostname", lambda: "node01.eth0")
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = LockdirLock(target, args)
-            assert lock.hostname == "node01.eth0"
+        target = os.path.join(str(tmp_path), "test.o")
+        args = _make_lock_args()
+        lock = LockdirLock(target, args)
+        assert lock.hostname == "node01.eth0"
 
 
 class TestFcntlLock:
@@ -454,23 +452,22 @@ class TestFcntlLock:
         finally:
             lock.release()
 
-    def test_acquire_sets_0o666_regardless_of_umask(self):
+    def test_acquire_sets_0o666_regardless_of_umask(self, tmp_path):
         """Issue #2 regression: lock file must be group/other writable so a
         second user can reopen+lock the same inode. With umask 0o022 the
         os.open(..., 0o666) yields a 0o644 file unless we explicitly fchmod."""
 
         old_umask = os.umask(0o022)
         try:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                target = os.path.join(tmpdir, "test.o")
-                args = _make_lock_args()
-                lock = FcntlLock(target, args)
-                lock.acquire()
-                try:
-                    mode = stat.S_IMODE(os.stat(lock.lockfile).st_mode)
-                    assert mode == 0o666, f"Expected 0o666, got {oct(mode)}"
-                finally:
-                    lock.release()
+            target = os.path.join(str(tmp_path), "test.o")
+            args = _make_lock_args()
+            lock = FcntlLock(target, args)
+            lock.acquire()
+            try:
+                mode = stat.S_IMODE(os.stat(lock.lockfile).st_mode)
+                assert mode == 0o666, f"Expected 0o666, got {oct(mode)}"
+            finally:
+                lock.release()
         finally:
             os.umask(old_umask)
 
@@ -520,22 +517,21 @@ class TestFlockLock:
         finally:
             lock.release()
 
-    def test_acquire_sets_0o666_regardless_of_umask(self):
+    def test_acquire_sets_0o666_regardless_of_umask(self, tmp_path):
         """Issue #2 regression: same as FcntlLock — defeat umask so a
         second user can reopen+lock the same inode."""
 
         old_umask = os.umask(0o022)
         try:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                target = os.path.join(tmpdir, "test.o")
-                args = _make_lock_args()
-                lock = FlockLock(target, args)
-                lock.acquire()
-                try:
-                    mode = stat.S_IMODE(os.stat(lock.lockfile).st_mode)
-                    assert mode == 0o666, f"Expected 0o666, got {oct(mode)}"
-                finally:
-                    lock.release()
+            target = os.path.join(str(tmp_path), "test.o")
+            args = _make_lock_args()
+            lock = FlockLock(target, args)
+            lock.acquire()
+            try:
+                mode = stat.S_IMODE(os.stat(lock.lockfile).st_mode)
+                assert mode == 0o666, f"Expected 0o666, got {oct(mode)}"
+            finally:
+                lock.release()
         finally:
             os.umask(old_umask)
 
@@ -666,13 +662,13 @@ class TestFlockLockRelease:
         # Release without acquire — should not crash
         lock.release()
 
-    def test_acquire_creates_parent_dir(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "subdir", "test.o")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
-            lock.acquire()
-            lock.release()
+    def test_acquire_creates_parent_dir(self, tmp_path):
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "subdir", "test.o")
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
+        lock.acquire()
+        lock.release()
 
 
 class TestDirectCompileProperty:
@@ -692,12 +688,12 @@ class TestDirectCompileProperty:
         lock = FlockLock(target, args)
         assert lock.direct_compile is True
 
-    def test_cifs_direct_compile_false(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = CIFSLock(target, args)
-            assert lock.direct_compile is False
+    def test_cifs_direct_compile_false(self, tmp_path):
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        lock = CIFSLock(target, args)
+        assert lock.direct_compile is False
 
 
 class TestAtomicCompile:
@@ -727,256 +723,256 @@ class TestAtomicCompile:
         return patch("compiletools.locking._run_with_signal_forwarding", new=mock), mock
 
     @requires_functional_compiler
-    def test_atomic_compile_direct_uses_temp(self):
+    def test_atomic_compile_direct_uses_temp(self, tmp_path):
         """FcntlLock (direct_compile=True) STILL routes through a temp file
         and renames: prevents a peer linker from reading a half-written .o
         while a compile is in progress (no read-side lock)."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = FcntlLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        lock = FcntlLock(target, args)
 
-            def create_temp(cmd):
-                out = cmd[cmd.index("-o") + 1]
-                open(out, "w").close()
+        def create_temp(cmd):
+            out = cmd[cmd.index("-o") + 1]
+            open(out, "w").close()
 
-            patcher, mock_run = self._patch_runner(on_run=create_temp)
-            with patcher:
-                atomic_compile(lock, target, self._compile_cmd())
-                call_args = mock_run.call_args[0][0]
-                assert call_args[-2] == "-o"
-                assert call_args[-1].endswith(".tmp"), f"compiler -o should be temp path, got {call_args[-1]}"
-                assert call_args[-1] != target
+        patcher, mock_run = self._patch_runner(on_run=create_temp)
+        with patcher:
+            atomic_compile(lock, target, self._compile_cmd())
+            call_args = mock_run.call_args[0][0]
+            assert call_args[-2] == "-o"
+            assert call_args[-1].endswith(".tmp"), f"compiler -o should be temp path, got {call_args[-1]}"
+            assert call_args[-1] != target
 
-            assert os.path.exists(target)
-            for f in os.listdir(tmpdir):
-                assert ".tmp" not in f
+        assert os.path.exists(target)
+        for f in os.listdir(tmpdir):
+            assert ".tmp" not in f
 
     @requires_functional_compiler
-    def test_atomic_compile_direct_calls_rename(self):
+    def test_atomic_compile_direct_calls_rename(self, tmp_path):
         """FcntlLock (direct_compile=True) calls os.replace(temp, target)
         after a successful compile."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = FcntlLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        lock = FcntlLock(target, args)
 
-            def create_temp(cmd):
-                out = cmd[cmd.index("-o") + 1]
-                open(out, "w").close()
+        def create_temp(cmd):
+            out = cmd[cmd.index("-o") + 1]
+            open(out, "w").close()
 
-            patcher, _ = self._patch_runner(on_run=create_temp)
-            with patcher, patch("os.replace") as mock_replace:
-                atomic_compile(lock, target, self._compile_cmd())
-                mock_replace.assert_called_once()
-                args_passed = mock_replace.call_args[0]
-                assert args_passed[0].endswith(".tmp")
-                assert args_passed[1] == target
+        patcher, _ = self._patch_runner(on_run=create_temp)
+        with patcher, patch("os.replace") as mock_replace:
+            atomic_compile(lock, target, self._compile_cmd())
+            mock_replace.assert_called_once()
+            args_passed = mock_replace.call_args[0]
+            assert args_passed[0].endswith(".tmp")
+            assert args_passed[1] == target
 
     @requires_functional_compiler
-    def test_atomic_compile_direct_failure_cleans_temp_no_rename(self):
+    def test_atomic_compile_direct_failure_cleans_temp_no_rename(self, tmp_path):
         """FcntlLock (direct_compile=True): on compiler failure, the temp
         file is removed and os.replace is NOT called."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = FcntlLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        lock = FcntlLock(target, args)
 
-            def create_temp(cmd):
-                out = cmd[cmd.index("-o") + 1]
-                with open(out, "w") as f:
-                    f.write("partial")
+        def create_temp(cmd):
+            out = cmd[cmd.index("-o") + 1]
+            with open(out, "w") as f:
+                f.write("partial")
 
-            patcher, _ = self._patch_runner(returncode=1, on_run=create_temp)
-            with patcher, patch("os.replace") as mock_replace, pytest.raises(subprocess.CalledProcessError):
-                atomic_compile(lock, target, self._compile_cmd())
-            mock_replace.assert_not_called()
-            for f in os.listdir(tmpdir):
-                assert ".tmp" not in f, f"Stale temp file found: {f}"
+        patcher, _ = self._patch_runner(returncode=1, on_run=create_temp)
+        with patcher, patch("os.replace") as mock_replace, pytest.raises(subprocess.CalledProcessError):
+            atomic_compile(lock, target, self._compile_cmd())
+        mock_replace.assert_not_called()
+        for f in os.listdir(tmpdir):
+            assert ".tmp" not in f, f"Stale temp file found: {f}"
 
     @requires_functional_compiler
-    def test_atomic_compile_indirect_uses_temp(self):
+    def test_atomic_compile_indirect_uses_temp(self, tmp_path):
         """CIFSLock (direct_compile=False): compiler gets -o *.tmp, rename IS called."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = CIFSLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        lock = CIFSLock(target, args)
 
-            def create_temp(cmd):
-                out = cmd[cmd.index("-o") + 1]
-                open(out, "w").close()
+        def create_temp(cmd):
+            out = cmd[cmd.index("-o") + 1]
+            open(out, "w").close()
 
-            patcher, mock_run = self._patch_runner(on_run=create_temp)
-            with patcher:
-                atomic_compile(lock, target, self._compile_cmd())
-                call_args = mock_run.call_args[0][0]
-                assert call_args[-2] == "-o"
-                assert call_args[-1].endswith(".tmp")
+        patcher, mock_run = self._patch_runner(on_run=create_temp)
+        with patcher:
+            atomic_compile(lock, target, self._compile_cmd())
+            call_args = mock_run.call_args[0][0]
+            assert call_args[-2] == "-o"
+            assert call_args[-1].endswith(".tmp")
 
-            assert os.path.exists(target)
-            for f in os.listdir(tmpdir):
-                assert ".tmp" not in f
+        assert os.path.exists(target)
+        for f in os.listdir(tmpdir):
+            assert ".tmp" not in f
 
     @requires_functional_compiler
-    def test_atomic_compile_direct_failure_releases_lock(self):
+    def test_atomic_compile_direct_failure_releases_lock(self, tmp_path):
         """FcntlLock (direct_compile=True): lock is released on compiler failure."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = FcntlLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        lock = FcntlLock(target, args)
 
-            patcher, _ = self._patch_runner(returncode=1)
-            with patcher, pytest.raises(subprocess.CalledProcessError):
-                atomic_compile(lock, target, self._compile_cmd())
+        patcher, _ = self._patch_runner(returncode=1)
+        with patcher, pytest.raises(subprocess.CalledProcessError):
+            atomic_compile(lock, target, self._compile_cmd())
 
-            lock2 = FcntlLock(target, args)
-            lock2.acquire()
-            lock2.release()
+        lock2 = FcntlLock(target, args)
+        lock2.acquire()
+        lock2.release()
 
     @requires_functional_compiler
-    def test_atomic_compile_indirect_failure_releases_lock_and_cleans_temp(self):
+    def test_atomic_compile_indirect_failure_releases_lock_and_cleans_temp(self, tmp_path):
         """CIFSLock (direct_compile=False): lock released and temp cleaned on failure."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = CIFSLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        lock = CIFSLock(target, args)
 
-            patcher, _ = self._patch_runner(returncode=1)
-            with patcher, pytest.raises(subprocess.CalledProcessError):
-                atomic_compile(lock, target, self._compile_cmd())
+        patcher, _ = self._patch_runner(returncode=1)
+        with patcher, pytest.raises(subprocess.CalledProcessError):
+            atomic_compile(lock, target, self._compile_cmd())
 
-            for f in os.listdir(tmpdir):
-                assert ".tmp" not in f, f"Stale temp file found: {f}"
+        for f in os.listdir(tmpdir):
+            assert ".tmp" not in f, f"Stale temp file found: {f}"
 
     @requires_functional_compiler
-    def test_atomic_compile_indirect_rename_failure_cleans_temp(self):
+    def test_atomic_compile_indirect_rename_failure_cleans_temp(self, tmp_path):
         """If os.replace fails, temp file is cleaned up and lock is released."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = CIFSLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        lock = CIFSLock(target, args)
 
-            def create_temp(cmd):
-                out = cmd[cmd.index("-o") + 1]
-                with open(out, "w") as f:
-                    f.write("fake")
+        def create_temp(cmd):
+            out = cmd[cmd.index("-o") + 1]
+            with open(out, "w") as f:
+                f.write("fake")
 
-            patcher, _ = self._patch_runner(on_run=create_temp)
-            with (
-                patcher,
-                patch("os.replace", side_effect=OSError("cross-device")),
-                pytest.raises(OSError, match="cross-device"),
-            ):
-                atomic_compile(lock, target, self._compile_cmd())
+        patcher, _ = self._patch_runner(on_run=create_temp)
+        with (
+            patcher,
+            patch("os.replace", side_effect=OSError("cross-device")),
+            pytest.raises(OSError, match="cross-device"),
+        ):
+            atomic_compile(lock, target, self._compile_cmd())
 
-            for f in os.listdir(tmpdir):
-                assert ".tmp" not in f, f"Stale temp file found: {f}"
+        for f in os.listdir(tmpdir):
+            assert ".tmp" not in f, f"Stale temp file found: {f}"
 
     @requires_functional_compiler
-    def test_atomic_compile_replaces_existing_target_in_subdir(self):
+    def test_atomic_compile_replaces_existing_target_in_subdir(self, tmp_path):
         """Issue #1 regression: target inside a subdirectory with an existing
         file is replaced atomically via os.replace. Exercises the typical
         case (target lives in an obj subdir, previous .o already exists)."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            subdir = os.path.join(tmpdir, "objs", "deep")
-            os.makedirs(subdir)
-            target = os.path.join(subdir, "test.o")
-            with open(target, "w") as f:
-                f.write("OLD")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
+        tmpdir = str(tmp_path)
+        subdir = os.path.join(tmpdir, "objs", "deep")
+        os.makedirs(subdir)
+        target = os.path.join(subdir, "test.o")
+        with open(target, "w") as f:
+            f.write("OLD")
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
 
-            def create_temp(cmd):
-                out = cmd[cmd.index("-o") + 1]
-                with open(out, "w") as f:
-                    f.write("NEW")
+        def create_temp(cmd):
+            out = cmd[cmd.index("-o") + 1]
+            with open(out, "w") as f:
+                f.write("NEW")
 
-            patcher, _ = self._patch_runner(on_run=create_temp)
-            with patcher:
-                atomic_compile(lock, target, self._compile_cmd())
+        patcher, _ = self._patch_runner(on_run=create_temp)
+        with patcher:
+            atomic_compile(lock, target, self._compile_cmd())
 
-            with open(target) as f:
-                assert f.read() == "NEW"
-            for f in os.listdir(subdir):
-                assert ".tmp" not in f
-
-    @requires_functional_compiler
-    def test_atomic_compile_skip_if_exists_returns_none_without_compile(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            with open(target, "w") as f:
-                f.write("PEER_PRODUCED")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
-
-            patcher, mock_run = self._patch_runner()
-            with patcher:
-                result = atomic_compile(lock, target, self._compile_cmd(), skip_if_exists=True)
-
-            assert result is None
-            mock_run.assert_not_called()
-            with open(target) as f:
-                assert f.read() == "PEER_PRODUCED"
-            for f in os.listdir(tmpdir):
-                assert ".tmp" not in f
+        with open(target) as f:
+            assert f.read() == "NEW"
+        for f in os.listdir(subdir):
+            assert ".tmp" not in f
 
     @requires_functional_compiler
-    def test_atomic_compile_skip_if_exists_releases_lock(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            open(target, "w").close()
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
+    def test_atomic_compile_skip_if_exists_returns_none_without_compile(self, tmp_path):
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        with open(target, "w") as f:
+            f.write("PEER_PRODUCED")
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
 
-            patcher, _ = self._patch_runner()
-            with patcher:
-                atomic_compile(lock, target, self._compile_cmd(), skip_if_exists=True)
+        patcher, mock_run = self._patch_runner()
+        with patcher:
+            result = atomic_compile(lock, target, self._compile_cmd(), skip_if_exists=True)
 
-            lock2 = FlockLock(target, args)
-            lock2.acquire()
-            lock2.release()
+        assert result is None
+        mock_run.assert_not_called()
+        with open(target) as f:
+            assert f.read() == "PEER_PRODUCED"
+        for f in os.listdir(tmpdir):
+            assert ".tmp" not in f
 
     @requires_functional_compiler
-    def test_atomic_compile_skip_if_exists_false_compiles_even_if_present(self):
+    def test_atomic_compile_skip_if_exists_releases_lock(self, tmp_path):
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        open(target, "w").close()
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
+
+        patcher, _ = self._patch_runner()
+        with patcher:
+            atomic_compile(lock, target, self._compile_cmd(), skip_if_exists=True)
+
+        lock2 = FlockLock(target, args)
+        lock2.acquire()
+        lock2.release()
+
+    @requires_functional_compiler
+    def test_atomic_compile_skip_if_exists_false_compiles_even_if_present(self, tmp_path):
         # Required by trace_backend's non-CA else branch where verify-trace failed.
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            with open(target, "w") as f:
-                f.write("STALE")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        with open(target, "w") as f:
+            f.write("STALE")
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
 
-            def create_temp(cmd):
-                out = cmd[cmd.index("-o") + 1]
-                with open(out, "w") as f:
-                    f.write("FRESH")
+        def create_temp(cmd):
+            out = cmd[cmd.index("-o") + 1]
+            with open(out, "w") as f:
+                f.write("FRESH")
 
-            patcher, mock_run = self._patch_runner(on_run=create_temp)
-            with patcher:
-                atomic_compile(lock, target, self._compile_cmd())
+        patcher, mock_run = self._patch_runner(on_run=create_temp)
+        with patcher:
+            atomic_compile(lock, target, self._compile_cmd())
 
-            mock_run.assert_called_once()
-            with open(target) as f:
-                assert f.read() == "FRESH"
+        mock_run.assert_called_once()
+        with open(target) as f:
+            assert f.read() == "FRESH"
 
     @requires_functional_compiler
-    def test_atomic_compile_skip_if_exists_no_target_compiles(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
+    def test_atomic_compile_skip_if_exists_no_target_compiles(self, tmp_path):
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
 
-            def create_temp(cmd):
-                out = cmd[cmd.index("-o") + 1]
-                open(out, "w").close()
+        def create_temp(cmd):
+            out = cmd[cmd.index("-o") + 1]
+            open(out, "w").close()
 
-            patcher, mock_run = self._patch_runner(on_run=create_temp)
-            with patcher:
-                result = atomic_compile(lock, target, self._compile_cmd(), skip_if_exists=True)
+        patcher, mock_run = self._patch_runner(on_run=create_temp)
+        with patcher:
+            result = atomic_compile(lock, target, self._compile_cmd(), skip_if_exists=True)
 
-            mock_run.assert_called_once()
-            assert result is not None and result.returncode == 0
-            assert os.path.exists(target)
+        mock_run.assert_called_once()
+        assert result is not None and result.returncode == 0
+        assert os.path.exists(target)
 
 
 class TestAtomicLink:
@@ -1273,23 +1269,23 @@ class TestAtomicLink:
         with open(target) as f:
             assert f.read() == "FRESH"
 
-    def test_atomic_link_skip_if_exists_no_target_links(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.exe")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
+    def test_atomic_link_skip_if_exists_no_target_links(self, tmp_path):
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.exe")
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
 
-            def on_run(cmd, *args, **kwargs):
-                tmp = cmd[cmd.index("-o") + 1]
-                open(tmp, "w").close()
+        def on_run(cmd, *args, **kwargs):
+            tmp = cmd[cmd.index("-o") + 1]
+            open(tmp, "w").close()
 
-            patcher, mock_run = self._patch_runner(on_run=on_run)
-            with patcher:
-                result = atomic_link(lock, target, ["cc", "-o", target, "foo.o"], skip_if_exists=True)
+        patcher, mock_run = self._patch_runner(on_run=on_run)
+        with patcher:
+            result = atomic_link(lock, target, ["cc", "-o", target, "foo.o"], skip_if_exists=True)
 
-            mock_run.assert_called_once()
-            assert result == 0
-            assert os.path.exists(target)
+        mock_run.assert_called_once()
+        assert result == 0
+        assert os.path.exists(target)
 
 
 class TestFileLock:
@@ -1365,12 +1361,12 @@ class TestFileLock:
             # Lock should be acquired
             assert fl.lock is not None
 
-    def test_creates_parent_dir(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "subdir", "test.o")
-            args = _make_lock_args()
-            lock = FileLock(target, args)
-            assert lock.lock is not None
+    def test_creates_parent_dir(self, tmp_path):
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "subdir", "test.o")
+        args = _make_lock_args()
+        lock = FileLock(target, args)
+        assert lock.lock is not None
 
 
 class TestPidReuseTolerance:
@@ -1483,13 +1479,13 @@ class TestSubprocessSafety:
         lock = FlockLock(target, args)
         self._assert_popen_used_with_new_session(lambda: atomic_compile(lock, target, ["c++", "-c", "test.c"]))
 
-    def test_atomic_link_starts_new_session(self):
+    def test_atomic_link_starts_new_session(self, tmp_path):
         """atomic_link must use start_new_session=True for signal forwarding."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.a")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
-            self._assert_popen_used_with_new_session(lambda: atomic_link(lock, target, ["ar", "rcs", target, "foo.o"]))
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.a")
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
+        self._assert_popen_used_with_new_session(lambda: atomic_link(lock, target, ["ar", "rcs", target, "foo.o"]))
 
     @pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX-only signal forwarding")
     def test_sigterm_during_atomic_compile_is_forwarded_to_child_group(self, tmp_path):
