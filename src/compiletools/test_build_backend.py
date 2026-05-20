@@ -1667,6 +1667,9 @@ class TestPchManifest:
             uth.add_backend_arguments(cap)
             ctx = BuildContext()
             args = compiletools.apptools.parseargs(cap, argv, context=ctx)
+            # cas-pchdir gets /<variant> auto-appended at parse time —
+            # use the post-parse value for filesystem assertions.
+            pchdir = args.cas_pchdir
             headerdeps = compiletools.headerdeps.create(args, context=ctx)
             magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
             hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)

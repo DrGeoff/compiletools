@@ -616,6 +616,29 @@ For diagnostics, at high verbosity (``-vvvv``) ``ct-config`` (or any
 PKG_CONFIG_PATH entry it emits, distinguishing conf-file values from
 CLI flags and auto-discovered cwd/gitroot defaults.
 
+**Variant suffix is auto-appended to cas-*dir paths**
+
+Any user-supplied value for ``cas-objdir``, ``cas-pchdir``,
+``cas-pcmdir``, or ``cas-exedir`` is normalised to end in
+``/<variant>`` so the four CAS layers stay separated per variant. A
+user pointing every host at a shared pool only needs to write the bare
+root:
+
+.. code-block:: ini
+
+    # ct.conf.d/shared.conf
+    cas-objdir = $HOME/cache/cas-objs
+    cas-pchdir = ~/cache/cas-pch
+
+Building ``--variant=gcc.release`` resolves these to
+``$HOME/cache/cas-objs/gcc.release`` and
+``~/cache/cas-pch/gcc.release`` respectively. The append is
+idempotent: a path that already ends in ``/<variant>`` is left alone,
+so a conf migrated from before this contract needs no edit. Built-in
+defaults (``<gitroot>/cas-objdir/<variant>`` and the no-gitroot
+``bin/<variant>/obj`` fallback) already incorporate the variant and
+are unchanged.
+
 **Common Configuration Options**
 
 Base configuration (ct.conf):
