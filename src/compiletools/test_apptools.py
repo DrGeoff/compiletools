@@ -76,6 +76,12 @@ def parsers_reset():
     uth.reset()
 
 
+def _stub_gitroot_and_chdir(monkeypatch, target):
+    """Stub git_utils.find_git_root to return str(target) and chdir into target."""
+    monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(target))
+    monkeypatch.chdir(target)
+
+
 class TestExtractCommandLineMacrosSz:
     """Test extract_command_line_macros_sz()."""
 
@@ -1020,8 +1026,7 @@ class TestSetupPkgConfigOverrides:
         pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
         pkgconfig_dir.mkdir(parents=True)
 
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path))
-        monkeypatch.chdir(tmp_path)
+        _stub_gitroot_and_chdir(monkeypatch, tmp_path)
         monkeypatch.setenv("PKG_CONFIG_PATH", "/existing/path")
 
         ctx = BuildContext()
@@ -1033,8 +1038,7 @@ class TestSetupPkgConfigOverrides:
 
     def test_noop_when_no_override_dir(self, monkeypatch, tmp_path):
         """When ct.conf.d/pkgconfig/ does not exist, PKG_CONFIG_PATH is unchanged."""
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path))
-        monkeypatch.chdir(tmp_path)
+        _stub_gitroot_and_chdir(monkeypatch, tmp_path)
         monkeypatch.setenv("PKG_CONFIG_PATH", "/original/path")
 
         ctx = BuildContext()
@@ -1047,8 +1051,7 @@ class TestSetupPkgConfigOverrides:
         pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
         pkgconfig_dir.mkdir(parents=True)
 
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path))
-        monkeypatch.chdir(tmp_path)
+        _stub_gitroot_and_chdir(monkeypatch, tmp_path)
         monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
 
         ctx = BuildContext()
@@ -1061,8 +1064,7 @@ class TestSetupPkgConfigOverrides:
         pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
         pkgconfig_dir.mkdir(parents=True)
 
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path))
-        monkeypatch.chdir(tmp_path)
+        _stub_gitroot_and_chdir(monkeypatch, tmp_path)
         monkeypatch.setenv("PKG_CONFIG_PATH", "/existing/path")
 
         ctx = BuildContext()
@@ -1079,8 +1081,7 @@ class TestSetupPkgConfigOverrides:
         pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
         pkgconfig_dir.mkdir(parents=True)
 
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path))
-        monkeypatch.chdir(tmp_path)
+        _stub_gitroot_and_chdir(monkeypatch, tmp_path)
         monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
 
         ctx = BuildContext()
@@ -1229,8 +1230,7 @@ class TestSetupPkgConfigOverrides:
         pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
         pkgconfig_dir.mkdir(parents=True)
 
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path))
-        monkeypatch.chdir(tmp_path)
+        _stub_gitroot_and_chdir(monkeypatch, tmp_path)
         monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
 
         ctx = BuildContext()
@@ -1293,8 +1293,7 @@ class TestSetupPkgConfigOverrides:
         multiple sequential contexts don't leak PKG_CONFIG_PATH state."""
         pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
         pkgconfig_dir.mkdir(parents=True)
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path))
-        monkeypatch.chdir(tmp_path)
+        _stub_gitroot_and_chdir(monkeypatch, tmp_path)
         monkeypatch.setenv("PKG_CONFIG_PATH", "/original/path")
 
         ctx = BuildContext()
@@ -1313,8 +1312,7 @@ class TestSetupPkgConfigOverrides:
         """Restore must remove PKG_CONFIG_PATH if it was originally unset."""
         pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
         pkgconfig_dir.mkdir(parents=True)
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path))
-        monkeypatch.chdir(tmp_path)
+        _stub_gitroot_and_chdir(monkeypatch, tmp_path)
         monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
 
         ctx = BuildContext()
@@ -1332,8 +1330,7 @@ class TestSetupPkgConfigOverrides:
         this for cleanup-by-context-manager / try/finally patterns."""
         pkgconfig_dir = tmp_path / "ct.conf.d" / "pkgconfig"
         pkgconfig_dir.mkdir(parents=True)
-        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(tmp_path))
-        monkeypatch.chdir(tmp_path)
+        _stub_gitroot_and_chdir(monkeypatch, tmp_path)
         monkeypatch.setenv("PKG_CONFIG_PATH", "/original/path")
 
         ctx = BuildContext()
