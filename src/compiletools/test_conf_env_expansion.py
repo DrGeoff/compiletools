@@ -160,10 +160,7 @@ def test_list_value_expands_each_element(tmp_path, monkeypatch):
     conf_dir = tmp_path / "axis-confs"
     conf_dir.mkdir()
     conf = conf_dir / "extras.conf"
-    conf.write_text(
-        "append-CXXFLAGS = -I$HOME/a\n"
-        "append-CXXFLAGS = -I$HOME/b\n"
-    )
+    conf.write_text("append-CXXFLAGS = -I$HOME/a\nappend-CXXFLAGS = -I$HOME/b\n")
 
     other_cwd = tmp_path / "other"
     other_cwd.mkdir()
@@ -315,10 +312,7 @@ def test_provenance_literal_for_list_value(tmp_path, monkeypatch):
     conf_dir = tmp_path / "axis-confs"
     conf_dir.mkdir()
     conf = conf_dir / "extras.conf"
-    conf.write_text(
-        "append-CXXFLAGS = -I$HOME/a\n"
-        "append-CXXFLAGS = -I/bare/b\n"
-    )
+    conf.write_text("append-CXXFLAGS = -I$HOME/a\nappend-CXXFLAGS = -I/bare/b\n")
 
     other_cwd = tmp_path / "other"
     other_cwd.mkdir()
