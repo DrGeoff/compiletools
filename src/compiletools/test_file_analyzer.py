@@ -4,15 +4,30 @@ import os
 import tempfile
 from types import SimpleNamespace
 
+import configargparse
+import stringzilla as sz
+
 from compiletools.build_context import BuildContext
-from compiletools.file_analyzer import FileAnalysisResult, FileAnalyzer, read_file_mmap, read_file_traditional
+from compiletools.file_analyzer import (
+    FileAnalysisResult,
+    FileAnalyzer,
+    MarkerType,
+    PreprocessorDirective,
+    _extract_conditional_macros,
+    cache_clear,
+    detect_include_guard,
+    get_cache_stats,
+    is_inside_block_comment_simd,
+    is_position_commented_simd_optimized,
+    parse_directive_struct,
+    print_cache_stats,
+    read_file_mmap,
+    read_file_traditional,
+    set_analyzer_args,
+)
 
 
 def _parse_directive(directive_type, line, *continuation_lines):
-    import stringzilla as sz
-
-    from compiletools.file_analyzer import parse_directive_struct
-
     lines = [sz.Str(line), *[sz.Str(continuation) for continuation in continuation_lines]]
     return parse_directive_struct(directive_type, 0, 0, lines)
 
@@ -121,54 +136,30 @@ class TestCommentDetection:
     """Test comment detection functions."""
 
     def test_is_position_commented_in_line_comment(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import is_position_commented_simd_optimized
-
         text = sz.Str("int x; // comment\nint y;")
         offsets = [0, 18]
         # Position inside the comment
         assert is_position_commented_simd_optimized(text, 10, offsets) is True
 
     def test_is_position_commented_not_commented(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import is_position_commented_simd_optimized
-
         text = sz.Str("int x = 5;\nint y;")
         offsets = [0, 11]
         assert is_position_commented_simd_optimized(text, 4, offsets) is False
 
     def test_is_position_commented_empty_offsets(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import is_position_commented_simd_optimized
-
         text = sz.Str("// all comment")
         offsets = [0]
         assert is_position_commented_simd_optimized(text, 5, offsets) is True
 
     def test_is_inside_block_comment_no_comments(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import is_inside_block_comment_simd
-
         text = sz.Str("int x = 5;")
         assert is_inside_block_comment_simd(text, 4) is False
 
     def test_is_inside_block_comment_inside(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import is_inside_block_comment_simd
-
         text = sz.Str("/* comment */ int x;")
         assert is_inside_block_comment_simd(text, 5) is True
 
     def test_is_inside_block_comment_outside(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import is_inside_block_comment_simd
-
         text = sz.Str("/* comment */ int x;")
         assert is_inside_block_comment_simd(text, 15) is False
 
@@ -206,23 +197,17 @@ class TestCacheStatsFunctions:
     """Test cache stats and clear functions."""
 
     def test_get_cache_stats(self):
-        from compiletools.file_analyzer import get_cache_stats
-
         ctx = BuildContext()
         stats = get_cache_stats(ctx)
         assert "cache_size" in stats
 
     def test_print_cache_stats(self, capsys):
-        from compiletools.file_analyzer import print_cache_stats
-
         ctx = BuildContext()
         print_cache_stats(ctx)
         captured = capsys.readouterr()
         assert "Cache" in captured.out
 
     def test_cache_clear(self):
-        from compiletools.file_analyzer import cache_clear
-
         ctx = BuildContext()
         cache_clear(ctx)  # Should not raise
 
@@ -242,8 +227,6 @@ class TestMarkerType:
     """Test MarkerType enum."""
 
     def test_marker_values(self):
-        from compiletools.file_analyzer import MarkerType
-
         assert MarkerType.NONE.value == 0
         assert MarkerType.EXE.value == 1
         assert MarkerType.TEST.value == 2
@@ -274,8 +257,6 @@ class TestDetectIncludeGuard:
     """Test detect_include_guard function."""
 
     def test_pragma_once(self):
-        from compiletools.file_analyzer import PreprocessorDirective, detect_include_guard
-
         directives = [
             PreprocessorDirective(
                 line_num=0, byte_pos=0, directive_type="pragma", continuation_lines=0, macro_name="once"
@@ -289,8 +270,6 @@ class TestDetectIncludeGuard:
         assert str(guard) == "pragma_once"
 
     def test_pragma_once_via_condition(self):
-        from compiletools.file_analyzer import PreprocessorDirective, detect_include_guard
-
         directives = [
             PreprocessorDirective(
                 line_num=0, byte_pos=0, directive_type="pragma", continuation_lines=0, condition="once"
@@ -304,10 +283,6 @@ class TestDetectIncludeGuard:
         assert str(guard) == "pragma_once"
 
     def test_traditional_include_guard(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import PreprocessorDirective, detect_include_guard
-
         directives = [
             PreprocessorDirective(
                 line_num=0, byte_pos=0, directive_type="ifndef", continuation_lines=0, macro_name=sz.Str("MY_HEADER_H")
@@ -322,15 +297,9 @@ class TestDetectIncludeGuard:
         assert str(guard) == "MY_HEADER_H"
 
     def test_no_guard_empty(self):
-        from compiletools.file_analyzer import detect_include_guard
-
         assert detect_include_guard([]) is None
 
     def test_no_guard_too_few_directives(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import PreprocessorDirective, detect_include_guard
-
         directives = [
             PreprocessorDirective(
                 line_num=0, byte_pos=0, directive_type="ifndef", continuation_lines=0, macro_name=sz.Str("X")
@@ -342,10 +311,6 @@ class TestDetectIncludeGuard:
         assert detect_include_guard(directives) is None
 
     def test_no_guard_last_not_endif(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import PreprocessorDirective, detect_include_guard
-
         directives = [
             PreprocessorDirective(
                 line_num=0, byte_pos=0, directive_type="ifndef", continuation_lines=0, macro_name=sz.Str("X")
@@ -360,10 +325,6 @@ class TestDetectIncludeGuard:
         assert detect_include_guard(directives) is None
 
     def test_no_guard_mismatched_names(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import PreprocessorDirective, detect_include_guard
-
         directives = [
             PreprocessorDirective(
                 line_num=0, byte_pos=0, directive_type="ifndef", continuation_lines=0, macro_name=sz.Str("X")
@@ -381,8 +342,6 @@ class TestAddArguments:
 
     def test_add_arguments(self):
         """Test that add_arguments adds expected flags."""
-        import configargparse
-
         cap = configargparse.ArgParser()
         FileAnalyzer.add_arguments(cap)
         # Parse with defaults
@@ -397,16 +356,12 @@ class TestDetermineFileReadingStrategy:
     """Test _determine_file_reading_strategy."""
 
     def test_no_mmap_flag(self):
-        from compiletools.file_analyzer import set_analyzer_args
-
         ctx = BuildContext()
         args = SimpleNamespace(use_mmap=False)
         set_analyzer_args(args, ctx)
         assert ctx.file_reading_strategy == "no_mmap"
 
     def test_force_mmap_flag(self):
-        from compiletools.file_analyzer import set_analyzer_args
-
         ctx = BuildContext()
         args = SimpleNamespace(use_mmap=True, force_mmap=True)
         set_analyzer_args(args, ctx)
@@ -417,10 +372,6 @@ class TestExtractConditionalMacros:
     """Test _extract_conditional_macros function."""
 
     def test_ifdef_macros(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import PreprocessorDirective, _extract_conditional_macros
-
         directives = [
             PreprocessorDirective(
                 line_num=0, byte_pos=0, directive_type="ifdef", continuation_lines=0, macro_name=sz.Str("DEBUG")
@@ -435,10 +386,6 @@ class TestExtractConditionalMacros:
         assert "NDEBUG" in names
 
     def test_if_elif_conditions(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import PreprocessorDirective, _extract_conditional_macros
-
         directives = [
             PreprocessorDirective(
                 line_num=0,
@@ -460,8 +407,6 @@ class TestExtractConditionalMacros:
         assert "defined" not in names
 
     def test_no_conditionals(self):
-        from compiletools.file_analyzer import PreprocessorDirective, _extract_conditional_macros
-
         directives = [
             PreprocessorDirective(
                 line_num=0, byte_pos=0, directive_type="define", continuation_lines=0, macro_name="X"
