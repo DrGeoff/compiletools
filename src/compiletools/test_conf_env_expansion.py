@@ -62,7 +62,9 @@ def _parse_conf(conf_path: str, third_cwd, monkeypatch) -> argparse.Namespace:
 
 def test_dollar_HOME_expands_in_conf_value(tmp_path, monkeypatch):
     """`cas-objdir = $HOME/x` must resolve to os.environ["HOME"] + "/x"
-    on args.cas_objdir."""
+    on args.cas_objdir. The ``/<variant>`` suffix is auto-appended by
+    the cas-dir variant-suffix helper, so we assert the prefix and
+    suffix independently."""
     monkeypatch.setenv("HOME", "/test/home")
     conf_dir = tmp_path / "axis-confs"
     conf_dir.mkdir()
@@ -73,11 +75,13 @@ def test_dollar_HOME_expands_in_conf_value(tmp_path, monkeypatch):
     other_cwd.mkdir()
 
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
-    assert args.cas_objdir == "/test/home/x", args.cas_objdir
+    assert args.cas_objdir == os.path.join("/test/home/x", args.variant), args.cas_objdir
 
 
 def test_tilde_expands_in_conf_value(tmp_path, monkeypatch):
-    """`cas-objdir = ~/x` must resolve via os.path.expanduser."""
+    """`cas-objdir = ~/x` must resolve via os.path.expanduser. The
+    ``/<variant>`` suffix is auto-appended by the cas-dir
+    variant-suffix helper."""
     monkeypatch.setenv("HOME", "/test/home")
     conf_dir = tmp_path / "axis-confs"
     conf_dir.mkdir()
@@ -88,11 +92,13 @@ def test_tilde_expands_in_conf_value(tmp_path, monkeypatch):
     other_cwd.mkdir()
 
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
-    assert args.cas_objdir == "/test/home/x", args.cas_objdir
+    assert args.cas_objdir == os.path.join("/test/home/x", args.variant), args.cas_objdir
 
 
 def test_brace_form_HOME_expands(tmp_path, monkeypatch):
-    """${HOME} brace form must expand the same as $HOME."""
+    """${HOME} brace form must expand the same as $HOME. The
+    ``/<variant>`` suffix is auto-appended by the cas-dir
+    variant-suffix helper."""
     monkeypatch.setenv("HOME", "/test/home")
     conf_dir = tmp_path / "axis-confs"
     conf_dir.mkdir()
@@ -103,7 +109,7 @@ def test_brace_form_HOME_expands(tmp_path, monkeypatch):
     other_cwd.mkdir()
 
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
-    assert args.cas_objdir == "/test/home/x", args.cas_objdir
+    assert args.cas_objdir == os.path.join("/test/home/x", args.variant), args.cas_objdir
 
 
 def test_conf_dir_expanded_before_env(tmp_path, monkeypatch):
@@ -149,7 +155,7 @@ def test_undefined_env_var_stays_literal(tmp_path, monkeypatch):
     other_cwd.mkdir()
 
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
-    assert args.cas_objdir == "$DEFINITELY_UNSET_xyz_42/x", args.cas_objdir
+    assert args.cas_objdir == os.path.join("$DEFINITELY_UNSET_xyz_42/x", args.variant), args.cas_objdir
 
 
 def test_list_value_expands_each_element(tmp_path, monkeypatch):
@@ -188,7 +194,7 @@ def test_bare_relative_not_touched_by_env_expansion(tmp_path, monkeypatch):
     other_cwd.mkdir()
 
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
-    assert args.cas_objdir == "relative/subdir/x", args.cas_objdir
+    assert args.cas_objdir == os.path.join("relative/subdir/x", args.variant), args.cas_objdir
 
 
 def test_dollar_escape_protects_literal_dollar(tmp_path, monkeypatch):

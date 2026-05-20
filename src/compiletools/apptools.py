@@ -544,6 +544,24 @@ def unsupplied_replacement(variable, default_variable, verbose, variable_str):
     return replacement
 
 
+def _ensure_variant_suffix(path, variant):
+    """Return ``path`` with ``/<variant>`` appended as a final segment
+    unless it is already there. Idempotent.
+
+    Used to keep the four ``cas-*dir`` layers separated per variant
+    even when the user points them at a bare shared-pool path (e.g.
+    ``cas-objdir = /mnt/team-cache``). The check is segment-aware:
+    ``/pool/release_old`` does NOT count as ending in ``release``.
+    Trailing ``/`` is normalised away so the result never contains
+    ``//``."""
+    if not path or not variant:
+        return path
+    normalised = path.rstrip(os.sep) or path
+    if os.path.basename(normalised) == variant:
+        return normalised
+    return os.path.join(normalised, variant)
+
+
 def _substitute_CXX_for_missing(args):
     """If C PreProcessor variables (and the same for the LD*) are not set
     but CXX ones are set then just use the CXX equivalents.
@@ -2646,6 +2664,7 @@ def _commonsubstitutions(args):
         else:
             default_cas_objdir = os.path.join(args.bindir, "obj")
         args.cas_objdir = unsupplied_replacement(args.cas_objdir, default_cas_objdir, args.verbose, "cas-objdir")
+        args.cas_objdir = _ensure_variant_suffix(args.cas_objdir, args.variant)
     except AttributeError:
         pass
 
@@ -2656,6 +2675,7 @@ def _commonsubstitutions(args):
         else:
             default_cas_pchdir = os.path.join(args.bindir, "pch")
         args.cas_pchdir = unsupplied_replacement(args.cas_pchdir, default_cas_pchdir, args.verbose, "cas-pchdir")
+        args.cas_pchdir = _ensure_variant_suffix(args.cas_pchdir, args.variant)
     except AttributeError:
         pass
 
@@ -2666,6 +2686,7 @@ def _commonsubstitutions(args):
         else:
             default_cas_pcmdir = os.path.join(args.bindir, "pcm")
         args.cas_pcmdir = unsupplied_replacement(args.cas_pcmdir, default_cas_pcmdir, args.verbose, "cas-pcmdir")
+        args.cas_pcmdir = _ensure_variant_suffix(args.cas_pcmdir, args.variant)
     except AttributeError:
         pass
 
@@ -2688,6 +2709,7 @@ def _commonsubstitutions(args):
                     file=sys.stderr,
                 )
         args.cas_exedir = unsupplied_replacement(args.cas_exedir, default_cas_exedir, args.verbose, "cas-exedir")
+        args.cas_exedir = _ensure_variant_suffix(args.cas_exedir, args.variant)
     except AttributeError:
         pass
 
