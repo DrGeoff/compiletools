@@ -32,6 +32,15 @@ import compiletools.testhelper as uth
 from compiletools.test_base import BaseCompileToolsTestCase
 
 
+def _run_in_spawn_pool(worker_func, args_list, num_workers):
+    """Run `worker_func` via `multiprocessing.Pool(num_workers).starmap`
+    with the 'spawn' context (avoids fork-related issues with pytest).
+    Returns the starmap result list."""
+    ctx = multiprocessing.get_context("spawn")
+    with ctx.Pool(num_workers) as pool:
+        return pool.starmap(worker_func, args_list)
+
+
 def compile_worker(worker_id, source_dir, config_name):
     """
     Worker process that runs ct-cake in a directory.
@@ -272,12 +281,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
 
         num_workers = 2
 
-        # Use 'spawn' instead of 'fork' to avoid multi-threading issues with pytest
-        ctx = multiprocessing.get_context("spawn")
-        with ctx.Pool(num_workers) as pool:
-            results = pool.starmap(
-                compile_worker, [(i, src_dir, cfg) for i, (src_dir, cfg) in enumerate(dirs_and_configs)]
-            )
+        results = _run_in_spawn_pool(compile_worker, [(i, src_dir, cfg) for i, (src_dir, cfg) in enumerate(dirs_and_configs)], num_workers)
 
         # Verify all workers succeeded
         for r in results:
@@ -335,12 +339,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
 
         num_workers = len(sources)
 
-        # Use 'spawn' instead of 'fork' to avoid multi-threading issues with pytest
-        ctx = multiprocessing.get_context("spawn")
-        with ctx.Pool(num_workers) as pool:
-            results = pool.starmap(
-                compile_worker, [(i, src_dir, cfg) for i, (src_dir, cfg) in enumerate(dirs_and_configs)]
-            )
+        results = _run_in_spawn_pool(compile_worker, [(i, src_dir, cfg) for i, (src_dir, cfg) in enumerate(dirs_and_configs)], num_workers)
 
         # All should succeed
         for r in results:
@@ -446,10 +445,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
 
         num_workers = 5
 
-        # Use 'spawn' instead of 'fork' to avoid multi-threading issues with pytest
-        ctx = multiprocessing.get_context("spawn")
-        with ctx.Pool(num_workers) as pool:
-            results = pool.starmap(create_objdir_worker, [(i, str(objdir)) for i in range(num_workers)])
+        results = _run_in_spawn_pool(create_objdir_worker, [(i, str(objdir)) for i in range(num_workers)], num_workers)
 
         # All should succeed
         for r in results:
@@ -491,12 +487,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
 
         start_time = time.time()
 
-        # Use 'spawn' instead of 'fork' to avoid multi-threading issues with pytest
-        ctx = multiprocessing.get_context("spawn")
-        with ctx.Pool(num_workers) as pool:
-            results = pool.starmap(
-                compile_worker, [(i, src_dir, cfg) for i, (src_dir, cfg) in enumerate(dirs_and_configs)]
-            )
+        results = _run_in_spawn_pool(compile_worker, [(i, src_dir, cfg) for i, (src_dir, cfg) in enumerate(dirs_and_configs)], num_workers)
 
         elapsed = time.time() - start_time
 
@@ -924,15 +915,14 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         )
 
         # Build both subprojects concurrently
-        ctx = multiprocessing.get_context("spawn")
-        with ctx.Pool(2) as pool:
-            results = pool.starmap(
-                build_subproject_worker,
+        results = _run_in_spawn_pool(
+            build_subproject_worker,
                 [
                     (0, str(subproject_a_dir), config_a),
                     (1, str(subproject_b_dir), config_b),
                 ],
-            )
+            2,
+        )
 
         # Verify both builds succeeded
         for r in results:
@@ -965,15 +955,14 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         source_dir_v1, config_v1 = self._create_test_source_dir(tmpdir, "build_v1", str(objdir))
         source_dir_v2, config_v2 = self._create_test_source_dir(tmpdir, "build_v2", str(objdir))
 
-        ctx = multiprocessing.get_context("spawn")
-        with ctx.Pool(2) as pool:
-            results = pool.starmap(
-                compile_worker_with_flags,
+        results = _run_in_spawn_pool(
+            compile_worker_with_flags,
                 [
                     (0, source_dir_v1, config_v1, []),
                     (1, source_dir_v2, config_v2, ["--CXXFLAGS=-O2"]),
                 ],
-            )
+            2,
+        )
 
         # Both must succeed
         for r in results:
@@ -1106,12 +1095,11 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             self._create_pch_source_dir(tmpdir, f"pch_build_{i}", str(objdir), str(pchdir)) for i in range(2)
         ]
 
-        ctx = multiprocessing.get_context("spawn")
-        with ctx.Pool(2) as pool:
-            results = pool.starmap(
-                compile_worker,
+        results = _run_in_spawn_pool(
+            compile_worker,
                 [(i, src_dir, cfg) for i, (src_dir, cfg) in enumerate(dirs_and_configs)],
-            )
+            2,
+        )
 
         for r in results:
             assert r["returncode"] == 0, f"Worker {r['worker_id']} failed: {r['error']}"
