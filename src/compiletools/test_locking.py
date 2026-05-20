@@ -35,29 +35,25 @@ def _make_lock_args(**overrides):
 class TestLockdirLock:
     """Test LockdirLock edge cases."""
 
-    def test_acquire_and_release(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = LockdirLock(target, args)
-            lock.acquire()
-            assert os.path.isdir(lock.lockdir)
-            lock.release()
-            assert not os.path.exists(lock.lockdir)
+    @pytest.fixture
+    def lock(self, tmp_path):
+        """LockdirLock with default args on a fresh tmp-path target."""
+        return LockdirLock(str(tmp_path / "test.o"), _make_lock_args())
 
-    def test_stale_detection_dead_pid(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = LockdirLock(target, args)
+    def test_acquire_and_release(self, lock):
+        lock.acquire()
+        assert os.path.isdir(lock.lockdir)
+        lock.release()
+        assert not os.path.exists(lock.lockdir)
 
-            # Create a stale lock manually
-            os.mkdir(lock.lockdir)
-            os.chmod(lock.lockdir, 0o775)
-            with open(lock.pid_file, "w") as f:
-                f.write(f"{lock.hostname}:99999999\n")  # Dead PID
+    def test_stale_detection_dead_pid(self, lock):
+        # Create a stale lock manually
+        os.mkdir(lock.lockdir)
+        os.chmod(lock.lockdir, 0o775)
+        with open(lock.pid_file, "w") as f:
+            f.write(f"{lock.hostname}:99999999\n")  # Dead PID
 
-            assert lock._is_lock_stale() is True
+        assert lock._is_lock_stale() is True
 
     def test_permissions_error_handled(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -79,71 +75,58 @@ class TestLockdirLock:
             # Should have auto-detected a sleep interval
             assert lock.sleep_interval > 0
 
-    def test_pid_file_includes_process_start_time(self):
+    def test_pid_file_includes_process_start_time(self, lock):
         """Regression: pid file format must be host:pid:starttime so we
         can detect PID reuse on busy build hosts."""
         from compiletools.lock_utils import get_process_start_time
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = LockdirLock(target, args)
-            lock.acquire()
-            try:
-                with open(lock.pid_file) as f:
-                    content = f.read().strip()
-                parts = content.split(":")
-                assert len(parts) == 3, f"Expected host:pid:starttime, got {content!r}"
-                host, pid_str, start_str = parts
-                # Issue #6: hostname is FQDN (with gethostname fallback)
-                assert host == (socket.getfqdn() or socket.gethostname())
-                assert int(pid_str) == os.getpid()
-                expected = get_process_start_time(os.getpid())
-                # /proc starttime is deterministic per (pid, boot) and the
-                # writer/reader both convert via the same SC_CLK_TCK divisor,
-                # so the round-trip should match within fp formatting noise.
-                assert expected is not None, "Linux test environment must expose /proc/[pid]/stat"
-                assert abs(float(start_str) - expected) < 0.001, (
-                    f"start_time {start_str} does not match get_process_start_time {expected}"
-                )
-            finally:
-                lock.release()
+        lock.acquire()
+        try:
+            with open(lock.pid_file) as f:
+                content = f.read().strip()
+            parts = content.split(":")
+            assert len(parts) == 3, f"Expected host:pid:starttime, got {content!r}"
+            host, pid_str, start_str = parts
+            # Issue #6: hostname is FQDN (with gethostname fallback)
+            assert host == (socket.getfqdn() or socket.gethostname())
+            assert int(pid_str) == os.getpid()
+            expected = get_process_start_time(os.getpid())
+            # /proc starttime is deterministic per (pid, boot) and the
+            # writer/reader both convert via the same SC_CLK_TCK divisor,
+            # so the round-trip should match within fp formatting noise.
+            assert expected is not None, "Linux test environment must expose /proc/[pid]/stat"
+            assert abs(float(start_str) - expected) < 0.001, (
+                f"start_time {start_str} does not match get_process_start_time {expected}"
+            )
+        finally:
+            lock.release()
 
-    def test_stale_detection_rejects_pid_reuse(self):
+    def test_stale_detection_rejects_pid_reuse(self, lock):
         """If the pid in the file matches a live process but with a
         different start_time, the lock is stale (PID reuse)."""
         from compiletools.lock_utils import get_process_start_time
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = LockdirLock(target, args)
+        os.mkdir(lock.lockdir)
+        os.chmod(lock.lockdir, 0o775)
+        real_start = get_process_start_time(os.getpid())
+        assert real_start is not None, "Linux test environment must expose /proc/[pid]/stat"
+        fake_start = real_start - 10000.0  # 10000s earlier — clearly different
+        with open(lock.pid_file, "w") as f:
+            f.write(f"{lock.hostname}:{os.getpid()}:{fake_start}\n")
 
-            os.mkdir(lock.lockdir)
-            os.chmod(lock.lockdir, 0o775)
-            real_start = get_process_start_time(os.getpid())
-            assert real_start is not None, "Linux test environment must expose /proc/[pid]/stat"
-            fake_start = real_start - 10000.0  # 10000s earlier — clearly different
-            with open(lock.pid_file, "w") as f:
-                f.write(f"{lock.hostname}:{os.getpid()}:{fake_start}\n")
+        assert lock._is_lock_stale() is True, "PID reuse must be detected via start_time mismatch"
 
-            assert lock._is_lock_stale() is True, "PID reuse must be detected via start_time mismatch"
-
-    def test_stale_detection_legacy_format_falls_back_to_pid_only(self):
+    def test_stale_detection_legacy_format_falls_back_to_pid_only(self, lock):
         """Old-format pid files (host:pid, no start_time) keep working —
         we fall back to pid-existence check, matching pre-fix behavior."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = LockdirLock(target, args)
-            os.mkdir(lock.lockdir)
-            os.chmod(lock.lockdir, 0o775)
-            # Old format
-            with open(lock.pid_file, "w") as f:
-                f.write(f"{lock.hostname}:{os.getpid()}\n")
+        os.mkdir(lock.lockdir)
+        os.chmod(lock.lockdir, 0o775)
+        # Old format
+        with open(lock.pid_file, "w") as f:
+            f.write(f"{lock.hostname}:{os.getpid()}\n")
 
-            # Our pid is alive — legacy file accepted as ACTIVE
-            assert lock._is_lock_stale() is False
+        # Our pid is alive — legacy file accepted as ACTIVE
+        assert lock._is_lock_stale() is False
 
     def test_pid_write_does_not_resurrect_torn_down_lockdir(self):
         """C3 regression: if a peer tears down our lockdir between our mkdir
@@ -232,15 +215,11 @@ class TestLockdirLock:
                 lock._set_lockdir_permissions()
             assert "Could not set lockdir permissions" in capsys.readouterr().err
 
-    def test_is_lock_stale_no_pid_fresh(self):
+    def test_is_lock_stale_no_pid_fresh(self, lock):
         """Lock without PID file within grace period is NOT stale."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = LockdirLock(target, args)
-            os.mkdir(lock.lockdir)
-            # Fresh lock (age < grace period) => not stale
-            assert lock._is_lock_stale() is False
+        os.mkdir(lock.lockdir)
+        # Fresh lock (age < grace period) => not stale
+        assert lock._is_lock_stale() is False
 
     def test_is_lock_stale_no_pid_old(self):
         """Lock without PID file older than cross_host_timeout IS stale."""
@@ -287,48 +266,36 @@ class TestLockdirLock:
             assert not os.path.exists(lock.lockdir)
             assert "Removed stale lock" in capsys.readouterr().err
 
-    def test_remove_stale_lock_permission_error(self):
+    def test_remove_stale_lock_permission_error(self, lock):
         """Raises PermissionError when lock cannot be removed."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = LockdirLock(target, args)
-            os.mkdir(lock.lockdir)
-            # Make rmtree a no-op so lockdir still exists
-            with patch("shutil.rmtree"):
-                with pytest.raises(PermissionError, match="Cannot remove stale lock"):
-                    lock._remove_stale_lock()
+        os.mkdir(lock.lockdir)
+        # Make rmtree a no-op so lockdir still exists
+        with patch("shutil.rmtree"):
+            with pytest.raises(PermissionError, match="Cannot remove stale lock"):
+                lock._remove_stale_lock()
 
-    def test_remove_stale_lock_exception_but_removed(self):
+    def test_remove_stale_lock_exception_but_removed(self, lock):
         """If rmtree raises but lock is gone, treat as success."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = LockdirLock(target, args)
-            os.mkdir(lock.lockdir)
+        os.mkdir(lock.lockdir)
 
-            real_rmtree = shutil.rmtree
+        real_rmtree = shutil.rmtree
 
-            def remove_then_raise(path, ignore_errors=False):
-                real_rmtree(path, ignore_errors=True)
-                raise RuntimeError("spurious")
+        def remove_then_raise(path, ignore_errors=False):
+            real_rmtree(path, ignore_errors=True)
+            raise RuntimeError("spurious")
 
-            with patch("shutil.rmtree", side_effect=remove_then_raise):
-                assert lock._remove_stale_lock() is True
+        with patch("shutil.rmtree", side_effect=remove_then_raise):
+            assert lock._remove_stale_lock() is True
 
-    def test_acquire_stale_lock_removed_and_reacquired(self):
+    def test_acquire_stale_lock_removed_and_reacquired(self, lock):
         """Acquire removes stale lock and succeeds."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = LockdirLock(target, args)
-            # Create stale lock with dead PID
-            os.mkdir(lock.lockdir)
-            with open(lock.pid_file, "w") as f:
-                f.write(f"{lock.hostname}:99999999\n")
-            lock.acquire()
-            assert os.path.isdir(lock.lockdir)
-            lock.release()
+        # Create stale lock with dead PID
+        os.mkdir(lock.lockdir)
+        with open(lock.pid_file, "w") as f:
+            f.write(f"{lock.hostname}:99999999\n")
+        lock.acquire()
+        assert os.path.isdir(lock.lockdir)
+        lock.release()
 
     def test_acquire_creates_parent_dir(self):
         """Acquire creates parent directory if missing."""
@@ -392,16 +359,12 @@ class TestLockdirLock:
             # rmdir on non-existent dir raises OSError, caught with verbose warning
             assert "Failed to release lock" in capsys.readouterr().err
 
-    def test_get_lock_age_seconds(self):
+    def test_get_lock_age_seconds(self, lock):
         """_get_lock_age_seconds delegates to lock_utils."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = LockdirLock(target, args)
-            os.mkdir(lock.lockdir)
-            age = lock._get_lock_age_seconds()
-            assert age >= 0
-            os.rmdir(lock.lockdir)
+        os.mkdir(lock.lockdir)
+        age = lock._get_lock_age_seconds()
+        assert age >= 0
+        os.rmdir(lock.lockdir)
 
     def test_hostname_uses_fqdn(self, monkeypatch):
         """Issue #6: multi-interface hosts get consistent identity via FQDN
@@ -428,16 +391,17 @@ class TestLockdirLock:
 class TestFcntlLock:
     """Test FcntlLock (fcntl.lockf-based locking for GPFS)."""
 
-    def test_acquire_and_release(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = FcntlLock(target, args)
-            lock.acquire()
-            assert os.path.exists(lock.lockfile)
-            lock.release()
-            # Lock file is intentionally NOT removed
-            assert os.path.exists(lock.lockfile)
+    @pytest.fixture
+    def lock(self, tmp_path):
+        """FcntlLock with default args on a fresh tmp-path target."""
+        return FcntlLock(str(tmp_path / "test.o"), _make_lock_args())
+
+    def test_acquire_and_release(self, lock):
+        lock.acquire()
+        assert os.path.exists(lock.lockfile)
+        lock.release()
+        # Lock file is intentionally NOT removed
+        assert os.path.exists(lock.lockfile)
 
     def test_creates_parent_dir(self):
         """Acquire creates parent directory if missing."""
@@ -470,13 +434,9 @@ class TestFcntlLock:
             lock = FcntlLock(target, args)
             assert lock.lockfile == os.path.realpath(target) + ".lock"
 
-    def test_fcntl_direct_compile_true(self):
+    def test_fcntl_direct_compile_true(self, lock):
         """FcntlLock should have direct_compile = True."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = FcntlLock(target, args)
-            assert lock.direct_compile is True
+        assert lock.direct_compile is True
 
     def test_acquire_does_not_create_target(self):
         """Acquire must NOT create the target file. Peer make uses target
@@ -521,23 +481,20 @@ class TestFcntlLock:
 class TestFlockLock:
     """Test FlockLock edge cases."""
 
-    def test_acquire_and_release(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
-            lock.acquire()
-            lock.release()
+    @pytest.fixture
+    def lock(self, tmp_path):
+        """FlockLock with default args on a fresh tmp-path target."""
+        return FlockLock(str(tmp_path / "test.o"), _make_lock_args())
 
-    def test_flock_no_fallback_attributes(self):
+    def test_acquire_and_release(self, lock):
+        lock.acquire()
+        lock.release()
+
+    def test_flock_no_fallback_attributes(self, lock):
         """FlockLock should not have O_EXCL fallback attributes."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
-            assert not hasattr(lock, "use_flock")
-            assert not hasattr(lock, "lockfile_pid")
-            assert not hasattr(lock, "sleep_interval")
+        assert not hasattr(lock, "use_flock")
+        assert not hasattr(lock, "lockfile_pid")
+        assert not hasattr(lock, "sleep_interval")
 
     def test_flock_locks_sidecar_not_target(self):
         """FlockLock.lockfile should be ``<target>.lock`` sidecar, never the
@@ -590,19 +547,20 @@ class TestFlockLock:
 class TestCIFSLock:
     """Test CIFSLock."""
 
-    def test_acquire_and_release(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = CIFSLock(target, args)
-            lock.acquire()
-            assert os.path.exists(lock.lockfile_excl)
-            lock.release()
-            assert not os.path.exists(lock.lockfile_excl)
-            # Issue #3: base lockfile is intentionally left behind so a peer
-            # who legitimately recreates lockfile_excl during our release
-            # window does not have its base file deleted underneath it.
-            assert os.path.exists(lock.lockfile)
+    @pytest.fixture
+    def lock(self, tmp_path):
+        """CIFSLock with default args on a fresh tmp-path target."""
+        return CIFSLock(str(tmp_path / "test.o"), _make_lock_args())
+
+    def test_acquire_and_release(self, lock):
+        lock.acquire()
+        assert os.path.exists(lock.lockfile_excl)
+        lock.release()
+        assert not os.path.exists(lock.lockfile_excl)
+        # Issue #3: base lockfile is intentionally left behind so a peer
+        # who legitimately recreates lockfile_excl during our release
+        # window does not have its base file deleted underneath it.
+        assert os.path.exists(lock.lockfile)
 
     def test_acquire_creates_parent_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -623,50 +581,42 @@ class TestCIFSLock:
                 lock.release()
             assert "Failed to release CIFS lock" in capsys.readouterr().err
 
-    def test_excl_holder_format_is_host_pid_starttime(self):
+    def test_excl_holder_format_is_host_pid_starttime(self, lock):
         """Issue #4 prerequisite: excl file carries host:pid:start_time so
         peers can detect dead local holders."""
         from compiletools.lock_utils import get_process_start_time
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = CIFSLock(target, args)
-            lock.acquire()
-            try:
-                with open(lock.lockfile_excl) as f:
-                    content = f.read().strip()
-                parts = content.split(":")
-                assert len(parts) == 3, f"Expected host:pid:starttime, got {content!r}"
-                host, pid_str, st_str = parts
-                # host is FQDN (or gethostname fallback) — match the same
-                assert host == (socket.getfqdn() or socket.gethostname())
-                assert int(pid_str) == os.getpid()
-                expected = get_process_start_time(os.getpid())
-                assert expected is not None, "Linux test environment must expose /proc/[pid]/stat"
-                # See LockdirLock equivalent: /proc starttime round-trip is
-                # deterministic; only fp formatting noise should differ.
-                assert abs(float(st_str) - expected) < 0.001
-            finally:
-                lock.release()
+        lock.acquire()
+        try:
+            with open(lock.lockfile_excl) as f:
+                content = f.read().strip()
+            parts = content.split(":")
+            assert len(parts) == 3, f"Expected host:pid:starttime, got {content!r}"
+            host, pid_str, st_str = parts
+            # host is FQDN (or gethostname fallback) — match the same
+            assert host == (socket.getfqdn() or socket.gethostname())
+            assert int(pid_str) == os.getpid()
+            expected = get_process_start_time(os.getpid())
+            assert expected is not None, "Linux test environment must expose /proc/[pid]/stat"
+            # See LockdirLock equivalent: /proc starttime round-trip is
+            # deterministic; only fp formatting noise should differ.
+            assert abs(float(st_str) - expected) < 0.001
+        finally:
+            lock.release()
 
-    def test_acquire_removes_dead_local_holder(self):
+    def test_acquire_removes_dead_local_holder(self, lock):
         """Issue #4: a killed peer's lockfile_excl is removed and acquisition
         proceeds rather than deadlocking forever."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = CIFSLock(target, args)
-            # Plant a stale lockfile_excl owned by a dead local PID.
-            os.makedirs(os.path.dirname(lock.lockfile_excl) or ".", exist_ok=True)
-            with open(lock.lockfile_excl, "w") as f:
-                f.write(f"{lock.hostname}:99999999\n")
-            # Should not block — stale removal kicks in.
-            lock.acquire()
-            try:
-                assert os.path.exists(lock.lockfile_excl)
-            finally:
-                lock.release()
+        # Plant a stale lockfile_excl owned by a dead local PID.
+        os.makedirs(os.path.dirname(lock.lockfile_excl) or ".", exist_ok=True)
+        with open(lock.lockfile_excl, "w") as f:
+            f.write(f"{lock.hostname}:99999999\n")
+        # Should not block — stale removal kicks in.
+        lock.acquire()
+        try:
+            assert os.path.exists(lock.lockfile_excl)
+        finally:
+            lock.release()
 
     def test_acquire_does_not_remove_live_local_holder(self):
         """Live local holder must NOT be cleared — that would clobber a
@@ -695,21 +645,17 @@ class TestCIFSLock:
             # is_excl_stale should be False (cross-host)
             assert lock._is_excl_stale() is False
 
-    def test_release_does_not_unlink_base_lockfile(self):
+    def test_release_does_not_unlink_base_lockfile(self, lock):
         """Issue #3: release must leave self.lockfile in place so a peer who
         recreates lockfile_excl during our release window doesn't have its
         base file deleted underneath it."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = CIFSLock(target, args)
-            lock.acquire()
-            assert os.path.exists(lock.lockfile)
-            lock.release()
-            assert os.path.exists(lock.lockfile), (
-                "Base lockfile must persist; deleting it races with a peer "
-                "that has just (legitimately) recreated lockfile_excl."
-            )
+        lock.acquire()
+        assert os.path.exists(lock.lockfile)
+        lock.release()
+        assert os.path.exists(lock.lockfile), (
+            "Base lockfile must persist; deleting it races with a peer "
+            "that has just (legitimately) recreated lockfile_excl."
+        )
 
 
 class TestFlockLockRelease:
