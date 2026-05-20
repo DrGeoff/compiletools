@@ -19,8 +19,12 @@ import pytest
 import compiletools.cake
 import compiletools.testhelper as uth
 import compiletools.utils
+from compiletools.bazel_backend import BazelBackend
 from compiletools.build_backend import available_backends, ensure_backends_registered
 from compiletools.build_graph import BuildGraph, BuildRule
+from compiletools.cmake_backend import CMakeBackend
+from compiletools.makefile_backend import MakefileBackend
+from compiletools.ninja_backend import NinjaBackend
 from compiletools.testhelper import (
     TempDirContextNoChange,
     make_backend_args,
@@ -28,6 +32,7 @@ from compiletools.testhelper import (
     make_mock_namer,
     make_stub_backend_class,
 )
+from compiletools.trace_backend import ShakeBackend
 
 ensure_backends_registered()
 
@@ -291,15 +296,11 @@ def _layer3_context(backend_class, graph_factory):
 
 class TestNinjaLibraryOutput:
     def test_ninja_static_library_output(self):
-        from compiletools.ninja_backend import NinjaBackend
-
         with _layer3_context(NinjaBackend, _make_library_graph) as (output, args):
             assert "rule static_library_cmd" in output
             assert f"build {args.bindir}/libmylib.a: static_library_cmd" in output
 
     def test_ninja_shared_library_output(self):
-        from compiletools.ninja_backend import NinjaBackend
-
         with _layer3_context(NinjaBackend, _make_shared_library_graph) as (output, args):
             assert "rule shared_library_cmd" in output
             assert f"build {args.bindir}/libmylib.so: shared_library_cmd" in output
@@ -307,15 +308,11 @@ class TestNinjaLibraryOutput:
 
 class TestCMakeLibraryOutput:
     def test_cmake_static_library_output(self):
-        from compiletools.cmake_backend import CMakeBackend
-
         with _layer3_context(CMakeBackend, _make_library_graph) as (output, _args):
             assert "add_library(" in output
             assert "STATIC" in output
 
     def test_cmake_shared_library_output(self):
-        from compiletools.cmake_backend import CMakeBackend
-
         with _layer3_context(CMakeBackend, _make_shared_library_graph) as (output, _args):
             assert "add_library(" in output
             assert "SHARED" in output
@@ -323,14 +320,10 @@ class TestCMakeLibraryOutput:
 
 class TestBazelLibraryOutput:
     def test_bazel_static_library_output(self):
-        from compiletools.bazel_backend import BazelBackend
-
         with _layer3_context(BazelBackend, _make_library_graph) as (output, _args):
             assert "cc_library(" in output
 
     def test_bazel_shared_library_output(self):
-        from compiletools.bazel_backend import BazelBackend
-
         with _layer3_context(BazelBackend, _make_shared_library_graph) as (output, _args):
             assert "cc_binary(" in output
             assert "linkshared = True" in output
@@ -338,16 +331,12 @@ class TestBazelLibraryOutput:
 
 class TestShakeLibrarySummary:
     def test_shake_static_library_summary(self):
-        from compiletools.trace_backend import ShakeBackend
-
         with _layer3_context(ShakeBackend, _make_library_graph) as (output, _args):
             assert "static_library" in output
 
 
 class TestMakefileLibraryOutput:
     def test_makefile_static_library_output(self):
-        from compiletools.makefile_backend import MakefileBackend
-
         with _layer3_context(MakefileBackend, _make_library_graph) as (output, _args):
             assert "ar -src" in output
 
