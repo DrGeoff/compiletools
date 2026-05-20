@@ -3,7 +3,6 @@
 import os
 import sys
 from textwrap import dedent
-from unittest.mock import patch
 
 import pytest
 
@@ -22,18 +21,17 @@ _skip_on_pypy = pytest.mark.skipif(
 
 
 class _CacheTestBase:
-    """Shared setup/teardown for preprocessing-cache tests: fresh BuildContext,
-    cleared cache, and a patched global_hash_registry.get_filepath_by_hash."""
+    """Shared setup for preprocessing-cache tests: fresh BuildContext,
+    cleared cache, and a stubbed global_hash_registry.get_filepath_by_hash."""
 
-    def setup_method(self):
+    @pytest.fixture(autouse=True)
+    def _setup_cache(self, monkeypatch):
         self.ctx = BuildContext()
         clear_cache(self.ctx)
-        self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
-        self.mock_get_filepath = self.patcher.start()
-        self.mock_get_filepath.return_value = "<test-file>"
-
-    def teardown_method(self):
-        self.patcher.stop()
+        monkeypatch.setattr(
+            "compiletools.global_hash_registry.get_filepath_by_hash",
+            lambda *_a, **_kw: "<test-file>",
+        )
 
 
 class TestPreprocessingCache(_CacheTestBase):
