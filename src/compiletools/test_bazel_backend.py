@@ -21,6 +21,30 @@ from compiletools.build_backend import (
 from compiletools.build_graph import BuildGraph, BuildRule
 
 
+def _make_bazelrc_backend(*, ldflags="", jvm_stack="256k", parallel: "int | None" = 1, graph=None):
+    """Build a BazelBackend with MagicMock args wired for the bazelrc-content
+    tests. Deduplicates `_backend_with` methods that previously lived on
+    TestBazelLinkerDefault, TestBazelJvmStackSize, and TestBazelActiveProcessorCount."""
+    args = MagicMock()
+    args.LDFLAGS = ldflags
+    args.bazel_jvm_stack_size = jvm_stack
+    args.parallel = parallel
+    args.CC = ""
+    args.CXX = ""
+    args.tests = []
+    backend = BazelBackend(args=args, hunter=MagicMock())
+    backend._graph = graph
+    return backend
+
+
+def _bazelrc_content(backend):
+    """Render the bazelrc content with os.path.exists stubbed False (no
+    system cacerts) — the standard precondition for the bazelrc-content
+    tests above. Centralises the 2-line `with patch(...)` block."""
+    with patch("os.path.exists", return_value=False):
+        return backend._build_bazelrc_content()
+
+
 @contextlib.contextmanager
 def _patched_bazel_execute(backend):
     """Patch the standard bazel-execute dependencies (shutil.which to locate
@@ -935,29 +959,12 @@ class TestBazelLinkerDefault:
     user has set their own -fuse-ld=... in LDFLAGS or in any per-rule
     link command (covers magic-flag-injected linker choices)."""
 
-    def _backend_with(self, *, ldflags="", graph=None):
-        args = MagicMock()
-        args.LDFLAGS = ldflags
-        args.bazel_jvm_stack_size = "256k"
-        args.parallel = 1
-        args.CC = ""
-        args.CXX = ""
-        args.tests = []
-        backend = BazelBackend(args=args, hunter=MagicMock())
-        backend._graph = graph
-        return backend
-
-    @staticmethod
-    def _bazelrc_for(backend):
-        with patch("os.path.exists", return_value=False):
-            return backend._build_bazelrc_content()
-
     def test_gold_added_when_no_user_setting(self):
-        content = self._bazelrc_for(self._backend_with())
+        content = _bazelrc_content(_make_bazelrc_backend())
         assert "build --linkopt=-fuse-ld=gold" in content, content
 
     def test_gold_skipped_when_ldflags_sets_fuse_ld(self):
-        content = self._bazelrc_for(self._backend_with(ldflags="-Wall -fuse-ld=mold"))
+        content = _bazelrc_content(_make_bazelrc_backend(ldflags="-Wall -fuse-ld=mold"))
         assert "-fuse-ld=" not in content, content
 
     def test_user_set_fuse_ld_via_link_rule_command(self):
@@ -971,7 +978,7 @@ class TestBazelLinkerDefault:
                 rule_type="link",
             )
         )
-        backend = self._backend_with(graph=graph)
+        backend = _make_bazelrc_backend(graph=graph)
         assert backend._user_set_fuse_ld() is True
 
     def test_user_set_fuse_ld_via_shared_library_command(self):
@@ -984,7 +991,7 @@ class TestBazelLinkerDefault:
                 rule_type="shared_library",
             )
         )
-        backend = self._backend_with(graph=graph)
+        backend = _make_bazelrc_backend(graph=graph)
         assert backend._user_set_fuse_ld() is True
 
     def test_user_set_fuse_ld_ignores_non_link_rules(self):
@@ -999,7 +1006,7 @@ class TestBazelLinkerDefault:
                 rule_type="compile",
             )
         )
-        backend = self._backend_with(graph=graph)
+        backend = _make_bazelrc_backend(graph=graph)
         assert backend._user_set_fuse_ld() is False
 
     def test_user_set_fuse_ld_ignores_quoted_substring_in_define(self):
@@ -1007,46 +1014,29 @@ class TestBazelLinkerDefault:
         # -DSOMETHING value) must NOT false-positive — the prior substring
         # search would have. Tokenisation via shlex makes the predicate
         # syntactic rather than textual.
-        backend = self._backend_with(ldflags='-DPROBE_FLAG="-fuse-ld=lld" -lm')
+        backend = _make_bazelrc_backend(ldflags='-DPROBE_FLAG="-fuse-ld=lld" -lm')
         assert backend._user_set_fuse_ld() is False
 
     def test_user_set_fuse_ld_via_wl_passthrough(self):
         # -Wl,-fuse-ld=mold (possibly with comma-separated peers) must trigger.
-        backend = self._backend_with(ldflags="-Wl,-fuse-ld=mold,--no-as-needed")
+        backend = _make_bazelrc_backend(ldflags="-Wl,-fuse-ld=mold,--no-as-needed")
         assert backend._user_set_fuse_ld() is True
 
 
 class TestBazelJvmStackSize:
     """`--bazel-jvm-stack-size` drives the JVM -Xss host_jvm_args; empty disables."""
 
-    def _backend_with(self, *, jvm_stack):
-        args = MagicMock()
-        args.LDFLAGS = ""
-        args.bazel_jvm_stack_size = jvm_stack
-        args.parallel = 1
-        args.CC = ""
-        args.CXX = ""
-        args.tests = []
-        backend = BazelBackend(args=args, hunter=MagicMock())
-        backend._graph = None
-        return backend
-
-    @staticmethod
-    def _bazelrc_for(backend):
-        with patch("os.path.exists", return_value=False):
-            return backend._build_bazelrc_content()
-
     def test_default_size_appears_in_bazelrc(self):
-        content = self._bazelrc_for(self._backend_with(jvm_stack="256k"))
+        content = _bazelrc_content(_make_bazelrc_backend(jvm_stack="256k"))
         assert "startup --host_jvm_args=-Xss256k" in content, content
 
     def test_custom_size_appears_in_bazelrc(self):
-        content = self._bazelrc_for(self._backend_with(jvm_stack="512k"))
+        content = _bazelrc_content(_make_bazelrc_backend(jvm_stack="512k"))
         assert "startup --host_jvm_args=-Xss512k" in content, content
         assert "-Xss256k" not in content, content
 
     def test_empty_skips_xss_flag(self):
-        content = self._bazelrc_for(self._backend_with(jvm_stack=""))
+        content = _bazelrc_content(_make_bazelrc_backend(jvm_stack=""))
         assert "-Xss" not in content, content
 
 
@@ -1055,29 +1045,12 @@ class TestBazelActiveProcessorCount:
     respects the canonical core-limit knob and doesn't pre-spawn nproc
     threads at server startup on many-core hosts."""
 
-    def _backend_with(self, *, parallel):
-        args = MagicMock()
-        args.LDFLAGS = ""
-        args.bazel_jvm_stack_size = "256k"
-        args.parallel = parallel
-        args.CC = ""
-        args.CXX = ""
-        args.tests = []
-        backend = BazelBackend(args=args, hunter=MagicMock())
-        backend._graph = None
-        return backend
-
-    @staticmethod
-    def _bazelrc_for(backend):
-        with patch("os.path.exists", return_value=False):
-            return backend._build_bazelrc_content()
-
     def test_active_processor_count_matches_parallel(self):
-        content = self._bazelrc_for(self._backend_with(parallel=8))
+        content = _bazelrc_content(_make_bazelrc_backend(parallel=8))
         assert "startup --host_jvm_args=-XX:ActiveProcessorCount=8" in content, content
 
     def test_no_flag_when_parallel_unset(self):
-        content = self._bazelrc_for(self._backend_with(parallel=None))
+        content = _bazelrc_content(_make_bazelrc_backend(parallel=None))
         assert "ActiveProcessorCount" not in content, content
 
 
