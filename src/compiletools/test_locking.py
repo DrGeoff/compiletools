@@ -242,16 +242,12 @@ class TestLockdirLock:
             with patch.object(lock, "_get_lock_age_seconds", return_value=10):
                 assert lock._is_lock_stale() is False
 
-    def test_is_lock_stale_cross_host(self):
+    def test_is_lock_stale_cross_host(self, lock):
         """Cross-host lock is NOT stale (can't verify remote process)."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = LockdirLock(target, args)
-            os.mkdir(lock.lockdir)
-            with open(lock.pid_file, "w") as f:
-                f.write("otherhost.example.com:12345\n")
-            assert lock._is_lock_stale() is False
+        os.mkdir(lock.lockdir)
+        with open(lock.pid_file, "w") as f:
+            f.write("otherhost.example.com:12345\n")
+        assert lock._is_lock_stale() is False
 
     def test_remove_stale_lock_success(self, capsys):
         """Successfully removes a stale lock."""
@@ -331,22 +327,17 @@ class TestLockdirLock:
             assert os.path.isdir(lock.lockdir)
             lock.release()
 
-    def test_acquire_filenotfounderror_max_retries(self):
+    def test_acquire_filenotfounderror_max_retries(self, lock):
         """RuntimeError after 3 failed attempts."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = LockdirLock(target, args)
+        real_mkdir = os.mkdir
 
-            real_mkdir = os.mkdir
+        def always_vanish(path, *a, **kw):
+            real_mkdir(path, *a, **kw)
+            raise FileNotFoundError("lockdir vanished")
 
-            def always_vanish(path, *a, **kw):
-                real_mkdir(path, *a, **kw)
-                raise FileNotFoundError("lockdir vanished")
-
-            with patch("os.mkdir", side_effect=always_vanish):
-                with pytest.raises(RuntimeError, match="Failed to acquire lock after 3 attempts"):
-                    lock.acquire()
+        with patch("os.mkdir", side_effect=always_vanish):
+            with pytest.raises(RuntimeError, match="Failed to acquire lock after 3 attempts"):
+                lock.acquire()
 
     def test_release_oserror_verbose(self, capsys):
         """Release OSError prints warning when verbose >= 2."""
