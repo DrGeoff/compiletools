@@ -916,48 +916,42 @@ class TestContentAddressableShortCircuit:
 
 
 class TestCALinkShortCircuit:
-    def test_ca_target_deterministic(self, tmp_path):
+    @pytest.fixture
+    def backend(self, tmp_path):
+        """Bare ShakeBackend (no __init__) wired with a MagicMock args whose
+        `cas_objdir` is `tmp_path`. The 4 _ca_target tests below all use
+        this minimal shape."""
+        b = ShakeBackend.__new__(ShakeBackend)
+        b.args = mock.MagicMock()
+        b.args.cas_objdir = str(tmp_path)
+        return b
+
+    def test_ca_target_deterministic(self, backend):
         """Same rule produces the same CA target path."""
         rule = BuildRule(output="foo", inputs=["foo.o"], command=["g++", "-o", "foo", "foo.o"], rule_type="link")
-        args = mock.MagicMock()
-        args.cas_objdir = str(tmp_path)
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
         assert backend._ca_target(rule) == backend._ca_target(rule)
 
-    def test_ca_target_differs_on_input_change(self, tmp_path):
+    def test_ca_target_differs_on_input_change(self, backend):
         """Different inputs produce different CA target paths."""
         rule1 = BuildRule(output="foo", inputs=["foo.o"], command=["g++", "-o", "foo", "foo.o"], rule_type="link")
         rule2 = BuildRule(
             output="foo", inputs=["foo.o", "bar.o"], command=["g++", "-o", "foo", "foo.o", "bar.o"], rule_type="link"
         )
-        args = mock.MagicMock()
-        args.cas_objdir = str(tmp_path)
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
         assert backend._ca_target(rule1) != backend._ca_target(rule2)
 
-    def test_ca_target_differs_on_command_change(self, tmp_path):
+    def test_ca_target_differs_on_command_change(self, backend):
         """Different commands (same inputs) produce different CA target paths."""
         rule1 = BuildRule(output="foo", inputs=["foo.o"], command=["g++", "-o", "foo", "foo.o"], rule_type="link")
         rule2 = BuildRule(
             output="foo", inputs=["foo.o"], command=["g++", "-O2", "-o", "foo", "foo.o"], rule_type="link"
         )
-        args = mock.MagicMock()
-        args.cas_objdir = str(tmp_path)
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
         assert backend._ca_target(rule1) != backend._ca_target(rule2)
 
-    def test_ca_target_preserves_extension(self, tmp_path):
+    def test_ca_target_preserves_extension(self, backend):
         """CA target preserves the file extension for libraries."""
         rule = BuildRule(
             output="libfoo.a", inputs=["foo.o"], command=["ar", "-src", "libfoo.a", "foo.o"], rule_type="static_library"
         )
-        args = mock.MagicMock()
-        args.cas_objdir = str(tmp_path)
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = args
         ca = backend._ca_target(rule)
         assert ca.endswith(".a")
         assert "libfoo_" in ca
