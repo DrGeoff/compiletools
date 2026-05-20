@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import os
 
@@ -6,6 +7,26 @@ import pytest
 import compiletools.apptools
 import compiletools.configutils
 import compiletools.testhelper as uth
+
+
+@contextlib.contextmanager
+def _temp_repo(defaultvariant):
+    """Enter a TempDirContextNoChange + write a project ct.conf naming
+    `defaultvariant`. Yields the repo root path."""
+    with uth.TempDirContextNoChange() as repo_root:
+        uth.create_temp_ct_conf(repo_root, defaultvariant=defaultvariant)
+        yield repo_root
+
+
+@contextlib.contextmanager
+def _temp_repo_with_conf_d(defaultvariant):
+    """Same as `_temp_repo` but also creates an empty `ct.conf.d/` next to
+    ct.conf. Yields (repo_root, conf_d) — most callers write their own
+    axis confs into conf_d immediately after entering this context."""
+    with _temp_repo(defaultvariant) as repo_root:
+        conf_d = os.path.join(repo_root, "ct.conf.d")
+        os.makedirs(conf_d)
+        yield repo_root, conf_d
 
 
 def _resolve_variant(repo_root, variant, *, argv=None, system_config_dir=None):
@@ -194,10 +215,7 @@ class TestVariant:
     def test_config_files_from_variant_synthesizes_composite(self):
         # When no literal gcc.debug.conf exists but gcc.conf and debug.conf
         # do, the resolver should synthesize the composition.
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="gcc.debug")
-            conf_d = os.path.join(repo_root, "ct.conf.d")
-            os.makedirs(conf_d)
+        with _temp_repo_with_conf_d("gcc.debug") as (repo_root, conf_d):
             with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
                 fh.write("CC = gcc\n")
                 fh.write("append-CFLAGS = -fPIC\n")
@@ -214,10 +232,7 @@ class TestVariant:
     def test_explicit_composite_file_overrides_synthesis(self):
         # A literal gcc.debug.conf takes precedence — its flags layer last
         # over the synthesized atoms (gcc + debug), not instead of them.
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="gcc.debug")
-            conf_d = os.path.join(repo_root, "ct.conf.d")
-            os.makedirs(conf_d)
+        with _temp_repo_with_conf_d("gcc.debug") as (repo_root, conf_d):
             for name, content in [
                 ("gcc.conf", "CC = gcc\n"),
                 ("debug.conf", "append-CFLAGS = -g\n"),
@@ -239,8 +254,7 @@ class TestVariant:
         # The `dev` bundle's extends declaration chains the full sanitizer-
         # driven dev iteration setup. Verify each named atom shows up in the
         # resolved axis list (in extends order, deduped, with dev itself last).
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="dev")
+        with _temp_repo("dev") as repo_root:
             resolution = _resolve_variant(repo_root, "dev")
             axis_names = [a.name for a in resolution.axes]
             # dev.conf: extends = ccache-gcc, cxx26, debug, asan, ubsan, werror
@@ -250,8 +264,7 @@ class TestVariant:
     def test_bundle_production_full_chain(self):
         # production = ccache-gcc, cxx26, release, lto, hardened, pie, strip
         # ccache-gcc itself extends gcc, so gcc appears first in the chain.
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="production")
+        with _temp_repo("production") as repo_root:
             resolution = _resolve_variant(repo_root, "production")
             axis_names = [a.name for a in resolution.axes]
             assert axis_names == [
@@ -269,8 +282,7 @@ class TestVariant:
     def test_bundle_safety_uses_clang(self):
         # safety bundle picks clang explicitly because its sanitizer libs
         # are more comprehensive than gcc's.
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="safety")
+        with _temp_repo("safety") as repo_root:
             resolution = _resolve_variant(repo_root, "safety")
             axis_names = [a.name for a in resolution.axes]
             assert axis_names[0] == "clang", f"safety must start with clang; got {axis_names}"
@@ -294,8 +306,7 @@ class TestVariant:
                 == "gcc.mold.release.asan"
             )
 
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="gcc.mold.release.asan")
+        with _temp_repo("gcc.mold.release.asan") as repo_root:
             resolution = _resolve_variant(repo_root, "gcc,mold,release,asan")
             axis_names = [a.name for a in resolution.axes]
             assert axis_names == ["gcc", "mold", "release", "asan"]
@@ -308,10 +319,7 @@ class TestVariant:
         # A composite that names its own `extends = ...` overrides the
         # implicit "extends from each canonical token" rule. Useful for
         # opting out of the implicit composition (e.g. `extends = blank`).
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="gcc.debug")
-            conf_d = os.path.join(repo_root, "ct.conf.d")
-            os.makedirs(conf_d)
+        with _temp_repo_with_conf_d("gcc.debug") as (repo_root, conf_d):
             for name, content in [
                 ("blank.conf", "# empty floor\n"),
                 ("gcc.conf", "CC = gcc\n"),
@@ -331,10 +339,7 @@ class TestVariant:
     def test_missing_axis_raises_with_full_hierarchy(self):
         # An axis that exists in NO config dir surfaces a clear error
         # listing every dir searched.
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="gcc.debug")
-            conf_d = os.path.join(repo_root, "ct.conf.d")
-            os.makedirs(conf_d)
+        with _temp_repo_with_conf_d("gcc.debug") as (repo_root, conf_d):
             with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
                 fh.write("CC = gcc\n")
             # debug.conf intentionally absent
@@ -359,8 +364,7 @@ class TestVariant:
         # gcc.conf and debug.conf live in src/compiletools/ct.conf.d/ (bundled).
         # A project that doesn't redeclare them should still resolve cleanly.
         # This exercises the "missing from full hierarchy" check.
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="gcc.debug")
+        with _temp_repo("gcc.debug") as repo_root:
             with uth.DirectoryContext(repo_root):
                 # Use the real bundled exedir so gcc.conf/debug.conf are visible.
                 resolution = compiletools.configutils.resolve_variant(
@@ -377,10 +381,7 @@ class TestVariant:
     def test_extends_directive_pulls_in_parent(self):
         # If a conf file has `extends = ...`, the parent's flags layer
         # before the child's.
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="myrelease")
-            conf_d = os.path.join(repo_root, "ct.conf.d")
-            os.makedirs(conf_d)
+        with _temp_repo_with_conf_d("myrelease") as (repo_root, conf_d):
             with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
                 fh.write("CC = gcc\n")
             with open(os.path.join(conf_d, "myrelease.conf"), "w") as fh:
@@ -392,10 +393,7 @@ class TestVariant:
             assert axis_names == ["gcc", "myrelease"]
 
     def test_extends_cycle_detected(self):
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="a")
-            conf_d = os.path.join(repo_root, "ct.conf.d")
-            os.makedirs(conf_d)
+        with _temp_repo_with_conf_d("a") as (repo_root, conf_d):
             with open(os.path.join(conf_d, "a.conf"), "w") as fh:
                 fh.write("extends = b\n")
             with open(os.path.join(conf_d, "b.conf"), "w") as fh:
@@ -417,10 +415,7 @@ class TestVariant:
 
     def test_diamond_dedup(self):
         # x extends a, b ; a extends base ; b extends base -> base appears once
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="x")
-            conf_d = os.path.join(repo_root, "ct.conf.d")
-            os.makedirs(conf_d)
+        with _temp_repo_with_conf_d("x") as (repo_root, conf_d):
             with open(os.path.join(conf_d, "base.conf"), "w") as fh:
                 fh.write("append-CFLAGS = -Dbase=1\n")
             with open(os.path.join(conf_d, "a.conf"), "w") as fh:
@@ -448,10 +443,7 @@ class TestVariant:
                 compiletools.apptools._check_legacy_variant_config_keys([os.path.join(os.getcwd(), "ct.conf")])
 
     def test_format_variant_resolution_includes_axes(self):
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="gcc.debug")
-            conf_d = os.path.join(repo_root, "ct.conf.d")
-            os.makedirs(conf_d)
+        with _temp_repo_with_conf_d("gcc.debug") as (repo_root, conf_d):
             with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
                 fh.write("CC = gcc\n")
             with open(os.path.join(conf_d, "debug.conf"), "w") as fh:
@@ -577,8 +569,7 @@ class TestVariant:
         builtin) for every other ct-* option, so a user can scope a
         custom order to a single invocation without editing a conf file.
         """
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="blank")
+        with _temp_repo("blank") as repo_root:
             with uth.DirectoryContext(repo_root):
                 argv = ["--variant-canonical-order=zzz,gcc,debug,asan"]
                 order, source = compiletools.configutils.get_canonical_order(
@@ -595,8 +586,7 @@ class TestVariant:
         """CT_VARIANT_CANONICAL_ORDER env var overrides ct.conf and builtin,
         but loses to a CLI flag."""
         monkeypatch.setenv("CT_VARIANT_CANONICAL_ORDER", "blank,gcc,debug")
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="blank")
+        with _temp_repo("blank") as repo_root:
             with uth.DirectoryContext(repo_root):
                 order, source = compiletools.configutils.get_canonical_order(
                     argv=[],
@@ -611,8 +601,7 @@ class TestVariant:
     def test_canonical_order_cli_beats_env_beats_conf(self, monkeypatch):
         """Full priority hierarchy: CLI > env > ct.conf > builtin."""
         monkeypatch.setenv("CT_VARIANT_CANONICAL_ORDER", "env,wins,over,conf")
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="blank")
+        with _temp_repo("blank") as repo_root:
             with open(os.path.join(repo_root, "ct.conf"), "a") as fh:
                 fh.write("variant-canonical-order = conf, only\n")
             with uth.DirectoryContext(repo_root):
@@ -728,10 +717,7 @@ class TestVariant:
         suppress per-module via
         ``logging.getLogger('compiletools.configutils').setLevel(logging.ERROR)``.
         """
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="my-bad-order")
-            conf_d = os.path.join(repo_root, "ct.conf.d")
-            os.makedirs(conf_d)
+        with _temp_repo_with_conf_d("my-bad-order") as (repo_root, conf_d):
             # werror is canonical-position 41; gcc is 1. Reversed order
             # is the buggy pattern this guard catches.
             with open(os.path.join(conf_d, "my-bad-order.conf"), "w") as fh:
@@ -777,10 +763,7 @@ class TestVariant:
         on this to add a project axis without redeclaring the whole
         canonical order.
         """
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="myproj")
-            conf_d = os.path.join(repo_root, "ct.conf.d")
-            os.makedirs(conf_d)
+        with _temp_repo_with_conf_d("myproj") as (repo_root, conf_d):
             with open(os.path.join(conf_d, "myproj.conf"), "w") as fh:
                 fh.write("extends = gcc, debug\nappend-CXXFLAGS = -DMYPROJ=1\n")
             with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
@@ -833,10 +816,7 @@ class TestVariant:
         directory is consulted (the other hermetic tests pass an
         explicit ``"/var"`` to block bundled lookup).
         """
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="myproj")
-            conf_d = os.path.join(repo_root, "ct.conf.d")
-            os.makedirs(conf_d)
+        with _temp_repo_with_conf_d("myproj") as (repo_root, conf_d):
             with open(os.path.join(conf_d, "myproj.conf"), "w") as fh:
                 fh.write("extends = ccache-gcc, cxx26, debug\nappend-CXXFLAGS = -DMYPROJ=1\n")
 
@@ -867,10 +847,7 @@ class TestVariant:
         user-defined axes) but is worth pinning so a future change to the
         unknown-token policy can't silently flip the behaviour.
         """
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="myproj")
-            conf_d = os.path.join(repo_root, "ct.conf.d")
-            os.makedirs(conf_d)
+        with _temp_repo_with_conf_d("myproj") as (repo_root, conf_d):
             # werror (canonical pos 44+) listed BEFORE gcc (pos 1) — would
             # normally warn. But myhelper is unknown, so the check skips.
             with open(os.path.join(conf_d, "myproj.conf"), "w") as fh:
@@ -919,10 +896,7 @@ class TestVariant:
         and asserts that no individual conf file is parsed more than once
         across the whole sequence.
         """
-        with uth.TempDirContextNoChange() as repo_root:
-            uth.create_temp_ct_conf(repo_root, defaultvariant="gcc.debug")
-            conf_d = os.path.join(repo_root, "ct.conf.d")
-            os.makedirs(conf_d)
+        with _temp_repo_with_conf_d("gcc.debug") as (repo_root, conf_d):
             with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
                 fh.write("CC = gcc\n")
             with open(os.path.join(conf_d, "debug.conf"), "w") as fh:
