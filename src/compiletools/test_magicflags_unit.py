@@ -11,19 +11,30 @@ import pytest
 import stringzilla as sz
 
 
+def _make_partial(cls_name: str = "MagicFlagsBase", **args_attrs):
+    """Create a minimally-mocked ``magicflags.<cls_name>`` instance for unit tests.
+
+    ``__init__`` is patched to a no-op so the test can side-step the full
+    parser/headerdeps wiring. The returned instance has only
+    ``obj._args = Namespace(verbose=0, **args_attrs)`` set; the test body
+    is responsible for any other attributes it needs (``defined_macros``,
+    ``_final_macro_states``, etc.).
+    """
+    import compiletools.magicflags as mf
+
+    cls = getattr(mf, cls_name)
+    args_attrs.setdefault("verbose", 0)
+    with patch.object(cls, "__init__", lambda self, *a, **kw: None):
+        obj = cls.__new__(cls)
+        obj._args = Namespace(**args_attrs)
+        return obj
+
+
 class TestHandleInclude:
     """Test MagicFlagsBase._handle_include()."""
 
     def _make_base(self):
-        """Create a MagicFlagsBase with minimal mocks."""
-        from compiletools.magicflags import MagicFlagsBase
-
-        args = Namespace(verbose=0)
-        # Patch __init__ to avoid full initialization
-        with patch.object(MagicFlagsBase, "__init__", lambda self, *a, **kw: None):
-            obj = MagicFlagsBase.__new__(MagicFlagsBase)
-            obj._args = args
-            return obj
+        return _make_partial()
 
     def test_handle_include_adds_I_flag(self):
         obj = self._make_base()
@@ -38,12 +49,7 @@ class TestHandleSource:
     """Test MagicFlagsBase._handle_source()."""
 
     def _make_base(self):
-        from compiletools.magicflags import MagicFlagsBase
-
-        with patch.object(MagicFlagsBase, "__init__", lambda self, *a, **kw: None):
-            obj = MagicFlagsBase.__new__(MagicFlagsBase)
-            obj._args = Namespace(verbose=0)
-            return obj
+        return _make_partial()
 
     def test_handle_source_absolute(self):
         obj = self._make_base()
@@ -102,13 +108,9 @@ class TestGetFinalMacroStateKey:
     """Test MagicFlagsBase.get_final_macro_state_key() and get_final_macro_state_hash()."""
 
     def _make_base(self):
-        from compiletools.magicflags import MagicFlagsBase
-
-        with patch.object(MagicFlagsBase, "__init__", lambda self, *a, **kw: None):
-            obj = MagicFlagsBase.__new__(MagicFlagsBase)
-            obj._args = Namespace(verbose=0)
-            obj._final_macro_states = {}
-            return obj
+        obj = _make_partial()
+        obj._final_macro_states = {}
+        return obj
 
     @pytest.mark.parametrize(
         "method_name",
@@ -127,12 +129,7 @@ class TestHandleSourceVerbose:
     """Test _handle_source verbose logging and source_file_context."""
 
     def _make_base(self):
-        from compiletools.magicflags import MagicFlagsBase
-
-        with patch.object(MagicFlagsBase, "__init__", lambda self, *a, **kw: None):
-            obj = MagicFlagsBase.__new__(MagicFlagsBase)
-            obj._args = Namespace(verbose=9)
-            return obj
+        return _make_partial(verbose=9)
 
     def test_handle_source_verbose_with_context(self, capsys):
         obj = self._make_base()
@@ -182,12 +179,7 @@ class TestResolveReadmacrosPath:
     """Test MagicFlagsBase._resolve_readmacros_path()."""
 
     def _make_base(self):
-        from compiletools.magicflags import MagicFlagsBase
-
-        with patch.object(MagicFlagsBase, "__init__", lambda self, *a, **kw: None):
-            obj = MagicFlagsBase.__new__(MagicFlagsBase)
-            obj._args = Namespace(verbose=0)
-            return obj
+        return _make_partial()
 
     def test_resolve_absolute_path(self):
         obj = self._make_base()
@@ -220,13 +212,9 @@ class TestHandleReadmacros:
     """Test MagicFlagsBase._handle_readmacros()."""
 
     def _make_base(self):
-        from compiletools.magicflags import MagicFlagsBase
-
-        with patch.object(MagicFlagsBase, "__init__", lambda self, *a, **kw: None):
-            obj = MagicFlagsBase.__new__(MagicFlagsBase)
-            obj._args = Namespace(verbose=0)
-            obj._explicit_macro_files = set()
-            return obj
+        obj = _make_partial()
+        obj._explicit_macro_files = set()
+        return obj
 
     def test_handle_readmacros_adds_to_set(self):
         obj = self._make_base()
@@ -324,12 +312,7 @@ class TestProcessMagicFlag:
     """Test MagicFlagsBase._process_magic_flag()."""
 
     def _make_base(self):
-        from compiletools.magicflags import MagicFlagsBase
-
-        with patch.object(MagicFlagsBase, "__init__", lambda self, *a, **kw: None):
-            obj = MagicFlagsBase.__new__(MagicFlagsBase)
-            obj._args = Namespace(verbose=0, separate_flags_CPP_CXX=False)
-            return obj
+        return _make_partial(separate_flags_CPP_CXX=False)
 
     def test_readmacros_skipped(self):
         obj = self._make_base()
@@ -356,13 +339,9 @@ class TestConvergeMacroState:
     """Test DirectMagicFlags._converge_macro_state()."""
 
     def _make_direct(self):
-        from compiletools.magicflags import DirectMagicFlags
-
-        with patch.object(DirectMagicFlags, "__init__", lambda self, *a, **kw: None):
-            obj = DirectMagicFlags.__new__(DirectMagicFlags)
-            obj._args = Namespace(verbose=0)
-            obj._stored_active_magic_flags = {}
-            return obj
+        obj = _make_partial("DirectMagicFlags")
+        obj._stored_active_magic_flags = {}
+        return obj
 
     def test_converges_with_no_files(self):
         obj = self._make_direct()
@@ -377,12 +356,7 @@ class TestCollectExplicitMacroFiles:
     """Test DirectMagicFlags._collect_explicit_macro_files()."""
 
     def _make_direct(self):
-        from compiletools.magicflags import DirectMagicFlags
-
-        with patch.object(DirectMagicFlags, "__init__", lambda self, *a, **kw: None):
-            obj = DirectMagicFlags.__new__(DirectMagicFlags)
-            obj._args = Namespace(verbose=5)
-            return obj
+        return _make_partial("DirectMagicFlags", verbose=5)
 
     def test_handles_exception_gracefully(self, capsys):
         obj = self._make_direct()
