@@ -21,6 +21,15 @@ from compiletools.build_backend import (
 from compiletools.build_graph import BuildGraph, BuildRule
 
 
+def _write_fake_exe(path, *, mode=0o755, content="#!/bin/sh\necho hello"):
+    """Create an executable shell script at `path` (parents created).
+    Used by TestBazelCopyExecutables / TestBazelPublishOutputs to stage
+    a fake bazel-bin/<name> for the copy/publish code paths."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    path.chmod(mode)
+
+
 def _make_bazelrc_backend(*, ldflags="", jvm_stack="256k", parallel: "int | None" = 1, graph=None):
     """Build a BazelBackend with MagicMock args wired for the bazelrc-content
     tests. Deduplicates `_backend_with` methods that previously lived on
@@ -637,77 +646,59 @@ class TestBazelRunsTestsInBuildPhase:
         assert not os.path.exists(exe_path + ".result"), "marker stamped despite reported failure"
 
 
+def _make_namer_backend(*, filename=None, tests=None, dest_path, topbindir=None, graph=None):
+    """Build a BazelBackend with mock args (filename + tests) and a mock
+    namer whose `executable_pathname` returns `dest_path`. Optionally
+    sets `topbindir` and `_graph` for the publish-outputs tests."""
+    args = MagicMock()
+    args.filename = list(filename) if filename else []
+    args.tests = list(tests) if tests else []
+    backend = BazelBackend(args=args, hunter=MagicMock())
+    backend.namer = MagicMock()
+    backend.namer.executable_pathname = MagicMock(return_value=dest_path)
+    if topbindir is not None:
+        backend.namer.topbindir = MagicMock(return_value=topbindir)
+    backend._graph = graph
+    return backend
+
+
 class TestBazelCopyExecutables:
     def test_copy_built_executables_to_namer_paths(self, tmp_path):
         """After bazel build, executables should be copied to namer paths."""
-        # Set up a fake bazel-bin directory
         bazel_bin = tmp_path / "bazel-bin"
-        bazel_bin.mkdir()
-        exe = bazel_bin / "helloworld_cpp"
-        exe.write_text("#!/bin/sh\necho hello")
-        exe.chmod(0o755)
-
-        args = MagicMock()
-        args.filename = ["/src/helloworld_cpp.cpp"]
-        args.tests = []
-        hunter = MagicMock()
-        backend = BazelBackend(args=args, hunter=hunter)
+        _write_fake_exe(bazel_bin / "helloworld_cpp")
 
         dest_path = str(tmp_path / "obj" / "helloworld_cpp")
-        backend.namer = MagicMock()
-        backend.namer.executable_pathname = MagicMock(return_value=dest_path)
+        backend = _make_namer_backend(filename=["/src/helloworld_cpp.cpp"], dest_path=dest_path)
 
         with patch("compiletools.wrappedos.realpath", side_effect=lambda x: x):
             backend._copy_built_executables(str(bazel_bin))
-
 
         assert os.path.exists(dest_path)
 
     def test_copy_built_executables_from_subdirectory(self, tmp_path):
         """Executables in subdirectories of bazel-bin should be found."""
         bazel_bin = tmp_path / "bazel-bin"
-        (bazel_bin / "subdir" / "pkg").mkdir(parents=True)
-        exe = bazel_bin / "subdir" / "pkg" / "myapp"
-        exe.write_text("#!/bin/sh\necho hello")
-        exe.chmod(0o755)
-
-        args = MagicMock()
-        args.filename = ["/src/subdir/myapp.cpp"]
-        args.tests = []
-        hunter = MagicMock()
-        backend = BazelBackend(args=args, hunter=hunter)
+        _write_fake_exe(bazel_bin / "subdir" / "pkg" / "myapp")
 
         dest_path = str(tmp_path / "obj" / "myapp")
-        backend.namer = MagicMock()
-        backend.namer.executable_pathname = MagicMock(return_value=dest_path)
+        backend = _make_namer_backend(filename=["/src/subdir/myapp.cpp"], dest_path=dest_path)
 
         with patch("compiletools.wrappedos.realpath", side_effect=lambda x: x):
             backend._copy_built_executables(str(bazel_bin))
-
 
         assert os.path.exists(dest_path)
 
     def test_copy_built_executables_mangled_name_in_subdirectory(self, tmp_path):
         """Mangled names in subdirectories should be found and copied."""
         bazel_bin = tmp_path / "bazel-bin"
-        (bazel_bin / "src" / "tests").mkdir(parents=True)
-        exe = bazel_bin / "src" / "tests" / "my_test_app"
-        exe.write_text("#!/bin/sh\necho test")
-        exe.chmod(0o755)
-
-        args = MagicMock()
-        args.filename = ["/src/my-test-app.cpp"]
-        args.tests = []
-        hunter = MagicMock()
-        backend = BazelBackend(args=args, hunter=hunter)
+        _write_fake_exe(bazel_bin / "src" / "tests" / "my_test_app", content="#!/bin/sh\necho test")
 
         dest_path = str(tmp_path / "obj" / "my-test-app")
-        backend.namer = MagicMock()
-        backend.namer.executable_pathname = MagicMock(return_value=dest_path)
+        backend = _make_namer_backend(filename=["/src/my-test-app.cpp"], dest_path=dest_path)
 
         with patch("compiletools.wrappedos.realpath", side_effect=lambda x: x):
             backend._copy_built_executables(str(bazel_bin))
-
 
         assert os.path.exists(dest_path)
 
@@ -728,21 +719,14 @@ class TestBazelPublishOutputs:
 
     def test_publish_lands_test_exes_at_namer_paths(self, tmp_path):
         bazel_bin = tmp_path / "bazel-bin"
-        bazel_bin.mkdir()
-        test_exe = bazel_bin / "test_combinator"
-        test_exe.write_text("#!/bin/sh\nexit 0\n")
-        test_exe.chmod(0o555)  # r-x, matching real bazel output
-
-        args = MagicMock()
-        args.filename = []
-        args.tests = ["/src/test_combinator.cpp"]
-        backend = BazelBackend(args=args, hunter=MagicMock())
+        _write_fake_exe(bazel_bin / "test_combinator", mode=0o555, content="#!/bin/sh\nexit 0\n")
 
         expected_path = str(tmp_path / "bin" / "gcc.debug" / "test_combinator")
-        backend.namer = MagicMock()
-        backend.namer.executable_pathname = MagicMock(return_value=expected_path)
-        backend.namer.topbindir = MagicMock(return_value=str(tmp_path / "bin") + "/")
-        backend._graph = None
+        backend = _make_namer_backend(
+            tests=["/src/test_combinator.cpp"],
+            dest_path=expected_path,
+            topbindir=str(tmp_path / "bin") + "/",
+        )
 
         with patch("compiletools.wrappedos.realpath", side_effect=lambda x: x):
             backend._publish_bazel_outputs()
@@ -758,21 +742,14 @@ class TestBazelPublishOutputs:
     def test_publish_idempotent_on_rerun_with_readonly_dest(self, tmp_path):
         """Second invocation must not fail with EACCES on the r-x output."""
         bazel_bin = tmp_path / "bazel-bin"
-        bazel_bin.mkdir()
-        exe = bazel_bin / "myapp"
-        exe.write_text("#!/bin/sh\nexit 0\n")
-        exe.chmod(0o555)
-
-        args = MagicMock()
-        args.filename = ["/src/myapp.cpp"]
-        args.tests = []
-        backend = BazelBackend(args=args, hunter=MagicMock())
+        _write_fake_exe(bazel_bin / "myapp", mode=0o555, content="#!/bin/sh\nexit 0\n")
 
         expected_path = str(tmp_path / "bin" / "gcc.debug" / "myapp")
-        backend.namer = MagicMock()
-        backend.namer.executable_pathname = MagicMock(return_value=expected_path)
-        backend.namer.topbindir = MagicMock(return_value=str(tmp_path / "bin") + "/")
-        backend._graph = None
+        backend = _make_namer_backend(
+            filename=["/src/myapp.cpp"],
+            dest_path=expected_path,
+            topbindir=str(tmp_path / "bin") + "/",
+        )
 
         with patch("compiletools.wrappedos.realpath", side_effect=lambda x: x):
             backend._publish_bazel_outputs()
