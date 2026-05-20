@@ -70,14 +70,19 @@ def _sample(rel):
     return uth.example_file(f"cache_scoping/{rel}")
 
 
-def _setup_method_common():
+@pytest.fixture(autouse=True)
+def _reset_parser_state():
+    """Wipe global configargparse parser cache around every test, and
+    construct a throwaway ArgumentParser to mirror the long-standing
+    TestHunterModule.setup_method pattern."""
     uth.reset()
-    # Drain any stale cached parser, mirroring TestHunterModule.setup_method.
     configargparse.ArgumentParser(
         conflict_handler="resolve",
         args_for_setting_config_path=["-c", "--config"],
         ignore_unknown_config_file_keys=True,
     )
+    yield
+    uth.reset()
 
 
 @pytest.fixture
@@ -93,12 +98,6 @@ def temp_config():
 
 
 class TestMacroStateHashBackwardCompat:
-    def setup_method(self):
-        _setup_method_common()
-
-    def teardown_method(self):
-        uth.reset()
-
     def test_macro_state_hash_no_dep_hash_unchanged(self, temp_config):
         """Without ``dep_hash``, ``Hunter.macro_state_hash`` must equal
         ``magicparser.get_final_macro_state_hash`` exactly. This is the
@@ -128,12 +127,6 @@ class TestMacroStateHashBackwardCompat:
 
 class TestMacroStateHashScopeFilter:
     """The report's reproducer plus its correctness counter-test."""
-
-    def setup_method(self):
-        _setup_method_common()
-
-    def teardown_method(self):
-        uth.reset()
 
     def _hash_with_app_name(self, value, sample_rel, dep_hash):
         """Build a fresh hunter with ``-DAPP_NAME=<value>`` and return
@@ -190,12 +183,6 @@ class TestMacroStateHashScopeFilter:
 
 
 class TestTransitiveContentHashes:
-    def setup_method(self):
-        _setup_method_common()
-
-    def teardown_method(self):
-        uth.reset()
-
     def test_transitive_content_hashes_excludes_tu_itself(self, temp_config):
         """``_transitive_content_hashes`` returns headers only -- the TU
         itself is scanned separately (via ``tu_content_hash`` in
@@ -220,12 +207,6 @@ class TestMacroStateHashCacheClear:
     """The lazily-built CmdlineMacroIndex must be evicted by
     ``clear_instance_cache`` so a subsequent reparse with different
     cmdline -D flags can't see the old ``cmdline_origin``."""
-
-    def setup_method(self):
-        _setup_method_common()
-
-    def teardown_method(self):
-        uth.reset()
 
     def test_clear_instance_cache_drops_cmdline_macro_index(self, temp_config):
         hntr = _make_hunter(
