@@ -209,6 +209,27 @@ def continuous_reader(obj_path, stop_event, errors):
 class TestMultiUserCache(BaseCompileToolsTestCase):
     """Tests for multi-user object CAS functionality."""
 
+    @pytest.fixture
+    def cas_objdir(self, tmp_path):
+        """Fresh `<tmp_path>/cas_objdir/` with 02775 mode (setgid + group-write)
+        — the multi-user CAS layout that lets independent processes share
+        an object cache. Tests that exercise the 'objdir does not yet exist'
+        code path skip this fixture and create the Path inline.
+
+        Explicit `os.umask(0o002)` around mkdir matches the original inline
+        block's effective mode: the class's `@with_group_writable_umask`
+        decorator only wraps `test_*` methods, so fixture setup runs
+        under the inherited umask and would otherwise strip the
+        group-write bit on systems where the default is 0o022.
+        """
+        d = tmp_path / "cas_objdir"
+        old = os.umask(0o002)
+        try:
+            d.mkdir(mode=0o2775)
+        finally:
+            os.umask(old)
+        return d
+
     def _create_test_source_dir(self, tmpdir, source_name, objdir):
         """
         Create a test directory with a source file and config.
@@ -234,7 +255,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         return str(source_dir), config_name
 
     @uth.requires_functional_compiler
-    def test_concurrent_same_file_compilation(self, tmp_path):
+    def test_concurrent_same_file_compilation(self, tmp_path, cas_objdir):
         """
         Test 1.1: Two processes compile same file simultaneously.
 
@@ -244,8 +265,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Both can access object CAS without permission errors
         """
         tmpdir = str(tmp_path)
-        objdir = Path(tmpdir) / "cas_objdir"
-        objdir.mkdir(mode=0o2775)
+        objdir = cas_objdir
 
         # Create two separate build directories with identical source
         dirs_and_configs = [self._create_test_source_dir(tmpdir, f"build_{i}", str(objdir)) for i in range(2)]
@@ -274,7 +294,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             assert mode & 0o040, f"{obj_file.name} not group-readable: {oct(mode)}"
 
     @uth.requires_functional_compiler
-    def test_concurrent_different_files(self, tmp_path):
+    def test_concurrent_different_files(self, tmp_path, cas_objdir):
         """
         Test 1.2: Multiple processes compile to same objdir.
 
@@ -284,8 +304,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - All can write to object CAS
         """
         tmpdir = str(tmp_path)
-        objdir = Path(tmpdir) / "cas_objdir"
-        objdir.mkdir(mode=0o2775)
+        objdir = cas_objdir
 
         # Create build directories with different main files
 
@@ -334,7 +353,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         )
 
     @uth.requires_functional_compiler
-    def test_different_umask_compatibility(self, tmp_path):
+    def test_different_umask_compatibility(self, tmp_path, cas_objdir):
         """
         Test 2.1: Umask compatibility for file-locking mode.
 
@@ -346,8 +365,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Warning only shown at verbose >= 1 for multi-user awareness
         """
         tmpdir = str(tmp_path)
-        objdir = Path(tmpdir) / "cas_objdir"
-        objdir.mkdir(mode=0o2775)
+        objdir = cas_objdir
 
         source_dir_a, config_name_a = self._create_test_source_dir(tmpdir, "build_a", str(objdir))
 
@@ -373,7 +391,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         assert returncode == 0, f"User C should succeed: {output}"
 
     @uth.requires_functional_compiler
-    def test_group_writable_cache(self, tmp_path):
+    def test_group_writable_cache(self, tmp_path, cas_objdir):
         """
         Test 2.2: Verify setgid directory enables multi-user sharing.
 
@@ -382,8 +400,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Files are group-accessible
         """
         tmpdir = str(tmp_path)
-        objdir = Path(tmpdir) / "cas_objdir"
-        objdir.mkdir(mode=0o2775)
+        objdir = cas_objdir
 
         # Try to set setgid bit explicitly (may not work on all filesystems)
         try:
@@ -447,7 +464,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         assert mode & 0o020, f"Group write not set: {oct(mode)}"
 
     @uth.requires_functional_compiler
-    def test_lock_fairness_high_contention(self, tmp_path):
+    def test_lock_fairness_high_contention(self, tmp_path, cas_objdir):
         """
         Test 1.3: 10 processes compile same file - test lock fairness.
 
@@ -466,8 +483,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         num_workers = 4 if on_termux else 10
 
         tmpdir = str(tmp_path)
-        objdir = Path(tmpdir) / "cas_objdir"
-        objdir.mkdir(mode=0o2775)
+        objdir = cas_objdir
 
         dirs_and_configs = [
             self._create_test_source_dir(tmpdir, f"build_{i}", str(objdir)) for i in range(num_workers)
@@ -493,7 +509,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         assert elapsed < 60, f"Took {elapsed}s - too slow, possible lock contention issue"
 
     @uth.requires_functional_compiler
-    def test_full_multiuser_workflow(self, tmp_path):
+    def test_full_multiuser_workflow(self, tmp_path, cas_objdir):
         """
         Test 5.1: Realistic multi-user development workflow.
 
@@ -503,8 +519,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - All users successful, no permission errors
         """
         tmpdir = str(tmp_path)
-        objdir = Path(tmpdir) / "cas_objdir"
-        objdir.mkdir(mode=0o2775)
+        objdir = cas_objdir
 
         # User A: Full build (cold cache)
         source_dir_a, config_name_a = self._create_test_source_dir(tmpdir, "user_a", str(objdir))
@@ -540,7 +555,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         assert final_obj_count >= initial_obj_count, "User B should have succeeded in building"
 
     @uth.requires_functional_compiler
-    def test_mixed_compiler_flags(self, tmp_path):
+    def test_mixed_compiler_flags(self, tmp_path, cas_objdir):
         """
         Test 5.2: Different compiler flags create different object files.
 
@@ -550,8 +565,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Both builds succeed
         """
         tmpdir = str(tmp_path)
-        objdir = Path(tmpdir) / "cas_objdir"
-        objdir.mkdir(mode=0o2775)
+        objdir = cas_objdir
 
         # Build 1: Default flags
         source_dir_1, config_name_1 = self._create_test_source_dir(tmpdir, "build_default", str(objdir))
@@ -587,7 +601,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         )
 
     @uth.requires_functional_compiler
-    def test_readonly_cache_access(self, tmp_path):
+    def test_readonly_cache_access(self, tmp_path, cas_objdir):
         """
         Test 2.3: User with read-only cache access.
 
@@ -596,8 +610,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Build fails with permission error
         """
         tmpdir = str(tmp_path)
-        objdir = Path(tmpdir) / "cas_objdir"
-        objdir.mkdir(mode=0o2775)
+        objdir = cas_objdir
 
         # User A: Create cached object
         source_dir_a, config_name_a = self._create_test_source_dir(tmpdir, "user_a", str(objdir))
@@ -629,7 +642,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         objdir.chmod(0o775)
 
     @uth.requires_functional_compiler
-    def test_object_replacement_race(self, tmp_path):
+    def test_object_replacement_race(self, tmp_path, cas_objdir):
         """
         Test 1.4: Object file replacement race.
 
@@ -639,8 +652,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Brief FileNotFoundError during move is acceptable
         """
         tmpdir = str(tmp_path)
-        objdir = Path(tmpdir) / "cas_objdir"
-        objdir.mkdir(mode=0o2775)
+        objdir = cas_objdir
 
         # Initial build
         source_dir_1, config_name_1 = self._create_test_source_dir(tmpdir, "build_1", str(objdir))
@@ -695,7 +707,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         assert len(list(errors)) == 0, f"Reader detected corruption: {list(errors)}"
 
     @uth.requires_functional_compiler
-    def test_cache_hit_rate(self, tmp_path):
+    def test_cache_hit_rate(self, tmp_path, cas_objdir):
         """
         Test 6.1: Cache hit rate measurement.
 
@@ -704,8 +716,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Significantly faster than first build
         """
         tmpdir = str(tmp_path)
-        objdir = Path(tmpdir) / "cas_objdir"
-        objdir.mkdir(mode=0o2775)
+        objdir = cas_objdir
 
         # First build (cold cache)
         source_dir_1, config_name_1 = self._create_test_source_dir(tmpdir, "build_1", str(objdir))
@@ -807,7 +818,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
 
     @uth.requires_lockdir_filesystem
     @uth.requires_functional_compiler
-    def test_lockdir_stale_lock_cleanup(self, tmp_path):
+    def test_lockdir_stale_lock_cleanup(self, tmp_path, cas_objdir):
         """
         Test stale lock detection and automatic cleanup.
 
@@ -821,8 +832,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         """
 
         tmpdir = str(tmp_path)
-        objdir = Path(tmpdir) / "cas_objdir"
-        objdir.mkdir(mode=0o2775)
+        objdir = cas_objdir
 
         source_dir, config_name = self._create_test_source_dir(tmpdir, "build", str(objdir))
 
@@ -862,7 +872,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         assert obj_file.exists(), "Object file should be rebuilt"
 
     @uth.requires_functional_compiler
-    def test_single_user_two_subprojects_concurrent(self, tmp_path):
+    def test_single_user_two_subprojects_concurrent(self, tmp_path, cas_objdir):
         """
         Test single user building two subprojects concurrently with shared source.
 
@@ -879,8 +889,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Stale lock cleanup works (same user can delete own files)
         """
         tmpdir = str(tmp_path)
-        objdir = Path(tmpdir) / "cas_objdir"
-        objdir.mkdir(mode=0o2775)
+        objdir = cas_objdir
 
         # Create two subproject directories using different sample projects
 
@@ -938,7 +947,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         assert len(lockdirs) == 0, f"Found stale lock directories: {lockdirs}"
 
     @uth.requires_functional_compiler
-    def test_concurrent_different_variants(self, tmp_path):
+    def test_concurrent_different_variants(self, tmp_path, cas_objdir):
         """
         Two processes compile the same source file simultaneously with
         different compiler flags (simulating v1=debug, v2=release).
@@ -950,8 +959,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - No stale lock directories remain
         """
         tmpdir = str(tmp_path)
-        objdir = Path(tmpdir) / "cas_objdir"
-        objdir.mkdir(mode=0o2775)
+        objdir = cas_objdir
 
         # Two build dirs with identical source but different flags
         source_dir_v1, config_v1 = self._create_test_source_dir(tmpdir, "build_v1", str(objdir))
@@ -995,7 +1003,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         assert len(lockdirs) == 0, f"Found stale lock directories: {lockdirs}"
 
     @uth.requires_functional_compiler
-    def test_mixed_compiler_flags_reverse_order(self, tmp_path):
+    def test_mixed_compiler_flags_reverse_order(self, tmp_path, cas_objdir):
         """
         Sequential variant test with reversed build order: optimized first,
         then default.  Ensures object naming is order-independent.
@@ -1007,8 +1015,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Neither build corrupts or overwrites the other
         """
         tmpdir = str(tmp_path)
-        objdir = Path(tmpdir) / "cas_objdir"
-        objdir.mkdir(mode=0o2775)
+        objdir = cas_objdir
 
         # Build 1: Optimized flags FIRST (reverse of test_mixed_compiler_flags)
         source_dir_opt, config_opt = self._create_test_source_dir(tmpdir, "build_optimized", str(objdir))
