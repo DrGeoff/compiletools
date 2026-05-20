@@ -70,7 +70,8 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
             self._verify_one_exe_per_main(relativepaths, search_dir=tmpdir)
 
     @uth.requires_functional_compiler
-    def test_magicpkgconfig_flags_discovery(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_magicpkgconfig_flags_discovery(self):
         with uth.CompileToolsTestContext() as (tmpdir, config_path):
             # Copy the magicpkgconfig_fake test files to the temp directory
             tmpmagicpkgconfig = os.path.join(tmpdir, "magicpkgconfig_fake")
@@ -139,7 +140,8 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                 assert "-ltestpkg1" in ldflags
 
     @uth.requires_functional_compiler
-    def test_pkg_config_transformation_in_actual_parsing(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_pkg_config_transformation_in_actual_parsing(self):
         """Test that the -I to -isystem transformation occurs during actual magic flag parsing using sample code"""
         with uth.CompileToolsTestContext() as (tmpdir, config_path):
             # Copy the magicpkgconfig_fake sample to the temp directory
@@ -210,7 +212,8 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
                 pass
 
     @uth.requires_functional_compiler
-    def test_project_pkgconfig_override(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_project_pkgconfig_override(self):
         """Test that ct.conf.d/pkgconfig/ overrides take priority over system/base .pc files.
 
         Uses the existing pkgconfig_env fixture (which sets PKG_CONFIG_PATH to
@@ -266,7 +269,8 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
             compiletools.apptools.clear_cache()
 
     @uth.requires_functional_compiler
-    def test_pkg_config_flags_are_split(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_pkg_config_flags_are_split(self):
         """Test that pkg-config output is split into individual flags.
 
         This test ensures that flags returned by pkg-config (e.g. "-I/path -Dflag")
@@ -316,7 +320,8 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
         assert "-ltestpkg1" in ldflags_str_list
 
     @uth.requires_functional_compiler
-    def test_transitive_deps_preserved_in_ldflags(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_transitive_deps_preserved_in_ldflags(self):
         """Transitive -l dependencies from pkg-config --libs must all appear
         in the parsed LDFLAGS.
 
@@ -340,7 +345,8 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
         assert "-ltransitivecore" in ldflags, f"-ltransitivecore missing: {ldflags}"
 
     @uth.requires_functional_compiler
-    def test_transitive_deps_in_link_line_across_files(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_transitive_deps_in_link_line_across_files(self):
         """When two source files use packages with transitive deps, all deps
         must appear in the merged link output from merge_ldflags_with_topo_sort.
 
@@ -371,7 +377,8 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
         assert "-ltestpkg1" in merged, f"-ltestpkg1 missing from merged link: {merged}"
 
     @uth.requires_functional_compiler
-    def test_prepend_pkg_config_path_via_cli(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_prepend_pkg_config_path_via_cli(self):
         """Test that --prepend-PKG-CONFIG-PATH overrides base PKG_CONFIG_PATH.
 
         The pkgconfig_env fixture sets PKG_CONFIG_PATH to examples-features/pkgs/ which
@@ -415,7 +422,8 @@ class TestMagicPKGCONFIG(tb.BaseCompileToolsTestCase):
             assert "-lcliprepended" in ldflags, f"Expected CLI-prepended libs, got: {ldflags}"
 
     @uth.requires_functional_compiler
-    def test_prepend_pkg_config_path_overrides_project(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_prepend_pkg_config_path_overrides_project(self):
         """Test that --prepend-PKG-CONFIG-PATH takes priority over ct.conf.d/pkgconfig/.
 
         Creates both a project-level override (ct.conf.d/pkgconfig/) and a
