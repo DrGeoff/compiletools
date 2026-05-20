@@ -374,7 +374,7 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             assert returncode == 0, f"User C should succeed: {output}"
 
     @uth.requires_functional_compiler
-    def test_group_writable_cache(self):
+    def test_group_writable_cache(self, tmp_path):
         """
         Test 2.2: Verify setgid directory enables multi-user sharing.
 
@@ -382,38 +382,38 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         - Directory has setgid bit (02775)
         - Files are group-accessible
         """
-        with tempfile.TemporaryDirectory() as tmpdir:
-            objdir = Path(tmpdir) / "cas_objdir"
-            objdir.mkdir(mode=0o2775)
+        tmpdir = str(tmp_path)
+        objdir = Path(tmpdir) / "cas_objdir"
+        objdir.mkdir(mode=0o2775)
 
-            # Try to set setgid bit explicitly (may not work on all filesystems)
-            try:
-                os.chmod(str(objdir), 0o2775)
-            except OSError:
-                pass
+        # Try to set setgid bit explicitly (may not work on all filesystems)
+        try:
+            os.chmod(str(objdir), 0o2775)
+        except OSError:
+            pass
 
-            # Note: setgid bit may not be settable on all filesystems (e.g., tmpfs)
-            # This is a known limitation - skip verification if not supported
-            mode = objdir.stat().st_mode
-            if not (mode & 0o2000):
-                pytest.skip("Filesystem does not support setgid bit")
+        # Note: setgid bit may not be settable on all filesystems (e.g., tmpfs)
+        # This is a known limitation - skip verification if not supported
+        mode = objdir.stat().st_mode
+        if not (mode & 0o2000):
+            pytest.skip("Filesystem does not support setgid bit")
 
-            source_dir, config_name = self._create_test_source_dir(tmpdir, "build", str(objdir))
+        source_dir, config_name = self._create_test_source_dir(tmpdir, "build", str(objdir))
 
-            # Compile
-            os.chdir(source_dir)
-            argv = [
-                "--exemarkers=main",
-                "--config=" + config_name,
-            ]
-            uth.reset()
-            compiletools.cake.main(argv)
+        # Compile
+        os.chdir(source_dir)
+        argv = [
+            "--exemarkers=main",
+            "--config=" + config_name,
+        ]
+        uth.reset()
+        compiletools.cake.main(argv)
 
-            # Check all created files are group-accessible
-            for item in objdir.rglob("*"):
-                if item.is_file():
-                    mode = item.stat().st_mode
-                    assert mode & 0o040, f"{item.name} not group-readable: {oct(mode)}"
+        # Check all created files are group-accessible
+        for item in objdir.rglob("*"):
+            if item.is_file():
+                mode = item.stat().st_mode
+                assert mode & 0o040, f"{item.name} not group-readable: {oct(mode)}"
 
     def test_concurrent_objdir_creation(self):
         """
