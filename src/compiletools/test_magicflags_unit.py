@@ -71,7 +71,6 @@ class TestHandleSource:
     def test_handle_source_nonexistent(self):
         obj = self._make_base()
         magic_flag_data = {"source_file_context": None}
-        import pytest
 
         with pytest.raises(OSError):
             obj._handle_source(sz.Str("/nonexistent/file.cpp"), magic_flag_data, "/some/main.cpp", sz.Str("SOURCE"))
@@ -111,15 +110,17 @@ class TestGetFinalMacroStateKey:
             obj._final_macro_states = {}
             return obj
 
-    def test_get_final_macro_state_key_raises_on_unknown_file(self):
+    @pytest.mark.parametrize(
+        "method_name",
+        [
+            pytest.param("get_final_macro_state_key", id="key"),
+            pytest.param("get_final_macro_state_hash", id="hash"),
+        ],
+    )
+    def test_get_final_macro_state_raises_on_unknown_file(self, method_name):
         obj = self._make_base()
         with pytest.raises(KeyError, match="not processed"):
-            obj.get_final_macro_state_key("/nonexistent/file.cpp")
-
-    def test_get_final_macro_state_hash_raises_on_unknown_file(self):
-        obj = self._make_base()
-        with pytest.raises(KeyError, match="not processed"):
-            obj.get_final_macro_state_hash("/nonexistent/file.cpp")
+            getattr(obj, method_name)("/nonexistent/file.cpp")
 
 
 class TestHandleSourceVerbose:

@@ -1,22 +1,24 @@
 import os
 
+import pytest
+
 import compiletools.listvariants
 import compiletools.testhelper as uth
 from compiletools.listvariants import FilelistStyle, FlatStyle
 
 
-def test_flat_style():
-    style = FlatStyle()
+@pytest.mark.parametrize(
+    ("style_cls", "expected"),
+    [
+        pytest.param(FlatStyle, "a b ", id="flat"),
+        pytest.param(FilelistStyle, "a\nb\n", id="filelist"),
+    ],
+)
+def test_style_append_variants(style_cls, expected):
+    style = style_cls()
     style.append_text("ignored")
     style.append_variants(["b", "a"])
-    assert style.output == "a b "
-
-
-def test_filelist_style():
-    style = FilelistStyle()
-    style.append_text("ignored")
-    style.append_variants(["b", "a"])
-    assert style.output == "a\nb\n"
+    assert style.output == expected
 
 
 def test_find_variants_with_configname():

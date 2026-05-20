@@ -4,6 +4,8 @@ import os
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from compiletools.filesystem_utils import (
     atomic_output_file,
     atomic_write,
@@ -47,99 +49,66 @@ def test_get_filesystem_type_nonexistent_path():
     assert isinstance(fstype, str)
 
 
-def test_get_lock_strategy_gpfs():
-    """GPFS should use fcntl strategy."""
-    assert get_lock_strategy("gpfs") == "fcntl"
+@pytest.mark.parametrize(
+    ("fstype", "expected"),
+    [
+        pytest.param("gpfs", "fcntl", id="gpfs"),
+        pytest.param("GPFS", "fcntl", id="gpfs-uppercase"),
+        pytest.param("Gpfs", "fcntl", id="gpfs-mixed-case"),
+        pytest.param("lustre", "lockdir", id="lustre"),
+        pytest.param("nfs", "lockdir", id="nfs"),
+        pytest.param("nfs4", "lockdir", id="nfs4"),
+        pytest.param("cifs", "cifs", id="cifs"),
+        pytest.param("smb", "cifs", id="smb"),
+        pytest.param("smbfs", "cifs", id="smbfs"),
+        pytest.param("ext4", "flock", id="ext4"),
+        pytest.param("xfs", "flock", id="xfs"),
+        pytest.param("btrfs", "flock", id="btrfs"),
+        pytest.param("tmpfs", "flock", id="tmpfs"),
+        pytest.param("unknown", "flock", id="unknown"),
+    ],
+)
+def test_get_lock_strategy(fstype, expected):
+    assert get_lock_strategy(fstype) == expected
 
 
-def test_get_lock_strategy_lustre():
-    """Lustre should use lockdir strategy."""
-    assert get_lock_strategy("lustre") == "lockdir"
+@pytest.mark.parametrize(
+    ("fstype", "expected"),
+    [
+        pytest.param("gpfs", False, id="gpfs"),
+        pytest.param("cifs", False, id="cifs"),
+        pytest.param("CIFS", False, id="cifs-uppercase"),
+        pytest.param("Cifs", False, id="cifs-mixed-case"),
+        pytest.param("smb", False, id="smb"),
+        pytest.param("smbfs", False, id="smbfs"),
+        pytest.param("afs", False, id="afs"),
+        pytest.param("ext4", True, id="ext4"),
+        pytest.param("xfs", True, id="xfs"),
+        pytest.param("btrfs", True, id="btrfs"),
+        pytest.param("tmpfs", True, id="tmpfs"),
+        pytest.param("zfs", True, id="zfs"),
+        # NFS v4 usually works, but has had mmap issues historically.
+        pytest.param("nfs", True, id="nfs"),
+        pytest.param("nfs4", True, id="nfs4"),
+        pytest.param("unknown", True, id="unknown"),
+    ],
+)
+def test_supports_mmap_safely(fstype, expected):
+    assert supports_mmap_safely(fstype) is expected
 
 
-def test_get_lock_strategy_nfs():
-    """NFS should use lockdir strategy."""
-    assert get_lock_strategy("nfs") == "lockdir"
-    assert get_lock_strategy("nfs4") == "lockdir"
-
-
-def test_get_lock_strategy_cifs():
-    """CIFS/SMB should use cifs strategy."""
-    assert get_lock_strategy("cifs") == "cifs"
-    assert get_lock_strategy("smb") == "cifs"
-    assert get_lock_strategy("smbfs") == "cifs"
-
-
-def test_get_lock_strategy_local_filesystems():
-    """Local filesystems should use flock."""
-    assert get_lock_strategy("ext4") == "flock"
-    assert get_lock_strategy("xfs") == "flock"
-    assert get_lock_strategy("btrfs") == "flock"
-    assert get_lock_strategy("tmpfs") == "flock"
-
-
-def test_get_lock_strategy_unknown():
-    """Unknown filesystems should default to flock."""
-    assert get_lock_strategy("unknown") == "flock"
-
-
-def test_supports_mmap_safely_problematic_filesystems():
-    """Known problematic filesystems should return False."""
-    assert supports_mmap_safely("gpfs") is False
-    assert supports_mmap_safely("cifs") is False
-    assert supports_mmap_safely("smb") is False
-    assert supports_mmap_safely("smbfs") is False
-    assert supports_mmap_safely("afs") is False
-
-
-def test_supports_mmap_safely_safe_filesystems():
-    """Known safe filesystems should return True."""
-    assert supports_mmap_safely("ext4") is True
-    assert supports_mmap_safely("xfs") is True
-    assert supports_mmap_safely("btrfs") is True
-    assert supports_mmap_safely("tmpfs") is True
-    assert supports_mmap_safely("zfs") is True
-
-
-def test_supports_mmap_safely_nfs():
-    """NFS is questionable but currently treated as safe."""
-    # NFS v4 usually works, but has had issues historically
-    assert supports_mmap_safely("nfs") is True
-    assert supports_mmap_safely("nfs4") is True
-
-
-def test_supports_mmap_safely_unknown():
-    """Unknown filesystems should be treated as safe."""
-    assert supports_mmap_safely("unknown") is True
-
-
-def test_get_lockdir_sleep_interval_lustre():
-    """Lustre should have shortest sleep interval."""
-    assert get_lockdir_sleep_interval("lustre") == 0.01
-
-
-def test_get_lockdir_sleep_interval_nfs():
-    """NFS should have longest sleep interval due to network latency."""
-    assert get_lockdir_sleep_interval("nfs") == 0.1
-    assert get_lockdir_sleep_interval("nfs4") == 0.1
-
-
-def test_get_lockdir_sleep_interval_gpfs():
-    """GPFS falls through to default (not used in practice; GPFS uses fcntl)."""
-    assert get_lockdir_sleep_interval("gpfs") == 0.05
-
-
-def test_get_lockdir_sleep_interval_unknown():
-    """Unknown filesystems should use default interval."""
-    assert get_lockdir_sleep_interval("unknown") == 0.05
-
-
-def test_case_insensitivity():
-    """Filesystem type matching should be case-insensitive."""
-    assert get_lock_strategy("GPFS") == "fcntl"
-    assert get_lock_strategy("Gpfs") == "fcntl"
-    assert supports_mmap_safely("CIFS") is False
-    assert supports_mmap_safely("Cifs") is False
+@pytest.mark.parametrize(
+    ("fstype", "expected"),
+    [
+        pytest.param("lustre", 0.01, id="lustre"),
+        pytest.param("nfs", 0.1, id="nfs"),
+        pytest.param("nfs4", 0.1, id="nfs4"),
+        pytest.param("gpfs", 0.05, id="gpfs-default"),
+        pytest.param("unknown", 0.05, id="unknown-default"),
+    ],
+)
+def test_get_lockdir_sleep_interval(fstype, expected):
+    assert get_lockdir_sleep_interval(fstype) == expected
 
 
 def test_atomic_write_basic(tmp_path):

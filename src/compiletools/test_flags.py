@@ -48,59 +48,41 @@ def test_flags_from_args_populates_compiler_identity():
     assert flags.compiler_identity != ""
 
 
-def test_flags_hash_relevant_strips_d_and_diagnostic():
-    flags = Flags(cxx=("-O2", "-DFOO", "-Wall", "-Werror"))
-    assert flags.hash_relevant("cxx") == ["-O2", "-Werror"]
+@pytest.mark.parametrize(
+    ("cxx_flags", "expected"),
+    [
+        pytest.param(("-O2", "-DFOO", "-Wall", "-Werror"), ["-O2", "-Werror"], id="strip-d-and-diagnostic"),
+        # Exact diagnostic-only tokens must not eat longer flag names with the
+        # same prefix.
+        pytest.param(("-pipefoo", "-pipe"), ["-pipefoo"], id="keep-pipe-prefix-lookalike"),
+        # Same boundary as -pipefoo: the exact -v rule must not strip a
+        # hypothetical future -vN flag.
+        pytest.param(("-vN", "-v"), ["-vN"], id="keep-v-prefix-lookalike"),
+        pytest.param(("-O2", "-fdiagnostics-color=auto"), ["-O2"], id="drop-diagnostics-color-value"),
+        # Detached -D FOO and -U BAR forms must be stripped as pairs, not just
+        # as lone option tokens.
+        pytest.param(("-O2", "-D", "FOO", "-U", "BAR", "-Wall"), ["-O2"], id="strip-detached-d-and-u"),
+        # -Werror can change build outcome, so it remains hash-relevant even
+        # though ordinary warning flags are diagnostic-only.
+        pytest.param(("-Werror=return-type", "-Wall"), ["-Werror=return-type"], id="keep-werror-value"),
+    ],
+)
+def test_flags_hash_relevant(cxx_flags, expected):
+    flags = Flags(cxx=cxx_flags)
+    assert flags.hash_relevant("cxx") == expected
 
 
-def test_flags_hash_relevant_keeps_prefix_lookalike_pipefoo():
-    """A token like ``-pipefoo`` must NOT be eaten by the exact ``-pipe``
-    rule. This is the boundary case the exact-vs-prefix split exists to
-    enforce."""
-    flags = Flags(cxx=("-pipefoo", "-pipe"))
-    assert flags.hash_relevant("cxx") == ["-pipefoo"]
-
-
-def test_flags_hash_relevant_keeps_prefix_lookalike_v_n():
-    """A token like ``-vN`` (hypothetical future flag) must NOT be eaten
-    by the exact ``-v`` rule."""
-    flags = Flags(cxx=("-vN", "-v"))
-    assert flags.hash_relevant("cxx") == ["-vN"]
-
-
-def test_flags_hash_relevant_drops_fdiagnostics_color_value():
-    """Prefix-matched diagnostic family ``-fdiagnostics-*`` must drop the
-    parametrized form ``-fdiagnostics-color=auto``."""
-    flags = Flags(cxx=("-O2", "-fdiagnostics-color=auto"))
-    assert flags.hash_relevant("cxx") == ["-O2"]
-
-
-def test_flags_hash_relevant_strips_detached_d_and_u():
-    """Detached ``-D FOO`` and ``-U FOO`` (two-token form) must be stripped
-    in pairs, not just the lone ``-D`` token."""
-    flags = Flags(cxx=("-O2", "-D", "FOO", "-U", "BAR", "-Wall"))
-    assert flags.hash_relevant("cxx") == ["-O2"]
-
-
-def test_flags_hash_relevant_keeps_werror_parametrized():
-    """``-Werror=foo`` must stay (it can change build outcome)."""
-    flags = Flags(cxx=("-Werror=return-type", "-Wall"))
-    assert flags.hash_relevant("cxx") == ["-Werror=return-type"]
-
-
-def test_flags_existing_include_paths_attached():
-    flags = Flags(cpp=("-I/a", "-O2"))
-    assert flags.existing_include_paths("cpp") == {"/a"}
-
-
-def test_flags_existing_include_paths_detached():
-    flags = Flags(cpp=("-I", "/a", "-O2"))
-    assert flags.existing_include_paths("cpp") == {"/a"}
-
-
-def test_flags_existing_include_paths_ignores_isystem():
-    flags = Flags(cpp=("-isystem", "/a"))
-    assert flags.existing_include_paths("cpp") == set()
+@pytest.mark.parametrize(
+    ("cpp_flags", "expected"),
+    [
+        pytest.param(("-I/a", "-O2"), {"/a"}, id="attached"),
+        pytest.param(("-I", "/a", "-O2"), {"/a"}, id="detached"),
+        pytest.param(("-isystem", "/a"), set(), id="ignore-isystem"),
+    ],
+)
+def test_flags_existing_include_paths(cpp_flags, expected):
+    flags = Flags(cpp=cpp_flags)
+    assert flags.existing_include_paths("cpp") == expected
 
 
 def test_flags_append_include_adds_when_missing_returns_new():
@@ -111,14 +93,15 @@ def test_flags_append_include_adds_when_missing_returns_new():
     assert flags.cpp == ("-O2",)
 
 
-def test_flags_append_include_skips_when_present_attached_returns_self():
-    flags = Flags(cpp=("-I/existing",))
-    updated = flags.append_include("/existing", slots=("cpp",))
-    assert updated is flags
-
-
-def test_flags_append_include_skips_when_present_detached_returns_self():
-    flags = Flags(cpp=("-I", "/existing"))
+@pytest.mark.parametrize(
+    "cpp_flags",
+    [
+        pytest.param(("-I/existing",), id="attached"),
+        pytest.param(("-I", "/existing"), id="detached"),
+    ],
+)
+def test_flags_append_include_skips_when_present_returns_self(cpp_flags):
+    flags = Flags(cpp=cpp_flags)
     updated = flags.append_include("/existing", slots=("cpp",))
     assert updated is flags
 

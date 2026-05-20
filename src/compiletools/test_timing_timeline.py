@@ -91,75 +91,75 @@ class TestPickTickInterval:
     def test_zero_duration(self):
         assert pick_tick_interval(0.0) > 0  # never returns 0
 
-    def test_picks_nice_value_for_short_view(self):
-        # 0.5s view, 8 ticks → raw ≈ 0.0625, picks 0.1
-        assert pick_tick_interval(0.5) == 0.1
-
-    def test_picks_nice_value_for_minute_view(self):
-        # 60s view, 8 ticks → raw ≈ 7.5, picks 10
-        assert pick_tick_interval(60.0) == 10.0
-
-    def test_capped_at_max(self):
-        # 100h view falls off the end → returns max nice interval.
-        assert pick_tick_interval(360_000.0) == 3600.0
+    @pytest.mark.parametrize(
+        ("duration_s", "expected"),
+        [
+            pytest.param(0.5, 0.1, id="short-view"),
+            pytest.param(60.0, 10.0, id="minute-view"),
+            pytest.param(360_000.0, 3600.0, id="capped-at-max"),
+        ],
+    )
+    def test_picks_nice_value(self, duration_s, expected):
+        assert pick_tick_interval(duration_s) == expected
 
 
 class TestSToCol:
-    def test_basic(self):
-        assert s_to_col(5.0, origin_s=0.0, seconds_per_col=1.0) == 5.0
-
-    def test_with_origin(self):
-        assert s_to_col(5.0, origin_s=2.0, seconds_per_col=1.0) == 3.0
-
-    def test_with_zoom(self):
-        # 0.5 s/col → 5s = 10 cols
-        assert s_to_col(5.0, origin_s=0.0, seconds_per_col=0.5) == 10.0
-
-    def test_zero_seconds_per_col_safe(self):
-        # Defensive: avoid /0; renderer may briefly hit this before mount.
-        assert s_to_col(5.0, origin_s=0.0, seconds_per_col=0.0) == 0.0
+    @pytest.mark.parametrize(
+        ("seconds", "origin_s", "seconds_per_col", "expected"),
+        [
+            pytest.param(5.0, 0.0, 1.0, 5.0, id="basic"),
+            pytest.param(5.0, 2.0, 1.0, 3.0, id="with-origin"),
+            pytest.param(5.0, 0.0, 0.5, 10.0, id="with-zoom"),
+            pytest.param(5.0, 0.0, 0.0, 0.0, id="zero-seconds-per-col"),
+        ],
+    )
+    def test_s_to_col(self, seconds, origin_s, seconds_per_col, expected):
+        assert s_to_col(seconds, origin_s=origin_s, seconds_per_col=seconds_per_col) == expected
 
 
 class TestTruncate:
-    def test_short_returns_unchanged(self):
-        assert _truncate("hello", 10) == "hello"
-
-    def test_exact_fit(self):
-        assert _truncate("hello", 5) == "hello"
-
-    def test_truncates_with_ellipsis(self):
-        assert _truncate("hello world", 7) == "hello …"[:7]
-
-    def test_max_w_one(self):
-        assert _truncate("hello", 1) == "…"
-
-    def test_max_w_zero(self):
-        assert _truncate("hello", 0) == ""
+    @pytest.mark.parametrize(
+        ("text", "max_width", "expected"),
+        [
+            pytest.param("hello", 10, "hello", id="short-unchanged"),
+            pytest.param("hello", 5, "hello", id="exact-fit"),
+            pytest.param("hello world", 7, "hello …"[:7], id="ellipsis"),
+            pytest.param("hello", 1, "…", id="max-width-one"),
+            pytest.param("hello", 0, "", id="max-width-zero"),
+        ],
+    )
+    def test_truncate(self, text, max_width, expected):
+        assert _truncate(text, max_width) == expected
 
 
 class TestFormatHelpers:
-    def test_format_time_seconds(self):
-        assert "1.50" in _format_time(1.5)
-        assert "s" in _format_time(1.5)
-
-    def test_format_time_ms(self):
-        assert "ms" in _format_time(0.05)
-
-    def test_format_time_us(self):
-        assert "µs" in _format_time(0.0001)
+    @pytest.mark.parametrize(
+        ("seconds", "expected_parts"),
+        [
+            pytest.param(1.5, ("1.50", "s"), id="seconds"),
+            pytest.param(0.05, ("ms",), id="milliseconds"),
+            pytest.param(0.0001, ("µs",), id="microseconds"),
+        ],
+    )
+    def test_format_time_contains_unit(self, seconds, expected_parts):
+        formatted = _format_time(seconds)
+        for part in expected_parts:
+            assert part in formatted
 
     def test_format_time_minutes(self):
         # 90s → 1m30.0s
         assert _format_time(90.0).startswith("1m")
 
-    def test_format_short_seconds(self):
-        assert _format_short(5.0) == "5s"
-
-    def test_format_short_ms(self):
-        assert _format_short(0.05) == "50ms"
-
-    def test_format_short_zero(self):
-        assert _format_short(0.0) == "0"
+    @pytest.mark.parametrize(
+        ("seconds", "expected"),
+        [
+            pytest.param(5.0, "5s", id="seconds"),
+            pytest.param(0.05, "50ms", id="milliseconds"),
+            pytest.param(0.0, "0", id="zero"),
+        ],
+    )
+    def test_format_short(self, seconds, expected):
+        assert _format_short(seconds) == expected
 
 
 class TestCoalesce:

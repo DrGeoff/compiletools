@@ -213,25 +213,24 @@ class TestEnvParsing:
     """Issue #8: bad env values must produce a clear, named warning rather
     than a generic ValueError that kills the helper without diagnostics."""
 
-    def test_garbage_int_falls_back_to_default_with_warning(self, monkeypatch, capsys):
+    @pytest.mark.parametrize(
+        ("env_name", "value", "attr", "expected_default"),
+        [
+            pytest.param("CT_LOCK_WARN_INTERVAL", "not-a-number", "lock_warn_interval", 30, id="garbage-int"),
+            pytest.param("CT_LOCK_SLEEP_INTERVAL", "fast", "sleep_interval_lockdir", 0.05, id="garbage-float"),
+        ],
+    )
+    def test_garbage_env_falls_back_to_default_with_warning(
+        self, monkeypatch, capsys, env_name, value, attr, expected_default
+    ):
         from compiletools.ct_lock_helper import create_args_from_env
 
-        monkeypatch.setenv("CT_LOCK_WARN_INTERVAL", "not-a-number")
+        monkeypatch.setenv(env_name, value)
         args = create_args_from_env()
-        assert args.lock_warn_interval == 30  # default
+        assert getattr(args, attr) == expected_default
         err = capsys.readouterr().err
-        assert "CT_LOCK_WARN_INTERVAL" in err
-        assert "not-a-number" in err
-
-    def test_garbage_float_falls_back_to_default_with_warning(self, monkeypatch, capsys):
-        from compiletools.ct_lock_helper import create_args_from_env
-
-        monkeypatch.setenv("CT_LOCK_SLEEP_INTERVAL", "fast")
-        args = create_args_from_env()
-        assert args.sleep_interval_lockdir == 0.05
-        err = capsys.readouterr().err
-        assert "CT_LOCK_SLEEP_INTERVAL" in err
-        assert "fast" in err
+        assert env_name in err
+        assert value in err
 
     def test_valid_values_are_parsed(self, monkeypatch):
         from compiletools.ct_lock_helper import create_args_from_env

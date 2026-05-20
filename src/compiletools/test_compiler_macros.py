@@ -3,6 +3,8 @@
 import subprocess
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import compiletools.compiler_macros as cm
 
 
@@ -197,23 +199,26 @@ class TestQueryHasFunction:
     def setup_method(self):
         cm.clear_cache()
 
-    def test_returns_1_when_compiler_says_true(self):
-        """Mock compiler preprocessor output containing '1'."""
+    @pytest.mark.parametrize(
+        ("stdout", "expression", "expected"),
+        [
+            pytest.param('# 1 "<stdin>"\n1\n', "__has_include(<iostream>)", 1, id="compiler-says-true"),
+            pytest.param(
+                '# 1 "<stdin>"\n0\n',
+                "__has_include(<nonexistent_header_xyz.h>)",
+                0,
+                id="compiler-says-false",
+            ),
+        ],
+    )
+    def test_uses_compiler_preprocessor_result(self, stdout, expression, expected):
+        """Mock compiler preprocessor output containing the query result."""
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = '# 1 "<stdin>"\n1\n'
+        mock_result.stdout = stdout
 
         with patch("subprocess.run", return_value=mock_result):
-            assert cm.query_has_function("gcc", "__has_include(<iostream>)") == 1
-
-    def test_returns_0_when_compiler_says_false(self):
-        """Mock compiler preprocessor output containing '0'."""
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = '# 1 "<stdin>"\n0\n'
-
-        with patch("subprocess.run", return_value=mock_result):
-            assert cm.query_has_function("gcc", "__has_include(<nonexistent_header_xyz.h>)") == 0
+            assert cm.query_has_function("gcc", expression) == expected
 
     def test_returns_0_for_empty_compiler(self):
         """No compiler specified should return 0."""
