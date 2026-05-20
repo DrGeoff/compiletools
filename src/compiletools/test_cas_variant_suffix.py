@@ -24,7 +24,6 @@ import compiletools.testhelper as uth
 from compiletools.apptools import add_output_directory_arguments
 from compiletools.build_context import BuildContext
 
-
 PINNED_VARIANT = "test.suffix.variant"
 
 
