@@ -5,16 +5,20 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
+import re
+import shlex
 import subprocess
 import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import configargparse
 import pytest
 
 import compiletools.diagnostics
 import compiletools.trace_backend  # ensure registered
+import compiletools.trace_backend as tb
 from compiletools.build_backend import (
     _DEFAULT_SLURM_EXPORT,
     _slurm_max_wait_arg,
@@ -29,6 +33,7 @@ from compiletools.build_context import BuildContext
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.testhelper import TempDirContextNoChange, make_backend_args
 from compiletools.trace_backend import SlurmBackend, TraceStore, _make_trace_entry
+from compiletools.trace_backend import SlurmBackend as _SB
 
 
 class _ScancelMock:
@@ -232,7 +237,6 @@ class TestSbatchSubmission:
             assert "sed" in wrap_value
             assert "SLURM_ARRAY_TASK_ID" in wrap_value
             # Wrap must reference the per-invocation cmds file.
-            import re
 
             m = re.search(r"\.ct-slurm-cmds-[\w\-.]+-0\.txt", wrap_value)
             assert m, f"wrap missing cmds file pattern: {wrap_value}"
@@ -342,7 +346,6 @@ class TestSbatchSubmission:
                 wrap_idx = cmd.index("--wrap")
                 wrap = cmd[wrap_idx + 1]
                 # Extract the cmds-file path from the wrap script
-                import re
 
                 m = re.search(r"\.ct-slurm-cmds-[\w\-.]+\.txt", wrap)
                 assert m
@@ -1270,7 +1273,6 @@ class TestOOMRetry:
         graph.add_rule(rule_bad)
         graph.add_rule(make_phony_rule("build", [ok_out, bad_out]))
 
-        from compiletools.trace_backend import SlurmBackend as _SB
 
         # First wait: rule_ok COMPLETED, rule_bad FAILED.
         wait_results = iter(
@@ -1740,7 +1742,6 @@ class TestWrapScriptEval:
     def test_command_substitution_in_arg_is_quoted_literally(self, tmp_path):
         """A compile arg containing $(...) is single-quoted by shlex.join,
         so eval treats it as a literal string instead of running a subshell."""
-        import shlex as _shlex
 
         rule = BuildRule(
             output=str(tmp_path / "foo.o"),
@@ -1749,7 +1750,7 @@ class TestWrapScriptEval:
             rule_type="compile",
         )
         assert rule.command is not None
-        line = _shlex.join(rule.command)
+        line = shlex.join(rule.command)
         # The metacharacter-bearing token must be single-quoted in the cmds file
         # so that `eval "$CMD"` treats `$(rogue)` as a literal string.
         assert "'-DFOO=$(rogue)'" in line
@@ -1764,7 +1765,6 @@ def test_quoted_define_with_space_survives_flatten(tmp_path, monkeypatch):
     Note: post-Fix-1 the trailing ``-o <path>`` pair is stripped from the line
     (the compute-node wrap script reattaches ``-o "$TMP"`` for atomic temp+rename).
     """
-    import shlex as _shlex
 
     graph = BuildGraph()
     rule = BuildRule(
@@ -1796,7 +1796,7 @@ def test_quoted_define_with_space_survives_flatten(tmp_path, monkeypatch):
         with open(cmds_file) as f:
             line = f.read().strip()
 
-    tokens = _shlex.split(line)
+    tokens = shlex.split(line)
     assert "-DGREETING=Hello World" in tokens, f"GREETING split across argv elements: tokens={tokens!r} line={line!r}"
     # Post-Fix-1: -o is stripped; the wrap script reattaches it pointing at $TMP.
     assert "-o" not in tokens, f"compile cmds-file line must not include -o: tokens={tokens!r}"
@@ -1816,7 +1816,6 @@ class TestAtomicComputeNodeCompile:
 
     def test_cmds_file_omits_o_flag(self, tmp_path, monkeypatch):
         """The cmds file line must NOT contain '-o <path>'."""
-        import shlex as _shlex
 
         rule = make_compile_rule(output=str(tmp_path / "foo.o"), src="src/foo.cpp")
         graph = BuildGraph()
@@ -1835,7 +1834,7 @@ class TestAtomicComputeNodeCompile:
             with open(cmds_file) as f:
                 line = f.read().strip()
 
-        tokens = _shlex.split(line)
+        tokens = shlex.split(line)
         assert "-o" not in tokens, f"-o must be stripped from compile line; got tokens={tokens!r}"
         assert str(tmp_path / "foo.o") not in tokens, f"output path must not appear; got tokens={tokens!r}"
 
@@ -1912,7 +1911,6 @@ class TestSlurmExport:
         assert "LD_LIBRARY_PATH" in _DEFAULT_SLURM_EXPORT
 
     def test_argparse_default_matches_runtime_fallback_constant(self):
-        import configargparse
 
         parser = configargparse.ArgumentParser()
         SlurmBackend.add_arguments(parser)
@@ -2050,7 +2048,6 @@ class TestTimingIncludesRetries:
         sacct_retry = "200_0|00:00:09|COMPLETED\n"
 
         # _wait_for_arrays calls are intercepted; simulate OOM then success.
-        from compiletools.trace_backend import SlurmBackend as _SB
 
         wait_results = iter(
             [
@@ -2381,7 +2378,6 @@ class TestSlurmLogsRouteThroughDiagnostics:
         :class:`TestSbatchUsesDiagnosticsDir`, which exercise the actual
         sbatch argv path.
         """
-        import compiletools.trace_backend as tb
 
         with open(tb.__file__, encoding="utf-8") as fh:
             source = fh.read()

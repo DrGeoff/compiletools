@@ -8,12 +8,14 @@ import os
 from textwrap import dedent
 
 import configargparse
+import stringzilla as sz
 
 import compiletools.headerdeps
 import compiletools.magicflags
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
 from compiletools.build_context import BuildContext
+from compiletools.file_analyzer import read_file_mmap, read_file_traditional
 
 
 class TestHeaderDepsIntegration(tb.BaseCompileToolsTestCase):
@@ -185,7 +187,6 @@ class TestMagicFlagsIntegration(tb.BaseCompileToolsTestCase):
         result = magicflags.parse(main_path)
 
         # Should detect the magic flags properly
-        import stringzilla as sz
 
         assert sz.Str("LIBS") in result
         assert sz.Str("CFLAGS") in result
@@ -215,7 +216,6 @@ int main() { return 0; }"""
         result = magicflags.parse(main_path)
 
         # Should find early magic flag
-        import stringzilla as sz
 
         assert sz.Str("LIBS") in result
         assert "early_lib" in str(result[sz.Str("LIBS")])
@@ -240,7 +240,6 @@ int main() { return 0; }"""
         result = magicflags.parse(main_path)
 
         # Should include pthread lib (USE_THREADING is defined)
-        import stringzilla as sz
 
         assert sz.Str("LIBS") in result
         assert "pthread" in str(result[sz.Str("LIBS")])
@@ -268,7 +267,6 @@ int main() { return 0; }"""
         result = magicflags.parse(main_path)
 
         # Should contain magic flags from both files
-        import stringzilla as sz
 
         assert sz.Str("CFLAGS") in result
         assert sz.Str("LIBS") in result
@@ -295,7 +293,6 @@ int main() { return 0; }"""
         result = magicflags.parse(main_path)
 
         # Should find the feature lib after processing header
-        import stringzilla as sz
 
         assert sz.Str("LIBS") in result
         assert "feature_lib" in str(result[sz.Str("LIBS")])
@@ -352,7 +349,6 @@ class TestSourceFileUnicodeTolerance(tb.BaseCompileToolsTestCase):
         return compiletools.magicflags.DirectMagicFlags(args, headerdeps, context=ctx)
 
     def test_read_file_mmap_preserves_emdash_and_emoji(self):
-        from compiletools.file_analyzer import read_file_mmap
 
         content = "// em-dash — and emoji 🎉 and CJK 漢字\nint main(){}\n"
         path = self.create_test_file("u.c", content)
@@ -362,7 +358,6 @@ class TestSourceFileUnicodeTolerance(tb.BaseCompileToolsTestCase):
         assert truncated is False
 
     def test_read_file_traditional_preserves_emdash_and_emoji(self):
-        from compiletools.file_analyzer import read_file_traditional
 
         content = "// em-dash — and emoji 🎉 and CJK 漢字\nint main(){}\n"
         path = self.create_test_file("u.c", content)
@@ -409,7 +404,6 @@ class TestSourceFileUnicodeTolerance(tb.BaseCompileToolsTestCase):
         magicflags = self.create_magicflags_instance()
         result = magicflags.parse(main_path)
 
-        import stringzilla as sz
 
         assert sz.Str("CXXFLAGS") in result
         assert sz.Str("LDFLAGS") in result
@@ -431,7 +425,6 @@ class TestSourceFileUnicodeTolerance(tb.BaseCompileToolsTestCase):
         magicflags = self.create_magicflags_instance()
         result = magicflags.parse(main_path)
 
-        import stringzilla as sz
 
         assert sz.Str("CXXFLAGS") in result
         value = str(result[sz.Str("CXXFLAGS")])

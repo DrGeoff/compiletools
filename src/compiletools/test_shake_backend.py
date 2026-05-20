@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import os
@@ -17,10 +18,12 @@ import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
 import compiletools.testhelper as uth
+from compiletools.apptools import _GITROOT_SENTINEL
 from compiletools.build_backend import available_backends, get_backend_class
 from compiletools.build_context import BuildContext
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.global_hash_registry import get_file_hash
+from compiletools.locking import FlockLock, atomic_compile
 from compiletools.testhelper import ShakeBackendTestContext
 from compiletools.trace_backend import (
     ShakeBackend,
@@ -813,7 +816,6 @@ class TestContentAddressableShortCircuit:
 
             traces = TraceStore(str(td / ".ct-traces.json"))
 
-            import asyncio
 
             memo: dict[str, asyncio.Task[bool]] = {}
             sem = asyncio.Semaphore(1)
@@ -989,7 +991,6 @@ class TestCALinkShortCircuit:
 class TestAtomicCompile:
     def test_atomic_compile_in_locking_module(self, tmp_path):
         """Verify the shared atomic_compile function in locking.py works correctly."""
-        from compiletools.locking import FlockLock, atomic_compile
 
         target = str(tmp_path / "bar.o")
         lock_args = mock.MagicMock()
@@ -1026,7 +1027,6 @@ class TestCompilerIdentityInTrace:
     (e.g. in-place upgrade) even though the argv is byte-identical."""
 
     def test_verify_fails_when_compiler_identity_changes(self, tmp_path, monkeypatch):
-        from compiletools.trace_backend import _make_trace_entry
 
         monkeypatch.chdir(tmp_path)
         src = tmp_path / "compiler_identity_src.cpp"
@@ -1037,7 +1037,6 @@ class TestCompilerIdentityInTrace:
         backend = ShakeBackend.__new__(ShakeBackend)
         backend.args = mock.MagicMock()
         backend.args.cas_objdir = str(tmp_path)
-        from compiletools.build_context import BuildContext
 
         backend.context = BuildContext()
 
@@ -1065,7 +1064,6 @@ class TestVerifyCanonicalization:
     invalidate traces."""
 
     def test_verify_ignores_prefix_differences(self, tmp_path, monkeypatch):
-        from compiletools.trace_backend import _make_trace_entry
 
         monkeypatch.chdir(tmp_path)
         src = tmp_path / "foo.cpp"
@@ -1076,7 +1074,6 @@ class TestVerifyCanonicalization:
         backend = ShakeBackend.__new__(ShakeBackend)
         backend.args = mock.MagicMock()
         backend.args.cas_objdir = str(tmp_path)
-        from compiletools.build_context import BuildContext
 
         backend.context = BuildContext()
 
@@ -1357,7 +1354,6 @@ class TestShakeTestRulesExecutedDuringBuild:
     """
 
     def test_do_build_executes_test_rules(self, tmp_path):
-        import asyncio
 
         # A real, instantly-passing test exe so _execute_rule's subprocess.run
         # succeeds and the .result marker gets touched.
@@ -1386,7 +1382,6 @@ class TestShakeTestRulesExecutedDuringBuild:
             assert not backend._test_failures
 
     def test_do_build_aggregates_failures(self, tmp_path):
-        import asyncio
 
         result_path = str(tmp_path / "test_fail.result")
         graph = BuildGraph()
@@ -1424,7 +1419,6 @@ class TestTraceInputCanonicalization:
     """
 
     def test_make_trace_entry_canonicalizes_input_keys(self, tmp_path, monkeypatch):
-        from compiletools.apptools import _GITROOT_SENTINEL
 
         monkeypatch.chdir(tmp_path)
         src = tmp_path / "foo.cpp"
