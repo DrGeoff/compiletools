@@ -8,6 +8,22 @@ import compiletools.configutils
 import compiletools.testhelper as uth
 
 
+def _resolve_variant(repo_root, variant, *, argv=None, system_config_dir=None):
+    """Wrap configutils.resolve_variant with the standard test scaffolding —
+    `user_config_dir="/var"`, `exedir=uth.cakedir()`, `gitroot=repo_root`,
+    inside `DirectoryContext(repo_root)`. `system_config_dir` defaults to None
+    so the bundled `/etc/xdg/ct` axes get discovered; pass "/var" to skip them."""
+    with uth.DirectoryContext(repo_root):
+        return compiletools.configutils.resolve_variant(
+            variant=variant,
+            argv=argv if argv is not None else [],
+            user_config_dir="/var",
+            system_config_dir=system_config_dir,
+            exedir=uth.cakedir(),
+            gitroot=repo_root,
+        )
+
+
 class TestVariant:
     @pytest.fixture(autouse=True)
     def _reset_parser_state(self):
@@ -188,15 +204,7 @@ class TestVariant:
             with open(os.path.join(conf_d, "debug.conf"), "w") as fh:
                 fh.write("append-CFLAGS = -g\n")
 
-            with uth.DirectoryContext(repo_root):
-                resolution = compiletools.configutils.resolve_variant(
-                    variant="gcc.debug",
-                    argv=[],
-                    user_config_dir="/var",
-                    system_config_dir="/var",
-                    exedir=uth.cakedir(),
-                    gitroot=repo_root,
-                )
+            resolution = _resolve_variant(repo_root, "gcc.debug", system_config_dir="/var")
 
             assert resolution.canonical_name == "gcc.debug"
             axis_names = [a.name for a in resolution.axes]
@@ -218,15 +226,7 @@ class TestVariant:
                 with open(os.path.join(conf_d, name), "w") as fh:
                     fh.write(content)
 
-            with uth.DirectoryContext(repo_root):
-                resolution = compiletools.configutils.resolve_variant(
-                    variant="gcc.debug",
-                    argv=[],
-                    user_config_dir="/var",
-                    system_config_dir="/var",
-                    exedir=uth.cakedir(),
-                    gitroot=repo_root,
-                )
+            resolution = _resolve_variant(repo_root, "gcc.debug", system_config_dir="/var")
 
             assert resolution.composite_override is not None
             assert resolution.composite_override.endswith("gcc.debug.conf")
@@ -241,15 +241,7 @@ class TestVariant:
         # resolved axis list (in extends order, deduped, with dev itself last).
         with uth.TempDirContextNoChange() as repo_root:
             uth.create_temp_ct_conf(repo_root, defaultvariant="dev")
-            with uth.DirectoryContext(repo_root):
-                resolution = compiletools.configutils.resolve_variant(
-                    variant="dev",
-                    argv=[],
-                    user_config_dir="/var",
-                    system_config_dir=None,
-                    exedir=uth.cakedir(),
-                    gitroot=repo_root,
-                )
+            resolution = _resolve_variant(repo_root, "dev")
             axis_names = [a.name for a in resolution.axes]
             # dev.conf: extends = ccache-gcc, cxx26, debug, asan, ubsan, werror
             # ccache-gcc itself extends gcc, so gcc appears first in the chain.
@@ -260,15 +252,7 @@ class TestVariant:
         # ccache-gcc itself extends gcc, so gcc appears first in the chain.
         with uth.TempDirContextNoChange() as repo_root:
             uth.create_temp_ct_conf(repo_root, defaultvariant="production")
-            with uth.DirectoryContext(repo_root):
-                resolution = compiletools.configutils.resolve_variant(
-                    variant="production",
-                    argv=[],
-                    user_config_dir="/var",
-                    system_config_dir=None,
-                    exedir=uth.cakedir(),
-                    gitroot=repo_root,
-                )
+            resolution = _resolve_variant(repo_root, "production")
             axis_names = [a.name for a in resolution.axes]
             assert axis_names == [
                 "gcc",
@@ -287,15 +271,7 @@ class TestVariant:
         # are more comprehensive than gcc's.
         with uth.TempDirContextNoChange() as repo_root:
             uth.create_temp_ct_conf(repo_root, defaultvariant="safety")
-            with uth.DirectoryContext(repo_root):
-                resolution = compiletools.configutils.resolve_variant(
-                    variant="safety",
-                    argv=[],
-                    user_config_dir="/var",
-                    system_config_dir=None,
-                    exedir=uth.cakedir(),
-                    gitroot=repo_root,
-                )
+            resolution = _resolve_variant(repo_root, "safety")
             axis_names = [a.name for a in resolution.axes]
             assert axis_names[0] == "clang", f"safety must start with clang; got {axis_names}"
             assert "asan" in axis_names and "ubsan" in axis_names
@@ -320,15 +296,7 @@ class TestVariant:
 
         with uth.TempDirContextNoChange() as repo_root:
             uth.create_temp_ct_conf(repo_root, defaultvariant="gcc.mold.release.asan")
-            with uth.DirectoryContext(repo_root):
-                resolution = compiletools.configutils.resolve_variant(
-                    variant="gcc,mold,release,asan",
-                    argv=[],
-                    user_config_dir="/var",
-                    system_config_dir=None,  # let the bundled dir be discovered
-                    exedir=uth.cakedir(),
-                    gitroot=repo_root,
-                )
+            resolution = _resolve_variant(repo_root, "gcc,mold,release,asan")
             axis_names = [a.name for a in resolution.axes]
             assert axis_names == ["gcc", "mold", "release", "asan"]
             # The mold axis conf file should be in the resolution's flat path list.
@@ -353,15 +321,7 @@ class TestVariant:
                 with open(os.path.join(conf_d, name), "w") as fh:
                     fh.write(content)
 
-            with uth.DirectoryContext(repo_root):
-                resolution = compiletools.configutils.resolve_variant(
-                    variant="gcc.debug",
-                    argv=[],
-                    user_config_dir="/var",
-                    system_config_dir="/var",
-                    exedir=uth.cakedir(),
-                    gitroot=repo_root,
-                )
+            resolution = _resolve_variant(repo_root, "gcc.debug", system_config_dir="/var")
 
             assert resolution.composite_override is not None
             # extends=blank wins over the implicit gcc+debug pull-in.
@@ -427,15 +387,7 @@ class TestVariant:
                 fh.write("extends = gcc\n")
                 fh.write("append-CFLAGS = -O3\n")
 
-            with uth.DirectoryContext(repo_root):
-                resolution = compiletools.configutils.resolve_variant(
-                    variant="myrelease",
-                    argv=[],
-                    user_config_dir="/var",
-                    system_config_dir="/var",
-                    exedir=uth.cakedir(),
-                    gitroot=repo_root,
-                )
+            resolution = _resolve_variant(repo_root, "myrelease", system_config_dir="/var")
             axis_names = [a.name for a in resolution.axes]
             assert axis_names == ["gcc", "myrelease"]
 
@@ -478,15 +430,7 @@ class TestVariant:
             with open(os.path.join(conf_d, "x.conf"), "w") as fh:
                 fh.write("extends = a, b\n")
 
-            with uth.DirectoryContext(repo_root):
-                resolution = compiletools.configutils.resolve_variant(
-                    variant="x",
-                    argv=[],
-                    user_config_dir="/var",
-                    system_config_dir="/var",
-                    exedir=uth.cakedir(),
-                    gitroot=repo_root,
-                )
+            resolution = _resolve_variant(repo_root, "x", system_config_dir="/var")
             axis_names = [a.name for a in resolution.axes]
             assert axis_names.count("base") == 1
             # base must precede a and b
@@ -513,15 +457,7 @@ class TestVariant:
             with open(os.path.join(conf_d, "debug.conf"), "w") as fh:
                 fh.write("append-CFLAGS = -g\n")
 
-            with uth.DirectoryContext(repo_root):
-                resolution = compiletools.configutils.resolve_variant(
-                    variant="gcc,debug",
-                    argv=[],
-                    user_config_dir="/var",
-                    system_config_dir="/var",
-                    exedir=uth.cakedir(),
-                    gitroot=repo_root,
-                )
+            resolution = _resolve_variant(repo_root, "gcc,debug", system_config_dir="/var")
             text = compiletools.configutils.format_variant_resolution(resolution)
             assert "gcc" in text
             assert "debug" in text
