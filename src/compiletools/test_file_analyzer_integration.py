@@ -18,8 +18,9 @@ from compiletools.build_context import BuildContext
 from compiletools.file_analyzer import read_file_mmap, read_file_traditional
 
 
-class TestHeaderDepsIntegration(tb.BaseCompileToolsTestCase):
-    """Test DirectHeaderDeps integration with FileAnalyzer."""
+class _FileAnalyzerIntegrationBase(tb.BaseCompileToolsTestCase):
+    """Shared scaffolding: ``self.temp_dir`` alias for the base-class tmpdir
+    and a ``create_test_file`` helper that writes content under it."""
 
     def setup_method(self):
         super().setup_method()
@@ -32,6 +33,10 @@ class TestHeaderDepsIntegration(tb.BaseCompileToolsTestCase):
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(content)
         return filepath
+
+
+class TestHeaderDepsIntegration(_FileAnalyzerIntegrationBase):
+    """Test DirectHeaderDeps integration with FileAnalyzer."""
 
     def create_headerdeps_instance(self, max_file_read_size=0):
         """Create a DirectHeaderDeps instance for testing."""
@@ -132,20 +137,8 @@ int main() { return 0; }"""
         # Note: feature_b.h may or may not be included depending on preprocessor behavior
 
 
-class TestMagicFlagsIntegration(tb.BaseCompileToolsTestCase):
+class TestMagicFlagsIntegration(_FileAnalyzerIntegrationBase):
     """Test DirectMagicFlags integration with FileAnalyzer."""
-
-    def setup_method(self):
-        super().setup_method()
-        self.temp_dir = self._tmpdir
-
-    def create_test_file(self, filename, content):
-        """Create a test file in temp directory."""
-        filepath = os.path.join(self.temp_dir, filename)
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(content)
-        return filepath
 
     def create_magicflags_instance(self, max_file_read_size=0):
         """Create a DirectMagicFlags instance for testing."""
@@ -298,7 +291,7 @@ int main() { return 0; }"""
         assert "feature_lib" in str(result[sz.Str("LIBS")])
 
 
-class TestSourceFileUnicodeTolerance(tb.BaseCompileToolsTestCase):
+class TestSourceFileUnicodeTolerance(_FileAnalyzerIntegrationBase):
     """Regression: source files containing non-ASCII bytes (em-dash,
     emoji, accented characters, CJK) in comments must analyze cleanly.
 
@@ -312,17 +305,6 @@ class TestSourceFileUnicodeTolerance(tb.BaseCompileToolsTestCase):
        to "character" offsets via len() of a python str would mis-align;
        this test pins that bytes-are-bytes for the analyzer.
     """
-
-    def setup_method(self):
-        super().setup_method()
-        self.temp_dir = self._tmpdir
-
-    def create_test_file(self, filename, content):
-        filepath = os.path.join(self.temp_dir, filename)
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(content)
-        return filepath
 
     def create_headerdeps_instance(self):
         cap = configargparse.ArgumentParser()
