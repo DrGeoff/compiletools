@@ -113,13 +113,23 @@ def _make_args(**overrides):
     return types.SimpleNamespace(**defaults)
 
 
-def _touch_obj(objdir, basename, file_hash, dep_hash, macro_hash, *, age_seconds=0, size=1024):
+def _touch_obj(
+    objdir,
+    basename,
+    file_hash,
+    dep_hash="11223344556677",
+    macro_hash="0011223344556677",
+    *,
+    age_seconds=0,
+    size=1024,
+):
     """Create a fake .o file in its sharded bucket dir, with controlled mtime/size.
 
     Mirrors production layout: ``<objdir>/<file_hash[:2]>/<basename>_<...>.o``.
-    Sidecar lockdirs/lockfiles in the same bucket are managed by the lock
-    subsystem, not this fixture — tests exercising lockdir behavior place
-    them explicitly.
+    ``dep_hash`` and ``macro_hash`` default to the canonical "11223344556677"
+    / "0011223344556677" pair used by every cache-trim test (only the
+    `file_hash` axis actually varies across cases). Sidecar lockdirs are
+    placed explicitly by tests that exercise lockdir behaviour.
     """
     name = f"{basename}_{file_hash}_{dep_hash}_{macro_hash}.o"
     bucket_dir = os.path.join(objdir, file_hash[:2])
@@ -136,7 +146,7 @@ def _touch_obj(objdir, basename, file_hash, dep_hash, macro_hash, *, age_seconds
 class TestTrimObjdir:
     def test_keeps_current_files(self, objdir):
         current_hash = "aabbccddeeff"
-        p = _touch_obj(objdir, "foo", current_hash, "11223344556677", "0011223344556677")
+        p = _touch_obj(objdir, "foo", current_hash)
 
         trimmer = CacheTrimmer(_make_args())
         stats = trimmer.trim_objdir(objdir, {current_hash})
@@ -148,8 +158,8 @@ class TestTrimObjdir:
     def test_removes_oldest_noncurrent(self, objdir):
         current_hash = "aabbccddeeff"
 
-        old = _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=3600)
-        newer = _touch_obj(objdir, "foo", "222222222222", "11223344556677", "0011223344556677", age_seconds=60)
+        old = _touch_obj(objdir, "foo", "111111111111", age_seconds=3600)
+        newer = _touch_obj(objdir, "foo", "222222222222", age_seconds=60)
 
         trimmer = CacheTrimmer(_make_args(keep_count=1))
         stats = trimmer.trim_objdir(objdir, {current_hash})
@@ -161,8 +171,8 @@ class TestTrimObjdir:
 
     def test_keeps_newest_noncurrent_per_basename(self, objdir):
 
-        _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=3600)
-        newest = _touch_obj(objdir, "foo", "222222222222", "11223344556677", "0011223344556677", age_seconds=60)
+        _touch_obj(objdir, "foo", "111111111111", age_seconds=3600)
+        newest = _touch_obj(objdir, "foo", "222222222222", age_seconds=60)
 
         trimmer = CacheTrimmer(_make_args(keep_count=1))
         stats = trimmer.trim_objdir(objdir, set())
@@ -172,9 +182,9 @@ class TestTrimObjdir:
 
     def test_keep_count_2(self, objdir):
 
-        oldest = _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=7200)
-        middle = _touch_obj(objdir, "foo", "222222222222", "11223344556677", "0011223344556677", age_seconds=3600)
-        newest = _touch_obj(objdir, "foo", "333333333333", "11223344556677", "0011223344556677", age_seconds=60)
+        oldest = _touch_obj(objdir, "foo", "111111111111", age_seconds=7200)
+        middle = _touch_obj(objdir, "foo", "222222222222", age_seconds=3600)
+        newest = _touch_obj(objdir, "foo", "333333333333", age_seconds=60)
 
         trimmer = CacheTrimmer(_make_args(keep_count=2))
         stats = trimmer.trim_objdir(objdir, set())
@@ -188,11 +198,11 @@ class TestTrimObjdir:
     def test_max_age_interaction(self, objdir):
 
         # 2 days old -- beyond max_age of 1 day
-        old = _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=172800)
+        old = _touch_obj(objdir, "foo", "111111111111", age_seconds=172800)
         # 1 hour old -- within max_age of 1 day
-        recent = _touch_obj(objdir, "foo", "222222222222", "11223344556677", "0011223344556677", age_seconds=3600)
+        recent = _touch_obj(objdir, "foo", "222222222222", age_seconds=3600)
         # newest -- kept by keep_count=1
-        newest = _touch_obj(objdir, "foo", "333333333333", "11223344556677", "0011223344556677", age_seconds=60)
+        newest = _touch_obj(objdir, "foo", "333333333333", age_seconds=60)
 
         trimmer = CacheTrimmer(_make_args(keep_count=1, max_age=1))
         trimmer.trim_objdir(objdir, set())
@@ -203,8 +213,8 @@ class TestTrimObjdir:
 
     def test_safety_keeps_one_when_all_noncurrent(self, objdir):
 
-        old = _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=7200)
-        newest = _touch_obj(objdir, "foo", "222222222222", "11223344556677", "0011223344556677", age_seconds=60)
+        old = _touch_obj(objdir, "foo", "111111111111", age_seconds=7200)
+        newest = _touch_obj(objdir, "foo", "222222222222", age_seconds=60)
 
         trimmer = CacheTrimmer(_make_args(keep_count=0))
         trimmer.trim_objdir(objdir, set())
@@ -215,8 +225,8 @@ class TestTrimObjdir:
 
     def test_dry_run_does_not_remove(self, objdir):
 
-        old = _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=3600)
-        newer = _touch_obj(objdir, "foo", "222222222222", "11223344556677", "0011223344556677", age_seconds=60)
+        old = _touch_obj(objdir, "foo", "111111111111", age_seconds=3600)
+        newer = _touch_obj(objdir, "foo", "222222222222", age_seconds=60)
 
         trimmer = CacheTrimmer(_make_args(dry_run=True, keep_count=1))
         stats = trimmer.trim_objdir(objdir, set())
@@ -326,12 +336,12 @@ class TestTrimObjdir:
     def test_multiple_basenames_independent(self, objdir):
 
         # foo: one current, one old
-        foo_current = _touch_obj(objdir, "foo", "aabbccddeeff", "11223344556677", "0011223344556677")
-        foo_old = _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=3600)
+        foo_current = _touch_obj(objdir, "foo", "aabbccddeeff")
+        foo_old = _touch_obj(objdir, "foo", "111111111111", age_seconds=3600)
 
         # bar: all non-current
-        bar_old = _touch_obj(objdir, "bar", "222222222222", "11223344556677", "0011223344556677", age_seconds=7200)
-        bar_newer = _touch_obj(objdir, "bar", "333333333333", "11223344556677", "0011223344556677", age_seconds=60)
+        bar_old = _touch_obj(objdir, "bar", "222222222222", age_seconds=7200)
+        bar_newer = _touch_obj(objdir, "bar", "333333333333", age_seconds=60)
 
         trimmer = CacheTrimmer(_make_args(keep_count=0))
         stats = trimmer.trim_objdir(objdir, {"aabbccddeeff"})
@@ -344,8 +354,8 @@ class TestTrimObjdir:
 
     def test_bytes_freed_tracked(self, objdir):
 
-        _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=3600, size=4096)
-        _touch_obj(objdir, "foo", "222222222222", "11223344556677", "0011223344556677", age_seconds=60, size=2048)
+        _touch_obj(objdir, "foo", "111111111111", age_seconds=3600, size=4096)
+        _touch_obj(objdir, "foo", "222222222222", age_seconds=60, size=2048)
 
         trimmer = CacheTrimmer(_make_args(keep_count=1))
         stats = trimmer.trim_objdir(objdir, set())
@@ -933,8 +943,8 @@ class TestNoncurrentKeptAccounting:
         noncurrent_kept calculation runs. Verify the count stays
         accurate (one survivor reported, one removed)."""
 
-        _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=7200)
-        _touch_obj(objdir, "foo", "222222222222", "11223344556677", "0011223344556677", age_seconds=60)
+        _touch_obj(objdir, "foo", "111111111111", age_seconds=7200)
+        _touch_obj(objdir, "foo", "222222222222", age_seconds=60)
 
         trimmer = CacheTrimmer(_make_args(keep_count=0))
         stats = trimmer.trim_objdir(objdir, set())
@@ -949,9 +959,9 @@ class TestNoncurrentKeptAccounting:
         should also be kept and counted."""
 
         # Three non-current files; only the oldest is beyond max_age=1d
-        _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=172800)
-        _touch_obj(objdir, "foo", "222222222222", "11223344556677", "0011223344556677", age_seconds=3600)
-        _touch_obj(objdir, "foo", "333333333333", "11223344556677", "0011223344556677", age_seconds=60)
+        _touch_obj(objdir, "foo", "111111111111", age_seconds=172800)
+        _touch_obj(objdir, "foo", "222222222222", age_seconds=3600)
+        _touch_obj(objdir, "foo", "333333333333", age_seconds=60)
 
         trimmer = CacheTrimmer(_make_args(keep_count=0, max_age=1))
         stats = trimmer.trim_objdir(objdir, set())
@@ -965,7 +975,7 @@ class TestNoncurrentKeptAccounting:
         """Edge: single file, keep_count=0, no current → safety
         keeps the lone file. noncurrent_kept must be 1, removed 0."""
 
-        _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=3600)
+        _touch_obj(objdir, "foo", "111111111111", age_seconds=3600)
 
         trimmer = CacheTrimmer(_make_args(keep_count=0))
         stats = trimmer.trim_objdir(objdir, set())
