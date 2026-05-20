@@ -8,6 +8,7 @@ do not "resurrect" and affect subsequent conditional compilation.
 from pathlib import Path
 
 import pytest
+import stringzilla as sz
 
 import compiletools.apptools
 import compiletools.headerdeps
@@ -21,7 +22,8 @@ from compiletools.test_base import BaseCompileToolsTestCase
 class TestUndefBugSample(BaseCompileToolsTestCase):
     """Test the undef_bug sample to validate #undef handling."""
 
-    def test_undef_bug_sample_finds_all_headers(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_undef_bug_sample_finds_all_headers(self):
         """Test that #undef in cleans_up.hpp allows should_not_see_macro.hpp to be included.
 
         Dependency chain:
@@ -55,13 +57,9 @@ class TestUndefBugSample(BaseCompileToolsTestCase):
         magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
         hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)
 
-        # Get header dependencies
         headers = hunter.header_dependencies(str(main_cpp))
         header_names = [Path(h).name for h in headers]
 
-        print(f"\nHeaders found: {header_names}")
-
-        # Validate all expected headers are present
         assert "uses_conditional.hpp" in header_names, "uses_conditional.hpp should be found (direct include)"
         assert "cleans_up.hpp" in header_names, "cleans_up.hpp should be found (included by uses_conditional)"
         assert "defines_macro.hpp" in header_names, "defines_macro.hpp should be found (included by cleans_up)"
@@ -71,24 +69,17 @@ class TestUndefBugSample(BaseCompileToolsTestCase):
             "BUG: should_be_included.hpp NOT found!\n"
             "     This means #undef TEMP_BUFFER_SIZE was ignored.\n"
             "     The macro persisted after cleans_up.hpp, so #ifndef TEMP_BUFFER_SIZE failed.\n"
-            "     Root cause: preprocessing_cache.py with_updates() merges instead of replacing."
+            "     Root cause: preprocessing_cache.py with_updates() merges instead of replacing.\n"
+            f"     headers={header_names}"
         )
 
-        # Validate PKG-CONFIG extraction from conditionally included header
+        # Validate PKG-CONFIG extraction from conditionally included header.
         magic_flags = hunter.magicflags(str(main_cpp))
-        import stringzilla as sz
-
         pkg_config_key = sz.Str("PKG-CONFIG")
         pkg_configs = [str(f) for f in magic_flags.get(pkg_config_key, [])]
-
-        print(f"PKG-CONFIG flags: {pkg_configs}")
 
         assert "leaked-macro-pkg" in pkg_configs, (
             "BUG: PKG-CONFIG=leaked-macro-pkg NOT found!\n"
             "     This flag is in should_not_see_macro.hpp which was not discovered.\n"
             "     The #undef bug prevented the header from being included."
         )
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-s"])

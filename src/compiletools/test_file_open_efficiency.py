@@ -13,10 +13,9 @@ import pytest
 
 import compiletools.apptools
 import compiletools.cake
-import compiletools.file_analyzer
-import compiletools.global_hash_registry
 import compiletools.test_base
 import compiletools.testhelper as uth
+from compiletools.build_context import BuildContext
 
 
 class FileOpenTracker:
@@ -62,47 +61,29 @@ class TestFileOpenEfficiency(compiletools.test_base.BaseCompileToolsTestCase):
             "magicinclude",
         ],
     )
-    def test_cake_auto_opens_files_once(self, sample_dir):
+    def test_cake_auto_opens_files_once(self, sample_dir, monkeypatch):
         """Test that ct-cake --auto opens each source file at most once.
 
         This test verifies the efficiency of file I/O operations during the build
         process. Opening files multiple times is wasteful and indicates potential
         optimization issues in the dependency analysis code.
         """
-        # Get the sample directory path
         test_dir = uth.example_path(sample_dir)
-
         if not os.path.exists(test_dir):
             pytest.skip(f"Sample directory not found: {test_dir}")
 
-        # Save current directory to restore later
-        original_dir = os.getcwd()
+        monkeypatch.chdir(test_dir)
 
-        try:
-            # Change to test directory
-            os.chdir(test_dir)
+        with uth.ParserContext(), FileOpenTracker() as tracker:
+            cap = compiletools.apptools.create_parser("Test ct-cake file efficiency")
+            compiletools.cake.Cake.add_arguments(cap)
 
-            # Track file opens during cake execution
-            with uth.ParserContext(), FileOpenTracker() as tracker:
-                # Create argument parser and run cake
-                cap = compiletools.apptools.create_parser("Test ct-cake file efficiency")
-                compiletools.cake.Cake.add_arguments(cap)
+            # --file-list triggers full dependency analysis without invoking the compiler.
+            argv = ["--file-list"]
+            args = compiletools.apptools.parseargs(cap, argv=argv, context=BuildContext())
 
-                # Use --auto to trigger dependency analysis and --file-list to avoid compilation
-                # This runs the full dependency analysis without invoking the compiler
-                argv = ["--file-list"]
-                from compiletools.build_context import BuildContext
+            cake = compiletools.cake.Cake(args)
+            cake.process()
 
-                args = compiletools.apptools.parseargs(cap, argv=argv, context=BuildContext())
-
-                # Run the dependency analysis
-                cake = compiletools.cake.Cake(args)
-                cake.process()
-
-            # Success: all files opened at most once
-            multiple_opens = tracker.get_multiple_opens()
-            assert len(multiple_opens) == 0, f"Files opened multiple times: {multiple_opens}"
-
-        finally:
-            # Restore original directory
-            os.chdir(original_dir)
+        multiple_opens = tracker.get_multiple_opens()
+        assert len(multiple_opens) == 0, f"Files opened multiple times: {multiple_opens}"
