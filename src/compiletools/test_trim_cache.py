@@ -17,6 +17,28 @@ from compiletools.trim_cache import (
 )
 from compiletools.trim_cache_main import main
 
+
+@pytest.fixture
+def objdir(tmp_path):
+    d = str(tmp_path / "obj")
+    os.makedirs(d)
+    return d
+
+
+@pytest.fixture
+def pchdir(tmp_path):
+    d = str(tmp_path / "pch")
+    os.makedirs(d)
+    return d
+
+
+@pytest.fixture
+def pcmdir(tmp_path):
+    d = str(tmp_path / "pcm")
+    os.makedirs(d)
+    return d
+
+
 # ── parse_object_filename ────────────────────────────────────────────
 
 
@@ -112,9 +134,7 @@ def _touch_obj(objdir, basename, file_hash, dep_hash, macro_hash, *, age_seconds
 
 
 class TestTrimObjdir:
-    def test_keeps_current_files(self, tmp_path):
-        objdir = str(tmp_path / "obj")
-        os.makedirs(objdir)
+    def test_keeps_current_files(self, objdir):
         current_hash = "aabbccddeeff"
         p = _touch_obj(objdir, "foo", current_hash, "11223344556677", "0011223344556677")
 
@@ -125,9 +145,7 @@ class TestTrimObjdir:
         assert stats["current_kept"] == 1
         assert stats["removed"] == 0
 
-    def test_removes_oldest_noncurrent(self, tmp_path):
-        objdir = str(tmp_path / "obj")
-        os.makedirs(objdir)
+    def test_removes_oldest_noncurrent(self, objdir):
         current_hash = "aabbccddeeff"
 
         old = _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=3600)
@@ -141,9 +159,7 @@ class TestTrimObjdir:
         assert stats["removed"] == 1
         assert stats["noncurrent_kept"] == 1
 
-    def test_keeps_newest_noncurrent_per_basename(self, tmp_path):
-        objdir = str(tmp_path / "obj")
-        os.makedirs(objdir)
+    def test_keeps_newest_noncurrent_per_basename(self, objdir):
 
         _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=3600)
         newest = _touch_obj(objdir, "foo", "222222222222", "11223344556677", "0011223344556677", age_seconds=60)
@@ -154,9 +170,7 @@ class TestTrimObjdir:
         assert os.path.exists(newest)
         assert stats["noncurrent_kept"] == 1
 
-    def test_keep_count_2(self, tmp_path):
-        objdir = str(tmp_path / "obj")
-        os.makedirs(objdir)
+    def test_keep_count_2(self, objdir):
 
         oldest = _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=7200)
         middle = _touch_obj(objdir, "foo", "222222222222", "11223344556677", "0011223344556677", age_seconds=3600)
@@ -171,9 +185,7 @@ class TestTrimObjdir:
         assert stats["removed"] == 1
         assert stats["noncurrent_kept"] == 2
 
-    def test_max_age_interaction(self, tmp_path):
-        objdir = str(tmp_path / "obj")
-        os.makedirs(objdir)
+    def test_max_age_interaction(self, objdir):
 
         # 2 days old -- beyond max_age of 1 day
         old = _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=172800)
@@ -189,9 +201,7 @@ class TestTrimObjdir:
         assert os.path.exists(recent)  # within max_age, not removed
         assert os.path.exists(newest)  # kept by keep_count
 
-    def test_safety_keeps_one_when_all_noncurrent(self, tmp_path):
-        objdir = str(tmp_path / "obj")
-        os.makedirs(objdir)
+    def test_safety_keeps_one_when_all_noncurrent(self, objdir):
 
         old = _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=7200)
         newest = _touch_obj(objdir, "foo", "222222222222", "11223344556677", "0011223344556677", age_seconds=60)
@@ -203,9 +213,7 @@ class TestTrimObjdir:
         assert os.path.exists(newest)
         assert not os.path.exists(old)
 
-    def test_dry_run_does_not_remove(self, tmp_path):
-        objdir = str(tmp_path / "obj")
-        os.makedirs(objdir)
+    def test_dry_run_does_not_remove(self, objdir):
 
         old = _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=3600)
         newer = _touch_obj(objdir, "foo", "222222222222", "11223344556677", "0011223344556677", age_seconds=60)
@@ -240,7 +248,7 @@ class TestTrimObjdir:
         assert stats["total_scanned"] == 0
         assert stats["removed"] == 0
 
-    def test_scans_inside_bucket_dirs_not_flat_objdir(self, tmp_path):
+    def test_scans_inside_bucket_dirs_not_flat_objdir(self, objdir):
         """Object files now live one level down in 2-hex bucket dirs
         (``<objdir>/<file_hash[:2]>/<basename>_<...>.o``). The scanner must
         descend into bucket subdirs to find them, and must ignore any stray
@@ -248,8 +256,6 @@ class TestTrimObjdir:
         leftovers from a pre-sharding install and (per the rollout doc) are
         the operator's responsibility to wipe before first run.
         """
-        objdir = str(tmp_path / "obj")
-        os.makedirs(objdir)
         current_hash = "aabbccddeeff"
 
         # Bucket-resident object: the only one that should be discovered.
@@ -282,7 +288,7 @@ class TestTrimObjdir:
         assert os.path.exists(bucket_obj_path), "current bucket-resident object kept"
         assert os.path.exists(stray_flat_path), "scanner must not touch flat-layout files — they are outside its world"
 
-    def test_skips_non_bucket_top_level_entries(self, tmp_path):
+    def test_skips_non_bucket_top_level_entries(self, objdir):
         """Anything at the top level of ``$objdir/`` whose name is not a
         2-hex bucket directory must be invisible to the scanner.
         ``TraceStore/`` lives there by design; ``slurm-ct-*.out`` files only
@@ -291,8 +297,6 @@ class TestTrimObjdir:
         ``<bindir>/diagnostics/<invocation>/``).  Either way, the scanner
         ignores them.
         """
-        objdir = str(tmp_path / "obj")
-        os.makedirs(objdir)
 
         # Real bucket with a real .o
         os.makedirs(os.path.join(objdir, "aa"))
@@ -319,9 +323,7 @@ class TestTrimObjdir:
         assert os.path.isdir(os.path.join(objdir, "not-a-hash"))
         assert os.path.isdir(os.path.join(objdir, "AA"))
 
-    def test_multiple_basenames_independent(self, tmp_path):
-        objdir = str(tmp_path / "obj")
-        os.makedirs(objdir)
+    def test_multiple_basenames_independent(self, objdir):
 
         # foo: one current, one old
         foo_current = _touch_obj(objdir, "foo", "aabbccddeeff", "11223344556677", "0011223344556677")
@@ -340,9 +342,7 @@ class TestTrimObjdir:
         assert not os.path.exists(bar_old)  # removed: oldest non-current
         assert stats["basenames_found"] == 2
 
-    def test_bytes_freed_tracked(self, tmp_path):
-        objdir = str(tmp_path / "obj")
-        os.makedirs(objdir)
+    def test_bytes_freed_tracked(self, objdir):
 
         _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=3600, size=4096)
         _touch_obj(objdir, "foo", "222222222222", "11223344556677", "0011223344556677", age_seconds=60, size=2048)
@@ -371,9 +371,7 @@ def _make_pchdir_entry(pchdir, command_hash, headers, *, age_seconds=0, size_per
 
 
 class TestTrimPchdir:
-    def test_keeps_newest_per_header(self, tmp_path):
-        pchdir = str(tmp_path / "pch")
-        os.makedirs(pchdir)
+    def test_keeps_newest_per_header(self, pchdir):
 
         old = _make_pchdir_entry(pchdir, "a" * 16, ["stdafx.h"], age_seconds=3600)
         new = _make_pchdir_entry(pchdir, "b" * 16, ["stdafx.h"], age_seconds=60)
@@ -386,9 +384,7 @@ class TestTrimPchdir:
         assert stats["dirs_removed"] == 1
         assert stats["dirs_kept"] == 1
 
-    def test_removes_oldest_per_header(self, tmp_path):
-        pchdir = str(tmp_path / "pch")
-        os.makedirs(pchdir)
+    def test_removes_oldest_per_header(self, pchdir):
 
         oldest = _make_pchdir_entry(pchdir, "a" * 16, ["stdafx.h"], age_seconds=7200)
         middle = _make_pchdir_entry(pchdir, "b" * 16, ["stdafx.h"], age_seconds=3600)
@@ -401,14 +397,12 @@ class TestTrimPchdir:
         assert os.path.isdir(middle)
         assert os.path.isdir(newest)
 
-    def test_per_cmd_hash_bucketing_unrelated_basenames_coexist(self, tmp_path):
+    def test_per_cmd_hash_bucketing_unrelated_basenames_coexist(self, pchdir):
         """Regression: two unrelated cmd_hash dirs that happen to
         share a header basename (e.g. ``stdafx.h`` from two different
         projects) must NOT evict each other. Each cmd_hash dir is an
         independent cache unit; the keep_count and max_age policies
         treat them globally by mtime, not bucketed by basename."""
-        pchdir = str(tmp_path / "pch")
-        os.makedirs(pchdir)
 
         # Three projects all using stdafx.h, each with its own cmd_hash
         # (different compiler/flags/realpath). Without keep_count limit,
@@ -426,11 +420,9 @@ class TestTrimPchdir:
         assert stats["dirs_removed"] == 0
         assert stats["dirs_kept"] == 3
 
-    def test_max_age_keeps_recent_dirs_beyond_keep_count(self, tmp_path):
+    def test_max_age_keeps_recent_dirs_beyond_keep_count(self, pchdir):
         """max_age extends retention beyond keep_count for dirs younger
         than the cutoff."""
-        pchdir = str(tmp_path / "pch")
-        os.makedirs(pchdir)
 
         old_outside = _make_pchdir_entry(pchdir, "a" * 16, ["x.h"], age_seconds=86400)
         recent1 = _make_pchdir_entry(pchdir, "b" * 16, ["x.h"], age_seconds=3600)
@@ -444,9 +436,7 @@ class TestTrimPchdir:
         assert os.path.isdir(recent1)
         assert os.path.isdir(recent2)
 
-    def test_dry_run_does_not_remove(self, tmp_path):
-        pchdir = str(tmp_path / "pch")
-        os.makedirs(pchdir)
+    def test_dry_run_does_not_remove(self, pchdir):
 
         old = _make_pchdir_entry(pchdir, "a" * 16, ["stdafx.h"], age_seconds=3600)
         _make_pchdir_entry(pchdir, "b" * 16, ["stdafx.h"], age_seconds=60)
@@ -462,9 +452,7 @@ class TestTrimPchdir:
         stats = trimmer.trim_pchdir(str(tmp_path / "nonexistent"))
         assert stats["total_dirs_scanned"] == 0
 
-    def test_skips_non_hash_directories(self, tmp_path):
-        pchdir = str(tmp_path / "pch")
-        os.makedirs(pchdir)
+    def test_skips_non_hash_directories(self, pchdir):
         os.makedirs(os.path.join(pchdir, "not-a-hash"))
         os.makedirs(os.path.join(pchdir, "AABBCCDDEE001122"))  # uppercase
 
@@ -473,9 +461,7 @@ class TestTrimPchdir:
 
         assert stats["total_dirs_scanned"] == 0
 
-    def test_bytes_freed_tracked(self, tmp_path):
-        pchdir = str(tmp_path / "pch")
-        os.makedirs(pchdir)
+    def test_bytes_freed_tracked(self, pchdir):
 
         _make_pchdir_entry(pchdir, "a" * 16, ["stdafx.h"], age_seconds=3600, size_per_gch=4096)
         _make_pchdir_entry(pchdir, "b" * 16, ["stdafx.h"], age_seconds=60, size_per_gch=2048)
@@ -500,17 +486,13 @@ class TestMainCLI:
         rc = main(["--dry-run", "--cas-objdir=/nonexistent/obj", "--cas-pchdir=/nonexistent/pch"])
         assert rc == 0
 
-    def test_cas_objdir_only_flag(self, tmp_path):
+    def test_cas_objdir_only_flag(self, objdir):
 
-        objdir = str(tmp_path / "obj")
-        os.makedirs(objdir)
         rc = main(["--dry-run", "--cas-objdir-only", f"--cas-objdir={objdir}"])
         assert rc == 0
 
-    def test_cas_pchdir_only_flag(self, tmp_path):
+    def test_cas_pchdir_only_flag(self, pchdir):
 
-        pchdir = str(tmp_path / "pch")
-        os.makedirs(pchdir)
         rc = main(["--dry-run", "--cas-pchdir-only", f"--cas-pchdir={pchdir}"])
         assert rc == 0
 
@@ -651,9 +633,7 @@ class TestPchPerRealpathBucketing:
             mtime = time.time() - age_seconds
             os.utime(d, (mtime, mtime))
 
-    def test_distinct_realpaths_get_independent_keep_count(self, tmp_path):
-        pchdir = str(tmp_path / "pch")
-        os.makedirs(pchdir)
+    def test_distinct_realpaths_get_independent_keep_count(self, pchdir):
 
         # Two different headers, each with two cmd_hash variants.
         a1 = _make_pchdir_entry(pchdir, "a" * 16, ["headerA.h"])
@@ -673,9 +653,7 @@ class TestPchPerRealpathBucketing:
         assert os.path.isdir(a2) and not os.path.isdir(a1)
         assert os.path.isdir(b2) and not os.path.isdir(b1)
 
-    def test_legacy_entries_without_manifest_use_global_ranking(self, tmp_path):
-        pchdir = str(tmp_path / "pch")
-        os.makedirs(pchdir)
+    def test_legacy_entries_without_manifest_use_global_ranking(self, pchdir):
         # No manifests written — legacy behavior.
         a = _make_pchdir_entry(pchdir, "1" * 16, ["x.h"], age_seconds=3600)
         b = _make_pchdir_entry(pchdir, "2" * 16, ["x.h"], age_seconds=60)
@@ -717,9 +695,7 @@ class TestTrimPcmdir:
         assert stats["total_dirs_scanned"] == 0
         assert stats["dirs_removed"] == 0
 
-    def test_keep_count_drops_oldest_in_a_legacy_bucket(self, tmp_path):
-        pcmdir = str(tmp_path / "pcm")
-        os.makedirs(pcmdir)
+    def test_keep_count_drops_oldest_in_a_legacy_bucket(self, pcmdir):
         a = _make_pcmdir_entry(pcmdir, "a" * 16, ["math.pcm"], age_seconds=3600)
         b = _make_pcmdir_entry(pcmdir, "b" * 16, ["math.pcm"], age_seconds=60)
         # No manifests -> __legacy__ bucket -> global keep_count=1.
@@ -727,9 +703,7 @@ class TestTrimPcmdir:
         trimmer.trim_pcmdir(pcmdir)
         assert os.path.isdir(b) and not os.path.isdir(a)
 
-    def test_max_age_keeps_recent_even_beyond_keep_count(self, tmp_path):
-        pcmdir = str(tmp_path / "pcm")
-        os.makedirs(pcmdir)
+    def test_max_age_keeps_recent_even_beyond_keep_count(self, pcmdir):
         # Three entries: keep_count=1 would normally drop two; max_age
         # rescues the recent ones.
         old = _make_pcmdir_entry(pcmdir, "a" * 16, ["math.pcm"], age_seconds=86400 * 30)
@@ -739,9 +713,7 @@ class TestTrimPcmdir:
         trimmer.trim_pcmdir(pcmdir)
         assert os.path.isdir(new) and os.path.isdir(mid) and not os.path.isdir(old)
 
-    def test_dry_run_removes_nothing(self, tmp_path):
-        pcmdir = str(tmp_path / "pcm")
-        os.makedirs(pcmdir)
+    def test_dry_run_removes_nothing(self, pcmdir):
         a = _make_pcmdir_entry(pcmdir, "a" * 16, ["math.pcm"], age_seconds=3600)
         b = _make_pcmdir_entry(pcmdir, "b" * 16, ["math.pcm"], age_seconds=60)
         trimmer = CacheTrimmer(_make_args(dry_run=True, keep_count=1))
@@ -771,9 +743,7 @@ class TestPcmPerBucketKeyBucketing:
             mtime = time.time() - age_seconds
             os.utime(d, (mtime, mtime))
 
-    def test_distinct_buckets_get_independent_keep_count(self, tmp_path):
-        pcmdir = str(tmp_path / "pcm")
-        os.makedirs(pcmdir)
+    def test_distinct_buckets_get_independent_keep_count(self, pcmdir):
         # Two named modules, each with two cmd_hash variants.
         a1 = _make_pcmdir_entry(pcmdir, "a" * 16, ["math.pcm"])
         a2 = _make_pcmdir_entry(pcmdir, "b" * 16, ["math.pcm"])
@@ -791,11 +761,9 @@ class TestPcmPerBucketKeyBucketing:
         assert os.path.isdir(a2) and not os.path.isdir(a1)
         assert os.path.isdir(b2) and not os.path.isdir(b1)
 
-    def test_header_unit_token_is_a_valid_bucket_key(self, tmp_path):
+    def test_header_unit_token_is_a_valid_bucket_key(self, pcmdir):
         """Header units bucket by token (`<vector>`, `"foo.h"`) so the
         same header in different variants/projects shares a bucket."""
-        pcmdir = str(tmp_path / "pcm")
-        os.makedirs(pcmdir)
         a1 = _make_pcmdir_entry(pcmdir, "1" * 16, ["vector.pcm"])
         a2 = _make_pcmdir_entry(pcmdir, "2" * 16, ["vector.pcm"])
         b1 = _make_pcmdir_entry(pcmdir, "3" * 16, ["cstdio.pcm"])
@@ -959,13 +927,11 @@ class TestPchTransitiveStaleness:
 
 
 class TestNoncurrentKeptAccounting:
-    def test_keep_count_zero_with_safety_floor(self, tmp_path):
+    def test_keep_count_zero_with_safety_floor(self, objdir):
         """When keep_count=0 AND no current entry exists, the
         safety pop bumps a candidate up to to_keep BEFORE the
         noncurrent_kept calculation runs. Verify the count stays
         accurate (one survivor reported, one removed)."""
-        objdir = str(tmp_path / "obj")
-        os.makedirs(objdir)
 
         _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=7200)
         _touch_obj(objdir, "foo", "222222222222", "11223344556677", "0011223344556677", age_seconds=60)
@@ -977,12 +943,10 @@ class TestNoncurrentKeptAccounting:
         assert stats["removed"] == 1
         assert stats["current_kept"] == 0
 
-    def test_keep_count_zero_safety_with_max_age_keeps_recent(self, tmp_path):
+    def test_keep_count_zero_safety_with_max_age_keeps_recent(self, objdir):
         """keep_count=0 + safety + max_age. The safety-popped file
         must be counted in noncurrent_kept. A second file inside max_age
         should also be kept and counted."""
-        objdir = str(tmp_path / "obj")
-        os.makedirs(objdir)
 
         # Three non-current files; only the oldest is beyond max_age=1d
         _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=172800)
@@ -997,11 +961,9 @@ class TestNoncurrentKeptAccounting:
         assert stats["noncurrent_kept"] == 2, f"expected 2 kept (safety + max_age); got {stats['noncurrent_kept']}"
         assert stats["removed"] == 1
 
-    def test_keep_count_zero_single_noncurrent_file(self, tmp_path):
+    def test_keep_count_zero_single_noncurrent_file(self, objdir):
         """Edge: single file, keep_count=0, no current → safety
         keeps the lone file. noncurrent_kept must be 1, removed 0."""
-        objdir = str(tmp_path / "obj")
-        os.makedirs(objdir)
 
         _touch_obj(objdir, "foo", "111111111111", "11223344556677", "0011223344556677", age_seconds=3600)
 
