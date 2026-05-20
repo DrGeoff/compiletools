@@ -98,6 +98,17 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         )
         compiletools.headerdeps.add_arguments(cap)
 
+    @staticmethod
+    def _parse_args(argv):
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
+        compiletools.headerdeps.add_arguments(cap)
+        compiletools.apptools.add_common_arguments(cap)
+        return compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+
     @uth.requires_functional_compiler
     def test_direct_and_cpp_generate_same_results(self):
         filenames = [
@@ -380,17 +391,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         ]
 
         for cppflags, expected_includes in test_cases:
-            cap = configargparse.ArgumentParser(
-                conflict_handler="resolve",
-                args_for_setting_config_path=["-c", "--config"],
-                ignore_unknown_config_file_keys=True,
-            )
-            compiletools.headerdeps.add_arguments(cap)
-            compiletools.apptools.add_common_arguments(cap)
-
-            argv = [f"--CPPFLAGS={cppflags}", "-q"]
-            args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
-
+            args = self._parse_args([f"--CPPFLAGS={cppflags}", "-q"])
             deps = compiletools.headerdeps.DirectHeaderDeps(args, context=BuildContext())
             assert deps.includes == expected_includes, (
                 f"CPPFLAGS: {cppflags}, Expected: {expected_includes}, Got: {deps.includes}"
@@ -409,17 +410,8 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         # This is the critical test case that exposes the bug
         expected_includes = ["/path with spaces/include"]
 
-        cap = configargparse.ArgumentParser(
-            conflict_handler="resolve",
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-        compiletools.headerdeps.add_arguments(cap)
-        compiletools.apptools.add_common_arguments(cap)
-
         # Bypass command line parsing issues by setting CPPFLAGS directly
-        argv = ["-q"]
-        args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+        args = self._parse_args(["-q"])
 
         # Set the CPPFLAGS with properly quoted string directly
         args.CPPFLAGS = '-I "/path with spaces/include"'
@@ -446,17 +438,7 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
         ]
 
         for cppflags in test_cases:
-            cap = configargparse.ArgumentParser(
-                conflict_handler="resolve",
-                args_for_setting_config_path=["-c", "--config"],
-                ignore_unknown_config_file_keys=True,
-            )
-            compiletools.headerdeps.add_arguments(cap)
-            compiletools.apptools.add_common_arguments(cap)
-
-            argv = [f"--CPPFLAGS={cppflags}", "-q"]
-            args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
-
+            args = self._parse_args([f"--CPPFLAGS={cppflags}", "-q"])
             # This should not raise an exception - the isystem parsing should work
             compiletools.headerdeps.DirectHeaderDeps(args, context=BuildContext())
 
@@ -515,6 +497,12 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
             args.verbose = verbose
         return args
 
+    def _make_base(self, cppflags="", verbose=0):
+        return compiletools.headerdeps.HeaderDepsBase(
+            self._make_args(cppflags=cppflags, verbose=verbose),
+            context=BuildContext(),
+        )
+
     def test_clear_caches(self):
         """Test clear_caches resets both caches on BuildContext."""
         ctx = BuildContext()
@@ -537,8 +525,7 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
 
     def test_base_process_impl_raises(self):
         """Test HeaderDepsBase._process_impl raises NotImplementedError."""
-        args = self._make_args()
-        base = compiletools.headerdeps.HeaderDepsBase(args, context=BuildContext())
+        base = self._make_base()
         try:
             base._process_impl("somepath", frozenset())
             assert False, "Should have raised NotImplementedError"
@@ -547,59 +534,51 @@ class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
 
     def test_extract_isystem_empty(self):
         """Test _extract_isystem_paths_from_flags with empty input."""
-        args = self._make_args()
-        base = compiletools.headerdeps.HeaderDepsBase(args, context=BuildContext())
+        base = self._make_base()
         assert base._extract_isystem_paths_from_flags("") == []
         assert base._extract_isystem_paths_from_flags(None) == []
 
     def test_extract_isystem_shlex_fallback(self):
         """Test _extract_isystem_paths_from_flags falls back on shlex ValueError."""
-        args = self._make_args()
-        base = compiletools.headerdeps.HeaderDepsBase(args, context=BuildContext())
+        base = self._make_base()
         # Unclosed quote causes shlex ValueError
         result = base._extract_isystem_paths_from_flags("-isystem /usr/include 'unclosed")
         assert "/usr/include" in result
 
     def test_extract_isystem_dangling(self):
         """Test -isystem at end of string with no following path."""
-        args = self._make_args()
-        base = compiletools.headerdeps.HeaderDepsBase(args, context=BuildContext())
+        base = self._make_base()
         result = base._extract_isystem_paths_from_flags("-isystem")
         assert result == []
 
     def test_extract_isystem_joined_format(self):
         """Test -isystem/path format (joined without space)."""
-        args = self._make_args()
-        base = compiletools.headerdeps.HeaderDepsBase(args, context=BuildContext())
+        base = self._make_base()
         result = base._extract_isystem_paths_from_flags("-isystem/usr/local/include")
         assert result == ["/usr/local/include"]
 
     def test_extract_include_empty(self):
         """Test _extract_include_paths_from_flags with empty input."""
-        args = self._make_args()
-        base = compiletools.headerdeps.HeaderDepsBase(args, context=BuildContext())
+        base = self._make_base()
         assert base._extract_include_paths_from_flags("") == []
         assert base._extract_include_paths_from_flags(None) == []
 
     def test_extract_include_list_input(self):
         """Test _extract_include_paths_from_flags with list input."""
-        args = self._make_args()
-        base = compiletools.headerdeps.HeaderDepsBase(args, context=BuildContext())
+        base = self._make_base()
         result = base._extract_include_paths_from_flags(["-I", "/usr/include", "-Ilocal"])
         assert "/usr/include" in result
         assert "local" in result
 
     def test_extract_include_shlex_fallback(self):
         """Test _extract_include_paths_from_flags falls back on shlex ValueError."""
-        args = self._make_args()
-        base = compiletools.headerdeps.HeaderDepsBase(args, context=BuildContext())
+        base = self._make_base()
         result = base._extract_include_paths_from_flags("-I /usr/include 'unclosed")
         assert "/usr/include" in result
 
     def test_extract_include_dangling_I(self):
         """Test -I at end of string with no following path."""
-        args = self._make_args()
-        base = compiletools.headerdeps.HeaderDepsBase(args, context=BuildContext())
+        base = self._make_base()
         result = base._extract_include_paths_from_flags("-I")
         assert result == []
 

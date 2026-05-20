@@ -8,6 +8,15 @@ from compiletools.build_context import BuildContext
 from compiletools.file_analyzer import FileAnalysisResult, FileAnalyzer, read_file_mmap, read_file_traditional
 
 
+def _parse_directive(directive_type, line, *continuation_lines):
+    import stringzilla as sz
+
+    from compiletools.file_analyzer import parse_directive_struct
+
+    lines = [sz.Str(line), *[sz.Str(continuation) for continuation in continuation_lines]]
+    return parse_directive_struct(directive_type, 0, 0, lines)
+
+
 class TestFileAnalysisResult:
     """Test FileAnalysisResult dataclass."""
 
@@ -55,39 +64,28 @@ class TestReadFunctions:
         self.test_files[filename] = f.name
         return f.name
 
-    def test_read_file_mmap(self):
-        """Test memory-mapped file reading."""
-        content = "Hello\nWorld\nTest"
-        filepath = self.create_test_file("mmap_test.c", content)
+    def assert_reader_handles_full_and_limited_read(self, reader, filename, content, limit):
+        filepath = self.create_test_file(filename, content)
 
-        # Test full file read
-        text, bytes_analyzed, was_truncated = read_file_mmap(filepath, 0)
+        text, bytes_analyzed, was_truncated = reader(filepath, 0)
         assert text == content
         assert bytes_analyzed == len(content.encode("utf-8"))
         assert was_truncated is False
 
-        # Test limited read
-        text_limited, bytes_limited, was_truncated_limited = read_file_mmap(filepath, 5)
-        assert len(text_limited.encode("utf-8")) <= 5
-        assert bytes_limited <= 5
+        text_limited, bytes_limited, was_truncated_limited = reader(filepath, limit)
+        assert len(text_limited.encode("utf-8")) <= limit
+        assert bytes_limited <= limit
         assert was_truncated_limited is True
+
+    def test_read_file_mmap(self):
+        """Test memory-mapped file reading."""
+        self.assert_reader_handles_full_and_limited_read(read_file_mmap, "mmap_test.c", "Hello\nWorld\nTest", 5)
 
     def test_read_file_traditional(self):
         """Test traditional file reading."""
-        content = "Traditional\nFile\nReading"
-        filepath = self.create_test_file("traditional_test.c", content)
-
-        # Test full file read
-        text, bytes_analyzed, was_truncated = read_file_traditional(filepath, 0)
-        assert text == content
-        assert bytes_analyzed == len(content.encode("utf-8"))
-        assert was_truncated is False
-
-        # Test limited read
-        text_limited, bytes_limited, was_truncated_limited = read_file_traditional(filepath, 8)
-        assert len(text_limited.encode("utf-8")) <= 8
-        assert bytes_limited <= 8
-        assert was_truncated_limited is True
+        self.assert_reader_handles_full_and_limited_read(
+            read_file_traditional, "traditional_test.c", "Traditional\nFile\nReading", 8
+        )
 
     def test_read_functions_consistency(self):
         """Test that mmap and traditional reading produce identical results."""
@@ -179,47 +177,27 @@ class TestParseDirectiveStruct:
     """Test parse_directive_struct()."""
 
     def test_parse_define_no_value(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import parse_directive_struct
-
-        result = parse_directive_struct("define", 0, 0, [sz.Str("#define FOO")])
+        result = _parse_directive("define", "#define FOO")
         assert result.directive_type == "define"
         assert str(result.macro_name) == "FOO"
         assert result.macro_value is None
 
     def test_parse_define_with_value(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import parse_directive_struct
-
-        result = parse_directive_struct("define", 0, 0, [sz.Str("#define FOO 42")])
+        result = _parse_directive("define", "#define FOO 42")
         assert str(result.macro_name) == "FOO"
         assert str(result.macro_value) == "42"
 
     def test_parse_ifdef(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import parse_directive_struct
-
-        result = parse_directive_struct("ifdef", 0, 0, [sz.Str("#ifdef MY_MACRO")])
+        result = _parse_directive("ifdef", "#ifdef MY_MACRO")
         assert result.directive_type == "ifdef"
         assert str(result.macro_name) == "MY_MACRO"
 
     def test_parse_directive_empty_content(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import parse_directive_struct
-
-        result = parse_directive_struct("endif", 0, 0, [sz.Str("#endif")])
+        result = _parse_directive("endif", "#endif")
         assert result.directive_type == "endif"
 
     def test_parse_include_directive(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import parse_directive_struct
-
-        result = parse_directive_struct("include", 0, 0, [sz.Str('#include "foo.h"')])
+        result = _parse_directive("include", '#include "foo.h"')
         assert result.directive_type == "include"
         assert '"foo.h"' in str(result.condition)
 
@@ -497,64 +475,36 @@ class TestParseDirectiveStructExtended:
     """Additional tests for parse_directive_struct edge cases."""
 
     def test_parse_ifndef(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import parse_directive_struct
-
-        result = parse_directive_struct("ifndef", 0, 0, [sz.Str("#ifndef GUARD_H")])
+        result = _parse_directive("ifndef", "#ifndef GUARD_H")
         assert result.directive_type == "ifndef"
         assert str(result.macro_name) == "GUARD_H"
 
     def test_parse_undef(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import parse_directive_struct
-
-        result = parse_directive_struct("undef", 0, 0, [sz.Str("#undef OLD_MACRO")])
+        result = _parse_directive("undef", "#undef OLD_MACRO")
         assert result.directive_type == "undef"
         assert str(result.macro_name) == "OLD_MACRO"
 
     def test_parse_if_condition(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import parse_directive_struct
-
-        result = parse_directive_struct("if", 0, 0, [sz.Str("#if defined(X) && Y > 1")])
+        result = _parse_directive("if", "#if defined(X) && Y > 1")
         assert result.directive_type == "if"
         assert "defined(X)" in str(result.condition)
 
     def test_parse_elif_condition(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import parse_directive_struct
-
-        result = parse_directive_struct("elif", 0, 0, [sz.Str("#elif Z == 0")])
+        result = _parse_directive("elif", "#elif Z == 0")
         assert result.directive_type == "elif"
         assert "Z == 0" in str(result.condition)
 
     def test_parse_pragma(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import parse_directive_struct
-
-        result = parse_directive_struct("pragma", 0, 0, [sz.Str("#pragma once")])
+        result = _parse_directive("pragma", "#pragma once")
         assert result.directive_type == "pragma"
         assert str(result.macro_name) == "once"
 
     def test_parse_define_function_like(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import parse_directive_struct
-
-        result = parse_directive_struct("define", 0, 0, [sz.Str("#define MAX(a,b) ((a)>(b)?(a):(b))")])
+        result = _parse_directive("define", "#define MAX(a,b) ((a)>(b)?(a):(b))")
         assert result.directive_type == "define"
         assert str(result.macro_name) == "MAX"
 
     def test_parse_multiline_directive(self):
-        import stringzilla as sz
-
-        from compiletools.file_analyzer import parse_directive_struct
-
-        result = parse_directive_struct("define", 0, 0, [sz.Str("#define LONG \\"), sz.Str("  value")])
+        result = _parse_directive("define", "#define LONG \\", "  value")
         assert result.directive_type == "define"
         assert str(result.macro_name) == "LONG"
