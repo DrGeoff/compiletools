@@ -8,6 +8,7 @@ import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 import stringzilla as sz
 
 import compiletools.apptools
@@ -21,10 +22,14 @@ import compiletools.wrappedos
 from compiletools.build_context import BuildContext
 
 
-class TestCompilationDatabase:
-    def setup_method(self):
-        uth.reset()
+@pytest.fixture(autouse=True)
+def _reset_parser_state():
+    """Wipe global configargparse parser cache before every test."""
+    uth.reset()
+    yield
 
+
+class TestCompilationDatabase:
     @uth.requires_functional_compiler
     def test_basic_compilation_database_creation(self):
         """Test basic compilation database creation with simple C++ files"""
@@ -1161,9 +1166,6 @@ def _concurrent_write_worker(work_queue, result_queue, source_file, output_file)
 class TestConcurrentCompilationDatabase:
     """Tests for concurrent compilation database writes."""
 
-    def setup_method(self):
-        uth.reset()
-
     @uth.requires_functional_compiler
     def test_concurrent_compilation_database_writes(self):
         """Test that concurrent writes don't corrupt compile_commands.json.
@@ -1503,9 +1505,6 @@ class TestCompilationDatabaseModuleFlags:
     so clangd / clang-tidy can resolve `import M;` / `import <h>;` lookups.
     Without them, IDEs report module imports as undefined."""
 
-    def setup_method(self):
-        uth.reset()
-
     def test_gcc_module_importer_gets_fmodules_ts(self):
         """A TU with `import math;` compiled under gcc must carry -fmodules-ts
         in its compile_commands.json entry; without it clangd / clang-tidy
@@ -1680,9 +1679,6 @@ class TestCompilationDatabaseModuleFlags:
 class TestCompilationDatabaseDefensivePaths:
     """Unit-level coverage of defensive / error-recovery paths in
     CompilationDatabaseCreator that are awkward to exercise end-to-end."""
-
-    def setup_method(self):
-        uth.reset()
 
     def test_add_arguments_is_idempotent(self):
         """add_arguments must be safe to call repeatedly on the same parser.
