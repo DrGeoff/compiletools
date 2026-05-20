@@ -1,27 +1,44 @@
+import io
 import json
 import os
 import shutil
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import stringzilla as sz
 
 import compiletools.apptools
+import compiletools.build_backend as bb
 import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
 import compiletools.testhelper as uth
+from compiletools.bazel_backend import BazelBackend
 from compiletools.build_backend import (
+    _PCHDIR_WARNED,
+    _REGISTRY,
     BuildBackend,
     _gch_path,
     _pch_command_hash,
+    _toposort_rules,
+    _warn_if_pchdir_not_cross_user_safe,
+    _write_pch_manifest,
     available_backends,
+    backend_tool_command,
     compute_link_signature,
+    detect_available_backends,
+    extract_linkopts,
     get_backend_class,
+    is_backend_available,
     register_backend,
 )
 from compiletools.build_context import BuildContext
-from compiletools.build_graph import BuildGraph, BuildRule
+from compiletools.build_graph import BuildGraph, BuildRule, RuleType, render_shell_recipe
+from compiletools.cmake_backend import CMakeBackend
+from compiletools.magicflags import _HARD_ORDERINGS_KEY
 from compiletools.makefile_backend import MakefileBackend
+from compiletools.ninja_backend import NinjaBackend
 from compiletools.testhelper import (
     BackendTestContext,
     make_backend_args,
@@ -29,6 +46,7 @@ from compiletools.testhelper import (
     make_mock_namer,
     make_stub_backend_class,
 )
+from compiletools.trace_backend import ShakeBackend, SlurmBackend
 
 
 def _cmd(rule: BuildRule) -> list[str]:
@@ -110,7 +128,6 @@ class TestBuildBackendContract:
     def test_explicit_context_without_hunter_works(self):
         """A caller may legitimately pass a context with no hunter
         (e.g. compilation_database stand-alone uses)."""
-        from compiletools.build_context import BuildContext
 
         class Minimal(BuildBackend):
             def generate(self, graph, output=None):
@@ -163,7 +180,6 @@ class TestBuildBackendContract:
 
     def test_generate_accepts_output_filelike(self):
         """ABC generate() must accept a file-like output argument."""
-        import io
 
         class WithOutput(BuildBackend):
             def generate(self, graph, output=None):
@@ -215,7 +231,6 @@ class TestPrebuildAuxArtefacts:
 
     @staticmethod
     def _pch_rule(gch, bucket):
-        from compiletools.build_graph import BuildRule, RuleType
 
         return BuildRule(
             output=str(gch),
@@ -227,7 +242,6 @@ class TestPrebuildAuxArtefacts:
 
     @staticmethod
     def _header_unit_rule(pcm, bucket):
-        from compiletools.build_graph import BuildRule, RuleType
 
         return BuildRule(
             output=str(pcm),
@@ -286,7 +300,6 @@ class TestPrebuildAuxArtefacts:
         bogus_file_dep = bucket / "leaked.pcm"
         bogus_file_dep.write_bytes(b"i am a file, not a directory")
         pcm = bucket / "vector.pcm"
-        from compiletools.build_graph import BuildRule, RuleType
 
         rule = BuildRule(
             output=str(pcm),
@@ -302,7 +315,6 @@ class TestPrebuildAuxArtefacts:
 
     def test_no_op_when_graph_has_no_aux_rules(self, tmp_path):
         backend = self._make_backend(tmp_path)
-        from compiletools.build_graph import BuildRule, RuleType
 
         self._attach_rule(
             backend,
@@ -368,14 +380,12 @@ class TestUseMtimeFlagPlumbing:
     """
 
     def _make_make_backend(self, tmp_path, **overrides):
-        from compiletools.makefile_backend import MakefileBackend
 
         args = make_backend_args(tmp_path, **overrides)
         hunter = make_mock_hunter()
         return MakefileBackend(args=args, hunter=hunter)
 
     def _make_ninja_backend(self, tmp_path, **overrides):
-        from compiletools.ninja_backend import NinjaBackend
 
         args = make_backend_args(tmp_path, **overrides)
         hunter = make_mock_hunter()
@@ -396,28 +406,24 @@ class TestUseMtimeFlagPlumbing:
         assert backend._honors_use_mtime() is True
 
     def test_cmake_backend_does_not_honor_use_mtime(self, tmp_path):
-        from compiletools.cmake_backend import CMakeBackend
 
         args = make_backend_args(tmp_path)
         backend = CMakeBackend(args=args, hunter=make_mock_hunter())
         assert backend._honors_use_mtime() is False
 
     def test_bazel_backend_does_not_honor_use_mtime(self, tmp_path):
-        from compiletools.bazel_backend import BazelBackend
 
         args = make_backend_args(tmp_path)
         backend = BazelBackend(args=args, hunter=make_mock_hunter())
         assert backend._honors_use_mtime() is False
 
     def test_shake_backend_does_not_honor_use_mtime(self, tmp_path):
-        from compiletools.trace_backend import ShakeBackend
 
         args = make_backend_args(tmp_path)
         backend = ShakeBackend(args=args, hunter=make_mock_hunter())
         assert backend._honors_use_mtime() is False
 
     def test_slurm_backend_does_not_honor_use_mtime(self, tmp_path):
-        from compiletools.trace_backend import SlurmBackend
 
         args = make_backend_args(tmp_path)
         backend = SlurmBackend(args=args, hunter=make_mock_hunter())
@@ -912,7 +918,6 @@ class TestBuildGraphPopulation:
 
     def test_pch_header_creates_gch_compile_rule(self, tmp_path):
         """PCH magic flag creates a compile rule for the .gch file."""
-        import stringzilla as sz
 
         pch_flags = {
             "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
@@ -948,7 +953,6 @@ class TestBuildGraphPopulation:
 
     def test_pch_with_pchdir_creates_content_addressable_gch(self, tmp_path):
         """When pchdir is set, .gch files are placed under <pchdir>/<hash>/."""
-        import stringzilla as sz
 
         pchdir = str(tmp_path / "pch")
         pch_flags = {
@@ -977,7 +981,6 @@ class TestBuildGraphPopulation:
 
     def test_pch_without_pchdir_uses_legacy_path(self, tmp_path):
         """When pchdir is None, .gch files are placed next to the header."""
-        import stringzilla as sz
 
         pch_flags = {
             "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
@@ -1007,7 +1010,6 @@ class TestBuildGraphPopulation:
         source. The absolute `-include` form opens the cached `.gch`
         unconditionally. Regression guard for the bug demonstrated in
         examples-features/pch_bypass_bug/."""
-        import stringzilla as sz
 
         pchdir = str(tmp_path / "pch")
         pch_flags = {
@@ -1044,7 +1046,6 @@ class TestBuildGraphPopulation:
 
     def test_pchdir_mkdir_rule_created(self, tmp_path):
         """A mkdir rule is created for each PCH hash subdirectory."""
-        import stringzilla as sz
 
         pchdir = str(tmp_path / "pch")
         pch_flags = {
@@ -1067,7 +1068,6 @@ class TestBuildGraphPopulation:
 
     def test_multiple_pch_headers_different_hashes(self, tmp_path):
         """Two PCH headers with different magic flags get distinct hash dirs."""
-        import stringzilla as sz
 
         pchdir = str(tmp_path / "pch")
         pch_flags = {
@@ -1095,7 +1095,6 @@ class TestBuildGraphPopulation:
     def test_multiple_pch_headers_source_gets_multiple_include_flags(self, tmp_path):
         """Source using multiple PCH headers gets one ``-include`` per
         header, each pointing under ``<pchdir>/<hash>/<basename>``."""
-        import stringzilla as sz
 
         pchdir = str(tmp_path / "pch")
         pch_flags = {
@@ -1125,7 +1124,6 @@ class TestBuildGraphPopulation:
 
     def test_no_pch_include_flag_when_pchdir_unset(self, tmp_path):
         """When pchdir is None, no PCH-specific ``-include`` is injected."""
-        import stringzilla as sz
 
         pch_flags = {
             "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
@@ -1212,7 +1210,6 @@ class TestCompilerWrapperSplit:
         assert cmd[1] == "gcc", f"argv[1] should be 'gcc', got {cmd[1]!r}"
 
     def test_pch_compile_command_splits_wrapper(self, tmp_path):
-        import stringzilla as sz
 
         pch_flags = {
             "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
@@ -1283,7 +1280,6 @@ class TestGccCppmExtensionRecognition:
         interface unit. The hunter is mocked to declare that the file
         ``export module``s a name, which is what triggers the modules
         flags via ``_compiler_module_flags_for``."""
-        from types import SimpleNamespace
 
         args = make_backend_args(tmp_path, CXX="g++")
         hunter = make_mock_hunter(sources=[source])
@@ -1342,7 +1338,6 @@ class TestModuleFlagsAreShellNaive:
 
         # Stand in for the FileAnalyzer result. Only the module_* fields
         # are read by _compiler_module_flags_for.
-        from types import SimpleNamespace
 
         result = SimpleNamespace(
             module_exports=(),
@@ -1420,7 +1415,6 @@ class TestGccHeaderUnitProducerSideRename:
         return backend
 
     def test_gcc_cache_mode_header_unit_recipe_has_temp_then_rename(self, tmp_path):
-        from compiletools.build_graph import render_shell_recipe
 
         backend = self._make_gcc_cache_backend(tmp_path)
         backend._gcc_header_unit_resolved = {"<vector>": ["/usr/include/vector"]}
@@ -1587,8 +1581,6 @@ class TestClangHeaderUnitStdlibSymmetry:
 
 class TestPchManifest:
     def test_manifest_records_header_realpath_and_compiler_identity(self, tmp_path, monkeypatch):
-        from compiletools.build_backend import _write_pch_manifest
-        from compiletools.build_context import BuildContext
 
         pchdir = tmp_path / "pch"
         cmd_hash = "a" * 16
@@ -1614,8 +1606,6 @@ class TestPchManifest:
         assert manifest["transitive_hashes"] == {}
 
     def test_manifest_write_is_atomic(self, tmp_path):
-        from compiletools.build_backend import _write_pch_manifest
-        from compiletools.build_context import BuildContext
 
         pchdir = tmp_path / "pch"
         cmd_hash = "b" * 16
@@ -1693,12 +1683,10 @@ class TestWarnIfPchdirNotCrossUserSafe:
     (cwd-relative or under the build's bin tree)."""
 
     def setup_method(self):
-        from compiletools.build_backend import _PCHDIR_WARNED
 
         _PCHDIR_WARNED.clear()
 
     def test_warns_for_shared_path(self, tmp_path, capsys):
-        from compiletools.build_backend import _warn_if_pchdir_not_cross_user_safe
 
         shared = tmp_path / "cas_pchdir"
         shared.mkdir(mode=0o755)  # not group-writable, no SGID
@@ -1707,7 +1695,6 @@ class TestWarnIfPchdirNotCrossUserSafe:
         assert "WARNING" in captured.err
 
     def test_skips_warning_for_cwd_relative_path(self, tmp_path, capsys, monkeypatch):
-        from compiletools.build_backend import _warn_if_pchdir_not_cross_user_safe
 
         monkeypatch.chdir(tmp_path)
         cwd_pch = tmp_path / "bin" / "gcc.debug" / "pch"
@@ -1717,7 +1704,6 @@ class TestWarnIfPchdirNotCrossUserSafe:
         assert "WARNING" not in captured.err
 
     def test_skips_warning_for_relative_path(self, tmp_path, capsys, monkeypatch):
-        from compiletools.build_backend import _warn_if_pchdir_not_cross_user_safe
 
         monkeypatch.chdir(tmp_path)
         (tmp_path / "bin" / "gcc.debug" / "pch").mkdir(parents=True, mode=0o755)
@@ -1739,7 +1725,6 @@ class TestPchCommandHash:
     _SCOPE_ZERO = "0" * 16
 
     def test_deterministic(self):
-        from types import SimpleNamespace
 
         args = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
         h1 = _pch_command_hash(
@@ -1751,7 +1736,6 @@ class TestPchCommandHash:
         assert h1 == h2
 
     def test_differs_for_different_flags(self):
-        from types import SimpleNamespace
 
         args1 = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
         args2 = SimpleNamespace(CXX="g++", CXXFLAGS="-O3")
@@ -1764,7 +1748,6 @@ class TestPchCommandHash:
         assert h1 != h2
 
     def test_differs_for_different_compiler(self):
-        from types import SimpleNamespace
 
         args1 = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
         args2 = SimpleNamespace(CXX="clang++", CXXFLAGS="-O2")
@@ -1777,9 +1760,7 @@ class TestPchCommandHash:
         assert h1 != h2
 
     def test_includes_magic_flags(self):
-        from types import SimpleNamespace
 
-        import stringzilla as sz
 
         args = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
         h1 = _pch_command_hash(
@@ -1815,7 +1796,6 @@ class TestPchFileLocking:
     """Test that PCH compile rules are wrapped with file-locking like other compiles."""
 
     def _make_backend_with_locking(self, tmp_path, cas_pchdir=None):
-        import stringzilla as sz
 
         StubClass = make_stub_backend_class()
         pch_flags = {
@@ -1869,7 +1849,6 @@ class TestPchIncrementalHash:
     """Test that hash changes correctly track flag/compiler changes."""
 
     def _build_graph_with_flags(self, tmp_path, cxxflags, pchdir):
-        import stringzilla as sz
 
         pch_flags = {
             "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
@@ -1913,7 +1892,6 @@ class TestPchIncrementalHash:
 
     def test_different_compiler_produces_different_gch_path(self, tmp_path):
         """Different compiler produces different .gch paths."""
-        import stringzilla as sz
 
         pchdir = str(tmp_path / "pch")
         pch_flags = {
@@ -1961,7 +1939,6 @@ class TestPchIncrementalHash:
         id_b = _compiler_identity(str(cxx_b))
         assert id_a != id_b
 
-        from types import SimpleNamespace
 
         args_a = SimpleNamespace(CXX=str(cxx_a), CXXFLAGS="-O2")
         args_b = SimpleNamespace(CXX=str(cxx_b), CXXFLAGS="-O2")
@@ -2012,11 +1989,8 @@ class TestPchIncrementalHash:
         """Cache key must distinguish ``-DFOO="a b"`` (one flag with embedded
         space) from ``-DFOO=a -Db`` (two flags). The pre-fix space-join
         collided these."""
-        from types import SimpleNamespace
 
-        import stringzilla as sz
 
-        from compiletools.build_backend import _pch_command_hash
 
         args = SimpleNamespace(CXX="cc", CXXFLAGS="-O2")
         flags_one = [sz.Str('-DFOO="a b"')]
@@ -2033,9 +2007,7 @@ class TestPchIncrementalHash:
         """Regression: a one-time stderr warning is emitted when
         the pchdir parent is not group-writable + SGID, so cross-user
         cache misses don't surprise operators."""
-        import stringzilla as sz
 
-        from compiletools.build_backend import _PCHDIR_WARNED
 
         pchdir = tmp_path / "pch"
         pchdir.mkdir(mode=0o700)  # missing group-write AND SGID
@@ -2069,7 +2041,6 @@ class TestExtractLinkopts:
     """extract_linkopts must normalise paths before stripping object files."""
 
     def test_normalises_dot_slash_prefix(self):
-        from compiletools.build_backend import extract_linkopts
 
         cmd = ["g++", "-o", "bin/foo", "./obj/foo.o", "obj/bar.o", "-lm"]
         # Object set uses bare form; cmd uses ./obj/foo.o
@@ -2080,7 +2051,6 @@ class TestExtractLinkopts:
         )
 
     def test_normalises_with_redundant_slashes(self):
-        from compiletools.build_backend import extract_linkopts
 
         cmd = ["g++", "-o", "bin/foo", "obj//foo.o", "-lm"]
         objs = {"obj/foo.o"}
@@ -2088,7 +2058,6 @@ class TestExtractLinkopts:
         assert result == ["-lm"]
 
     def test_normalises_when_object_set_uses_dot_slash(self):
-        from compiletools.build_backend import extract_linkopts
 
         cmd = ["g++", "-o", "bin/foo", "obj/foo.o", "-lm"]
         # Object set has ./ prefix
@@ -2463,7 +2432,6 @@ class TestLinkOrderCorrectness:
     def test_link_rule_respects_dependency_order(self, tmp_path):
         """When one.cpp has -llibbase and two.cpp has -llibnext -llibbase,
         the link command must have -llibnext before -llibbase."""
-        import stringzilla as sz
 
         sources = ["/src/one.cpp", "/src/two.cpp"]
         per_file = {
@@ -2490,7 +2458,6 @@ class TestLinkOrderCorrectness:
 
     def test_link_rule_deduplicates_l_flags(self, tmp_path):
         """Same -l flag from multiple files should appear only once."""
-        import stringzilla as sz
 
         sources = ["/src/one.cpp", "/src/two.cpp"]
         per_file = {
@@ -2515,7 +2482,6 @@ class TestLinkOrderCorrectness:
         beat a single-file LDFLAGS soft ordering that disagrees with it.
         End-to-end through magicflags -> _merge_ldflags_for_sources ->
         final link line."""
-        import stringzilla as sz
 
         sources = ["/src/one.cpp", "/src/two.cpp"]
         # one.cpp has a single-package PKG-CONFIG worth of soft ordering:
@@ -2524,7 +2490,6 @@ class TestLinkOrderCorrectness:
         # libssh2 before libbase (hard edge libssh2 -> libbase). The hard
         # edge wins; the soft edge is cancelled (or overridden); final
         # link has -llibssh2 before -llibbase.
-        from compiletools.magicflags import _HARD_ORDERINGS_KEY
 
         per_file = {
             "/src/one.cpp": {
@@ -2555,9 +2520,7 @@ class TestLinkOrderCorrectness:
         """Two hard orderings in opposite directions form a genuine cycle —
         end-to-end this must raise (cycle-error formatter is invoked
         elsewhere)."""
-        import stringzilla as sz
 
-        from compiletools.magicflags import _HARD_ORDERINGS_KEY
 
         sources = ["/src/a.cpp", "/src/b.cpp"]
         per_file = {
@@ -2587,7 +2550,6 @@ class TestToposortRules:
     a direct unit test."""
 
     def test_orders_dependents_after_their_inputs(self):
-        from compiletools.build_backend import _toposort_rules
 
         rule_a = BuildRule(output="a.pcm", inputs=[], command=["c"], rule_type="compile")
         rule_b = BuildRule(output="b.pcm", inputs=["a.pcm"], command=["c"], rule_type="compile")
@@ -2599,14 +2561,12 @@ class TestToposortRules:
         """Edges to external artefacts (source files) must not be treated
         as ordering constraints, otherwise the only-modules subset would
         block on prerequisites that aren't part of the toposort scope."""
-        from compiletools.build_backend import _toposort_rules
 
         rule = BuildRule(output="m.pcm", inputs=["/external/src.cpp"], command=["c"], rule_type="compile")
         ordered = _toposort_rules({"m.pcm": rule})
         assert [r.output for r in ordered] == ["m.pcm"]
 
     def test_raises_on_cycle(self):
-        from compiletools.build_backend import _toposort_rules
 
         rule_a = BuildRule(output="a.pcm", inputs=["b.pcm"], command=["c"], rule_type="compile")
         rule_b = BuildRule(output="b.pcm", inputs=["a.pcm"], command=["c"], rule_type="compile")
@@ -2650,7 +2610,6 @@ class TestDetectAvailableBackends:
     is unavailable."""
 
     def test_unknown_backend_reports_unavailable(self):
-        from compiletools.build_backend import backend_tool_command, is_backend_available
 
         assert is_backend_available("definitely_not_a_backend") is False
         assert backend_tool_command("definitely_not_a_backend") is None
@@ -2658,12 +2617,6 @@ class TestDetectAvailableBackends:
     def test_self_executing_backend_reports_available(self):
         """A backend whose tool_command() returns None has no external
         dependency and so always reports available."""
-        from compiletools.build_backend import (
-            _REGISTRY,
-            BuildBackend,
-            is_backend_available,
-            register_backend,
-        )
 
         class _SelfExec(BuildBackend):
             def generate(self, graph, output=None):
@@ -2693,14 +2646,6 @@ class TestDetectAvailableBackends:
         """Inject a fake backend that claims a non-existent binary so we
         exercise the print + filter path without depending on the host's
         installed tooling."""
-        from compiletools.build_backend import (
-            _REGISTRY,
-            BuildBackend,
-            backend_tool_command,
-            detect_available_backends,
-            is_backend_available,
-            register_backend,
-        )
 
         class _Fake(BuildBackend):
             def generate(self, graph, output=None):
@@ -2739,12 +2684,6 @@ class TestDetectAvailableBackends:
     def test_backend_tool_command_returns_first_of_tuple(self):
         """When tool_command() returns a tuple of alternates, the canonical
         name is the first element."""
-        from compiletools.build_backend import (
-            _REGISTRY,
-            BuildBackend,
-            backend_tool_command,
-            register_backend,
-        )
 
         class _Alts(BuildBackend):
             def generate(self, graph, output=None):
@@ -2794,7 +2733,6 @@ class TestResolveSystemHeaderAbsPath:
     def test_returns_first_path_when_probe_succeeds(self, monkeypatch):
         """Stub _resolve_system_header_abs_paths so we can exercise the
         wrapper's first-of-list selection without touching a real compiler."""
-        import compiletools.build_backend as bb
 
         monkeypatch.setattr(
             bb,
