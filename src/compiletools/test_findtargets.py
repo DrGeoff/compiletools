@@ -12,6 +12,25 @@ import compiletools.utils
 from compiletools.build_context import BuildContext
 
 
+def _make_findtargets(description, *extra_argv, exedir=None):
+    """Build a FindTargets bound to a parsed-args namespace with --shorten."""
+    exedir = exedir or uth.cakedir()
+    config_files = compiletools.configutils.config_files_from_variant(exedir=exedir, argv=[])
+    cap = configargparse.ArgumentParser(
+        conflict_handler="resolve",
+        description=description,
+        formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+        default_config_files=config_files,
+        args_for_setting_config_path=["-c", "--config"],
+        ignore_unknown_config_file_keys=True,
+    )
+    compiletools.findtargets.add_arguments(cap)
+    argv = ["--shorten", *extra_argv]
+    args = compiletools.apptools.parseargs(cap, argv=argv, context=BuildContext())
+    findtargets = compiletools.findtargets.FindTargets(args, exedir=exedir, context=BuildContext())
+    return args, findtargets
+
+
 class TestFindTargetsModule:
     def setup_method(self):
         uth.reset()
@@ -115,23 +134,12 @@ class TestFindTargetsModule:
         if not disable_tests:
             expectedtests = {os.path.realpath(uth.example_file(tt)) for tt in relativeexpectedtests}
 
-        config_files = compiletools.configutils.config_files_from_variant(exedir=uth.cakedir(), argv=[])
-        cap = configargparse.ArgumentParser(
-            conflict_handler="resolve",
-            description="TestFindTargetsModule",
-            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-            default_config_files=config_files,
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-        compiletools.findtargets.add_arguments(cap)
-        argv = ["--shorten"]
+        extra_argv = []
         if disable_tests:
-            argv.append("--disable-tests")
+            extra_argv.append("--disable-tests")
         if disable_exes:
-            argv.append("--disable-exes")
-        args = compiletools.apptools.parseargs(cap, argv=argv, context=BuildContext())
-        findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir(), context=BuildContext())
+            extra_argv.append("--disable-exes")
+        _args, findtargets = _make_findtargets("TestFindTargetsModule", *extra_argv)
         executabletargets, testtargets = findtargets(path=uth.cakedir())
         assert expectedexes == set(executabletargets)
         assert expectedtests == set(testtargets)
@@ -216,21 +224,7 @@ class TestFindTargetsProcess:
 
     def test_process_populates_args(self):
         """Test that process() adds targets to args.filename and args.tests."""
-        config_files = compiletools.configutils.config_files_from_variant(exedir=uth.cakedir(), argv=[])
-        cap = configargparse.ArgumentParser(
-            conflict_handler="resolve",
-            description="TestFindTargetsProcess",
-            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-            default_config_files=config_files,
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-        compiletools.findtargets.add_arguments(cap)
-        argv = ["--shorten"]
-        args = compiletools.apptools.parseargs(cap, argv=argv, context=BuildContext())
-        findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir(), context=BuildContext())
-
-        # Set up args for process()
+        args, findtargets = _make_findtargets("TestFindTargetsProcess")
         args.filename = []
         args.tests = None
         findtargets.process(args, path=uth.cakedir())
@@ -241,21 +235,8 @@ class TestFindTargetsProcess:
 
     def test_process_verbose(self):
         """Test that process() with verbose >= 2 prints style output."""
-        config_files = compiletools.configutils.config_files_from_variant(exedir=uth.cakedir(), argv=[])
-        cap = configargparse.ArgumentParser(
-            conflict_handler="resolve",
-            description="TestFindTargetsProcessVerbose",
-            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-            default_config_files=config_files,
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-        compiletools.findtargets.add_arguments(cap)
-        argv = ["--shorten"]
-        args = compiletools.apptools.parseargs(cap, argv=argv, context=BuildContext())
+        args, findtargets = _make_findtargets("TestFindTargetsProcessVerbose")
         args.verbose = 2
-        findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir(), context=BuildContext())
-
         args.filename = []
         args.tests = None
         # Should not raise
@@ -273,20 +254,8 @@ class TestFindTargetsNoExemarkers:
 
     def test_no_exemarkers_exits(self):
         """Test that None exemarkers causes sys.exit(1)."""
-        config_files = compiletools.configutils.config_files_from_variant(exedir=uth.cakedir(), argv=[])
-        cap = configargparse.ArgumentParser(
-            conflict_handler="resolve",
-            description="TestNoExemarkers",
-            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-            default_config_files=config_files,
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-        compiletools.findtargets.add_arguments(cap)
-        argv = ["--shorten"]
-        args = compiletools.apptools.parseargs(cap, argv=argv, context=BuildContext())
+        args, findtargets = _make_findtargets("TestNoExemarkers")
         args.exemarkers = None  # Force None
-        findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir(), context=BuildContext())
         try:
             findtargets()
             assert False, "Should have called sys.exit"
@@ -311,19 +280,7 @@ class TestFindTargetsOsWalkFallback:
             with open(src, "w") as f:
                 f.write("#include <iostream>\nint main() { return 0; }\n")
 
-            config_files = compiletools.configutils.config_files_from_variant(exedir=uth.cakedir(), argv=[])
-            cap = configargparse.ArgumentParser(
-                conflict_handler="resolve",
-                description="TestWalkFallback",
-                formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-                default_config_files=config_files,
-                args_for_setting_config_path=["-c", "--config"],
-                ignore_unknown_config_file_keys=True,
-            )
-            compiletools.findtargets.add_arguments(cap)
-            argv = ["--shorten"]
-            args = compiletools.apptools.parseargs(cap, argv=argv, context=BuildContext())
-            findtargets = compiletools.findtargets.FindTargets(args, exedir=uth.cakedir(), context=BuildContext())
+            _args, findtargets = _make_findtargets("TestWalkFallback")
 
             # Mock get_tracked_files to return empty dict (non-git)
             with patch("compiletools.global_hash_registry.get_tracked_files", return_value={}):

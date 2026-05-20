@@ -12,25 +12,35 @@ import compiletools.testhelper as uth
 from compiletools.build_context import BuildContext
 
 
+def _make_namer(description):
+    """Build (args, namer) for the bundled ``gcc.debug`` variant.
+
+    The args/namer share a single BuildContext, mirroring the production
+    create_parser → parseargs → Namer flow.
+    """
+    config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
+    config_files = [os.path.join(config_dir, "gcc.debug.conf")]
+    cap = configargparse.ArgumentParser(
+        conflict_handler="resolve",
+        description=description,
+        formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+        default_config_files=config_files,
+        args_for_setting_config_path=["-c", "--config"],
+        ignore_unknown_config_file_keys=True,
+    )
+    argv = ["--no-git-root"]
+    compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
+    compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
+    ctx = BuildContext()
+    args = compiletools.apptools.parseargs(cap, argv, context=ctx)
+    namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=ctx)
+    return args, namer
+
+
 def test_executable_pathname():
     uth.reset()
-
     try:
-        config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
-        config_files = [os.path.join(config_dir, "gcc.debug.conf")]
-        cap = configargparse.ArgumentParser(
-            conflict_handler="resolve",
-            description="TestNamer",
-            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-            default_config_files=config_files,
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-        argv = ["--no-git-root"]
-        compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
-        compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
-        args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
-        namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=BuildContext())
+        _args, namer = _make_namer("TestNamer")
         exename = namer.executable_pathname("/home/user/code/my.cpp")
         assert exename == "bin/gcc.debug/my"
     finally:
@@ -59,22 +69,7 @@ def test_object_name_with_dependencies():
                 f.write(b"#define BAZ 3")
 
             # Setup namer
-            config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
-            config_files = [os.path.join(config_dir, "gcc.debug.conf")]
-            cap = configargparse.ArgumentParser(
-                conflict_handler="resolve",
-                description="TestNamer",
-                formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-                default_config_files=config_files,
-                args_for_setting_config_path=["-c", "--config"],
-                ignore_unknown_config_file_keys=True,
-            )
-            argv = ["--no-git-root"]
-            compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
-            compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
-            ctx = BuildContext()
-            args = compiletools.apptools.parseargs(cap, argv, context=ctx)
-            namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=ctx)
+            _args, namer = _make_namer("TestNamer")
 
             # Test with no dependencies
             dep_hash_empty = namer.compute_dep_hash([])
@@ -144,21 +139,7 @@ def test_dep_hash_xor_properties():
                 f.write(b"#define BAR 2")
 
             # Setup namer
-            config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
-            config_files = [os.path.join(config_dir, "gcc.debug.conf")]
-            cap = configargparse.ArgumentParser(
-                conflict_handler="resolve",
-                description="TestNamer",
-                formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-                default_config_files=config_files,
-                args_for_setting_config_path=["-c", "--config"],
-                ignore_unknown_config_file_keys=True,
-            )
-            argv = ["--no-git-root"]
-            compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
-            compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
-            args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
-            namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=BuildContext())
+            _args, namer = _make_namer("TestNamer")
 
             # Test 1: XOR commutativity A⊕B = B⊕A (order-independent via sorting)
             hash_ab = namer.compute_dep_hash([h1_file, h2_file])
@@ -201,21 +182,7 @@ def test_dep_hash_handles_missing_generated_headers():
                 f.write(b"#define REAL 1")
 
             # Setup namer
-            config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
-            config_files = [os.path.join(config_dir, "gcc.debug.conf")]
-            cap = configargparse.ArgumentParser(
-                conflict_handler="resolve",
-                description="TestNamer",
-                formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-                default_config_files=config_files,
-                args_for_setting_config_path=["-c", "--config"],
-                ignore_unknown_config_file_keys=True,
-            )
-            argv = ["--no-git-root"]
-            compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
-            compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
-            args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
-            namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=BuildContext())
+            _args, namer = _make_namer("TestNamer")
 
             missing_gen = os.path.join(tmpdir, "generated.h")
 
@@ -272,22 +239,7 @@ def test_object_pathname_is_sharded_by_file_hash():
             )
             source_file = str(src["shardme.cpp"])
 
-            config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
-            config_files = [os.path.join(config_dir, "gcc.debug.conf")]
-            cap = configargparse.ArgumentParser(
-                conflict_handler="resolve",
-                description="TestNamerSharding",
-                formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-                default_config_files=config_files,
-                args_for_setting_config_path=["-c", "--config"],
-                ignore_unknown_config_file_keys=True,
-            )
-            argv = ["--no-git-root"]
-            compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
-            compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
-            ctx = BuildContext()
-            args = compiletools.apptools.parseargs(cap, argv, context=ctx)
-            namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=ctx)
+            args, namer = _make_namer("TestNamerSharding")
 
             dep_hash = namer.compute_dep_hash([])
             obj_path = namer.object_pathname(source_file, "0123456789abcdef", dep_hash)
@@ -430,21 +382,7 @@ def test_different_cppflags_produce_different_object_names():
             uth.reset()
 
             # Setup namer
-            config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
-            config_files = [os.path.join(config_dir, "gcc.debug.conf")]
-            cap = configargparse.ArgumentParser(
-                conflict_handler="resolve",
-                description="TestNamerCPPFLAGS",
-                formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-                default_config_files=config_files,
-                args_for_setting_config_path=["-c", "--config"],
-                ignore_unknown_config_file_keys=True,
-            )
-            argv = ["--no-git-root"]
-            compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
-            compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
-            args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
-            namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=BuildContext())
+            _args, namer = _make_namer("TestNamerCPPFLAGS")
 
             dep_hash = namer.compute_dep_hash([])
 
@@ -468,22 +406,7 @@ def test_cas_exe_pathname_is_sharded_by_link_key_hash():
     uth.reset()
 
     try:
-        config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
-        config_files = [os.path.join(config_dir, "gcc.debug.conf")]
-        cap = configargparse.ArgumentParser(
-            conflict_handler="resolve",
-            description="TestCasExe",
-            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-            default_config_files=config_files,
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-        argv = ["--no-git-root"]
-        compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
-        compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
-        ctx = BuildContext()
-        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
-        namer = compiletools.namer.Namer(args, argv=argv, variant="gcc.debug", context=ctx)
+        args, namer = _make_namer("TestCasExe")
 
         link_key = "abcd1234ef567890abcd1234ef567890"  # pragma: allowlist secret
         exe_path = namer.cas_exe_pathname("/some/where/foo.cpp", link_key)
@@ -515,21 +438,7 @@ def test_cas_exedir_default_path_includes_variant():
     uth.reset()
 
     try:
-        config_dir = os.path.join(uth.cakedir(), "ct.conf.d")
-        config_files = [os.path.join(config_dir, "gcc.debug.conf")]
-        cap = configargparse.ArgumentParser(
-            conflict_handler="resolve",
-            description="TestCasExeDirDefault",
-            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-            default_config_files=config_files,
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-        argv = ["--no-git-root"]
-        compiletools.apptools.add_common_arguments(cap=cap, argv=argv, variant="gcc.debug")
-        compiletools.namer.Namer.add_arguments(cap=cap, argv=argv, variant="gcc.debug")
-        ctx = BuildContext()
-        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
+        args, _namer = _make_namer("TestCasExeDirDefault")
 
         # Default path must end in <variant>; matches the sibling cache dirs
         # (--cas-objdir / --cas-pchdir / --cas-pcmdir) which all variant-suffix.
