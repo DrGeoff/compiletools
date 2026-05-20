@@ -5,7 +5,6 @@ The core functionality has been verified to work correctly.
 """
 
 import os
-import tempfile
 from textwrap import dedent
 
 import configargparse
@@ -22,13 +21,7 @@ class TestHeaderDepsIntegration(tb.BaseCompileToolsTestCase):
 
     def setup_method(self):
         super().setup_method()
-        self.temp_dir = tempfile.mkdtemp()
-
-    def teardown_method(self):
-        super().teardown_method()
-        import shutil
-
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        self.temp_dir = self._tmpdir
 
     def create_test_file(self, filename, content):
         """Create a test file in temp directory."""
@@ -142,13 +135,7 @@ class TestMagicFlagsIntegration(tb.BaseCompileToolsTestCase):
 
     def setup_method(self):
         super().setup_method()
-        self.temp_dir = tempfile.mkdtemp()
-
-    def teardown_method(self):
-        super().teardown_method()
-        import shutil
-
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        self.temp_dir = self._tmpdir
 
     def create_test_file(self, filename, content):
         """Create a test file in temp directory."""
@@ -331,13 +318,7 @@ class TestSourceFileUnicodeTolerance(tb.BaseCompileToolsTestCase):
 
     def setup_method(self):
         super().setup_method()
-        self.temp_dir = tempfile.mkdtemp()
-
-    def teardown_method(self):
-        super().teardown_method()
-        import shutil
-
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        self.temp_dir = self._tmpdir
 
     def create_test_file(self, filename, content):
         filepath = os.path.join(self.temp_dir, filename)
