@@ -14,6 +14,41 @@ from compiletools.build_timer import BuildTimer
 from compiletools.ninja_backend import NinjaBackend
 
 
+def _default_ninja_args(**overrides):
+    """Standard SimpleNamespace `args` for NinjaBackend tests. The body of
+    this helper was duplicated 4-fold (3 verbatim with cosmetic field
+    ordering, 1 near-duplicate with empty CFLAGS/CXXFLAGS) across
+    TestNinjaGenerate, TestNinjaFileLocking, TestUseMtime, and
+    TestModuleIfaceCompileRule before extraction."""
+    defaults = dict(
+        verbose=0,
+        cas_objdir="/tmp/obj",
+        bindir="/tmp/bin",
+        git_root="",
+        file_locking=False,
+        filename=[],
+        tests=[],
+        static=[],
+        dynamic=[],
+        CC="gcc",
+        CXX="g++",
+        CFLAGS="-O2",
+        CXXFLAGS="-O2",
+        LD="g++",
+        LDFLAGS="",
+        serialisetests=False,
+        build_only_changed=None,
+        use_mtime=False,
+        sleep_interval_lockdir=None,
+        sleep_interval_cifs=0.1,
+        sleep_interval_flock_fallback=0.1,
+        lock_warn_interval=30,
+        lock_cross_host_timeout=600,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
 class TestNinjaBackendRegistered:
     def test_registered_as_ninja(self):
         cls = get_backend_class("ninja")
@@ -27,39 +62,10 @@ class TestNinjaBackendRegistered:
 
 
 class TestNinjaGenerate:
-    def _make_args(self, **overrides):
-        defaults = dict(
-            verbose=0,
-            cas_objdir="/tmp/obj",
-            bindir="/tmp/bin",
-            git_root="",
-            file_locking=False,
-            filename=[],
-            tests=[],
-            static=[],
-            dynamic=[],
-            CC="gcc",
-            CXX="g++",
-            CFLAGS="-O2",
-            CXXFLAGS="-O2",
-            LD="g++",
-            LDFLAGS="",
-            serialisetests=False,
-            build_only_changed=None,
-            use_mtime=False,
-            sleep_interval_lockdir=None,
-            sleep_interval_cifs=0.1,
-            sleep_interval_flock_fallback=0.1,
-            lock_warn_interval=30,
-            lock_cross_host_timeout=600,
-        )
-        defaults.update(overrides)
-        return SimpleNamespace(**defaults)
-
     def _generate(self, graph, args=None):
         """Run NinjaBackend.generate on *graph* with a mocked hunter; return content."""
         if args is None:
-            args = self._make_args()
+            args = _default_ninja_args()
         hunter = MagicMock()
         hunter.huntsource = MagicMock()
         hunter.getsources = MagicMock(return_value=[])
@@ -265,38 +271,9 @@ def _compile_graph():
 
 
 class TestNinjaFileLocking:
-    def _make_args(self, **overrides):
-        defaults = dict(
-            verbose=0,
-            cas_objdir="/tmp/obj",
-            bindir="/tmp/bin",
-            git_root="",
-            file_locking=False,
-            filename=[],
-            tests=[],
-            static=[],
-            dynamic=[],
-            CC="gcc",
-            CXX="g++",
-            CFLAGS="-O2",
-            CXXFLAGS="-O2",
-            LD="g++",
-            LDFLAGS="",
-            serialisetests=False,
-            build_only_changed=None,
-            use_mtime=False,
-            sleep_interval_lockdir=None,
-            sleep_interval_cifs=0.1,
-            sleep_interval_flock_fallback=0.1,
-            lock_warn_interval=30,
-            lock_cross_host_timeout=600,
-        )
-        defaults.update(overrides)
-        return SimpleNamespace(**defaults)
-
     def test_compile_not_wrapped_when_locking_disabled(self):
         """Compile commands pass through unchanged when file_locking=False."""
-        args = self._make_args(file_locking=False)
+        args = _default_ninja_args(file_locking=False)
         hunter = MagicMock()
         backend = NinjaBackend(args=args, hunter=hunter)
 
@@ -309,7 +286,7 @@ class TestNinjaFileLocking:
 
     def test_compile_wrapped_with_lockdir_strategy(self):
         """Compile commands are wrapped with ct-lock-helper on NFS."""
-        args = self._make_args(file_locking=True, sleep_interval_lockdir=0.05)
+        args = _default_ninja_args(file_locking=True, sleep_interval_lockdir=0.05)
         hunter = MagicMock()
         backend = NinjaBackend(args=args, hunter=hunter)
 
@@ -330,7 +307,7 @@ class TestNinjaFileLocking:
 
     def test_compile_wrapped_with_native_flock(self):
         """Compile commands use native flock binary on local filesystems."""
-        args = self._make_args(file_locking=True, sleep_interval_flock_fallback=0.03)
+        args = _default_ninja_args(file_locking=True, sleep_interval_flock_fallback=0.03)
         hunter = MagicMock()
         backend = NinjaBackend(args=args, hunter=hunter)
 
@@ -348,7 +325,7 @@ class TestNinjaFileLocking:
 
     def test_compile_wrapped_with_flock_fallback(self):
         """Falls back to ct-lock-helper when native flock is unavailable."""
-        args = self._make_args(file_locking=True, sleep_interval_flock_fallback=0.03)
+        args = _default_ninja_args(file_locking=True, sleep_interval_flock_fallback=0.03)
         hunter = MagicMock()
         backend = NinjaBackend(args=args, hunter=hunter)
 
@@ -366,7 +343,7 @@ class TestNinjaFileLocking:
 
     def test_compile_wrapped_with_cifs_strategy(self):
         """Compile commands use cifs strategy on CIFS filesystems."""
-        args = self._make_args(file_locking=True, sleep_interval_cifs=0.02)
+        args = _default_ninja_args(file_locking=True, sleep_interval_cifs=0.02)
         hunter = MagicMock()
         backend = NinjaBackend(args=args, hunter=hunter)
 
@@ -393,7 +370,7 @@ class TestNinjaFileLocking:
             )
         )
 
-        args = self._make_args(file_locking=True, sleep_interval_lockdir=0.05)
+        args = _default_ninja_args(file_locking=True, sleep_interval_lockdir=0.05)
         hunter = MagicMock()
         backend = NinjaBackend(args=args, hunter=hunter)
 
@@ -427,7 +404,7 @@ class TestNinjaFileLocking:
             )
         )
 
-        args = self._make_args(file_locking=False)
+        args = _default_ninja_args(file_locking=False)
         hunter = MagicMock()
         backend = NinjaBackend(args=args, hunter=hunter)
 
@@ -452,7 +429,7 @@ class TestNinjaFileLocking:
             )
         )
 
-        args = self._make_args(file_locking=True, sleep_interval_lockdir=0.05)
+        args = _default_ninja_args(file_locking=True, sleep_interval_lockdir=0.05)
         hunter = MagicMock()
         backend = NinjaBackend(args=args, hunter=hunter)
 
@@ -473,7 +450,7 @@ class TestNinjaFileLocking:
 
     def test_ct_lock_helper_missing_exits(self):
         """generate() exits with error when ct-lock-helper is missing."""
-        args = self._make_args(file_locking=True)
+        args = _default_ninja_args(file_locking=True)
         hunter = MagicMock()
         backend = NinjaBackend(args=args, hunter=hunter)
 
@@ -494,35 +471,6 @@ class TestUseMtime:
 
     Opt-in (True): preserves classical input-driven rebuild detection.
     """
-
-    def _make_args(self, **overrides):
-        defaults = dict(
-            verbose=0,
-            cas_objdir="/tmp/obj",
-            bindir="/tmp/bin",
-            git_root="",
-            file_locking=False,
-            filename=[],
-            tests=[],
-            static=[],
-            dynamic=[],
-            CC="gcc",
-            CXX="g++",
-            CFLAGS="-O2",
-            CXXFLAGS="-O2",
-            LD="g++",
-            LDFLAGS="",
-            serialisetests=False,
-            build_only_changed=None,
-            sleep_interval_lockdir=None,
-            sleep_interval_cifs=0.1,
-            sleep_interval_flock_fallback=0.1,
-            lock_warn_interval=30,
-            lock_cross_host_timeout=600,
-            use_mtime=False,
-        )
-        defaults.update(overrides)
-        return SimpleNamespace(**defaults)
 
     def _generate(self, args, graph):
         hunter = MagicMock()
@@ -553,7 +501,7 @@ class TestUseMtime:
         raise AssertionError(f"no compile build line found in:\n{content}")
 
     def test_compile_rule_drops_inputs_when_no_use_mtime(self):
-        args = self._make_args(use_mtime=False)
+        args = _default_ninja_args(use_mtime=False)
         content = self._generate(args, self._compile_graph())
         line = self._compile_build_line(content)
         assert "/work/foo.cpp" not in line
@@ -563,7 +511,7 @@ class TestUseMtime:
         assert "|| /tmp/obj/aa" in line
 
     def test_compile_rule_keeps_inputs_when_use_mtime(self):
-        args = self._make_args(use_mtime=True)
+        args = _default_ninja_args(use_mtime=True)
         content = self._generate(args, self._compile_graph())
         line = self._compile_build_line(content)
         # Primary input present
@@ -584,7 +532,7 @@ class TestUseMtime:
                 order_only_deps=["/tmp/obj/aa"],
             )
         )
-        args = self._make_args(use_mtime=False)
+        args = _default_ninja_args(use_mtime=False)
         content = self._generate(args, graph)
         line = self._compile_build_line(content)
         # PCH must still appear in the build line so ninja orders it,
@@ -604,35 +552,6 @@ class TestModuleIfaceCompileRule:
     inputs" and stops.  The separate ``compile_module_iface_cmd`` rule
     (no depfile / no deps) is used for these rules instead.
     """
-
-    def _make_args(self, **overrides):
-        defaults = dict(
-            verbose=0,
-            cas_objdir="/tmp/obj",
-            bindir="/tmp/bin",
-            git_root="",
-            file_locking=False,
-            filename=[],
-            tests=[],
-            static=[],
-            dynamic=[],
-            CC="gcc",
-            CXX="g++",
-            CFLAGS="",
-            CXXFLAGS="",
-            LD="g++",
-            LDFLAGS="",
-            serialisetests=False,
-            build_only_changed=None,
-            use_mtime=False,
-            sleep_interval_lockdir=None,
-            sleep_interval_cifs=0.1,
-            sleep_interval_flock_fallback=0.1,
-            lock_warn_interval=30,
-            lock_cross_host_timeout=600,
-        )
-        defaults.update(overrides)
-        return SimpleNamespace(**defaults)
 
     def _generate_with_module_iface(self, module_iface_obj, module_iface_pcm=None):
         """Build a graph with one module-iface compile rule and generate ninja."""
@@ -663,7 +582,7 @@ class TestModuleIfaceCompileRule:
             )
         )
 
-        args = self._make_args()
+        args = _default_ninja_args(CFLAGS="", CXXFLAGS="")
         hunter = MagicMock()
         hunter.huntsource = MagicMock()
         hunter.getsources = MagicMock(return_value=[])
@@ -752,7 +671,7 @@ class TestModuleIfaceCompileRule:
                 rule_type="compile",
             )
         )
-        args = self._make_args()
+        args = _default_ninja_args(CFLAGS="", CXXFLAGS="")
         hunter = MagicMock()
         hunter.huntsource = MagicMock()
         hunter.getsources = MagicMock(return_value=[])
