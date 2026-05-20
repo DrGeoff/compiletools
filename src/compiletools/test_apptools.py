@@ -6,7 +6,6 @@ import os
 import shlex
 import shutil
 import subprocess
-import tempfile
 import warnings
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -116,22 +115,17 @@ class TestExtractCommandLineMacrosSz:
 class TestFindSystemHeader:
     """Test find_system_header()."""
 
-    def test_header_found(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            header_path = os.path.join(tmpdir, "myheader.h")
-            with open(header_path, "w") as f:
-                f.write("// header\n")
+    def test_header_found(self, tmp_path):
+        (tmp_path / "myheader.h").write_text("// header\n")
+        args = SimpleNamespace(CPPFLAGS=f"-I{tmp_path}", CFLAGS="", CXXFLAGS="", INCLUDE="")
+        result = find_system_header("myheader.h", args)
+        assert result is not None
+        assert result.endswith("myheader.h")
 
-            args = SimpleNamespace(CPPFLAGS=f"-I{tmpdir}", CFLAGS="", CXXFLAGS="", INCLUDE="")
-            result = find_system_header("myheader.h", args)
-            assert result is not None
-            assert result.endswith("myheader.h")
-
-    def test_header_not_found(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            args = SimpleNamespace(CPPFLAGS=f"-I{tmpdir}", CFLAGS="", CXXFLAGS="", INCLUDE="")
-            result = find_system_header("nonexistent.h", args)
-            assert result is None
+    def test_header_not_found(self, tmp_path):
+        args = SimpleNamespace(CPPFLAGS=f"-I{tmp_path}", CFLAGS="", CXXFLAGS="", INCLUDE="")
+        result = find_system_header("nonexistent.h", args)
+        assert result is None
 
 
 class TestFilterPkgConfigCflags:
