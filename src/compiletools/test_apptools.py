@@ -68,6 +68,15 @@ from compiletools.build_context import BuildContext
 from compiletools.utils import split_command_cached
 
 
+@pytest.fixture
+def parsers_reset():
+    """Wipe the configargparse parser cache around tests that go through
+    ``parseargs`` end-to-end. Opt-in via ``@pytest.mark.usefixtures``."""
+    uth.reset()
+    yield
+    uth.reset()
+
+
 class TestExtractCommandLineMacrosSz:
     """Test extract_command_line_macros_sz()."""
 
@@ -1359,6 +1368,7 @@ class TestSetupPkgConfigOverrides:
         assert ctx.pkg_config_overrides_applied is False
 
 
+@pytest.mark.usefixtures("parsers_reset")
 class TestAppendFlagsAccumulateAcrossConfHierarchy:
     """Regression tests for the multi-conf ``append-*`` / ``prepend-*`` bug.
 
@@ -1372,10 +1382,6 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
     full conf hierarchy into a single stream and accumulating duplicate
     append-/prepend- keys into a list.
     """
-
-    def setup_method(self):
-
-        uth.reset()
 
     def _setup_three_axis_conf_tree(self, repo_root):
         """Create gcc.conf, release.conf, extras.conf with distinct
@@ -1700,11 +1706,8 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
                     f"conf hierarchy. args.prepend_cxxflags={args.prepend_cxxflags!r}"
                 )
 
-    def teardown_method(self):
 
-        uth.reset()
-
-
+@pytest.mark.usefixtures("parsers_reset")
 class TestVariantResolutionRespectsArgv:
     """Regression tests for the substitutions() variant-from-sys.argv bug.
 
@@ -1714,10 +1717,6 @@ class TestVariantResolutionRespectsArgv:
     reset to whatever sys.argv implied. Both tests below exercise the
     parseargs pipeline with argv that does NOT match sys.argv.
     """
-
-    def setup_method(self):
-
-        uth.reset()
 
     def test_argv_variant_preserved_when_not_aliased(self):
         """A --variant=<canonical-name> in argv survives substitutions even

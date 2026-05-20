@@ -88,12 +88,15 @@ class TestUlimitDetection:
             pytest.skip("Ulimit not available on this system")
 
 
-class TestFileReadingStrategy:
-    """Tests for file reading strategy selection."""
+class _CtxBase:
+    """Shared scaffolding: ``self.ctx`` is a fresh BuildContext per test."""
 
     def setup_method(self):
-        """Create fresh BuildContext before each test."""
         self.ctx = BuildContext()
+
+
+class TestFileReadingStrategy(_CtxBase):
+    """Tests for file reading strategy selection."""
 
     def test_default_strategy(self):
         """Test default strategy selection."""
@@ -165,12 +168,8 @@ class TestFileAnalyzerArguments:
         assert args.suppress_filesystem_warnings is True
 
 
-class TestFileReadingWithRealFiles:
+class TestFileReadingWithRealFiles(_CtxBase):
     """Tests that verify file reading strategies work with real sample files."""
-
-    def setup_method(self):
-        """Create fresh BuildContext before each test."""
-        self.ctx = BuildContext()
 
     def test_no_mmap_mode_reads_real_file(self):
         """Test that no_mmap mode actually reads and analyzes real files correctly."""
