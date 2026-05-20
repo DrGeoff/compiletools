@@ -1,3 +1,4 @@
+import contextlib
 import json
 import multiprocessing
 import os
@@ -29,261 +30,265 @@ def _reset_parser_state():
     yield
 
 
+@contextlib.contextmanager
+def _temp_dir_with_config():
+    """Enter `TempDirContext` (which chdirs into a fresh temp dir) and
+    layer `TempConfigContext` on top with the new cwd as its tempdir.
+    Yields the path to the temporary config file."""
+    with uth.TempDirContext():
+        with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
+            yield temp_config_name
+
+
 class TestCompilationDatabase:
     @uth.requires_functional_compiler
     def test_basic_compilation_database_creation(self):
         """Test basic compilation database creation with simple C++ files"""
 
-        with uth.TempDirContext() as _:
-            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
-                # Use existing sample files
-                relativepaths = ["simple/helloworld_cpp.cpp", "simple/helloworld_c.c"]
-                realpaths = [uth.example_file(filename) for filename in relativepaths]
+        with _temp_dir_with_config() as temp_config_name:
+            # Use existing sample files
+            relativepaths = ["simple/helloworld_cpp.cpp", "simple/helloworld_c.c"]
+            realpaths = [uth.example_file(filename) for filename in relativepaths]
 
-                with uth.ParserContext():
-                    # Create compilation database
-                    output_file = "compile_commands.json"
-                    compiletools.compilation_database.main(
-                        ["--config=" + temp_config_name, "--compilation-database-output=" + output_file] + realpaths
-                    )
+            with uth.ParserContext():
+                # Create compilation database
+                output_file = "compile_commands.json"
+                compiletools.compilation_database.main(
+                    ["--config=" + temp_config_name, "--compilation-database-output=" + output_file] + realpaths
+                )
 
-                    # Verify file was created
-                    assert os.path.exists(output_file)
+                # Verify file was created
+                assert os.path.exists(output_file)
 
-                    # Verify JSON format
-                    with open(output_file) as f:
-                        commands = json.load(f)
+                # Verify JSON format
+                with open(output_file) as f:
+                    commands = json.load(f)
 
-                    assert isinstance(commands, list)
-                    assert len(commands) >= 2  # At least our two test files
+                assert isinstance(commands, list)
+                assert len(commands) >= 2  # At least our two test files
 
-                    # Verify command structure
-                    for cmd in commands:
-                        assert isinstance(cmd, dict)
-                        assert "directory" in cmd
-                        assert "file" in cmd
-                        assert "arguments" in cmd
-                        assert isinstance(cmd["arguments"], list)
-                        assert len(cmd["arguments"]) > 0
-                        assert cmd["arguments"][0].endswith(("gcc", "g++", "clang", "clang++"))
+                # Verify command structure
+                for cmd in commands:
+                    assert isinstance(cmd, dict)
+                    assert "directory" in cmd
+                    assert "file" in cmd
+                    assert "arguments" in cmd
+                    assert isinstance(cmd["arguments"], list)
+                    assert len(cmd["arguments"]) > 0
+                    assert cmd["arguments"][0].endswith(("gcc", "g++", "clang", "clang++"))
 
     @uth.requires_functional_compiler
     def test_compilation_database_with_relative_paths(self):
         """Test compilation database creation with relative paths option"""
 
-        with uth.TempDirContext() as _:
-            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
-                relativepaths = ["simple/helloworld_cpp.cpp"]
-                realpaths = [uth.example_file(filename) for filename in relativepaths]
+        with _temp_dir_with_config() as temp_config_name:
+            relativepaths = ["simple/helloworld_cpp.cpp"]
+            realpaths = [uth.example_file(filename) for filename in relativepaths]
 
-                with uth.ParserContext():
-                    output_file = "compile_commands_rel.json"
-                    compiletools.compilation_database.main(
-                        [
-                            "--config=" + temp_config_name,
-                            "--relative-paths",
-                            "--compilation-database-output=" + output_file,
-                        ]
-                        + realpaths
+            with uth.ParserContext():
+                output_file = "compile_commands_rel.json"
+                compiletools.compilation_database.main(
+                    [
+                        "--config=" + temp_config_name,
+                        "--relative-paths",
+                        "--compilation-database-output=" + output_file,
+                    ]
+                    + realpaths
+                )
+
+                assert os.path.exists(output_file)
+
+                with open(output_file) as f:
+                    commands = json.load(f)
+
+                # Check that file paths are relative when --relative-paths is used
+                for cmd in commands:
+                    # Directory should still be absolute (working directory)
+                    assert cmd["directory"].startswith("/"), (
+                        f"Directory should still be absolute, got: {cmd['directory']}"
                     )
-
-                    assert os.path.exists(output_file)
-
-                    with open(output_file) as f:
-                        commands = json.load(f)
-
-                    # Check that file paths are relative when --relative-paths is used
-                    for cmd in commands:
-                        # Directory should still be absolute (working directory)
-                        assert cmd["directory"].startswith("/"), (
-                            f"Directory should still be absolute, got: {cmd['directory']}"
-                        )
-                        # File path should be relative when --relative-paths is used
-                        assert not cmd["file"].startswith("/"), (
-                            f"File path should be relative with --relative-paths, got: {cmd['file']}"
-                        )
+                    # File path should be relative when --relative-paths is used
+                    assert not cmd["file"].startswith("/"), (
+                        f"File path should be relative with --relative-paths, got: {cmd['file']}"
+                    )
 
     @uth.requires_functional_compiler
     def test_compilation_database_creator_class(self):
         """Test the CompilationDatabaseCreator class directly"""
 
-        with uth.TempDirContext() as _:
-            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
-                # Create args object by parsing like main() would
-                relativepaths = ["simple/helloworld_cpp.cpp"]
-                realpaths = [uth.example_file(filename) for filename in relativepaths]
+        with _temp_dir_with_config() as temp_config_name:
+            # Create args object by parsing like main() would
+            relativepaths = ["simple/helloworld_cpp.cpp"]
+            realpaths = [uth.example_file(filename) for filename in relativepaths]
 
-                # Use the module's main function to test integration
-                argv = ["--config=" + temp_config_name, "--compilation-database-output=test_output.json"] + realpaths
+            # Use the module's main function to test integration
+            argv = ["--config=" + temp_config_name, "--compilation-database-output=test_output.json"] + realpaths
 
-                cap = compiletools.apptools.create_parser("Generate compile_commands.json for clang tooling", argv=argv)
-                compiletools.compilation_database.CompilationDatabaseCreator.add_arguments(cap)
-                compiletools.hunter.add_arguments(cap)
-                args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+            cap = compiletools.apptools.create_parser("Generate compile_commands.json for clang tooling", argv=argv)
+            compiletools.compilation_database.CompilationDatabaseCreator.add_arguments(cap)
+            compiletools.hunter.add_arguments(cap)
+            args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
 
-                with uth.ParserContext():
-                    # Test the creator class
-                    creator = compiletools.compilation_database.CompilationDatabaseCreator(args, context=BuildContext())
+            with uth.ParserContext():
+                # Test the creator class
+                creator = compiletools.compilation_database.CompilationDatabaseCreator(args, context=BuildContext())
 
-                    # Test command object creation
-                    if realpaths and os.path.exists(realpaths[0]):
-                        cmd_obj = creator._create_command_object(realpaths[0])
+                # Test command object creation
+                if realpaths and os.path.exists(realpaths[0]):
+                    cmd_obj = creator._create_command_object(realpaths[0])
 
-                        assert isinstance(cmd_obj, dict)
-                        assert "directory" in cmd_obj
-                        assert "file" in cmd_obj
-                        assert "arguments" in cmd_obj
-                        assert isinstance(cmd_obj["arguments"], list)
+                    assert isinstance(cmd_obj, dict)
+                    assert "directory" in cmd_obj
+                    assert "file" in cmd_obj
+                    assert "arguments" in cmd_obj
+                    assert isinstance(cmd_obj["arguments"], list)
 
-                    # Test full database creation
-                    commands = creator.create_compilation_database()
-                    assert isinstance(commands, list)
+                # Test full database creation
+                commands = creator.create_compilation_database()
+                assert isinstance(commands, list)
 
-                    # Test writing to file
-                    creator.write_compilation_database()
-                    assert os.path.exists(args.compilation_database_output)
+                # Test writing to file
+                creator.write_compilation_database()
+                assert os.path.exists(args.compilation_database_output)
 
     def test_json_format_compliance(self):
         """Test that generated JSON is valid and properly formatted"""
 
-        with uth.TempDirContext() as _:
-            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
-                relativepaths = ["simple/helloworld_cpp.cpp"]
-                realpaths = [uth.example_file(filename) for filename in relativepaths]
+        with _temp_dir_with_config() as temp_config_name:
+            relativepaths = ["simple/helloworld_cpp.cpp"]
+            realpaths = [uth.example_file(filename) for filename in relativepaths]
 
-                with uth.ParserContext():
-                    output_file = "format_test.json"
-                    compiletools.compilation_database.main(
-                        ["--config=" + temp_config_name, "--compilation-database-output=" + output_file] + realpaths
-                    )
+            with uth.ParserContext():
+                output_file = "format_test.json"
+                compiletools.compilation_database.main(
+                    ["--config=" + temp_config_name, "--compilation-database-output=" + output_file] + realpaths
+                )
 
-                    # Verify JSON can be parsed
-                    with open(output_file) as f:
-                        content = f.read()
-                        commands = json.loads(content)
+                # Verify JSON can be parsed
+                with open(output_file) as f:
+                    content = f.read()
+                    commands = json.loads(content)
 
-                    # Verify structure matches clang specification
-                    for cmd in commands:
-                        # Required fields
-                        assert "directory" in cmd
-                        assert "file" in cmd
-                        assert "arguments" in cmd or "command" in cmd  # One of these required
+                # Verify structure matches clang specification
+                for cmd in commands:
+                    # Required fields
+                    assert "directory" in cmd
+                    assert "file" in cmd
+                    assert "arguments" in cmd or "command" in cmd  # One of these required
 
-                        # Verify arguments format (preferred)
-                        if "arguments" in cmd:
-                            assert isinstance(cmd["arguments"], list)
-                            assert all(isinstance(arg, str) for arg in cmd["arguments"])
+                    # Verify arguments format (preferred)
+                    if "arguments" in cmd:
+                        assert isinstance(cmd["arguments"], list)
+                        assert all(isinstance(arg, str) for arg in cmd["arguments"])
 
-                        # Verify paths are valid
-                        assert isinstance(cmd["directory"], str)
-                        assert isinstance(cmd["file"], str)
-                        assert len(cmd["directory"]) > 0
-                        assert len(cmd["file"]) > 0
+                    # Verify paths are valid
+                    assert isinstance(cmd["directory"], str)
+                    assert isinstance(cmd["file"], str)
+                    assert len(cmd["directory"]) > 0
+                    assert len(cmd["file"]) > 0
 
     @uth.requires_functional_compiler
     def test_compilation_database_vs_makefile_equivalence(self):
         """Test that compilation database generates equivalent commands to Makefile"""
 
-        with uth.TempDirContext() as _:
-            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
-                # Use the same test files as the Makefile test
-                relativepaths = ["simple/helloworld_cpp.cpp", "simple/helloworld_c.c"]
-                realpaths = [uth.example_file(filename) for filename in relativepaths]
+        with _temp_dir_with_config() as temp_config_name:
+            # Use the same test files as the Makefile test
+            relativepaths = ["simple/helloworld_cpp.cpp", "simple/helloworld_c.c"]
+            realpaths = [uth.example_file(filename) for filename in relativepaths]
 
-                # Generate compilation database
-                comp_db_output = "compile_commands.json"
-                with uth.ParserContext():
-                    compiletools.compilation_database.main(
-                        ["--config=" + temp_config_name, "--compilation-database-output=" + comp_db_output] + realpaths
-                    )
+            # Generate compilation database
+            comp_db_output = "compile_commands.json"
+            with uth.ParserContext():
+                compiletools.compilation_database.main(
+                    ["--config=" + temp_config_name, "--compilation-database-output=" + comp_db_output] + realpaths
+                )
 
-                # Generate Makefile (disable file-locking so commands are directly comparable)
-                with uth.ParserContext():
-                    compiletools.makefile_backend.main(
-                        ["--config=" + temp_config_name, "--no-file-locking"] + realpaths
-                    )
+            # Generate Makefile (disable file-locking so commands are directly comparable)
+            with uth.ParserContext():
+                compiletools.makefile_backend.main(
+                    ["--config=" + temp_config_name, "--no-file-locking"] + realpaths
+                )
 
-                # Read compilation database
-                with open(comp_db_output) as f:
-                    comp_db_commands = json.load(f)
+            # Read compilation database
+            with open(comp_db_output) as f:
+                comp_db_commands = json.load(f)
 
-                # Parse Makefile for compilation rules
-                makefile_commands = self._extract_compile_commands_from_makefile()
+            # Parse Makefile for compilation rules
+            makefile_commands = self._extract_compile_commands_from_makefile()
 
-                # Compare commands for equivalence
-                self._assert_commands_equivalent(comp_db_commands, makefile_commands, realpaths)
+            # Compare commands for equivalence
+            self._assert_commands_equivalent(comp_db_commands, makefile_commands, realpaths)
 
     @uth.requires_functional_compiler
     def test_compilation_database_vs_makefile_complex_project(self):
         """Test equivalence with a more complex project having multiple files and dependencies"""
 
-        with uth.TempDirContext() as _:
-            with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
-                # Use factory sample which has multiple source files with dependencies
-                relativepaths = [
-                    "factory/test_factory.cpp",
-                    "factory/widget_factory.cpp",
-                    "factory/a_widget.cpp",
-                    "factory/z_widget.cpp",
-                    # Also include numbers sample for additional complexity
-                    "numbers/test_direct_include.cpp",
-                    "numbers/get_numbers.cpp",
-                    "numbers/get_int.cpp",
-                    "numbers/get_double.cpp",
-                ]
-                realpaths = [uth.example_file(filename) for filename in relativepaths]
+        with _temp_dir_with_config() as temp_config_name:
+            # Use factory sample which has multiple source files with dependencies
+            relativepaths = [
+                "factory/test_factory.cpp",
+                "factory/widget_factory.cpp",
+                "factory/a_widget.cpp",
+                "factory/z_widget.cpp",
+                # Also include numbers sample for additional complexity
+                "numbers/test_direct_include.cpp",
+                "numbers/get_numbers.cpp",
+                "numbers/get_int.cpp",
+                "numbers/get_double.cpp",
+            ]
+            realpaths = [uth.example_file(filename) for filename in relativepaths]
 
-                # Generate compilation database
-                comp_db_output = "compile_commands_complex.json"
-                with uth.ParserContext():
-                    compiletools.compilation_database.main(
-                        ["--config=" + temp_config_name, "--compilation-database-output=" + comp_db_output] + realpaths
-                    )
-
-                # Generate Makefile (disable file-locking so commands are directly comparable)
-                with uth.ParserContext():
-                    compiletools.makefile_backend.main(
-                        ["--config=" + temp_config_name, "--no-file-locking"] + realpaths
-                    )
-
-                # Read compilation database
-                with open(comp_db_output) as f:
-                    comp_db_commands = json.load(f)
-
-                # Parse Makefile for compilation rules
-                makefile_commands = self._extract_compile_commands_from_makefile()
-
-                # Verify we have commands for all source files
-                assert len(comp_db_commands) >= len(relativepaths), (
-                    f"Expected at least {len(relativepaths)} compilation database entries, got {len(comp_db_commands)}"
-                )
-                assert len(makefile_commands) >= len(relativepaths), (
-                    f"Expected at least {len(relativepaths)} Makefile commands, got {len(makefile_commands)}"
+            # Generate compilation database
+            comp_db_output = "compile_commands_complex.json"
+            with uth.ParserContext():
+                compiletools.compilation_database.main(
+                    ["--config=" + temp_config_name, "--compilation-database-output=" + comp_db_output] + realpaths
                 )
 
-                # Compare commands for equivalence
-                self._assert_commands_equivalent(comp_db_commands, makefile_commands, realpaths)
-
-                # Additional verification: check that header dependencies are handled
-                # Both tools should produce the same set of include flags
-                comp_db_includes = set()
-                makefile_includes = set()
-
-                for cmd in comp_db_commands:
-                    args = cmd["arguments"]
-                    for i, arg in enumerate(args):
-                        if arg == "-I" and i + 1 < len(args):
-                            comp_db_includes.add(args[i + 1])
-
-                for command in makefile_commands.values():
-                    for i, arg in enumerate(command):
-                        if arg == "-I" and i + 1 < len(command):
-                            makefile_includes.add(command[i + 1])
-
-                # The include sets should be equivalent (same directories used)
-                assert comp_db_includes == makefile_includes, (
-                    f"Include directories differ: comp_db={comp_db_includes}, makefile={makefile_includes}"
+            # Generate Makefile (disable file-locking so commands are directly comparable)
+            with uth.ParserContext():
+                compiletools.makefile_backend.main(
+                    ["--config=" + temp_config_name, "--no-file-locking"] + realpaths
                 )
+
+            # Read compilation database
+            with open(comp_db_output) as f:
+                comp_db_commands = json.load(f)
+
+            # Parse Makefile for compilation rules
+            makefile_commands = self._extract_compile_commands_from_makefile()
+
+            # Verify we have commands for all source files
+            assert len(comp_db_commands) >= len(relativepaths), (
+                f"Expected at least {len(relativepaths)} compilation database entries, got {len(comp_db_commands)}"
+            )
+            assert len(makefile_commands) >= len(relativepaths), (
+                f"Expected at least {len(relativepaths)} Makefile commands, got {len(makefile_commands)}"
+            )
+
+            # Compare commands for equivalence
+            self._assert_commands_equivalent(comp_db_commands, makefile_commands, realpaths)
+
+            # Additional verification: check that header dependencies are handled
+            # Both tools should produce the same set of include flags
+            comp_db_includes = set()
+            makefile_includes = set()
+
+            for cmd in comp_db_commands:
+                args = cmd["arguments"]
+                for i, arg in enumerate(args):
+                    if arg == "-I" and i + 1 < len(args):
+                        comp_db_includes.add(args[i + 1])
+
+            for command in makefile_commands.values():
+                for i, arg in enumerate(command):
+                    if arg == "-I" and i + 1 < len(command):
+                        makefile_includes.add(command[i + 1])
+
+            # The include sets should be equivalent (same directories used)
+            assert comp_db_includes == makefile_includes, (
+                f"Include directories differ: comp_db={comp_db_includes}, makefile={makefile_includes}"
+            )
 
     @uth.requires_functional_compiler
     def test_compilation_database_with_findtargets_discovery(self):
