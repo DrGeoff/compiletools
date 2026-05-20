@@ -46,14 +46,18 @@ def tmpdir_with_locks(tmp_path):
     return str(tmp_path)
 
 
-def create_lockdir(objdir, name, hostname, pid):
-    """Helper to create a lockdir with specific hostname:pid."""
+def _make_lockdir_with_pid(objdir, name, content):
+    """Create ``<objdir>/<name>.lockdir/`` with a ``pid`` file containing *content*."""
     lockdir = os.path.join(objdir, f"{name}.lockdir")
     os.makedirs(lockdir, exist_ok=True)
-    pid_file = os.path.join(lockdir, "pid")
-    with open(pid_file, "w") as f:
-        f.write(f"{hostname}:{pid}\n")
+    with open(os.path.join(lockdir, "pid"), "w") as f:
+        f.write(content)
     return lockdir
+
+
+def create_lockdir(objdir, name, hostname, pid):
+    """Helper to create a lockdir with specific hostname:pid."""
+    return _make_lockdir_with_pid(objdir, name, f"{hostname}:{pid}\n")
 
 
 def create_old_lockdir(objdir, name, hostname, pid, age_seconds):
@@ -80,10 +84,7 @@ class TestLockCleanerUnit:
 
     def test_read_lock_info_with_start_time(self, tmpdir_with_locks, cleaner):
         """Test reading the new host:pid:start_time format."""
-        lockdir = os.path.join(tmpdir_with_locks, "x.lockdir")
-        os.makedirs(lockdir)
-        with open(os.path.join(lockdir, "pid"), "w") as f:
-            f.write("host1:12345:1700000000.5\n")
+        lockdir = _make_lockdir_with_pid(tmpdir_with_locks, "x", "host1:12345:1700000000.5\n")
 
         hostname, pid, start_time = cleaner._read_lock_info(lockdir)
         assert hostname == "host1"
@@ -92,11 +93,7 @@ class TestLockCleanerUnit:
 
     def test_read_lock_info_invalid_format_no_colon(self, tmpdir_with_locks, cleaner):
         """Test handling of malformed pid file without colon."""
-        lockdir = os.path.join(tmpdir_with_locks, "test1.lockdir")
-        os.makedirs(lockdir)
-        pid_file = os.path.join(lockdir, "pid")
-        with open(pid_file, "w") as f:
-            f.write("invalid-no-colon\n")
+        lockdir = _make_lockdir_with_pid(tmpdir_with_locks, "test1", "invalid-no-colon\n")
 
         hostname, pid, start_time = cleaner._read_lock_info(lockdir)
 
@@ -106,11 +103,7 @@ class TestLockCleanerUnit:
 
     def test_read_lock_info_empty_file(self, tmpdir_with_locks, cleaner):
         """Test handling of empty pid file."""
-        lockdir = os.path.join(tmpdir_with_locks, "test1.lockdir")
-        os.makedirs(lockdir)
-        pid_file = os.path.join(lockdir, "pid")
-        with open(pid_file, "w") as f:
-            f.write("")
+        lockdir = _make_lockdir_with_pid(tmpdir_with_locks, "test1", "")
 
         hostname, pid, start_time = cleaner._read_lock_info(lockdir)
 
