@@ -212,12 +212,9 @@ class TestLockdirLock:
         with patch("os.chown", side_effect=PermissionError("not allowed")):
             lock._set_lockdir_permissions()  # Should not raise
 
-    def test_set_lockdir_permissions_oserror_verbose(self, capsys, tmp_path):
+    def test_set_lockdir_permissions_oserror_verbose(self, capsys, make_lock):
         """OSError during chmod prints warning when verbose >= 2."""
-        tmpdir = str(tmp_path)
-        target = os.path.join(tmpdir, "test.o")
-        args = _make_lock_args(verbose=2)
-        lock = LockdirLock(target, args)
+        lock = make_lock(verbose=2)
         os.mkdir(lock.lockdir)
         with patch("os.chmod", side_effect=OSError("perm denied")):
             lock._set_lockdir_permissions()
@@ -251,12 +248,9 @@ class TestLockdirLock:
             f.write("otherhost.example.com:12345\n")
         assert lock._is_lock_stale() is False
 
-    def test_remove_stale_lock_success(self, capsys, tmp_path):
+    def test_remove_stale_lock_success(self, capsys, make_lock):
         """Successfully removes a stale lock."""
-        tmpdir = str(tmp_path)
-        target = os.path.join(tmpdir, "test.o")
-        args = _make_lock_args(verbose=1)
-        lock = LockdirLock(target, args)
+        lock = make_lock(verbose=1)
         os.mkdir(lock.lockdir)
         with open(lock.pid_file, "w") as f:
             f.write(f"{lock.hostname}:99999999\n")
@@ -338,12 +332,9 @@ class TestLockdirLock:
             with pytest.raises(RuntimeError, match="Failed to acquire lock after 3 attempts"):
                 lock.acquire()
 
-    def test_release_oserror_verbose(self, capsys, tmp_path):
+    def test_release_oserror_verbose(self, capsys, make_lock):
         """Release OSError prints warning when verbose >= 2."""
-        tmpdir = str(tmp_path)
-        target = os.path.join(tmpdir, "test.o")
-        args = _make_lock_args(verbose=2)
-        lock = LockdirLock(target, args)
+        lock = make_lock(verbose=2)
         # Don't actually acquire - lockdir doesn't exist, release should handle it
         lock.release()
         # rmdir on non-existent dir raises OSError, caught with verbose warning
@@ -356,15 +347,12 @@ class TestLockdirLock:
         assert age >= 0
         os.rmdir(lock.lockdir)
 
-    def test_hostname_uses_fqdn(self, monkeypatch, tmp_path):
+    def test_hostname_uses_fqdn(self, monkeypatch, make_lock):
         """Issue #6: multi-interface hosts get consistent identity via FQDN
         rather than gethostname() (which can return per-interface aliases)."""
         monkeypatch.setattr(socket, "getfqdn", lambda *a, **kw: "node01.cluster.example.com")
         monkeypatch.setattr(socket, "gethostname", lambda: "node01.eth0")
-        tmpdir = str(tmp_path)
-        target = os.path.join(tmpdir, "test.o")
-        args = _make_lock_args()
-        lock = LockdirLock(target, args)
+        lock = make_lock()
         assert lock.hostname == "node01.cluster.example.com"
 
     def test_hostname_falls_back_to_gethostname_when_fqdn_empty(self, monkeypatch, tmp_path):
@@ -409,12 +397,9 @@ class TestFcntlLock:
         assert os.path.exists(lock.lockfile)
         lock.release()
 
-    def test_release_error_handled(self, capsys, tmp_path):
+    def test_release_error_handled(self, capsys, make_lock):
         """Release handles errors gracefully."""
-        tmpdir = str(tmp_path)
-        target = os.path.join(tmpdir, "test.o")
-        args = _make_lock_args(verbose=2)
-        lock = FcntlLock(target, args)
+        lock = make_lock(verbose=2)
         lock.fd = None
         # Release without acquire — should not crash
         lock.release()
@@ -576,11 +561,8 @@ class TestCIFSLock:
         lock.acquire()
         lock.release()
 
-    def test_release_oserror_verbose(self, capsys, tmp_path):
-        tmpdir = str(tmp_path)
-        target = os.path.join(tmpdir, "test.o")
-        args = _make_lock_args(verbose=2)
-        lock = CIFSLock(target, args)
+    def test_release_oserror_verbose(self, capsys, make_lock):
+        lock = make_lock(verbose=2)
         lock.fd = None
         # Release without acquire - should handle gracefully
         with patch("os.path.exists", return_value=True), patch("os.unlink", side_effect=OSError("fail")):
