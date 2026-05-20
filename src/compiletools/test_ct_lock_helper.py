@@ -10,6 +10,8 @@ import tempfile
 
 import pytest
 
+from compiletools.ct_lock_helper import create_args_from_env
+
 
 @pytest.fixture
 def temp_target():
@@ -38,48 +40,53 @@ def temp_target():
                 pass
 
 
+def _run_helper(subcmd, target, strategy, *cmd, timeout=5):
+    """Invoke ``ct-lock-helper <subcmd> --target=... --strategy=... -- <cmd...>``."""
+    return subprocess.run(
+        [
+            "ct-lock-helper",
+            subcmd,
+            f"--target={target}",
+            f"--strategy={strategy}",
+            "--",
+            *cmd,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def _assert_lock_cleaned(target, strategy, *, on_error=False):
+    """Assert that the strategy-specific lock sidecar was removed.
+
+    ``flock``/``fcntl`` keep a persistent ``<target>.lock`` shared with peers;
+    ``cifs`` keeps the base ``.lock`` but removes ``.lock_excl``; ``lockdir``
+    removes the entire ``.lockdir``.
+    """
+    suffix = " on error" if on_error else ""
+    if strategy == "lockdir":
+        assert not os.path.exists(target + ".lockdir"), f"Lock not cleaned up{suffix}"
+    elif strategy == "cifs":
+        assert not os.path.exists(target + ".lock_excl"), f"Excl marker not cleaned up{suffix}"
+    elif strategy not in ("flock", "fcntl"):
+        assert not os.path.exists(target + ".lock"), f"Lock not cleaned up{suffix}"
+
+
 class TestLockHelper:
     """Tests for ct-lock-helper."""
 
     @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock", "fcntl"])
     def test_successful_compile(self, temp_target, strategy):
         """Test that ct-lock-helper successfully compiles a simple program."""
-        # Create a simple C source file
         source = temp_target.replace(".o", ".c")
         with open(source, "w") as f:
             f.write("int main() { return 0; }\n")
-
         try:
-            result = subprocess.run(
-                [
-                    "ct-lock-helper",
-                    "compile",
-                    f"--target={temp_target}",
-                    f"--strategy={strategy}",
-                    "--",
-                    "gcc",
-                    "-c",
-                    source,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-
-            # Verify success
+            result = _run_helper("compile", temp_target, strategy, "gcc", "-c", source)
             assert result.returncode == 0, f"Compilation failed: {result.stderr}"
             assert os.path.exists(temp_target), "Target file not created"
-
-            # Verify lock was cleaned up (flock/fcntl lock the target directly, no sidecar).
-            # CIFSLock intentionally leaves the base .lock file as a persistent marker; only
-            # the .lock_excl exclusivity marker is removed on release.
-            if strategy == "lockdir":
-                assert not os.path.exists(temp_target + ".lockdir"), "Lock not cleaned up"
-            elif strategy == "cifs":
-                assert not os.path.exists(temp_target + ".lock_excl"), "Excl marker not cleaned up"
-            elif strategy not in ("flock", "fcntl"):
-                assert not os.path.exists(temp_target + ".lock"), "Lock not cleaned up"
-
+            _assert_lock_cleaned(temp_target, strategy)
         finally:
             if os.path.exists(source):
                 os.unlink(source)
@@ -87,43 +94,13 @@ class TestLockHelper:
     @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock", "fcntl"])
     def test_compile_error_propagates(self, temp_target, strategy):
         """Test that compiler errors cause non-zero exit."""
-        # Create source with syntax error
         source = temp_target.replace(".o", ".c")
         with open(source, "w") as f:
             f.write("int main() { this_is_a_syntax_error; }\n")
-
         try:
-            result = subprocess.run(
-                [
-                    "ct-lock-helper",
-                    "compile",
-                    f"--target={temp_target}",
-                    f"--strategy={strategy}",
-                    "--",
-                    "gcc",
-                    "-c",
-                    source,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-
-            # Verify failure
+            result = _run_helper("compile", temp_target, strategy, "gcc", "-c", source)
             assert result.returncode != 0, "Should fail with syntax error"
-
-            # Verify lock was cleaned up even on error (flock/fcntl keep lockfile
-            # on disk: their ``<target>.lock`` sidecar is a persistent marker
-            # that peer locks share — unlinking would race peers).
-            # CIFSLock intentionally leaves the base .lock file as a persistent marker; only
-            # the .lock_excl exclusivity marker is removed on release.
-            if strategy == "lockdir":
-                assert not os.path.exists(temp_target + ".lockdir"), "Lock not cleaned up on error"
-            elif strategy == "cifs":
-                assert not os.path.exists(temp_target + ".lock_excl"), "Excl marker not cleaned up on error"
-            elif strategy not in ("flock", "fcntl"):
-                assert not os.path.exists(temp_target + ".lock"), "Lock not cleaned up on error"
-
+            _assert_lock_cleaned(temp_target, strategy, on_error=True)
         finally:
             if os.path.exists(source):
                 os.unlink(source)
@@ -151,48 +128,17 @@ class TestLockHelperLink:
     def test_successful_link(self, temp_target, strategy):
         """Test that ct-lock-helper link runs a command under lock."""
         # Use 'touch' as a simple link stand-in
-        result = subprocess.run(
-            [
-                "ct-lock-helper",
-                "link",
-                f"--target={temp_target}",
-                f"--strategy={strategy}",
-                "--",
-                "touch",
-                temp_target,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-
+        result = _run_helper("link", temp_target, strategy, "touch", temp_target)
         assert result.returncode == 0, f"Link failed: {result.stderr}"
         assert os.path.exists(temp_target), "Target file not created"
-
-        # Verify lock was cleaned up
         if strategy == "lockdir":
             assert not os.path.exists(temp_target + ".lockdir"), "Lock not cleaned up"
 
     @pytest.mark.parametrize("strategy", ["lockdir", "cifs", "flock", "fcntl"])
     def test_link_error_propagates(self, temp_target, strategy):
         """Test that link command errors cause non-zero exit."""
-        result = subprocess.run(
-            [
-                "ct-lock-helper",
-                "link",
-                f"--target={temp_target}",
-                f"--strategy={strategy}",
-                "--",
-                "false",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-
+        result = _run_helper("link", temp_target, strategy, "false")
         assert result.returncode != 0, "Should fail when command fails"
-
-        # Verify lock was cleaned up even on error
         if strategy == "lockdir":
             assert not os.path.exists(temp_target + ".lockdir"), "Lock not cleaned up on error"
 
@@ -223,8 +169,6 @@ class TestEnvParsing:
     def test_garbage_env_falls_back_to_default_with_warning(
         self, monkeypatch, capsys, env_name, value, attr, expected_default
     ):
-        from compiletools.ct_lock_helper import create_args_from_env
-
         monkeypatch.setenv(env_name, value)
         args = create_args_from_env()
         assert getattr(args, attr) == expected_default
@@ -233,8 +177,6 @@ class TestEnvParsing:
         assert value in err
 
     def test_valid_values_are_parsed(self, monkeypatch):
-        from compiletools.ct_lock_helper import create_args_from_env
-
         monkeypatch.setenv("CT_LOCK_WARN_INTERVAL", "60")
         monkeypatch.setenv("CT_LOCK_SLEEP_INTERVAL", "0.25")
         args = create_args_from_env()
@@ -242,8 +184,6 @@ class TestEnvParsing:
         assert args.sleep_interval_lockdir == 0.25
 
     def test_unset_env_uses_defaults(self, monkeypatch):
-        from compiletools.ct_lock_helper import create_args_from_env
-
         for name in (
             "CT_LOCK_WARN_INTERVAL",
             "CT_LOCK_TIMEOUT",
