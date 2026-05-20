@@ -49,6 +49,14 @@ class TestLockdirLock:
         """LockdirLock with default args on a fresh tmp-path target."""
         return LockdirLock(str(tmp_path / "test.o"), _make_lock_args())
 
+    @pytest.fixture
+    def make_lock(self, tmp_path):
+        """Factory that builds a LockdirLock with arbitrary arg overrides
+        on the same fresh tmp_path/test.o target."""
+        def _factory(**overrides):
+            return LockdirLock(str(tmp_path / "test.o"), _make_lock_args(**overrides))
+        return _factory
+
     def test_acquire_and_release(self, lock):
         lock.acquire()
         assert os.path.isdir(lock.lockdir)
@@ -64,23 +72,17 @@ class TestLockdirLock:
 
         assert lock._is_lock_stale() is True
 
-    def test_permissions_error_handled(self, tmp_path):
-        tmpdir = str(tmp_path)
-        target = os.path.join(tmpdir, "test.o")
-        args = _make_lock_args(verbose=3)
-        lock = LockdirLock(target, args)
+    def test_permissions_error_handled(self, make_lock):
+        lock = make_lock(verbose=3)
 
         # Acquire to create lockdir, then test permissions
         lock.acquire()
         # _set_lockdir_permissions runs during acquire, just verify no crash
         lock.release()
 
-    def test_auto_detect_sleep_interval(self, tmp_path):
+    def test_auto_detect_sleep_interval(self, make_lock):
         """When sleep_interval_lockdir is None, auto-detect from filesystem."""
-        tmpdir = str(tmp_path)
-        target = os.path.join(tmpdir, "test.o")
-        args = _make_lock_args(sleep_interval_lockdir=None)
-        lock = LockdirLock(target, args)
+        lock = make_lock(sleep_interval_lockdir=None)
         # Should have auto-detected a sleep interval
         assert lock.sleep_interval > 0
 
@@ -227,23 +229,17 @@ class TestLockdirLock:
         # Fresh lock (age < grace period) => not stale
         assert lock._is_lock_stale() is False
 
-    def test_is_lock_stale_no_pid_old(self, tmp_path):
+    def test_is_lock_stale_no_pid_old(self, make_lock):
         """Lock without PID file older than cross_host_timeout IS stale."""
-        tmpdir = str(tmp_path)
-        target = os.path.join(tmpdir, "test.o")
-        args = _make_lock_args(lock_cross_host_timeout=1, lock_creation_grace_period=0)
-        lock = LockdirLock(target, args)
+        lock = make_lock(lock_cross_host_timeout=1, lock_creation_grace_period=0)
         os.mkdir(lock.lockdir)
         # Make the lock appear old
         with patch.object(lock, "_get_lock_age_seconds", return_value=10):
             assert lock._is_lock_stale() is True
 
-    def test_is_lock_stale_no_pid_middle(self, tmp_path):
+    def test_is_lock_stale_no_pid_middle(self, make_lock):
         """Lock without PID in middle ground (past grace, before timeout) is NOT stale."""
-        tmpdir = str(tmp_path)
-        target = os.path.join(tmpdir, "test.o")
-        args = _make_lock_args(lock_cross_host_timeout=300, lock_creation_grace_period=2)
-        lock = LockdirLock(target, args)
+        lock = make_lock(lock_cross_host_timeout=300, lock_creation_grace_period=2)
         os.mkdir(lock.lockdir)
         with patch.object(lock, "_get_lock_age_seconds", return_value=10):
             assert lock._is_lock_stale() is False
@@ -309,12 +305,9 @@ class TestLockdirLock:
         assert os.path.isdir(lock.lockdir)
         lock.release()
 
-    def test_acquire_filenotfounderror_retry(self, tmp_path):
+    def test_acquire_filenotfounderror_retry(self, make_lock):
         """FileNotFoundError during pid write triggers retry."""
-        tmpdir = str(tmp_path)
-        target = os.path.join(tmpdir, "test.o")
-        args = _make_lock_args(verbose=1)
-        lock = LockdirLock(target, args)
+        lock = make_lock(verbose=1)
 
         call_count = 0
         real_mkdir = os.mkdir
@@ -391,6 +384,13 @@ class TestFcntlLock:
     def lock(self, tmp_path):
         """FcntlLock with default args on a fresh tmp-path target."""
         return FcntlLock(str(tmp_path / "test.o"), _make_lock_args())
+
+    @pytest.fixture
+    def make_lock(self, tmp_path):
+        """Factory that builds an FcntlLock with arbitrary arg overrides."""
+        def _factory(**overrides):
+            return FcntlLock(str(tmp_path / "test.o"), _make_lock_args(**overrides))
+        return _factory
 
     def test_acquire_and_release(self, lock):
         lock.acquire()
@@ -480,6 +480,13 @@ class TestFlockLock:
         """FlockLock with default args on a fresh tmp-path target."""
         return FlockLock(str(tmp_path / "test.o"), _make_lock_args())
 
+    @pytest.fixture
+    def make_lock(self, tmp_path):
+        """Factory that builds a FlockLock with arbitrary arg overrides."""
+        def _factory(**overrides):
+            return FlockLock(str(tmp_path / "test.o"), _make_lock_args(**overrides))
+        return _factory
+
     def test_acquire_and_release(self, lock):
         lock.acquire()
         lock.release()
@@ -543,6 +550,13 @@ class TestCIFSLock:
     def lock(self, tmp_path):
         """CIFSLock with default args on a fresh tmp-path target."""
         return CIFSLock(str(tmp_path / "test.o"), _make_lock_args())
+
+    @pytest.fixture
+    def make_lock(self, tmp_path):
+        """Factory that builds a CIFSLock with arbitrary arg overrides."""
+        def _factory(**overrides):
+            return CIFSLock(str(tmp_path / "test.o"), _make_lock_args(**overrides))
+        return _factory
 
     def test_acquire_and_release(self, lock):
         lock.acquire()
@@ -625,12 +639,9 @@ class TestCIFSLock:
         finally:
             holder.release()
 
-    def test_acquire_does_not_remove_cross_host_holder(self, tmp_path):
+    def test_acquire_does_not_remove_cross_host_holder(self, make_lock):
         """Cross-host holders cannot be verified; we must not evict them."""
-        tmpdir = str(tmp_path)
-        target = os.path.join(tmpdir, "test.o")
-        args = _make_lock_args(sleep_interval_cifs=0.01, lock_cross_host_timeout=600)
-        lock = CIFSLock(target, args)
+        lock = make_lock(sleep_interval_cifs=0.01, lock_cross_host_timeout=600)
         with open(lock.lockfile_excl, "w") as f:
             f.write("some.other.host.example.com:12345:1.0\n")
         # is_excl_stale should be False (cross-host)
