@@ -27,14 +27,34 @@ from compiletools.apptools import add_output_directory_arguments
 from compiletools.build_context import BuildContext
 
 
+@pytest.fixture(scope="session")
+def _functional_cxx():  # pyright: ignore[reportUnusedFunction]
+    """Resolve a functional compiler ONCE, while $HOME is still genuine.
+
+    Several tests below clobber $HOME to a non-existent absolute path to
+    assert $HOME / ~ expansion. On hosts where g++ is a ccache wrapper,
+    that broken $HOME makes ccache fail to create its cache dir under
+    $HOME/.cache, so the incidental compiler auto-detection inside
+    parseargs (which runs a real -c compile) fails and parseargs raises.
+    These tests are about conf expansion, not the compiler, so we pin CXX
+    to a compiler detected before $HOME is mutated. Detection here uses the
+    same env-blind probe (a fixed g++/clang++/... candidate list) that
+    parseargs runs, so the pinned value matches what parseargs would have
+    auto-detected on a non-ccache host — only the timing differs."""
+    return apptools.get_functional_cxx_compiler()
+
+
 @pytest.fixture(autouse=True)
-def _clear_apptools_cache():  # pyright: ignore[reportUnusedFunction]
+def _clear_apptools_cache(monkeypatch, _functional_cxx):  # pyright: ignore[reportUnusedFunction]
     """Reset configargparse parser state and apptools caches around every
     test so PKG_CONFIG_PATH mutations from neighbouring tests can't leak
-    in (or out)."""
+    in (or out). Also pin CXX so the $HOME overrides below can't break
+    parseargs' compiler auto-detection (see _functional_cxx)."""
     apptools.clear_cache()
     uth.delete_existing_parsers()
     apptools.resetcallbacks()
+    if _functional_cxx:
+        monkeypatch.setenv("CXX", _functional_cxx)
     yield
     apptools.clear_cache()
     uth.delete_existing_parsers()
