@@ -11,6 +11,8 @@ This test exposes cases where they disagree.
 
 from pathlib import Path
 
+import pytest
+
 import compiletools.apptools
 import compiletools.headerdeps
 import compiletools.hunter
@@ -105,7 +107,8 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
         """Convert set of file paths to set of basenames for easier comparison."""
         return {Path(h).name for h in header_set}
 
-    def test_empty_macro_bug_sample(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_empty_macro_bug_sample(self):
         """Expose bug where headertree misses conditionally-included headers.
 
         The dependency chain:
@@ -126,17 +129,8 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
         headertree_basenames = self._get_basenames(headertree_headers)
         hunter_basenames = self._get_basenames(hunter_headers)
 
-        print(f"\nheadertree found: {sorted(headertree_basenames)}")
-        print(f"hunter found: {sorted(hunter_basenames)}")
-
-        # Check for disagreement
         missing_in_headertree = hunter_basenames - headertree_basenames
         missing_in_hunter = headertree_basenames - hunter_basenames
-
-        if missing_in_headertree:
-            print(f"\nBUG EXPOSED: headertree missed: {missing_in_headertree}")
-        if missing_in_hunter:
-            print(f"\nWARNING: hunter missed: {missing_in_hunter}")
 
         assert headertree_basenames == hunter_basenames, (
             f"BUG EXPOSED: headertree and hunter disagree on included files!\n"
@@ -156,7 +150,8 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
             f"     3. Re-discover with converged macro state"
         )
 
-    def test_undef_bug_sample(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_undef_bug_sample(self):
         """Test #undef handling agreement between headertree and hunter.
 
         The dependency chain:
@@ -178,16 +173,8 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
         headertree_basenames = self._get_basenames(headertree_headers)
         hunter_basenames = self._get_basenames(hunter_headers)
 
-        print(f"\nheadertree found: {sorted(headertree_basenames)}")
-        print(f"hunter found: {sorted(hunter_basenames)}")
-
         missing_in_headertree = hunter_basenames - headertree_basenames
         missing_in_hunter = headertree_basenames - hunter_basenames
-
-        if missing_in_headertree:
-            print(f"\nBUG: headertree missed: {missing_in_headertree}")
-        if missing_in_hunter:
-            print(f"\nBUG: hunter missed: {missing_in_hunter}")
 
         assert headertree_basenames == hunter_basenames, (
             f"Disagreement on #undef handling!\n"
@@ -223,17 +210,8 @@ class TestHeadertreeHunterAgreement(BaseCompileToolsTestCase):
         headertree_basenames = self._get_basenames(headertree_headers)
         hunter_basenames = self._get_basenames(hunter_headers)
 
-        print("\nWithout DEBUG macro:")
-        print(f"headertree found: {sorted(headertree_basenames)}")
-        print(f"hunter found: {sorted(hunter_basenames)}")
-
         missing_in_headertree = hunter_basenames - headertree_basenames
         missing_in_hunter = headertree_basenames - hunter_basenames
-
-        if missing_in_headertree:
-            print(f"\nBUG: headertree missed: {missing_in_headertree}")
-        if missing_in_hunter:
-            print(f"\nBUG: hunter missed: {missing_in_hunter}")
 
         assert headertree_basenames == hunter_basenames, (
             f"Disagreement on basic macro-conditional includes!\n"

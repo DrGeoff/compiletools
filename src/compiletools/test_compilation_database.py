@@ -270,7 +270,7 @@ class TestCompilationDatabase:
                         if arg == "-I" and i + 1 < len(args):
                             comp_db_includes.add(args[i + 1])
 
-                for _source_file, command in makefile_commands.items():
+                for command in makefile_commands.values():
                     for i, arg in enumerate(command):
                         if arg == "-I" and i + 1 < len(command):
                             makefile_includes.add(command[i + 1])
@@ -954,7 +954,7 @@ class TestCompilationDatabase:
 
         source_token_re = re.compile(r".+\.(?:cpp|c|cc|cxx|C)\Z")
 
-        for _line_num, line in enumerate(lines):
+        for line in lines:
             original_line = line
             line = line.strip()
 
@@ -1126,12 +1126,6 @@ class TestCompilationDatabase:
                             f"Duplicate -I paths found: {include_paths}"
                         )
 
-                        print(f"✓ Command format valid for {cmd['file']}")
-                        print(f"  Compiler: {first_arg}")
-                        print(f"  Include paths: {include_paths}")
-                        print(f"  System include paths: {isystem_paths}")
-
-                    print("✓ All compile_commands.json format compliance tests passed!")
 
 
 def _concurrent_write_worker(work_queue, result_queue, source_file, output_file):
@@ -1254,8 +1248,6 @@ class TestConcurrentCompilationDatabase:
                 f"Duplicate entries found - possible write corruption. "
                 f"Entries: {len(compile_commands)}, Unique files: {len(files_in_db)}"
             )
-
-            print(f"✓ Concurrent write test passed with {len(compile_commands)} entries")
 
     @uth.requires_functional_compiler
     def test_merge_respects_existing_directory_field(self):
