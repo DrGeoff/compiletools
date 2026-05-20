@@ -1,12 +1,16 @@
+import glob
+import json
 import os
 import os.path
 import shutil
+import subprocess
+from unittest.mock import patch
+
+import pytest
 
 import compiletools.apptools
 import compiletools.cake
 import compiletools.namer
-
-# import pdb
 import compiletools.testhelper as uth
 import compiletools.utils
 from compiletools.build_context import BuildContext
@@ -72,7 +76,6 @@ class TestCake(BaseCompileToolsTestCase):
             assert os.path.exists("compile_commands.json"), "Compilation database should be created by default"
 
             # Verify compilation database content
-            import json
 
             with open("compile_commands.json") as f:
                 commands = json.load(f)
@@ -174,7 +177,6 @@ class TestCake(BaseCompileToolsTestCase):
             )
 
             # Verify custom compilation database content
-            import json
 
             with open(custom_output) as f:
                 commands = json.load(f)
@@ -295,7 +297,6 @@ class TestCake(BaseCompileToolsTestCase):
 
         # Add in the object filenames (only cpp have object files)
         # Object files now have content-addressable names with hashes, so we glob for them
-        import glob
 
         objdir = nmr.object_dir(fnames[0])
         for fname in [name for name in fnames if "cpp" in name]:
@@ -322,7 +323,6 @@ class TestCake(BaseCompileToolsTestCase):
         timestamps, the pre compiling timestamps and the
         post compiling timestamps
         """
-        import os
 
         # For files in prets that still exist in postts, verify they changed or didn't as expected
         for fname in prets:
@@ -498,7 +498,6 @@ class TestCake(BaseCompileToolsTestCase):
 
     def test_main_oserror(self):
         """Test that main() handles OSError and returns 1."""
-        from unittest.mock import patch
 
         with uth.TempDirContext():
             self._tmpdir = os.getcwd()
@@ -513,7 +512,6 @@ class TestCake(BaseCompileToolsTestCase):
 
     def test_main_generic_exception(self):
         """Test that main() handles generic exceptions and returns 1."""
-        from unittest.mock import patch
 
         with uth.TempDirContext():
             self._tmpdir = os.getcwd()
@@ -528,7 +526,6 @@ class TestCake(BaseCompileToolsTestCase):
 
     def test_main_oserror_verbose_reraises(self):
         """Test that main() re-raises OSError when verbose >= 2."""
-        from unittest.mock import patch
 
         with uth.TempDirContext():
             self._tmpdir = os.getcwd()
@@ -537,7 +534,6 @@ class TestCake(BaseCompileToolsTestCase):
                 tempdir=self._tmpdir,
                 defaultvariant=os.path.basename(self._config_name)[:-5],
             )
-            import pytest
 
             with pytest.raises(OSError):
                 with patch(
@@ -548,7 +544,6 @@ class TestCake(BaseCompileToolsTestCase):
 
     def test_main_generic_exception_verbose_reraises(self):
         """Test that main() re-raises generic exceptions when verbose >= 2."""
-        from unittest.mock import patch
 
         with uth.TempDirContext():
             self._tmpdir = os.getcwd()
@@ -557,7 +552,6 @@ class TestCake(BaseCompileToolsTestCase):
                 tempdir=self._tmpdir,
                 defaultvariant=os.path.basename(self._config_name)[:-5],
             )
-            import pytest
 
             with pytest.raises(RuntimeError, match="something broke"):
                 with patch(
@@ -568,8 +562,6 @@ class TestCake(BaseCompileToolsTestCase):
 
     def test_main_called_process_error(self, capsys):
         """Test that main() handles subprocess.CalledProcessError and returns 1."""
-        import subprocess
-        from unittest.mock import patch
 
         with uth.TempDirContext():
             self._tmpdir = os.getcwd()
@@ -593,8 +585,6 @@ class TestCake(BaseCompileToolsTestCase):
 
     def test_main_called_process_error_verbose_reraises(self):
         """Test that main() re-raises subprocess.CalledProcessError when verbose >= 2."""
-        import subprocess
-        from unittest.mock import patch
 
         with uth.TempDirContext():
             self._tmpdir = os.getcwd()
@@ -603,7 +593,6 @@ class TestCake(BaseCompileToolsTestCase):
                 tempdir=self._tmpdir,
                 defaultvariant=os.path.basename(self._config_name)[:-5],
             )
-            import pytest
 
             cpe = subprocess.CalledProcessError(
                 returncode=2,
@@ -617,8 +606,6 @@ class TestCake(BaseCompileToolsTestCase):
 
     def test_main_called_process_error_string_cmd(self, capsys):
         """Test that main() handles CalledProcessError with a plain-string cmd (output-only branch)."""
-        import subprocess
-        from unittest.mock import patch
 
         with uth.TempDirContext():
             self._tmpdir = os.getcwd()
@@ -642,7 +629,6 @@ class TestCake(BaseCompileToolsTestCase):
 
     def test_signal_handler_exits(self):
         """Test that signal_handler calls sys.exit(0)."""
-        import pytest
 
         with pytest.raises(SystemExit) as exc_info:
             compiletools.cake.signal_handler(None, None)
@@ -865,7 +851,6 @@ class TestCake(BaseCompileToolsTestCase):
         when realclean is set, not just clean. Generating
         compile_commands.json immediately before nuking the bin/obj
         dirs is wasted work and confuses tooling."""
-        from unittest.mock import patch
 
         with uth.TempDirContext():
             self._tmpdir = os.getcwd()
@@ -887,7 +872,6 @@ class TestCake(BaseCompileToolsTestCase):
 
     def test_process_filelist_branch(self):
         """Test that process() calls _callfilelist when args.filelist is set."""
-        from unittest.mock import patch
 
         with uth.TempDirContext():
             self._tmpdir = os.getcwd()
@@ -908,7 +892,6 @@ class TestCake(BaseCompileToolsTestCase):
 
     def test_process_verbose_high(self):
         """Test that process() prints debug messages when verbose > 4."""
-        from unittest.mock import patch
 
         with uth.TempDirContext():
             self._tmpdir = os.getcwd()
@@ -929,7 +912,6 @@ class TestCake(BaseCompileToolsTestCase):
 
     def test_process_single_static_expands(self):
         """Test that process() expands a single static library file."""
-        from unittest.mock import patch
 
         with uth.TempDirContext():
             self._tmpdir = os.getcwd()
@@ -959,7 +941,6 @@ class TestCake(BaseCompileToolsTestCase):
 
     def test_process_single_dynamic_expands(self):
         """Test that process() expands a single dynamic library file."""
-        from unittest.mock import patch
 
         with uth.TempDirContext():
             self._tmpdir = os.getcwd()

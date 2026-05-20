@@ -1,7 +1,14 @@
 import json
+import multiprocessing
 import os
+import re
+import shutil
 import time
 import types
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import stringzilla as sz
 
 import compiletools.apptools
 import compiletools.compilation_database
@@ -279,7 +286,6 @@ class TestCompilationDatabase:
 
         with uth.TempDirContext() as _:
             # Copy some sample files to the current directory for auto-discovery
-            import shutil
 
             shutil.copy(uth.example_file("simple/helloworld_cpp.cpp"), ".")
             shutil.copy(uth.example_file("simple/helloworld_c.c"), ".")
@@ -370,7 +376,6 @@ class TestCompilationDatabase:
 
         with uth.TempDirContext() as _:
             # Copy multiple sample files for initial build
-            import shutil
 
             shutil.copy(uth.example_file("simple/helloworld_cpp.cpp"), ".")
             shutil.copy(uth.example_file("simple/helloworld_c.c"), ".")
@@ -750,7 +755,6 @@ class TestCompilationDatabase:
 
         with uth.TempDirContext() as _:
             # Copy initial set of files
-            import shutil
 
             shutil.copy(uth.example_file("simple/helloworld_cpp.cpp"), ".")
             shutil.copy(uth.example_file("simple/helloworld_c.c"), ".")
@@ -853,7 +857,6 @@ class TestCompilationDatabase:
 
         with uth.TempDirContext() as _:
             # Copy files for testing
-            import shutil
 
             shutil.copy(uth.example_file("simple/helloworld_cpp.cpp"), ".")
             shutil.copy(uth.example_file("simple/helloworld_c.c"), ".")
@@ -878,7 +881,6 @@ class TestCompilationDatabase:
                     assert path1 == path2, "Path normalization should be consistent"
 
                     # Test StringZilla API - should leverage shared cache
-                    import stringzilla as sz
 
                     path3_sz = compiletools.wrappedos.realpath_sz(sz.Str("./test.cpp"))
                     path3 = str(path3_sz)  # Convert for comparison
@@ -949,7 +951,6 @@ class TestCompilationDatabase:
         with open(makefile_name) as f:
             lines = f.readlines()
 
-        import re
 
         source_token_re = re.compile(r".+\.(?:cpp|c|cc|cxx|C)\Z")
 
@@ -1044,7 +1045,6 @@ class TestCompilationDatabase:
 
             with uth.TempConfigContext(tempdir=os.getcwd()) as temp_config_name:
                 # Copy the sample to test directory
-                import shutil
 
                 shutil.copy(duplicate_flags_sample, "test_main.cpp")
 
@@ -1139,9 +1139,6 @@ def _concurrent_write_worker(work_queue, result_queue, source_file, output_file)
 
     Uses queues for deterministic coordination to avoid flaky tests.
     """
-    import compiletools.apptools
-    import compiletools.compilation_database
-    import compiletools.hunter
 
     # Wait for signal to start (all workers ready)
     work_queue.get()
@@ -1180,7 +1177,6 @@ class TestConcurrentCompilationDatabase:
         Uses multiprocessing with barriers to ensure deterministic timing
         and avoid flaky test failures in CI.
         """
-        import multiprocessing
 
         # Use spawn method to avoid fork() deprecation warnings
         ctx = multiprocessing.get_context("spawn")
@@ -1527,8 +1523,6 @@ class TestCompilationDatabaseModuleFlags:
         Avoiding the end-to-end path is deliberate: the CDB-on-disk variant
         only worked when get_functional_cxx_compiler() returned a g++ that
         accepted -std=c++20, which is environment-dependent."""
-        from types import SimpleNamespace
-        from unittest.mock import MagicMock
 
         creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
             compiletools.compilation_database.CompilationDatabaseCreator
@@ -1553,8 +1547,6 @@ class TestCompilationDatabaseModuleFlags:
         as an unknown header unit. Unit-level test (no compiler required):
         constructs a CompilationDatabaseCreator and stubs the file-analysis
         result for a clang CXX."""
-        from types import SimpleNamespace
-        from unittest.mock import MagicMock
 
         creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
             compiletools.compilation_database.CompilationDatabaseCreator
@@ -1576,8 +1568,6 @@ class TestCompilationDatabaseModuleFlags:
     def test_clang_import_std_gets_stdlib_libcxx(self):
         """`import std;` under clang requires -stdlib=libc++; the system std
         module is libc++-shipped today."""
-        from types import SimpleNamespace
-        from unittest.mock import MagicMock
 
         creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
             compiletools.compilation_database.CompilationDatabaseCreator
@@ -1627,8 +1617,6 @@ class TestCompilationDatabaseModuleFlags:
         Complements test_non_module_tu_unchanged (end-to-end) with a unit-level
         assertion that the no-activity short-circuit in _module_kind_flags
         fires regardless of compiler kind."""
-        from types import SimpleNamespace
-        from unittest.mock import MagicMock
 
         creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
             compiletools.compilation_database.CompilationDatabaseCreator
@@ -1651,8 +1639,6 @@ class TestCompilationDatabaseModuleFlags:
         (e.g. icpx, msvc) must yield no module flags rather than emit the
         wrong compiler's syntax. compiler_kind returns 'unknown' for such
         binaries; the final return [] is the safety net."""
-        from types import SimpleNamespace
-        from unittest.mock import MagicMock
 
         creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
             compiletools.compilation_database.CompilationDatabaseCreator
@@ -1674,8 +1660,6 @@ class TestCompilationDatabaseModuleFlags:
         """If hunter has no FileAnalysisResult cached for a source (e.g. a
         synthetic file added after the analysis sweep), _module_kind_flags
         must degrade to [] rather than crash with AttributeError."""
-        from types import SimpleNamespace
-        from unittest.mock import MagicMock
 
         creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
             compiletools.compilation_database.CompilationDatabaseCreator
@@ -1690,8 +1674,6 @@ class TestCompilationDatabaseModuleFlags:
         """If _file_analysis_result raises, _module_kind_flags must swallow
         and return [] — module-flag emission is best-effort augmentation and
         must never break compile_commands.json generation."""
-        from types import SimpleNamespace
-        from unittest.mock import MagicMock
 
         creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
             compiletools.compilation_database.CompilationDatabaseCreator
@@ -1730,7 +1712,6 @@ class TestCompilationDatabaseDefensivePaths:
         return [] rather than emit a CDB entry with no compiler — clangd
         treats an empty arguments[0] as an opaque command and reports the
         entire TU as unparseable."""
-        from types import SimpleNamespace
 
         creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
             compiletools.compilation_database.CompilationDatabaseCreator
@@ -1746,7 +1727,6 @@ class TestCompilationDatabaseDefensivePaths:
         """When _get_compiler_command returns [] (e.g. missing CXX),
         _create_command_object must return None so the caller drops the
         entry from the CDB."""
-        from types import SimpleNamespace
 
         creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
             compiletools.compilation_database.CompilationDatabaseCreator
@@ -1851,8 +1831,6 @@ class TestCompilationDatabaseDefensivePaths:
         propagate — the producer can then write an empty CDB and the next
         build heals it. Without this guard a single bad file would lock
         the user out of regenerating compile_commands.json entirely."""
-        from types import SimpleNamespace
-        from unittest.mock import MagicMock
 
         creator = compiletools.compilation_database.CompilationDatabaseCreator.__new__(
             compiletools.compilation_database.CompilationDatabaseCreator

@@ -8,8 +8,11 @@ import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
 import compiletools.namer
+import compiletools.test_base as tb
 import compiletools.testhelper as uth
+from compiletools.build_backend import BuildBackend
 from compiletools.build_context import BuildContext
+from compiletools.trim_cache import parse_object_filename
 
 
 def _make_namer(description):
@@ -244,7 +247,6 @@ def test_object_pathname_is_sharded_by_file_hash():
             dep_hash = namer.compute_dep_hash([])
             obj_path = namer.object_pathname(source_file, "0123456789abcdef", dep_hash)
 
-            from compiletools.trim_cache import parse_object_filename
 
             obj_filename = os.path.basename(obj_path)
             parsed = parse_object_filename(obj_filename)
@@ -348,7 +350,6 @@ def test_different_cppflags_produce_different_object_names():
     uth.reset()
 
     try:
-        import compiletools.test_base as tb
 
         # Create a source file in a temp directory
         with tempfile.TemporaryDirectory() as srcdir:
@@ -455,10 +456,7 @@ def test_create_link_rule_returns_cas_link_plus_publish_pair():
     (with symlink fallback). Downstream rules continue to reference
     bin/<name> via Namer.executable_pathname; the symlink rule's output
     IS that path so test/build deps resolve correctly."""
-    import tempfile
 
-    import compiletools.testhelper as uth
-    from compiletools.build_backend import BuildBackend
 
     class _ConcreteBackend(BuildBackend):
         @staticmethod
@@ -530,10 +528,7 @@ def test_create_link_rule_legacy_shape_when_backend_self_manages_exe():
     ``_create_link_rule`` then emits a single classical link rule whose
     output IS the user-facing bin/<name> path (no compiletools-side
     cas-exedir wrapping)."""
-    import tempfile
 
-    import compiletools.testhelper as uth
-    from compiletools.build_backend import BuildBackend
 
     uth.reset()
     try:
@@ -586,8 +581,6 @@ def _make_minimal_link_backend(tmpdir, *, sources=None, env=None):
     so the link-key payload contents can be exercised in isolation.
     Used by C3 / C5 tests.
     """
-    import compiletools.testhelper as uth
-    from compiletools.build_backend import BuildBackend
 
     sources = sources or ["/src/main.cpp"]
 
@@ -636,9 +629,7 @@ def test_link_key_changes_with_source_date_epoch(monkeypatch):
     Two builds at different epochs MUST produce different cas-exe
     paths so the cache doesn't bake a stale build-id.
     """
-    import tempfile
 
-    import compiletools.testhelper as uth
 
     uth.reset()
     try:
@@ -664,9 +655,7 @@ def test_link_key_changes_with_library_path(monkeypatch):
     which libfoo.so the linker resolves -lfoo against. Different
     resolution → different binary content → must differ in cache key.
     """
-    import tempfile
 
-    import compiletools.testhelper as uth
 
     uth.reset()
     try:
@@ -769,9 +758,7 @@ def test_link_key_differs_for_same_basename_different_bindir(monkeypatch):
     ``blank``. The new payload field is ``canonical_bindir``: the full
     canonicalised bindir, which differs between the two cases.
     """
-    import tempfile
 
-    import compiletools.testhelper as uth
 
     uth.reset()
     try:
@@ -801,9 +788,7 @@ def test_static_lib_key_changes_with_ar_identity(monkeypatch, tmp_path):
     A cache shared across runners with different binutils must not
     silently mix formats.
     """
-    import tempfile
 
-    import compiletools.testhelper as uth
 
     uth.reset()
     try:
