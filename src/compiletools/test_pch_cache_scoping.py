@@ -11,14 +11,18 @@ The load-bearing reproducer is
 ``test_pch_cache_key_unchanged_when_unused_cmdline_macro_changes``.
 """
 
+from types import SimpleNamespace
+
 import configargparse
 import pytest
+import stringzilla as sz
 
 import compiletools.apptools
 import compiletools.headerdeps
 import compiletools.hunter
 import compiletools.magicflags
 import compiletools.testhelper as uth
+from compiletools.build_backend import _pch_command_hash, _pch_scope_macro_hash
 from compiletools.build_context import BuildContext
 
 
@@ -72,8 +76,6 @@ def temp_config():
 def _hash_pch_with_app_name(value, sample_rel, temp_config):
     """Build a Hunter with ``-DAPP_NAME=<value>`` and compute the PCH
     command hash for ``sample_rel`` (used as a PCH header)."""
-    from compiletools.build_backend import _pch_command_hash, _pch_scope_macro_hash
-
     hntr = _make_hunter(
         [f"--append-CPPFLAGS=-DAPP_NAME={value}"],
         temp_config,
@@ -81,8 +83,6 @@ def _hash_pch_with_app_name(value, sample_rel, temp_config):
     sample = _sample(sample_rel)
     _process(hntr, sample)
     # Sanity: cmdline_origin actually contains APP_NAME.
-    import stringzilla as sz
-
     assert sz.Str("APP_NAME") in hntr.magicparser._initial_macro_state.cmdline_origin
 
     cxxflags_tokens = compiletools.apptools.tokenize_compile_flags("", "", hntr.args.CXXFLAGS)[2]
@@ -151,10 +151,6 @@ class TestPchCacheKeyNonDFlagsStillMatter:
     def test_pch_cache_key_changes_with_meaningful_flag_changes(self):
         """``-O2`` vs ``-O3`` must still produce distinct PCH cache keys
         even after the -D scope filter is applied."""
-        from types import SimpleNamespace
-
-        from compiletools.build_backend import _pch_command_hash
-
         args_o2 = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
         args_o3 = SimpleNamespace(CXX="g++", CXXFLAGS="-O3")
 
@@ -200,8 +196,6 @@ class TestPchScopeMacroHashEdgeCases:
         """When ``cmdline_origin`` is empty (no ``--append-*FLAGS=-D...``),
         ``_pch_scope_macro_hash`` returns 16 zero hex chars. The full
         ``_pch_command_hash`` should still produce a stable hash."""
-        from compiletools.build_backend import _pch_command_hash, _pch_scope_macro_hash
-
         hntr = _make_hunter([], temp_config)
         sample = _sample("no_ref.cpp")
         _process(hntr, sample)
@@ -226,16 +220,12 @@ class TestPchScopeMacroHashEdgeCases:
         """``cmdline_origin`` non-empty but the PCH header references
         none of the cmdline-D macros: ``_pch_scope_macro_hash`` returns
         the all-zeros sentinel (no scoping applied)."""
-        from compiletools.build_backend import _pch_scope_macro_hash
-
         hntr = _make_hunter(
             ["--append-CPPFLAGS=-DAPP_NAME=A"],
             temp_config,
         )
         sample = _sample("no_ref.cpp")
         _process(hntr, sample)
-
-        import stringzilla as sz
 
         assert sz.Str("APP_NAME") in hntr.magicparser._initial_macro_state.cmdline_origin
 
@@ -268,9 +258,6 @@ def test_pch_cache_key_unchanged_with_w_warning_change():
     in production calls ``args.flags.hash_relevant("cxx")``). Mirror
     that contract here by pre-filtering before each invocation.
     """
-    import compiletools.apptools
-    from compiletools.build_backend import _pch_command_hash
-
     def _hr(tokens):
         return compiletools.apptools.filter_hash_irrelevant_tokens(compiletools.apptools.strip_d_u_tokens(tokens))
 
@@ -299,8 +286,6 @@ def test_pch_cache_key_unchanged_with_w_warning_change():
 def test_pch_cache_key_unchanged_with_w_warning_in_magic_cxx_flags():
     """Magic-flag warnings (``//#CXXFLAGS=-Wall``) must also be
     filtered from the PCH cache key."""
-    from compiletools.build_backend import _pch_command_hash
-
     args = _StubArgs()
     h_wall = _pch_command_hash(
         args,
