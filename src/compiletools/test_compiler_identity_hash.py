@@ -10,11 +10,11 @@ still invalidates stale objects.
 
 import os
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import pytest
 import stringzilla as sz
 
 import compiletools.test_base as tb
@@ -24,6 +24,14 @@ from compiletools.preprocessing_cache import (
     MacroState,
     get_or_compute_preprocessing,
 )
+
+
+def _make_wrapper_script(path: Path, content: str = '#!/bin/sh\nexec g++ "$@"\n') -> Path:
+    """Create an executable wrapper script at ``path``, making parent dirs as needed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    path.chmod(0o755)
+    return path
 
 # ---------------------------------------------------------------------------
 # Tests 1-3: apptools.compiler_identity helper
@@ -74,10 +82,7 @@ def test_compiler_identity_canonicalises_in_workspace_binary(tmp_path):
     anchor_root, the realpath portion is rewritten to ``<GITROOT>/...``
     so two workspaces sharing a CAS see identical identity strings."""
     workspace = tmp_path / "workspace"
-    (workspace / "tools").mkdir(parents=True)
-    binary = workspace / "tools" / "cc-wrap.sh"
-    binary.write_text('#!/bin/sh\nexec g++ "$@"\n')
-    binary.chmod(0o755)
+    binary = _make_wrapper_script(workspace / "tools" / "cc-wrap.sh")
 
     compiler_identity.cache_clear()
     result = compiler_identity(str(binary), anchor_root=str(workspace))
@@ -88,11 +93,7 @@ def test_compiler_identity_canonicalises_in_workspace_binary(tmp_path):
 def test_compiler_identity_outside_anchor_unchanged(tmp_path):
     """A system / out-of-workspace compiler is left alone — only paths
     actually under the anchor get rewritten."""
-    sibling = tmp_path / "external"
-    sibling.mkdir()
-    binary = sibling / "g++-fake"
-    binary.write_text("#!/bin/sh\n")
-    binary.chmod(0o755)
+    binary = _make_wrapper_script(tmp_path / "external" / "g++-fake", "#!/bin/sh\n")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
@@ -104,10 +105,7 @@ def test_compiler_identity_outside_anchor_unchanged(tmp_path):
 
 def test_compiler_identity_empty_anchor_is_identity(tmp_path):
     """anchor_root="" must be a graceful no-op (no canonicalisation)."""
-    binary = tmp_path / "workspace" / "tools" / "cc.sh"
-    binary.parent.mkdir(parents=True)
-    binary.write_text("#!/bin/sh\n")
-    binary.chmod(0o755)
+    binary = _make_wrapper_script(tmp_path / "workspace" / "tools" / "cc.sh", "#!/bin/sh\n")
 
     compiler_identity.cache_clear()
     result = compiler_identity(str(binary), anchor_root="")
@@ -194,19 +192,11 @@ def test_compiler_identity_two_workspaces_canonicalise_to_same_realpath(tmp_path
     report's wrapper-script reproducer. Distinct from the unit tests
     because it proves the *cross-workspace* equality the leak
     actually broke."""
-    wrapper_content = '#!/bin/sh\nexec g++ "$@"\n'
-
     ws_a = tmp_path / "run-A" / "workspace"
-    (ws_a / "tools").mkdir(parents=True)
-    bin_a = ws_a / "tools" / "cc-wrap.sh"
-    bin_a.write_text(wrapper_content)
-    bin_a.chmod(0o755)
+    bin_a = _make_wrapper_script(ws_a / "tools" / "cc-wrap.sh")
 
     ws_b = tmp_path / "run-B" / "workspace"
-    (ws_b / "tools").mkdir(parents=True)
-    bin_b = ws_b / "tools" / "cc-wrap.sh"
-    bin_b.write_text(wrapper_content)
-    bin_b.chmod(0o755)
+    bin_b = _make_wrapper_script(ws_b / "tools" / "cc-wrap.sh")
 
     # Pin mtime+atime so the size|mtime portions match — the realpath
     # canonicalisation is what we're proving, not the (separate, more
@@ -323,7 +313,3 @@ def test_compiler_identity_propagates_through_get_or_compute_preprocessing():
         mock_lookup.return_value = "<test-file>"
         result = get_or_compute_preprocessing(file_result, initial, verbose=0, context=ctx)
     assert result.updated_macros.compiler_identity == "my-identity-string"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
