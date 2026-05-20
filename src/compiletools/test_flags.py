@@ -24,6 +24,35 @@ def _make_args(**kwargs) -> types.SimpleNamespace:
     return types.SimpleNamespace(**kwargs)
 
 
+@pytest.fixture
+def parsers_reset():
+    """Wipe the global configargparse parser cache + apptools callbacks
+    around tests that go through ``parseargs`` end-to-end."""
+    uth.delete_existing_parsers()
+    compiletools.apptools.resetcallbacks()
+    yield
+    uth.delete_existing_parsers()
+    compiletools.apptools.resetcallbacks()
+
+
+def _parseargs_with_temp_config(tmp_path, description):
+    """Build the standard test parser, run parseargs end-to-end, return args."""
+    temp_config_name = uth.create_temp_config(str(tmp_path))
+    argv = ["--config=" + temp_config_name]
+    config_files = compiletools.configutils.config_files_from_variant(argv=argv, exedir=uth.cakedir())
+    cap = configargparse.ArgumentParser(
+        conflict_handler="resolve",
+        description=description,
+        formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+        default_config_files=config_files,
+        args_for_setting_config_path=["-c", "--config"],
+        ignore_unknown_config_file_keys=True,
+    )
+    compiletools.apptools.add_common_arguments(cap)
+    compiletools.apptools.add_link_arguments(cap)
+    return compiletools.apptools.parseargs(cap, argv, context=BuildContext())
+
+
 def test_flags_from_args_reads_tokens():
     args = _make_args(
         CPPFLAGS_tokens=["-O2", "-Wall"],
@@ -127,30 +156,11 @@ def test_flags_is_frozen_and_hashable():
         a.cpp = ("-O0",)  # type: ignore[misc]
 
 
+@pytest.mark.usefixtures("parsers_reset")
 def test_args_has_flags_attribute_after_parseargs(tmp_path):
     """parseargs must populate args.flags as a Flags instance whose
     cpp slot mirrors args.CPPFLAGS_tokens (tuple-vs-list aware)."""
-    uth.delete_existing_parsers()
-    compiletools.apptools.resetcallbacks()
-    try:
-        temp_config_name = uth.create_temp_config(str(tmp_path))
-        argv = ["--config=" + temp_config_name]
-        config_files = compiletools.configutils.config_files_from_variant(argv=argv, exedir=uth.cakedir())
-
-        cap = configargparse.ArgumentParser(
-            conflict_handler="resolve",
-            description="test_args_has_flags_attribute_after_parseargs",
-            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-            default_config_files=config_files,
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-        compiletools.apptools.add_common_arguments(cap)
-        compiletools.apptools.add_link_arguments(cap)
-        args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
-    finally:
-        uth.delete_existing_parsers()
-        compiletools.apptools.resetcallbacks()
+    args = _parseargs_with_temp_config(tmp_path, "test_args_has_flags_attribute_after_parseargs")
 
     assert hasattr(args, "flags"), "parseargs must populate args.flags"
     assert isinstance(args.flags, Flags)
@@ -162,29 +172,11 @@ def test_args_has_flags_attribute_after_parseargs(tmp_path):
     assert utils.split_command_cached("-O2") == ["-O2"]
 
 
+@pytest.mark.usefixtures("parsers_reset")
 def test_check_flag_string_drift_clean(tmp_path):
     """check_flag_string_drift is a no-op when args.{*FLAGS} match the
     snapshot taken at parseargs end."""
-    uth.delete_existing_parsers()
-    compiletools.apptools.resetcallbacks()
-    try:
-        temp_config_name = uth.create_temp_config(str(tmp_path))
-        argv = ["--config=" + temp_config_name]
-        config_files = compiletools.configutils.config_files_from_variant(argv=argv, exedir=uth.cakedir())
-        cap = configargparse.ArgumentParser(
-            conflict_handler="resolve",
-            description="test_check_flag_string_drift_clean",
-            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-            default_config_files=config_files,
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-        compiletools.apptools.add_common_arguments(cap)
-        compiletools.apptools.add_link_arguments(cap)
-        args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
-    finally:
-        uth.delete_existing_parsers()
-        compiletools.apptools.resetcallbacks()
+    args = _parseargs_with_temp_config(tmp_path, "test_check_flag_string_drift_clean")
     # No mutation -> no raise.
     compiletools.apptools.check_flag_string_drift(args)
 
