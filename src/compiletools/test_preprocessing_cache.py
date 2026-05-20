@@ -15,23 +15,29 @@ from compiletools.build_context import BuildContext
 from compiletools.file_analyzer import FileAnalysisResult, PreprocessorDirective
 from compiletools.preprocessing_cache import MacroState, clear_cache, get_cache_stats, get_or_compute_preprocessing
 
+_skip_on_pypy = pytest.mark.skipif(
+    hasattr(sys, "pypy_version_info"),
+    reason="cache size assertions use sys.getsizeof / tracemalloc — not meaningful in PyPy",
+)
 
-class TestPreprocessingCache:
-    """Tests for unified preprocessing cache correctness."""
+
+class _CacheTestBase:
+    """Shared setup/teardown for preprocessing-cache tests: fresh BuildContext,
+    cleared cache, and a patched global_hash_registry.get_filepath_by_hash."""
 
     def setup_method(self):
-        """Clear cache before each test."""
         self.ctx = BuildContext()
         clear_cache(self.ctx)
-
-        # Mock get_filepath_by_hash since tests don't have real files in registry
         self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
         self.mock_get_filepath = self.patcher.start()
         self.mock_get_filepath.return_value = "<test-file>"
 
     def teardown_method(self):
-        """Clean up after each test method."""
         self.patcher.stop()
+
+
+class TestPreprocessingCache(_CacheTestBase):
+    """Tests for unified preprocessing cache correctness."""
 
     def _get_stats(self):
         return get_cache_stats(self.ctx)
@@ -125,7 +131,7 @@ class TestPreprocessingCache:
             conditional_macros=frozenset(conditional_macros),
         )
 
-    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
+    @_skip_on_pypy
     def test_cache_basic_hit(self):
         """Test basic cache hit scenario."""
         text = dedent("""
@@ -153,7 +159,7 @@ class TestPreprocessingCache:
         assert stats["misses"] == 1
         assert stats["total_calls"] == 2
 
-    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
+    @_skip_on_pypy
     def test_cache_macro_value_change(self):
         """Test that macro value changes produce different results."""
         text = dedent("""
@@ -178,7 +184,7 @@ class TestPreprocessingCache:
         stats = get_cache_stats(self.ctx)
         assert stats["misses"] == 2  # Both are misses
 
-    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
+    @_skip_on_pypy
     def test_cache_irrelevant_macro_addition(self):
         """Test that adding irrelevant macros results in cache HIT (optimization)."""
         text = dedent("""
@@ -204,7 +210,7 @@ class TestPreprocessingCache:
         assert stats["misses"] == 1  # Only first call is a miss
         assert stats["hits"] == 1  # Second call is a hit (same relevant macros)
 
-    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
+    @_skip_on_pypy
     def test_cache_irrelevant_macro_removal(self):
         """Test that removing irrelevant macros results in cache HIT (optimization)."""
         text = dedent("""
@@ -229,7 +235,7 @@ class TestPreprocessingCache:
         assert stats["misses"] == 1  # Only first call is a miss
         assert stats["hits"] == 1  # Second call is a hit (same relevant macros)
 
-    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
+    @_skip_on_pypy
     def test_cache_relevant_macro_change(self):
         """Test that changing relevant macros creates different cache keys."""
         text = dedent("""
@@ -259,7 +265,7 @@ class TestPreprocessingCache:
         stats = get_cache_stats(self.ctx)
         assert stats["misses"] == 2
 
-    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
+    @_skip_on_pypy
     def test_cache_file_change(self):
         """Test that file content changes create different cache keys."""
         text1 = dedent("""
@@ -342,7 +348,7 @@ class TestPreprocessingCache:
         # Verify initial_macros is unchanged (immutable input)
         assert sz.Str("NEW_MACRO") not in initial_macros.variable
 
-    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
+    @_skip_on_pypy
     def test_invariant_cache_honors_undef(self):
         """Ensure invariant cache does not resurrect macros removed via #undef."""
 
@@ -390,7 +396,7 @@ class TestPreprocessingCache:
             "Invariant cache should not reintroduce macros removed via #undef"
         )
 
-    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
+    @_skip_on_pypy
     def test_empty_macros(self):
         """Test cache behavior with empty macro state."""
         text = dedent("""
@@ -409,7 +415,7 @@ class TestPreprocessingCache:
         stats = get_cache_stats(self.ctx)
         assert stats["hits"] == 1
 
-    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
+    @_skip_on_pypy
     def test_cache_stats_accuracy(self):
         """Test that cache statistics are accurate."""
         text = dedent("""
@@ -447,24 +453,10 @@ class TestPreprocessingCache:
         assert stats3["hit_rate"] > 66.0  # 2/3 = 66.7%
 
 
-class TestCacheManagement:
+class TestCacheManagement(_CacheTestBase):
     """Tests for cache management functions."""
 
-    def setup_method(self):
-        """Clear cache before each test."""
-        self.ctx = BuildContext()
-        clear_cache(self.ctx)
-
-        # Mock get_filepath_by_hash since tests don't have real files in registry
-        self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
-        self.mock_get_filepath = self.patcher.start()
-        self.mock_get_filepath.return_value = "<test-file>"
-
-    def teardown_method(self):
-        """Clean up after each test method."""
-        self.patcher.stop()
-
-    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
+    @_skip_on_pypy
     def test_clear_cache(self):
         """Test cache clearing."""
         text = '#include "test.h"'
@@ -498,7 +490,7 @@ class TestCacheManagement:
         assert stats2["hits"] == 0
         assert stats2["misses"] == 0
 
-    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="sys.getsizeof not meaningful in PyPy")
+    @_skip_on_pypy
     def test_get_cache_stats_memory(self):
         """Test that cache stats include memory information."""
         clear_cache(self.ctx)
@@ -509,7 +501,7 @@ class TestCacheManagement:
         assert stats["memory_bytes"] >= 0
         assert stats["memory_mb"] >= 0.0
 
-    @pytest.mark.skipif(hasattr(sys, "pypy_version_info"), reason="tracemalloc not available in PyPy")
+    @_skip_on_pypy
     def test_memory_usage_reasonable(self):
         """Test that cache memory usage stays reasonable."""
         import tracemalloc
@@ -682,21 +674,11 @@ class TestGetHashVariableOnly:
         assert state.get_hash() == "0000000000000000"
 
 
-class TestCacheHitMacroReconstruction:
+class TestCacheHitMacroReconstruction(_CacheTestBase):
     """Regression tests for the anti-pollution invariant: cache hits must
     rebuild updated_macros from the *current* caller's input, not from the
     first caller's context that produced the cached entry.
     """
-
-    def setup_method(self):
-        self.ctx = BuildContext()
-        clear_cache(self.ctx)
-        self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
-        self.mock = self.patcher.start()
-        self.mock.return_value = "<test-file>"
-
-    def teardown_method(self):
-        self.patcher.stop()
 
     def _file_with_define(self, content_hash: str) -> FileAnalysisResult:
         """File with one #define and no conditionals (invariant)."""
@@ -829,19 +811,9 @@ class TestCacheHitMacroReconstruction:
         assert merged[sz.Str("GATE")] == sz.Str("1")
 
 
-class TestClearVariantCache:
+class TestClearVariantCache(_CacheTestBase):
     """clear_variant_cache must purge variant entries but preserve invariant
     entries. Used in two-pass header discovery convergence."""
-
-    def setup_method(self):
-        self.ctx = BuildContext()
-        clear_cache(self.ctx)
-        self.patcher = patch("compiletools.global_hash_registry.get_filepath_by_hash")
-        self.mock = self.patcher.start()
-        self.mock.return_value = "<test-file>"
-
-    def teardown_method(self):
-        self.patcher.stop()
 
     def test_clear_variant_cache_preserves_invariant_entries(self):
         from compiletools.preprocessing_cache import clear_variant_cache
