@@ -1,5 +1,6 @@
 """Unit tests for the Bazel build backend (no compiler required)."""
 
+import contextlib
 import io
 import os
 import shutil
@@ -18,6 +19,22 @@ from compiletools.build_backend import (
     get_backend_class,
 )
 from compiletools.build_graph import BuildGraph, BuildRule
+
+
+@contextlib.contextmanager
+def _patched_bazel_execute(backend):
+    """Patch the standard bazel-execute dependencies (shutil.which to locate
+    bazel, os.path.isdir, backend._run_bazel, _write_bazelrc, _publish_test_results)
+    that nearly every TestBazelRunsTestsInBuildPhase test sets up. Yields
+    (mock_run, mock_publish) for post-execute assertions."""
+    with (
+        patch("shutil.which", side_effect=lambda n: "/usr/bin/bazel" if n == "bazel" else None),
+        patch("os.path.isdir", return_value=False),
+        patch.object(backend, "_run_bazel") as mock_run,
+        patch.object(backend, "_write_bazelrc"),
+        patch.object(backend, "_publish_test_results") as mock_publish,
+    ):
+        yield mock_run, mock_publish
 
 
 class TestBazelBackendRegistered:
@@ -474,13 +491,7 @@ class TestBazelRunsTestsInBuildPhase:
 
     def test_execute_build_uses_bazel_test_when_graph_has_tests(self):
         backend = self._backend_with_test_graph()
-        with (
-            patch("shutil.which", side_effect=lambda n: "/usr/bin/bazel" if n == "bazel" else None),
-            patch("os.path.isdir", return_value=False),
-            patch.object(backend, "_run_bazel") as mock_run,
-            patch.object(backend, "_write_bazelrc"),
-            patch.object(backend, "_publish_test_results") as mock_publish,
-        ):
+        with _patched_bazel_execute(backend) as (mock_run, mock_publish):
             backend.execute("build")
 
         cmd = mock_run.call_args[0][0]
@@ -502,13 +513,7 @@ class TestBazelRunsTestsInBuildPhase:
             )
         )
         backend._graph = graph
-        with (
-            patch("shutil.which", side_effect=lambda n: "/usr/bin/bazel" if n == "bazel" else None),
-            patch("os.path.isdir", return_value=False),
-            patch.object(backend, "_run_bazel") as mock_run,
-            patch.object(backend, "_write_bazelrc"),
-            patch.object(backend, "_publish_test_results") as mock_publish,
-        ):
+        with _patched_bazel_execute(backend) as (mock_run, mock_publish):
             backend.execute("build")
 
         assert mock_run.call_args[0][0][1] == "build"
@@ -516,13 +521,7 @@ class TestBazelRunsTestsInBuildPhase:
 
     def test_run_under_plumbs_testprefix(self):
         backend = self._backend_with_test_graph(testprefix="valgrind --error-exitcode=1")
-        with (
-            patch("shutil.which", side_effect=lambda n: "/usr/bin/bazel" if n == "bazel" else None),
-            patch("os.path.isdir", return_value=False),
-            patch.object(backend, "_run_bazel") as mock_run,
-            patch.object(backend, "_write_bazelrc"),
-            patch.object(backend, "_publish_test_results"),
-        ):
+        with _patched_bazel_execute(backend) as (mock_run, _mock_publish):
             backend.execute("build")
 
         cmd = mock_run.call_args[0][0]
@@ -533,13 +532,7 @@ class TestBazelRunsTestsInBuildPhase:
         one test runs at a time while compilation still parallelises freely."""
         backend = self._backend_with_test_graph()
         backend.args.serialisetests = True
-        with (
-            patch("shutil.which", side_effect=lambda n: "/usr/bin/bazel" if n == "bazel" else None),
-            patch("os.path.isdir", return_value=False),
-            patch.object(backend, "_run_bazel") as mock_run,
-            patch.object(backend, "_write_bazelrc"),
-            patch.object(backend, "_publish_test_results"),
-        ):
+        with _patched_bazel_execute(backend) as (mock_run, _mock_publish):
             backend.execute("build")
 
         cmd = mock_run.call_args[0][0]
@@ -549,13 +542,7 @@ class TestBazelRunsTestsInBuildPhase:
         """Without --serialise-tests, ``--local_test_jobs`` must not appear."""
         backend = self._backend_with_test_graph()
         backend.args.serialisetests = False
-        with (
-            patch("shutil.which", side_effect=lambda n: "/usr/bin/bazel" if n == "bazel" else None),
-            patch("os.path.isdir", return_value=False),
-            patch.object(backend, "_run_bazel") as mock_run,
-            patch.object(backend, "_write_bazelrc"),
-            patch.object(backend, "_publish_test_results"),
-        ):
+        with _patched_bazel_execute(backend) as (mock_run, _mock_publish):
             backend.execute("build")
 
         cmd = mock_run.call_args[0][0]
