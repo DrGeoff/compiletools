@@ -9,6 +9,14 @@ import compiletools.configutils
 import compiletools.testhelper as uth
 
 
+def _write_conf(conf_d, name, content):
+    """Write `content` to ``conf_d/name``. Most TestVariant cases use this
+    to seed axis confs (`gcc.conf`, `debug.conf`, …) under the project
+    `ct.conf.d/` created by `_temp_repo_with_conf_d`."""
+    with open(os.path.join(conf_d, name), "w") as fh:
+        fh.write(content)
+
+
 @contextlib.contextmanager
 def _temp_repo(defaultvariant):
     """Enter a TempDirContextNoChange + write a project ct.conf naming
@@ -216,11 +224,8 @@ class TestVariant:
         # When no literal gcc.debug.conf exists but gcc.conf and debug.conf
         # do, the resolver should synthesize the composition.
         with _temp_repo_with_conf_d("gcc.debug") as (repo_root, conf_d):
-            with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
-                fh.write("CC = gcc\n")
-                fh.write("append-CFLAGS = -fPIC\n")
-            with open(os.path.join(conf_d, "debug.conf"), "w") as fh:
-                fh.write("append-CFLAGS = -g\n")
+            _write_conf(conf_d, "gcc.conf", "CC = gcc\nappend-CFLAGS = -fPIC\n")
+            _write_conf(conf_d, "debug.conf", "append-CFLAGS = -g\n")
 
             resolution = _resolve_variant(repo_root, "gcc.debug", system_config_dir="/var")
 
@@ -238,8 +243,7 @@ class TestVariant:
                 ("debug.conf", "append-CFLAGS = -g\n"),
                 ("gcc.debug.conf", "append-CFLAGS = -DTUNED=1\n"),
             ]:
-                with open(os.path.join(conf_d, name), "w") as fh:
-                    fh.write(content)
+                _write_conf(conf_d, name, content)
 
             resolution = _resolve_variant(repo_root, "gcc.debug", system_config_dir="/var")
 
@@ -326,8 +330,7 @@ class TestVariant:
                 ("debug.conf", "append-CFLAGS = -g\n"),
                 ("gcc.debug.conf", "extends = blank\nappend-CFLAGS = -DSOLO=1\n"),
             ]:
-                with open(os.path.join(conf_d, name), "w") as fh:
-                    fh.write(content)
+                _write_conf(conf_d, name, content)
 
             resolution = _resolve_variant(repo_root, "gcc.debug", system_config_dir="/var")
 
@@ -340,8 +343,7 @@ class TestVariant:
         # An axis that exists in NO config dir surfaces a clear error
         # listing every dir searched.
         with _temp_repo_with_conf_d("gcc.debug") as (repo_root, conf_d):
-            with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
-                fh.write("CC = gcc\n")
+            _write_conf(conf_d, "gcc.conf", "CC = gcc\n")
             # debug.conf intentionally absent
 
             with uth.DirectoryContext(repo_root):
@@ -382,11 +384,8 @@ class TestVariant:
         # If a conf file has `extends = ...`, the parent's flags layer
         # before the child's.
         with _temp_repo_with_conf_d("myrelease") as (repo_root, conf_d):
-            with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
-                fh.write("CC = gcc\n")
-            with open(os.path.join(conf_d, "myrelease.conf"), "w") as fh:
-                fh.write("extends = gcc\n")
-                fh.write("append-CFLAGS = -O3\n")
+            _write_conf(conf_d, "gcc.conf", "CC = gcc\n")
+            _write_conf(conf_d, "myrelease.conf", "extends = gcc\nappend-CFLAGS = -O3\n")
 
             resolution = _resolve_variant(repo_root, "myrelease", system_config_dir="/var")
             axis_names = [a.name for a in resolution.axes]
@@ -394,10 +393,8 @@ class TestVariant:
 
     def test_extends_cycle_detected(self):
         with _temp_repo_with_conf_d("a") as (repo_root, conf_d):
-            with open(os.path.join(conf_d, "a.conf"), "w") as fh:
-                fh.write("extends = b\n")
-            with open(os.path.join(conf_d, "b.conf"), "w") as fh:
-                fh.write("extends = a\n")
+            _write_conf(conf_d, "a.conf", "extends = b\n")
+            _write_conf(conf_d, "b.conf", "extends = a\n")
 
             with uth.DirectoryContext(repo_root):
                 with pytest.raises(
@@ -416,14 +413,10 @@ class TestVariant:
     def test_diamond_dedup(self):
         # x extends a, b ; a extends base ; b extends base -> base appears once
         with _temp_repo_with_conf_d("x") as (repo_root, conf_d):
-            with open(os.path.join(conf_d, "base.conf"), "w") as fh:
-                fh.write("append-CFLAGS = -Dbase=1\n")
-            with open(os.path.join(conf_d, "a.conf"), "w") as fh:
-                fh.write("extends = base\n")
-            with open(os.path.join(conf_d, "b.conf"), "w") as fh:
-                fh.write("extends = base\n")
-            with open(os.path.join(conf_d, "x.conf"), "w") as fh:
-                fh.write("extends = a, b\n")
+            _write_conf(conf_d, "base.conf", "append-CFLAGS = -Dbase=1\n")
+            _write_conf(conf_d, "a.conf", "extends = base\n")
+            _write_conf(conf_d, "b.conf", "extends = base\n")
+            _write_conf(conf_d, "x.conf", "extends = a, b\n")
 
             resolution = _resolve_variant(repo_root, "x", system_config_dir="/var")
             axis_names = [a.name for a in resolution.axes]
@@ -444,10 +437,8 @@ class TestVariant:
 
     def test_format_variant_resolution_includes_axes(self):
         with _temp_repo_with_conf_d("gcc.debug") as (repo_root, conf_d):
-            with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
-                fh.write("CC = gcc\n")
-            with open(os.path.join(conf_d, "debug.conf"), "w") as fh:
-                fh.write("append-CFLAGS = -g\n")
+            _write_conf(conf_d, "gcc.conf", "CC = gcc\n")
+            _write_conf(conf_d, "debug.conf", "append-CFLAGS = -g\n")
 
             resolution = _resolve_variant(repo_root, "gcc,debug", system_config_dir="/var")
             text = compiletools.configutils.format_variant_resolution(resolution)
@@ -720,12 +711,9 @@ class TestVariant:
         with _temp_repo_with_conf_d("my-bad-order") as (repo_root, conf_d):
             # werror is canonical-position 41; gcc is 1. Reversed order
             # is the buggy pattern this guard catches.
-            with open(os.path.join(conf_d, "my-bad-order.conf"), "w") as fh:
-                fh.write("extends = werror, gcc\n")
-            with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
-                fh.write("CC = gcc\n")
-            with open(os.path.join(conf_d, "werror.conf"), "w") as fh:
-                fh.write("append-CFLAGS = -Werror\n")
+            _write_conf(conf_d, "my-bad-order.conf", "extends = werror, gcc\n")
+            _write_conf(conf_d, "gcc.conf", "CC = gcc\n")
+            _write_conf(conf_d, "werror.conf", "append-CFLAGS = -Werror\n")
 
             with uth.DirectoryContext(repo_root):
                 compiletools.configutils.clear_cache()
@@ -764,12 +752,9 @@ class TestVariant:
         canonical order.
         """
         with _temp_repo_with_conf_d("myproj") as (repo_root, conf_d):
-            with open(os.path.join(conf_d, "myproj.conf"), "w") as fh:
-                fh.write("extends = gcc, debug\nappend-CXXFLAGS = -DMYPROJ=1\n")
-            with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
-                fh.write("CC = gcc\nCXX = g++\n")
-            with open(os.path.join(conf_d, "debug.conf"), "w") as fh:
-                fh.write("append-CFLAGS = -g\n")
+            _write_conf(conf_d, "myproj.conf", "extends = gcc, debug\nappend-CXXFLAGS = -DMYPROJ=1\n")
+            _write_conf(conf_d, "gcc.conf", "CC = gcc\nCXX = g++\n")
+            _write_conf(conf_d, "debug.conf", "append-CFLAGS = -g\n")
 
             with uth.DirectoryContext(repo_root):
                 compiletools.configutils.clear_cache()
@@ -817,8 +802,7 @@ class TestVariant:
         explicit ``"/var"`` to block bundled lookup).
         """
         with _temp_repo_with_conf_d("myproj") as (repo_root, conf_d):
-            with open(os.path.join(conf_d, "myproj.conf"), "w") as fh:
-                fh.write("extends = ccache-gcc, cxx26, debug\nappend-CXXFLAGS = -DMYPROJ=1\n")
+            _write_conf(conf_d, "myproj.conf", "extends = ccache-gcc, cxx26, debug\nappend-CXXFLAGS = -DMYPROJ=1\n")
 
             with uth.DirectoryContext(repo_root):
                 compiletools.configutils.clear_cache()
@@ -850,14 +834,10 @@ class TestVariant:
         with _temp_repo_with_conf_d("myproj") as (repo_root, conf_d):
             # werror (canonical pos 44+) listed BEFORE gcc (pos 1) — would
             # normally warn. But myhelper is unknown, so the check skips.
-            with open(os.path.join(conf_d, "myproj.conf"), "w") as fh:
-                fh.write("extends = werror, gcc, myhelper\n")
-            with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
-                fh.write("CC = gcc\n")
-            with open(os.path.join(conf_d, "werror.conf"), "w") as fh:
-                fh.write("append-CFLAGS = -Werror\n")
-            with open(os.path.join(conf_d, "myhelper.conf"), "w") as fh:
-                fh.write("append-CXXFLAGS = -DMYHELPER=1\n")
+            _write_conf(conf_d, "myproj.conf", "extends = werror, gcc, myhelper\n")
+            _write_conf(conf_d, "gcc.conf", "CC = gcc\n")
+            _write_conf(conf_d, "werror.conf", "append-CFLAGS = -Werror\n")
+            _write_conf(conf_d, "myhelper.conf", "append-CXXFLAGS = -DMYHELPER=1\n")
 
             with uth.DirectoryContext(repo_root):
                 compiletools.configutils.clear_cache()
@@ -897,10 +877,8 @@ class TestVariant:
         across the whole sequence.
         """
         with _temp_repo_with_conf_d("gcc.debug") as (repo_root, conf_d):
-            with open(os.path.join(conf_d, "gcc.conf"), "w") as fh:
-                fh.write("CC = gcc\n")
-            with open(os.path.join(conf_d, "debug.conf"), "w") as fh:
-                fh.write("append-CFLAGS = -g\n")
+            _write_conf(conf_d, "gcc.conf", "CC = gcc\n")
+            _write_conf(conf_d, "debug.conf", "append-CFLAGS = -g\n")
 
             compiletools.configutils.clear_cache()
 
