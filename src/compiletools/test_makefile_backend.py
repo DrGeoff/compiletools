@@ -383,26 +383,35 @@ class TestMakefileTestRules:
         defaults.update(overrides)
         return SimpleNamespace(**defaults)
 
+    def _test_rule(
+        self,
+        *,
+        output="bin/test_foo.result",
+        exe="bin/test_foo",
+        command=None,
+    ):
+        """Build a `rule_type="test"` BuildRule. success_marker mirrors output."""
+        return BuildRule(
+            output=output,
+            inputs=[exe],
+            command=command if command is not None else [exe],
+            rule_type="test",
+            success_marker=output,
+        )
+
+    def _render(self, graph, **arg_overrides):
+        """Run MakefileBackend.generate(graph) and return the rendered text."""
+        backend = MakefileBackend(args=self._make_args(**arg_overrides), hunter=MagicMock())
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        return buf.getvalue()
+
     def test_test_recipe_with_testprefix_then_marker(self):
         """TESTPREFIX tokens precede the exe; marker touch is appended after."""
         graph = BuildGraph()
-        graph.add_rule(
-            BuildRule(
-                output="bin/test_foo.result",
-                inputs=["bin/test_foo"],
-                command=["valgrind", "--leak-check=full", "bin/test_foo"],
-                rule_type="test",
-                success_marker="bin/test_foo.result",
-            )
-        )
+        graph.add_rule(self._test_rule(command=["valgrind", "--leak-check=full", "bin/test_foo"]))
 
-        args = self._make_args()
-        hunter = MagicMock()
-        backend = MakefileBackend(args=args, hunter=hunter)
-
-        buf = io.StringIO()
-        backend.generate(graph, output=buf)
-        content = buf.getvalue()
+        content = self._render(graph)
 
         assert "valgrind --leak-check=full bin/test_foo && touch bin/test_foo.result" in content
 
@@ -414,45 +423,22 @@ class TestMakefileTestRules:
         """
         graph = BuildGraph()
         graph.add_rule(
-            BuildRule(
+            self._test_rule(
                 output="bin/dir with space/test_foo.result",
-                inputs=["bin/dir with space/test_foo"],
-                command=["bin/dir with space/test_foo"],
-                rule_type="test",
-                success_marker="bin/dir with space/test_foo.result",
+                exe="bin/dir with space/test_foo",
             )
         )
 
-        args = self._make_args()
-        hunter = MagicMock()
-        backend = MakefileBackend(args=args, hunter=hunter)
-
-        buf = io.StringIO()
-        backend.generate(graph, output=buf)
-        content = buf.getvalue()
+        content = self._render(graph)
 
         assert "'bin/dir with space/test_foo'" in content
 
     def test_test_recipe_quotes_success_marker_with_space(self):
         """A success_marker path with a space must be shell-quoted in the touch tail."""
         graph = BuildGraph()
-        graph.add_rule(
-            BuildRule(
-                output="bin/dir with space/test_foo.result",
-                inputs=["bin/test_foo"],
-                command=["bin/test_foo"],
-                rule_type="test",
-                success_marker="bin/dir with space/test_foo.result",
-            )
-        )
+        graph.add_rule(self._test_rule(output="bin/dir with space/test_foo.result"))
 
-        args = self._make_args()
-        hunter = MagicMock()
-        backend = MakefileBackend(args=args, hunter=hunter)
-
-        buf = io.StringIO()
-        backend.generate(graph, output=buf)
-        content = buf.getvalue()
+        content = self._render(graph)
 
         assert "&& touch 'bin/dir with space/test_foo.result'" in content
 
@@ -464,15 +450,7 @@ class TestMakefileTestRules:
         /bin/sh.
         """
         graph = BuildGraph()
-        graph.add_rule(
-            BuildRule(
-                output="bin/test_foo.result",
-                inputs=["bin/test_foo"],
-                command=["bin/test_foo"],
-                rule_type="test",
-                success_marker="bin/test_foo.result",
-            )
-        )
+        graph.add_rule(self._test_rule())
         graph.add_rule(
             BuildRule(
                 output="runtests",
@@ -482,13 +460,7 @@ class TestMakefileTestRules:
             )
         )
 
-        args = self._make_args()
-        hunter = MagicMock()
-        backend = MakefileBackend(args=args, hunter=hunter)
-
-        buf = io.StringIO()
-        backend.generate(graph, output=buf)
-        content = buf.getvalue()
+        content = self._render(graph)
 
         assert "bin/test_foo.result: bin/test_foo" in content
         assert "bin/test_foo && touch bin/test_foo.result" in content
@@ -499,15 +471,7 @@ class TestMakefileTestRules:
     def test_test_result_rule_in_makefile(self):
         """Test rules should produce .result file recipes in the Makefile."""
         graph = BuildGraph()
-        graph.add_rule(
-            BuildRule(
-                output="bin/test_foo.result",
-                inputs=["bin/test_foo"],
-                command=["bin/test_foo"],
-                rule_type="test",
-                success_marker="bin/test_foo.result",
-            )
-        )
+        graph.add_rule(self._test_rule())
         graph.add_rule(
             BuildRule(
                 output="runtests",
@@ -517,13 +481,7 @@ class TestMakefileTestRules:
             )
         )
 
-        args = self._make_args()
-        hunter = MagicMock()
-        backend = MakefileBackend(args=args, hunter=hunter)
-
-        buf = io.StringIO()
-        backend.generate(graph, output=buf)
-        content = buf.getvalue()
+        content = self._render(graph)
 
         assert "bin/test_foo.result: bin/test_foo" in content
         assert "bin/test_foo && touch bin/test_foo.result" in content
@@ -534,69 +492,27 @@ class TestMakefileTestRules:
     def test_test_verbose_echo(self):
         """Test rules should include echo when verbose >= 1."""
         graph = BuildGraph()
-        graph.add_rule(
-            BuildRule(
-                output="bin/test_foo.result",
-                inputs=["bin/test_foo"],
-                command=["bin/test_foo"],
-                rule_type="test",
-                success_marker="bin/test_foo.result",
-            )
-        )
+        graph.add_rule(self._test_rule())
 
-        args = self._make_args(verbose=1)
-        hunter = MagicMock()
-        backend = MakefileBackend(args=args, hunter=hunter)
-
-        buf = io.StringIO()
-        backend.generate(graph, output=buf)
-        content = buf.getvalue()
+        content = self._render(graph, verbose=1)
 
         assert "@echo ... bin/test_foo" in content
 
     def test_notparallel_when_serialise_tests(self):
         """.NOTPARALLEL should be emitted when --serialise-tests is set."""
         graph = BuildGraph()
-        graph.add_rule(
-            BuildRule(
-                output="bin/test_foo.result",
-                inputs=["bin/test_foo"],
-                command=["bin/test_foo"],
-                rule_type="test",
-                success_marker="bin/test_foo.result",
-            )
-        )
+        graph.add_rule(self._test_rule())
 
-        args = self._make_args(serialisetests=True)
-        hunter = MagicMock()
-        backend = MakefileBackend(args=args, hunter=hunter)
-
-        buf = io.StringIO()
-        backend.generate(graph, output=buf)
-        content = buf.getvalue()
+        content = self._render(graph, serialisetests=True)
 
         assert ".NOTPARALLEL: runtests" in content
 
     def test_no_notparallel_when_not_serialised(self):
         """.NOTPARALLEL should NOT be emitted when --serialise-tests is not set."""
         graph = BuildGraph()
-        graph.add_rule(
-            BuildRule(
-                output="bin/test_foo.result",
-                inputs=["bin/test_foo"],
-                command=["bin/test_foo"],
-                rule_type="test",
-                success_marker="bin/test_foo.result",
-            )
-        )
+        graph.add_rule(self._test_rule())
 
-        args = self._make_args(serialisetests=False)
-        hunter = MagicMock()
-        backend = MakefileBackend(args=args, hunter=hunter)
-
-        buf = io.StringIO()
-        backend.generate(graph, output=buf)
-        content = buf.getvalue()
+        content = self._render(graph, serialisetests=False)
 
         assert ".NOTPARALLEL" not in content
 
