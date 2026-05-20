@@ -11,19 +11,17 @@ import compiletools.compiler_macros as cm
 class TestCompilerMacros:
     """Test the dynamic compiler macro detection functionality."""
 
-    def test_get_compiler_macros_no_compiler(self):
-        """Test get_compiler_macros with no compiler specified."""
-        # Clear cache first
+    @pytest.fixture(autouse=True)
+    def _clear_macro_cache(self):
         cm.get_compiler_macros.cache_clear()
 
+    def test_get_compiler_macros_no_compiler(self):
+        """Test get_compiler_macros with no compiler specified."""
         macros = cm.get_compiler_macros("", verbose=0)
         assert macros == {}
 
     def test_get_compiler_macros_success(self):
         """Test successful querying of compiler macros."""
-        # Clear cache first
-        cm.get_compiler_macros.cache_clear()
-
         # Mock successful subprocess call
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -47,9 +45,6 @@ class TestCompilerMacros:
 
     def test_get_compiler_macros_with_quotes(self):
         """Test handling of macros with quoted values."""
-        # Clear cache first
-        cm.get_compiler_macros.cache_clear()
-
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = '#define __VERSION__ "gcc version 11.2.0"'
@@ -60,9 +55,6 @@ class TestCompilerMacros:
 
     def test_get_compiler_macros_failure_nonzero_return(self):
         """Test handling of non-zero return code."""
-        # Clear cache first
-        cm.get_compiler_macros.cache_clear()
-
         mock_result = MagicMock()
         mock_result.returncode = 1
 
@@ -72,27 +64,18 @@ class TestCompilerMacros:
 
     def test_get_compiler_macros_failure_not_found(self):
         """Test handling of FileNotFoundError."""
-        # Clear cache first
-        cm.get_compiler_macros.cache_clear()
-
         with patch("subprocess.run", side_effect=FileNotFoundError("Compiler not found")):
             macros = cm.get_compiler_macros("nonexistent", verbose=0)
             assert macros == {}
 
     def test_get_compiler_macros_failure_timeout(self):
         """Test handling of timeout."""
-        # Clear cache first
-        cm.get_compiler_macros.cache_clear()
-
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 5)):
             macros = cm.get_compiler_macros("slow-compiler", verbose=0)
             assert macros == {}
 
     def test_lru_cache_functionality(self):
         """Test that the LRU cache is working properly."""
-        # Clear cache first
-        cm.get_compiler_macros.cache_clear()
-
         call_count = 0
 
         def mock_run(*args, **kwargs):
@@ -122,8 +105,6 @@ class TestCompilerMacros:
     def test_clear_cache(self):
         """Test the cache clearing functionality."""
         # Populate cache
-        cm.get_compiler_macros.cache_clear()
-
         with patch("subprocess.run") as mock_run:
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = "#define __TEST__ 1"
@@ -145,9 +126,6 @@ class TestCompilerMacros:
 
     def test_real_gcc_if_available(self):
         """Test with real GCC compiler if available."""
-        # Clear cache first
-        cm.get_compiler_macros.cache_clear()
-
         # This test will only run if gcc is actually available
         try:
             subprocess.run(["gcc", "--version"], capture_output=True, check=True, timeout=1)
@@ -196,7 +174,8 @@ class TestFilterForExpansion:
 class TestQueryHasFunction:
     """Test the query_has_function() functionality."""
 
-    def setup_method(self):
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
         cm.clear_cache()
 
     @pytest.mark.parametrize(
