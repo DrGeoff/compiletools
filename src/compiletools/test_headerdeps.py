@@ -476,9 +476,6 @@ class TestHeaderDepsModule(tb.BaseCompileToolsTestCase):
 class TestHeaderDepsUnitTests(tb.BaseCompileToolsTestCase):
     """Unit tests for headerdeps module coverage of uncovered lines."""
 
-    def setup_method(self):
-        super().setup_method()
-
     def _make_args(self, cppflags="", verbose=0):
         """Helper to create args with a fresh parser."""
         cap = configargparse.ArgumentParser(
