@@ -12,7 +12,6 @@ import os
 import shutil
 import socket
 import subprocess
-import tempfile
 import time
 from unittest.mock import Mock, patch
 
@@ -42,10 +41,9 @@ def cleaner(mock_args):
 
 
 @pytest.fixture
-def tmpdir_with_locks():
+def tmpdir_with_locks(tmp_path):
     """Create temporary directory for lock testing."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yield tmpdir
+    return str(tmp_path)
 
 
 def create_lockdir(objdir, name, hostname, pid):

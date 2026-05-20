@@ -483,53 +483,52 @@ def test_create_link_rule_returns_cas_link_plus_publish_pair(tmp_path):
     assert "--source-realpath" in cmd
 
 
-def test_create_link_rule_legacy_shape_when_backend_self_manages_exe():
+def test_create_link_rule_legacy_shape_when_backend_self_manages_exe(tmp_path):
     """Backends that manage their own exe placement (cmake/bazel)
     override ``_self_manages_exe_placement`` to return True;
     ``_create_link_rule`` then emits a single classical link rule whose
     output IS the user-facing bin/<name> path (no compiletools-side
     cas-exedir wrapping)."""
+    tmpdir = str(tmp_path)
+    args = uth.make_backend_args(tmpdir, filename=["/src/main.cpp"])
+    hunter = uth.make_mock_hunter(
+        sources=["/src/main.cpp"],
+        per_file_magicflags={"/src/main.cpp": {}},
+    )
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        args = uth.make_backend_args(tmpdir, filename=["/src/main.cpp"])
-        hunter = uth.make_mock_hunter(
-            sources=["/src/main.cpp"],
-            per_file_magicflags={"/src/main.cpp": {}},
-        )
+    class _LegacyBackend(BuildBackend):
+        @classmethod
+        def _self_manages_exe_placement(cls):
+            return True
 
-        class _LegacyBackend(BuildBackend):
-            @classmethod
-            def _self_manages_exe_placement(cls):
-                return True
+        @staticmethod
+        def name():
+            return "test-legacy"
 
-            @staticmethod
-            def name():
-                return "test-legacy"
+        @staticmethod
+        def build_filename():
+            return "Legacyfile"
 
-            @staticmethod
-            def build_filename():
-                return "Legacyfile"
+        def generate(self, graph, output=None):
+            raise NotImplementedError
 
-            def generate(self, graph, output=None):
-                raise NotImplementedError
+        def _execute_build(self, target):
+            raise NotImplementedError
 
-            def _execute_build(self, target):
-                raise NotImplementedError
+    backend = _LegacyBackend.__new__(_LegacyBackend)
+    backend.args = args
+    backend.hunter = hunter
+    backend.namer = uth.make_mock_namer(args)
+    backend.context = BuildContext()
+    backend._anchor_root = ""
 
-        backend = _LegacyBackend.__new__(_LegacyBackend)
-        backend.args = args
-        backend.hunter = hunter
-        backend.namer = uth.make_mock_namer(args)
-        backend.context = BuildContext()
-        backend._anchor_root = ""
-
-        rules = backend._create_link_rule("/src/main.cpp")
-        assert len(rules) == 1, f"legacy shape should be a single rule, got {len(rules)}"
-        (rule,) = rules
-        assert rule.rule_type == "link"
-        # Output is the user-facing path; no cas-exedir routing.
-        assert rule.output == backend.namer.executable_pathname("/src/main.cpp")
-        assert args.cas_exedir not in rule.output
+    rules = backend._create_link_rule("/src/main.cpp")
+    assert len(rules) == 1, f"legacy shape should be a single rule, got {len(rules)}"
+    (rule,) = rules
+    assert rule.rule_type == "link"
+    # Output is the user-facing path; no cas-exedir routing.
+    assert rule.output == backend.namer.executable_pathname("/src/main.cpp")
+    assert args.cas_exedir not in rule.output
 
 
 def _make_minimal_link_backend(tmpdir, *, sources=None, env=None):
