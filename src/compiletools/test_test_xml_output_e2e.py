@@ -58,6 +58,33 @@ def _make_config(tmpdir):
     return config_name
 
 
+def _run_cake(source, config_name, xml_dir):
+    """Drive ct-cake on a single test source with ``--test-xml-dir``.
+
+    ``--no-file-locking`` is set because ct-cake's link rule shells out to
+    ct-lock-helper, which won't be on PATH in environments where the venv
+    hasn't been ``uv pip install -e .``'d. The XML-emission behaviour under
+    test is orthogonal to file locking.
+    """
+    uth.reset()
+    compiletools.cake.main(
+        [
+            "--exemarkers=main",
+            "--testmarkers=unittest.hpp",
+            "--config=" + config_name,
+            f"--tests={source}",
+            f"--test-xml-dir={xml_dir}",
+            "--no-auto",
+            "--no-file-locking",
+        ]
+    )
+
+
+def _variant_for(config_name):
+    """Return the variant name encoded in the temp-config filename stem."""
+    return os.path.basename(config_name)[:-5]
+
+
 @uth.requires_functional_compiler
 def test_gtest_fixture_emits_xml_under_test_xml_dir():
     """End-to-end: ct-cake compiles a stub gtest fixture, runs it with
@@ -66,34 +93,13 @@ def test_gtest_fixture_emits_xml_under_test_xml_dir():
     ``--gtest_output=xml:<path>`` after exe_path."""
     with uth.TempDirContext():
         tmpdir = os.getcwd()
-        source = _setup_sample(
-            tmpdir,
-            "test_stub_gtest.cpp",
-            extra_files=("gtest/gtest.h",),
-        )
+        source = _setup_sample(tmpdir, "test_stub_gtest.cpp", extra_files=("gtest/gtest.h",))
         config_name = _make_config(tmpdir)
         xml_dir = os.path.join(tmpdir, "junit")
 
-        uth.reset()
-        compiletools.cake.main(
-            [
-                "--exemarkers=main",
-                "--testmarkers=unittest.hpp",
-                "--config=" + config_name,
-                f"--tests={source}",
-                f"--test-xml-dir={xml_dir}",
-                "--no-auto",
-                # File locking requires ct-lock-helper on PATH; disable so
-                # the test runs in environments where the venv hasn't been
-                # `uv pip install -e .`'d. The XML behaviour under test is
-                # orthogonal to file locking.
-                "--no-file-locking",
-            ]
-        )
+        _run_cake(source, config_name, xml_dir)
 
-        # The variant name is the config filename stem
-        variant = os.path.basename(config_name)[:-5]
-        expected_xml = os.path.join(xml_dir, variant, "test_stub_gtest.xml")
+        expected_xml = os.path.join(xml_dir, _variant_for(config_name), "test_stub_gtest.xml")
         assert os.path.exists(expected_xml), (
             f"missing {expected_xml}; ct-cake either skipped the test "
             f"or didn't pass --gtest_output. xml_dir contents: "
@@ -110,33 +116,13 @@ def test_doctest_fixture_emits_xml_with_doctest_argv():
     (``--reporters=junit --out=PATH``)."""
     with uth.TempDirContext():
         tmpdir = os.getcwd()
-        source = _setup_sample(
-            tmpdir,
-            "test_stub_doctest.cpp",
-            extra_files=("doctest/doctest.h",),
-        )
+        source = _setup_sample(tmpdir, "test_stub_doctest.cpp", extra_files=("doctest/doctest.h",))
         config_name = _make_config(tmpdir)
         xml_dir = os.path.join(tmpdir, "junit")
 
-        uth.reset()
-        compiletools.cake.main(
-            [
-                "--exemarkers=main",
-                "--testmarkers=unittest.hpp",
-                "--config=" + config_name,
-                f"--tests={source}",
-                f"--test-xml-dir={xml_dir}",
-                "--no-auto",
-                # File locking requires ct-lock-helper on PATH; disable so
-                # the test runs in environments where the venv hasn't been
-                # `uv pip install -e .`'d. The XML behaviour under test is
-                # orthogonal to file locking.
-                "--no-file-locking",
-            ]
-        )
+        _run_cake(source, config_name, xml_dir)
 
-        variant = os.path.basename(config_name)[:-5]
-        expected_xml = os.path.join(xml_dir, variant, "test_stub_doctest.xml")
+        expected_xml = os.path.join(xml_dir, _variant_for(config_name), "test_stub_doctest.xml")
         assert os.path.exists(expected_xml), f"missing {expected_xml}"
         with open(expected_xml) as f:
             contents = f.read()
@@ -153,25 +139,9 @@ def test_unknown_framework_runs_without_xml_or_error():
         config_name = _make_config(tmpdir)
         xml_dir = os.path.join(tmpdir, "junit")
 
-        uth.reset()
-        compiletools.cake.main(
-            [
-                "--exemarkers=main",
-                "--testmarkers=unittest.hpp",
-                "--config=" + config_name,
-                f"--tests={source}",
-                f"--test-xml-dir={xml_dir}",
-                "--no-auto",
-                # File locking requires ct-lock-helper on PATH; disable so
-                # the test runs in environments where the venv hasn't been
-                # `uv pip install -e .`'d. The XML behaviour under test is
-                # orthogonal to file locking.
-                "--no-file-locking",
-            ]
-        )
+        _run_cake(source, config_name, xml_dir)
 
-        variant = os.path.basename(config_name)[:-5]
-        unexpected_xml = os.path.join(xml_dir, variant, "test_unknown_framework.xml")
+        unexpected_xml = os.path.join(xml_dir, _variant_for(config_name), "test_unknown_framework.xml")
         assert not os.path.exists(unexpected_xml), "unknown-framework test must NOT write XML"
 
 
@@ -182,32 +152,12 @@ def test_rerun_when_xml_deleted_between_runs():
     though the .result marker is current."""
     with uth.TempDirContext():
         tmpdir = os.getcwd()
-        source = _setup_sample(
-            tmpdir,
-            "test_stub_gtest.cpp",
-            extra_files=("gtest/gtest.h",),
-        )
+        source = _setup_sample(tmpdir, "test_stub_gtest.cpp", extra_files=("gtest/gtest.h",))
         config_name = _make_config(tmpdir)
         xml_dir = os.path.join(tmpdir, "junit")
-        variant = os.path.basename(config_name)[:-5]
-        expected_xml = os.path.join(xml_dir, variant, "test_stub_gtest.xml")
+        expected_xml = os.path.join(xml_dir, _variant_for(config_name), "test_stub_gtest.xml")
 
-        uth.reset()
-        compiletools.cake.main(
-            [
-                "--exemarkers=main",
-                "--testmarkers=unittest.hpp",
-                "--config=" + config_name,
-                f"--tests={source}",
-                f"--test-xml-dir={xml_dir}",
-                "--no-auto",
-                # File locking requires ct-lock-helper on PATH; disable so
-                # the test runs in environments where the venv hasn't been
-                # `uv pip install -e .`'d. The XML behaviour under test is
-                # orthogonal to file locking.
-                "--no-file-locking",
-            ]
-        )
+        _run_cake(source, config_name, xml_dir)
         assert os.path.exists(expected_xml)
 
         # Delete the XML file but leave the .result marker. A second
@@ -215,22 +165,7 @@ def test_rerun_when_xml_deleted_between_runs():
         # Integration" predicate) so the XML reappears.
         os.unlink(expected_xml)
 
-        uth.reset()
-        compiletools.cake.main(
-            [
-                "--exemarkers=main",
-                "--testmarkers=unittest.hpp",
-                "--config=" + config_name,
-                f"--tests={source}",
-                f"--test-xml-dir={xml_dir}",
-                "--no-auto",
-                # File locking requires ct-lock-helper on PATH; disable so
-                # the test runs in environments where the venv hasn't been
-                # `uv pip install -e .`'d. The XML behaviour under test is
-                # orthogonal to file locking.
-                "--no-file-locking",
-            ]
-        )
+        _run_cake(source, config_name, xml_dir)
         assert os.path.exists(expected_xml), (
             "deleting the XML file between runs must trigger a re-run "
             "to regenerate it; .result alone is no longer enough"
