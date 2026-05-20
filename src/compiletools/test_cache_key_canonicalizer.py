@@ -375,6 +375,56 @@ def test_canonicalize_path_for_command_empty_anchor_is_identity():
     assert canonicalize_path_for_command(f"{ANCHOR}/foo.o", "", target=".") == f"{ANCHOR}/foo.o"
 
 
+def test_cache_key_collapses_dotdot_segments():
+    """Two textually distinct conf-driven include paths that resolve to the
+    same directory (``${CONF_DIR}/../shared/src/include`` from a sibling
+    conf vs. ``${CONF_DIR}/shared/src/include`` from the parent) must
+    hash to the same cache key. Without normpath in the sentinel-rewrite
+    path, each consumer forks the macro_state_hash on a token that
+    compiles to the same ``-I`` semantically -- the central-include
+    fragility that motivates this patch.
+    """
+    a = canonicalize_path_for_cache_key(f"{ANCHOR}/lib/../src/include", ANCHOR)
+    b = canonicalize_path_for_cache_key(f"{ANCHOR}/src/include", ANCHOR)
+    assert a == b == "<GITROOT>/src/include"
+
+
+def test_cache_key_collapses_redundant_separators_and_dot():
+    """Interior double-slashes and ``./`` segments collapse to a single
+    separator / dropped segment. (Leading ``//`` is preserved by
+    :func:`os.path.normpath` per POSIX -- not exercised here because the
+    sentinel-rooted paths produced by the rewrite never start with
+    ``//``.)"""
+    assert canonicalize_path_for_cache_key(f"{ANCHOR}//foo/./bar", ANCHOR) == "<GITROOT>/foo/bar"
+
+
+def test_cache_key_normalises_already_sentinel_path_with_dotdot():
+    """The early-return arm (path already contains the sentinel) must
+    normalise too -- otherwise a re-entrant caller that passes back a
+    previously-sentinel-rewritten-but-not-yet-normalised string would
+    silently bypass the fragmentation fix. Pins symmetry with the
+    rewrite arm."""
+    assert canonicalize_path_for_cache_key("<GITROOT>/lib/../src", ANCHOR) == "<GITROOT>/src"
+
+
+def test_cache_key_token_normalisation_in_I_flag():
+    """The same fragmentation surface, but on the token form
+    (``-I<gitroot>/lib/../src/include``) that magicflags actually
+    emits."""
+    a = canonicalize_for_cache_key([f"-I{ANCHOR}/lib/../src/include"], ANCHOR)
+    b = canonicalize_for_cache_key([f"-I{ANCHOR}/src/include"], ANCHOR)
+    assert a == b == ["-I<GITROOT>/src/include"]
+
+
+def test_command_path_not_normalised_through_dotdot():
+    """Emitted-command paths skip normpath: lexical ``..`` collapse can
+    change what gcc resolves when intermediate segments are symlinks. The
+    cache-key flavour normalises; the command flavour preserves the
+    original lexical form."""
+    out = canonicalize_path_for_command(f"{ANCHOR}/lib/../src/include", ANCHOR, target=".")
+    assert out == "./lib/../src/include"
+
+
 def test_canonicalize_for_cache_key_unchanged_after_refactor():
     """Smoke check that the existing public API still produces sentinel
     output (the refactor extracted a shared core but the public function

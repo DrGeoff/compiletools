@@ -1254,11 +1254,25 @@ def _canonicalize_one_path_to_target(path: str, anchor_prefix: str, target: str)
     :func:`_canonicalize_one_path` (cache-key flavour, target=sentinel)
     and :func:`canonicalize_path_for_command` (emitted-command flavour,
     target configurable).
+
+    Cache-key flavour additionally collapses ``..`` segments, redundant
+    separators, and ``./`` prefixes via :func:`os.path.normpath` so that
+    textually distinct but semantically identical paths
+    (``<GITROOT>/lib/../src/include`` vs ``<GITROOT>/src/include``)
+    produce the same cache key. Emitted-command flavour skips normpath because
+    lexical ``..`` collapse changes what the compiler resolves through
+    symlinked intermediates (``a/../b`` ≠ ``b`` when ``a`` is a symlink),
+    and emitted commands feed gcc's actual ``open()`` calls rather than a
+    hash. See top-level CLAUDE.md "Path-canonical CAS keys" for the
+    cache-side rationale.
     """
     if target == _GITROOT_SENTINEL and _GITROOT_SENTINEL in path:
-        return path
+        return os.path.normpath(path)
     if path.startswith(anchor_prefix):
-        return target + "/" + path[len(anchor_prefix) :]
+        rewritten = target + "/" + path[len(anchor_prefix) :]
+        if target == _GITROOT_SENTINEL:
+            return os.path.normpath(rewritten)
+        return rewritten
     return path
 
 
