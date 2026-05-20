@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+import pytest
 import stringzilla as sz
 
 import compiletools.test_base as tb
@@ -24,6 +25,12 @@ from compiletools.preprocessing_cache import (
     MacroState,
     get_or_compute_preprocessing,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_compiler_identity_cache():
+    """Reset the lru_cache on compiler_identity so each test sees a fresh probe."""
+    compiler_identity.cache_clear()
 
 
 def _make_wrapper_script(path: Path, content: str = '#!/bin/sh\nexec g++ "$@"\n') -> Path:
@@ -84,7 +91,6 @@ def test_compiler_identity_canonicalises_in_workspace_binary(tmp_path):
     workspace = tmp_path / "workspace"
     binary = _make_wrapper_script(workspace / "tools" / "cc-wrap.sh")
 
-    compiler_identity.cache_clear()
     result = compiler_identity(str(binary), anchor_root=str(workspace))
     realpath_part = result.split("|", 1)[0]
     assert realpath_part == "<GITROOT>/tools/cc-wrap.sh", f"compiler_identity leaked workspace prefix: {result!r}"
@@ -97,7 +103,6 @@ def test_compiler_identity_outside_anchor_unchanged(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    compiler_identity.cache_clear()
     result = compiler_identity(str(binary), anchor_root=str(workspace))
     realpath_part = result.split("|", 1)[0]
     assert realpath_part == str(binary)
@@ -107,7 +112,6 @@ def test_compiler_identity_empty_anchor_is_identity(tmp_path):
     """anchor_root="" must be a graceful no-op (no canonicalisation)."""
     binary = _make_wrapper_script(tmp_path / "workspace" / "tools" / "cc.sh", "#!/bin/sh\n")
 
-    compiler_identity.cache_clear()
     result = compiler_identity(str(binary), anchor_root="")
     realpath_part = result.split("|", 1)[0]
     assert realpath_part == str(binary)
@@ -122,7 +126,6 @@ def test_compiler_identity_fallback_string_canonicalised_when_under_anchor(tmp_p
     workspace.mkdir()
     bogus = str(workspace / "tools" / "does-not-exist")
 
-    compiler_identity.cache_clear()
     result = compiler_identity(bogus, anchor_root=str(workspace))
     assert result == "<GITROOT>/tools/does-not-exist", f"compiler_identity fallback leaked workspace prefix: {result!r}"
 
@@ -205,7 +208,6 @@ def test_compiler_identity_two_workspaces_canonicalise_to_same_realpath(tmp_path
     os.utime(bin_a, fixed)
     os.utime(bin_b, fixed)
 
-    compiler_identity.cache_clear()
     id_a = compiler_identity(str(bin_a), anchor_root=str(ws_a))
     compiler_identity.cache_clear()
     id_b = compiler_identity(str(bin_b), anchor_root=str(ws_b))
