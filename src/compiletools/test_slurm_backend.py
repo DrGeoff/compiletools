@@ -140,6 +140,17 @@ def make_phony_rule(name="build", inputs=()):
     return BuildRule(output=name, inputs=list(inputs), command=None, rule_type="phony")
 
 
+def _single_compile_graph(output, src="src/foo.cpp"):
+    """Build a graph with one compile rule + a 'build' phony aggregator.
+    Returns (graph, rule). Most TestSbatchSubmission / TestJobFailures
+    cases need exactly this 4-line incantation."""
+    rule = make_compile_rule(output=output, src=src)
+    graph = BuildGraph()
+    graph.add_rule(rule)
+    graph.add_rule(make_phony_rule("build", [output]))
+    return graph, rule
+
+
 def _sacct_output(*rows):
     """Build a mock sacct --parsable2 output string."""
     return "\n".join(f"{jid}|{state}" for jid, state in rows) + "\n"
@@ -217,10 +228,7 @@ class TestAvailability:
 
 class TestSbatchSubmission:
     def test_compile_rule_submitted_to_slurm(self, tmp_path):
-        graph = BuildGraph()
-        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [rule.output]))
+        graph, _rule = _single_compile_graph(str(tmp_path / "foo.o"))
 
         mock_sbatch = _run_sbatch_build(graph, return_value="12345\n")
 
@@ -233,10 +241,7 @@ class TestSbatchSubmission:
 
     def test_sbatch_wrap_reads_from_cmds_file(self, tmp_path):
         """The --wrap script reads the compile command from the commands file."""
-        graph = BuildGraph()
-        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [rule.output]))
+        graph, _rule = _single_compile_graph(str(tmp_path / "foo.o"))
 
         mock_sbatch = _run_sbatch_build(graph)
 
@@ -251,10 +256,7 @@ class TestSbatchSubmission:
         assert m, f"wrap missing cmds file pattern: {wrap_value}"
 
     def test_partition_added_when_specified(self, tmp_path):
-        graph = BuildGraph()
-        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [rule.output]))
+        graph, _rule = _single_compile_graph(str(tmp_path / "foo.o"))
 
         mock_sbatch = _run_sbatch_build(graph, return_value="7\n", slurm_partition="gpu")
 
@@ -263,10 +265,7 @@ class TestSbatchSubmission:
         assert "gpu" in cmd
 
     def test_partition_omitted_when_none(self, tmp_path):
-        graph = BuildGraph()
-        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [rule.output]))
+        graph, _rule = _single_compile_graph(str(tmp_path / "foo.o"))
 
         mock_sbatch = _run_sbatch_build(graph, return_value="7\n")
 
@@ -274,10 +273,7 @@ class TestSbatchSubmission:
         assert "--partition" not in cmd
 
     def test_account_added_when_specified(self, tmp_path):
-        graph = BuildGraph()
-        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [rule.output]))
+        graph, _rule = _single_compile_graph(str(tmp_path / "foo.o"))
 
         mock_sbatch = _run_sbatch_build(graph, return_value="9\n", slurm_account="myproject")
 
@@ -352,10 +348,7 @@ class TestCAShortCircuit:
         (tmp_path / "foo.cpp").write_text("int x;")
         (tmp_path / "foo.o").write_text("compiled")
 
-        rule = make_compile_rule(output=out, src=src)
-        graph = BuildGraph()
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [out]))
+        graph, rule = _single_compile_graph(out, src=src)
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             backend.args.cas_objdir = str(tmp_path)
@@ -379,10 +372,7 @@ class TestCAShortCircuit:
         never ran) and cannot be trusted even if it appears valid on disk.
         """
         out = str(tmp_path / "foo.o")
-        graph = BuildGraph()
-        rule = make_compile_rule(output=out)
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [out]))
+        graph, _rule = _single_compile_graph(out)
 
         # File exists on disk but no trace was recorded for it
         open(out, "w").close()
@@ -413,10 +403,7 @@ class TestTraceVerification:
         with open(out, "w") as f:
             f.write("compiled")
 
-        rule = make_compile_rule(output=out, src=src)
-        graph = BuildGraph()
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [out]))
+        graph, rule = _single_compile_graph(out, src=src)
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             # Point objdir to tmp_path so the trace file is found
@@ -442,10 +429,7 @@ class TestTraceVerification:
 class TestJobFailures:
     def test_failed_job_raises_runtime_error(self, tmp_path):
         out = str(tmp_path / "foo.o")
-        rule = make_compile_rule(output=out)
-        graph = BuildGraph()
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [out]))
+        graph, _rule = _single_compile_graph(out)
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             with patch(
@@ -460,10 +444,7 @@ class TestJobFailures:
 
     def test_cancelled_job_raises_runtime_error(self, tmp_path):
         out = str(tmp_path / "foo.o")
-        rule = make_compile_rule(output=out)
-        graph = BuildGraph()
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [out]))
+        graph, _rule = _single_compile_graph(out)
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             with patch(
@@ -1075,10 +1056,7 @@ class TestTieredSubmission:
 
     def test_sbatch_array_mem_parameter_overrides_default(self, tmp_path):
         """The mem parameter to _sbatch_array overrides self.args.slurm_mem."""
-        graph = BuildGraph()
-        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [rule.output]))
+        graph, rule = _single_compile_graph(str(tmp_path / "foo.o"))
 
         with SlurmBackendTestContext(graph, slurm_mem="16G") as (backend, _tmpdir):
             with patch("subprocess.check_output", return_value="42\n") as mock_sbatch:
@@ -1090,10 +1068,7 @@ class TestTieredSubmission:
 
     def test_sbatch_array_without_mem_uses_default(self, tmp_path):
         """Without mem parameter, _sbatch_array uses self.args.slurm_mem."""
-        graph = BuildGraph()
-        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [rule.output]))
+        graph, rule = _single_compile_graph(str(tmp_path / "foo.o"))
 
         with SlurmBackendTestContext(graph, slurm_mem="16G") as (backend, _tmpdir):
             with patch("subprocess.check_output", return_value="42\n") as mock_sbatch:
@@ -1218,10 +1193,7 @@ class TestOOMRetry:
     def test_non_oom_failure_not_retried(self, tmp_path):
         """Non-OOM failures (FAILED, CANCELLED) are not retried."""
         out = str(tmp_path / "foo.o")
-        rule = make_compile_rule(output=out)
-        graph = BuildGraph()
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [out]))
+        graph, _rule = _single_compile_graph(out)
 
         with SlurmBackendTestContext(graph, slurm_mem="16G") as (backend, _tmpdir):
             with patch(
@@ -1532,10 +1504,7 @@ class TestScancelOnFailure:
     def test_scancel_called_when_wait_raises(self, tmp_path, _mock_scancel):
         """If _wait_for_arrays raises, scancel runs in the finally block."""
         out = str(tmp_path / "foo.o")
-        rule = make_compile_rule(output=out)
-        graph = BuildGraph()
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [out]))
+        graph, _rule = _single_compile_graph(out)
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             with (
@@ -1551,10 +1520,7 @@ class TestScancelOnFailure:
     def test_scancel_skips_terminal_jobs(self, tmp_path, _mock_scancel):
         """Jobs marked terminal by _wait_for_arrays are not cancelled again."""
         out = str(tmp_path / "foo.o")
-        rule = make_compile_rule(output=out)
-        graph = BuildGraph()
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [out]))
+        graph, _rule = _single_compile_graph(out)
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             backend._tracked_jobs = {"77": "terminal", "88": "pending"}
@@ -1706,10 +1672,7 @@ class TestSacctTransientFailures:
 
 class TestWrapScriptEval:
     def test_wrap_uses_eval_not_bash_c(self, tmp_path):
-        graph = BuildGraph()
-        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [rule.output]))
+        graph, _rule = _single_compile_graph(str(tmp_path / "foo.o"))
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             with (
@@ -1877,10 +1840,7 @@ class TestAtomicComputeNodeCompile:
 
 class TestSlurmExport:
     def _run_with_export(self, tmp_path, export_value):
-        graph = BuildGraph()
-        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [rule.output]))
+        graph, _rule = _single_compile_graph(str(tmp_path / "foo.o"))
 
         with SlurmBackendTestContext(graph, slurm_export=export_value) as (backend, _tmpdir):
             with (
@@ -1919,10 +1879,7 @@ class TestSlurmExport:
 
 class TestSbatchStderr:
     def test_sbatch_failure_includes_stderr_in_message(self, tmp_path):
-        graph = BuildGraph()
-        rule = make_compile_rule(output=str(tmp_path / "foo.o"))
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [rule.output]))
+        graph, _rule = _single_compile_graph(str(tmp_path / "foo.o"))
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             err = subprocess.CalledProcessError(1, ["sbatch"], stderr="invalid partition: bogus")
@@ -2194,10 +2151,7 @@ class TestTracesAlwaysSaved:
     def test_traces_saved_on_unexpected_exception(self, tmp_path):
         """An unexpected exception must not strand the trace store."""
         out = str(tmp_path / "foo.o")
-        rule = make_compile_rule(output=out)
-        graph = BuildGraph()
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [out]))
+        graph, _rule = _single_compile_graph(out)
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             with (
@@ -2308,10 +2262,7 @@ class TestScancelOnSignal:
     def test_signal_handler_calls_scancel(self, tmp_path, _mock_scancel):
         """SIGINT during execute() triggers scancel via the installed handler."""
         out = str(tmp_path / "foo.o")
-        rule = make_compile_rule(output=out)
-        graph = BuildGraph()
-        graph.add_rule(rule)
-        graph.add_rule(make_phony_rule("build", [out]))
+        graph, _rule = _single_compile_graph(out)
 
         with SlurmBackendTestContext(graph) as (backend, _tmpdir):
             # Simulate slow polling so we can deliver a signal mid-execute
