@@ -35,6 +35,20 @@ from compiletools.trace_backend import (
 )
 
 
+def _make_bare_shake_backend(tmp_path, *, cas_subdir=None, context=None):
+    """Build a bare ShakeBackend (bypassing __init__) wired with MagicMock
+    args (cas_objdir = tmp_path[/cas_subdir]) and either a real BuildContext
+    (default) or the caller's supplied context. Used by tests that exercise
+    pure methods like `_verify` / `_make_trace_entry` without needing
+    full backend init."""
+    backend = ShakeBackend.__new__(ShakeBackend)
+    backend.args = mock.MagicMock()
+    cas_path = tmp_path / cas_subdir if cas_subdir else tmp_path
+    backend.args.cas_objdir = str(cas_path)
+    backend.context = context if context is not None else BuildContext()
+    return backend
+
+
 def _swf_writer(content: bytes = b"\x7fELF fake", returncode: int = 0):
     """Build a fake `compiletools.locking._run_with_signal_forwarding` that
     writes `content` to the rewritten output path in the cmd.
@@ -1028,11 +1042,7 @@ class TestCompilerIdentityInTrace:
         src.write_text("int main() {}")
         obj.write_bytes(b"\x7fELF")
 
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = mock.MagicMock()
-        backend.args.cas_objdir = str(tmp_path)
-
-        backend.context = BuildContext()
+        backend = _make_bare_shake_backend(tmp_path)
 
         rule = BuildRule(
             output=str(obj),
@@ -1065,11 +1075,7 @@ class TestVerifyCanonicalization:
         src.write_text("int main() {}")
         obj.write_bytes(b"\x7fELF")
 
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = mock.MagicMock()
-        backend.args.cas_objdir = str(tmp_path)
-
-        backend.context = BuildContext()
+        backend = _make_bare_shake_backend(tmp_path)
 
         # Same file referenced via canonical and ./-prefixed paths.
         rule_plain = BuildRule(
@@ -1134,10 +1140,7 @@ class TestVerifyAssertions:
     """Direct unit tests for ShakeBackend._verify."""
 
     def test_verify_asserts_when_command_is_none(self, tmp_path):
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = mock.MagicMock()
-        backend.args.cas_objdir = str(tmp_path)
-        backend.context = mock.MagicMock()
+        backend = _make_bare_shake_backend(tmp_path, context=mock.MagicMock())
         rule = BuildRule(output="x", inputs=[], command=None, rule_type="phony")
         trace = TraceEntry(output_hash="h", input_hashes={}, command_hash="c")
         with pytest.raises(AssertionError):
@@ -1420,10 +1423,7 @@ class TestTraceInputCanonicalization:
         src.write_text("int main() {}")
         obj.write_bytes(b"\x7fELF")
 
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = mock.MagicMock()
-        backend.args.cas_objdir = str(tmp_path)
-        backend.context = BuildContext()
+        backend = _make_bare_shake_backend(tmp_path)
 
         rule = BuildRule(
             output=str(obj),
@@ -1463,10 +1463,7 @@ class TestTraceInputCanonicalization:
         (ws_b / "foo.cpp").write_text("int main() {}\n")
         (ws_b / "foo.o").write_bytes(b"\x7fELF identical-bytes")
 
-        backend = ShakeBackend.__new__(ShakeBackend)
-        backend.args = mock.MagicMock()
-        backend.args.cas_objdir = str(tmp_path / "cas")
-        backend.context = BuildContext()
+        backend = _make_bare_shake_backend(tmp_path, cas_subdir="cas")
 
         # Build the trace under workspace A.
         rule_a = BuildRule(
