@@ -731,9 +731,11 @@ class TestBazelPublishOutputs:
     call raised FileNotFoundError on every bazel build with tests.
     """
 
-    def test_publish_lands_test_exes_at_namer_paths(self, tmp_path, monkeypatch):
-
+    @pytest.fixture(autouse=True)
+    def _chdir_to_tmp(self, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)
+
+    def test_publish_lands_test_exes_at_namer_paths(self, tmp_path):
         bazel_bin = tmp_path / "bazel-bin"
         bazel_bin.mkdir()
         test_exe = bazel_bin / "test_combinator"
@@ -762,10 +764,8 @@ class TestBazelPublishOutputs:
             f"_run_tests would raise FileNotFoundError"
         )
 
-    def test_publish_idempotent_on_rerun_with_readonly_dest(self, tmp_path, monkeypatch):
+    def test_publish_idempotent_on_rerun_with_readonly_dest(self, tmp_path):
         """Second invocation must not fail with EACCES on the r-x output."""
-
-        monkeypatch.chdir(tmp_path)
         bazel_bin = tmp_path / "bazel-bin"
         bazel_bin.mkdir()
         exe = bazel_bin / "myapp"

@@ -1514,12 +1514,15 @@ class TestShakeRunsTestsInBuildPhase:
         yield
         uth.reset()
 
+    @pytest.fixture(autouse=True)
+    def _chdir_to_tmp(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+
     @uth.requires_functional_compiler
-    def test_shake_runs_tests_in_build(self, tmp_path, monkeypatch):
+    def test_shake_runs_tests_in_build(self, tmp_path):
         """After execute("build") — NOT execute("runtests") — the test's
         ``.result`` success marker exists, proving the test ran during the
         build phase."""
-        monkeypatch.chdir(tmp_path)
         (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
         test_src = tmp_path / "test_pass.cpp"
         test_src.write_text('#include "unit_test.hpp"\nint main() { return 0; }\n')
@@ -1533,11 +1536,10 @@ class TestShakeRunsTestsInBuildPhase:
         )
 
     @uth.requires_functional_compiler
-    def test_shake_test_failure_fails_build(self, tmp_path, monkeypatch):
+    def test_shake_test_failure_fails_build(self, tmp_path):
         """A deliberately-failing no-framework test must make execute("build")
         raise, and the failing test's ``.result`` marker must NOT be created
         (the marker is only touched on rc==0)."""
-        monkeypatch.chdir(tmp_path)
         (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
         test_src = tmp_path / "test_fail.cpp"
         test_src.write_text('#include "unit_test.hpp"\nint main() { return 1; }\n')
@@ -1553,11 +1555,10 @@ class TestShakeRunsTestsInBuildPhase:
         )
 
     @uth.requires_functional_compiler
-    def test_shake_aggregates_test_failures(self, tmp_path, monkeypatch):
+    def test_shake_aggregates_test_failures(self, tmp_path):
         """TWO deliberately-failing tests: BOTH must be reported in the raised
         error, proving shake aggregates failures (appends to _test_failures and
         continues) rather than stopping on the first failure."""
-        monkeypatch.chdir(tmp_path)
         (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
         test_a = tmp_path / "test_fail_a.cpp"
         test_a.write_text('#include "unit_test.hpp"\nint main() { return 1; }\n')
@@ -1576,7 +1577,7 @@ class TestShakeRunsTestsInBuildPhase:
         assert not uth.find_result_markers(tmp_path)
 
     @uth.requires_functional_compiler
-    def test_shake_framework_test_failure_preserves_xml(self, tmp_path, monkeypatch):
+    def test_shake_framework_test_failure_preserves_xml(self, tmp_path):
         """A failing framework-detected test writes its JUnit XML report and
         *then* exits non-zero. The test rule's ``output`` is the XML path, but
         shake never feeds a test rule to _make_trace_entry, and nothing deletes
@@ -1585,7 +1586,6 @@ class TestShakeRunsTestsInBuildPhase:
           - the failing test's ``.result`` marker is NOT created,
           - the JUnit XML file DOES still exist after the failed build.
         """
-        monkeypatch.chdir(tmp_path)
         test_src = uth.write_failing_gtest_fixture(tmp_path)
 
         xml_dir = tmp_path / "junit"
