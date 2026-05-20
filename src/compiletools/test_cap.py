@@ -1,6 +1,14 @@
 import configargparse
+import pytest
 
 import compiletools.testhelper as uth
+
+
+@pytest.fixture(autouse=True)
+def _reset_parsers():
+    uth.reset()
+    yield
+    uth.reset()
 
 
 def add_to_parser_in_func(recursion_depth=0):
@@ -36,37 +44,32 @@ def add_to_parser_in_func(recursion_depth=0):
 
 
 def test_multiple_parse_known_args():
-    uth.reset()
+    non_existent_config_files = ["/blah/foo.conf", "/usr/bin/ba.conf"]
+    cap = configargparse.ArgumentParser(
+        conflict_handler="resolve",
+        prog="UnitTest",
+        description="unit testing",
+        formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
+        default_config_files=non_existent_config_files,
+        args_for_setting_config_path=["-c", "--config"],
+        ignore_unknown_config_file_keys=True,
+    )
 
-    try:
-        non_existent_config_files = ["/blah/foo.conf", "/usr/bin/ba.conf"]
-        cap = configargparse.ArgumentParser(
-            conflict_handler="resolve",
-            prog="UnitTest",
-            description="unit testing",
-            formatter_class=configargparse.ArgumentDefaultsHelpFormatter,
-            default_config_files=non_existent_config_files,
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
+    cap.add_argument(
+        "--variant",
+        help="Specifies which variant of the config should be used. Use the config name without the .conf",
+        default="debug",
+    )
+    parsed_args = cap.parse_known_args()
+    assert parsed_args is not None
+    assert parsed_args[0].variant == "debug"
 
-        cap.add_argument(
-            "--variant",
-            help="Specifies which variant of the config should be used. Use the config name without the .conf",
-            default="debug",
-        )
-        parsed_args = cap.parse_known_args()
-        assert parsed_args is not None
-        assert parsed_args[0].variant == "debug"
+    add_to_parser_in_func()
 
-        add_to_parser_in_func()
-
-        cap.add_argument(
-            "-c",
-            "--cfg",
-            is_config_file=True,
-            help="Manually specify the config file path if you want to override the variant default",
-        )
-        cap.parse_known_args(args=["--variant", "release"])
-    finally:
-        uth.reset()
+    cap.add_argument(
+        "-c",
+        "--cfg",
+        is_config_file=True,
+        help="Manually specify the config file path if you want to override the variant default",
+    )
+    cap.parse_known_args(args=["--variant", "release"])
