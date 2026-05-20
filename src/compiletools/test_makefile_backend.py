@@ -19,6 +19,15 @@ from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.makefile_backend import MakefileBackend
 
 
+@pytest.fixture(autouse=True)
+def _reset_parser_state():
+    """Wipe global configargparse parser cache around every test in this
+    module so backend/concurrency tests don't leak parser state."""
+    uth.reset()
+    yield
+    uth.reset()
+
+
 class TestMakefileBackendRegistered:
     def test_registered_as_make(self):
         cls = get_backend_class("make")
@@ -796,12 +805,6 @@ class TestWrapCompileCmdRobust:
 class TestMakeRuntestsIncremental:
     """Fix 2: `make runtests` must skip up-to-date tests."""
 
-    def setup_method(self):
-        uth.reset()
-
-    def teardown_method(self):
-        uth.reset()
-
     @uth.requires_functional_compiler
     def test_make_runtests_skips_uptodate(self, tmp_path, monkeypatch):
         """After a successful first run, the second `make runtests` must not
@@ -860,12 +863,6 @@ class TestMakeRuntestsCasContract:
     content change (v1 -> v2) still re-runs because the v2 cas-path has
     no marker yet.
     """
-
-    def setup_method(self):
-        uth.reset()
-
-    def teardown_method(self):
-        uth.reset()
 
     @uth.requires_functional_compiler
     def test_runtests_skips_round_trip_and_runs_on_real_change(self, tmp_path, monkeypatch):
@@ -978,12 +975,6 @@ class TestAllOutputsCurrentHeaderEdit:
     which changes the object output path, so `os.path.exists(rule.output)`
     in `_all_outputs_current` returns False on the freshly-built graph and
     make is invoked. This test pins that behavior."""
-
-    def setup_method(self):
-        uth.reset()
-
-    def teardown_method(self):
-        uth.reset()
 
     @uth.requires_functional_compiler
     def test_header_edit_triggers_rebuild(self, tmp_path, monkeypatch):
@@ -1234,12 +1225,6 @@ class TestMakefileConcurrency:
     correct build (no half-written .o, no torn link). Recent commit 348c18e1
     wraps link rules with ct-lock-helper for this case."""
 
-    def setup_method(self):
-        uth.reset()
-
-    def teardown_method(self):
-        uth.reset()
-
     @uth.requires_functional_compiler
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only")
     def test_concurrent_make_against_same_objdir(self, tmp_path, monkeypatch):
@@ -1325,12 +1310,6 @@ class TestMakeRunsTestsInBuildPhase:
     natively (via the ``all`` phony), so make's ``-j`` scheduler fires each
     test the moment its exe links — no separate post-build ``runtests`` sweep.
     """
-
-    def setup_method(self):
-        uth.reset()
-
-    def teardown_method(self):
-        uth.reset()
 
     @uth.requires_functional_compiler
     def test_make_runs_tests_in_build(self, tmp_path, monkeypatch):
