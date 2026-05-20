@@ -16,7 +16,6 @@ the full contract. Mirrors the shape of test_conf_dir_placeholder.py.
 from __future__ import annotations
 
 import argparse
-import os
 
 import pytest
 
@@ -28,7 +27,7 @@ from compiletools.build_context import BuildContext
 
 
 @pytest.fixture(autouse=True)
-def _clear_apptools_cache():
+def _clear_apptools_cache():  # pyright: ignore[reportUnusedFunction]
     """Reset configargparse parser state and apptools caches around every
     test so PKG_CONFIG_PATH mutations from neighbouring tests can't leak
     in (or out)."""
