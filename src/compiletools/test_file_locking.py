@@ -2,6 +2,7 @@
 
 import multiprocessing
 import os
+import shutil
 import tempfile
 import time
 from unittest.mock import Mock, patch
@@ -38,8 +39,6 @@ def temp_lock_file():
         try:
             path = temp_path + ext
             if os.path.isdir(path):
-                import shutil
-
                 shutil.rmtree(path)
             elif os.path.exists(path):
                 os.unlink(path)
@@ -50,10 +49,13 @@ def temp_lock_file():
 class TestLockdirLock:
     """Tests for lockdir-based locking (NFS/Lustre)."""
 
-    def test_acquire_release_basic(self, temp_lock_file, mock_args):
-        """Test basic lock acquire and release."""
-        lock = compiletools.locking.LockdirLock(temp_lock_file, mock_args)
+    @pytest.fixture
+    def lock(self, temp_lock_file, mock_args):
+        """LockdirLock instance backed by the temp_lock_file + mock_args fixtures."""
+        return compiletools.locking.LockdirLock(temp_lock_file, mock_args)
 
+    def test_acquire_release_basic(self, lock):
+        """Test basic lock acquire and release."""
         # Acquire lock
         lock.acquire()
         assert os.path.exists(lock.lockdir)
@@ -89,10 +91,8 @@ class TestLockdirLock:
         assert os.path.exists(lock2.lockdir)
         lock2.release()
 
-    def test_stale_lock_detection_same_host(self, temp_lock_file, mock_args):
+    def test_stale_lock_detection_same_host(self, lock):
         """Test stale lock removal when process is dead."""
-        lock = compiletools.locking.LockdirLock(temp_lock_file, mock_args)
-
         # Manually create a stale lock with fake PID
         os.mkdir(lock.lockdir)
         fake_pid = 999999  # Unlikely to exist
@@ -114,10 +114,8 @@ class TestLockdirLock:
 
         lock.release()
 
-    def test_cross_host_lock_not_stale(self, temp_lock_file, mock_args):
+    def test_cross_host_lock_not_stale(self, lock):
         """Test that cross-host locks are not considered stale."""
-        lock = compiletools.locking.LockdirLock(temp_lock_file, mock_args)
-
         # Create lock from different host
         os.mkdir(lock.lockdir)
         with open(lock.pid_file, "w") as f:
@@ -126,10 +124,8 @@ class TestLockdirLock:
         # Should not be stale (can't verify remote process)
         assert not lock._is_lock_stale()
 
-    def test_future_mtime_clock_skew(self, temp_lock_file, mock_args):
+    def test_future_mtime_clock_skew(self, lock):
         """Test handling of future mtimes (clock skew)."""
-        lock = compiletools.locking.LockdirLock(temp_lock_file, mock_args)
-
         # Create lock and set mtime to future
         os.mkdir(lock.lockdir)
         future_time = time.time() + 3600  # 1 hour in future
@@ -139,10 +135,8 @@ class TestLockdirLock:
         age = lock._get_lock_age_seconds()
         assert age == 0
 
-    def test_unreadable_lock_info_grace_period(self, temp_lock_file, mock_args):
+    def test_unreadable_lock_info_grace_period(self, lock):
         """Test grace period for locks without PID file during creation."""
-        lock = compiletools.locking.LockdirLock(temp_lock_file, mock_args)
-
         # Create lock without pid file (simulates creation race)
         os.mkdir(lock.lockdir)
 
@@ -211,7 +205,7 @@ class TestLockdirLock:
 
             lock.release()
 
-    def test_lockdir_removed_during_pid_write_retry(self, temp_lock_file, mock_args):
+    def test_lockdir_removed_during_pid_write_retry(self, lock):
         """Test retry mechanism when lockdir removed during pid write.
 
         This tests the fix for the race condition where:
@@ -220,10 +214,6 @@ class TestLockdirLock:
         3. Process B: Removes lockdir
         4. Process A: Fails to write pid file, retries acquisition
         """
-        import shutil
-
-        lock = compiletools.locking.LockdirLock(temp_lock_file, mock_args)
-
         # Track attempts; patch the new internal pid-write helper so we can
         # simulate the lockdir-was-torn-down race without going through any
         # makedirs path.
@@ -259,12 +249,8 @@ class TestLockdirLock:
             lock.release()
             assert not os.path.exists(lock.lockdir), "Lockdir should be removed after release"
 
-    def test_lockdir_removed_max_retries_exceeded(self, temp_lock_file, mock_args):
+    def test_lockdir_removed_max_retries_exceeded(self, lock):
         """Test that acquisition fails after 3 retry attempts."""
-        import shutil
-
-        lock = compiletools.locking.LockdirLock(temp_lock_file, mock_args)
-
         def always_failing_write():
             if os.path.exists(lock.lockdir):
                 shutil.rmtree(lock.lockdir)
@@ -280,10 +266,13 @@ class TestLockdirLock:
 class TestCIFSLock:
     """Tests for CIFS/SMB locking."""
 
-    def test_acquire_release_basic(self, temp_lock_file, mock_args):
-        """Test basic CIFS lock acquire and release."""
-        lock = compiletools.locking.CIFSLock(temp_lock_file, mock_args)
+    @pytest.fixture
+    def lock(self, temp_lock_file, mock_args):
+        """CIFSLock instance backed by the temp_lock_file + mock_args fixtures."""
+        return compiletools.locking.CIFSLock(temp_lock_file, mock_args)
 
+    def test_acquire_release_basic(self, lock):
+        """Test basic CIFS lock acquire and release."""
         lock.acquire()
         assert os.path.exists(lock.lockfile_excl)
 
@@ -330,10 +319,13 @@ class TestCIFSLock:
 class TestFlockLock:
     """Tests for POSIX flock locking."""
 
-    def test_acquire_release_basic(self, temp_lock_file, mock_args):
-        """Test basic flock acquire and release."""
-        lock = compiletools.locking.FlockLock(temp_lock_file, mock_args)
+    @pytest.fixture
+    def lock(self, temp_lock_file, mock_args):
+        """FlockLock instance backed by the temp_lock_file + mock_args fixtures."""
+        return compiletools.locking.FlockLock(temp_lock_file, mock_args)
 
+    def test_acquire_release_basic(self, lock):
+        """Test basic flock acquire and release."""
         lock.acquire()
         assert os.path.exists(lock.lockfile)
 
