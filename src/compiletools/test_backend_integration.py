@@ -224,6 +224,11 @@ class TestBackendBuildPCH(BaseCompileToolsTestCase):
             uth.add_backend_arguments(cap)
             ctx = BuildContext()
             args = compiletools.apptools.parseargs(cap, argv, context=ctx)
+            # cas-objdir / cas-pchdir get the active variant appended at
+            # parse time, so refresh the test's local references from the
+            # post-parse values before asserting on output paths.
+            objdir = args.cas_objdir
+            pchdir = args.cas_pchdir
             headerdeps = compiletools.headerdeps.create(args, context=ctx)
             magicparser = compiletools.magicflags.create(args, headerdeps, context=ctx)
             hunter = compiletools.hunter.Hunter(args, headerdeps, magicparser, context=ctx)

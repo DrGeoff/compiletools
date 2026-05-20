@@ -580,10 +580,64 @@ consumer cwd (matching the CLI's
 A working fixture lives at
 ``examples-features/conf_dir_relative_pkgconfig/``.
 
+**Environment variables and ~ in conf values**
+
+Conf-file values also expand ``$VAR``, ``${VAR}``, and ``~`` at parse
+time, after the ``${CONF_DIR}`` substitution. The pipeline is:
+
+1. ``${CONF_DIR}`` is substituted first (above).
+2. ``$VAR`` and ``${VAR}`` are expanded via ``os.path.expandvars`` —
+   unset variables stay literal.
+3. ``~`` and ``~user`` are expanded via ``os.path.expanduser``.
+
+This lets a checked-in axis conf express a per-user cache root without
+hardcoding one developer's absolute path:
+
+.. code-block:: ini
+
+    # ct.conf.d/shared.conf — shared cache for multi-user dev hosts
+    extends = mold
+    cas-objdir = $HOME/cache/cas-objs
+    cas-pchdir = ~/cache/cas-pch
+
+To keep a literal ``$`` in a value, double it: ``$$``. For example,
+``append-CXXFLAGS = -DVERSION=$$BUILD_NUM`` expands to the literal flag
+``-DVERSION=$BUILD_NUM`` rather than expanding ``$BUILD_NUM`` as an
+environment variable.
+
+**Backward-compat note:** a user with a literal ``$HOME`` or ``~`` in a
+conf today now gets it expanded. Those values were broken under the
+prior parser (compiletools would have tried to open
+``/abs/$HOME/cache/...`` and failed), so the change is a fix rather
+than a regression.
+
 For diagnostics, at high verbosity (``-vvvv``) ``ct-config`` (or any
 ``ct-*`` tool) prints the source ``conf-file:line`` for every
 PKG_CONFIG_PATH entry it emits, distinguishing conf-file values from
 CLI flags and auto-discovered cwd/gitroot defaults.
+
+**Variant suffix is auto-appended to cas-*dir paths**
+
+Any user-supplied value for ``cas-objdir``, ``cas-pchdir``,
+``cas-pcmdir``, or ``cas-exedir`` is normalised to end in
+``/<variant>`` so the four CAS layers stay separated per variant. A
+user pointing every host at a shared pool only needs to write the bare
+root:
+
+.. code-block:: ini
+
+    # ct.conf.d/shared.conf
+    cas-objdir = $HOME/cache/cas-objs
+    cas-pchdir = ~/cache/cas-pch
+
+Building ``--variant=gcc.release`` resolves these to
+``$HOME/cache/cas-objs/gcc.release`` and
+``~/cache/cas-pch/gcc.release`` respectively. The append is
+idempotent: a path that already ends in ``/<variant>`` is left alone,
+so a conf migrated from before this contract needs no edit. Built-in
+defaults (``<gitroot>/cas-objdir/<variant>`` and the no-gitroot
+``bin/<variant>/obj`` fallback) already incorporate the variant and
+are unchanged.
 
 **Common Configuration Options**
 

@@ -402,7 +402,12 @@ def add_cas_directory_arguments(cap, variant):
         default_cas_objdir = "".join(["bin/", variant, "/obj"])
     cap.add_argument(
         "--cas-objdir",
-        help="Output directory for object files (content-addressable store)",
+        help=(
+            "Output directory for object files (content-addressable store). "
+            "If the supplied path does not already end in /<variant>, the "
+            "active variant is appended automatically so the layer stays "
+            "separated per variant."
+        ),
         default=default_cas_objdir,
     )
     if git_root:
@@ -411,7 +416,12 @@ def add_cas_directory_arguments(cap, variant):
         default_cas_pchdir = os.path.join("bin", variant, "pch")
     cap.add_argument(
         "--cas-pchdir",
-        help="Output directory for precompiled header cache (content-addressable store)",
+        help=(
+            "Output directory for precompiled header cache (content-addressable store). "
+            "If the supplied path does not already end in /<variant>, the "
+            "active variant is appended automatically so the layer stays "
+            "separated per variant."
+        ),
         default=default_cas_pchdir,
     )
     if git_root:
@@ -420,7 +430,12 @@ def add_cas_directory_arguments(cap, variant):
         default_cas_pcmdir = os.path.join("bin", variant, "pcm")
     cap.add_argument(
         "--cas-pcmdir",
-        help="Output directory for precompiled C++20 module cache (content-addressable store)",
+        help=(
+            "Output directory for precompiled C++20 module cache (content-addressable store). "
+            "If the supplied path does not already end in /<variant>, the "
+            "active variant is appended automatically so the layer stays "
+            "separated per variant."
+        ),
         default=default_cas_pcmdir,
     )
     if git_root:
@@ -435,7 +450,9 @@ def add_cas_directory_arguments(cap, variant):
             "the user-facing bin/<variant>/<name> is a hard link (with symlink "
             "fallback for cross-filesystem cases) to that file. Sharing this "
             "directory across CI runners makes link rules reusable across "
-            "fresh checkouts."
+            "fresh checkouts. If the supplied path does not already end in "
+            "/<variant>, the active variant is appended automatically so the "
+            "layer stays separated per variant."
         ),
         default=default_cas_exedir,
     )
@@ -542,6 +559,24 @@ def unsupplied_replacement(variable, default_variable, verbose, variable_str):
         if verbose >= 6:
             print(" ".join([variable_str, "was unsupplied. Changed to use ", default_variable]))
     return replacement
+
+
+def _ensure_variant_suffix(path, variant):
+    """Return ``path`` with ``/<variant>`` appended as a final segment
+    unless it is already there. Idempotent.
+
+    Used to keep the four ``cas-*dir`` layers separated per variant
+    even when the user points them at a bare shared-pool path (e.g.
+    ``cas-objdir = /mnt/team-cache``). The check is segment-aware:
+    ``/pool/release_old`` does NOT count as ending in ``release``.
+    Trailing ``/`` is normalised away so the result never contains
+    ``//``."""
+    if not path or not variant:
+        return path
+    normalised = path.rstrip(os.sep) or path
+    if os.path.basename(normalised) == variant:
+        return normalised
+    return os.path.join(normalised, variant)
 
 
 def _substitute_CXX_for_missing(args):
@@ -2047,12 +2082,16 @@ def _pkg_config_provenance_label(
         target_real = compiletools.wrappedos.realpath(path)
     except (OSError, ValueError):
         target_real = path
-    for value, source_file, lineno in provenance.get(key, []):
+    for entry in provenance.get(key, []):
+        value, source_file, lineno = entry[0], entry[1], entry[2]
+        literal = entry[3] if len(entry) >= 4 else value
         try:
             value_real = compiletools.wrappedos.realpath(value)
         except (OSError, ValueError):
             value_real = value
         if value_real == target_real:
+            if literal != value:
+                return f"(from {source_file}:{lineno}, literal: {literal})"
             return f"(from {source_file}:{lineno})"
     return "(from CLI)"
 
@@ -2642,6 +2681,7 @@ def _commonsubstitutions(args):
         else:
             default_cas_objdir = os.path.join(args.bindir, "obj")
         args.cas_objdir = unsupplied_replacement(args.cas_objdir, default_cas_objdir, args.verbose, "cas-objdir")
+        args.cas_objdir = _ensure_variant_suffix(args.cas_objdir, args.variant)
     except AttributeError:
         pass
 
@@ -2652,6 +2692,7 @@ def _commonsubstitutions(args):
         else:
             default_cas_pchdir = os.path.join(args.bindir, "pch")
         args.cas_pchdir = unsupplied_replacement(args.cas_pchdir, default_cas_pchdir, args.verbose, "cas-pchdir")
+        args.cas_pchdir = _ensure_variant_suffix(args.cas_pchdir, args.variant)
     except AttributeError:
         pass
 
@@ -2662,6 +2703,7 @@ def _commonsubstitutions(args):
         else:
             default_cas_pcmdir = os.path.join(args.bindir, "pcm")
         args.cas_pcmdir = unsupplied_replacement(args.cas_pcmdir, default_cas_pcmdir, args.verbose, "cas-pcmdir")
+        args.cas_pcmdir = _ensure_variant_suffix(args.cas_pcmdir, args.variant)
     except AttributeError:
         pass
 
@@ -2684,6 +2726,7 @@ def _commonsubstitutions(args):
                     file=sys.stderr,
                 )
         args.cas_exedir = unsupplied_replacement(args.cas_exedir, default_cas_exedir, args.verbose, "cas-exedir")
+        args.cas_exedir = _ensure_variant_suffix(args.cas_exedir, args.variant)
     except AttributeError:
         pass
 
@@ -3048,6 +3091,29 @@ def _expand_conf_dir(value, conf_dir):
     return value.replace(_CONF_DIR_PLACEHOLDER, conf_dir)
 
 
+_DOLLAR_SENTINEL = "\x00"
+
+
+def _expand_env_and_user(value):
+    """Expand $VAR, ${VAR}, and ~ in conf-file values.
+
+    Applies to scalar strings and to each element of list values; leaves
+    non-string types untouched. Order: env vars first, then ~ expansion
+    (so $HOME and ~ agree). Unknown env vars are left as the literal
+    placeholder, matching os.path.expandvars semantics. The $$ escape
+    yields a literal $ in the output (sentinel-swap, since
+    os.path.expandvars does not honor $$ natively)."""
+    if isinstance(value, list):
+        return [_expand_env_and_user(elem) for elem in value]
+    if not isinstance(value, str):
+        return value
+    if "$" not in value and "~" not in value:
+        return value
+    protected = value.replace("$$", _DOLLAR_SENTINEL)
+    expanded = os.path.expanduser(os.path.expandvars(protected))
+    return expanded.replace(_DOLLAR_SENTINEL, "$")
+
+
 class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
     """Variant of ``DefaultConfigFileParser`` that accumulates duplicate
     ``append-*`` / ``prepend-*`` keys into a list rather than last-writer-wins,
@@ -3074,14 +3140,19 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
 
     Provenance side channel: every parsed entry is also recorded into
     ``self._provenance`` as ``key -> [(expanded_value, source_file_abspath,
-    lineno), ...]`` in parse order. Used by ``-vv`` diagnostics to
-    attribute each emitted setting back to its conf-file:line origin
-    without changing any ``args.*`` shape.
+    lineno, pre_expansion_literal), ...]`` in parse order. The
+    pre-expansion literal is the value as it appeared in the conf file
+    after JSON-list parsing but before ``${CONF_DIR}`` and env-var
+    expansion; equals the expanded value when no expansion happened.
+    Used by ``-vv`` diagnostics to attribute each emitted setting back
+    to its conf-file:line origin and to show "literal: $HOME/..." when
+    a value was expanded from an env var. Does not change any
+    ``args.*`` shape.
     """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._provenance: dict[str, list[tuple[str, str, int]]] = {}
+        self._provenance: dict[str, list[tuple[str, str, int, str]]] = {}
 
     def parse(self, stream):
         items = OrderedDict()
@@ -3146,7 +3217,13 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
                 except Exception:
                     value = [elem.strip() for elem in value[1:-1].split(",")]
 
+            if isinstance(value, list):
+                pre_expansion_literal = [str(elem) for elem in value]
+            else:
+                pre_expansion_literal = str(value)
+
             value = _expand_conf_dir(value, conf_dir)
+            value = _expand_env_and_user(value)
 
             if key.startswith(("append-", "prepend-")) and key in items:
                 existing = items[key]
@@ -3162,10 +3239,12 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
 
             prov_bucket = self._provenance.setdefault(key, [])
             if isinstance(value, list):
-                for elem in value:
-                    prov_bucket.append((str(elem), source_file, segment_lineno))
+                for i, elem in enumerate(value):
+                    literal_elem = pre_expansion_literal[i] if i < len(pre_expansion_literal) else str(elem)
+                    prov_bucket.append((str(elem), source_file, segment_lineno, literal_elem))
             else:
-                prov_bucket.append((str(value), source_file, segment_lineno))
+                literal_str = pre_expansion_literal if isinstance(pre_expansion_literal, str) else str(value)
+                prov_bucket.append((str(value), source_file, segment_lineno, literal_str))
         return items
 
 
@@ -3220,7 +3299,7 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
         kwargs.setdefault("config_file_open_func", _open_conf_file_utf8)
         super().__init__(*args, **kwargs)
 
-    def get_conf_file_provenance(self) -> dict[str, list[tuple[str, str, int]]]:
+    def get_conf_file_provenance(self) -> dict[str, list[tuple[str, str, int, str]]]:
         """Return a shallow copy of the per-conf-file provenance dict from
         the most recent parse (the entry tuples themselves are immutable,
         so callers cannot mutate the parser's internal state through the
