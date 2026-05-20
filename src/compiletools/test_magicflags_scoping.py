@@ -17,8 +17,10 @@ import os
 import pytest
 import stringzilla as sz
 
+import compiletools.apptools
 import compiletools.test_base as tb
 import compiletools.testhelper as uth
+import compiletools.wrappedos
 from compiletools.build_context import BuildContext
 
 
@@ -33,6 +35,16 @@ def _make_parser(extra_args, tempdir, magic_type="direct"):
         args.extend(extra_args)
     ctx = BuildContext()
     return tb.create_magic_parser(args, tempdir=tempdir, context=ctx)
+
+
+def _parse_or_skip(parser, path):
+    """Run parser.parse(path); skip the test if no functional C++ compiler is available."""
+    try:
+        parser.parse(path)
+    except RuntimeError as e:
+        if "No functional C++ compiler detected" in str(e):
+            pytest.skip("No functional C++ compiler detected")
+        raise
 
 
 class TestInitialMacroStateWiring(tb.BaseCompileToolsTestCase):
@@ -85,14 +97,9 @@ class TestGetFinalMacroStateHash(tb.BaseCompileToolsTestCase):
     and forward it to MacroState.get_hash unchanged."""
 
     def _process(self, parser, sample_rel="simple/helloworld_cpp.cpp"):
-        try:
-            sample_path = uth.example_file(sample_rel)
-            parser.parse(sample_path)
-            return sample_path
-        except RuntimeError as e:
-            if "No functional C++ compiler detected" in str(e):
-                pytest.skip("No functional C++ compiler detected")
-            raise
+        sample_path = uth.example_file(sample_rel)
+        _parse_or_skip(parser, sample_path)
+        return sample_path
 
     def test_get_final_macro_state_hash_default_unchanged(self):
         """Calling with no scope_filter must equal calling with
@@ -152,14 +159,6 @@ class TestParsePropagation(tb.BaseCompileToolsTestCase):
             fh.write("//#CPPFLAGS=-DMAGIC_DEFINE=1\nint main() { return 0; }\n")
         return src_path
 
-    def _parse_or_skip(self, parser, src_path):
-        try:
-            parser.parse(src_path)
-        except RuntimeError as e:
-            if "No functional C++ compiler detected" in str(e):
-                pytest.skip("No functional C++ compiler detected")
-            raise
-
     def test_parse_preserves_cmdline_origin_through_final_state(self):
         """cmdline_origin in the final state must equal the initial
         state's cmdline_origin -- magic -D macros are NOT cmdline-origin."""
@@ -168,9 +167,7 @@ class TestParsePropagation(tb.BaseCompileToolsTestCase):
             tempdir=self._tmpdir,
         )
         src_path = self._make_magic_d_source()
-        self._parse_or_skip(parser, src_path)
-
-        import compiletools.wrappedos
+        _parse_or_skip(parser, src_path)
 
         abs_path = compiletools.wrappedos.realpath(src_path)
         final_ms = parser._final_macro_states[abs_path]
@@ -188,9 +185,7 @@ class TestParsePropagation(tb.BaseCompileToolsTestCase):
         including the per-file magic -DMAGIC_DEFINE=1."""
         parser = _make_parser([], tempdir=self._tmpdir)
         src_path = self._make_magic_d_source()
-        self._parse_or_skip(parser, src_path)
-
-        import compiletools.wrappedos
+        _parse_or_skip(parser, src_path)
 
         abs_path = compiletools.wrappedos.realpath(src_path)
         final_ms = parser._final_macro_states[abs_path]
@@ -210,16 +205,13 @@ class TestParsePropagation(tb.BaseCompileToolsTestCase):
         global tokens are reused directly, only the magic-flag
         contribution is appended.
         """
-        import compiletools.apptools
-        import compiletools.wrappedos
-
         parser = _make_parser([], tempdir=self._tmpdir)
         # The args object owned by the parser must have the global
         # token cache populated by parseargs (TOKEN-2).
         assert hasattr(parser._args, "CPPFLAGS_tokens"), "parseargs must populate args.CPPFLAGS_tokens"
 
         src_path = self._make_magic_d_source()
-        self._parse_or_skip(parser, src_path)
+        _parse_or_skip(parser, src_path)
 
         abs_path = compiletools.wrappedos.realpath(src_path)
         final_ms = parser._final_macro_states[abs_path]
