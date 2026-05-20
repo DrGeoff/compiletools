@@ -1713,6 +1713,12 @@ class TestVariantResolutionRespectsArgv:
                 )
 
 
+def _resolved_compiler_args(value, *, variant="gcc.debug"):
+    """SimpleNamespace for _check_resolved_compiler_available with CC/CXX/LD
+    all set to the same value — the common case across these tests."""
+    return SimpleNamespace(variant=variant, CC=value, CXX=value, LD=value)
+
+
 class TestResolvedCompilerAvailable:
     """The functional-compiler auto-detect kicks in only when args.CXX is
     None. A toolchain axis (e.g. gcc.conf) sets CXX=g++ explicitly, so on
@@ -1721,14 +1727,7 @@ class TestResolvedCompilerAvailable:
     """
 
     def test_missing_binary_raises_with_variant_hint(self):
-
-
-        args = SimpleNamespace(
-            variant="gcc.debug",
-            CC="this-compiler-does-not-exist-7f3a",
-            CXX="this-compiler-does-not-exist-7f3a",
-            LD="this-compiler-does-not-exist-7f3a",
-        )
+        args = _resolved_compiler_args("this-compiler-does-not-exist-7f3a")
         with pytest.raises(RuntimeError) as excinfo:
             apptools._check_resolved_compiler_available(args)
         msg = str(excinfo.value)
@@ -1736,20 +1735,15 @@ class TestResolvedCompilerAvailable:
         assert "gcc.debug" in msg  # variant must appear in the diagnostic
 
     def test_existing_binary_passes_silently(self):
-
-
         real_cxx = shutil.which("g++") or shutil.which("clang++") or shutil.which("sh")
         assert real_cxx, "test environment lacks any usable executable"
-        args = SimpleNamespace(variant="gcc.debug", CC=real_cxx, CXX=real_cxx, LD=real_cxx)
         # Must not raise.
-        apptools._check_resolved_compiler_available(args)
+        apptools._check_resolved_compiler_available(_resolved_compiler_args(real_cxx))
 
     def test_unsupplied_sentinel_is_skipped(self):
         # The "unsupplied_implies_use_CXX" sentinel means a downstream
         # substitution replaces this with a real CXX value — the check
         # must not flag it as a missing binary.
-
-
         real_cxx = shutil.which("g++") or shutil.which("clang++") or shutil.which("sh")
         args = SimpleNamespace(
             variant="x",
@@ -1764,34 +1758,23 @@ class TestResolvedCompilerAvailable:
         # validator must tokenize and resolve the first token (the actual
         # executable to invoke) instead of feeding the whole string to
         # shutil.which, which would return None and false-positive raise.
-
-
         real_cxx = shutil.which("g++") or shutil.which("clang++") or shutil.which("sh")
         assert real_cxx, "test environment lacks any usable executable"
         # Use `env` (POSIX, ubiquitous on PATH) as a stand-in wrapper so
         # the test doesn't require ccache to be installed.
         wrapper = shutil.which("env")
         assert wrapper, "POSIX `env` must be on PATH for this test"
-        args = SimpleNamespace(
-            variant="ccache-gcc.debug",
-            CC=f"env {real_cxx}",
-            CXX=f"env {real_cxx}",
-            LD=f"env {real_cxx}",
-        )
         # Must not raise — the first token (`env`) is on PATH.
-        apptools._check_resolved_compiler_available(args)
+        apptools._check_resolved_compiler_available(
+            _resolved_compiler_args(f"env {real_cxx}", variant="ccache-gcc.debug")
+        )
 
     def test_wrapper_with_missing_first_token_raises(self):
         # Mirror case: when the wrapper itself isn't on PATH, the validator
         # must still surface the failure (don't accidentally pass by ignoring
         # the resolved value).
-
-
-        args = SimpleNamespace(
-            variant="ccache-gcc.debug",
-            CC="this-wrapper-does-not-exist-7f3a g++",
-            CXX="this-wrapper-does-not-exist-7f3a g++",
-            LD="this-wrapper-does-not-exist-7f3a g++",
+        args = _resolved_compiler_args(
+            "this-wrapper-does-not-exist-7f3a g++", variant="ccache-gcc.debug"
         )
         with pytest.raises(RuntimeError) as excinfo:
             apptools._check_resolved_compiler_available(args)
@@ -1800,22 +1783,20 @@ class TestResolvedCompilerAvailable:
         assert "ccache-gcc.debug" in msg
 
 
+def _std_check_args(*, variant="x", cc="g++", cxx="g++", cflags="-O0", cxxflags=""):
+    """SimpleNamespace for _check_compiler_supports_requested_standard.
+    Defaults match the most common shape (gcc-style driver, -O0 cflags)."""
+    return SimpleNamespace(variant=variant, CC=cc, CXX=cxx, CFLAGS=cflags, CXXFLAGS=cxxflags)
+
+
 class TestCompilerSupportsRequestedStandard:
     """Static (compiler, version) -> max-std table is the cheap way to
     catch "user picked cxx26 on gcc 11" before the compile error surfaces
     with no pointer at the variant chain."""
 
     def test_too_old_for_requested_std_raises(self, monkeypatch):
-
-
         monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: ("gcc", 11))
-        args = SimpleNamespace(
-            variant="gcc.cxx26.debug",
-            CC="g++",
-            CXX="g++",
-            CFLAGS="-O0",
-            CXXFLAGS="-std=c++26 -O0",
-        )
+        args = _std_check_args(variant="gcc.cxx26.debug", cxxflags="-std=c++26 -O0")
         with pytest.raises(RuntimeError) as excinfo:
             apptools._check_compiler_supports_requested_standard(args)
         msg = str(excinfo.value)
@@ -1823,60 +1804,30 @@ class TestCompilerSupportsRequestedStandard:
         assert "gcc >= 14" in msg
 
     def test_recent_compiler_passes(self, monkeypatch):
-
-
         monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: ("gcc", 14))
-        args = SimpleNamespace(
-            variant="gcc.cxx26.debug",
-            CC="g++",
-            CXX="g++",
-            CFLAGS="-O0",
-            CXXFLAGS="-std=c++26 -O0",
-        )
+        args = _std_check_args(variant="gcc.cxx26.debug", cxxflags="-std=c++26 -O0")
         # 14 >= 14 — passes.
         apptools._check_compiler_supports_requested_standard(args)
 
     def test_unknown_driver_skips_silently(self, monkeypatch):
-
-
         monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: None)
-        args = SimpleNamespace(
-            variant="x",
-            CC="some-cross-compiler",
-            CXX="some-cross-compiler",
-            CFLAGS="",
-            CXXFLAGS="-std=c++26",
+        args = _std_check_args(
+            cc="some-cross-compiler", cxx="some-cross-compiler", cflags="", cxxflags="-std=c++26"
         )
         # Unknown driver → skip silently rather than false-positive.
         apptools._check_compiler_supports_requested_standard(args)
 
     def test_no_std_flag_skips_silently(self, monkeypatch):
-
-
         monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: ("gcc", 4))
-        args = SimpleNamespace(
-            variant="blank.debug",
-            CC="gcc",
-            CXX="g++",
-            CFLAGS="-O0",
-            CXXFLAGS="-O0",  # No -std=
-        )
         # No -std= in flags → nothing to check.
+        args = _std_check_args(variant="blank.debug", cc="gcc", cxxflags="-O0")
         apptools._check_compiler_supports_requested_standard(args)
 
     def test_alt_spelling_cxx2c_normalised_to_cxx26(self, monkeypatch):
         # gcc <14 / clang <18 spelled C++26 as -std=c++2c. The check should
         # normalise that to c++26 for the version lookup.
-
-
         monkeypatch.setattr(apptools, "_compiler_major_version", lambda path: ("gcc", 11))
-        args = SimpleNamespace(
-            variant="x",
-            CC="g++",
-            CXX="g++",
-            CFLAGS="",
-            CXXFLAGS="-std=c++2c -O0",
-        )
+        args = _std_check_args(cflags="", cxxflags="-std=c++2c -O0")
         with pytest.raises(RuntimeError, match=r"does not support -std=c\+\+2c"):
             apptools._check_compiler_supports_requested_standard(args)
 
