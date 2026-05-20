@@ -63,7 +63,8 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert self._check_flags(result, "CFLAGS", ["-std=gnu99"], [])
 
     @uth.requires_functional_compiler
-    def test_lotsofmagic(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_lotsofmagic(self):
         """Test parsing multiple magic flags from a complex file"""
         result = self._parse_with_magic("cpp", "lotsofmagic/lotsofmagic.cpp")
 
@@ -91,7 +92,8 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert sz.Str("CXXFLAGS") in result
 
     @uth.requires_functional_compiler
-    def test_direct_and_cpp_magic_generate_same_results(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_direct_and_cpp_magic_generate_same_results(self):
         """Test that DirectMagicFlags and CppMagicFlags produce identical results on conditional compilation samples"""
 
         # Test files with optional expected values for correctness verification
@@ -156,7 +158,8 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
                 fail_msg = "\n\nDirectMagicFlags vs CppMagicFlags equivalence failures:\n" + "\n".join(failures)
                 assert False, fail_msg
 
-    def test_macro_deps_cross_file(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_macro_deps_cross_file(self):
         """Test that macros defined in source files affect header magic flags"""
         source_file = "macro_deps/main.cpp"
 
@@ -222,7 +225,8 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
             "Direct magic should expand LIB_SUFFIX=g in LDFLAGS values"
         )
 
-    def test_macro_expansion_in_pkg_config_output(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_macro_expansion_in_pkg_config_output(self):
         """Test that macros are expanded in pkg-config --cflags and --libs output.
 
         Without the fix, pkg-config output like -lmylib-LIB_SUFFIX would not
@@ -239,7 +243,8 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
             "LIB_SUFFIX should be expanded in pkg-config --libs output"
         )
 
-    def test_hard_orderings_use_expanded_names(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_hard_orderings_use_expanded_names(self):
         """Test that _HARD_ORDERINGS from multi-package PKG-CONFIG annotations
         use macro-expanded library names, not raw pkg-config output.
 
@@ -264,7 +269,8 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert pred == "mylib-O2", f"Hard ordering should use expanded name 'mylib-O2', got '{pred}'"
         assert succ == "testpkg", f"Expected 'testpkg', got '{succ}'"
 
-    def test_macro_expansion_debug_suffix_in_ldflags_and_hard_orderings(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_macro_expansion_debug_suffix_in_ldflags_and_hard_orderings(self):
         """Verify macro expansion works with debug-style suffixes (e.g. -g).
 
         LIB_SUFFIX=g should expand -lmylib-LIB_SUFFIX to -lmylib-g in
@@ -294,7 +300,8 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert pred == "mylib-g", f"Hard ordering should use expanded name 'mylib-g', got '{pred}'"
         assert succ == "testpkg", f"Expected 'testpkg', got '{succ}'"
 
-    def test_gcc_linux_macro_not_expanded_in_pkg_config_paths(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_gcc_linux_macro_not_expanded_in_pkg_config_paths(self):
         """GCC predefines #define linux 1.  This must not corrupt
         pkg-config paths that contain the word 'linux'.
 
@@ -418,7 +425,8 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
             )
 
     @uth.requires_functional_compiler
-    def test_magic_processing_order_bug(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_magic_processing_order_bug(self):
         """Test that DirectMagicFlags and CppMagicFlags produce identical results - should expose the processing order bug"""
 
         source_file = "magic_processing_order/complex_test.cpp"
@@ -434,10 +442,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         result_direct = self._parse_with_magic("direct", source_file, test_flags)
         result_cpp = self._parse_with_magic("cpp", source_file, test_flags)
 
-        # Print results for debugging
-        print(f"\nDirect result: {result_direct}")
-        print(f"CPP result: {result_cpp}")
-
         # The critical test: results should be identical between parsers
         # This should FAIL if there's a macro transformation bug
         assert result_direct == result_cpp, (
@@ -448,7 +452,8 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         )
 
     @uth.requires_functional_compiler
-    def test_conditional_magic_comments_with_complex_headers(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_conditional_magic_comments_with_complex_headers(self):
         """Test conditional magic comments work correctly with header dependencies"""
 
         source_file = "magic_processing_order/complex_test.cpp"
@@ -568,10 +573,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         direct_cppflags = " ".join(str(x) for x in result_direct.get(sz.Str("CPPFLAGS"), []))
         cpp_cppflags = " ".join(str(x) for x in result_cpp.get(sz.Str("CPPFLAGS"), []))
 
-        print("\n-isystem include path test results:")
-        print(f"DirectMagicFlags: {direct_cppflags}")
-        print(f"CppMagicFlags: {cpp_cppflags}")
-
         # Define the expected patterns based on version 2.15
         legacy_pattern = "USE_LEGACY_API"  # Should appear if macros undefined (DirectMagicFlags)
         modern_pattern = "SYSTEM_ENABLE_V2"  # Should appear if macros = 2,15 (CppMagicFlags)
@@ -600,9 +601,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
                 f"DirectMagicFlags doesn't process -I/-isystem include paths like the real preprocessor!"
             )
 
-        # If we reach here, both parsers produce identical results (bug is fixed)
-        print("✓ Both parsers process -isystem include paths identically - bug is fixed!")
-
     def test_duplicate_flag_deduplication(self):
         """Test that duplicate compiler flags are properly deduplicated using samples"""
         # Use our new duplicate_flags sample
@@ -613,7 +611,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
         # Check CPPFLAGS for duplicates
         cppflags = result.get(sz.Str("CPPFLAGS"), [])
-        print(f"CPPFLAGS result: {cppflags}")
 
         # Count occurrences of duplicate flags
         include_test_count = 0
@@ -634,8 +631,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert duplicate_macro_count <= 1, (
             f"Duplicate -D DUPLICATE_MACRO found {duplicate_macro_count} times in {cppflags}"
         )
-
-        print("✓ Duplicate flag deduplication test passed!")
 
     def test_mixed_flag_forms_deduplication(self):
         """Test that mixed forms like '-I/path' and '-I path' are properly deduplicated"""
@@ -679,8 +674,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
         assert len(isystem_paths) == 1, f"Mixed -isystem forms not deduplicated: {isystem_paths}"
 
-        print("✓ Mixed flag forms deduplication test passed!")
-
     def test_ldflags_and_linkflags_deduplication(self):
         """Test that LDFLAGS and LINKFLAGS are properly deduplicated using samples"""
         # Use our duplicate_flags sample which now includes LDFLAGS/LINKFLAGS
@@ -691,11 +684,9 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
 
         # Check LDFLAGS for duplicates (LINKFLAGS should be merged into LDFLAGS)
         ldflags = result.get(sz.Str("LDFLAGS"), [])
-        print(f"LDFLAGS result: {ldflags}")
 
         # LINKFLAGS should no longer appear in results (merged into LDFLAGS)
         linkflags = result.get(sz.Str("LINKFLAGS"), [])
-        print(f"LINKFLAGS result: {linkflags}")
         assert len(linkflags) == 0, f"LINKFLAGS should be empty (merged into LDFLAGS), got: {linkflags}"
 
         # Count occurrences of duplicate library paths and libraries in LDFLAGS only
@@ -730,8 +721,6 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         # Verify specific expected deduplication
         assert lib_paths.count("/usr/lib") <= 1, f"/usr/lib path duplicated: {lib_paths}"
         assert libraries.count("math") <= 1 and libraries.count("m") <= 1, f"math library duplicated: {libraries}"
-
-        print("✓ LDFLAGS and LINKFLAGS deduplication test passed!")
 
     def test_cache_invalidates_on_header_magic_change(self):
         """Verify cache invalidates when header magic flags change."""
@@ -873,7 +862,8 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
         assert "-lm" in ldflags_values, f"Expected -lm in LDFLAGS from header_b.hpp, got: {ldflags_values}"
 
     @uth.requires_functional_compiler
-    def test_cpp_magic_initialization_regression(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_cpp_magic_initialization_regression(self):
         """Regression test for CppMagicFlags initialization (AttributeError fix) using real processing."""
         # Use existing sample that caused issues (lotsofmagic/lotsofmagic.cpp)
         source_file = "lotsofmagic/lotsofmagic.cpp"
@@ -898,7 +888,8 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
             pytest.fail(f"Crashed with AttributeError accessing macro state key: {e}")
 
     @uth.requires_functional_compiler
-    def test_magic_flags_macro_state_equivalence(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_magic_flags_macro_state_equivalence(self):
         """Verify DirectMagicFlags and CppMagicFlags produce same final macro state.
 
         Both magic modes should converge to the same set of variable macros after
@@ -1065,7 +1056,8 @@ class TestMagicFlagsModule(tb.BaseCompileToolsTestCase):
             f"Different per-file magic CPPFLAGS should produce different macro_state_hash: {hash1} vs {hash2}"
         )
 
-    def test_macro_state_hash_captures_per_file_pkg_config(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_macro_state_hash_captures_per_file_pkg_config(self):
         """Different pkg-config results must produce different macro_state_hash."""
         # Use the existing nested.pc from samples
         files = uth.write_sources({"test_pkg.cpp": "//#PKG-CONFIG=nested\nint main() { return 0; }\n"})
