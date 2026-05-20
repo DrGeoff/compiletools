@@ -37,6 +37,13 @@ def _reset_diagnostics_cache():
     uth.reset()
 
 
+@pytest.fixture
+def temp_config():
+    """Provide a temporary config-file path that's cleaned up at test end."""
+    with uth.TempConfigContext() as cfg:
+        yield cfg
+
+
 def _make_hunter(extra_args, temp_config):
     """Build a fresh Hunter wired up with its own BuildContext.
 
@@ -77,145 +84,139 @@ def _scope_dir(diag_root):
     return os.path.join(str(diag_root), iid, "scope")
 
 
-def test_scope_diagnostics_off_by_default(tmp_path):
+def test_scope_diagnostics_off_by_default(tmp_path, temp_config):
     """Without ``--scope-diagnostics``, no scope/ subdir is written even
     when a diagnostics-dir is resolvable and macro_state_hash runs."""
-    with uth.TempConfigContext() as temp_config:
-        hntr = _make_hunter(["--append-CPPFLAGS=-DAPP_NAME=A"], temp_config)
-        # Make a diagnostics dir resolvable but leave --scope-diagnostics off.
-        hntr.args.diagnostics_dir = str(tmp_path)
-        sample = _sample("no_ref.cpp")
-        _process(hntr, sample)
+    hntr = _make_hunter(["--append-CPPFLAGS=-DAPP_NAME=A"], temp_config)
+    # Make a diagnostics dir resolvable but leave --scope-diagnostics off.
+    hntr.args.diagnostics_dir = str(tmp_path)
+    sample = _sample("no_ref.cpp")
+    _process(hntr, sample)
 
-        hntr.macro_state_hash(sample, dep_hash="0" * 16)
+    hntr.macro_state_hash(sample, dep_hash="0" * 16)
 
-        scope_dir = _scope_dir(tmp_path)
-        assert not os.path.exists(scope_dir), (
-            f"scope dir must not be created when --scope-diagnostics is off, but found: {scope_dir}"
-        )
+    scope_dir = _scope_dir(tmp_path)
+    assert not os.path.exists(scope_dir), (
+        f"scope dir must not be created when --scope-diagnostics is off, but found: {scope_dir}"
+    )
 
 
-def test_scope_diagnostics_writes_json_when_on(tmp_path):
+def test_scope_diagnostics_writes_json_when_on(tmp_path, temp_config):
     """With ``--scope-diagnostics`` on and a diagnostics-dir resolvable,
     a JSON sidecar lands at <diag>/<iid>/scope/<basename>.<dep_hash>.json."""
-    with uth.TempConfigContext() as temp_config:
-        hntr = _make_hunter(["--append-CPPFLAGS=-DAPP_NAME=A"], temp_config)
-        hntr.args.diagnostics_dir = str(tmp_path)
-        hntr.args.scope_diagnostics = True
-        sample = _sample("no_ref.cpp")
-        _process(hntr, sample)
+    hntr = _make_hunter(["--append-CPPFLAGS=-DAPP_NAME=A"], temp_config)
+    hntr.args.diagnostics_dir = str(tmp_path)
+    hntr.args.scope_diagnostics = True
+    sample = _sample("no_ref.cpp")
+    _process(hntr, sample)
 
-        dep_hash = "0" * 16
-        hntr.macro_state_hash(sample, dep_hash=dep_hash)
+    dep_hash = "0" * 16
+    hntr.macro_state_hash(sample, dep_hash=dep_hash)
 
-        expected = os.path.join(
-            _scope_dir(tmp_path),
-            f"{os.path.basename(sample)}.{dep_hash}.json",
-        )
-        assert os.path.isfile(expected), f"expected scope JSON at {expected}"
+    expected = os.path.join(
+        _scope_dir(tmp_path),
+        f"{os.path.basename(sample)}.{dep_hash}.json",
+    )
+    assert os.path.isfile(expected), f"expected scope JSON at {expected}"
 
 
-def test_scope_diagnostics_payload_has_required_keys(tmp_path):
+def test_scope_diagnostics_payload_has_required_keys(tmp_path, temp_config):
     """The JSON payload must carry the keys downstream consumers rely on."""
-    with uth.TempConfigContext() as temp_config:
-        hntr = _make_hunter(["--append-CPPFLAGS=-DAPP_NAME=A"], temp_config)
-        hntr.args.diagnostics_dir = str(tmp_path)
-        hntr.args.scope_diagnostics = True
-        sample = _sample("no_ref.cpp")
-        _process(hntr, sample)
+    hntr = _make_hunter(["--append-CPPFLAGS=-DAPP_NAME=A"], temp_config)
+    hntr.args.diagnostics_dir = str(tmp_path)
+    hntr.args.scope_diagnostics = True
+    sample = _sample("no_ref.cpp")
+    _process(hntr, sample)
 
-        dep_hash = "0" * 16
-        hntr.macro_state_hash(sample, dep_hash=dep_hash)
+    dep_hash = "0" * 16
+    hntr.macro_state_hash(sample, dep_hash=dep_hash)
 
-        payload_path = os.path.join(
-            _scope_dir(tmp_path),
-            f"{os.path.basename(sample)}.{dep_hash}.json",
-        )
-        with open(payload_path) as f:
-            payload = json.load(f)
+    payload_path = os.path.join(
+        _scope_dir(tmp_path),
+        f"{os.path.basename(sample)}.{dep_hash}.json",
+    )
+    with open(payload_path) as f:
+        payload = json.load(f)
 
-        for key in (
-            "tu",
-            "dep_hash",
-            "cmdline_d_macros_total",
-            "cmdline_d_macros_in_hash",
-            "cmdline_d_macros_excluded",
-        ):
-            assert key in payload, f"missing key {key!r} in {payload}"
+    for key in (
+        "tu",
+        "dep_hash",
+        "cmdline_d_macros_total",
+        "cmdline_d_macros_in_hash",
+        "cmdline_d_macros_excluded",
+    ):
+        assert key in payload, f"missing key {key!r} in {payload}"
 
 
-def test_scope_diagnostics_lists_included_excluded_correctly(tmp_path):
+def test_scope_diagnostics_lists_included_excluded_correctly(tmp_path, temp_config):
     """Build with two cmdline -D macros; only one is referenced by the TU.
 
     The JSON must list the referenced macro under ``cmdline_d_macros_in_hash``
     and the unreferenced one under ``cmdline_d_macros_excluded``.
     """
-    with uth.TempConfigContext() as temp_config:
-        # with_ref.cpp references APP_NAME but not UNUSED_NAME.
-        hntr = _make_hunter(
-            ["--append-CPPFLAGS=-DAPP_NAME=A -DUNUSED_NAME=Z"],
-            temp_config,
-        )
-        hntr.args.diagnostics_dir = str(tmp_path)
-        hntr.args.scope_diagnostics = True
-        sample = _sample("with_ref.cpp")
-        _process(hntr, sample)
+    # with_ref.cpp references APP_NAME but not UNUSED_NAME.
+    hntr = _make_hunter(
+        ["--append-CPPFLAGS=-DAPP_NAME=A -DUNUSED_NAME=Z"],
+        temp_config,
+    )
+    hntr.args.diagnostics_dir = str(tmp_path)
+    hntr.args.scope_diagnostics = True
+    sample = _sample("with_ref.cpp")
+    _process(hntr, sample)
 
-        dep_hash = "0" * 16
-        hntr.macro_state_hash(sample, dep_hash=dep_hash)
+    dep_hash = "0" * 16
+    hntr.macro_state_hash(sample, dep_hash=dep_hash)
 
-        payload_path = os.path.join(
-            _scope_dir(tmp_path),
-            f"{os.path.basename(sample)}.{dep_hash}.json",
-        )
-        with open(payload_path) as f:
-            payload = json.load(f)
+    payload_path = os.path.join(
+        _scope_dir(tmp_path),
+        f"{os.path.basename(sample)}.{dep_hash}.json",
+    )
+    with open(payload_path) as f:
+        payload = json.load(f)
 
-        assert "APP_NAME" in payload["cmdline_d_macros_in_hash"], (
-            f"APP_NAME should be included (TU references it); got payload={payload}"
-        )
-        assert "UNUSED_NAME" in payload["cmdline_d_macros_excluded"], (
-            f"UNUSED_NAME should be excluded (TU does not reference it); got payload={payload}"
-        )
-        # Sorting invariant for deterministic diffs.
-        assert payload["cmdline_d_macros_in_hash"] == sorted(payload["cmdline_d_macros_in_hash"])
-        assert payload["cmdline_d_macros_excluded"] == sorted(payload["cmdline_d_macros_excluded"])
+    assert "APP_NAME" in payload["cmdline_d_macros_in_hash"], (
+        f"APP_NAME should be included (TU references it); got payload={payload}"
+    )
+    assert "UNUSED_NAME" in payload["cmdline_d_macros_excluded"], (
+        f"UNUSED_NAME should be excluded (TU does not reference it); got payload={payload}"
+    )
+    # Sorting invariant for deterministic diffs.
+    assert payload["cmdline_d_macros_in_hash"] == sorted(payload["cmdline_d_macros_in_hash"])
+    assert payload["cmdline_d_macros_excluded"] == sorted(payload["cmdline_d_macros_excluded"])
 
 
-def test_scope_diagnostics_skipped_when_no_diagnostics_dir_resolvable(tmp_path):
+def test_scope_diagnostics_skipped_when_no_diagnostics_dir_resolvable(temp_config):
     """If neither --diagnostics-dir nor --bindir is set, the diagnostic
     write must be silently skipped (resolve_diagnostics_dir raises
     RuntimeError) -- macro_state_hash must NOT crash."""
-    with uth.TempConfigContext() as temp_config:
-        hntr = _make_hunter(["--append-CPPFLAGS=-DAPP_NAME=A"], temp_config)
-        hntr.args.scope_diagnostics = True
-        # Force both to be unresolvable.
-        hntr.args.diagnostics_dir = None
-        hntr.args.bindir = None
-        sample = _sample("no_ref.cpp")
-        _process(hntr, sample)
+    hntr = _make_hunter(["--append-CPPFLAGS=-DAPP_NAME=A"], temp_config)
+    hntr.args.scope_diagnostics = True
+    # Force both to be unresolvable.
+    hntr.args.diagnostics_dir = None
+    hntr.args.bindir = None
+    sample = _sample("no_ref.cpp")
+    _process(hntr, sample)
 
-        # Should not raise.
-        result = hntr.macro_state_hash(sample, dep_hash="0" * 16)
-        assert isinstance(result, str) and len(result) > 0
+    # Should not raise.
+    result = hntr.macro_state_hash(sample, dep_hash="0" * 16)
+    assert isinstance(result, str) and len(result) > 0
 
 
-def test_scope_diagnostics_filename_includes_dep_hash(tmp_path):
+def test_scope_diagnostics_filename_includes_dep_hash(tmp_path, temp_config):
     """Two distinct dep_hashes for the same TU must produce two distinct
     sidecar files -- the dep_hash is part of the filename so they can't
     collide in the diagnostics dir."""
-    with uth.TempConfigContext() as temp_config:
-        hntr = _make_hunter(["--append-CPPFLAGS=-DAPP_NAME=A"], temp_config)
-        hntr.args.diagnostics_dir = str(tmp_path)
-        hntr.args.scope_diagnostics = True
-        sample = _sample("no_ref.cpp")
-        _process(hntr, sample)
+    hntr = _make_hunter(["--append-CPPFLAGS=-DAPP_NAME=A"], temp_config)
+    hntr.args.diagnostics_dir = str(tmp_path)
+    hntr.args.scope_diagnostics = True
+    sample = _sample("no_ref.cpp")
+    _process(hntr, sample)
 
-        dep_a = "a" * 16
-        dep_b = "b" * 16
-        hntr.macro_state_hash(sample, dep_hash=dep_a)
-        hntr.macro_state_hash(sample, dep_hash=dep_b)
+    dep_a = "a" * 16
+    dep_b = "b" * 16
+    hntr.macro_state_hash(sample, dep_hash=dep_a)
+    hntr.macro_state_hash(sample, dep_hash=dep_b)
 
-        scope_dir = _scope_dir(tmp_path)
-        assert os.path.isfile(os.path.join(scope_dir, f"{os.path.basename(sample)}.{dep_a}.json"))
-        assert os.path.isfile(os.path.join(scope_dir, f"{os.path.basename(sample)}.{dep_b}.json"))
+    scope_dir = _scope_dir(tmp_path)
+    assert os.path.isfile(os.path.join(scope_dir, f"{os.path.basename(sample)}.{dep_a}.json"))
+    assert os.path.isfile(os.path.join(scope_dir, f"{os.path.basename(sample)}.{dep_b}.json"))
