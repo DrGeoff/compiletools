@@ -20,6 +20,7 @@ import compiletools.filesystem_utils
 import compiletools.wrappedos
 from compiletools.build_backend import (
     BuildBackend,
+    _register_bazel_cli_arguments,
     aggregate_rule_sources,
     build_obj_info,
     extract_include_paths,
@@ -124,19 +125,7 @@ class BazelBackend(BuildBackend):
 
         Safe to call more than once on the same parser.
         """
-        if compiletools.apptools._parser_has_option(cap, "--bazel-jvm-stack-size"):
-            return
-        cap.add(
-            "--bazel-jvm-stack-size",
-            default="256k",
-            help=(
-                "Per-thread JVM stack size passed to bazel as "
-                "--host_jvm_args=-Xss<value>. Bazel sizes its internal "
-                "thread pool by --jobs and reserves the default 1MB stack "
-                "per slot, which OOMs on many-core hosts. 256k is "
-                "sufficient for bazel's worker threads. Set empty to skip."
-            ),
-        )
+        _register_bazel_cli_arguments(cap)
 
     def generate(self, graph: BuildGraph, output=None) -> None:
         graph = self._apply_build_only_changed(graph)

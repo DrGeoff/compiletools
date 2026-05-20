@@ -20,7 +20,7 @@ import compiletools.magicflags
 import compiletools.namer
 import compiletools.utils
 import compiletools.wrappedos
-from compiletools.build_backend import available_backends, ensure_backends_registered, get_backend_class
+from compiletools.build_backend import get_backend_class, known_backend_names
 from compiletools.build_context import BuildContext
 from compiletools.version import __version__, get_package_git_sha
 
@@ -77,19 +77,14 @@ class Cake:
 
     @staticmethod
     def add_arguments(cap):
-        ensure_backends_registered()
-
         # General arguments needed by all backends
         compiletools.apptools.add_target_arguments_ex(cap)
         compiletools.apptools.add_link_arguments(cap)
         compiletools.namer.Namer.add_arguments(cap)
         compiletools.hunter.add_arguments(cap)
 
-        # Backend-specific arguments — every registered backend that
-        # declares add_arguments(cap) gets its CLI flags wired up. This
-        # replaces the v8.0.2 pattern of hardcoding two backends here,
-        # which silently dropped any add_arguments() declared on
-        # ninja/cmake/bazel/shake.
+        # Backend-specific arguments are registered from lightweight metadata
+        # so parser construction does not import every backend module.
         from compiletools.build_backend import register_backend_cli_arguments
 
         register_backend_cli_arguments(cap)
@@ -168,7 +163,7 @@ class Cake:
         cap.add_argument(
             "--backend",
             default="make",
-            choices=available_backends(),
+            choices=known_backend_names(),
             help="Build system backend to use (default: make).",
         )
 
@@ -415,14 +410,21 @@ class Cake:
                 print("Early scanning. Cake determining targets and implied files")
 
             with timer.phase("target_discovery"):
-                self._createctobjs()
-                assert self.hunter is not None
+                created_ctobjs = False
                 recreateobjs = False
                 if self.args.static and len(self.args.static) == 1:
+                    if not created_ctobjs:
+                        self._createctobjs()
+                        created_ctobjs = True
+                    assert self.hunter is not None
                     self.args.static.extend(self.hunter.required_source_files(self.args.static[0]))
                     recreateobjs = True
 
                 if self.args.dynamic and len(self.args.dynamic) == 1:
+                    if not created_ctobjs:
+                        self._createctobjs()
+                        created_ctobjs = True
+                    assert self.hunter is not None
                     self.args.dynamic.extend(self.hunter.required_source_files(self.args.dynamic[0]))
                     recreateobjs = True
 
@@ -441,6 +443,9 @@ class Cake:
                     if self.args.verbose > 4:
                         print("Cake recreating objects and reparsing for second stage processing")
                     compiletools.apptools.substitutions(self.args, verbose=0)
+                    self._createctobjs()
+                    created_ctobjs = True
+                elif not created_ctobjs:
                     self._createctobjs()
 
             compiletools.apptools.verboseprintconfig(self.args)

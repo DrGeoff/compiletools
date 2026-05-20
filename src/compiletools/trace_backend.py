@@ -43,7 +43,6 @@ directly from Python.
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import collections
 import contextlib
@@ -67,10 +66,25 @@ import compiletools.filesystem_utils
 import compiletools.git_utils
 import compiletools.wrappedos
 from compiletools.build_backend import (
+    _DEFAULT_SLURM_EXPORT,
     _ORDER_ONLY_DEP_FORBIDDEN_EXTS,
     BuildBackend,
     _compiler_identity,
+    _parse_slurm_mem,
+    _register_slurm_cli_arguments,
     register_backend,
+)
+from compiletools.build_backend import (
+    _slurm_max_wait_arg as _backend_slurm_max_wait_arg,
+)
+from compiletools.build_backend import (
+    _slurm_mem_arg as _backend_slurm_mem_arg,
+)
+from compiletools.build_backend import (
+    _slurm_mem_tiers_arg as _backend_slurm_mem_tiers_arg,
+)
+from compiletools.build_backend import (
+    _slurm_time_arg as _backend_slurm_time_arg,
 )
 from compiletools.build_graph import BuildGraph, BuildRule, RuleType
 from compiletools.global_hash_registry import get_file_hash
@@ -80,13 +94,11 @@ logger = logging.getLogger(__name__)
 
 TRACE_VERSION = 1
 
-# LD_LIBRARY_PATH is included because non-system-installed compilers (Spack, Lmod,
-# environment modules, custom installs) almost always need it to find their shared
-# libs on the compute node. Other HPC vars (MODULEPATH, LMOD_*, SPACK_ROOT, etc.)
-# are deliberately excluded — sites using those toolchains can extend this via
-# --slurm-export.
-_DEFAULT_SLURM_EXPORT = "PATH,HOME,USER,LANG,LC_ALL,CC,CXX,CPATH,LD_LIBRARY_PATH"
-
+_parse_mem_str = _parse_slurm_mem
+_slurm_max_wait_arg = _backend_slurm_max_wait_arg
+_slurm_mem_arg = _backend_slurm_mem_arg
+_slurm_mem_tiers_arg = _backend_slurm_mem_tiers_arg
+_slurm_time_arg = _backend_slurm_time_arg
 
 @dataclass
 class TraceEntry:
@@ -577,99 +589,6 @@ class ShakeBackend(BuildBackend):
         return True
 
 
-_DEFAULT_MEM_TIERS_STR = "1:1G,2:2G,4:4G,8:8G,16:16G"
-
-
-def _parse_mem_str(mem_str: str) -> int:
-    """Parse a Slurm memory string (e.g. '4G', '512M') to megabytes."""
-    s = mem_str.strip().upper()
-    if not s:
-        raise ValueError("empty memory value")
-    if s.endswith("G"):
-        return int(s[:-1]) * 1024
-    if s.endswith("M"):
-        return int(s[:-1])
-    return int(s)
-
-
-def _slurm_mem_arg(value: str) -> str:
-    try:
-        if _parse_mem_str(value) <= 0:
-            raise ValueError("memory must be positive")
-    except ValueError as e:
-        raise argparse.ArgumentTypeError(
-            f"invalid Slurm memory '{value}': {e} (expected '<int>G', '<int>M', or '<int>')"
-        ) from e
-    return value
-
-
-def _slurm_max_wait_arg(value: str) -> float:
-    """Validate the --slurm-max-wait wall-clock cap (positive float seconds)."""
-    s = (value or "").strip()
-    if not s:
-        raise argparse.ArgumentTypeError("invalid --slurm-max-wait: empty")
-    try:
-        seconds = float(s)
-    except ValueError as e:
-        raise argparse.ArgumentTypeError(f"invalid --slurm-max-wait '{value}': not a number") from e
-    if seconds <= 0:
-        raise argparse.ArgumentTypeError(f"invalid --slurm-max-wait '{value}': must be positive")
-    return seconds
-
-
-def _slurm_time_arg(value: str) -> str:
-    """Validate Slurm wall-clock time format (HH:MM:SS or D-HH:MM:SS)."""
-    s = value.strip()
-    if not s:
-        raise argparse.ArgumentTypeError("invalid Slurm time: empty")
-    rest = s
-    if "-" in rest:
-        day_str, rest = rest.split("-", 1)
-        try:
-            if int(day_str) < 0:
-                raise ValueError("days must be non-negative")
-        except ValueError as e:
-            raise argparse.ArgumentTypeError(f"invalid Slurm time '{value}': bad days field") from e
-    parts = rest.split(":")
-    if len(parts) not in (2, 3):
-        raise argparse.ArgumentTypeError(f"invalid Slurm time '{value}': expected HH:MM:SS or D-HH:MM:SS")
-    try:
-        for p in parts:
-            if int(p) < 0:
-                raise ValueError("time fields must be non-negative")
-    except ValueError as e:
-        raise argparse.ArgumentTypeError(f"invalid Slurm time '{value}': {e}") from e
-    return value
-
-
-def _slurm_mem_tiers_arg(value: str) -> list[tuple[int, str]]:
-    """Parse '<threshold>:<mem>,<threshold>:<mem>,...' into a sorted tier list."""
-    if not value or not value.strip():
-        raise argparse.ArgumentTypeError("invalid --slurm-mem-tiers: empty")
-    tiers: list[tuple[int, str]] = []
-    for entry in value.split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        if ":" not in entry:
-            raise argparse.ArgumentTypeError(f"invalid --slurm-mem-tiers entry '{entry}': expected '<threshold>:<mem>'")
-        thr_str, mem_str = entry.split(":", 1)
-        try:
-            threshold = int(thr_str.strip())
-        except ValueError as e:
-            raise argparse.ArgumentTypeError(f"invalid --slurm-mem-tiers threshold '{thr_str}': {e}") from e
-        mem = mem_str.strip()
-        try:
-            _parse_mem_str(mem)
-        except ValueError as e:
-            raise argparse.ArgumentTypeError(f"invalid --slurm-mem-tiers memory '{mem}': {e}") from e
-        tiers.append((threshold, mem))
-    if not tiers:
-        raise argparse.ArgumentTypeError("invalid --slurm-mem-tiers: no entries")
-    tiers.sort(key=lambda t: t[0])
-    return tiers
-
-
 @register_backend
 class SlurmBackend(ShakeBackend):
     """Self-executing backend that distributes compile rules via Slurm."""
@@ -689,102 +608,7 @@ class SlurmBackend(ShakeBackend):
 
     @staticmethod
     def add_arguments(cap) -> None:
-        if compiletools.apptools._parser_has_option(cap, "--slurm-partition"):
-            return
-        cap.add_argument(
-            "--slurm-partition",
-            default=None,
-            help="Slurm partition (queue) for compile jobs. Omit to use the site default partition.",
-        )
-        cap.add_argument(
-            "--slurm-time",
-            default="00:30:00",
-            type=_slurm_time_arg,
-            help="Wall-clock time limit per compile job (HH:MM:SS or D-HH:MM:SS). Default: 00:30:00",
-        )
-        cap.add_argument(
-            "--slurm-mem",
-            default="16G",
-            type=_slurm_mem_arg,
-            help="Memory ceiling per compile job (e.g. 16G, 8G, 512M). Default: 16G",
-        )
-        cap.add_argument(
-            "--slurm-cpus",
-            default=1,
-            type=int,
-            help="CPUs allocated per compile job. Default: 1",
-        )
-        cap.add_argument(
-            "--slurm-account",
-            default=None,
-            help="Slurm account/project to charge for compile jobs.",
-        )
-        cap.add_argument(
-            "--slurm-max-array",
-            default=1000,
-            type=int,
-            help="Maximum job-array size per sbatch call. Larger projects are split into "
-            "multiple arrays. Default: 1000",
-        )
-        cap.add_argument(
-            "--slurm-poll-interval",
-            default=2.0,
-            type=float,
-            help="Seconds between sacct polls when waiting for compile jobs. Default: 2.0",
-        )
-        cap.add_argument(
-            "--slurm-job-name",
-            default="ct-compile",
-            help="Name applied to submitted Slurm jobs (visible in squeue/sacct). "
-            "Default: ct-compile. Useful for distinguishing concurrent ct-cake invocations.",
-        )
-        cap.add_argument(
-            "--slurm-mem-tiers",
-            default=_DEFAULT_MEM_TIERS_STR,
-            type=_slurm_mem_tiers_arg,
-            help="Memory tier mapping as 'threshold:mem,threshold:mem,...' where threshold is "
-            "the maximum work-weight for that tier (quoted-include count for compile rules, "
-            "input-object count for link/library rules). Rules whose weight exceeds the largest "
-            "threshold use --slurm-mem. Default: " + _DEFAULT_MEM_TIERS_STR,
-        )
-        cap.add_argument(
-            "--slurm-sacct-failure-threshold",
-            default=10,
-            type=int,
-            help="Consecutive sacct failures tolerated before _wait_for_arrays raises. Default: 10",
-        )
-        cap.add_argument(
-            "--slurm-output-wait-timeout",
-            default=30.0,
-            type=float,
-            help="Seconds to wait for compiled outputs to become visible on the submitter "
-            "after sacct reports COMPLETED (network filesystem metadata lag). Default: 30.0",
-        )
-        cap.add_argument(
-            "--slurm-export",
-            default=_DEFAULT_SLURM_EXPORT,
-            help="Value passed to sbatch --export=. Default propagates a curated allowlist "
-            f"({_DEFAULT_SLURM_EXPORT}) instead of the submitter's full environment. "
-            "Use 'ALL' to restore legacy behavior, 'NONE' for a fully isolated environment, "
-            "or extend the default for Lmod/Spack sites (e.g. "
-            "'PATH,HOME,USER,LANG,LC_ALL,CC,CXX,CPATH,LD_LIBRARY_PATH,MODULEPATH,LMOD_CMD'). "
-            "See README.ct-backends for guidance.",
-        )
-        cap.add_argument(
-            "--slurm-rule-retry-cap",
-            default=3,
-            type=int,
-            help="Maximum OOM retries per rule before that rule is abandoned. Default: 3",
-        )
-        cap.add_argument(
-            "--slurm-max-wait",
-            default=7200.0,
-            type=_slurm_max_wait_arg,
-            help="Total wall-clock seconds to wait for all submitted Slurm arrays "
-            "to reach a terminal state.  Raised as RuntimeError if exceeded. "
-            "Tune upward on busy clusters where queue waits exceed the default. "
-            "Default: 7200.0 (2 hours)",
-        )
+        _register_slurm_cli_arguments(cap)
 
     # ------------------------------------------------------------------
     # Core execute() — overrides ShakeBackend's async engine

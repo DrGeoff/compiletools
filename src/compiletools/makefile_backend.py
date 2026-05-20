@@ -20,6 +20,7 @@ import compiletools.utils
 from compiletools.build_backend import (
     CAS_PRODUCER_TYPES,
     BuildBackend,
+    _register_make_cli_arguments,
     cas_demoted_order_only,
     register_backend,
 )
@@ -96,35 +97,7 @@ class MakefileBackend(BuildBackend):
 
         Safe to call more than once on the same parser.
         """
-        if compiletools.apptools._parser_has_option(cap, "--makefilename"):
-            return
-        cap.add_argument(
-            "--makefilename",
-            default="Makefile",
-            help="Output filename for the Makefile",
-        )
-        cap.add_argument(
-            "--build-only-changed",
-            help="Only build the binaries depending on the source or header absolute "
-            "filenames in this space-delimited list.",
-        )
-        compiletools.apptools.add_locking_arguments(cap)
-        compiletools.utils.add_flag_argument(
-            parser=cap,
-            name="serialise-tests",
-            dest="serialisetests",
-            default=False,
-            help="Force the unit tests to run serially rather than in parallel. "
-            "Defaults to false because it is slower.",
-        )
-        compiletools.utils.add_flag_argument(
-            parser=cap,
-            name="shuffle",
-            dest="shuffle",
-            default=False,
-            help="Pass --shuffle to GNU Make (>= 4.4) to randomize prerequisite ordering. "
-            "Useful for CI to detect missing dependencies.",
-        )
+        _register_make_cli_arguments(cap)
 
     def generate(self, graph: BuildGraph, output=None) -> None:
         """Write Makefile from BuildGraph.
