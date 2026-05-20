@@ -38,6 +38,13 @@ def _reset_diagnostics_cache():
     uth.reset()
 
 
+@pytest.fixture
+def temp_config():
+    """Provide a temporary config-file path that's cleaned up at test end."""
+    with uth.TempConfigContext() as cfg:
+        yield cfg
+
+
 def _make_hunter(extra_args, temp_config):
     """Build a fresh Hunter wired up with its own BuildContext.
 
@@ -78,150 +85,144 @@ def _pch_scope_dir(diag_root):
     return os.path.join(str(diag_root), iid, "scope", "pch")
 
 
-def test_pch_scope_diagnostics_off_by_default(tmp_path):
+def test_pch_scope_diagnostics_off_by_default(tmp_path, temp_config):
     """Without ``--scope-diagnostics``, no scope/pch/ subdir is written
     even when a diagnostics-dir is resolvable and _pch_scope_macro_hash runs."""
-    with uth.TempConfigContext() as temp_config:
-        hntr = _make_hunter(["--append-CPPFLAGS=-DAPP_NAME=A"], temp_config)
-        # Make a diagnostics dir resolvable but leave --scope-diagnostics off.
-        hntr.args.diagnostics_dir = str(tmp_path)
-        sample = _sample("with_ref.cpp")
-        _process(hntr, sample)
+    hntr = _make_hunter(["--append-CPPFLAGS=-DAPP_NAME=A"], temp_config)
+    # Make a diagnostics dir resolvable but leave --scope-diagnostics off.
+    hntr.args.diagnostics_dir = str(tmp_path)
+    sample = _sample("with_ref.cpp")
+    _process(hntr, sample)
 
-        _pch_scope_macro_hash(hntr, sample)
+    _pch_scope_macro_hash(hntr, sample)
 
-        scope_pch_dir = _pch_scope_dir(tmp_path)
-        assert not os.path.exists(scope_pch_dir), (
-            f"scope/pch dir must not be created when --scope-diagnostics is off, but found: {scope_pch_dir}"
-        )
+    scope_pch_dir = _pch_scope_dir(tmp_path)
+    assert not os.path.exists(scope_pch_dir), (
+        f"scope/pch dir must not be created when --scope-diagnostics is off, but found: {scope_pch_dir}"
+    )
 
 
-def test_pch_scope_diagnostics_writes_json_when_on(tmp_path):
+def test_pch_scope_diagnostics_writes_json_when_on(tmp_path, temp_config):
     """With ``--scope-diagnostics`` on and a diagnostics-dir resolvable,
     a JSON sidecar lands at <diag>/<iid>/scope/pch/<basename>.json."""
-    with uth.TempConfigContext() as temp_config:
-        hntr = _make_hunter(["--append-CPPFLAGS=-DAPP_NAME=A"], temp_config)
-        hntr.args.diagnostics_dir = str(tmp_path)
-        hntr.args.scope_diagnostics = True
-        sample = _sample("with_ref.cpp")
-        _process(hntr, sample)
+    hntr = _make_hunter(["--append-CPPFLAGS=-DAPP_NAME=A"], temp_config)
+    hntr.args.diagnostics_dir = str(tmp_path)
+    hntr.args.scope_diagnostics = True
+    sample = _sample("with_ref.cpp")
+    _process(hntr, sample)
 
-        _pch_scope_macro_hash(hntr, sample)
+    _pch_scope_macro_hash(hntr, sample)
 
-        expected = os.path.join(
-            _pch_scope_dir(tmp_path),
-            f"{os.path.basename(sample)}.json",
-        )
-        assert os.path.isfile(expected), f"expected per-PCH scope JSON at {expected}"
+    expected = os.path.join(
+        _pch_scope_dir(tmp_path),
+        f"{os.path.basename(sample)}.json",
+    )
+    assert os.path.isfile(expected), f"expected per-PCH scope JSON at {expected}"
 
 
-def test_pch_scope_diagnostics_payload_has_required_keys(tmp_path):
+def test_pch_scope_diagnostics_payload_has_required_keys(tmp_path, temp_config):
     """The JSON payload must carry the keys downstream consumers rely on."""
-    with uth.TempConfigContext() as temp_config:
-        hntr = _make_hunter(["--append-CPPFLAGS=-DAPP_NAME=A"], temp_config)
-        hntr.args.diagnostics_dir = str(tmp_path)
-        hntr.args.scope_diagnostics = True
-        sample = _sample("with_ref.cpp")
-        _process(hntr, sample)
+    hntr = _make_hunter(["--append-CPPFLAGS=-DAPP_NAME=A"], temp_config)
+    hntr.args.diagnostics_dir = str(tmp_path)
+    hntr.args.scope_diagnostics = True
+    sample = _sample("with_ref.cpp")
+    _process(hntr, sample)
 
-        _pch_scope_macro_hash(hntr, sample)
+    _pch_scope_macro_hash(hntr, sample)
 
-        payload_path = os.path.join(
-            _pch_scope_dir(tmp_path),
-            f"{os.path.basename(sample)}.json",
-        )
-        with open(payload_path) as f:
-            payload = json.load(f)
+    payload_path = os.path.join(
+        _pch_scope_dir(tmp_path),
+        f"{os.path.basename(sample)}.json",
+    )
+    with open(payload_path) as f:
+        payload = json.load(f)
 
-        for key in (
-            "pch_header",
-            "cmdline_d_macros_total",
-            "cmdline_d_macros_in_hash",
-            "cmdline_d_macros_excluded",
-        ):
-            assert key in payload, f"missing key {key!r} in {payload}"
+    for key in (
+        "pch_header",
+        "cmdline_d_macros_total",
+        "cmdline_d_macros_in_hash",
+        "cmdline_d_macros_excluded",
+    ):
+        assert key in payload, f"missing key {key!r} in {payload}"
 
 
-def test_pch_scope_diagnostics_lists_included_excluded_correctly(tmp_path):
+def test_pch_scope_diagnostics_lists_included_excluded_correctly(tmp_path, temp_config):
     """Build with two cmdline -D macros; only one is referenced by the PCH header.
 
     The JSON must list the referenced macro under ``cmdline_d_macros_in_hash``
     and the unreferenced one under ``cmdline_d_macros_excluded``.
     """
-    with uth.TempConfigContext() as temp_config:
-        # with_ref.cpp references APP_NAME but not UNUSED_NAME.
-        hntr = _make_hunter(
-            ["--append-CPPFLAGS=-DAPP_NAME=A -DUNUSED_NAME=Z"],
-            temp_config,
-        )
-        hntr.args.diagnostics_dir = str(tmp_path)
-        hntr.args.scope_diagnostics = True
-        sample = _sample("with_ref.cpp")
-        _process(hntr, sample)
+    # with_ref.cpp references APP_NAME but not UNUSED_NAME.
+    hntr = _make_hunter(
+        ["--append-CPPFLAGS=-DAPP_NAME=A -DUNUSED_NAME=Z"],
+        temp_config,
+    )
+    hntr.args.diagnostics_dir = str(tmp_path)
+    hntr.args.scope_diagnostics = True
+    sample = _sample("with_ref.cpp")
+    _process(hntr, sample)
 
-        _pch_scope_macro_hash(hntr, sample)
+    _pch_scope_macro_hash(hntr, sample)
 
-        payload_path = os.path.join(
-            _pch_scope_dir(tmp_path),
-            f"{os.path.basename(sample)}.json",
-        )
-        with open(payload_path) as f:
-            payload = json.load(f)
+    payload_path = os.path.join(
+        _pch_scope_dir(tmp_path),
+        f"{os.path.basename(sample)}.json",
+    )
+    with open(payload_path) as f:
+        payload = json.load(f)
 
-        assert "APP_NAME" in payload["cmdline_d_macros_in_hash"], (
-            f"APP_NAME should be included (PCH references it); got payload={payload}"
-        )
-        assert "UNUSED_NAME" in payload["cmdline_d_macros_excluded"], (
-            f"UNUSED_NAME should be excluded (PCH does not reference it); got payload={payload}"
-        )
-        # Sorting invariant for deterministic diffs.
-        assert payload["cmdline_d_macros_in_hash"] == sorted(payload["cmdline_d_macros_in_hash"])
-        assert payload["cmdline_d_macros_excluded"] == sorted(payload["cmdline_d_macros_excluded"])
+    assert "APP_NAME" in payload["cmdline_d_macros_in_hash"], (
+        f"APP_NAME should be included (PCH references it); got payload={payload}"
+    )
+    assert "UNUSED_NAME" in payload["cmdline_d_macros_excluded"], (
+        f"UNUSED_NAME should be excluded (PCH does not reference it); got payload={payload}"
+    )
+    # Sorting invariant for deterministic diffs.
+    assert payload["cmdline_d_macros_in_hash"] == sorted(payload["cmdline_d_macros_in_hash"])
+    assert payload["cmdline_d_macros_excluded"] == sorted(payload["cmdline_d_macros_excluded"])
 
 
-def test_pch_scope_diagnostics_empty_scope_still_writes(tmp_path):
+def test_pch_scope_diagnostics_empty_scope_still_writes(tmp_path, temp_config):
     """Even when scope_filter is empty (no cmdline-D macro is referenced),
     the diagnostic file is still written so users can see "0 macros mattered
     for this PCH" -- the success path for cross-app PCH reuse.
     """
-    with uth.TempConfigContext() as temp_config:
-        hntr = _make_hunter(["--append-CPPFLAGS=-DAPP_NAME=foo"], temp_config)
-        hntr.args.diagnostics_dir = str(tmp_path)
-        hntr.args.scope_diagnostics = True
-        # no_ref.cpp does not reference APP_NAME, so scope_filter is empty.
-        sample = _sample("no_ref.cpp")
-        _process(hntr, sample)
+    hntr = _make_hunter(["--append-CPPFLAGS=-DAPP_NAME=foo"], temp_config)
+    hntr.args.diagnostics_dir = str(tmp_path)
+    hntr.args.scope_diagnostics = True
+    # no_ref.cpp does not reference APP_NAME, so scope_filter is empty.
+    sample = _sample("no_ref.cpp")
+    _process(hntr, sample)
 
-        _pch_scope_macro_hash(hntr, sample)
+    _pch_scope_macro_hash(hntr, sample)
 
-        payload_path = os.path.join(
-            _pch_scope_dir(tmp_path),
-            f"{os.path.basename(sample)}.json",
-        )
-        assert os.path.isfile(payload_path), (
-            f"expected per-PCH scope JSON at {payload_path} even with empty scope_filter"
-        )
-        with open(payload_path) as f:
-            payload = json.load(f)
-        assert payload["cmdline_d_macros_in_hash"] == [], (
-            f"in_hash should be empty when no cmdline-D macro is referenced; got {payload}"
-        )
-        assert payload["cmdline_d_macros_excluded"] == ["APP_NAME"], f"excluded should list APP_NAME; got {payload}"
+    payload_path = os.path.join(
+        _pch_scope_dir(tmp_path),
+        f"{os.path.basename(sample)}.json",
+    )
+    assert os.path.isfile(payload_path), (
+        f"expected per-PCH scope JSON at {payload_path} even with empty scope_filter"
+    )
+    with open(payload_path) as f:
+        payload = json.load(f)
+    assert payload["cmdline_d_macros_in_hash"] == [], (
+        f"in_hash should be empty when no cmdline-D macro is referenced; got {payload}"
+    )
+    assert payload["cmdline_d_macros_excluded"] == ["APP_NAME"], f"excluded should list APP_NAME; got {payload}"
 
 
-def test_pch_scope_diagnostics_skipped_when_no_diagnostics_dir_resolvable(tmp_path):
+def test_pch_scope_diagnostics_skipped_when_no_diagnostics_dir_resolvable(temp_config):
     """If neither --diagnostics-dir nor --bindir is set, the diagnostic
     write must be silently skipped (resolve_diagnostics_dir raises
     RuntimeError) -- _pch_scope_macro_hash must NOT crash."""
-    with uth.TempConfigContext() as temp_config:
-        hntr = _make_hunter(["--append-CPPFLAGS=-DAPP_NAME=A"], temp_config)
-        hntr.args.scope_diagnostics = True
-        # Force both to be unresolvable.
-        hntr.args.diagnostics_dir = None
-        hntr.args.bindir = None
-        sample = _sample("with_ref.cpp")
-        _process(hntr, sample)
+    hntr = _make_hunter(["--append-CPPFLAGS=-DAPP_NAME=A"], temp_config)
+    hntr.args.scope_diagnostics = True
+    # Force both to be unresolvable.
+    hntr.args.diagnostics_dir = None
+    hntr.args.bindir = None
+    sample = _sample("with_ref.cpp")
+    _process(hntr, sample)
 
-        # Should not raise.
-        result = _pch_scope_macro_hash(hntr, sample)
-        assert isinstance(result, str) and len(result) > 0
+    # Should not raise.
+    result = _pch_scope_macro_hash(hntr, sample)
+    assert isinstance(result, str) and len(result) > 0

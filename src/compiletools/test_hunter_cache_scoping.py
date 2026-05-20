@@ -80,6 +80,18 @@ def _setup_method_common():
     )
 
 
+@pytest.fixture
+def temp_config():
+    """Provide a temp config path plus a fresh isolated tmp dir (no cwd change).
+
+    The bare ``TempDirContextNoChange()`` creates a sandbox dir so the test runs
+    in a predictable filesystem state; the config file itself is created by
+    ``TempConfigContext()`` in the system temp dir.
+    """
+    with uth.TempDirContextNoChange(), uth.TempConfigContext() as cfg:
+        yield cfg
+
+
 class TestMacroStateHashBackwardCompat:
     def setup_method(self):
         _setup_method_common()
@@ -87,33 +99,31 @@ class TestMacroStateHashBackwardCompat:
     def teardown_method(self):
         uth.reset()
 
-    def test_macro_state_hash_no_dep_hash_unchanged(self):
+    def test_macro_state_hash_no_dep_hash_unchanged(self, temp_config):
         """Without ``dep_hash``, ``Hunter.macro_state_hash`` must equal
         ``magicparser.get_final_macro_state_hash`` exactly. This is the
         pre-fix backward-compat path -- callers that haven't been
         updated to pass ``dep_hash`` see identical behaviour."""
-        with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr = _make_hunter([], temp_config)
-            sample = _sample("no_ref.cpp")
-            _process(hntr, sample)
+        hntr = _make_hunter([], temp_config)
+        sample = _sample("no_ref.cpp")
+        _process(hntr, sample)
 
-            via_hunter = hntr.macro_state_hash(sample)
-            via_parser = hntr.magicparser.get_final_macro_state_hash(sample)
-            assert via_hunter == via_parser
+        via_hunter = hntr.macro_state_hash(sample)
+        via_parser = hntr.magicparser.get_final_macro_state_hash(sample)
+        assert via_hunter == via_parser
 
-    def test_macro_state_hash_with_dep_hash_no_cmdline_origin_unchanged(self):
+    def test_macro_state_hash_with_dep_hash_no_cmdline_origin_unchanged(self, temp_config):
         """``dep_hash`` is a no-op when there are no cmdline ``-D`` macros
         in scope. The early-return in ``Hunter.macro_state_hash`` short-
         circuits the whole index walk in this case."""
-        with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr = _make_hunter([], temp_config)
-            sample = _sample("no_ref.cpp")
-            _process(hntr, sample)
+        hntr = _make_hunter([], temp_config)
+        sample = _sample("no_ref.cpp")
+        _process(hntr, sample)
 
-            assert hntr.magicparser._initial_macro_state.cmdline_origin == frozenset()
-            without = hntr.macro_state_hash(sample)
-            with_dep = hntr.macro_state_hash(sample, dep_hash="deadbeef" * 4)
-            assert without == with_dep
+        assert hntr.magicparser._initial_macro_state.cmdline_origin == frozenset()
+        without = hntr.macro_state_hash(sample)
+        with_dep = hntr.macro_state_hash(sample, dep_hash="deadbeef" * 4)
+        assert without == with_dep
 
 
 class TestMacroStateHashScopeFilter:
@@ -186,7 +196,7 @@ class TestTransitiveContentHashes:
     def teardown_method(self):
         uth.reset()
 
-    def test_transitive_content_hashes_excludes_tu_itself(self):
+    def test_transitive_content_hashes_excludes_tu_itself(self, temp_config):
         """``_transitive_content_hashes`` returns headers only -- the TU
         itself is scanned separately (via ``tu_content_hash`` in
         ``CmdlineMacroIndex.tu_referenced_macros``). Including it twice
@@ -195,16 +205,15 @@ class TestTransitiveContentHashes:
         separately."""
         from compiletools.global_hash_registry import get_file_hash
 
-        with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr = _make_hunter([], temp_config)
-            sample = _sample("tu_via_header.cpp")
-            _process(hntr, sample)
+        hntr = _make_hunter([], temp_config)
+        sample = _sample("tu_via_header.cpp")
+        _process(hntr, sample)
 
-            transitive = hntr._transitive_content_hashes(sample)
-            tu_hash = get_file_hash(sample, hntr.context)
-            assert tu_hash not in transitive, "_transitive_content_hashes must NOT include the TU's own content hash"
-            # Sanity: the transitive list is non-empty (header_ref.hpp).
-            assert len(transitive) >= 1
+        transitive = hntr._transitive_content_hashes(sample)
+        tu_hash = get_file_hash(sample, hntr.context)
+        assert tu_hash not in transitive, "_transitive_content_hashes must NOT include the TU's own content hash"
+        # Sanity: the transitive list is non-empty (header_ref.hpp).
+        assert len(transitive) >= 1
 
 
 class TestMacroStateHashCacheClear:
@@ -218,17 +227,16 @@ class TestMacroStateHashCacheClear:
     def teardown_method(self):
         uth.reset()
 
-    def test_clear_instance_cache_drops_cmdline_macro_index(self):
-        with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr = _make_hunter(
-                ["--append-CPPFLAGS=-DAPP_NAME=A"],
-                temp_config,
-            )
-            sample = _sample("with_ref.cpp")
-            _process(hntr, sample)
-            # Force the index to be built.
-            hntr.macro_state_hash(sample, dep_hash="0" * 16)
-            assert hasattr(hntr, "_cmdline_macro_index_cached")
+    def test_clear_instance_cache_drops_cmdline_macro_index(self, temp_config):
+        hntr = _make_hunter(
+            ["--append-CPPFLAGS=-DAPP_NAME=A"],
+            temp_config,
+        )
+        sample = _sample("with_ref.cpp")
+        _process(hntr, sample)
+        # Force the index to be built.
+        hntr.macro_state_hash(sample, dep_hash="0" * 16)
+        assert hasattr(hntr, "_cmdline_macro_index_cached")
 
-            hntr.clear_instance_cache()
-            assert not hasattr(hntr, "_cmdline_macro_index_cached")
+        hntr.clear_instance_cache()
+        assert not hasattr(hntr, "_cmdline_macro_index_cached")
