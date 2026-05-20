@@ -9,7 +9,10 @@ import compiletools.testhelper as uth
 
 
 class TestVariant:
-    def setup_method(self):
+    @pytest.fixture(autouse=True)
+    def _reset_parser_state(self):
+        uth.reset()
+        yield
         uth.reset()
 
     def test_extract_value_from_argv(self):
@@ -1024,5 +1027,3 @@ class TestVariant:
                 "parses within the same process are deduplicated."
             )
 
-    def teardown_method(self):
-        uth.reset()

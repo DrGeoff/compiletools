@@ -696,7 +696,10 @@ class TestMakefileBackendExecute:
 class TestMakefile:
     """Integration tests using makefile.py main() (which now delegates to MakefileBackend)."""
 
-    def setup_method(self):
+    @pytest.fixture(autouse=True)
+    def _reset_parser_state(self):
+        uth.reset()
+        yield
         uth.reset()
 
     def _create_makefile_and_make(self, tempdir, parallel_argv=None):
@@ -851,9 +854,6 @@ int main() {
                             assert run_result.returncode == 0
                             assert "pch works" in run_result.stdout
                 assert exe_found, "Build should have produced the pch_user executable"
-
-    def teardown_method(self):
-        uth.reset()
 
 
 def _test_library(static_dynamic):

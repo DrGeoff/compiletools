@@ -1508,10 +1508,10 @@ class TestShakeRunsTestsInBuildPhase:
     make/ninja e2e tests.
     """
 
-    def setup_method(self):
+    @pytest.fixture(autouse=True)
+    def _reset_parser_state(self):
         uth.reset()
-
-    def teardown_method(self):
+        yield
         uth.reset()
 
     @uth.requires_functional_compiler
