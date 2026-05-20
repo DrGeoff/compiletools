@@ -1,5 +1,6 @@
 """Tests for the Make backend (MakefileBackend) and makefile_backend.main()."""
 
+import contextlib
 import io
 import os
 import shutil
@@ -17,6 +18,16 @@ from compiletools.apptools import add_locking_arguments
 from compiletools.build_backend import wrap_link_with_lock
 from compiletools.build_graph import BuildGraph, BuildRule
 from compiletools.makefile_backend import MakefileBackend, main
+
+
+@contextlib.contextmanager
+def _temporary_umask(value):
+    """Set ``os.umask(value)`` for the duration of the block, restore on exit."""
+    old = os.umask(value)
+    try:
+        yield
+    finally:
+        os.umask(old)
 
 
 def _make_args(**overrides):
@@ -293,27 +304,23 @@ class TestMakefileBackendFileLocking:
         assert "--strategy=flock" in content
         assert "CT_LOCK_SLEEP_INTERVAL_FLOCK=0.03" in content
 
-    def test_validate_umask_warning(self, capsys):
+    @pytest.mark.parametrize(
+        ("umask_value", "warn_expected"),
+        [
+            pytest.param(0o077, True, id="restrictive-warns"),
+            pytest.param(0o002, False, id="permissive-no-warning"),
+        ],
+    )
+    def test_validate_umask_warning(self, capsys, umask_value, warn_expected):
         args = _make_args(file_locking=True, verbose=1)
         backend = MakefileBackend(args=args, hunter=MagicMock())
-        old_umask = os.umask(0o077)
-        try:
+        with _temporary_umask(umask_value):
             backend._validate_umask_for_file_locking()
-        finally:
-            os.umask(old_umask)
-        captured = capsys.readouterr()
-        assert "restrictive umask" in captured.err
-
-    def test_validate_umask_no_warning_permissive(self, capsys):
-        args = _make_args(file_locking=True, verbose=1)
-        backend = MakefileBackend(args=args, hunter=MagicMock())
-        old_umask = os.umask(0o002)
-        try:
-            backend._validate_umask_for_file_locking()
-        finally:
-            os.umask(old_umask)
-        captured = capsys.readouterr()
-        assert "restrictive umask" not in captured.err
+        err = capsys.readouterr().err
+        if warn_expected:
+            assert "restrictive umask" in err
+        else:
+            assert "restrictive umask" not in err
 
     def test_link_rule_wrapped_with_lock_helper(self):
         """Link rules include ct-lock-helper link when file_locking=True."""
