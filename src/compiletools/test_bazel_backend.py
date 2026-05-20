@@ -876,15 +876,7 @@ class TestBazelWriteBazelrc:
 
     def test_write_bazelrc_persists_content_to_disk(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        args = MagicMock()
-        args.parallel = 2
-        args.bazel_jvm_stack_size = "256k"
-        args.LDFLAGS = ""
-        args.CC = ""
-        args.CXX = ""
-        args.tests = []
-        backend = BazelBackend(args=args, hunter=MagicMock())
-        backend._graph = None
+        backend = _make_bazelrc_backend(parallel=2)
 
         with (
             patch("shutil.which", side_effect=lambda n: "/usr/bin/bazel" if n == "bazel" else None),
@@ -903,20 +895,10 @@ class TestBazelWriteBazelrc:
     def test_write_bazelrc_skips_when_content_unchanged(self, tmp_path):
         """Concurrent peer runs with the same args must not race on the
         atomic-rename. Eliminate the race by comparing first."""
-        args = MagicMock()
-        args.parallel = 2
-        args.bazel_jvm_stack_size = "256k"
-        args.LDFLAGS = ""
-        args.CC = ""
-        args.CXX = ""
-        args.tests = []
-        backend = BazelBackend(args=args, hunter=MagicMock())
-        backend._graph = None
+        backend = _make_bazelrc_backend(parallel=2)
 
         path = tmp_path / ".bazelrc"
-        with patch("os.path.exists", return_value=False):
-            content = backend._build_bazelrc_content()
-        path.write_text(content)
+        path.write_text(_bazelrc_content(backend))
         original_mtime_ns = path.stat().st_mtime_ns
 
         # Second invocation with identical content must not rewrite (mtime
@@ -926,15 +908,7 @@ class TestBazelWriteBazelrc:
         assert path.stat().st_mtime_ns == original_mtime_ns, "expected skip-on-unchanged"
 
     def test_write_bazelrc_replaces_when_content_differs(self, tmp_path):
-        args = MagicMock()
-        args.parallel = 2
-        args.bazel_jvm_stack_size = "256k"
-        args.LDFLAGS = ""
-        args.CC = ""
-        args.CXX = ""
-        args.tests = []
-        backend = BazelBackend(args=args, hunter=MagicMock())
-        backend._graph = None
+        backend = _make_bazelrc_backend(parallel=2)
 
         path = tmp_path / ".bazelrc"
         path.write_text("# stale content from a peer\n")
