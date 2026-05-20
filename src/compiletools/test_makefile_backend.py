@@ -1,8 +1,11 @@
 import io
+import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -1106,9 +1109,8 @@ class TestTimingWrapBSDDate:
             # ``BuildTimer.record_rules_from_make_timing`` would silently
             # drop on ``JSONDecodeError``, leaving ``.ct-timing.json``
             # with phase rows but no per-rule entries.
-            import json as _json
 
-            entry = _json.loads(line)
+            entry = json.loads(line)
             # Critical guarantee: when only BSD `date` is available and
             # $EPOCHREALTIME is unset, our wrapper validates the date
             # output and substitutes 0 (well-formed) rather than
@@ -1158,7 +1160,6 @@ class TestTimingWrapEmitsValidJSON:
     def test_wrapped_recipe_emits_valid_json(self, tmp_path, target):
         if not os.path.exists("/bin/bash"):
             pytest.skip("requires /bin/bash")
-        import json as _json
 
         backend = self._backend_with_timer()
         wrapped = backend._wrap_with_timing("true", target)
@@ -1177,7 +1178,7 @@ class TestTimingWrapEmitsValidJSON:
         try:
             with open(log_path) as f:
                 line = f.readline().strip()
-            entry = _json.loads(line)
+            entry = json.loads(line)
             assert entry["target"] == target, f"target round-tripped wrong: {entry['target']!r}"
             assert isinstance(entry["start_ns"], int)
             assert isinstance(entry["end_ns"], int)
@@ -1212,10 +1213,9 @@ class TestTimingLogPidNamespace:
         b1 = MakefileBackend(args=args1, hunter=MagicMock())
         b2 = MakefileBackend(args=args2, hunter=MagicMock())
         # Force monotonic_ns to advance between calls
-        import time as _t
 
         p1 = b1._timing_log_path
-        _t.sleep(0)  # let monotonic_ns tick (it's strictly monotonic anyway)
+        time.sleep(0)  # let monotonic_ns tick (it's strictly monotonic anyway)
         p2 = b2._timing_log_path
         assert p1 != p2, f"Concurrent backends got same log path: {p1}"
 
@@ -1268,9 +1268,8 @@ class TestMakefileConcurrency:
                 # Wipe build outputs between iterations
                 for d in objdirs:
                     if os.path.isdir(d):
-                        import shutil as _sh
 
-                        _sh.rmtree(d, ignore_errors=True)
+                        shutil.rmtree(d, ignore_errors=True)
 
                 results: list[subprocess.CompletedProcess] = []
                 errs: list[BaseException] = []

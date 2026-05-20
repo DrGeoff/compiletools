@@ -7,11 +7,16 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import configargparse
+import pytest
+
 import compiletools.makefile_backend
 import compiletools.testhelper as uth
 import compiletools.utils
+from compiletools.apptools import add_locking_arguments
+from compiletools.build_backend import wrap_link_with_lock
 from compiletools.build_graph import BuildGraph, BuildRule
-from compiletools.makefile_backend import MakefileBackend
+from compiletools.makefile_backend import MakefileBackend, main
 
 
 def _make_args(**overrides):
@@ -312,7 +317,6 @@ class TestMakefileBackendFileLocking:
 
     def test_link_rule_wrapped_with_lock_helper(self):
         """Link rules include ct-lock-helper link when file_locking=True."""
-        import pytest
 
         args = _make_args(file_locking=True, sleep_interval_lockdir=0.05)
         backend = MakefileBackend(args=args, hunter=MagicMock())
@@ -334,7 +338,6 @@ class TestMakefileBackendFileLocking:
 
     def test_static_library_rule_wrapped_with_lock_helper(self):
         """Static library (ar) rules include ct-lock-helper link when file_locking=True."""
-        import pytest
 
         args = _make_args(file_locking=True, sleep_interval_lockdir=0.05)
         backend = MakefileBackend(args=args, hunter=MagicMock())
@@ -382,7 +385,6 @@ class TestWrapLinkWithLock:
     """Test wrap_link_with_lock() function in build_backend."""
 
     def test_wraps_link_with_lockdir(self):
-        from compiletools.build_backend import wrap_link_with_lock
 
         args = _make_args(
             file_locking=True,
@@ -403,7 +405,6 @@ class TestWrapLinkWithLock:
         assert "g++ -o /tmp/test_bin/foo /tmp/test_obj/foo.o" in result
 
     def test_wraps_link_with_flock(self):
-        from compiletools.build_backend import wrap_link_with_lock
 
         args = _make_args(
             file_locking=True,
@@ -429,7 +430,6 @@ class TestWrapLinkWithLock:
 
     def test_wraps_link_with_flock_fallback(self):
         """Falls back to ct-lock-helper when native flock is unavailable."""
-        from compiletools.build_backend import wrap_link_with_lock
 
         args = _make_args(
             file_locking=True,
@@ -452,7 +452,6 @@ class TestWrapLinkWithLock:
         assert "CT_LOCK_SLEEP_INTERVAL_FLOCK=0.03" in result
 
     def test_no_wrap_when_locking_disabled(self):
-        from compiletools.build_backend import wrap_link_with_lock
 
         args = _make_args(file_locking=False)
         result = wrap_link_with_lock(
@@ -874,9 +873,7 @@ def _test_library(static_dynamic):
 
 def test_file_locking_registered_in_apptools():
     """--file-locking is registered centrally in add_locking_arguments(), not per-backend."""
-    import configargparse
 
-    from compiletools.apptools import add_locking_arguments
 
     cap = configargparse.ArgParser()
     add_locking_arguments(cap)
@@ -896,6 +893,5 @@ def test_file_locking_registered_in_apptools():
 def test_makefile_backend_main_entry_point_exists():
     """ct-create-makefile should be importable from makefile_backend
     once the shim is removed."""
-    from compiletools.makefile_backend import main
 
     assert callable(main)

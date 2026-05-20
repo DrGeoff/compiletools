@@ -1,5 +1,6 @@
 """Tests for trim_cache module."""
 
+import hashlib
 import json
 import os
 import time
@@ -7,11 +8,14 @@ import types
 
 import pytest
 
+from compiletools import trim_cache
 from compiletools.trim_cache import (
     CacheTrimmer,
+    _load_pch_manifest,
     build_current_hash_set,
     parse_object_filename,
 )
+from compiletools.trim_cache_main import main
 
 # ── parse_object_filename ────────────────────────────────────────────
 
@@ -487,19 +491,16 @@ class TestTrimPchdir:
 
 class TestMainCLI:
     def test_mutual_exclusion_error(self):
-        from compiletools.trim_cache_main import main
 
         rc = main(["--cas-objdir-only", "--cas-pchdir-only"])
         assert rc == 1
 
     def test_dry_run_with_nonexistent_dirs(self):
-        from compiletools.trim_cache_main import main
 
         rc = main(["--dry-run", "--cas-objdir=/nonexistent/obj", "--cas-pchdir=/nonexistent/pch"])
         assert rc == 0
 
     def test_cas_objdir_only_flag(self, tmp_path):
-        from compiletools.trim_cache_main import main
 
         objdir = str(tmp_path / "obj")
         os.makedirs(objdir)
@@ -507,7 +508,6 @@ class TestMainCLI:
         assert rc == 0
 
     def test_cas_pchdir_only_flag(self, tmp_path):
-        from compiletools.trim_cache_main import main
 
         pchdir = str(tmp_path / "pch")
         os.makedirs(pchdir)
@@ -523,7 +523,6 @@ class TestSafeLockedUnlink:
         """When FileLock raises OSError (filesystem unsupported,
         permissions, etc.), we MUST NOT delete the file unlocked. Caller
         sees False; the file remains on disk for retry."""
-        from compiletools import trim_cache
 
         target = tmp_path / "victim.o"
         target.write_bytes(b"x" * 1024)
@@ -543,7 +542,6 @@ class TestSafeLockedRmtree:
     def test_refuses_when_lock_unavailable(self, tmp_path, monkeypatch):
         """When FileLock raises OSError on a contained file, we
         MUST NOT rmtree unlocked. Caller sees False; dir remains."""
-        from compiletools import trim_cache
 
         d = tmp_path / "cmd_hash_dir"
         d.mkdir()
@@ -566,7 +564,6 @@ class TestSafeLockedRmtree:
         the initial scan and the lock window, we re-scan inside the lock
         and abort the rmtree. The new (unlocked) file would be deleted
         half-written otherwise."""
-        from compiletools import trim_cache
 
         d = tmp_path / "cmd_hash_dir"
         d.mkdir()
@@ -604,7 +601,6 @@ class TestSafeLockedRmtree:
 
 class TestLoadPchManifest:
     def test_returns_dict_when_manifest_present(self, tmp_path):
-        from compiletools.trim_cache import _load_pch_manifest
 
         cmd_hash_dir = tmp_path / "abc1234567890123"
         cmd_hash_dir.mkdir()
@@ -617,14 +613,12 @@ class TestLoadPchManifest:
         assert manifest["transitive_hashes"] == {"/abs/bar.h": "deadbeef"}
 
     def test_returns_none_when_missing(self, tmp_path):
-        from compiletools.trim_cache import _load_pch_manifest
 
         cmd_hash_dir = tmp_path / "abc1234567890123"
         cmd_hash_dir.mkdir()
         assert _load_pch_manifest(str(cmd_hash_dir)) is None
 
     def test_returns_none_on_corrupt_json(self, tmp_path):
-        from compiletools.trim_cache import _load_pch_manifest
 
         cmd_hash_dir = tmp_path / "abc1234567890123"
         cmd_hash_dir.mkdir()
@@ -825,7 +819,6 @@ class TestPcmTransitiveStaleness:
 
     @staticmethod
     def _git_blob_sha1(content: bytes) -> str:
-        import hashlib
 
         return hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
 
@@ -887,7 +880,6 @@ class TestPchTransitiveStaleness:
     @staticmethod
     def _git_blob_sha1(content: bytes) -> str:
         """Helper matching global_hash_registry._compute_external_file_hash."""
-        import hashlib
 
         return hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
 
@@ -1204,7 +1196,6 @@ class TestTrimExedir:
         just gained a published reference and force a relink on the
         next build.
         """
-        from compiletools import trim_cache as tc
 
         exedir = str(tmp_path / "cas-exe")
         bindir = tmp_path / "bin"
@@ -1220,7 +1211,7 @@ class TestTrimExedir:
         # for old_a, hardlink it into bindir before the (post-lock)
         # nlink re-check. Without the I4 fix, old_a is unlinked and the
         # bindir hardlink dangles.
-        original = tc._safe_locked_unlink
+        original = trim_cache._safe_locked_unlink
 
         def racing_unlink(path, *, skip_if_nlink_above=None):
             if path == old_a:
@@ -1230,7 +1221,7 @@ class TestTrimExedir:
                 os.link(path, str(bindir / "main"))
             return original(path, skip_if_nlink_above=skip_if_nlink_above)
 
-        monkeypatch.setattr(tc, "_safe_locked_unlink", racing_unlink)
+        monkeypatch.setattr(trim_cache, "_safe_locked_unlink", racing_unlink)
 
         trimmer = CacheTrimmer(_make_args(keep_count=1))
         trimmer.trim_exedir(exedir)
