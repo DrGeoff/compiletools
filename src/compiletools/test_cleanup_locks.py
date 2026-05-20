@@ -9,6 +9,7 @@ Tests cover:
 """
 
 import os
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -32,6 +33,12 @@ def mock_args():
     args.lock_cross_host_timeout = 600
     args.verbose = 1
     return args
+
+
+@pytest.fixture
+def cleaner(mock_args):
+    """LockCleaner instance backed by the default mock_args fixture."""
+    return compiletools.cleanup_locks.LockCleaner(mock_args)
 
 
 @pytest.fixture
@@ -63,9 +70,8 @@ def create_old_lockdir(objdir, name, hostname, pid, age_seconds):
 class TestLockCleanerUnit:
     """Unit tests with full mocking - no real SSH or filesystem complexity."""
 
-    def test_read_lock_info_valid(self, tmpdir_with_locks, mock_args):
+    def test_read_lock_info_valid(self, tmpdir_with_locks, cleaner):
         """Test reading valid lock info (legacy host:pid format)."""
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
         lockdir = create_lockdir(tmpdir_with_locks, "test1", "host1", 12345)
 
         hostname, pid, start_time = cleaner._read_lock_info(lockdir)
@@ -74,9 +80,8 @@ class TestLockCleanerUnit:
         assert pid == 12345
         assert start_time is None  # legacy format has no start_time
 
-    def test_read_lock_info_with_start_time(self, tmpdir_with_locks, mock_args):
+    def test_read_lock_info_with_start_time(self, tmpdir_with_locks, cleaner):
         """Test reading the new host:pid:start_time format."""
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
         lockdir = os.path.join(tmpdir_with_locks, "x.lockdir")
         os.makedirs(lockdir)
         with open(os.path.join(lockdir, "pid"), "w") as f:
@@ -87,9 +92,8 @@ class TestLockCleanerUnit:
         assert pid == 12345
         assert start_time == 1700000000.5
 
-    def test_read_lock_info_invalid_format_no_colon(self, tmpdir_with_locks, mock_args):
+    def test_read_lock_info_invalid_format_no_colon(self, tmpdir_with_locks, cleaner):
         """Test handling of malformed pid file without colon."""
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
         lockdir = os.path.join(tmpdir_with_locks, "test1.lockdir")
         os.makedirs(lockdir)
         pid_file = os.path.join(lockdir, "pid")
@@ -102,9 +106,8 @@ class TestLockCleanerUnit:
         assert pid is None
         assert start_time is None
 
-    def test_read_lock_info_empty_file(self, tmpdir_with_locks, mock_args):
+    def test_read_lock_info_empty_file(self, tmpdir_with_locks, cleaner):
         """Test handling of empty pid file."""
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
         lockdir = os.path.join(tmpdir_with_locks, "test1.lockdir")
         os.makedirs(lockdir)
         pid_file = os.path.join(lockdir, "pid")
@@ -117,9 +120,8 @@ class TestLockCleanerUnit:
         assert pid is None
         assert start_time is None
 
-    def test_read_lock_info_missing_file(self, tmpdir_with_locks, mock_args):
+    def test_read_lock_info_missing_file(self, tmpdir_with_locks, cleaner):
         """Test handling of missing pid file."""
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
         lockdir = os.path.join(tmpdir_with_locks, "test1.lockdir")
         os.makedirs(lockdir)
 
@@ -130,11 +132,9 @@ class TestLockCleanerUnit:
         assert start_time is None
 
     @patch("subprocess.run")
-    def test_is_process_alive_remote_success(self, mock_run, mock_args):
+    def test_is_process_alive_remote_success(self, mock_run, cleaner):
         """Test SSH check when process exists."""
         mock_run.return_value = Mock(returncode=0)
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
-
         is_alive, ssh_error = cleaner._is_process_alive_remote("remote-host", 12345)
 
         assert is_alive is True
@@ -147,52 +147,43 @@ class TestLockCleanerUnit:
         assert "kill -0 12345" in " ".join(call_args)
 
     @patch("subprocess.run")
-    def test_is_process_alive_remote_not_found(self, mock_run, mock_args):
+    def test_is_process_alive_remote_not_found(self, mock_run, cleaner):
         """Test SSH check when process doesn't exist."""
         mock_run.return_value = Mock(returncode=1)
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
-
         is_alive, ssh_error = cleaner._is_process_alive_remote("remote-host", 12345)
 
         assert is_alive is False
         assert ssh_error is False  # Exit code 1 = process not found, not SSH error
 
     @patch("subprocess.run")
-    def test_is_process_alive_remote_ssh_failure(self, mock_run, mock_args):
+    def test_is_process_alive_remote_ssh_failure(self, mock_run, cleaner):
         """Test SSH check when connection fails."""
         mock_run.return_value = Mock(returncode=255)
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
-
         is_alive, ssh_error = cleaner._is_process_alive_remote("remote-host", 12345)
 
         assert is_alive is False
         assert ssh_error is True  # Exit code 255 = SSH connection failed
 
     @patch("subprocess.run")
-    def test_is_process_alive_remote_timeout(self, mock_run, mock_args):
+    def test_is_process_alive_remote_timeout(self, mock_run, cleaner):
         """Test SSH check timeout handling."""
         mock_run.side_effect = subprocess.TimeoutExpired("ssh", 5)
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
-
         is_alive, ssh_error = cleaner._is_process_alive_remote("remote-host", 12345)
 
         assert is_alive is False
         assert ssh_error is True  # Timeout treated as SSH failure
 
     @patch("compiletools.lock_utils.os.kill")
-    def test_is_process_alive_local(self, mock_kill, mock_args):
+    def test_is_process_alive_local(self, mock_kill, cleaner):
         """Local process check probes pid existence with os.kill(pid, 0)."""
         mock_kill.return_value = None
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
-
         result = cleaner._is_process_alive_local(12345)
 
         assert result is True
         mock_kill.assert_called_once_with(12345, 0)
 
-    def test_get_lock_age_future_mtime(self, tmpdir_with_locks, mock_args):
+    def test_get_lock_age_future_mtime(self, tmpdir_with_locks, cleaner):
         """Test clock skew handling (future mtime returns age 0)."""
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
         lockdir = create_lockdir(tmpdir_with_locks, "test1", "host1", 12345)
 
         # Set mtime to future
@@ -203,9 +194,8 @@ class TestLockCleanerUnit:
 
         assert age == 0
 
-    def test_get_lock_age_normal(self, tmpdir_with_locks, mock_args):
+    def test_get_lock_age_normal(self, tmpdir_with_locks, cleaner):
         """Test normal lock age calculation."""
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
         lockdir = create_old_lockdir(tmpdir_with_locks, "test1", "host1", 12345, 100)
 
         age = cleaner._get_lock_age_seconds(lockdir)
@@ -217,15 +207,12 @@ class TestLockCleanerUnit:
 class TestFcntlCleanupRemoved:
     """Verify fcntl-specific cleanup code has been removed."""
 
-    def test_no_fcntl_lock_held_method(self, mock_args):
+    def test_no_fcntl_lock_held_method(self, cleaner):
         """LockCleaner should not have _is_fcntl_lock_held (no sidecar files to clean)."""
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
         assert not hasattr(cleaner, "_is_fcntl_lock_held")
 
-    def test_no_fcntl_lock_scan(self, tmpdir_with_locks, mock_args):
+    def test_no_fcntl_lock_scan(self, tmpdir_with_locks, cleaner):
         """Scanning a GPFS directory should NOT scan for .lock files."""
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
-
         # Create a .lock file that would previously have been scanned
         lockfile = os.path.join(tmpdir_with_locks, "test.o.lock")
         with open(lockfile, "w") as f:
@@ -244,18 +231,16 @@ class TestFcntlCleanupRemoved:
 class TestLockCleanerIntegration:
     """Integration tests with real lockdirs, mocked SSH."""
 
-    def test_scan_empty_directory(self, tmpdir_with_locks, mock_args):
+    def test_scan_empty_directory(self, tmpdir_with_locks, cleaner):
         """Test scanning directory with no locks."""
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
         stats = cleaner.scan_and_cleanup(tmpdir_with_locks)
 
         assert stats["total"] == 0
         assert stats["active"] == 0
         assert stats["stale_removed"] == 0
 
-    def test_scan_with_stale_local_locks(self, tmpdir_with_locks, mock_args):
+    def test_scan_with_stale_local_locks(self, tmpdir_with_locks, cleaner):
         """Test cleanup of stale local locks (fake PID)."""
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
         hostname = socket.gethostname()
 
         # Create old stale lock with fake PID
@@ -268,11 +253,9 @@ class TestLockCleanerIntegration:
         assert not os.path.exists(lockdir), "Stale lock should be removed"
 
     @patch("subprocess.run")
-    def test_scan_with_active_remote_locks(self, mock_run, tmpdir_with_locks, mock_args):
+    def test_scan_with_active_remote_locks(self, mock_run, tmpdir_with_locks, cleaner):
         """Test preservation of active remote locks."""
         mock_run.return_value = Mock(returncode=0)  # Process exists
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
-
         # Create old remote lock (would be stale if local)
         lockdir = create_old_lockdir(tmpdir_with_locks, "test1", "remote-host", 12345, 100)
 
@@ -284,11 +267,9 @@ class TestLockCleanerIntegration:
         assert os.path.exists(lockdir), "Active remote lock should be preserved"
 
     @patch("subprocess.run")
-    def test_scan_with_stale_remote_locks(self, mock_run, tmpdir_with_locks, mock_args):
+    def test_scan_with_stale_remote_locks(self, mock_run, tmpdir_with_locks, cleaner):
         """Test cleanup of stale remote locks."""
         mock_run.return_value = Mock(returncode=1)  # Process not found
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
-
         lockdir = create_old_lockdir(tmpdir_with_locks, "test1", "remote-host", 12345, 100)
 
         stats = cleaner.scan_and_cleanup(tmpdir_with_locks)
@@ -298,11 +279,9 @@ class TestLockCleanerIntegration:
         assert not os.path.exists(lockdir), "Stale remote lock should be removed"
 
     @patch("subprocess.run")
-    def test_scan_with_ssh_failure(self, mock_run, tmpdir_with_locks, mock_args):
+    def test_scan_with_ssh_failure(self, mock_run, tmpdir_with_locks, cleaner):
         """Test handling when SSH unavailable."""
         mock_run.return_value = Mock(returncode=255)  # SSH failed
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
-
         lockdir = create_old_lockdir(tmpdir_with_locks, "test1", "remote-host", 12345, 100)
 
         stats = cleaner.scan_and_cleanup(tmpdir_with_locks)
@@ -341,11 +320,9 @@ class TestLockCleanerIntegration:
         assert stats["stale_removed"] == 0
         assert os.path.exists(lockdir), "Young lock should be preserved"
 
-    def test_statistics_collection(self, tmpdir_with_locks, mock_args):
+    def test_statistics_collection(self, tmpdir_with_locks, cleaner):
         """Test accurate statistics tracking."""
         hostname = socket.gethostname()
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
-
         # Create mix of locks
         # 1. Active local lock (our PID)
         create_old_lockdir(tmpdir_with_locks, "active", hostname, os.getpid(), 100)
@@ -384,9 +361,8 @@ class TestLockCleanerIntegration:
         # Verify stale remote lock was actually removed
         assert not os.path.exists(stale_remote_lockdir), "Stale remote lock should be removed"
 
-    def test_permission_errors_handling(self, tmpdir_with_locks, mock_args):
+    def test_permission_errors_handling(self, tmpdir_with_locks, cleaner):
         """Test handling of permission denied on removal."""
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
         hostname = socket.gethostname()
 
         lockdir = create_old_lockdir(tmpdir_with_locks, "test1", hostname, 999999, 100)
@@ -409,10 +385,8 @@ class TestLockCleanerIntegration:
 class TestLockCleanupRaceConditions:
     """Test edge cases where locks change during scan."""
 
-    def test_lock_disappears_between_scan_and_read(self, tmpdir_with_locks, mock_args):
+    def test_lock_disappears_between_scan_and_read(self, tmpdir_with_locks, cleaner):
         """Test lock removed after os.walk finds it."""
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
-
         # Create lockdir
         create_lockdir(tmpdir_with_locks, "test1", "host1", 12345)
 
@@ -420,8 +394,6 @@ class TestLockCleanupRaceConditions:
         original_read = cleaner._read_lock_info
 
         def read_and_delete(lockdir_path):
-            import shutil
-
             if os.path.exists(lockdir_path):
                 shutil.rmtree(lockdir_path)
             return original_read(lockdir_path)
@@ -433,9 +405,8 @@ class TestLockCleanupRaceConditions:
         # Verify completed without crash and found the lock
         assert stats["total"] == 1  # Found 1 lock (even though it disappeared)
 
-    def test_active_process_dies_during_cleanup(self, tmpdir_with_locks, mock_args):
+    def test_active_process_dies_during_cleanup(self, tmpdir_with_locks, cleaner):
         """Test process exits between stale check and removal."""
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
         hostname = socket.gethostname()
 
         # This scenario: check shows active, but dies before removal
@@ -463,11 +434,9 @@ class TestLockCleanupRaceConditions:
 class TestLockCleanupMetrics:
     """Test that statistics accurately reflect operations."""
 
-    def test_metrics_counters_sum_correctly(self, tmpdir_with_locks, mock_args):
+    def test_metrics_counters_sum_correctly(self, tmpdir_with_locks, cleaner):
         """Test that stats counters add up to total."""
         hostname = socket.gethostname()
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
-
         # Create various locks
         create_old_lockdir(tmpdir_with_locks, "active", hostname, os.getpid(), 100)
         create_old_lockdir(tmpdir_with_locks, "stale", hostname, 999999, 100)
@@ -482,9 +451,8 @@ class TestLockCleanupMetrics:
 
         assert stats["total"] == accounted
 
-    def test_metrics_evolution_safety(self, tmpdir_with_locks, mock_args):
+    def test_metrics_evolution_safety(self, tmpdir_with_locks, cleaner):
         """Test metrics structure for future additions."""
-        cleaner = compiletools.cleanup_locks.LockCleaner(mock_args)
         stats = cleaner.scan_and_cleanup(tmpdir_with_locks)
 
         # These keys must always exist
