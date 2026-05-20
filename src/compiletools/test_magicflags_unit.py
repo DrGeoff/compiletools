@@ -86,22 +86,17 @@ class TestExtractMacrosFromMagicFlags:
     """Test DirectMagicFlags._extract_macros_from_magic_flags()."""
 
     def test_extract_macros_from_cppflags(self):
-        from compiletools.magicflags import DirectMagicFlags
+        obj = _make_partial("DirectMagicFlags")
+        # Create a mock MacroState that supports with_updates
+        mock_macro_state = MagicMock()
+        mock_macro_state.with_updates.return_value = mock_macro_state
+        obj.defined_macros = mock_macro_state
 
-        with patch.object(DirectMagicFlags, "__init__", lambda self, *a, **kw: None):
-            obj = DirectMagicFlags.__new__(DirectMagicFlags)
-            obj._args = Namespace(verbose=0)
-
-            # Create a mock MacroState that supports with_updates
-            mock_macro_state = MagicMock()
-            mock_macro_state.with_updates.return_value = mock_macro_state
-            obj.defined_macros = mock_macro_state
-
-            magic_flags_result = {
-                sz.Str("CPPFLAGS"): [sz.Str("-DFOO=1"), sz.Str("-DBAR=2")],
-            }
-            obj._extract_macros_from_magic_flags(magic_flags_result)
-            mock_macro_state.with_updates.assert_called_once()
+        magic_flags_result = {
+            sz.Str("CPPFLAGS"): [sz.Str("-DFOO=1"), sz.Str("-DBAR=2")],
+        }
+        obj._extract_macros_from_magic_flags(magic_flags_result)
+        mock_macro_state.with_updates.assert_called_once()
 
 
 class TestGetFinalMacroStateKey:
@@ -165,14 +160,10 @@ class TestHandleIncludeVerbose:
     """Test _handle_include verbose logging."""
 
     def test_verbose_include(self, capsys):
-        from compiletools.magicflags import MagicFlagsBase
-
-        with patch.object(MagicFlagsBase, "__init__", lambda self, *a, **kw: None):
-            obj = MagicFlagsBase.__new__(MagicFlagsBase)
-            obj._args = Namespace(verbose=9)
-            obj._handle_include(sz.Str("/some/path"))
-            captured = capsys.readouterr()
-            assert "Added -I" in captured.out
+        obj = _make_partial(verbose=9)
+        obj._handle_include(sz.Str("/some/path"))
+        captured = capsys.readouterr()
+        assert "Added -I" in captured.out
 
 
 class TestResolveReadmacrosPath:
@@ -232,23 +223,20 @@ class TestExtractMacrosFromPreprocessor:
     """Test CppMagicFlags._extract_macros_from_preprocessor()."""
 
     def _make_cpp_magicflags(self):
-        from compiletools.magicflags import CppMagicFlags
         from compiletools.preprocessing_cache import MacroState
 
-        with patch.object(CppMagicFlags, "__init__", lambda self, *a, **kw: None):
-            obj = CppMagicFlags.__new__(CppMagicFlags)
-            obj._args = Namespace(verbose=0)
-            obj._initial_macro_state = MacroState(
-                core={sz.Str("__cplusplus"): sz.Str("201703L")},
-                variable={},
-                compiler_path="g++",
-                cppflags="",
-                cflags="",
-                cxxflags="",
-                anchor_root="",
-            )
-            obj.preprocessor = MagicMock()
-            return obj
+        obj = _make_partial("CppMagicFlags")
+        obj._initial_macro_state = MacroState(
+            core={sz.Str("__cplusplus"): sz.Str("201703L")},
+            variable={},
+            compiler_path="g++",
+            cppflags="",
+            cflags="",
+            cxxflags="",
+            anchor_root="",
+        )
+        obj.preprocessor = MagicMock()
+        return obj
 
     def test_parses_define_lines(self):
         obj = self._make_cpp_magicflags()
