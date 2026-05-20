@@ -1311,12 +1311,15 @@ class TestMakeRunsTestsInBuildPhase:
     test the moment its exe links — no separate post-build ``runtests`` sweep.
     """
 
+    @pytest.fixture(autouse=True)
+    def _chdir_to_tmp(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+
     @uth.requires_functional_compiler
-    def test_make_runs_tests_in_build(self, tmp_path, monkeypatch):
+    def test_make_runs_tests_in_build(self, tmp_path):
         """After execute("build") — NOT execute("runtests") — the test's
         ``.result`` success marker exists, proving the test ran during the
         build phase."""
-        monkeypatch.chdir(tmp_path)
         (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
         test_src = tmp_path / "test_pass.cpp"
         test_src.write_text('#include "unit_test.hpp"\nint main() { return 0; }\n')
@@ -1340,11 +1343,10 @@ class TestMakeRunsTestsInBuildPhase:
         )
 
     @uth.requires_functional_compiler
-    def test_make_test_failure_halts_build(self, tmp_path, monkeypatch):
+    def test_make_test_failure_halts_build(self, tmp_path):
         """A failing test must make execute("build") raise CalledProcessError,
         and the failing test's ``.result`` marker must NOT be created (the
         ``&& touch`` tail only runs on rc==0)."""
-        monkeypatch.chdir(tmp_path)
         (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
         test_src = tmp_path / "test_fail.cpp"
         test_src.write_text('#include "unit_test.hpp"\nint main() { return 1; }\n')
@@ -1361,7 +1363,7 @@ class TestMakeRunsTestsInBuildPhase:
         assert not results, f"failing test left a .result marker (touch ran despite rc!=0): {results}"
 
     @uth.requires_functional_compiler
-    def test_make_framework_test_failure_preserves_xml(self, tmp_path, monkeypatch):
+    def test_make_framework_test_failure_preserves_xml(self, tmp_path):
         """A failing framework-detected test writes its JUnit XML report and
         *then* exits non-zero. Because the test rule's ``output`` is the XML
         path, ``.DELETE_ON_ERROR`` would delete that just-written report --
@@ -1373,7 +1375,6 @@ class TestMakeRunsTestsInBuildPhase:
           - the failing test's ``.result`` marker is NOT created,
           - the JUnit XML file DOES still exist after the failed build.
         """
-        monkeypatch.chdir(tmp_path)
         test_src = uth.write_failing_gtest_fixture(tmp_path)
 
         xml_dir = tmp_path / "junit"
@@ -1414,14 +1415,13 @@ class TestMakeRunsTestsInBuildPhase:
             assert "<testsuites>" in xf.read()
 
     @uth.requires_functional_compiler
-    def test_make_framework_test_failure_reruns_when_only_failed_xml_exists(self, tmp_path, monkeypatch):
+    def test_make_framework_test_failure_reruns_when_only_failed_xml_exists(self, tmp_path):
         """A preserved failed JUnit XML file is not a passing test marker.
 
         The framework XML target is intentionally ``.PRECIOUS`` so the report
         survives a failing test. A later build must still re-run that test when
         the XML exists but the ``.result`` success marker does not.
         """
-        monkeypatch.chdir(tmp_path)
         test_src = uth.write_failing_gtest_fixture(tmp_path)
 
         xml_dir = tmp_path / "junit"

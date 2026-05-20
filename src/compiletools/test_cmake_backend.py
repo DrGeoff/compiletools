@@ -788,13 +788,16 @@ class TestCMakeRunsTestsInBuildPhase:
         yield
         uth.reset()
 
+    @pytest.fixture(autouse=True)
+    def _chdir_to_tmp(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+
     @uth.requires_functional_compiler
-    def test_cmake_runs_tests_in_build(self, tmp_path, monkeypatch):
+    def test_cmake_runs_tests_in_build(self, tmp_path):
         """After execute("build") — NOT execute("runtests") — the test's
         ``.result`` success marker exists at the graph-declared path, proving
         the test ran during the build phase and the marker landed where the
         rest of compiletools expects it (not buried inside cmake-build/)."""
-        monkeypatch.chdir(tmp_path)
         (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
         test_src = tmp_path / "test_pass.cpp"
         test_src.write_text('#include "unit_test.hpp"\nint main() { return 0; }\n')
@@ -821,11 +824,10 @@ class TestCMakeRunsTestsInBuildPhase:
         )
 
     @uth.requires_functional_compiler
-    def test_cmake_test_failure_fails_build(self, tmp_path, monkeypatch):
+    def test_cmake_test_failure_fails_build(self, tmp_path):
         """A failing test must make execute("build") raise CalledProcessError,
         and the failing test's ``.result`` marker must NOT be created (the
         touch only runs after the test exits 0)."""
-        monkeypatch.chdir(tmp_path)
         (tmp_path / "unit_test.hpp").write_text("#pragma once\n")
         test_src = tmp_path / "test_fail.cpp"
         test_src.write_text('#include "unit_test.hpp"\nint main() { return 1; }\n')
