@@ -62,34 +62,40 @@ def _setup_method_common():
     )
 
 
-def _hash_pch_with_app_name(value, sample_rel):
+@pytest.fixture
+def temp_config():
+    """Provide a temp config path plus a fresh isolated tmp dir (no cwd change)."""
+    with uth.TempDirContextNoChange(), uth.TempConfigContext() as cfg:
+        yield cfg
+
+
+def _hash_pch_with_app_name(value, sample_rel, temp_config):
     """Build a Hunter with ``-DAPP_NAME=<value>`` and compute the PCH
     command hash for ``sample_rel`` (used as a PCH header)."""
     from compiletools.build_backend import _pch_command_hash, _pch_scope_macro_hash
 
-    with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-        hntr = _make_hunter(
-            [f"--append-CPPFLAGS=-DAPP_NAME={value}"],
-            temp_config,
-        )
-        sample = _sample(sample_rel)
-        _process(hntr, sample)
-        # Sanity: cmdline_origin actually contains APP_NAME.
-        import stringzilla as sz
+    hntr = _make_hunter(
+        [f"--append-CPPFLAGS=-DAPP_NAME={value}"],
+        temp_config,
+    )
+    sample = _sample(sample_rel)
+    _process(hntr, sample)
+    # Sanity: cmdline_origin actually contains APP_NAME.
+    import stringzilla as sz
 
-        assert sz.Str("APP_NAME") in hntr.magicparser._initial_macro_state.cmdline_origin
+    assert sz.Str("APP_NAME") in hntr.magicparser._initial_macro_state.cmdline_origin
 
-        cxxflags_tokens = compiletools.apptools.tokenize_compile_flags("", "", hntr.args.CXXFLAGS)[2]
-        scope_macro_hash = _pch_scope_macro_hash(hntr, sample)
-        return _pch_command_hash(
-            hntr.args,
-            sample,
-            magic_cpp_flags=[],
-            magic_cxx_flags=[],
-            cxxflags_tokens=cxxflags_tokens,
-            scope_macro_hash=scope_macro_hash,
-            anchor_root="",
-        )
+    cxxflags_tokens = compiletools.apptools.tokenize_compile_flags("", "", hntr.args.CXXFLAGS)[2]
+    scope_macro_hash = _pch_scope_macro_hash(hntr, sample)
+    return _pch_command_hash(
+        hntr.args,
+        sample,
+        magic_cpp_flags=[],
+        magic_cxx_flags=[],
+        cxxflags_tokens=cxxflags_tokens,
+        scope_macro_hash=scope_macro_hash,
+        anchor_root="",
+    )
 
 
 class TestPchCacheKeyScopeFilter:
@@ -101,37 +107,37 @@ class TestPchCacheKeyScopeFilter:
     def teardown_method(self):
         uth.reset()
 
-    def test_pch_cache_key_unchanged_when_unused_cmdline_macro_changes(self):
+    def test_pch_cache_key_unchanged_when_unused_cmdline_macro_changes(self, temp_config):
         """Load-bearing reproducer: ``no_ref.cpp`` does not reference
         ``APP_NAME``, so two PCH builds that differ only in
         ``-DAPP_NAME=A`` vs ``-DAPP_NAME=B`` must produce IDENTICAL PCH
         cache keys. Pre-fix this assertion fails (the cmdline -D value
         leaks into the hash)."""
-        h_a = _hash_pch_with_app_name("A", "no_ref.cpp")
-        h_b = _hash_pch_with_app_name("B", "no_ref.cpp")
+        h_a = _hash_pch_with_app_name("A", "no_ref.cpp", temp_config)
+        h_b = _hash_pch_with_app_name("B", "no_ref.cpp", temp_config)
         assert h_a == h_b, (
             "no_ref.cpp does not reference APP_NAME, so changing the "
             "cmdline -DAPP_NAME=... value must NOT change the PCH cache key"
         )
 
-    def test_pch_cache_key_changes_when_referenced_cmdline_macro_changes(self):
+    def test_pch_cache_key_changes_when_referenced_cmdline_macro_changes(self, temp_config):
         """Counter-test: ``with_ref.cpp`` references ``APP_NAME``
         directly. The PCH cache key must change when the macro value
         changes -- otherwise the filter is over-aggressive and we'd
         silently reuse stale PCH bytes."""
-        h_a = _hash_pch_with_app_name("A", "with_ref.cpp")
-        h_b = _hash_pch_with_app_name("B", "with_ref.cpp")
+        h_a = _hash_pch_with_app_name("A", "with_ref.cpp", temp_config)
+        h_b = _hash_pch_with_app_name("B", "with_ref.cpp", temp_config)
         assert h_a != h_b, (
             "with_ref.cpp uses APP_NAME, so distinct -DAPP_NAME=... values must produce distinct PCH cache keys"
         )
 
-    def test_pch_cache_key_via_transitive_header(self):
+    def test_pch_cache_key_via_transitive_header(self, temp_config):
         """``tu_via_header.cpp`` does not mention ``APP_NAME`` in its own
         bytes -- the reference is in ``header_ref.hpp``. The transitive
         walk must surface the macro so distinct ``-DAPP_NAME=`` values
         still produce distinct PCH cache keys."""
-        h_a = _hash_pch_with_app_name("A", "tu_via_header.cpp")
-        h_b = _hash_pch_with_app_name("B", "tu_via_header.cpp")
+        h_a = _hash_pch_with_app_name("A", "tu_via_header.cpp", temp_config)
+        h_b = _hash_pch_with_app_name("B", "tu_via_header.cpp", temp_config)
         assert h_a != h_b, (
             "tu_via_header.cpp pulls APP_NAME in via header_ref.hpp, so "
             "the transitive scan must keep APP_NAME in the PCH cache key"
@@ -190,56 +196,54 @@ class TestPchScopeMacroHashEdgeCases:
     def teardown_method(self):
         uth.reset()
 
-    def test_pch_scope_macro_hash_empty_origin_returns_zeros(self):
+    def test_pch_scope_macro_hash_empty_origin_returns_zeros(self, temp_config):
         """When ``cmdline_origin`` is empty (no ``--append-*FLAGS=-D...``),
         ``_pch_scope_macro_hash`` returns 16 zero hex chars. The full
         ``_pch_command_hash`` should still produce a stable hash."""
         from compiletools.build_backend import _pch_command_hash, _pch_scope_macro_hash
 
-        with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr = _make_hunter([], temp_config)
-            sample = _sample("no_ref.cpp")
-            _process(hntr, sample)
+        hntr = _make_hunter([], temp_config)
+        sample = _sample("no_ref.cpp")
+        _process(hntr, sample)
 
-            # Confirm precondition.
-            assert hntr.magicparser._initial_macro_state.cmdline_origin == frozenset()
+        # Confirm precondition.
+        assert hntr.magicparser._initial_macro_state.cmdline_origin == frozenset()
 
-            scope_hash = _pch_scope_macro_hash(hntr, sample)
-            assert scope_hash == "0" * 16
+        scope_hash = _pch_scope_macro_hash(hntr, sample)
+        assert scope_hash == "0" * 16
 
-            # Full pch hash is stable across calls with same inputs.
-            tokens = compiletools.apptools.tokenize_compile_flags("", "", hntr.args.CXXFLAGS)[2]
-            h1 = _pch_command_hash(
-                hntr.args, sample, [], [], cxxflags_tokens=tokens, scope_macro_hash=scope_hash, anchor_root=""
-            )
-            h2 = _pch_command_hash(
-                hntr.args, sample, [], [], cxxflags_tokens=tokens, scope_macro_hash=scope_hash, anchor_root=""
-            )
-            assert h1 == h2
+        # Full pch hash is stable across calls with same inputs.
+        tokens = compiletools.apptools.tokenize_compile_flags("", "", hntr.args.CXXFLAGS)[2]
+        h1 = _pch_command_hash(
+            hntr.args, sample, [], [], cxxflags_tokens=tokens, scope_macro_hash=scope_hash, anchor_root=""
+        )
+        h2 = _pch_command_hash(
+            hntr.args, sample, [], [], cxxflags_tokens=tokens, scope_macro_hash=scope_hash, anchor_root=""
+        )
+        assert h1 == h2
 
-    def test_pch_scope_macro_hash_no_referenced_macros_returns_zeros(self):
+    def test_pch_scope_macro_hash_no_referenced_macros_returns_zeros(self, temp_config):
         """``cmdline_origin`` non-empty but the PCH header references
         none of the cmdline-D macros: ``_pch_scope_macro_hash`` returns
         the all-zeros sentinel (no scoping applied)."""
         from compiletools.build_backend import _pch_scope_macro_hash
 
-        with uth.TempDirContextNoChange(), uth.TempConfigContext() as temp_config:
-            hntr = _make_hunter(
-                ["--append-CPPFLAGS=-DAPP_NAME=A"],
-                temp_config,
-            )
-            sample = _sample("no_ref.cpp")
-            _process(hntr, sample)
+        hntr = _make_hunter(
+            ["--append-CPPFLAGS=-DAPP_NAME=A"],
+            temp_config,
+        )
+        sample = _sample("no_ref.cpp")
+        _process(hntr, sample)
 
-            import stringzilla as sz
+        import stringzilla as sz
 
-            assert sz.Str("APP_NAME") in hntr.magicparser._initial_macro_state.cmdline_origin
+        assert sz.Str("APP_NAME") in hntr.magicparser._initial_macro_state.cmdline_origin
 
-            scope_hash = _pch_scope_macro_hash(hntr, sample)
-            assert scope_hash == "0" * 16, (
-                "no_ref.cpp does not reference APP_NAME, so the scope "
-                "filter should be empty and yield the all-zeros sentinel"
-            )
+        scope_hash = _pch_scope_macro_hash(hntr, sample)
+        assert scope_hash == "0" * 16, (
+            "no_ref.cpp does not reference APP_NAME, so the scope "
+            "filter should be empty and yield the all-zeros sentinel"
+        )
 
 
 # --- TOKEN-3: diagnostic-only flag tokens are excluded from PCH cache key ---
