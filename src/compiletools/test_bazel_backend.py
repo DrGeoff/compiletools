@@ -2,12 +2,21 @@
 
 import io
 import os
+import shutil
+import subprocess
+from io import StringIO
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from compiletools.bazel_backend import BazelBackend
-from compiletools.build_backend import extract_copts, extract_include_paths, extract_linkopts, get_backend_class
+from compiletools.build_backend import (
+    compute_link_signature,
+    extract_copts,
+    extract_include_paths,
+    extract_linkopts,
+    get_backend_class,
+)
 from compiletools.build_graph import BuildGraph, BuildRule
 
 
@@ -425,7 +434,6 @@ class TestStarlarkStringEscape:
     def test_emit_target_quotes_pathological_src(self):
         """End-to-end: a src containing ``"`` must round-trip through
         ``_emit_target`` without producing an unbalanced quote in the output."""
-        from io import StringIO
 
         buf = StringIO()
         BazelBackend._emit_target(
@@ -661,7 +669,6 @@ class TestBazelCopyExecutables:
         with patch("compiletools.wrappedos.realpath", side_effect=lambda x: x):
             backend._copy_built_executables(str(bazel_bin))
 
-        import os
 
         assert os.path.exists(dest_path)
 
@@ -686,7 +693,6 @@ class TestBazelCopyExecutables:
         with patch("compiletools.wrappedos.realpath", side_effect=lambda x: x):
             backend._copy_built_executables(str(bazel_bin))
 
-        import os
 
         assert os.path.exists(dest_path)
 
@@ -711,7 +717,6 @@ class TestBazelCopyExecutables:
         with patch("compiletools.wrappedos.realpath", side_effect=lambda x: x):
             backend._copy_built_executables(str(bazel_bin))
 
-        import os
 
         assert os.path.exists(dest_path)
 
@@ -727,7 +732,6 @@ class TestBazelPublishOutputs:
     """
 
     def test_publish_lands_test_exes_at_namer_paths(self, tmp_path, monkeypatch):
-        import os
 
         monkeypatch.chdir(tmp_path)
         bazel_bin = tmp_path / "bazel-bin"
@@ -760,7 +764,6 @@ class TestBazelPublishOutputs:
 
     def test_publish_idempotent_on_rerun_with_readonly_dest(self, tmp_path, monkeypatch):
         """Second invocation must not fail with EACCES on the r-x output."""
-        import os
 
         monkeypatch.chdir(tmp_path)
         bazel_bin = tmp_path / "bazel-bin"
@@ -1132,31 +1135,28 @@ class TestBazelRunBazelDiagnostic:
 
     def test_failure_without_marker_raises_plain_called_process_error(self):
         backend = self._make_backend()
-        import subprocess as sp
 
         with patch("subprocess.Popen", return_value=self._fake_proc("undefined reference to `foo'\n", 1)):
-            with pytest.raises(sp.CalledProcessError) as excinfo:
+            with pytest.raises(subprocess.CalledProcessError) as excinfo:
                 backend._run_bazel(["bazel", "build", "//:all"])
         assert "Bazel's link step failed" not in (excinfo.value.stderr or "")
 
     def test_lld_failure_augments_stderr_with_clang_hint(self):
         backend = self._make_backend()
-        import subprocess as sp
 
         stderr = "collect2: fatal error: cannot find 'ld'\ncompilation terminated.\n"
         with patch("subprocess.Popen", return_value=self._fake_proc(stderr, 1)):
-            with pytest.raises(sp.CalledProcessError) as excinfo:
+            with pytest.raises(subprocess.CalledProcessError) as excinfo:
                 backend._run_bazel(["bazel", "build", "//:all"])
         assert "clang" in (excinfo.value.stderr or "").lower()
         assert "fuse-ld=lld" in (excinfo.value.stderr or "")
 
     def test_toolchain_failure_augments_stderr(self):
         backend = self._make_backend()
-        import subprocess as sp
 
         stderr = "ERROR: Could not find a C++ toolchain for the requested platform\n"
         with patch("subprocess.Popen", return_value=self._fake_proc(stderr, 1)):
-            with pytest.raises(sp.CalledProcessError) as excinfo:
+            with pytest.raises(subprocess.CalledProcessError) as excinfo:
                 backend._run_bazel(["bazel", "build", "//:all"])
         assert "clang" in (excinfo.value.stderr or "").lower()
 
@@ -1248,10 +1248,9 @@ class TestBazelPrepareExternalSources:
 
             assert (base_dir / "ext" / "ext_source.cpp").exists()
         finally:
-            import shutil as _sh
 
             if outside.exists():
-                _sh.rmtree(outside)
+                shutil.rmtree(outside)
 
 
 class TestBazelAllOutputsCurrent:
@@ -1261,7 +1260,6 @@ class TestBazelAllOutputsCurrent:
     post-build copy from bazel-bin/) always runs."""
 
     def test_always_returns_false_even_when_outputs_exist(self, tmp_path):
-        from compiletools.build_backend import compute_link_signature
 
         args = MagicMock()
         hunter = MagicMock()

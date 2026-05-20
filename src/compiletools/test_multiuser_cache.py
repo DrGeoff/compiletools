@@ -16,8 +16,12 @@ Umask Requirements:
 - Original umask is restored after each test
 """
 
+import io
 import multiprocessing
 import os
+import shutil
+import socket
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -42,7 +46,6 @@ def compile_worker(worker_id, source_dir, config_name):
         Dict with worker_id, returncode, exception info
     """
     # Small delay to increase concurrency
-    import time
 
     time.sleep(0.01 * worker_id)
 
@@ -73,8 +76,6 @@ def compile_worker(worker_id, source_dir, config_name):
 
 def compile_with_umask(source_dir, config_name, umask_value):
     """Run ct-cake with specific umask value."""
-    import io
-    import sys
 
     old_umask = os.umask(umask_value)
     # Capture both stdout and stderr to get error messages
@@ -112,7 +113,6 @@ def compile_with_umask(source_dir, config_name, umask_value):
 def create_objdir_worker(worker_id, objdir):
     """Worker that tries to create objdir."""
     # Small delay to increase chance of concurrent access
-    import time
 
     time.sleep(0.01 * worker_id)
 
@@ -140,7 +140,6 @@ def compile_worker_with_flags(worker_id, source_dir, config_name, extra_argv):
     Returns:
         Dict with worker_id, returncode, obj_names, exception info
     """
-    import time
 
     time.sleep(0.01 * worker_id)
 
@@ -221,7 +220,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         source_dir.mkdir(exist_ok=True)
 
         # Copy source file
-        import shutil
 
         src_file = uth.example_file("simple/helloworld_cpp.cpp")
         shutil.copy2(src_file, str(source_dir / "main.cpp"))
@@ -291,7 +289,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             objdir.mkdir(mode=0o2775)
 
             # Create build directories with different main files
-            import shutil
 
             sources = [
                 "simple/helloworld_cpp.cpp",
@@ -823,7 +820,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         2. Same-host stale locks are automatically removed
         3. Build succeeds after removing stale lock
         """
-        import socket
 
         with tempfile.TemporaryDirectory() as tmpdir:
             objdir = Path(tmpdir) / "cas_objdir"
@@ -888,7 +884,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
             objdir.mkdir(mode=0o2775)
 
             # Create two subproject directories using different sample projects
-            import shutil
 
             # Subproject A: numbers sample
             subproject_a_dir = Path(tmpdir) / "subproject_numbers"
@@ -1070,7 +1065,6 @@ class TestMultiUserCache(BaseCompileToolsTestCase):
         """Helper: create a build dir using the examples-end-to-end/pch source.
 
         Returns (source_dir, config_name)."""
-        import shutil
 
         source_dir = Path(tmpdir) / source_name
         source_dir.mkdir(exist_ok=True)
