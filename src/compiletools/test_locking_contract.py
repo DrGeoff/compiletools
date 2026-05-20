@@ -8,6 +8,7 @@ These tests must pass both BEFORE and AFTER the refactor to lock_utils.py.
 """
 
 import os
+import shutil
 import tempfile
 import time
 from unittest.mock import Mock
@@ -38,13 +39,11 @@ def temp_lockdir():
     with tempfile.TemporaryDirectory() as tmpdir:
         lockfile = os.path.join(tmpdir, "test.o")
         yield lockfile
-        # Cleanup lockdirs
+        # Cleanup any lock sidecars the test created (tempdir auto-removes the rest).
         for ext in [".lockdir", ".lock", ".lock.excl", ".lock.pid"]:
             try:
                 path = lockfile + ext
                 if os.path.isdir(path):
-                    import shutil
-
                     shutil.rmtree(path)
                 elif os.path.exists(path):
                     os.unlink(path)
@@ -52,13 +51,17 @@ def temp_lockdir():
                 pass
 
 
+@pytest.fixture
+def lock(temp_lockdir, mock_args):
+    """LockdirLock instance backed by a fresh temp_lockdir + mock_args."""
+    return compiletools.locking.LockdirLock(temp_lockdir, mock_args)
+
+
 class TestLockdirLockContract:
     """Contract tests for LockdirLock behavior - must not change during refactor."""
 
-    def test_lock_age_calculation_normal(self, temp_lockdir, mock_args):
+    def test_lock_age_calculation_normal(self, lock):
         """Contract: Lock age is calculated as (now - mtime) in seconds."""
-        lock = compiletools.locking.LockdirLock(temp_lockdir, mock_args)
-
         # Create lockdir with known mtime
         os.makedirs(lock.lockdir)
         known_mtime = time.time() - 100.5  # 100.5 seconds ago
@@ -69,10 +72,8 @@ class TestLockdirLockContract:
         # Age should be approximately 100.5 seconds (allow 1 second tolerance)
         assert 99.5 <= age <= 101.5, f"Expected age ~100.5, got {age}"
 
-    def test_lock_age_calculation_future_mtime(self, temp_lockdir, mock_args):
+    def test_lock_age_calculation_future_mtime(self, lock):
         """Contract: Future mtime (clock skew) returns age 0."""
-        lock = compiletools.locking.LockdirLock(temp_lockdir, mock_args)
-
         # Create lockdir with future mtime
         os.makedirs(lock.lockdir)
         future_mtime = time.time() + 3600  # 1 hour in future
@@ -83,20 +84,16 @@ class TestLockdirLockContract:
         # Contract: Future mtime must return 0
         assert age == 0, f"Expected age 0 for future mtime, got {age}"
 
-    def test_lock_age_calculation_nonexistent(self, temp_lockdir, mock_args):
+    def test_lock_age_calculation_nonexistent(self, lock):
         """Contract: Nonexistent lockdir returns age 0."""
-        lock = compiletools.locking.LockdirLock(temp_lockdir, mock_args)
-
         # Don't create lockdir
         age = lock._get_lock_age_seconds()
 
         # Contract: Nonexistent lock must return 0
         assert age == 0, f"Expected age 0 for nonexistent lock, got {age}"
 
-    def test_stale_detection_local_dead_process(self, temp_lockdir, mock_args):
+    def test_stale_detection_local_dead_process(self, lock):
         """Contract: Local lock with dead process (PID 999999) is stale."""
-        lock = compiletools.locking.LockdirLock(temp_lockdir, mock_args)
-
         # Create lockdir with fake PID that doesn't exist
         os.makedirs(lock.lockdir)
         with open(lock.pid_file, "w") as f:
@@ -107,10 +104,8 @@ class TestLockdirLockContract:
         # Contract: Dead local process must be detected as stale
         assert is_stale is True, "Expected dead local process to be stale"
 
-    def test_stale_detection_local_alive_process(self, temp_lockdir, mock_args):
+    def test_stale_detection_local_alive_process(self, lock):
         """Contract: Local lock with alive process (our PID) is not stale."""
-        lock = compiletools.locking.LockdirLock(temp_lockdir, mock_args)
-
         # Create lockdir with our own PID (guaranteed to exist)
         os.makedirs(lock.lockdir)
         with open(lock.pid_file, "w") as f:
@@ -121,10 +116,8 @@ class TestLockdirLockContract:
         # Contract: Our own process must NOT be detected as stale
         assert is_stale is False, "Expected our own process to not be stale"
 
-    def test_stale_detection_remote_host(self, temp_lockdir, mock_args):
+    def test_stale_detection_remote_host(self, lock):
         """Contract: Remote host lock is not considered stale (can't verify)."""
-        lock = compiletools.locking.LockdirLock(temp_lockdir, mock_args)
-
         # Create lockdir from different host
         os.makedirs(lock.lockdir)
         with open(lock.pid_file, "w") as f:
@@ -136,10 +129,8 @@ class TestLockdirLockContract:
         # (LockdirLock doesn't do SSH checks - only local process checks)
         assert is_stale is False, "Expected remote lock to not be stale"
 
-    def test_stale_detection_missing_pid_file(self, temp_lockdir, mock_args):
+    def test_stale_detection_missing_pid_file(self, lock):
         """Contract: Fresh lockdir without pid file is NOT stale (grace period)."""
-        lock = compiletools.locking.LockdirLock(temp_lockdir, mock_args)
-
         # Create fresh lockdir but no pid file (simulates creation race)
         os.makedirs(lock.lockdir)
 
@@ -157,10 +148,8 @@ class TestLockdirLockContract:
         # Contract: Old lock without PID IS stale (exceeded timeout)
         assert is_stale is True, "Expected old lockdir without pid file to be stale"
 
-    def test_stale_detection_malformed_pid_file(self, temp_lockdir, mock_args):
+    def test_stale_detection_malformed_pid_file(self, lock):
         """Contract: Fresh malformed pid file is NOT stale (grace period)."""
-        lock = compiletools.locking.LockdirLock(temp_lockdir, mock_args)
-
         # Create fresh lockdir with malformed pid file
         os.makedirs(lock.lockdir)
         with open(lock.pid_file, "w") as f:
@@ -180,10 +169,8 @@ class TestLockdirLockContract:
         # Contract: Old malformed lock IS stale
         assert is_stale is True, "Expected old malformed pid file to be stale"
 
-    def test_stale_detection_empty_pid_file(self, temp_lockdir, mock_args):
+    def test_stale_detection_empty_pid_file(self, lock):
         """Contract: Fresh empty pid file is NOT stale (grace period)."""
-        lock = compiletools.locking.LockdirLock(temp_lockdir, mock_args)
-
         # Create fresh lockdir with empty pid file
         os.makedirs(lock.lockdir)
         with open(lock.pid_file, "w") as f:
@@ -207,10 +194,8 @@ class TestLockdirLockContract:
 class TestLockBehaviorContract:
     """Contract tests for overall locking behavior."""
 
-    def test_acquire_creates_lockdir_with_pid_file(self, temp_lockdir, mock_args):
+    def test_acquire_creates_lockdir_with_pid_file(self, lock):
         """Contract: acquire() creates lockdir with hostname:pid in pid file."""
-        lock = compiletools.locking.LockdirLock(temp_lockdir, mock_args)
-
         lock.acquire()
 
         # Verify lockdir exists
@@ -231,10 +216,8 @@ class TestLockBehaviorContract:
 
         lock.release()
 
-    def test_release_removes_lockdir(self, temp_lockdir, mock_args):
+    def test_release_removes_lockdir(self, lock):
         """Contract: release() removes the lockdir."""
-        lock = compiletools.locking.LockdirLock(temp_lockdir, mock_args)
-
         lock.acquire()
         assert os.path.exists(lock.lockdir), "Lockdir should exist after acquire"
 
@@ -243,10 +226,8 @@ class TestLockBehaviorContract:
         # Contract: Lockdir must be removed after release
         assert not os.path.exists(lock.lockdir), "Expected lockdir to be removed after release"
 
-    def test_stale_lock_removal_on_acquire(self, temp_lockdir, mock_args):
+    def test_stale_lock_removal_on_acquire(self, lock):
         """Contract: acquire() removes stale locks before acquiring."""
-        lock = compiletools.locking.LockdirLock(temp_lockdir, mock_args)
-
         # Manually create stale lock
         os.makedirs(lock.lockdir)
         with open(lock.pid_file, "w") as f:
