@@ -4158,6 +4158,12 @@ _BUILTIN_BACKEND_MODULES: Mapping[str, str] = MappingProxyType(
 _ALWAYS_AVAILABLE_BACKENDS = frozenset({"shake"})
 
 _DEFAULT_MEM_TIERS_STR = "1:1G,2:2G,4:4G,8:8G,16:16G"
+
+# LD_LIBRARY_PATH is included because non-system-installed compilers (Spack, Lmod,
+# environment modules, custom installs) almost always need it to find their shared
+# libs on the compute node. Other HPC vars (MODULEPATH, LMOD_*, SPACK_ROOT, etc.)
+# are deliberately excluded — sites using those toolchains can extend this via
+# --slurm-export.
 _DEFAULT_SLURM_EXPORT = "PATH,HOME,USER,LANG,LC_ALL,CC,CXX,CPATH,LD_LIBRARY_PATH"
 
 _BackendT = TypeVar("_BackendT", bound="BuildBackend")
