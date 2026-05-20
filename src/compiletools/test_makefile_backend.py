@@ -66,6 +66,18 @@ class TestMakefileGenerate:
         defaults.update(overrides)
         return SimpleNamespace(**defaults)
 
+    def _generate(self, graph, args=None):
+        """Run MakefileBackend.generate on *graph* with a mocked hunter; return content."""
+        if args is None:
+            args = self._make_args()
+        hunter = MagicMock()
+        hunter.huntsource = MagicMock()
+        hunter.getsources = MagicMock(return_value=[])
+        backend = MakefileBackend(args=args, hunter=hunter)
+        buf = io.StringIO()
+        backend.generate(graph, output=buf)
+        return buf.getvalue()
+
     def test_generate_writes_makefile_syntax(self):
         """generate() should produce valid Makefile syntax from a BuildGraph."""
         graph = BuildGraph()
@@ -95,15 +107,7 @@ class TestMakefileGenerate:
             )
         )
 
-        args = self._make_args()
-        hunter = MagicMock()
-        hunter.huntsource = MagicMock()
-        hunter.getsources = MagicMock(return_value=[])
-        backend = MakefileBackend(args=args, hunter=hunter)
-
-        buf = io.StringIO()
-        backend.generate(graph, output=buf)
-        content = buf.getvalue()
+        content = self._generate(graph)
 
         assert ".DELETE_ON_ERROR:" in content
         # Default policy is CAS-only (use_mtime=False): compile and link
@@ -119,16 +123,7 @@ class TestMakefileGenerate:
     def test_generate_phony_no_recipe(self):
         graph = BuildGraph()
         graph.add_rule(BuildRule(output="all", inputs=["build"], command=None, rule_type="phony"))
-
-        args = self._make_args()
-        hunter = MagicMock()
-        hunter.huntsource = MagicMock()
-        hunter.getsources = MagicMock(return_value=[])
-        backend = MakefileBackend(args=args, hunter=hunter)
-
-        buf = io.StringIO()
-        backend.generate(graph, output=buf)
-        content = buf.getvalue()
+        content = self._generate(graph)
 
         assert ".PHONY: all" in content
         assert "all: build" in content
@@ -137,17 +132,7 @@ class TestMakefileGenerate:
         """Generated Makefile should disable builtin rules/variables."""
         graph = BuildGraph()
         graph.add_rule(BuildRule(output="all", inputs=["build"], command=None, rule_type="phony"))
-
-        args = self._make_args()
-        hunter = MagicMock()
-        hunter.huntsource = MagicMock()
-        hunter.getsources = MagicMock(return_value=[])
-        backend = MakefileBackend(args=args, hunter=hunter)
-
-        buf = io.StringIO()
-        backend.generate(graph, output=buf)
-        content = buf.getvalue()
-
+        content = self._generate(graph)
         assert "MAKEFLAGS += -rR" in content
 
     @patch("os.path.isfile", return_value=True)
@@ -155,17 +140,7 @@ class TestMakefileGenerate:
         """Generated Makefile should set SHELL when /bin/bash exists."""
         graph = BuildGraph()
         graph.add_rule(BuildRule(output="all", inputs=["build"], command=None, rule_type="phony"))
-
-        args = self._make_args()
-        hunter = MagicMock()
-        hunter.huntsource = MagicMock()
-        hunter.getsources = MagicMock(return_value=[])
-        backend = MakefileBackend(args=args, hunter=hunter)
-
-        buf = io.StringIO()
-        backend.generate(graph, output=buf)
-        content = buf.getvalue()
-
+        content = self._generate(graph)
         assert "SHELL := /bin/bash" in content
 
     @patch("os.path.isfile", return_value=False)
@@ -173,17 +148,7 @@ class TestMakefileGenerate:
         """Generated Makefile should omit SHELL when /bin/bash is absent."""
         graph = BuildGraph()
         graph.add_rule(BuildRule(output="all", inputs=["build"], command=None, rule_type="phony"))
-
-        args = self._make_args()
-        hunter = MagicMock()
-        hunter.huntsource = MagicMock()
-        hunter.getsources = MagicMock(return_value=[])
-        backend = MakefileBackend(args=args, hunter=hunter)
-
-        buf = io.StringIO()
-        backend.generate(graph, output=buf)
-        content = buf.getvalue()
-
+        content = self._generate(graph)
         assert "SHELL" not in content
 
 
