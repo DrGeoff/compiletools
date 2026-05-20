@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from compiletools.build_backend import _pch_command_hash
 
 
@@ -41,15 +43,20 @@ def test_pch_hash_stable_across_workspace_moves():
     assert _hash("/run-1/workspace") == _hash("/run-2/workspace")
 
 
-def test_pch_hash_distinguishes_different_headers():
-    """Two different headers under the same workspace must hash differently."""
-    a = _hash("/some/workspace", header_name="pch_a.h")
-    b = _hash("/some/workspace", header_name="pch_b.h")
-    assert a != b, "Canonicalizer over-stripped: distinct PCH headers must yield distinct hashes"
-
-
-def test_pch_hash_distinguishes_real_flag_changes():
-    """Adding -O3 to cxxflags must change the hash even when paths canonicalize."""
-    baseline = _hash("/some/workspace")
-    with_o3 = _hash("/some/workspace", extra_cxx="-O3")
-    assert baseline != with_o3, "Canonicalizer over-stripped: -O3 addition must change the PCH hash"
+@pytest.mark.parametrize(
+    ("baseline_kwargs", "changed_kwargs", "reason"),
+    [
+        pytest.param(
+            {"header_name": "pch_a.h"},
+            {"header_name": "pch_b.h"},
+            "distinct PCH headers",
+            id="headers",
+        ),
+        pytest.param({}, {"extra_cxx": "-O3"}, "-O3 addition", id="flags"),
+    ],
+)
+def test_pch_hash_distinguishes_real_changes(baseline_kwargs, changed_kwargs, reason):
+    """Different headers/flags under the same workspace must hash differently."""
+    baseline = _hash("/some/workspace", **baseline_kwargs)
+    changed = _hash("/some/workspace", **changed_kwargs)
+    assert baseline != changed, f"Canonicalizer over-stripped: {reason} must change the PCH hash"

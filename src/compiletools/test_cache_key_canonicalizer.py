@@ -14,7 +14,9 @@ import pytest
 
 from compiletools.apptools import (
     canonicalize_for_cache_key,
+    canonicalize_for_command,
     canonicalize_path_for_cache_key,
+    canonicalize_path_for_command,
 )
 
 ANCHOR = "/run-1/workspace"
@@ -164,24 +166,18 @@ def test_detached_at_end_with_no_following_token():
 # ---------------------------------------------------------------------------
 
 
-def test_path_under_anchor_rewritten():
-    assert canonicalize_path_for_cache_key(f"{ANCHOR}/lib/util/pch.h", ANCHOR) == "<GITROOT>/lib/util/pch.h"
-
-
-def test_path_outside_anchor_unchanged():
-    assert canonicalize_path_for_cache_key("/usr/include/stdio.h", ANCHOR) == "/usr/include/stdio.h"
-
-
-def test_path_empty_anchor_is_identity():
-    assert canonicalize_path_for_cache_key("/run-1/workspace/foo.h", "") == "/run-1/workspace/foo.h"
-
-
-def test_path_anchor_exactly_equals():
-    assert canonicalize_path_for_cache_key(ANCHOR, ANCHOR) == "<GITROOT>"
-
-
-def test_path_anchor_with_trailing_slash():
-    assert canonicalize_path_for_cache_key(f"{ANCHOR}/foo.h", ANCHOR + "/") == "<GITROOT>/foo.h"
+@pytest.mark.parametrize(
+    ("path", "anchor", "expected"),
+    [
+        pytest.param(f"{ANCHOR}/lib/util/pch.h", ANCHOR, "<GITROOT>/lib/util/pch.h", id="under-anchor"),
+        pytest.param("/usr/include/stdio.h", ANCHOR, "/usr/include/stdio.h", id="outside-anchor"),
+        pytest.param("/run-1/workspace/foo.h", "", "/run-1/workspace/foo.h", id="empty-anchor"),
+        pytest.param(ANCHOR, ANCHOR, "<GITROOT>", id="anchor-exact"),
+        pytest.param(f"{ANCHOR}/foo.h", ANCHOR + "/", "<GITROOT>/foo.h", id="trailing-slash"),
+    ],
+)
+def test_path_canonicalization(path, anchor, expected):
+    assert canonicalize_path_for_cache_key(path, anchor) == expected
 
 
 def test_path_idempotent():
@@ -195,38 +191,42 @@ def test_path_idempotent():
 # ---------------------------------------------------------------------------
 
 
-def test_Wl_comma_path_canonicalized():
-    """``-Wl,-rpath,/abs/path/lib`` — split on comma, canonicalise each
-    path-shaped segment. Without this, trace_backend's command_hash
+@pytest.mark.parametrize(
+    ("tokens", "expected"),
+    [
+        pytest.param(
+            [f"-Wl,-rpath,{ANCHOR}/lib"],
+            ["-Wl,-rpath,<GITROOT>/lib"],
+            id="comma-path",
+        ),
+        pytest.param(
+            [f"-Wl,--version-script={ANCHOR}/script.ld"],
+            ["-Wl,--version-script=<GITROOT>/script.ld"],
+            id="equals-path",
+        ),
+        pytest.param(
+            [f"-Wl,-rpath,{ANCHOR}/a,-rpath,{ANCHOR}/b"],
+            ["-Wl,-rpath,<GITROOT>/a,-rpath,<GITROOT>/b"],
+            id="multiple-paths",
+        ),
+        pytest.param(["-Wl,-rpath,/usr/lib"], ["-Wl,-rpath,/usr/lib"], id="outside-anchor"),
+        pytest.param(["-Wl,--as-needed"], ["-Wl,--as-needed"], id="no-path-segment"),
+    ],
+)
+def test_Wl_canonicalization(tokens, expected):
+    """``-Wl,`` tokens are split on ``,`` and ``=``, and each path-shaped
+    segment is canonicalised. Without this, trace_backend's ``command_hash``
     differs between workspaces under different gitroots even when the
-    rpath is logically the same.
+    rpath / version-script is logically the same. Cases:
+
+    - ``comma-path``: ``-Wl,-rpath,/abs/path/lib`` — comma split.
+    - ``equals-path``: ``-Wl,--version-script=/abs/path/script.ld`` — comma
+      then ``=`` split for value-bearing options.
+    - ``multiple-paths``: both rpaths in a single ``-Wl,`` token canonicalised.
+    - ``outside-anchor``: unrelated paths pass through unchanged.
+    - ``no-path-segment``: ``-Wl,--as-needed`` (no path) passes through.
     """
-    assert canonicalize_for_cache_key([f"-Wl,-rpath,{ANCHOR}/lib"], ANCHOR) == ["-Wl,-rpath,<GITROOT>/lib"]
-
-
-def test_Wl_equals_path_canonicalized():
-    """``-Wl,--version-script=/abs/path/script.ld`` — split on comma,
-    then on ``=`` for value-bearing options.
-    """
-    assert canonicalize_for_cache_key([f"-Wl,--version-script={ANCHOR}/script.ld"], ANCHOR) == [
-        "-Wl,--version-script=<GITROOT>/script.ld"
-    ]
-
-
-def test_Wl_multiple_paths_in_one_token_all_canonicalized():
-    """``-Wl,-rpath,/abs/a,-rpath,/abs/b`` — both paths get canonicalised."""
-    assert canonicalize_for_cache_key([f"-Wl,-rpath,{ANCHOR}/a,-rpath,{ANCHOR}/b"], ANCHOR) == [
-        "-Wl,-rpath,<GITROOT>/a,-rpath,<GITROOT>/b"
-    ]
-
-
-def test_Wl_outside_anchor_unchanged():
-    assert canonicalize_for_cache_key(["-Wl,-rpath,/usr/lib"], ANCHOR) == ["-Wl,-rpath,/usr/lib"]
-
-
-def test_Wl_no_path_segment_unchanged():
-    """``-Wl,--as-needed`` (no path) passes through unchanged."""
-    assert canonicalize_for_cache_key(["-Wl,--as-needed"], ANCHOR) == ["-Wl,--as-needed"]
+    assert canonicalize_for_cache_key(tokens, ANCHOR) == expected
 
 
 def test_Xlinker_two_token_path_canonicalized():
@@ -265,24 +265,22 @@ def test_Wl_idempotent():
 # ---------------------------------------------------------------------------
 
 
-def test_ffile_prefix_map_recognized():
-    out = canonicalize_for_cache_key([f"-ffile-prefix-map={ANCHOR}=."], ANCHOR)
-    assert out == ["-ffile-prefix-map=<GITROOT>=."]
-
-
-def test_fdebug_prefix_map_recognized():
-    out = canonicalize_for_cache_key([f"-fdebug-prefix-map={ANCHOR}/sub=/__ct__/sub"], ANCHOR)
-    assert out == ["-fdebug-prefix-map=<GITROOT>/sub=/__ct__/sub"]
-
-
-def test_fmacro_prefix_map_recognized():
-    out = canonicalize_for_cache_key([f"-fmacro-prefix-map={ANCHOR}=."], ANCHOR)
-    assert out == ["-fmacro-prefix-map=<GITROOT>=."]
-
-
-def test_fcanon_prefix_map_recognized():
-    out = canonicalize_for_cache_key([f"-fcanon-prefix-map={ANCHOR}=."], ANCHOR)
-    assert out == ["-fcanon-prefix-map=<GITROOT>=."]
+@pytest.mark.parametrize(
+    ("token", "expected"),
+    [
+        pytest.param(f"-ffile-prefix-map={ANCHOR}=.", "-ffile-prefix-map=<GITROOT>=.", id="file"),
+        pytest.param(
+            f"-fdebug-prefix-map={ANCHOR}/sub=/__ct__/sub",
+            "-fdebug-prefix-map=<GITROOT>/sub=/__ct__/sub",
+            id="debug",
+        ),
+        pytest.param(f"-fmacro-prefix-map={ANCHOR}=.", "-fmacro-prefix-map=<GITROOT>=.", id="macro"),
+        pytest.param(f"-fcanon-prefix-map={ANCHOR}=.", "-fcanon-prefix-map=<GITROOT>=.", id="canon"),
+    ],
+)
+def test_prefix_map_recognized(token, expected):
+    out = canonicalize_for_cache_key([token], ANCHOR)
+    assert out == [expected]
 
 
 def test_prefix_map_outside_anchor_passes_through():
@@ -335,35 +333,25 @@ def test_prefix_map_inside_other_tokens_unaffected():
 # ---------------------------------------------------------------------------
 
 
-def test_canonicalize_for_command_substitutes_target_not_sentinel():
-    from compiletools.apptools import canonicalize_for_command
-
-    out = canonicalize_for_command(
-        [f"-I{ANCHOR}/include", f"-Wl,-rpath,{ANCHOR}/lib"],
-        ANCHOR,
-        target=".",
-    )
-    assert out == ["-I./include", "-Wl,-rpath,./lib"]
-
-
-def test_canonicalize_for_command_with_custom_target():
-    from compiletools.apptools import canonicalize_for_command
-
-    out = canonicalize_for_command([f"-I{ANCHOR}/include"], ANCHOR, target="/__ct__")
-    assert out == ["-I/__ct__/include"]
-
-
-def test_canonicalize_for_command_passes_through_outside_anchor():
-    from compiletools.apptools import canonicalize_for_command
-
-    out = canonicalize_for_command(["-I/usr/include", "-O2"], ANCHOR, target=".")
-    assert out == ["-I/usr/include", "-O2"]
+@pytest.mark.parametrize(
+    ("tokens", "target", "expected"),
+    [
+        pytest.param(
+            [f"-I{ANCHOR}/include", f"-Wl,-rpath,{ANCHOR}/lib"],
+            ".",
+            ["-I./include", "-Wl,-rpath,./lib"],
+            id="target-not-sentinel",
+        ),
+        pytest.param([f"-I{ANCHOR}/include"], "/__ct__", ["-I/__ct__/include"], id="custom-target"),
+        pytest.param(["-I/usr/include", "-O2"], ".", ["-I/usr/include", "-O2"], id="outside-anchor"),
+    ],
+)
+def test_command_token_canonicalization(tokens, target, expected):
+    assert canonicalize_for_command(tokens, ANCHOR, target=target) == expected
 
 
 def test_canonicalize_for_command_empty_anchor_is_identity():
     """Falsy anchor -> identity; same contract as canonicalize_for_cache_key."""
-    from compiletools.apptools import canonicalize_for_command
-
     tokens = [f"-I{ANCHOR}/include", "-O2"]
     assert canonicalize_for_command(tokens, "", target=".") == tokens
 
@@ -373,23 +361,17 @@ def test_canonicalize_for_command_handles_prefix_map_flag():
     auto-injected ``-ffile-prefix-map=<gitroot>=.`` becomes
     ``-ffile-prefix-map=.=.`` in the emitted command (which is harmless
     -- gcc maps ``.`` to ``.``)."""
-    from compiletools.apptools import canonicalize_for_command
-
     out = canonicalize_for_command([f"-ffile-prefix-map={ANCHOR}=."], ANCHOR, target=".")
     assert out == ["-ffile-prefix-map=.=."]
 
 
 def test_canonicalize_path_for_command_substitutes_target():
-    from compiletools.apptools import canonicalize_path_for_command
-
     assert canonicalize_path_for_command(f"{ANCHOR}/foo.o", ANCHOR, target=".") == "./foo.o"
     assert canonicalize_path_for_command(ANCHOR, ANCHOR, target=".") == "."
     assert canonicalize_path_for_command("/usr/lib/libc.a", ANCHOR, target=".") == "/usr/lib/libc.a"
 
 
 def test_canonicalize_path_for_command_empty_anchor_is_identity():
-    from compiletools.apptools import canonicalize_path_for_command
-
     assert canonicalize_path_for_command(f"{ANCHOR}/foo.o", "", target=".") == f"{ANCHOR}/foo.o"
 
 

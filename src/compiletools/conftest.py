@@ -159,16 +159,14 @@ def ensure_lock_helper_in_path():
 
 
 @pytest.fixture(scope="function")
-def pkgconfig_env():
+def pkgconfig_env(monkeypatch):
     """Set PKG_CONFIG_PATH to shared test pkg-config directory.
 
     This fixture provides access to the consolidated test .pc files in
     examples-features/pkgs/ for tests that need to validate pkg-config functionality.
 
-    The fixture:
-    1. Sets PKG_CONFIG_PATH to examples-features/pkgs/ directory
-    2. Yields control to the test
-    3. Restores original PKG_CONFIG_PATH after test completes
+    The fixture sets PKG_CONFIG_PATH to examples-features/pkgs/ directory
+    for the duration of the test.
 
     Usage in tests:
         def test_something(self, pkgconfig_env):
@@ -184,18 +182,7 @@ def pkgconfig_env():
 
     from compiletools.examples_registry import example_path
 
-    # Save original PKG_CONFIG_PATH
-    original_pkg_config_path = os.environ.get("PKG_CONFIG_PATH")
-
-    # Set PKG_CONFIG_PATH to shared pkgs directory
     shared_pkgconfig = Path(example_path("pkgs"))
-    os.environ["PKG_CONFIG_PATH"] = str(shared_pkgconfig)
+    monkeypatch.setenv("PKG_CONFIG_PATH", str(shared_pkgconfig))
 
-    # Yield to test
     yield str(shared_pkgconfig)
-
-    # Restore original PKG_CONFIG_PATH
-    if original_pkg_config_path is None:
-        os.environ.pop("PKG_CONFIG_PATH", None)
-    else:
-        os.environ["PKG_CONFIG_PATH"] = original_pkg_config_path

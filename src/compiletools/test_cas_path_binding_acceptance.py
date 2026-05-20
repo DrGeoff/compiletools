@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from compiletools.preprocessing_cache import MacroState
 
 WS1 = "/run-1/workspace"
@@ -81,24 +83,16 @@ def _pcm_hash_for_prefix(prefix: str) -> str:
     )
 
 
-def test_object_cache_path_independent():
-    """MacroState.get_hash(include_core=True) must NOT depend on the
-    absolute workspace path. Two TUs whose source/headers/flags match
-    bit-for-bit modulo the workspace prefix MUST hash identically."""
-    h1 = _macro_state_hash_for_prefix(WS1)
-    h2 = _macro_state_hash_for_prefix(WS2)
-    assert h1 == h2, f"object cache hash is workspace-bound: WS1={h1} != WS2={h2}. Every CI re-run becomes cache-cold."
-
-
-def test_pch_cache_path_independent():
-    """_pch_command_hash must be invariant under workspace path moves."""
-    h1 = _pch_hash_for_prefix(WS1)
-    h2 = _pch_hash_for_prefix(WS2)
-    assert h1 == h2, f"PCH cache hash is workspace-bound: WS1={h1} != WS2={h2}. PCH cache cold across CI re-runs."
-
-
-def test_pcm_cache_path_independent():
-    """_pcm_command_hash must be invariant under workspace path moves."""
-    h1 = _pcm_hash_for_prefix(WS1)
-    h2 = _pcm_hash_for_prefix(WS2)
-    assert h1 == h2, f"PCM cache hash is workspace-bound: WS1={h1} != WS2={h2}. PCM cache cold across CI re-runs."
+@pytest.mark.parametrize(
+    ("cache_name", "hash_for_prefix"),
+    [
+        pytest.param("object cache", _macro_state_hash_for_prefix, id="object"),
+        pytest.param("PCH cache", _pch_hash_for_prefix, id="pch"),
+        pytest.param("PCM cache", _pcm_hash_for_prefix, id="pcm"),
+    ],
+)
+def test_cache_hash_path_independent(cache_name, hash_for_prefix):
+    """Cache hashes must be invariant under workspace path moves."""
+    h1 = hash_for_prefix(WS1)
+    h2 = hash_for_prefix(WS2)
+    assert h1 == h2, f"{cache_name} hash is workspace-bound: WS1={h1} != WS2={h2}. CI re-runs become cache-cold."

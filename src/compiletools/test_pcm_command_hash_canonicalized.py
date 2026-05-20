@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from compiletools.build_backend import _pcm_command_hash
 
 
@@ -39,15 +41,20 @@ def test_pcm_hash_stable_across_workspace_moves():
     assert _hash("/run-1/workspace") == _hash("/run-2/workspace")
 
 
-def test_pcm_hash_distinguishes_different_sources():
-    """Two different module sources under the same workspace hash differently."""
-    a = _hash("/some/workspace", source_name="app.cppm")
-    b = _hash("/some/workspace", source_name="widget.cppm")
-    assert a != b, "Canonicalizer over-stripped: distinct module sources must yield distinct hashes"
-
-
-def test_pcm_hash_distinguishes_real_flag_changes():
-    """Adding -O3 to cxxflags must change the hash even when paths canonicalize."""
-    baseline = _hash("/some/workspace")
-    with_o3 = _hash("/some/workspace", extra_cxx="-O3")
-    assert baseline != with_o3, "Canonicalizer over-stripped: -O3 addition must change the PCM hash"
+@pytest.mark.parametrize(
+    ("baseline_kwargs", "changed_kwargs", "reason"),
+    [
+        pytest.param(
+            {"source_name": "app.cppm"},
+            {"source_name": "widget.cppm"},
+            "distinct module sources",
+            id="sources",
+        ),
+        pytest.param({}, {"extra_cxx": "-O3"}, "-O3 addition", id="flags"),
+    ],
+)
+def test_pcm_hash_distinguishes_real_changes(baseline_kwargs, changed_kwargs, reason):
+    """Different module sources/flags under the same workspace must hash differently."""
+    baseline = _hash("/some/workspace", **baseline_kwargs)
+    changed = _hash("/some/workspace", **changed_kwargs)
+    assert baseline != changed, f"Canonicalizer over-stripped: {reason} must change the PCM hash"

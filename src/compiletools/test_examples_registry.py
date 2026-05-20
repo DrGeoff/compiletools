@@ -9,14 +9,16 @@ import pytest
 from compiletools import examples_registry as er
 
 
-def test_e2e_registry_size():
-    """Spec pins 37 entries in examples-end-to-end."""
-    assert len(er.EXAMPLES_E2E) == 37
-
-
-def test_features_registry_size():
-    """Spec pins 25 entries in examples-features."""
-    assert len(er.EXAMPLES_FEATURES) == 25
+@pytest.mark.parametrize(
+    ("registry", "expected_size"),
+    [
+        pytest.param(er.EXAMPLES_E2E, 37, id="examples-end-to-end"),
+        pytest.param(er.EXAMPLES_FEATURES, 25, id="examples-features"),
+    ],
+)
+def test_registry_size(registry, expected_size):
+    """Spec pins the expected number of entries in each examples bucket."""
+    assert len(registry) == expected_size
 
 
 def test_registries_are_disjoint():
@@ -24,15 +26,16 @@ def test_registries_are_disjoint():
     assert er.EXAMPLES_E2E.isdisjoint(er.EXAMPLES_FEATURES)
 
 
-def test_e2e_known_member_resolves():
-    p = er.example_path("calculator")
-    assert p.endswith(os.path.join("examples-end-to-end", "calculator"))
-    assert os.path.isabs(p)
-
-
-def test_features_known_member_resolves():
-    p = er.example_path("cycle")
-    assert p.endswith(os.path.join("examples-features", "cycle"))
+@pytest.mark.parametrize(
+    ("name", "bucket"),
+    [
+        pytest.param("calculator", "examples-end-to-end", id="examples-end-to-end"),
+        pytest.param("cycle", "examples-features", id="examples-features"),
+    ],
+)
+def test_known_member_resolves(name, bucket):
+    p = er.example_path(name)
+    assert p.endswith(os.path.join(bucket, name))
     assert os.path.isabs(p)
 
 
@@ -41,26 +44,33 @@ def test_unknown_name_raises_keyerror():
         er.example_path("definitely_not_a_real_example")
 
 
-def test_example_file_joins_relative_path():
-    """example_file('simple/helloworld.cpp') resolves through the bucket."""
-    p = er.example_file("simple/helloworld_cpp.cpp")
-    assert p.endswith(os.path.join("examples-end-to-end", "simple", "helloworld_cpp.cpp"))
+@pytest.mark.parametrize(
+    ("relpath", "expected_suffix"),
+    [
+        pytest.param(
+            "simple/helloworld_cpp.cpp",
+            os.path.join("examples-end-to-end", "simple", "helloworld_cpp.cpp"),
+            id="relative-path",
+        ),
+        pytest.param("pkgs", os.path.join("examples-features", "pkgs"), id="bare-name"),
+    ],
+)
+def test_example_file_resolves(relpath, expected_suffix):
+    p = er.example_file(relpath)
+    assert p.endswith(expected_suffix)
 
 
-def test_example_file_with_bare_name():
-    """example_file('pkgs') (no slash) resolves to the bucket dir itself."""
-    p = er.example_file("pkgs")
-    assert p.endswith(os.path.join("examples-features", "pkgs"))
-
-
-def test_e2e_dir_returns_examples_end_to_end():
-    assert er.e2e_dir().endswith("examples-end-to-end")
-    assert os.path.isabs(er.e2e_dir())
-
-
-def test_features_dir_returns_examples_features():
-    assert er.features_dir().endswith("examples-features")
-    assert os.path.isabs(er.features_dir())
+@pytest.mark.parametrize(
+    ("directory", "suffix"),
+    [
+        pytest.param(er.e2e_dir, "examples-end-to-end", id="examples-end-to-end"),
+        pytest.param(er.features_dir, "examples-features", id="examples-features"),
+    ],
+)
+def test_dir_returns_examples_bucket(directory, suffix):
+    path = directory()
+    assert path.endswith(suffix)
+    assert os.path.isabs(path)
 
 
 def test_drift_guard_filesystem_matches_registries():
