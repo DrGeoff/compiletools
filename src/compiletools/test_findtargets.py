@@ -1,5 +1,4 @@
 import os
-import tempfile
 from unittest.mock import patch
 
 import configargparse
@@ -258,21 +257,18 @@ class TestFindTargetsNoExemarkers:
 class TestFindTargetsOsWalkFallback:
     """Test FindTargets os.walk fallback for non-git directories."""
 
-    def test_walk_fallback(self):
+    def test_walk_fallback(self, tmp_path):
         """Test the os.walk fallback when get_tracked_files returns empty."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Create a source file with main(
-            src = os.path.join(tmpdir, "hello.cpp")
-            with open(src, "w") as f:
-                f.write("#include <iostream>\nint main() { return 0; }\n")
+        # Create a source file with main()
+        (tmp_path / "hello.cpp").write_text("#include <iostream>\nint main() { return 0; }\n")
 
-            _args, findtargets = _make_findtargets("TestWalkFallback")
+        _args, findtargets = _make_findtargets("TestWalkFallback")
 
-            # Mock get_tracked_files to return empty dict (non-git)
-            with patch("compiletools.global_hash_registry.get_tracked_files", return_value={}):
-                exes, _tests = findtargets(path=tmpdir)
-                # Should find our file as an executable
-                assert any("hello.cpp" in e for e in exes)
+        # Mock get_tracked_files to return empty dict (non-git)
+        with patch("compiletools.global_hash_registry.get_tracked_files", return_value={}):
+            exes, _tests = findtargets(path=str(tmp_path))
+            # Should find our file as an executable
+            assert any("hello.cpp" in e for e in exes)
 
 
 class TestFindTargetsMain:

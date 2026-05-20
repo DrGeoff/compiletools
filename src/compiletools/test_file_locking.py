@@ -160,50 +160,45 @@ class TestLockdirLock:
             # Lock released after context
             assert not os.path.exists(lockdir)
 
-    def test_nonexistent_directory(self, mock_args):
+    def test_nonexistent_directory(self, mock_args, tmp_path):
         """Test that lock creation works when parent directory doesn't exist."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Create path in nonexistent subdirectory
-            lock_file = os.path.join(tmpdir, "subdir", "nested", "file.txt")
+        # Path in nonexistent subdirectory
+        lock_file = str(tmp_path / "subdir" / "nested" / "file.txt")
+        lock = compiletools.locking.LockdirLock(lock_file, mock_args)
 
-            lock = compiletools.locking.LockdirLock(lock_file, mock_args)
+        # Should create parent directories and acquire lock
+        lock.acquire()
+        assert os.path.exists(lock.lockdir)
+        assert os.path.exists(lock.pid_file)
 
-            # Should create parent directories and acquire lock
-            lock.acquire()
-            assert os.path.exists(lock.lockdir)
-            assert os.path.exists(lock.pid_file)
+        # Cleanup
+        lock.release()
+        assert not os.path.exists(lock.lockdir)
 
-            # Cleanup
-            lock.release()
-            assert not os.path.exists(lock.lockdir)
-
-    def test_multiuser_permissions(self, mock_args):
+    def test_multiuser_permissions(self, mock_args, tmp_path):
         """Test that lockdir and pid file have correct permissions for multi-user mode."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            lock_file = os.path.join(tmpdir, "file.txt")
+        lock_file = tmp_path / "file.txt"
+        # Create target file first so group can be copied
+        lock_file.write_text("test")
 
-            # Create target file first so group can be copied
-            with open(lock_file, "w") as f:
-                f.write("test")
+        lock = compiletools.locking.LockdirLock(str(lock_file), mock_args)
+        lock.acquire()
 
-            lock = compiletools.locking.LockdirLock(lock_file, mock_args)
-            lock.acquire()
+        # Verify lockdir permissions (should be 775 = rwxrwxr-x)
+        lockdir_stat = os.stat(lock.lockdir)
+        lockdir_mode = lockdir_stat.st_mode & 0o777
+        assert lockdir_mode == 0o775, f"Expected 0o775, got {oct(lockdir_mode)}"
 
-            # Verify lockdir permissions (should be 775 = rwxrwxr-x)
-            lockdir_stat = os.stat(lock.lockdir)
-            lockdir_mode = lockdir_stat.st_mode & 0o777
-            assert lockdir_mode == 0o775, f"Expected 0o775, got {oct(lockdir_mode)}"
+        # Verify pid file permissions (should be 664 = rw-rw-r--)
+        pid_stat = os.stat(lock.pid_file)
+        pid_mode = pid_stat.st_mode & 0o777
+        assert pid_mode == 0o664, f"Expected 0o664, got {oct(pid_mode)}"
 
-            # Verify pid file permissions (should be 664 = rw-rw-r--)
-            pid_stat = os.stat(lock.pid_file)
-            pid_mode = pid_stat.st_mode & 0o777
-            assert pid_mode == 0o664, f"Expected 0o664, got {oct(pid_mode)}"
+        # Verify lockdir group matches target file group
+        target_stat = os.stat(lock_file)
+        assert lockdir_stat.st_gid == target_stat.st_gid, "Lockdir group should match target file group"
 
-            # Verify lockdir group matches target file group
-            target_stat = os.stat(lock_file)
-            assert lockdir_stat.st_gid == target_stat.st_gid, "Lockdir group should match target file group"
-
-            lock.release()
+        lock.release()
 
     def test_lockdir_removed_during_pid_write_retry(self, lock):
         """Test retry mechanism when lockdir removed during pid write.
@@ -303,17 +298,16 @@ class TestCIFSLock:
 
             assert not os.path.exists(lockfile_excl)
 
-    def test_nonexistent_directory(self, mock_args):
+    def test_nonexistent_directory(self, mock_args, tmp_path):
         """Test that CIFS lock works when parent directory doesn't exist."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            lock_file = os.path.join(tmpdir, "subdir", "nested", "file.txt")
-            lock = compiletools.locking.CIFSLock(lock_file, mock_args)
+        lock_file = str(tmp_path / "subdir" / "nested" / "file.txt")
+        lock = compiletools.locking.CIFSLock(lock_file, mock_args)
 
-            lock.acquire()
-            assert os.path.exists(lock.lockfile_excl)
+        lock.acquire()
+        assert os.path.exists(lock.lockfile_excl)
 
-            lock.release()
-            assert not os.path.exists(lock.lockfile_excl)
+        lock.release()
+        assert not os.path.exists(lock.lockfile_excl)
 
 
 class TestFlockLock:
@@ -354,16 +348,15 @@ class TestFlockLock:
                 # FlockLock locks target directly (no .lock sidecar)
                 assert os.path.exists(temp_lock_file)
 
-    def test_nonexistent_directory(self, mock_args):
+    def test_nonexistent_directory(self, mock_args, tmp_path):
         """Test that flock works when parent directory doesn't exist."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            lock_file = os.path.join(tmpdir, "subdir", "nested", "file.txt")
-            lock = compiletools.locking.FlockLock(lock_file, mock_args)
+        lock_file = str(tmp_path / "subdir" / "nested" / "file.txt")
+        lock = compiletools.locking.FlockLock(lock_file, mock_args)
 
-            lock.acquire()
-            assert os.path.exists(lock.lockfile)
+        lock.acquire()
+        assert os.path.exists(lock.lockfile)
 
-            lock.release()
+        lock.release()
 
 
 class TestFileLock:
@@ -430,19 +423,18 @@ class TestFileLock:
             lockdir = temp_lock_file + ".lockdir"
             assert not os.path.exists(lockdir)
 
-    def test_creates_output_directory(self, mock_args):
+    def test_creates_output_directory(self, mock_args, tmp_path):
         """Test that FileLock creates output directory if it doesn't exist."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Path with nonexistent subdirectories
-            output_file = os.path.join(tmpdir, "build", "subdir", "compile_commands.json")
+        # Path with nonexistent subdirectories
+        output_file = str(tmp_path / "build" / "subdir" / "compile_commands.json")
 
-            # FileLock should create the parent directory
-            with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"):
-                with compiletools.locking.FileLock(output_file, mock_args):
-                    # Directory should exist
-                    parent_dir = os.path.dirname(output_file)
-                    assert os.path.exists(parent_dir)
-                    assert os.path.isdir(parent_dir)
+        # FileLock should create the parent directory
+        with patch("compiletools.filesystem_utils.get_lock_strategy", return_value="flock"):
+            with compiletools.locking.FileLock(output_file, mock_args):
+                # Directory should exist
+                parent_dir = os.path.dirname(output_file)
+                assert os.path.exists(parent_dir)
+                assert os.path.isdir(parent_dir)
 
 
 def _concurrent_lock_worker(queue, temp_file, args_dict, worker_id, strategy):

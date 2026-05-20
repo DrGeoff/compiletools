@@ -8,8 +8,6 @@ These tests must pass both BEFORE and AFTER the refactor to lock_utils.py.
 """
 
 import os
-import shutil
-import tempfile
 import time
 from unittest.mock import Mock
 
@@ -34,21 +32,11 @@ def mock_args():
 
 
 @pytest.fixture
-def temp_lockdir():
-    """Create temporary directory for lock testing."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        lockfile = os.path.join(tmpdir, "test.o")
-        yield lockfile
-        # Cleanup any lock sidecars the test created (tempdir auto-removes the rest).
-        for ext in [".lockdir", ".lock", ".lock.excl", ".lock.pid"]:
-            try:
-                path = lockfile + ext
-                if os.path.isdir(path):
-                    shutil.rmtree(path)
-                elif os.path.exists(path):
-                    os.unlink(path)
-            except OSError:
-                pass
+def temp_lockdir(tmp_path):
+    """Provide a target path for lock tests inside a fresh tmp dir; tmp_path
+    auto-cleans the lock sidecars (.lockdir, .lock, .lock.excl, .lock.pid)
+    along with the target itself when the test exits."""
+    return str(tmp_path / "test.o")
 
 
 @pytest.fixture
