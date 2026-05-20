@@ -2,13 +2,18 @@
 
 import os
 import resource
+from types import SimpleNamespace
 
+import configargparse
 import pytest
 
+import compiletools.wrappedos
 from compiletools.build_context import BuildContext
+from compiletools.examples_registry import example_file
 from compiletools.file_analyzer import (
     FileAnalyzer,
     _determine_file_reading_strategy,
+    analyze_file,
     set_analyzer_args,
 )
 from compiletools.filesystem_utils import (
@@ -17,6 +22,24 @@ from compiletools.filesystem_utils import (
     get_lockdir_sleep_interval,
     supports_mmap_safely,
 )
+from compiletools.global_hash_registry import get_file_hash, load_hashes
+
+
+def _make_args(**overrides) -> SimpleNamespace:
+    """Default analyzer args; overrides win."""
+    defaults = dict(
+        max_read_size=0,
+        verbose=0,
+        exemarkers=[],
+        testmarkers=[],
+        librarymarkers=[],
+        use_mmap=True,
+        force_mmap=False,
+        suppress_fd_warnings=True,
+        suppress_filesystem_warnings=True,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
 
 
 class TestFilesystemIntegration:
@@ -74,21 +97,7 @@ class TestFileReadingStrategy:
 
     def test_default_strategy(self):
         """Test default strategy selection."""
-        args = type(
-            "Args",
-            (),
-            {
-                "max_read_size": 0,
-                "verbose": 0,
-                "exemarkers": [],
-                "testmarkers": [],
-                "librarymarkers": [],
-                "use_mmap": True,
-                "force_mmap": False,
-                "suppress_fd_warnings": True,
-                "suppress_filesystem_warnings": True,
-            },
-        )()
+        args = _make_args()
 
         set_analyzer_args(args, self.ctx)
         strategy = _determine_file_reading_strategy(self.ctx)
@@ -96,21 +105,7 @@ class TestFileReadingStrategy:
 
     def test_manual_override_no_use_mmap(self):
         """Test manual override to disable mmap (no_mmap mode)."""
-        args = type(
-            "Args",
-            (),
-            {
-                "max_read_size": 0,
-                "verbose": 0,
-                "exemarkers": [],
-                "testmarkers": [],
-                "librarymarkers": [],
-                "use_mmap": False,
-                "force_mmap": False,
-                "suppress_fd_warnings": True,
-                "suppress_filesystem_warnings": True,
-            },
-        )()
+        args = _make_args(use_mmap=False)
 
         set_analyzer_args(args, self.ctx)
         strategy = _determine_file_reading_strategy(self.ctx)
@@ -118,21 +113,7 @@ class TestFileReadingStrategy:
 
     def test_manual_override_force_mmap(self):
         """Test manual override to force mmap mode."""
-        args = type(
-            "Args",
-            (),
-            {
-                "max_read_size": 0,
-                "verbose": 0,
-                "exemarkers": [],
-                "testmarkers": [],
-                "librarymarkers": [],
-                "use_mmap": True,
-                "force_mmap": True,
-                "suppress_fd_warnings": True,
-                "suppress_filesystem_warnings": True,
-            },
-        )()
+        args = _make_args(force_mmap=True)
 
         set_analyzer_args(args, self.ctx)
         strategy = _determine_file_reading_strategy(self.ctx)
@@ -142,27 +123,11 @@ class TestFileReadingStrategy:
         """Test that very low ulimit (< 100) automatically triggers no_mmap mode."""
         # This test simulates the behavior, but can't actually change ulimit
         # The real test is that pytest -n auto works with ulimit 20
-        import resource
-
         try:
             soft, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
             # If we're running with low ulimit, verify no_mmap is used
             if soft < 100:
-                args = type(
-                    "Args",
-                    (),
-                    {
-                        "max_read_size": 0,
-                        "verbose": 0,
-                        "exemarkers": [],
-                        "testmarkers": [],
-                        "librarymarkers": [],
-                        "use_mmap": True,
-                        "force_mmap": False,
-                        "suppress_fd_warnings": True,
-                        "suppress_filesystem_warnings": True,
-                    },
-                )()
+                args = _make_args()
 
                 set_analyzer_args(args, self.ctx)
                 strategy = _determine_file_reading_strategy(self.ctx)
@@ -176,8 +141,6 @@ class TestFileAnalyzerArguments:
 
     def test_add_arguments_no_use_mmap(self):
         """Test that --no-use-mmap argument works."""
-        import configargparse
-
         cap = configargparse.ArgumentParser()
         FileAnalyzer.add_arguments(cap)
 
@@ -186,8 +149,6 @@ class TestFileAnalyzerArguments:
 
     def test_add_arguments_force_mmap(self):
         """Test that --force-mmap argument works."""
-        import configargparse
-
         cap = configargparse.ArgumentParser()
         FileAnalyzer.add_arguments(cap)
 
@@ -196,8 +157,6 @@ class TestFileAnalyzerArguments:
 
     def test_add_arguments_suppress_warnings(self):
         """Test that warning suppression arguments work."""
-        import configargparse
-
         cap = configargparse.ArgumentParser()
         FileAnalyzer.add_arguments(cap)
 
@@ -215,12 +174,7 @@ class TestFileReadingWithRealFiles:
 
     def test_no_mmap_mode_reads_real_file(self):
         """Test that no_mmap mode actually reads and analyzes real files correctly."""
-        import compiletools.wrappedos
-
         # Use a simple sample file
-        from compiletools.examples_registry import example_file
-        from compiletools.global_hash_registry import get_file_hash, load_hashes
-
         sample_file = example_file("simple/helloworld_cpp.cpp")
         sample_file = compiletools.wrappedos.realpath(sample_file)
         assert os.path.exists(sample_file), f"Sample file not found: {sample_file}"
@@ -230,29 +184,13 @@ class TestFileReadingWithRealFiles:
         content_hash = get_file_hash(sample_file, self.ctx)
 
         # Configure no_mmap mode
-        args = type(
-            "Args",
-            (),
-            {
-                "max_read_size": 0,
-                "verbose": 0,
-                "exemarkers": ["int main"],
-                "testmarkers": [],
-                "librarymarkers": [],
-                "use_mmap": False,
-                "force_mmap": False,
-                "suppress_fd_warnings": True,
-                "suppress_filesystem_warnings": True,
-            },
-        )()
+        args = _make_args(exemarkers=["int main"], use_mmap=False)
 
         set_analyzer_args(args, self.ctx)
         strategy = _determine_file_reading_strategy(self.ctx)
         assert strategy == "no_mmap"
 
         # Analyze the file - this exercises _read_file_with_strategy
-        from compiletools.file_analyzer import analyze_file
-
         result = analyze_file(content_hash, self.ctx)
 
         # Verify the analysis worked correctly
@@ -263,10 +201,6 @@ class TestFileReadingWithRealFiles:
 
     def test_mmap_mode_reads_real_file(self):
         """Test that mmap mode reads and analyzes real files correctly."""
-        import compiletools.wrappedos
-        from compiletools.examples_registry import example_file
-        from compiletools.global_hash_registry import get_file_hash, load_hashes
-
         sample_file = example_file("simple/helloworld_cpp.cpp")
         sample_file = compiletools.wrappedos.realpath(sample_file)
         assert os.path.exists(sample_file)
@@ -274,27 +208,11 @@ class TestFileReadingWithRealFiles:
         load_hashes(context=self.ctx)
         content_hash = get_file_hash(sample_file, self.ctx)
 
-        args = type(
-            "Args",
-            (),
-            {
-                "max_read_size": 0,
-                "verbose": 0,
-                "exemarkers": ["int main"],
-                "testmarkers": [],
-                "librarymarkers": [],
-                "use_mmap": True,
-                "force_mmap": True,
-                "suppress_fd_warnings": True,
-                "suppress_filesystem_warnings": True,
-            },
-        )()
+        args = _make_args(exemarkers=["int main"], force_mmap=True)
 
         set_analyzer_args(args, self.ctx)
         strategy = _determine_file_reading_strategy(self.ctx)
         assert strategy == "mmap"
-
-        from compiletools.file_analyzer import analyze_file
 
         result = analyze_file(content_hash, self.ctx)
 
@@ -304,10 +222,6 @@ class TestFileReadingWithRealFiles:
 
     def test_no_use_mmap_mode_reads_real_file(self):
         """Test that --no-use-mmap mode reads and analyzes real files correctly."""
-        import compiletools.wrappedos
-        from compiletools.examples_registry import example_file
-        from compiletools.global_hash_registry import get_file_hash, load_hashes
-
         sample_file = example_file("simple/helloworld_cpp.cpp")
         sample_file = compiletools.wrappedos.realpath(sample_file)
         assert os.path.exists(sample_file)
@@ -315,27 +229,11 @@ class TestFileReadingWithRealFiles:
         load_hashes(context=self.ctx)
         content_hash = get_file_hash(sample_file, self.ctx)
 
-        args = type(
-            "Args",
-            (),
-            {
-                "max_read_size": 0,
-                "verbose": 0,
-                "exemarkers": ["int main"],
-                "testmarkers": [],
-                "librarymarkers": [],
-                "use_mmap": False,
-                "force_mmap": False,
-                "suppress_fd_warnings": True,
-                "suppress_filesystem_warnings": True,
-            },
-        )()
+        args = _make_args(exemarkers=["int main"], use_mmap=False)
 
         set_analyzer_args(args, self.ctx)
         strategy = _determine_file_reading_strategy(self.ctx)
         assert strategy == "no_mmap"
-
-        from compiletools.file_analyzer import analyze_file
 
         result = analyze_file(content_hash, self.ctx)
 
