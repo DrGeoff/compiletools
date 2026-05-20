@@ -57,13 +57,19 @@ def _sample(rel):
     return uth.example_file(f"cache_scoping/{rel}")
 
 
-def _setup_method_common():
+@pytest.fixture(autouse=True)
+def _reset_parser_state():
+    """Wipe global configargparse parser cache around every test, and
+    construct a throwaway ArgumentParser to mirror the long-standing
+    TestHunterModule.setup_method pattern."""
     uth.reset()
     configargparse.ArgumentParser(
         conflict_handler="resolve",
         args_for_setting_config_path=["-c", "--config"],
         ignore_unknown_config_file_keys=True,
     )
+    yield
+    uth.reset()
 
 
 @pytest.fixture
@@ -100,12 +106,6 @@ def _hash_pch_with_app_name(value, sample_rel, temp_config):
 
 class TestPchCacheKeyScopeFilter:
     """The PCH-side mirror of TestMacroStateHashScopeFilter."""
-
-    def setup_method(self):
-        _setup_method_common()
-
-    def teardown_method(self):
-        uth.reset()
 
     def test_pch_cache_key_unchanged_when_unused_cmdline_macro_changes(self, temp_config):
         """Load-bearing reproducer: ``no_ref.cpp`` does not reference
@@ -185,12 +185,6 @@ class TestPchCacheKeyNonDFlagsStillMatter:
 
 class TestPchScopeMacroHashEdgeCases:
     """Unit tests for ``_pch_scope_macro_hash`` directly."""
-
-    def setup_method(self):
-        _setup_method_common()
-
-    def teardown_method(self):
-        uth.reset()
 
     def test_pch_scope_macro_hash_empty_origin_returns_zeros(self, temp_config):
         """When ``cmdline_origin`` is empty (no ``--append-*FLAGS=-D...``),
