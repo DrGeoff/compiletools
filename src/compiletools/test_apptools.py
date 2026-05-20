@@ -76,6 +76,20 @@ def parsers_reset():
     uth.reset()
 
 
+def _parseargs_for_variant(repo_root, argv, *, add_link=False):
+    """Run create_parser + add_common_arguments [+ add_link_arguments] +
+    parseargs under DirectoryContext + ParserContext. Returns the parsed
+    args. Used by TestAppendFlagsAccumulateAcrossConfHierarchy tests that
+    each repeat the same 5-line preamble."""
+    with uth.DirectoryContext(repo_root):
+        cap = apptools.create_parser("regression test", argv=argv)
+        apptools.add_common_arguments(cap, argv=argv)
+        if add_link:
+            apptools.add_link_arguments(cap)
+        with uth.ParserContext():
+            return apptools.parseargs(cap, argv, context=BuildContext())
+
+
 def _stub_gitroot_and_chdir(monkeypatch, target):
     """Stub git_utils.find_git_root to return str(target) and chdir into target."""
     monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: str(target))
@@ -1407,11 +1421,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
         with uth.TempDirContextNoChange() as repo_root:
             self._setup_three_axis_conf_tree(repo_root)
             argv = ["--variant=gcc,release,extras", "--no-git-root"]
-            with uth.DirectoryContext(repo_root):
-                cap = apptools.create_parser("regression test", argv=argv)
-                apptools.add_common_arguments(cap, argv=argv)
-                with uth.ParserContext():
-                    args = apptools.parseargs(cap, argv, context=BuildContext())
+            args = _parseargs_for_variant(repo_root, argv)
 
             for marker in ("-DFROM_GCC_AXIS", "-DFROM_RELEASE_AXIS", "-DFROM_EXTRAS_AXIS"):
                 assert marker in args.CXXFLAGS, (
@@ -1442,11 +1452,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
                 "--append-CXXFLAGS=-DFROM_CLI",
                 "--no-git-root",
             ]
-            with uth.DirectoryContext(repo_root):
-                cap = apptools.create_parser("regression test", argv=argv)
-                apptools.add_common_arguments(cap, argv=argv)
-                with uth.ParserContext():
-                    args = apptools.parseargs(cap, argv, context=BuildContext())
+            args = _parseargs_for_variant(repo_root, argv)
 
             # The CLI value is always honored. The three conf values are
             # the regression target: at least one of them MUST survive
@@ -1485,12 +1491,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
                 fh.write("append-LDFLAGS = -Wl,--as-needed\n")
 
             argv = ["--variant=gcc,release,extras", "--no-git-root"]
-            with uth.DirectoryContext(repo_root):
-                cap = apptools.create_parser("regression test", argv=argv)
-                apptools.add_common_arguments(cap, argv=argv)
-                apptools.add_link_arguments(cap)
-                with uth.ParserContext():
-                    args = apptools.parseargs(cap, argv, context=BuildContext())
+            args = _parseargs_for_variant(repo_root, argv, add_link=True)
 
             for marker in ("-Wl,--build-id", "-Wl,-O1", "-Wl,--as-needed"):
                 assert marker in args.LDFLAGS, (
@@ -1525,11 +1526,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
                 fh.write("append-CXXFLAGS = [-DLIST_VAL1, -DLIST_VAL2]\n")
 
             argv = ["--variant=gcc,release", "--no-git-root"]
-            with uth.DirectoryContext(repo_root):
-                cap = apptools.create_parser("regression test", argv=argv)
-                apptools.add_common_arguments(cap, argv=argv)
-                with uth.ParserContext():
-                    args = apptools.parseargs(cap, argv, context=BuildContext())
+            args = _parseargs_for_variant(repo_root, argv)
 
             for marker in ("-DSCALAR_FROM_GCC", "-DLIST_VAL1", "-DLIST_VAL2"):
                 assert marker in args.CXXFLAGS, (
@@ -1564,11 +1561,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
                 fh.write("append-CXXFLAGS = -Os\n")  # highest priority
 
             argv = ["--variant=gcc,release,extras", "--no-git-root"]
-            with uth.DirectoryContext(repo_root):
-                cap = apptools.create_parser("regression test", argv=argv)
-                apptools.add_common_arguments(cap, argv=argv)
-                with uth.ParserContext():
-                    args = apptools.parseargs(cap, argv, context=BuildContext())
+            args = _parseargs_for_variant(repo_root, argv)
 
             cxx = args.CXXFLAGS
             o0 = cxx.find("-O0")
@@ -1616,11 +1609,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
                 fh.write(f"append-INCLUDE ={inc_c}\n")
 
             argv = ["--variant=gcc,release,extras", "--no-git-root"]
-            with uth.DirectoryContext(repo_root):
-                cap = apptools.create_parser("regression test", argv=argv)
-                apptools.add_common_arguments(cap, argv=argv)
-                with uth.ParserContext():
-                    args = apptools.parseargs(cap, argv, context=BuildContext())
+            args = _parseargs_for_variant(repo_root, argv)
 
             for inc_dir in (inc_a, inc_b, inc_c):
                 assert inc_dir in args.INCLUDE, (
@@ -1644,11 +1633,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
                 "-DFROM_CLI_SPACE",
                 "--no-git-root",
             ]
-            with uth.DirectoryContext(repo_root):
-                cap = apptools.create_parser("regression test", argv=argv)
-                apptools.add_common_arguments(cap, argv=argv)
-                with uth.ParserContext():
-                    args = apptools.parseargs(cap, argv, context=BuildContext())
+            args = _parseargs_for_variant(repo_root, argv)
 
             assert "-DFROM_CLI_SPACE" in args.CXXFLAGS, args.CXXFLAGS
             for marker in ("-DFROM_GCC_AXIS", "-DFROM_RELEASE_AXIS", "-DFROM_EXTRAS_AXIS"):
@@ -1684,11 +1669,7 @@ class TestAppendFlagsAccumulateAcrossConfHierarchy:
                 fh.write("prepend-CXXFLAGS = -DPREPEND_EXTRAS\n")
 
             argv = ["--variant=gcc,release,extras", "--no-git-root"]
-            with uth.DirectoryContext(repo_root):
-                cap = apptools.create_parser("regression test", argv=argv)
-                apptools.add_common_arguments(cap, argv=argv)
-                with uth.ParserContext():
-                    args = apptools.parseargs(cap, argv, context=BuildContext())
+            args = _parseargs_for_variant(repo_root, argv)
 
             for marker in ("-DPREPEND_GCC", "-DPREPEND_RELEASE", "-DPREPEND_EXTRAS"):
                 assert marker in args.CXXFLAGS, (
