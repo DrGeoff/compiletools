@@ -21,7 +21,6 @@ import os
 import shutil
 
 import configargparse
-import pytest
 
 import compiletools.apptools
 import compiletools.cake
@@ -44,6 +43,30 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
         """Helper to get path to file in the engine sample directory."""
         return uth.example_file("/".join(("transitive_cache_bug", "engine") + parts))
 
+    @staticmethod
+    def _make_parser():
+        cap = configargparse.ArgumentParser(
+            conflict_handler="resolve",
+            args_for_setting_config_path=["-c", "--config"],
+            ignore_unknown_config_file_keys=True,
+        )
+        compiletools.headerdeps.add_arguments(cap)
+        compiletools.apptools.add_common_arguments(cap)
+        return cap
+
+    @staticmethod
+    def _engine_argv():
+        sample_dir = uth.example_path("transitive_cache_bug")
+        engine_dir = os.path.join(sample_dir, "engine")
+        return ["--headerdeps", "direct", "--INCLUDE", sample_dir, "--INCLUDE", engine_dir, "-q"]
+
+    def _fresh_deps(self):
+        """Build a DirectHeaderDeps configured for the transitive_cache_bug sample."""
+        compiletools.headerdeps.HeaderDepsBase.clear_cache()
+        ctx = BuildContext()
+        args = compiletools.apptools.parseargs(self._make_parser(), self._engine_argv(), context=ctx)
+        return compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
+
     def test_game_engine_transitive_deps(self):
         """
         Test the game engine sample code that mirrors the real-world bug.
@@ -58,26 +81,7 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
 
         All 3 headers should appear in task_scheduler.cpp's dependencies.
         """
-        # Setup
-        cap = configargparse.ArgumentParser(
-            conflict_handler="resolve",
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-        compiletools.headerdeps.add_arguments(cap)
-        compiletools.apptools.add_common_arguments(cap)
-
-        sample_dir = uth.example_path("transitive_cache_bug")
-        engine_dir = os.path.join(sample_dir, "engine")
-        argv = ["--headerdeps", "direct", "--INCLUDE", sample_dir, "--INCLUDE", engine_dir, "-q"]
-
-        # Clear module-level caches to start fresh
-        compiletools.headerdeps.HeaderDepsBase.clear_cache()
-
-        # Create DirectHeaderDeps instance
-        ctx = BuildContext()
-        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
-        deps = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
+        deps = self._fresh_deps()
 
         # Process task_scheduler.cpp
         task_scheduler_cpp = self._get_engine_file("systems", "task_scheduler.cpp")
@@ -117,26 +121,8 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
 
         All files include event_handler.hpp which has the #ifndef guard.
         """
-        # Setup
-        cap = configargparse.ArgumentParser(
-            conflict_handler="resolve",
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-        compiletools.headerdeps.add_arguments(cap)
-        compiletools.apptools.add_common_arguments(cap)
-
-        sample_dir = uth.example_path("transitive_cache_bug")
-        engine_dir = os.path.join(sample_dir, "engine")
-        argv = ["--headerdeps", "direct", "--INCLUDE", sample_dir, "--INCLUDE", engine_dir, "-q"]
-
-        # Clear module-level caches to start fresh
-        compiletools.headerdeps.HeaderDepsBase.clear_cache()
-
-        # Use SINGLE DirectHeaderDeps instance for all files (like ct-cake does)
-        ctx = BuildContext()
-        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
-        deps = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx)
+        # Use a single DirectHeaderDeps instance for all files (like ct-cake does).
+        deps = self._fresh_deps()
 
         # Process files in alphabetical order (typical make behavior)
         files_to_process = [
@@ -176,25 +162,14 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
         ct-cake uses when generating Makefiles. The Hunter calls magicparser.parse()
         first, then uses the computed macro_state_key with headerdeps.process().
         """
-        # Setup with magicflags arguments
-        cap = configargparse.ArgumentParser(
-            conflict_handler="resolve",
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-        compiletools.headerdeps.add_arguments(cap)
+        # Hunter setup needs magicflags arguments too.
+        cap = self._make_parser()
         compiletools.magicflags.add_arguments(cap)
-        compiletools.apptools.add_common_arguments(cap)
+        argv = self._engine_argv() + ["--magic", "direct"]
 
-        sample_dir = uth.example_path("transitive_cache_bug")
-        engine_dir = os.path.join(sample_dir, "engine")
-        argv = ["--headerdeps", "direct", "--magic", "direct", "--INCLUDE", sample_dir, "--INCLUDE", engine_dir, "-q"]
-
-        # Clear all caches
         compiletools.headerdeps.HeaderDepsBase.clear_cache()
         compiletools.magicflags.MagicFlagsBase.clear_cache()
 
-        # Create Hunter with headerdeps and magicflags (like ct-cake does)
         ctx = BuildContext()
         args = compiletools.apptools.parseargs(cap, argv, context=ctx)
         headerdeps = compiletools.headerdeps.create(args, context=ctx)
@@ -232,34 +207,16 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
 
         Process the same files in two different orders and verify identical results.
         """
-        # Setup
-        cap = configargparse.ArgumentParser(
-            conflict_handler="resolve",
-            args_for_setting_config_path=["-c", "--config"],
-            ignore_unknown_config_file_keys=True,
-        )
-        compiletools.headerdeps.add_arguments(cap)
-        compiletools.apptools.add_common_arguments(cap)
-
-        sample_dir = uth.example_path("transitive_cache_bug")
-        engine_dir = os.path.join(sample_dir, "engine")
-        argv = ["--headerdeps", "direct", "--INCLUDE", sample_dir, "--INCLUDE", engine_dir, "-q"]
-        args = compiletools.apptools.parseargs(cap, argv, context=BuildContext())
-
         task_scheduler = self._get_engine_file("systems", "task_scheduler.cpp")
         audio_system = self._get_engine_file("systems", "audio_system.cpp")
 
         # Test 1: Process task_scheduler first
-        compiletools.headerdeps.HeaderDepsBase.clear_cache()
-        ctx1 = BuildContext()
-        deps1 = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx1)
+        deps1 = self._fresh_deps()
         result1_task = set(deps1.process(task_scheduler, frozenset()))
         result1_audio = set(deps1.process(audio_system, frozenset()))
 
         # Test 2: Process audio_system first (different order)
-        compiletools.headerdeps.HeaderDepsBase.clear_cache()
-        ctx2 = BuildContext()
-        deps2 = compiletools.headerdeps.DirectHeaderDeps(args, context=ctx2)
+        deps2 = self._fresh_deps()
         result2_audio = set(deps2.process(audio_system, frozenset()))
         result2_task = set(deps2.process(task_scheduler, frozenset()))
 
@@ -340,7 +297,7 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
             # If we get here, build succeeded - verify executables were created
             expected_exes = {"a-game", "b-game"}
             actual_exes = set()
-            for root, _dirs, files in os.walk(temp_engine):
+            for root, _, files in os.walk(temp_engine):
                 for ff in files:
                     full_path = os.path.join(root, ff)
                     if os.access(full_path, os.X_OK) and os.path.isfile(full_path):
@@ -352,9 +309,3 @@ class TestTransitiveCacheBug(tb.BaseCompileToolsTestCase):
                 f"Expected executables {expected_exes} but found {actual_exes}.\n"
                 f"Build succeeded but executables were not created."
             )
-
-
-if __name__ == "__main__":
-    import pytest
-
-    pytest.main([__file__, "-v"])

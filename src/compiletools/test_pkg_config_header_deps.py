@@ -13,19 +13,17 @@ The bug occurs when:
 Regression test for PKG-CONFIG cache invalidation with nested macro headers.
 """
 
-import os
 import shutil
-import tempfile
 from pathlib import Path
 
 import pytest
+import stringzilla as sz
 
 import compiletools.apptools
-import compiletools.global_hash_registry
 import compiletools.headerdeps
 import compiletools.magicflags
-import compiletools.wrappedos
 from compiletools.build_context import BuildContext
+from compiletools.examples_registry import example_path
 from compiletools.test_base import BaseCompileToolsTestCase
 
 
@@ -33,37 +31,24 @@ class TestPkgConfigHeaderDeps(BaseCompileToolsTestCase):
     """Test PKG-CONFIG extraction from headers with macro dependencies."""
 
     def setup_method(self):
-        """Set up test environment."""
+        """Copy sample C++ code into the per-test tmp dir provided by the base class.
+
+        The base class also cd's into _tmpdir, so no extra chdir is needed.
+        """
         super().setup_method()
-
-        # Set up temporary directory for test execution
-        self.test_dir = Path(tempfile.mkdtemp(prefix="ct_test_"))
-
-        # Copy sample C++ code to temp directory (needed for cache invalidation test)
-        from compiletools.examples_registry import example_path
-
+        self.test_dir = Path(self._tmpdir)
         sample_src = Path(example_path("pkg_config_header_deps"))
-
-        # Copy directory structure
         self.src_dir = self.test_dir / "src"
         shutil.copytree(sample_src / "src", self.src_dir)
-
         self.libs_dir = self.test_dir / "libs"
         shutil.copytree(sample_src / "libs", self.libs_dir)
-
-        # Set up file references
         self.header_with_macros = self.libs_dir / "header_with_macros.hpp"
         self.header_with_pkgconfig = self.libs_dir / "header_with_pkgconfig.hpp"
         self.main_header = self.libs_dir / "main_header.hpp"
         self.source_file = self.src_dir / "test.cpp"
 
-    def teardown_method(self):
-        """Clean up test environment."""
-        if hasattr(self, "test_dir") and self.test_dir.exists():
-            shutil.rmtree(self.test_dir)
-        super().teardown_method()
-
-    def test_pkgconfig_extracted_from_nested_header(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_pkgconfig_extracted_from_nested_header(self):
         """Test that PKG-CONFIG is extracted from headers included after macro definitions.
 
         This test verifies that when:
@@ -73,9 +58,6 @@ class TestPkgConfigHeaderDeps(BaseCompileToolsTestCase):
 
         The PKG-CONFIG=testpkg1 directive is properly extracted and included in the flags.
         """
-        # pkgconfig_env fixture already set PKG_CONFIG_PATH to examples-features/pkgs/
-
-        # Set up arguments
         argv = ["-vvvv", "--magic=direct", "--headerdeps=direct", f"--INCLUDE={self.test_dir}", str(self.source_file)]
 
         cap = compiletools.apptools.create_parser("Test PKG-CONFIG", argv=argv)
@@ -83,40 +65,28 @@ class TestPkgConfigHeaderDeps(BaseCompileToolsTestCase):
         compiletools.magicflags.add_arguments(cap)
         cap.add_argument("filename", help="File to analyze", nargs="+")
 
-        # Change to test directory
-        original_cwd = os.getcwd()
-        try:
-            os.chdir(self.test_dir)
+        ctx = BuildContext()
+        args = compiletools.apptools.parseargs(cap, argv, context=ctx)
+        headerdeps = compiletools.headerdeps.create(args, context=ctx)
+        magicflags = compiletools.magicflags.create(args, headerdeps, context=ctx)
 
-            # Create headerdeps and magicflags
-            ctx = BuildContext()
-            args = compiletools.apptools.parseargs(cap, argv, context=ctx)
-            headerdeps = compiletools.headerdeps.create(args, context=ctx)
-            magicflags = compiletools.magicflags.create(args, headerdeps, context=ctx)
+        flags = magicflags.parse(str(self.source_file.resolve()))
 
-            # Get magic flags
-            flags = magicflags.parse(str(self.source_file.resolve()))
+        pkg_config_key = sz.Str("PKG-CONFIG")
+        assert pkg_config_key in flags, f"PKG-CONFIG key missing from flags. Keys: {list(flags.keys())}"
+        pkg_configs = [str(f) for f in flags[pkg_config_key]]
+        assert "nested" in pkg_configs, f"PKG-CONFIG=nested not found. Got: {pkg_configs}"
 
-            # Verify PKG-CONFIG was extracted (keys are StringZilla strings)
-            import stringzilla as sz
+        # Verify nested Cflags were added
+        cppflags_key = sz.Str("CPPFLAGS")
+        assert cppflags_key in flags, "CPPFLAGS missing from flags"
+        cppflags_str = " ".join(str(f) for f in flags[cppflags_key])
+        assert "/usr/local/include/testpkg1" in cppflags_str or "TEST_PKG1_ENABLED" in cppflags_str, (
+            f"nested Cflags not in CPPFLAGS: {cppflags_str}"
+        )
 
-            pkg_config_key = sz.Str("PKG-CONFIG")
-            assert pkg_config_key in flags, f"PKG-CONFIG key missing from flags. Keys: {list(flags.keys())}"
-            pkg_configs = [str(f) for f in flags[pkg_config_key]]
-            assert "nested" in pkg_configs, f"PKG-CONFIG=nested not found. Got: {pkg_configs}"
-
-            # Verify nested Cflags were added
-            cppflags_key = sz.Str("CPPFLAGS")
-            assert cppflags_key in flags, "CPPFLAGS missing from flags"
-            cppflags_str = " ".join(str(f) for f in flags[cppflags_key])
-            assert "/usr/local/include/testpkg1" in cppflags_str or "TEST_PKG1_ENABLED" in cppflags_str, (
-                f"nested Cflags not in CPPFLAGS: {cppflags_str}"
-            )
-
-        finally:
-            os.chdir(original_cwd)
-
-    def test_cache_invalidation_after_header_change(self, pkgconfig_env):
+    @pytest.mark.usefixtures("pkgconfig_env")
+    def test_cache_invalidation_after_header_change(self):
         """Test that cache is properly invalidated when a nested header changes.
 
         This tests the regression where changing a nested header's PKG-CONFIG
@@ -127,9 +97,6 @@ class TestPkgConfigHeaderDeps(BaseCompileToolsTestCase):
         This caused get_file_hash() to return cached hashes that weren't registered
         in _REVERSE_HASHES, leading to FileNotFoundError in get_filepath_by_hash().
         """
-        # pkgconfig_env fixture already set PKG_CONFIG_PATH to examples-features/pkgs/
-
-        # Set up arguments
         argv = ["--magic=direct", "--headerdeps=direct", f"--INCLUDE={self.test_dir}", str(self.source_file)]
 
         cap = compiletools.apptools.create_parser("Test cache invalidation", argv=argv)
@@ -137,30 +104,22 @@ class TestPkgConfigHeaderDeps(BaseCompileToolsTestCase):
         compiletools.magicflags.add_arguments(cap)
         cap.add_argument("filename", help="File to analyze", nargs="+")
 
-        original_cwd = os.getcwd()
-        try:
-            os.chdir(self.test_dir)
+        # First pass - extract flags with nested
+        ctx1 = BuildContext()
+        args = compiletools.apptools.parseargs(cap, argv, context=ctx1)
+        headerdeps1 = compiletools.headerdeps.create(args, context=ctx1)
+        magicflags1 = compiletools.magicflags.create(args, headerdeps1, context=ctx1)
+        flags1 = magicflags1.parse(str(self.source_file.resolve()))
 
-            # First pass - extract flags with nested
-            ctx1 = BuildContext()
-            args = compiletools.apptools.parseargs(cap, argv, context=ctx1)
-            headerdeps1 = compiletools.headerdeps.create(args, context=ctx1)
-            magicflags1 = compiletools.magicflags.create(args, headerdeps1, context=ctx1)
-            flags1 = magicflags1.parse(str(self.source_file.resolve()))
+        pkg_config_key = sz.Str("PKG-CONFIG")
+        assert pkg_config_key in flags1
+        pkg_configs1 = [str(f) for f in flags1[pkg_config_key]]
+        assert "nested" in pkg_configs1
 
-            # Verify nested is present
-            import stringzilla as sz
+        compiletools.magicflags.MagicFlagsBase.clear_cache()
 
-            pkg_config_key = sz.Str("PKG-CONFIG")
-            assert pkg_config_key in flags1
-            pkg_configs1 = [str(f) for f in flags1[pkg_config_key]]
-            assert "nested" in pkg_configs1
-
-            # Also clear the magicflags cache
-            compiletools.magicflags.MagicFlagsBase.clear_cache()
-
-            # Modify the header_with_pkgconfig to use modified instead of nested
-            self.header_with_pkgconfig.write_text("""
+        # Modify the header_with_pkgconfig to use modified instead of nested
+        self.header_with_pkgconfig.write_text("""
 #ifndef HEADER_WITH_PKGCONFIG_HPP
 #define HEADER_WITH_PKGCONFIG_HPP
 
@@ -170,22 +129,13 @@ void testpkg2_function();
 #endif
 """)
 
-            # Second pass with fresh BuildContext - should pick up the change
-            ctx2 = BuildContext()
-            headerdeps2 = compiletools.headerdeps.create(args, context=ctx2)
-            magicflags2 = compiletools.magicflags.create(args, headerdeps2, context=ctx2)
-            flags2 = magicflags2.parse(str(self.source_file.resolve()))
+        # Second pass with fresh BuildContext - should pick up the change
+        ctx2 = BuildContext()
+        headerdeps2 = compiletools.headerdeps.create(args, context=ctx2)
+        magicflags2 = compiletools.magicflags.create(args, headerdeps2, context=ctx2)
+        flags2 = magicflags2.parse(str(self.source_file.resolve()))
 
-            # Verify modified is present and nested is NOT present
-            pkg_config_key = sz.Str("PKG-CONFIG")
-            assert pkg_config_key in flags2
-            pkg_configs2 = [str(f) for f in flags2[pkg_config_key]]
-            assert "modified" in pkg_configs2, f"PKG-CONFIG=modified not found after change. Got: {pkg_configs2}"
-            assert "nested" not in pkg_configs2, f"PKG-CONFIG=nested still present after change. Got: {pkg_configs2}"
-
-        finally:
-            os.chdir(original_cwd)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+        assert pkg_config_key in flags2
+        pkg_configs2 = [str(f) for f in flags2[pkg_config_key]]
+        assert "modified" in pkg_configs2, f"PKG-CONFIG=modified not found after change. Got: {pkg_configs2}"
+        assert "nested" not in pkg_configs2, f"PKG-CONFIG=nested still present after change. Got: {pkg_configs2}"
