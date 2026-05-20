@@ -136,58 +136,58 @@ class TestLockdirLock:
         # Our pid is alive — legacy file accepted as ACTIVE
         assert lock._is_lock_stale() is False
 
-    def test_pid_write_does_not_resurrect_torn_down_lockdir(self):
+    def test_pid_write_does_not_resurrect_torn_down_lockdir(self, tmp_path):
         """C3 regression: if a peer tears down our lockdir between our mkdir
         and our pid-file write, the pid write must fail (so we retry the
         whole acquire) rather than silently re-creating the lockdir via
         os.makedirs and writing a pid file into a directory nobody owns."""
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = LockdirLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        lock = LockdirLock(target, args)
 
-            real_mkdir = os.mkdir
-            sabotaged = {"done": False}
+        real_mkdir = os.mkdir
+        sabotaged = {"done": False}
 
-            def racy_mkdir(path, mode=0o777):
-                result = real_mkdir(path, mode)
-                # First call only: tear down the lockdir we just created
-                # to simulate a peer's concurrent rmtree.
-                if not sabotaged["done"] and path == lock.lockdir:
-                    sabotaged["done"] = True
-                    shutil.rmtree(path)
-                return result
+        def racy_mkdir(path, mode=0o777):
+            result = real_mkdir(path, mode)
+            # First call only: tear down the lockdir we just created
+            # to simulate a peer's concurrent rmtree.
+            if not sabotaged["done"] and path == lock.lockdir:
+                sabotaged["done"] = True
+                shutil.rmtree(path)
+            return result
 
-            real_makedirs = os.makedirs
-            makedirs_paths = []
+        real_makedirs = os.makedirs
+        makedirs_paths = []
 
-            def tracking_makedirs(path, *a, **kw):
-                makedirs_paths.append(path)
-                return real_makedirs(path, *a, **kw)
+        def tracking_makedirs(path, *a, **kw):
+            makedirs_paths.append(path)
+            return real_makedirs(path, *a, **kw)
 
-            # Limit the retry loop so the test cannot run forever if the
-            # acquire happens to keep racing.
-            with (
-                mock.patch("os.mkdir", side_effect=racy_mkdir),
-                mock.patch("os.makedirs", side_effect=tracking_makedirs),
-            ):
+        # Limit the retry loop so the test cannot run forever if the
+        # acquire happens to keep racing.
+        with (
+            mock.patch("os.mkdir", side_effect=racy_mkdir),
+            mock.patch("os.makedirs", side_effect=tracking_makedirs),
+        ):
+            try:
+                lock.acquire()
+            except Exception:
+                pass
+            finally:
                 try:
-                    lock.acquire()
+                    lock.release()
                 except Exception:
                     pass
-                finally:
-                    try:
-                        lock.release()
-                    except Exception:
-                        pass
 
-            for path in makedirs_paths:
-                assert path != lock.lockdir, (
-                    f"os.makedirs({path!r}) called to resurrect the torn-down "
-                    "lockdir — pid write must use plain open+rename inside the "
-                    "lockdir, not a makedirs-bearing helper."
-                )
+        for path in makedirs_paths:
+            assert path != lock.lockdir, (
+                f"os.makedirs({path!r}) called to resurrect the torn-down "
+                "lockdir — pid write must use plain open+rename inside the "
+                "lockdir, not a makedirs-bearing helper."
+            )
 
     def test_auto_detect_sleep_interval_fallback_on_error(self, tmp_path):
         """When filesystem detection fails, fall back to 0.05."""
@@ -364,16 +364,16 @@ class TestLockdirLock:
         assert age >= 0
         os.rmdir(lock.lockdir)
 
-    def test_hostname_uses_fqdn(self, monkeypatch):
+    def test_hostname_uses_fqdn(self, monkeypatch, tmp_path):
         """Issue #6: multi-interface hosts get consistent identity via FQDN
         rather than gethostname() (which can return per-interface aliases)."""
         monkeypatch.setattr(socket, "getfqdn", lambda *a, **kw: "node01.cluster.example.com")
         monkeypatch.setattr(socket, "gethostname", lambda: "node01.eth0")
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = LockdirLock(target, args)
-            assert lock.hostname == "node01.cluster.example.com"
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        lock = LockdirLock(target, args)
+        assert lock.hostname == "node01.cluster.example.com"
 
     def test_hostname_falls_back_to_gethostname_when_fqdn_empty(self, monkeypatch):
         """If getfqdn returns empty string we fall back to gethostname."""
@@ -421,38 +421,38 @@ class TestFcntlLock:
         # Release without acquire — should not crash
         lock.release()
 
-    def test_locks_sidecar_not_target(self):
+    def test_locks_sidecar_not_target(self, tmp_path):
         """FcntlLock.lockfile should be ``<target>.lock`` sidecar, never the
         target itself. Locking the target directly creates an empty target
         file at acquire-time which fools peer make's mtime check into
         skipping the compile recipe."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = FcntlLock(target, args)
-            assert lock.lockfile == os.path.realpath(target) + ".lock"
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        lock = FcntlLock(target, args)
+        assert lock.lockfile == os.path.realpath(target) + ".lock"
 
     def test_fcntl_direct_compile_true(self, lock):
         """FcntlLock should have direct_compile = True."""
         assert lock.direct_compile is True
 
-    def test_acquire_does_not_create_target(self):
+    def test_acquire_does_not_create_target(self, tmp_path):
         """Acquire must NOT create the target file. Peer make uses target
         mtime to decide whether to recompile; an empty target file with
         fresh mtime tricks it into skipping compile and linking empty."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = FcntlLock(target, args)
-            lock.acquire()
-            try:
-                assert not os.path.exists(target), (
-                    "FcntlLock.acquire created the build target — peer make "
-                    "will treat the empty file as up-to-date and skip compile"
-                )
-                assert os.path.exists(target + ".lock")
-            finally:
-                lock.release()
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        lock = FcntlLock(target, args)
+        lock.acquire()
+        try:
+            assert not os.path.exists(target), (
+                "FcntlLock.acquire created the build target — peer make "
+                "will treat the empty file as up-to-date and skip compile"
+            )
+            assert os.path.exists(target + ".lock")
+        finally:
+            lock.release()
 
     def test_acquire_sets_0o666_regardless_of_umask(self):
         """Issue #2 regression: lock file must be group/other writable so a
@@ -493,32 +493,32 @@ class TestFlockLock:
         assert not hasattr(lock, "lockfile_pid")
         assert not hasattr(lock, "sleep_interval")
 
-    def test_flock_locks_sidecar_not_target(self):
+    def test_flock_locks_sidecar_not_target(self, tmp_path):
         """FlockLock.lockfile should be ``<target>.lock`` sidecar, never the
         target itself. See FcntlLock.test_locks_sidecar_not_target for why."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
-            assert lock.lockfile == os.path.realpath(target) + ".lock"
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
+        assert lock.lockfile == os.path.realpath(target) + ".lock"
 
-    def test_flock_acquire_does_not_create_target(self):
+    def test_flock_acquire_does_not_create_target(self, tmp_path):
         """Acquire must NOT create the target file. Peer make uses target
         mtime to decide whether to recompile; an empty target file with
         fresh mtime tricks it into skipping compile and linking empty."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
-            lock.acquire()
-            try:
-                assert not os.path.exists(target), (
-                    "FlockLock.acquire created the build target — peer make "
-                    "will treat the empty file as up-to-date and skip compile"
-                )
-                assert os.path.exists(target + ".lock")
-            finally:
-                lock.release()
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
+        lock.acquire()
+        try:
+            assert not os.path.exists(target), (
+                "FlockLock.acquire created the build target — peer make "
+                "will treat the empty file as up-to-date and skip compile"
+            )
+            assert os.path.exists(target + ".lock")
+        finally:
+            lock.release()
 
     def test_acquire_sets_0o666_regardless_of_umask(self):
         """Issue #2 regression: same as FcntlLock — defeat umask so a
@@ -613,21 +613,21 @@ class TestCIFSLock:
         finally:
             lock.release()
 
-    def test_acquire_does_not_remove_live_local_holder(self):
+    def test_acquire_does_not_remove_live_local_holder(self, tmp_path):
         """Live local holder must NOT be cleared — that would clobber a
         legitimate concurrent compile. Verified directly via _is_excl_stale."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            holder = CIFSLock(target, args)
-            holder.acquire()
-            try:
-                # The holder's own pid/start_time is recorded in lockfile_excl.
-                # A peer probing _is_excl_stale must see the holder as ACTIVE.
-                peer = CIFSLock(target, args)
-                assert peer._is_excl_stale() is False
-            finally:
-                holder.release()
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        holder = CIFSLock(target, args)
+        holder.acquire()
+        try:
+            # The holder's own pid/start_time is recorded in lockfile_excl.
+            # A peer probing _is_excl_stale must see the holder as ACTIVE.
+            peer = CIFSLock(target, args)
+            assert peer._is_excl_stale() is False
+        finally:
+            holder.release()
 
     def test_acquire_does_not_remove_cross_host_holder(self, tmp_path):
         """Cross-host holders cannot be verified; we must not evict them."""
@@ -1029,32 +1029,32 @@ class TestAtomicLink:
 
         assert call_order == ["acquire", "run", "release"]
 
-    def test_atomic_link_writes_to_temp_then_renames(self):
+    def test_atomic_link_writes_to_temp_then_renames(self, tmp_path):
         """atomic_link writes to a .tmp file and renames to target — never
         leaves a partial archive on the path another process is reading."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.a")
-            args = _make_lock_args()
-            lock = CIFSLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.a")
+        args = _make_lock_args()
+        lock = CIFSLock(target, args)
 
-            def fake_ar(cmd, *args, **kwargs):
-                # The temp path appears where the target used to be
-                tmp = cmd[2]
-                assert tmp.endswith(".tmp"), f"ar should be told to write the .tmp path, got {tmp!r}"
-                open(tmp, "w").close()
+        def fake_ar(cmd, *args, **kwargs):
+            # The temp path appears where the target used to be
+            tmp = cmd[2]
+            assert tmp.endswith(".tmp"), f"ar should be told to write the .tmp path, got {tmp!r}"
+            open(tmp, "w").close()
 
-            patcher, mock_run = self._patch_runner(on_run=fake_ar)
-            with patcher:
-                atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
-                rewritten = mock_run.call_args[0][0]
-                assert rewritten[0] == "ar"
-                assert rewritten[1] == "rcs"
-                assert rewritten[2].endswith(".tmp")
-                assert rewritten[3] == "foo.o"
+        patcher, mock_run = self._patch_runner(on_run=fake_ar)
+        with patcher:
+            atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
+            rewritten = mock_run.call_args[0][0]
+            assert rewritten[0] == "ar"
+            assert rewritten[1] == "rcs"
+            assert rewritten[2].endswith(".tmp")
+            assert rewritten[3] == "foo.o"
 
-            assert os.path.exists(target)
-            for f in os.listdir(tmpdir):
-                assert ".tmp" not in f
+        assert os.path.exists(target)
+        for f in os.listdir(tmpdir):
+            assert ".tmp" not in f
 
     def test_atomic_link_returns_zero_on_success(self, tmp_path):
         """Successful link returns 0."""
@@ -1088,31 +1088,31 @@ class TestAtomicLink:
         lock2.acquire()
         lock2.release()
 
-    def test_atomic_link_no_torn_target_when_link_fails(self):
+    def test_atomic_link_no_torn_target_when_link_fails(self, tmp_path):
         """If the linker dies, the target is NOT replaced — peers see the
         last good artifact (or nothing), never a partial archive."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.a")
-            with open(target, "w") as f:
-                f.write("LAST_GOOD_CONTENT")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.a")
+        with open(target, "w") as f:
+            f.write("LAST_GOOD_CONTENT")
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
 
-            def fake_partial_then_fail(cmd, *args, **kwargs):
-                # Linker writes a partial output to temp, then fails
-                tmp = cmd[2]
-                with open(tmp, "w") as f:
-                    f.write("PARTIAL_GARBAGE")
+        def fake_partial_then_fail(cmd, *args, **kwargs):
+            # Linker writes a partial output to temp, then fails
+            tmp = cmd[2]
+            with open(tmp, "w") as f:
+                f.write("PARTIAL_GARBAGE")
 
-            patcher, _ = self._patch_runner(returncode=1, on_run=fake_partial_then_fail)
-            with patcher, pytest.raises(subprocess.CalledProcessError):
-                atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
+        patcher, _ = self._patch_runner(returncode=1, on_run=fake_partial_then_fail)
+        with patcher, pytest.raises(subprocess.CalledProcessError):
+            atomic_link(lock, target, ["ar", "rcs", target, "foo.o"])
 
-            # Target retains the last good content; partial garbage is gone
-            with open(target) as f:
-                assert f.read() == "LAST_GOOD_CONTENT"
-            for f in os.listdir(tmpdir):
-                assert ".tmp" not in f
+        # Target retains the last good content; partial garbage is gone
+        with open(target) as f:
+            assert f.read() == "LAST_GOOD_CONTENT"
+        for f in os.listdir(tmpdir):
+            assert ".tmp" not in f
 
     def test_atomic_link_ld_o_form_uses_temp(self, tmp_path):
         """ld/cc -o form: the path after -o is rewritten to the .tmp path."""
@@ -1135,53 +1135,53 @@ class TestAtomicLink:
         assert captured["cmd"][captured["cmd"].index("-o") + 1].endswith(".tmp")
         assert os.path.exists(target)
 
-    def test_atomic_link_ar_append_seeds_temp_with_existing_archive(self):
+    def test_atomic_link_ar_append_seeds_temp_with_existing_archive(self, tmp_path):
         """ar with mutating mode (r/q/m) seeds the temp file with the
         existing archive content so the append operates as intended."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.a")
-            with open(target, "w") as f:
-                f.write("EXISTING_ARCHIVE")
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.a")
+        with open(target, "w") as f:
+            f.write("EXISTING_ARCHIVE")
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
 
-            seen_temp_content = {}
+        seen_temp_content = {}
 
-            def fake_ar_append(cmd, *args, **kwargs):
-                tmp = cmd[2]
-                # ar would read the existing content and append; we just
-                # observe whether it was seeded
-                if os.path.exists(tmp):
-                    with open(tmp) as f:
-                        seen_temp_content["content"] = f.read()
-                # Pretend ar updated it
-                with open(tmp, "w") as f:
-                    f.write("APPENDED")
+        def fake_ar_append(cmd, *args, **kwargs):
+            tmp = cmd[2]
+            # ar would read the existing content and append; we just
+            # observe whether it was seeded
+            if os.path.exists(tmp):
+                with open(tmp) as f:
+                    seen_temp_content["content"] = f.read()
+            # Pretend ar updated it
+            with open(tmp, "w") as f:
+                f.write("APPENDED")
 
-            patcher, _ = self._patch_runner(on_run=fake_ar_append)
-            with patcher:
-                atomic_link(lock, target, ["ar", "rcs", target, "extra.o"])
+        patcher, _ = self._patch_runner(on_run=fake_ar_append)
+        with patcher:
+            atomic_link(lock, target, ["ar", "rcs", target, "extra.o"])
 
-            assert seen_temp_content.get("content") == "EXISTING_ARCHIVE"
+        assert seen_temp_content.get("content") == "EXISTING_ARCHIVE"
 
-    def test_atomic_link_warns_when_target_not_found_in_cmd(self, capsys):
+    def test_atomic_link_warns_when_target_not_found_in_cmd(self, capsys, tmp_path):
         """Issue #7: when the link command does not contain the target in a
         recognised form, atomic_link can't do temp+rename. The user must be
         told (verbose >= 2) so they can diagnose torn-binary races."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.bin")
-            args = _make_lock_args(verbose=2)
-            lock = FlockLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.bin")
+        args = _make_lock_args(verbose=2)
+        lock = FlockLock(target, args)
 
-            # Custom linker invocation that does not match -o or ar shapes
-            # (target nowhere in the command).
-            patcher, _ = self._patch_runner()
-            with patcher:
-                atomic_link(lock, target, ["custom-linker", "--out-magic-flag", "/somewhere/else"])
+        # Custom linker invocation that does not match -o or ar shapes
+        # (target nowhere in the command).
+        patcher, _ = self._patch_runner()
+        with patcher:
+            atomic_link(lock, target, ["custom-linker", "--out-magic-flag", "/somewhere/else"])
 
-            err = capsys.readouterr().err
-            assert "atomic_link could not find target" in err
-            assert "no temp+rename atomicity" in err
+        err = capsys.readouterr().err
+        assert "atomic_link could not find target" in err
+        assert "no temp+rename atomicity" in err
 
     def test_atomic_link_no_warning_when_rewrite_succeeds(self, capsys, tmp_path):
         """Sanity: when -o target is present, no warning is emitted."""
@@ -1201,36 +1201,36 @@ class TestAtomicLink:
         err = capsys.readouterr().err
         assert "atomic_link could not find target" not in err
 
-    def test_atomic_link_skips_seed_for_empty_target(self):
+    def test_atomic_link_skips_seed_for_empty_target(self, tmp_path):
         """An empty (0-byte) target is the lock-file artifact left by
         FlockLock/FcntlLock O_CREAT, not a real archive. atomic_link must
         NOT seed the temp file from it (ar would fail with
         'File format not recognized')."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.a")
-            # Pre-create empty target (the FlockLock O_CREAT artifact)
-            open(target, "w").close()
-            assert os.path.getsize(target) == 0
-            args = _make_lock_args()
-            lock = FlockLock(target, args)
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.a")
+        # Pre-create empty target (the FlockLock O_CREAT artifact)
+        open(target, "w").close()
+        assert os.path.getsize(target) == 0
+        args = _make_lock_args()
+        lock = FlockLock(target, args)
 
-            seen_temp_state = {}
+        seen_temp_state = {}
 
-            def fake_ar_append(cmd, *args, **kwargs):
-                tmp = cmd[2]
-                seen_temp_state["existed_before_ar"] = os.path.exists(tmp)
-                # Pretend ar created a fresh archive
-                with open(tmp, "w") as f:
-                    f.write("FRESH_ARCHIVE")
+        def fake_ar_append(cmd, *args, **kwargs):
+            tmp = cmd[2]
+            seen_temp_state["existed_before_ar"] = os.path.exists(tmp)
+            # Pretend ar created a fresh archive
+            with open(tmp, "w") as f:
+                f.write("FRESH_ARCHIVE")
 
-            patcher, _ = self._patch_runner(on_run=fake_ar_append)
-            with patcher:
-                atomic_link(lock, target, ["ar", "rcs", target, "extra.o"])
+        patcher, _ = self._patch_runner(on_run=fake_ar_append)
+        with patcher:
+            atomic_link(lock, target, ["ar", "rcs", target, "extra.o"])
 
-            # The temp file should NOT have been pre-seeded from the empty target
-            assert seen_temp_state.get("existed_before_ar") is False
-            with open(target) as f:
-                assert f.read() == "FRESH_ARCHIVE"
+        # The temp file should NOT have been pre-seeded from the empty target
+        assert seen_temp_state.get("existed_before_ar") is False
+        with open(target) as f:
+            assert f.read() == "FRESH_ARCHIVE"
 
     def test_atomic_link_skip_if_exists_returns_none_without_link(self, tmp_path):
         tmpdir = str(tmp_path)
@@ -1466,14 +1466,14 @@ class TestSubprocessSafety:
                 f"Calls: {[c.kwargs for c in mock_popen.call_args_list]}"
             )
 
-    def test_atomic_compile_indirect_starts_new_session(self):
+    def test_atomic_compile_indirect_starts_new_session(self, tmp_path):
         """Indirect compile must use start_new_session=True so signals can be
         forwarded to the child's process group."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target = os.path.join(tmpdir, "test.o")
-            args = _make_lock_args()
-            lock = CIFSLock(target, args)
-            self._assert_popen_used_with_new_session(lambda: atomic_compile(lock, target, ["c++", "-c", "test.c"]))
+        tmpdir = str(tmp_path)
+        target = os.path.join(tmpdir, "test.o")
+        args = _make_lock_args()
+        lock = CIFSLock(target, args)
+        self._assert_popen_used_with_new_session(lambda: atomic_compile(lock, target, ["c++", "-c", "test.c"]))
 
     def test_atomic_compile_direct_starts_new_session(self, tmp_path):
         """Direct compile path must also use start_new_session=True."""
