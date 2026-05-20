@@ -37,17 +37,22 @@ class TestCake(BaseCompileToolsTestCase):
         uth.reset()
         compiletools.cake.main(self._create_argv() + extraargv)
 
+    def _write_default_config(self):
+        """Populate self._config_name and write a default ct.conf naming
+        that temp config as the variant. Requires self._tmpdir already set."""
+        self._config_name = uth.create_temp_config(self._tmpdir)
+        uth.create_temp_ct_conf(
+            tempdir=self._tmpdir,
+            defaultvariant=os.path.basename(self._config_name)[:-5],
+        )
+
     @contextlib.contextmanager
     def _tmpdir_with_config(self):
         """Enter a fresh TempDirContext, populate self._tmpdir/_config_name,
         and write a default ct.conf that names the temp config as the variant."""
         with uth.TempDirContext():
             self._tmpdir = os.getcwd()
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+            self._write_default_config()
             yield self._tmpdir
 
     @uth.requires_functional_compiler
@@ -61,11 +66,7 @@ class TestCake(BaseCompileToolsTestCase):
             for ff in realpaths:
                 shutil.copy2(ff, self._tmpdir)
 
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+            self._write_default_config()
             self._call_ct_cake()
 
             # Check that an executable got built for each cpp
@@ -114,11 +115,7 @@ class TestCake(BaseCompileToolsTestCase):
             for ff in realpaths:
                 shutil.copy2(ff, self._tmpdir)
 
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+            self._write_default_config()
             # Call ct-cake with --no-compilation-database
             self._call_ct_cake(extraargv=["--no-compilation-database"])
 
@@ -157,11 +154,7 @@ class TestCake(BaseCompileToolsTestCase):
             for ff in realpaths:
                 shutil.copy2(ff, self._tmpdir)
 
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+            self._write_default_config()
             # Call ct-cake with custom compilation database output
             custom_output = "my_compile_commands.json"
             self._call_ct_cake(extraargv=[f"--compilation-database-output={custom_output}"])
@@ -408,11 +401,7 @@ class TestCake(BaseCompileToolsTestCase):
             self._create_recompile_test_files(deeper_is_included)
 
             # Do an initial build
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+            self._write_default_config()
             self._call_ct_cake(extraargv=[])
 
             # Grab the timestamps on the build products so that later we can test that only the expected ones changed
@@ -474,11 +463,7 @@ class TestCake(BaseCompileToolsTestCase):
             for f in os.listdir(sample_dir):
                 shutil.copy2(os.path.join(sample_dir, f), self._tmpdir)
 
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+            self._write_default_config()
             self._call_ct_cake()
 
             actual_exes = set()
@@ -748,11 +733,7 @@ class TestCake(BaseCompileToolsTestCase):
         with uth.TempDirContext():
             self._tmpdir = os.getcwd()
             self._create_source_files(["main.cpp", "extra.cpp", "extra.hpp"])
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+            self._write_default_config()
             args = self._make_cake_args(["--filelist"])
 
             cake = compiletools.cake.Cake(args)
@@ -795,11 +776,7 @@ class TestCake(BaseCompileToolsTestCase):
         with uth.TempDirContext():
             self._tmpdir = os.getcwd()
             self._create_source_files(["main.cpp", "extra.cpp", "extra.hpp"])
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+            self._write_default_config()
             args = self._make_cake_args(["--filelist"])
 
             cake = compiletools.cake.Cake(args)
@@ -815,11 +792,7 @@ class TestCake(BaseCompileToolsTestCase):
         with uth.TempDirContext():
             self._tmpdir = os.getcwd()
             self._create_source_files(["main.cpp", "extra.cpp", "extra.hpp"])
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+            self._write_default_config()
             args = self._make_cake_args(["-vvvvv"])
 
             cake = compiletools.cake.Cake(args)
@@ -835,11 +808,8 @@ class TestCake(BaseCompileToolsTestCase):
         with uth.TempDirContext():
             self._tmpdir = os.getcwd()
             self._create_source_files(["main.cpp", "extra.cpp", "extra.hpp"])
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+            self._write_default_config()
+            assert self._config_name is not None
             uth.reset()
             argv = [
                 "--exemarkers=main",
@@ -864,11 +834,8 @@ class TestCake(BaseCompileToolsTestCase):
         with uth.TempDirContext():
             self._tmpdir = os.getcwd()
             self._create_source_files(["main.cpp", "extra.cpp", "extra.hpp"])
-            self._config_name = uth.create_temp_config(self._tmpdir)
-            uth.create_temp_ct_conf(
-                tempdir=self._tmpdir,
-                defaultvariant=os.path.basename(self._config_name)[:-5],
-            )
+            self._write_default_config()
+            assert self._config_name is not None
             uth.reset()
             argv = [
                 "--exemarkers=main",
