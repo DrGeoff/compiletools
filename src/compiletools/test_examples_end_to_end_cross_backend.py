@@ -28,10 +28,12 @@ re-discover them.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import os
 import pathlib
 import subprocess
+import sys
 from collections.abc import Iterable
 
 import pytest
@@ -299,8 +301,6 @@ def _resolve_cas_root(workspace: pathlib.Path, cas_layout: str) -> pathlib.Path:
 # ---------------------------------------------------------------------------
 
 
-
-
 def _build_argv(
     workspace: pathlib.Path,
     backend_name: str,
@@ -395,7 +395,7 @@ def test_example_builds_with_backend(example_name, backend_name, cas_layout, tmp
 
     * ``skip_reason`` set → ``pytest.skip`` with the registered reason.
     * ``xfail_reason`` set → expected to fail; an unexpected success
-      becomes an XPASS.
+      fails the matrix so stale policy is removed deliberately.
     * default → the build must succeed (returncode == 0).
 
     The ``cas_layout`` axis exercises the cas-inside-gitroot (developer
@@ -428,7 +428,7 @@ def test_example_builds_with_backend(example_name, backend_name, cas_layout, tmp
 
         if plan.xfail_reason:
             if result.returncode == 0:
-                pytest.xfail(f"unexpected build success despite xfail policy: {plan.xfail_reason}")
+                pytest.fail(f"unexpected build success despite xfail policy: {plan.xfail_reason}")
             return  # expected failure
 
         assert result.returncode == 0, (
@@ -438,6 +438,41 @@ def test_example_builds_with_backend(example_name, backend_name, cas_layout, tmp
             f"--- stdout ---\n{result.stdout}\n"
             f"--- stderr ---\n{result.stderr}\n"
         )
+
+
+def test_xfail_policy_fails_on_unexpected_build_success(monkeypatch, tmp_path):
+    """A stale expected-failure policy must fail the matrix, not hide as XFAIL."""
+    module = sys.modules[__name__]
+    plan = ExamplePlan(xfail_reason="intentional failure still expected")
+
+    @contextlib.contextmanager
+    def fake_shared_filesystem_tmpdir(backend_name, fallback_path):
+        yield str(fallback_path)
+
+    def fake_copy_example_workspace(src, dst):
+        dst.mkdir(parents=True, exist_ok=True)
+        return dst
+
+    monkeypatch.setattr(compiletools.apptools, "get_functional_cxx_compiler", lambda: "/usr/bin/c++")
+    monkeypatch.setattr(uth, "_backend_tool_available", lambda backend_name: True)
+    monkeypatch.setattr(uth, "shared_filesystem_tmpdir", fake_shared_filesystem_tmpdir)
+    monkeypatch.setattr(uth, "copy_example_workspace", fake_copy_example_workspace)
+    monkeypatch.setattr(module, "_example_plan", lambda example_name: plan)
+    monkeypatch.setattr(
+        module,
+        "_run_build",
+        lambda backend_name, workspace, plan, cas_root: subprocess.CompletedProcess(
+            args=("ct-cake",),
+            returncode=0,
+            stdout="",
+            stderr="",
+        ),
+    )
+
+    with pytest.raises(pytest.fail.Exception, match="unexpected build success") as raised:
+        test_example_builds_with_backend("stale_xfail", "make", "inside", tmp_path)
+
+    assert type(raised.value) is pytest.fail.Exception
 
 
 # ---------------------------------------------------------------------------
