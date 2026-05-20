@@ -19,6 +19,15 @@ def temp_dir():
     uth.reset()
 
 
+@pytest.fixture
+def functional_compiler():
+    """Provide the host's detected functional C++ compiler or skip the test."""
+    compiler = compiletools.apptools.get_functional_cxx_compiler()
+    if compiler is None:
+        pytest.skip("No functional C++ compiler detected")
+    return compiler
+
+
 def test_functional_cxx_compiler_detection():
     """Test that the new compiler detection function finds a working compiler."""
     compiler = compiletools.apptools.get_functional_cxx_compiler()
@@ -45,23 +54,12 @@ def test_functional_cxx_compiler_caching():
     assert compiler1 == compiler2, "Compiler detection caching not working properly"
 
 
-def test_gcc_compiler_available(temp_dir):
+def test_gcc_compiler_available(temp_dir, functional_compiler):
     """Test that GCC compiler is available and supports C++17."""
-    # Use new detection function first
-    detected_compiler = compiletools.apptools.get_functional_cxx_compiler()
-
-    # Skip if no functional compiler at all
-    if detected_compiler is None:
-        pytest.skip("No functional C++ compiler detected")
-
     # Skip if detected compiler is not GCC
-    if "gcc" not in detected_compiler and "g++" not in detected_compiler:
+    if "gcc" not in functional_compiler and "g++" not in functional_compiler:
         pytest.skip("GCC not detected as primary compiler - may not be available")
-
-    gcc_path = shutil.which("gcc")
-    gxx_path = shutil.which("g++")
-
-    if gcc_path is None or gxx_path is None:
+    if shutil.which("gcc") is None or shutil.which("g++") is None:
         pytest.skip("GCC/G++ not found in PATH - using detected alternative")
 
     # Test C++17 support by compiling a simple program
@@ -79,15 +77,9 @@ int main() {
 }
 """)
 
-    # Use detected functional compiler instead of hardcoded g++
-    functional_compiler = compiletools.apptools.get_functional_cxx_compiler()
-    if functional_compiler is None:
-        pytest.skip("No functional C++ compiler detected")
-
     result = subprocess.run(
         [functional_compiler, "-std=c++17", "-o", test_exe, test_cpp], capture_output=True, text=True
     )
-
     assert result.returncode == 0, f"GCC failed to compile C++17 code: {result.stderr}"
 
 
@@ -129,14 +121,8 @@ def test_pkg_config_available():
     assert result.returncode == 0, f"pkg-config version check failed: {result.stderr}"
 
 
-def test_linker_features(temp_dir):
+def test_linker_features(temp_dir, functional_compiler):
     """Test that linker supports required features like --build-id."""
-    # Use detected functional compiler
-    functional_compiler = compiletools.apptools.get_functional_cxx_compiler()
-    if functional_compiler is None:
-        pytest.skip("No functional C++ compiler detected")
-
-    # Derive C compiler from C++ compiler
     c_compiler = compiletools.apptools.derive_c_compiler_from_cxx(functional_compiler)
 
     # Create a simple test object to link
@@ -165,14 +151,8 @@ def test_linker_features(temp_dir):
     assert result.returncode == 0, f"Linker does not support --build-id: {result.stderr}"
 
 
-def test_fPIC_support(temp_dir):
+def test_fPIC_support(temp_dir, functional_compiler):
     """Test that compilers support -fPIC flag (required for shared libraries)."""
-    # Use detected functional compiler
-    functional_compiler = compiletools.apptools.get_functional_cxx_compiler()
-    if functional_compiler is None:
-        pytest.skip("No functional C++ compiler detected")
-
-    # Derive C compiler from C++ compiler
     c_compiler = compiletools.apptools.derive_c_compiler_from_cxx(functional_compiler)
 
     test_c = os.path.join(temp_dir, "test_fpic.c")
@@ -208,7 +188,7 @@ def test_configuration_defaults_valid(temp_dir):
 
 
 @uth.requires_functional_compiler
-def test_standard_libraries_linkable(temp_dir):
+def test_standard_libraries_linkable(temp_dir, functional_compiler):
     """Test that standard libraries required by samples can be linked."""
     test_cpp = os.path.join(temp_dir, "test_stdlib.cpp")
     test_exe = os.path.join(temp_dir, "test_stdlib")
@@ -225,22 +205,12 @@ int main() {
 }
 """)
 
-    # Use detected functional compiler instead of hardcoded g++
-    functional_compiler = compiletools.apptools.get_functional_cxx_compiler()
-    if functional_compiler is None:
-        pytest.skip("No functional C++ compiler detected")
-
     result = subprocess.run([functional_compiler, test_cpp, "-lm", "-o", test_exe], capture_output=True, text=True)
     assert result.returncode == 0, f"Failed to link with math library: {result.stderr}"
 
 
-def test_compiler_diagnostics_support(temp_dir):
+def test_compiler_diagnostics_support(temp_dir, functional_compiler):
     """Test that compilers support diagnostic features used in release configs."""
-    # Use detected functional compiler
-    functional_compiler = compiletools.apptools.get_functional_cxx_compiler()
-    if functional_compiler is None:
-        pytest.skip("No functional C++ compiler detected")
-
     test_cpp = os.path.join(temp_dir, "test_diagnostics.cpp")
     test_o = os.path.join(temp_dir, "test_diagnostics.o")
 
@@ -263,13 +233,8 @@ def test_compiler_diagnostics_support(temp_dir):
         assert result.returncode == 0, f"Clang does not support color diagnostics: {result.stderr}"
 
 
-def test_optimization_flags_supported(temp_dir):
+def test_optimization_flags_supported(temp_dir, functional_compiler):
     """Test that optimization flags used in release configs are supported."""
-    # Use detected functional compiler
-    functional_compiler = compiletools.apptools.get_functional_cxx_compiler()
-    if functional_compiler is None:
-        pytest.skip("No functional C++ compiler detected")
-
     test_cpp = os.path.join(temp_dir, "test_optimization.cpp")
     test_exe = os.path.join(temp_dir, "test_optimization")
 
@@ -288,13 +253,8 @@ int main() { return inline_func(); }
     assert result.returncode == 0, f"Compiler does not support optimization flags: {result.stderr}"
 
 
-def test_wall_werror_flags_supported(temp_dir):
+def test_wall_werror_flags_supported(temp_dir, functional_compiler):
     """Test that warning flags used in configs are supported."""
-    # Use detected functional compiler
-    functional_compiler = compiletools.apptools.get_functional_cxx_compiler()
-    if functional_compiler is None:
-        pytest.skip("No functional C++ compiler detected")
-
     test_cpp = os.path.join(temp_dir, "test_warnings.cpp")
     test_exe = os.path.join(temp_dir, "test_warnings")
 
