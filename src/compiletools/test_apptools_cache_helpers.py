@@ -178,6 +178,14 @@ class TestArgsTokensAfterParseargs:
     strings.
     """
 
+    @pytest.fixture(autouse=True)
+    def _reset_parsers(self):
+        uth.delete_existing_parsers()
+        apptools.resetcallbacks()
+        yield
+        uth.delete_existing_parsers()
+        apptools.resetcallbacks()
+
     def _parse(self, extra_args=None, tempdir=None):
         """Run parseargs end-to-end against the standard test parser.
 
@@ -204,14 +212,7 @@ class TestArgsTokensAfterParseargs:
         return compiletools.apptools.parseargs(cap, argv, context=BuildContext())
 
     def test_args_get_tokens_after_parseargs(self, tmp_path):
-
-        uth.delete_existing_parsers()
-        apptools.resetcallbacks()
-        try:
-            args = self._parse(tempdir=str(tmp_path))
-        finally:
-            uth.delete_existing_parsers()
-            apptools.resetcallbacks()
+        args = self._parse(tempdir=str(tmp_path))
 
         # All four token attributes must exist and be lists.
         for attr in ("CPPFLAGS_tokens", "CFLAGS_tokens", "CXXFLAGS_tokens", "LDFLAGS_tokens"):
@@ -228,14 +229,7 @@ class TestArgsTokensAfterParseargs:
 
     def test_args_tokens_reflect_appended_cppflags(self, tmp_path):
         """append-CPPFLAGS contributions must appear in the token list."""
-
-        uth.delete_existing_parsers()
-        apptools.resetcallbacks()
-        try:
-            args = self._parse(["--append-CPPFLAGS=-DAFTER_TOKENIZE=42"], tempdir=str(tmp_path))
-        finally:
-            uth.delete_existing_parsers()
-            apptools.resetcallbacks()
+        args = self._parse(["--append-CPPFLAGS=-DAFTER_TOKENIZE=42"], tempdir=str(tmp_path))
 
         assert "-DAFTER_TOKENIZE=42" in args.CPPFLAGS_tokens, (
             "Appended -D entries must be present in CPPFLAGS_tokens; "
