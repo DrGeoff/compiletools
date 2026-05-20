@@ -28,6 +28,37 @@ def _reset_parser_state():
     uth.reset()
 
 
+def _default_makefile_args(**overrides):
+    """Standard SimpleNamespace `args` for MakefileBackend tests. The body
+    of this helper was duplicated 4-fold across TestMakefileGenerate,
+    TestMakefileTestRules, TestMakefileHeaderDeterministic, and
+    TestUseMtime before extraction (and 5-fold counting the
+    TestMakefileTestEchoTarget variant that just overrides verbose=1)."""
+    defaults = dict(
+        verbose=0,
+        cas_objdir="/tmp/obj",
+        bindir="/tmp/bin",
+        git_root="",
+        file_locking=False,
+        makefilename="Makefile",
+        filename=[],
+        tests=[],
+        static=[],
+        dynamic=[],
+        CC="gcc",
+        CXX="g++",
+        CFLAGS="-O2",
+        CXXFLAGS="-O2",
+        LD="g++",
+        LDFLAGS="",
+        serialisetests=False,
+        build_only_changed=None,
+        use_mtime=False,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
 class TestMakefileBackendRegistered:
     def test_registered_as_make(self):
         cls = get_backend_class("make")
@@ -41,35 +72,10 @@ class TestMakefileBackendRegistered:
 
 
 class TestMakefileGenerate:
-    def _make_args(self, **overrides):
-        defaults = dict(
-            verbose=0,
-            cas_objdir="/tmp/obj",
-            bindir="/tmp/bin",
-            git_root="",
-            file_locking=False,
-            makefilename="Makefile",
-            filename=[],
-            tests=[],
-            static=[],
-            dynamic=[],
-            CC="gcc",
-            CXX="g++",
-            CFLAGS="-O2",
-            CXXFLAGS="-O2",
-            LD="g++",
-            LDFLAGS="",
-            serialisetests=False,
-            build_only_changed=None,
-            use_mtime=False,
-        )
-        defaults.update(overrides)
-        return SimpleNamespace(**defaults)
-
     def _generate(self, graph, args=None):
         """Run MakefileBackend.generate on *graph* with a mocked hunter; return content."""
         if args is None:
-            args = self._make_args()
+            args = _default_makefile_args()
         hunter = MagicMock()
         hunter.huntsource = MagicMock()
         hunter.getsources = MagicMock(return_value=[])
@@ -358,31 +364,6 @@ class TestMakefileExecute:
 class TestMakefileTestRules:
     """Test that test execution rules are rendered correctly in the Makefile."""
 
-    def _make_args(self, **overrides):
-        defaults = dict(
-            verbose=0,
-            cas_objdir="/tmp/obj",
-            bindir="/tmp/bin",
-            git_root="",
-            file_locking=False,
-            makefilename="Makefile",
-            filename=[],
-            tests=[],
-            static=[],
-            dynamic=[],
-            CC="gcc",
-            CXX="g++",
-            CFLAGS="-O2",
-            CXXFLAGS="-O2",
-            LD="g++",
-            LDFLAGS="",
-            serialisetests=False,
-            build_only_changed=None,
-            use_mtime=False,
-        )
-        defaults.update(overrides)
-        return SimpleNamespace(**defaults)
-
     def _test_rule(
         self,
         *,
@@ -401,7 +382,7 @@ class TestMakefileTestRules:
 
     def _render(self, graph, **arg_overrides):
         """Run MakefileBackend.generate(graph) and return the rendered text."""
-        backend = MakefileBackend(args=self._make_args(**arg_overrides), hunter=MagicMock())
+        backend = MakefileBackend(args=_default_makefile_args(**arg_overrides), hunter=MagicMock())
         buf = io.StringIO()
         backend.generate(graph, output=buf)
         return buf.getvalue()
@@ -525,35 +506,10 @@ class TestMakefileHeaderDeterministic:
     returns False and Makefile generation runs every time.
     """
 
-    def _make_args(self, **overrides):
-        defaults = dict(
-            verbose=0,
-            cas_objdir="/tmp/obj",
-            bindir="/tmp/bin",
-            git_root="",
-            file_locking=False,
-            makefilename="Makefile",
-            filename=[],
-            tests=[],
-            static=[],
-            dynamic=[],
-            CC="gcc",
-            CXX="g++",
-            CFLAGS="-O2",
-            CXXFLAGS="-O2",
-            LD="g++",
-            LDFLAGS="",
-            serialisetests=False,
-            build_only_changed=None,
-            use_mtime=False,
-        )
-        defaults.update(overrides)
-        return SimpleNamespace(**defaults)
-
     def test_header_ignores_underscore_attrs(self):
         """Attrs prefixed with `_` (e.g. _parser, _context with object addresses)
         must not appear in the header signature."""
-        args = self._make_args()
+        args = _default_makefile_args()
         # Attach the same kind of non-deterministic objects apptools attaches
         args._parser = object()
         args._context = object()
@@ -567,13 +523,13 @@ class TestMakefileHeaderDeterministic:
     def test_two_invocations_produce_identical_headers(self):
         """Critical regression: two backends built from independent args
         with identical CLI values must emit byte-identical headers."""
-        args1 = self._make_args()
+        args1 = _default_makefile_args()
         args1._parser = object()
         args1._context = object()
         backend1 = MakefileBackend(args=args1, hunter=MagicMock())
         backend1._filesystem_type = None
 
-        args2 = self._make_args()
+        args2 = _default_makefile_args()
         args2._parser = object()  # Distinct object => distinct repr address
         args2._context = object()
         backend2 = MakefileBackend(args=args2, hunter=MagicMock())
@@ -1279,31 +1235,6 @@ class TestMakefileTestEchoTarget:
     ``command[-1]`` — which is now an XML flag when --test-xml-dir is set
     (``_test_command_for`` appends framework XML argv after the exe)."""
 
-    def _make_args(self, **overrides):
-        defaults = dict(
-            verbose=1,
-            cas_objdir="/tmp/obj",
-            bindir="/tmp/bin",
-            git_root="",
-            file_locking=False,
-            makefilename="Makefile",
-            filename=[],
-            tests=[],
-            static=[],
-            dynamic=[],
-            CC="gcc",
-            CXX="g++",
-            CFLAGS="-O2",
-            CXXFLAGS="-O2",
-            LD="g++",
-            LDFLAGS="",
-            serialisetests=False,
-            build_only_changed=None,
-            use_mtime=False,
-        )
-        defaults.update(overrides)
-        return SimpleNamespace(**defaults)
-
     def test_makefile_test_echo_target_is_exe(self):
         """With a framework XML flag appended after the exe in command, the
         verbose echo line still names the exe path, not the XML flag."""
@@ -1318,7 +1249,7 @@ class TestMakefileTestEchoTarget:
             )
         )
 
-        args = self._make_args()
+        args = _default_makefile_args(verbose=1)
         backend = MakefileBackend(args=args, hunter=MagicMock())
         buf = io.StringIO()
         backend.generate(graph, output=buf)
@@ -1344,7 +1275,7 @@ class TestMakefileTestEchoTarget:
             )
         )
 
-        args = self._make_args()
+        args = _default_makefile_args(verbose=1)
         backend = MakefileBackend(args=args, hunter=MagicMock())
         buf = io.StringIO()
         backend.generate(graph, output=buf)
@@ -1364,31 +1295,6 @@ class TestUseMtime:
 
     Opt-in (True): preserves classical mtime-driven prerequisite emission.
     """
-
-    def _make_args(self, **overrides):
-        defaults = dict(
-            verbose=0,
-            cas_objdir="/tmp/obj",
-            bindir="/tmp/bin",
-            git_root="",
-            file_locking=False,
-            makefilename="Makefile",
-            filename=[],
-            tests=[],
-            static=[],
-            dynamic=[],
-            CC="gcc",
-            CXX="g++",
-            CFLAGS="-O2",
-            CXXFLAGS="-O2",
-            LD="g++",
-            LDFLAGS="",
-            serialisetests=False,
-            build_only_changed=None,
-            use_mtime=False,
-        )
-        defaults.update(overrides)
-        return SimpleNamespace(**defaults)
 
     def _generate(self, args, graph):
         hunter = MagicMock()
@@ -1419,7 +1325,7 @@ class TestUseMtime:
         raise AssertionError(f"no compile rule line found in:\n{content}")
 
     def test_compile_rule_drops_prereqs_when_no_use_mtime(self):
-        args = self._make_args(use_mtime=False)
+        args = _default_makefile_args(use_mtime=False)
         content = self._generate(args, self._compile_graph())
         line = self._compile_line(content)
         # ``<target>: | <order_only>`` — nothing between ``:`` and ``|``
@@ -1430,7 +1336,7 @@ class TestUseMtime:
         assert "/work/bar.h" not in line
 
     def test_compile_rule_keeps_prereqs_when_use_mtime(self):
-        args = self._make_args(use_mtime=True)
+        args = _default_makefile_args(use_mtime=True)
         content = self._generate(args, self._compile_graph())
         line = self._compile_line(content)
         assert "/work/foo.cpp" in line
@@ -1453,7 +1359,7 @@ class TestUseMtime:
                 order_only_deps=["/tmp/obj/aa"],
             )
         )
-        args = self._make_args(use_mtime=False)
+        args = _default_makefile_args(use_mtime=False)
         content = self._generate(args, graph)
         line = self._compile_line(content)
         # PCH must still be referenced (so it's built before this rule),
@@ -1478,7 +1384,7 @@ class TestUseMtime:
                 rule_type="link",
             )
         )
-        args = self._make_args(use_mtime=False)
+        args = _default_makefile_args(use_mtime=False)
         content = self._generate(args, graph)
         for line in content.splitlines():
             if line.startswith("/tmp/bin/foo:"):
