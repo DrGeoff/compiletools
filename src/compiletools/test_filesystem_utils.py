@@ -1,7 +1,11 @@
 """Tests for filesystem_utils module."""
 
+import builtins
+import glob
 import os
-import tempfile
+import stat
+import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -9,6 +13,7 @@ import pytest
 from compiletools.filesystem_utils import (
     atomic_output_file,
     atomic_write,
+    atomic_write_if_changed,
     get_filesystem_type,
     get_lock_strategy,
     get_lockdir_sleep_interval,
@@ -127,8 +132,6 @@ def test_atomic_write_binary(tmp_path):
 
 def test_atomic_write_preserves_permissions(tmp_path):
     """atomic_write preserves existing file permissions."""
-    import stat
-
     target = str(tmp_path / "out.txt")
     with open(target, "w") as f:
         f.write("old")
@@ -171,8 +174,6 @@ def test_atomic_output_file_exception_cleans_up(tmp_path):
 
 def test_get_filesystem_type_proc_mounts_unavailable(monkeypatch):
     """Falls back when /proc/mounts is not available."""
-    import builtins
-
     real_open = builtins.open
 
     def fake_open(path, *args, **kwargs):
@@ -185,8 +186,6 @@ def test_get_filesystem_type_proc_mounts_unavailable(monkeypatch):
     monkeypatch.setattr(builtins, "open", fake_open)
 
     # Also mock subprocess to return something
-    import subprocess
-
     orig_run = subprocess.run
 
     def fake_run(cmd, *args, **kwargs):
@@ -207,8 +206,6 @@ def test_get_filesystem_type_proc_mounts_unavailable(monkeypatch):
 
 def test_get_filesystem_type_all_fallbacks_fail(monkeypatch):
     """Returns 'unknown' when all detection methods fail."""
-    import builtins
-
     real_open = builtins.open
 
     def fake_open(path, *args, **kwargs):
@@ -218,8 +215,6 @@ def test_get_filesystem_type_all_fallbacks_fail(monkeypatch):
 
     get_filesystem_type.cache_clear()
     monkeypatch.setattr(builtins, "open", fake_open)
-
-    import subprocess
 
     def fake_run(cmd, *args, **kwargs):
         raise OSError("no stat")
@@ -232,8 +227,6 @@ def test_get_filesystem_type_all_fallbacks_fail(monkeypatch):
 
 def test_get_filesystem_type_stat_nonzero_returncode(monkeypatch):
     """Returns 'unknown' when stat command fails with non-zero return code."""
-    import builtins
-
     real_open = builtins.open
 
     def fake_open(path, *args, **kwargs):
@@ -243,8 +236,6 @@ def test_get_filesystem_type_stat_nonzero_returncode(monkeypatch):
 
     get_filesystem_type.cache_clear()
     monkeypatch.setattr(builtins, "open", fake_open)
-
-    import subprocess
 
     orig_run = subprocess.run
 
@@ -316,8 +307,6 @@ def test_atomic_write_error_cleanup(tmp_path, monkeypatch):
     # Target should not exist, and no temp files should remain
     assert not os.path.exists(target)
     # Check no temp files left
-    import glob
-
     temps = glob.glob(str(tmp_path / ".tmp.*"))
     assert len(temps) == 0
 
@@ -340,8 +329,6 @@ def test_atomic_output_file_creates_directory(tmp_path):
 
 def test_atomic_output_file_preserves_permissions(tmp_path):
     """atomic_output_file preserves existing file permissions."""
-    import stat
-
     target = str(tmp_path / "perm.txt")
     with open(target, "w") as f:
         f.write("old")
@@ -368,23 +355,22 @@ def test_atomic_output_file_exception_cleans_up_binary(tmp_path):
     assert not os.path.exists(target)
 
 
-def test_real_filesystem_detection():
+def test_real_filesystem_detection(tmp_path):
     """Integration test: detect actual filesystem type."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        fstype = get_filesystem_type(tmpdir)
-        assert isinstance(fstype, str)
-        assert len(fstype) > 0
+    fstype = get_filesystem_type(str(tmp_path))
+    assert isinstance(fstype, str)
+    assert len(fstype) > 0
 
-        # Verify policy functions work with detected type
-        strategy = get_lock_strategy(fstype)
-        assert strategy in ["fcntl", "lockdir", "cifs", "flock"]
+    # Verify policy functions work with detected type
+    strategy = get_lock_strategy(fstype)
+    assert strategy in ["fcntl", "lockdir", "cifs", "flock"]
 
-        mmap_safe = supports_mmap_safely(fstype)
-        assert isinstance(mmap_safe, bool)
+    mmap_safe = supports_mmap_safely(fstype)
+    assert isinstance(mmap_safe, bool)
 
-        interval = get_lockdir_sleep_interval(fstype)
-        assert isinstance(interval, float)
-        assert interval > 0
+    interval = get_lockdir_sleep_interval(fstype)
+    assert isinstance(interval, float)
+    assert interval > 0
 
 
 def test_atomic_write_if_changed_skips_when_byte_identical(tmp_path):
@@ -392,11 +378,7 @@ def test_atomic_write_if_changed_skips_when_byte_identical(tmp_path):
     target.write_text("hello")
     initial_mtime_ns = target.stat().st_mtime_ns
     initial_inode = target.stat().st_ino
-    import time
-
     time.sleep(0.01)  # widen the window
-
-    from compiletools.filesystem_utils import atomic_write_if_changed
 
     wrote = atomic_write_if_changed(str(target), "hello")
 
@@ -410,8 +392,6 @@ def test_atomic_write_if_changed_writes_when_content_differs(tmp_path):
     target.write_text("hello")
     initial_inode = target.stat().st_ino
 
-    from compiletools.filesystem_utils import atomic_write_if_changed
-
     wrote = atomic_write_if_changed(str(target), "world")
 
     assert wrote is True
@@ -421,8 +401,6 @@ def test_atomic_write_if_changed_writes_when_content_differs(tmp_path):
 
 def test_atomic_write_if_changed_writes_when_target_absent(tmp_path):
     target = tmp_path / "f.txt"
-    from compiletools.filesystem_utils import atomic_write_if_changed
-
     wrote = atomic_write_if_changed(str(target), "hello")
     assert wrote is True
     assert target.read_text() == "hello"
