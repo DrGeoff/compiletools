@@ -231,6 +231,14 @@ class TestNinjaLogParsing:
         log.write_text(content)
         return str(log)
 
+    def _parse_into_phase(self, log, **kwargs):
+        """Drive record_rules_from_ninja_log under a single build_execution
+        phase and return that phase node."""
+        timer = BuildTimer(enabled=True)
+        with timer.phase("build_execution"):
+            timer.record_rules_from_ninja_log(log, **kwargs)
+        return timer._root.children[0]
+
     def test_parse_valid_log(self, tmp_path):
         log = self._write_log(
             tmp_path,
@@ -239,10 +247,7 @@ class TestNinjaLogParsing:
                 "100\t2000\t12346\tobj/bar.o\tdef456",
             ],
         )
-        timer = BuildTimer(enabled=True)
-        with timer.phase("build_execution"):
-            timer.record_rules_from_ninja_log(log)
-        phase = timer._root.children[0]
+        phase = self._parse_into_phase(log)
         assert len(phase.children) == 2
         # Check first rule
         rules_by_target = {r.target: r for r in phase.children}
@@ -260,10 +265,8 @@ class TestNinjaLogParsing:
                 "0\t1000\t0\ta.o\thash",
             ],
         )
-        timer = BuildTimer(enabled=True)
-        with timer.phase("build_execution"):
-            timer.record_rules_from_ninja_log(log)
-        assert len(timer._root.children[0].children) == 1
+        phase = self._parse_into_phase(log)
+        assert len(phase.children) == 1
 
     def test_parse_log_with_offset(self, tmp_path):
         log_path = tmp_path / ".ninja_log"
@@ -272,19 +275,13 @@ class TestNinjaLogParsing:
         log_path.write_text(old_content + new_content)
         offset = len(old_content)
 
-        timer = BuildTimer(enabled=True)
-        with timer.phase("build_execution"):
-            timer.record_rules_from_ninja_log(str(log_path), offset=offset)
-        phase = timer._root.children[0]
+        phase = self._parse_into_phase(str(log_path), offset=offset)
         assert len(phase.children) == 1
         assert phase.children[0].target == "new.o"
 
     def test_parse_empty_log(self, tmp_path):
-        log = self._write_log(tmp_path, [])
-        timer = BuildTimer(enabled=True)
-        with timer.phase("build_execution"):
-            timer.record_rules_from_ninja_log(log)
-        assert len(timer._root.children[0].children) == 0
+        phase = self._parse_into_phase(self._write_log(tmp_path, []))
+        assert len(phase.children) == 0
 
     def test_parse_duplicate_outputs_keeps_last(self, tmp_path):
         log = self._write_log(
@@ -294,18 +291,13 @@ class TestNinjaLogParsing:
                 "1000\t3000\t0\tobj/foo.o\thash2",
             ],
         )
-        timer = BuildTimer(enabled=True)
-        with timer.phase("build_execution"):
-            timer.record_rules_from_ninja_log(log)
-        phase = timer._root.children[0]
+        phase = self._parse_into_phase(log)
         assert len(phase.children) == 1
         assert phase.children[0].elapsed_s == pytest.approx(2.0)
 
     def test_parse_nonexistent_log(self):
-        timer = BuildTimer(enabled=True)
-        with timer.phase("build_execution"):
-            timer.record_rules_from_ninja_log("/nonexistent/.ninja_log")
-        assert len(timer._root.children[0].children) == 0
+        phase = self._parse_into_phase("/nonexistent/.ninja_log")
+        assert len(phase.children) == 0
 
     def test_parse_with_graph_lookup(self, tmp_path):
         from compiletools.build_graph import BuildGraph, BuildRule
@@ -335,10 +327,7 @@ class TestNinjaLogParsing:
                 "5000\t6000\t0\tbin/app\thash2",
             ],
         )
-        timer = BuildTimer(enabled=True)
-        with timer.phase("build_execution"):
-            timer.record_rules_from_ninja_log(log, graph=graph)
-        phase = timer._root.children[0]
+        phase = self._parse_into_phase(log, graph=graph)
         rules = {r.target: r for r in phase.children}
         assert rules["obj/foo.o"].source == "src/foo.cpp"
         assert rules["obj/foo.o"].category == "compile"
@@ -349,16 +338,21 @@ class TestNinjaLogParsing:
 
 
 class TestMakeTimingParsing:
+    def _parse_into_phase(self, log, **kwargs):
+        """Drive record_rules_from_make_timing under a single build_execution
+        phase and return that phase node."""
+        timer = BuildTimer(enabled=True)
+        with timer.phase("build_execution"):
+            timer.record_rules_from_make_timing(log, **kwargs)
+        return timer._root.children[0]
+
     def test_parse_valid_jsonl(self, tmp_path):
         log = tmp_path / ".ct-make-timing.jsonl"
         log.write_text(
             '{"target":"obj/foo.o","start_ns":1000000000,"end_ns":3500000000}\n'
             '{"target":"bin/app","start_ns":3500000000,"end_ns":4000000000}\n'
         )
-        timer = BuildTimer(enabled=True)
-        with timer.phase("build_execution"):
-            timer.record_rules_from_make_timing(str(log))
-        phase = timer._root.children[0]
+        phase = self._parse_into_phase(str(log))
         assert len(phase.children) == 2
         rules = {r.target: r for r in phase.children}
         assert rules["obj/foo.o"].elapsed_s == pytest.approx(2.5)
@@ -379,26 +373,19 @@ class TestMakeTimingParsing:
 
         log = tmp_path / ".ct-make-timing.jsonl"
         log.write_text('{"target":"obj/foo.o","start_ns":0,"end_ns":2000000000}\n')
-        timer = BuildTimer(enabled=True)
-        with timer.phase("build_execution"):
-            timer.record_rules_from_make_timing(str(log), graph=graph)
-        rule = timer._root.children[0].children[0]
+        rule = self._parse_into_phase(str(log), graph=graph).children[0]
         assert rule.source == "src/foo.cpp"
         assert rule.category == "compile"
 
     def test_parse_invalid_json_skipped(self, tmp_path):
         log = tmp_path / ".ct-make-timing.jsonl"
         log.write_text('not json\n{"target":"a.o","start_ns":0,"end_ns":1000000000}\n')
-        timer = BuildTimer(enabled=True)
-        with timer.phase("build_execution"):
-            timer.record_rules_from_make_timing(str(log))
-        assert len(timer._root.children[0].children) == 1
+        phase = self._parse_into_phase(str(log))
+        assert len(phase.children) == 1
 
     def test_parse_nonexistent_log(self):
-        timer = BuildTimer(enabled=True)
-        with timer.phase("build_execution"):
-            timer.record_rules_from_make_timing("/nonexistent/log.jsonl")
-        assert len(timer._root.children[0].children) == 0
+        phase = self._parse_into_phase("/nonexistent/log.jsonl")
+        assert len(phase.children) == 0
 
     def test_wall_to_monotonic_conversion(self, tmp_path):
         """Recipe wrappers write bash $EPOCHREALTIME (wall clock since
