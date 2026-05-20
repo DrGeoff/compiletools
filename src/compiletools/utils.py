@@ -142,6 +142,12 @@ def is_source(filename: str) -> bool:
 
 
 def is_executable(filename: str) -> bool:
+    # wrappedos.isfile is process-cached. Production callers (cake.py
+    # post-build exe checks, compiler-resolution probes) run once per
+    # process; in-process multi-build test drivers must call
+    # wrappedos.clear_cache() between builds or risk a stale True from
+    # an earlier build. os.access stays direct: it takes a mode arg
+    # outside the single-path wrappedos surface and is only called here.
     return compiletools.wrappedos.isfile(filename) and os.access(filename, os.X_OK)
 
 

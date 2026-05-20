@@ -95,7 +95,7 @@ Prefer `compiletools.wrappedos.<fn>` over `os.path.<fn>` whenever the wrapper ex
 
 Skip the wrapper — and use `os.path.<fn>` directly — only when caching would be **wrong**. Three patterns recur:
 
-1. **Lock/cleanup loops** where the filesystem object is expected to appear/disappear during the call sequence. `locking.py:434` and `lock_utils.py:34` have inline `CRITICAL` comments explaining why; replicate that pattern (comment + uncached call) anywhere a lock file or sidecar is the target of the stat.
+1. **Stats of lock/sidecar files whose existence or mtime can change concurrently** with the call. `locking.py:434` and `lock_utils.py:34` have inline `CRITICAL` comments explaining why; replicate that pattern (comment + uncached call) anywhere a lock file or sidecar is the target of the stat.
 2. **Build-output existence checks** that happen AFTER the rule that produces the output has run. Examples: `build_backend.clean()/realclean()`, `trace_backend._make_trace_entry` (post-execute output check), `ninja_backend` (post-build log read), `trim_cache` / `cache_report` (post-build cache directory walks). The cached "missing" answer from a pre-build call would be stale once the build finished.
 3. **Relative-path inputs subject to chdir.** `bazel_backend.py:113-117` has the cardinal example: `BUILD.bazel` resolved at module import would lock in the import-time cwd via `@functools.cache`, and any later `chdir` would silently return the wrong absolute path. The fix is `os.path.realpath` direct; only cache absolute paths.
 
