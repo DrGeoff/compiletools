@@ -88,3 +88,106 @@ def test_tilde_expands_in_conf_value(tmp_path, monkeypatch):
 
     args = _parse_conf(str(conf), other_cwd, monkeypatch)
     assert args.cas_objdir == "/test/home/x", args.cas_objdir
+
+
+def test_brace_form_HOME_expands(tmp_path, monkeypatch):
+    """${HOME} brace form must expand the same as $HOME."""
+    monkeypatch.setenv("HOME", "/test/home")
+    conf_dir = tmp_path / "axis-confs"
+    conf_dir.mkdir()
+    conf = conf_dir / "extras.conf"
+    conf.write_text("cas-objdir = ${HOME}/x\n")
+
+    other_cwd = tmp_path / "other"
+    other_cwd.mkdir()
+
+    args = _parse_conf(str(conf), other_cwd, monkeypatch)
+    assert args.cas_objdir == "/test/home/x", args.cas_objdir
+
+
+def test_conf_dir_expanded_before_env(tmp_path, monkeypatch):
+    """${CONF_DIR} must expand before $HOME so a value like
+    `${CONF_DIR}/$HOME/x` produces /<confdir>/<expanded-home>/x.
+
+    Regression guard on pipeline step order — flipping the steps would
+    leave ${CONF_DIR} as a literal that os.path.expandvars then sees as
+    ${CONF}_DIR/<something> and either expands or leaves alone in
+    surprising ways.
+
+    HOME is set to a relative-style token (no leading /) so that
+    ${CONF_DIR}/$HOME/inc produces a clean single-slash path.  The key
+    assertion is that ${CONF_DIR} was substituted (giving the conf-file
+    directory as a prefix), not that any particular slash-normalisation
+    rule is applied."""
+    monkeypatch.setenv("HOME", "test/home")
+    conf_dir = tmp_path / "axis-confs"
+    conf_dir.mkdir()
+    conf = conf_dir / "extras.conf"
+    conf.write_text("append-CXXFLAGS = -I${CONF_DIR}/$HOME/inc\n")
+
+    other_cwd = tmp_path / "other"
+    other_cwd.mkdir()
+
+    args = _parse_conf(str(conf), other_cwd, monkeypatch)
+    flat = " ".join(args.append_cxxflags) if isinstance(args.append_cxxflags, list) else str(args.append_cxxflags)
+    expected = f"-I{conf_dir}/test/home/inc"
+    assert expected in flat, f"expected {expected!r} in {flat!r}"
+
+
+def test_undefined_env_var_stays_literal(tmp_path, monkeypatch):
+    """A reference to a variable not in os.environ stays literal —
+    matches os.path.expandvars semantics and preserves today's behaviour
+    for genuinely undefined vars."""
+    monkeypatch.delenv("DEFINITELY_UNSET_xyz_42", raising=False)
+    conf_dir = tmp_path / "axis-confs"
+    conf_dir.mkdir()
+    conf = conf_dir / "extras.conf"
+    conf.write_text("cas-objdir = $DEFINITELY_UNSET_xyz_42/x\n")
+
+    other_cwd = tmp_path / "other"
+    other_cwd.mkdir()
+
+    args = _parse_conf(str(conf), other_cwd, monkeypatch)
+    assert args.cas_objdir == "$DEFINITELY_UNSET_xyz_42/x", args.cas_objdir
+
+
+def test_list_value_expands_each_element(tmp_path, monkeypatch):
+    """Accumulated list values (append-CXXFLAGS) expand each element
+    independently. Locks in the recursion in _expand_env_and_user
+    (mirrors how _expand_conf_dir handles lists)."""
+    monkeypatch.setenv("HOME", "/test/home")
+    conf_dir = tmp_path / "axis-confs"
+    conf_dir.mkdir()
+    conf = conf_dir / "extras.conf"
+    conf.write_text(
+        "append-CXXFLAGS = -I$HOME/a\n"
+        "append-CXXFLAGS = -I$HOME/b\n"
+    )
+
+    other_cwd = tmp_path / "other"
+    other_cwd.mkdir()
+
+    args = _parse_conf(str(conf), other_cwd, monkeypatch)
+    values = args.append_cxxflags if isinstance(args.append_cxxflags, list) else [args.append_cxxflags]
+    flat = " ".join(values)
+    assert "-I/test/home/a" in flat, flat
+    assert "-I/test/home/b" in flat, flat
+    assert "$HOME" not in flat, flat
+
+
+def test_bare_relative_not_touched_by_env_expansion(tmp_path, monkeypatch):
+    """A bare relative path that contains no $ or ~ must pass through
+    verbatim — the env-expansion helper does not auto-anchor against
+    conf-dir or cwd. Symmetric to
+    test_bare_relative_paths_are_not_auto_anchored in
+    test_conf_dir_placeholder.py."""
+    conf_dir = tmp_path / "axis-confs"
+    conf_dir.mkdir()
+    conf = conf_dir / "extras.conf"
+    conf.write_text("cas-objdir = relative/subdir/x\n")
+
+    other_cwd = tmp_path / "other"
+    other_cwd.mkdir()
+
+    args = _parse_conf(str(conf), other_cwd, monkeypatch)
+    assert args.cas_objdir == "relative/subdir/x", args.cas_objdir
