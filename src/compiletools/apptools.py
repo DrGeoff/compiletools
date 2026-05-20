@@ -2047,7 +2047,8 @@ def _pkg_config_provenance_label(
         target_real = compiletools.wrappedos.realpath(path)
     except (OSError, ValueError):
         target_real = path
-    for value, source_file, lineno in provenance.get(key, []):
+    for entry in provenance.get(key, []):
+        value, source_file, lineno = entry[0], entry[1], entry[2]
         try:
             value_real = compiletools.wrappedos.realpath(value)
         except (OSError, ValueError):
@@ -3097,14 +3098,19 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
 
     Provenance side channel: every parsed entry is also recorded into
     ``self._provenance`` as ``key -> [(expanded_value, source_file_abspath,
-    lineno), ...]`` in parse order. Used by ``-vv`` diagnostics to
-    attribute each emitted setting back to its conf-file:line origin
-    without changing any ``args.*`` shape.
+    lineno, pre_expansion_literal), ...]`` in parse order. The
+    pre-expansion literal is the value as it appeared in the conf file
+    after JSON-list parsing but before ``${CONF_DIR}`` and env-var
+    expansion; equals the expanded value when no expansion happened.
+    Used by ``-vv`` diagnostics to attribute each emitted setting back
+    to its conf-file:line origin and to show "literal: $HOME/..." when
+    a value was expanded from an env var. Does not change any
+    ``args.*`` shape.
     """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._provenance: dict[str, list[tuple[str, str, int]]] = {}
+        self._provenance: dict[str, list[tuple[str, str, int, str]]] = {}
 
     def parse(self, stream):
         items = OrderedDict()
@@ -3169,6 +3175,11 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
                 except Exception:
                     value = [elem.strip() for elem in value[1:-1].split(",")]
 
+            if isinstance(value, list):
+                pre_expansion_literal = [str(elem) for elem in value]
+            else:
+                pre_expansion_literal = str(value)
+
             value = _expand_conf_dir(value, conf_dir)
             value = _expand_env_and_user(value)
 
@@ -3186,10 +3197,12 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
 
             prov_bucket = self._provenance.setdefault(key, [])
             if isinstance(value, list):
-                for elem in value:
-                    prov_bucket.append((str(elem), source_file, segment_lineno))
+                for i, elem in enumerate(value):
+                    literal_elem = pre_expansion_literal[i] if i < len(pre_expansion_literal) else str(elem)
+                    prov_bucket.append((str(elem), source_file, segment_lineno, literal_elem))
             else:
-                prov_bucket.append((str(value), source_file, segment_lineno))
+                literal_str = pre_expansion_literal if isinstance(pre_expansion_literal, str) else str(value)
+                prov_bucket.append((str(value), source_file, segment_lineno, literal_str))
         return items
 
 
@@ -3244,7 +3257,7 @@ class _ComposingArgumentParser(configargparse.ArgumentParser):
         kwargs.setdefault("config_file_open_func", _open_conf_file_utf8)
         super().__init__(*args, **kwargs)
 
-    def get_conf_file_provenance(self) -> dict[str, list[tuple[str, str, int]]]:
+    def get_conf_file_provenance(self) -> dict[str, list[tuple[str, str, int, str]]]:
         """Return a shallow copy of the per-conf-file provenance dict from
         the most recent parse (the entry tuples themselves are immutable,
         so callers cannot mutate the parser's internal state through the

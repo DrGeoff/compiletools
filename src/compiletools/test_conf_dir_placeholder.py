@@ -379,7 +379,8 @@ def test_provenance_records_source_file_for_each_conf_value(tmp_path, monkeypatc
         f"no provenance entry containing {expected_value_substr!r} "
         f"sourced from {flavor_b_conf!r}; entries: {entries!r}"
     )
-    for _value, _source_file, lineno in matched:
+    for entry in matched:
+        lineno = entry[2]
         assert isinstance(lineno, int) and lineno >= 1, (
             f"lineno must be positive int (1-based); got {lineno!r}"
         )
