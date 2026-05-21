@@ -8,7 +8,7 @@ Generate Makefile from compiletools magic
 
 :Author: drgeoffathome@gmail.com
 :Date:   2024-11-24
-:Version: 10.0.4
+:Version: 10.0.5
 :Manual section: 1
 :Manual group: developers
 

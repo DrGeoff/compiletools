@@ -8,7 +8,7 @@ Legacy helper for pruning stale lockdir directories remotely
 
 :Author: drgeoffathome@gmail.com
 :Date:   2025-11-26
-:Version: 10.0.4
+:Version: 10.0.5
 :Manual section: 1
 :Manual group: developers
 

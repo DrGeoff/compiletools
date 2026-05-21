@@ -8,7 +8,7 @@ Generate compile_commands.json for clang tooling and IDE integration
 
 :Author: drgeoffathome@gmail.com
 :Date:   2026-05-09
-:Version: 10.0.4
+:Version: 10.0.5
 :Manual section: 1
 :Manual group: developers
 
