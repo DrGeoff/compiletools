@@ -8,7 +8,7 @@ Report git blob SHA hashes for files in the repository
 
 :Author: drgeoffathome@gmail.com
 :Date:   2024-11-24
-:Version: 10.0.5
+:Version: 10.0.6
 :Manual section: 1
 :Manual group: developers
 

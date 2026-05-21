@@ -15,7 +15,7 @@ C/C++ build tools that requires almost no configuration.
 
 :Author: drgeoffathome@gmail.com
 :Date:   2026-05-09
-:Version: 10.0.5
+:Version: 10.0.6
 :Manual section: 1
 :Manual group: developers
 
