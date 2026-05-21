@@ -83,6 +83,7 @@ def main(argv=None):
 
         # Parse arguments (use parse_args directly, we don't need compiler substitutions)
         args = cap.parse_args(args=argv)
+        compiletools.apptools.resolve_cas_directory_arguments(args)
         args.verbose -= args.quiet  # Apply quiet adjustment
 
         # If min_lock_age not specified, use lock_cross_host_timeout

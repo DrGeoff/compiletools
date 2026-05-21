@@ -205,16 +205,26 @@ def test_cli_text_output_minimal(tmp_path, capsys):
 
 
 def test_cli_json_output_round_trips(tmp_path, capsys):
-    _make_obj(tmp_path, "aaaaaaaaaaaa", "11111111111111", "0000000000000001", basename="A", size=100)
-    _make_obj(tmp_path, "aaaaaaaaaaaa", "11111111111111", "0000000000000002", basename="A", size=100)
-    _make_obj(tmp_path, "bbbbbbbbbbbb", "22222222222222", "0000000000000003", basename="B", size=200)
+    # The cache_report resolver auto-appends /<variant> to --cas-objdir.
+    # Drive the variant via --config=<extras.conf> so impliedvariant short-circuits
+    # to "extras" without needing to find composable axis conf files on the host.
+    conf = tmp_path / "extras.conf"
+    conf.write_text("")
+    variant_dir = tmp_path / "extras"
+    variant_dir.mkdir()
+    _make_obj(variant_dir, "aaaaaaaaaaaa", "11111111111111", "0000000000000001", basename="A", size=100)
+    _make_obj(variant_dir, "aaaaaaaaaaaa", "11111111111111", "0000000000000002", basename="A", size=100)
+    _make_obj(variant_dir, "bbbbbbbbbbbb", "22222222222222", "0000000000000003", basename="B", size=200)
 
-    rc = cache_report.main([f"--cas-objdir={tmp_path}", "--json"])
+    # --config=<extras.conf> makes impliedvariant short-circuit axis
+    # canonicalization; --variant=extras then ensures args.variant after
+    # cap.parse_args wins over whatever the host's ct.conf set.
+    rc = cache_report.main([f"--cas-objdir={tmp_path}", f"--config={conf}", "--variant=extras", "--json"])
     out = capsys.readouterr().out
     assert rc == 0
 
     data = json.loads(out)
-    assert data["cas-objdir"] == str(tmp_path)
+    assert data["cas-objdir"] == str(variant_dir)
     assert data["total-entries"] == 3
     assert data["total-bytes"] == 400
     assert data["unique-src-deps-count"] == 2

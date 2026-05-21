@@ -1095,6 +1095,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = cap.parse_args(args=argv)
+    compiletools.apptools.resolve_cas_directory_arguments(args)
     args.verbose -= args.quiet
 
     # Scope decision: if the user named one or more --cas-*dir flags

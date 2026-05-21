@@ -91,6 +91,7 @@ def main(argv=None):
         compiletools.apptools.add_output_directory_arguments(cap, variant)
 
         args = cap.parse_args(args=argv)
+        compiletools.apptools.resolve_cas_directory_arguments(args)
         args.verbose -= args.quiet
 
         only_flags = sum(

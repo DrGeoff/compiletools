@@ -519,8 +519,9 @@ class TestCleanupLocksMain:
                 with patch("compiletools.apptools.add_base_arguments"):
                     with patch("compiletools.apptools.add_locking_arguments"):
                         with patch("compiletools.apptools.add_output_directory_arguments"):
-                            with pytest.raises(RuntimeError, match="boom"):
-                                compiletools.cleanup_locks_main.main(argv=[])
+                            with patch("compiletools.apptools.resolve_cas_directory_arguments"):
+                                with pytest.raises(RuntimeError, match="boom"):
+                                    compiletools.cleanup_locks_main.main(argv=[])
 
     def test_exit_code_on_empty_directory(self, tmpdir_with_locks):
         """Test exit code 0 when no locks found."""
@@ -565,6 +566,7 @@ class TestCleanupLocksMain:
             patch("compiletools.apptools.add_base_arguments"),
             patch("compiletools.apptools.add_locking_arguments"),
             patch("compiletools.apptools.add_output_directory_arguments"),
+            patch("compiletools.apptools.resolve_cas_directory_arguments"),
             patch("compiletools.cleanup_locks.LockCleaner", return_value=mock_cleaner),
             patch("compiletools.namer.Namer", return_value=mock_namer),
         ):
@@ -615,6 +617,7 @@ class TestCleanupLocksMain:
             patch("compiletools.apptools.add_base_arguments"),
             patch("compiletools.apptools.add_locking_arguments"),
             patch("compiletools.apptools.add_output_directory_arguments"),
+            patch("compiletools.apptools.resolve_cas_directory_arguments"),
             patch("compiletools.cleanup_locks.LockCleaner", side_effect=OSError(2, "No such file", "/bad")),
         ):
             mock_parser.return_value.parse_args.return_value = mock_args

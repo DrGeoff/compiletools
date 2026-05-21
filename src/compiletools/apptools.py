@@ -391,6 +391,14 @@ def add_cas_directory_arguments(cap, variant):
     without inheriting unrelated build-only knobs (``--bindir``,
     ``--use-mtime``).
 
+    Callers that parse via ``cap.parse_args(argv)`` directly (instead
+    of routing through ``apptools.parseargs(...)``) MUST follow up with
+    ``resolve_cas_directory_arguments(args)`` to apply the
+    ``unsupplied``-sentinel fallback and the variant-suffix auto-append
+    — otherwise ``args.cas_*dir`` will hold the bare conf value, not
+    the variant-suffixed path ct-cake writes to. The contract is
+    grep-enforced by ``test_cas_dir_resolver_contract.py``.
+
     Safe to call more than once on the same parser.
     """
     if _parser_has_option(cap, "--cas-objdir"):
@@ -456,6 +464,89 @@ def add_cas_directory_arguments(cap, variant):
         ),
         default=default_cas_exedir,
     )
+
+
+def resolve_cas_directory_arguments(args):
+    """Apply the unsupplied-sentinel defaults and variant-suffix
+    auto-append to ``args.cas_objdir`` / ``cas_pchdir`` / ``cas_pcmdir``
+    / ``cas_exedir`` using ``args.variant`` as the suffix. Idempotent.
+
+    REQUIRED follow-up to ``add_cas_directory_arguments`` when the
+    caller parses with ``cap.parse_args(argv)`` directly instead of
+    routing through ``apptools.parseargs(...)``. Diagnostic-only tools
+    that bypass ``parseargs`` (ct-cache-report, ct-trim-cache,
+    ct-cleanup-locks) call this so they see the same resolved paths
+    ct-cake writes to. The contract is enforced by
+    ``test_cas_dir_resolver_contract.py``.
+
+    Uses ``args.variant`` (the post-parse value) rather than an
+    early-extracted variant: ``configutils.extract_variant(argv)``
+    can return a stale value when a ``--config`` file's basename is
+    interpreted as an axis (the working precedent inside
+    ``_commonsubstitutions`` always used ``args.variant``).
+
+    Missing attrs on ``args`` are tolerated — the resolver only
+    touches attributes that were registered by
+    ``add_cas_directory_arguments`` (or its caller
+    ``add_output_directory_arguments``).
+    """
+    variant = args.variant
+    try:
+        # Same idea as the bindir modification -- use cas-objdir at git root if available
+        git_root = compiletools.git_utils.find_git_root()
+        if git_root:
+            default_cas_objdir = os.path.join(git_root, "cas-objdir", variant)
+        else:
+            default_cas_objdir = os.path.join(args.bindir, "obj")
+        args.cas_objdir = unsupplied_replacement(args.cas_objdir, default_cas_objdir, args.verbose, "cas-objdir")
+        args.cas_objdir = _ensure_variant_suffix(args.cas_objdir, variant)
+    except AttributeError:
+        pass
+
+    try:
+        git_root = compiletools.git_utils.find_git_root()
+        if git_root:
+            default_cas_pchdir = os.path.join(git_root, "cas-pchdir", variant)
+        else:
+            default_cas_pchdir = os.path.join(args.bindir, "pch")
+        args.cas_pchdir = unsupplied_replacement(args.cas_pchdir, default_cas_pchdir, args.verbose, "cas-pchdir")
+        args.cas_pchdir = _ensure_variant_suffix(args.cas_pchdir, variant)
+    except AttributeError:
+        pass
+
+    try:
+        git_root = compiletools.git_utils.find_git_root()
+        if git_root:
+            default_cas_pcmdir = os.path.join(git_root, "cas-pcmdir", variant)
+        else:
+            default_cas_pcmdir = os.path.join(args.bindir, "pcm")
+        args.cas_pcmdir = unsupplied_replacement(args.cas_pcmdir, default_cas_pcmdir, args.verbose, "cas-pcmdir")
+        args.cas_pcmdir = _ensure_variant_suffix(args.cas_pcmdir, variant)
+    except AttributeError:
+        pass
+
+    try:
+        git_root = compiletools.git_utils.find_git_root()
+        if git_root:
+            default_cas_exedir = os.path.join(git_root, "cas-exedir", variant)
+        else:
+            default_cas_exedir = os.path.join(args.bindir, "exe")
+            # M1: when no gitroot is detected, the cas-exedir lands
+            # inside the working tree but isn't necessarily gitignored.
+            # Surface this so users can `.gitignore` the dir themselves
+            # before they accidentally commit cache entries.
+            if args.verbose >= 1:
+                import sys
+
+                print(
+                    f"WARN: cas-exedir defaulted to {default_cas_exedir!r} (no gitroot detected). "
+                    f"Add to .gitignore manually if this directory lives inside a VCS-tracked tree.",
+                    file=sys.stderr,
+                )
+        args.cas_exedir = unsupplied_replacement(args.cas_exedir, default_cas_exedir, args.verbose, "cas-exedir")
+        args.cas_exedir = _ensure_variant_suffix(args.cas_exedir, variant)
+    except AttributeError:
+        pass
 
 
 def add_output_directory_arguments(cap, variant):
@@ -2687,62 +2778,7 @@ def _commonsubstitutions(args):
     except AttributeError:
         pass
 
-    try:
-        # Same idea as the bindir modification -- use cas-objdir at git root if available
-        git_root = compiletools.git_utils.find_git_root()
-        if git_root:
-            default_cas_objdir = os.path.join(git_root, "cas-objdir", args.variant)
-        else:
-            default_cas_objdir = os.path.join(args.bindir, "obj")
-        args.cas_objdir = unsupplied_replacement(args.cas_objdir, default_cas_objdir, args.verbose, "cas-objdir")
-        args.cas_objdir = _ensure_variant_suffix(args.cas_objdir, args.variant)
-    except AttributeError:
-        pass
-
-    try:
-        git_root = compiletools.git_utils.find_git_root()
-        if git_root:
-            default_cas_pchdir = os.path.join(git_root, "cas-pchdir", args.variant)
-        else:
-            default_cas_pchdir = os.path.join(args.bindir, "pch")
-        args.cas_pchdir = unsupplied_replacement(args.cas_pchdir, default_cas_pchdir, args.verbose, "cas-pchdir")
-        args.cas_pchdir = _ensure_variant_suffix(args.cas_pchdir, args.variant)
-    except AttributeError:
-        pass
-
-    try:
-        git_root = compiletools.git_utils.find_git_root()
-        if git_root:
-            default_cas_pcmdir = os.path.join(git_root, "cas-pcmdir", args.variant)
-        else:
-            default_cas_pcmdir = os.path.join(args.bindir, "pcm")
-        args.cas_pcmdir = unsupplied_replacement(args.cas_pcmdir, default_cas_pcmdir, args.verbose, "cas-pcmdir")
-        args.cas_pcmdir = _ensure_variant_suffix(args.cas_pcmdir, args.variant)
-    except AttributeError:
-        pass
-
-    try:
-        git_root = compiletools.git_utils.find_git_root()
-        if git_root:
-            default_cas_exedir = os.path.join(git_root, "cas-exedir", args.variant)
-        else:
-            default_cas_exedir = os.path.join(args.bindir, "exe")
-            # M1: when no gitroot is detected, the cas-exedir lands
-            # inside the working tree but isn't necessarily gitignored.
-            # Surface this so users can `.gitignore` the dir themselves
-            # before they accidentally commit cache entries.
-            if args.verbose >= 1:
-                import sys
-
-                print(
-                    f"WARN: cas-exedir defaulted to {default_cas_exedir!r} (no gitroot detected). "
-                    f"Add to .gitignore manually if this directory lives inside a VCS-tracked tree.",
-                    file=sys.stderr,
-                )
-        args.cas_exedir = unsupplied_replacement(args.cas_exedir, default_cas_exedir, args.verbose, "cas-exedir")
-        args.cas_exedir = _ensure_variant_suffix(args.cas_exedir, args.variant)
-    except AttributeError:
-        pass
+    resolve_cas_directory_arguments(args)
 
     # Anchor --test-xml-dir to gitroot so the value survives a `cd` into
     # a subdirectory between parseargs and the build, matching how
