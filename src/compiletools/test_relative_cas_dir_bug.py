@@ -164,11 +164,15 @@ def test_absolute_cas_root_outside_gitroot_builds(tmp_path):
     assert not sorted((repo / "abscache").rglob("*.gch"))
 
 
-def test_resolve_cas_directory_arguments_gitroot_anchors_relative(monkeypatch):
+def test_resolve_cas_directory_arguments_gitroot_anchors_relative(tmp_path, monkeypatch):
     """Fast, compiler-free check of the resolver's anchoring semantics:
     relative cas dirs anchor to the gitroot, absolute ones pass through, and the
     whole thing is idempotent.
     """
+    # Run from a controlled cwd that differs from the (faked) gitroot, so the
+    # gitroot != cwd anchor gate fires deterministically rather than relying on
+    # the ambient test cwd.
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(compiletools.git_utils, "find_git_root", lambda *a, **k: "/fake/gitroot")
     args = argparse.Namespace(
         variant="gcc.debug",
@@ -193,3 +197,42 @@ def test_resolve_cas_directory_arguments_gitroot_anchors_relative(monkeypatch):
     snapshot = (args.cas_objdir, args.cas_pchdir, args.cas_pcmdir, args.cas_exedir)
     compiletools.apptools.resolve_cas_directory_arguments(args)
     assert (args.cas_objdir, args.cas_pchdir, args.cas_pcmdir, args.cas_exedir) == snapshot
+
+
+def test_relative_cas_dir_resolves_to_same_location_from_any_cwd(tmp_path, monkeypatch):
+    """cwd-independence: a relative ``--cas-objdir`` resolves to the SAME physical
+    cache whether ct-cake is invoked from the gitroot or from a subdir of it.
+
+    This is the user-facing win of gitroot-anchoring -- ct-cake and the
+    diagnostic tools (which share the resolver) agree on the cache location
+    regardless of where they are invoked. Compiler-free: it exercises the
+    resolver against a real planted-``.git`` gitroot.
+    """
+    repo = tmp_path / "repo"
+    sub = repo / "sub"
+    sub.mkdir(parents=True)
+    (repo / ".git").mkdir()  # makes find_git_root() resolve to <repo> from both cwds
+
+    def _physical_cas_objdir(cwd: pathlib.Path) -> str:
+        monkeypatch.chdir(cwd)
+        args = argparse.Namespace(
+            variant="gcc.debug",
+            bindir=str(repo / "bin"),
+            verbose=0,
+            cas_objdir="relcache/obj",
+            cas_pchdir="relcache/pch",
+            cas_pcmdir="relcache/pcm",
+            cas_exedir="relcache/exe",
+        )
+        compiletools.apptools.resolve_cas_directory_arguments(args)
+        # From the gitroot the value stays relative (gate skips); from a subdir
+        # it is anchored to an absolute gitroot path. Either way the *physical*
+        # location is the relative value resolved against the invocation cwd
+        # (== make's cwd), so resolve it that way for an apples-to-apples compare.
+        return os.path.realpath(os.path.join(str(cwd), args.cas_objdir))
+
+    from_gitroot = _physical_cas_objdir(repo)
+    from_subdir = _physical_cas_objdir(sub)
+    expected = os.path.realpath(repo / "relcache" / "obj" / "gcc.debug")
+    assert from_gitroot == expected, from_gitroot
+    assert from_subdir == expected, from_subdir

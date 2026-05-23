@@ -64,8 +64,11 @@ def _clear_apptools_cache(monkeypatch, _functional_cxx):  # pyright: ignore[repo
 def _parse_conf(conf_path: str, third_cwd, monkeypatch) -> argparse.Namespace:
     """Parse a single --config=<conf_path> from third_cwd.
 
-    --no-git-root short-circuits find_git_root so the test is
-    insensitive to whether the temp dir lives inside a git checkout.
+    The temp dir is outside any git checkout, so find_git_root() returns
+    the cwd and resolve_cas_directory_arguments leaves a bare-relative
+    cas dir literal (its gitroot-vs-cwd anchor gate doesn't fire) -- what
+    the no-auto-anchor tests assert. --no-git-root is passed too, but the
+    cas-dir resolver calls find_git_root() directly and does not consult it.
 
     add_output_directory_arguments registers --cas-objdir (and siblings)
     so the tests can assert on args.cas_objdir directly."""
