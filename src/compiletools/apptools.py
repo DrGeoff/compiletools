@@ -469,7 +469,33 @@ def add_cas_directory_arguments(cap, variant):
 def resolve_cas_directory_arguments(args):
     """Apply the unsupplied-sentinel defaults and variant-suffix
     auto-append to ``args.cas_objdir`` / ``cas_pchdir`` / ``cas_pcmdir``
-    / ``cas_exedir`` using ``args.variant`` as the suffix. Idempotent.
+    / ``cas_exedir`` using ``args.variant`` as the suffix, then anchor
+    any *relative* cas dir to the gitroot. Idempotent.
+
+    Gitroot-anchoring (``os.path.join(git_root, value)``, a no-op for
+    already-absolute values) makes a relative ``--cas-*dir`` mean
+    "relative to the gitroot" — matching the gitroot-anchored default.
+    It is applied only when the gitroot differs from the invocation cwd
+    (i.e. ct-cake was invoked from a subdir of the gitroot — the only
+    case that trips the bug below). From the gitroot itself, or outside
+    any repo (where ``find_git_root()`` falls back to the cwd), a
+    relative value is left as-is, preserving the documented
+    bare-relative-stays-literal contract (``test_conf_env_expansion``).
+    This is load-bearing for two reasons:
+
+    * The PCH/PCM precompile rules run under ``cwd=anchor_root``
+      (``cd <gitroot> && g++ ... -o <cas-path>``) for cross-user
+      byte-identity; a relative ``-o`` would resolve against the gitroot
+      after the ``cd`` rather than the invocation cwd, so building from a
+      subdir of the gitroot with a relative cas dir failed with "cannot
+      create precompiled header ...: No such file or directory". See
+      ``test_relative_cas_dir_bug.py``.
+    * ``canonicalize_path_for_cache_key`` is a textual string-prefix op,
+      so cross-user cache-key stability needs the cas-dir string to share
+      the exact ``anchor_root`` prefix. Anchoring with the same
+      ``find_git_root()`` value the build's ``anchor_root`` uses
+      guarantees that; cwd-based ``abspath`` would not under
+      symlinked / NFS-automounted checkouts.
 
     REQUIRED follow-up to ``add_cas_directory_arguments`` when the
     caller parses with ``cap.parse_args(argv)`` directly instead of
@@ -491,6 +517,14 @@ def resolve_cas_directory_arguments(args):
     ``add_output_directory_arguments``).
     """
     variant = args.variant
+    # Only gitroot-anchor a relative cas dir when the gitroot actually differs
+    # from the invocation cwd -- i.e. ct-cake was invoked from a subdir of the
+    # gitroot, which is the only case that trips the precompile-rule bug
+    # (``cd <gitroot> && -o <relpath>``). When there is no real repo,
+    # ``find_git_root()`` falls back to returning the cwd, so this guard also
+    # leaves bare-relative cas dirs untouched outside a repo (the documented
+    # no-auto-anchor contract; see test_conf_env_expansion).
+    cwd_real = os.path.realpath(os.getcwd())
     try:
         # Same idea as the bindir modification -- use cas-objdir at git root if available
         git_root = compiletools.git_utils.find_git_root()
@@ -500,6 +534,8 @@ def resolve_cas_directory_arguments(args):
             default_cas_objdir = os.path.join(args.bindir, "obj")
         args.cas_objdir = unsupplied_replacement(args.cas_objdir, default_cas_objdir, args.verbose, "cas-objdir")
         args.cas_objdir = _ensure_variant_suffix(args.cas_objdir, variant)
+        if git_root and os.path.realpath(git_root) != cwd_real:
+            args.cas_objdir = os.path.normpath(os.path.join(git_root, args.cas_objdir))
     except AttributeError:
         pass
 
@@ -511,6 +547,8 @@ def resolve_cas_directory_arguments(args):
             default_cas_pchdir = os.path.join(args.bindir, "pch")
         args.cas_pchdir = unsupplied_replacement(args.cas_pchdir, default_cas_pchdir, args.verbose, "cas-pchdir")
         args.cas_pchdir = _ensure_variant_suffix(args.cas_pchdir, variant)
+        if git_root and os.path.realpath(git_root) != cwd_real:
+            args.cas_pchdir = os.path.normpath(os.path.join(git_root, args.cas_pchdir))
     except AttributeError:
         pass
 
@@ -522,6 +560,8 @@ def resolve_cas_directory_arguments(args):
             default_cas_pcmdir = os.path.join(args.bindir, "pcm")
         args.cas_pcmdir = unsupplied_replacement(args.cas_pcmdir, default_cas_pcmdir, args.verbose, "cas-pcmdir")
         args.cas_pcmdir = _ensure_variant_suffix(args.cas_pcmdir, variant)
+        if git_root and os.path.realpath(git_root) != cwd_real:
+            args.cas_pcmdir = os.path.normpath(os.path.join(git_root, args.cas_pcmdir))
     except AttributeError:
         pass
 
@@ -545,6 +585,8 @@ def resolve_cas_directory_arguments(args):
                 )
         args.cas_exedir = unsupplied_replacement(args.cas_exedir, default_cas_exedir, args.verbose, "cas-exedir")
         args.cas_exedir = _ensure_variant_suffix(args.cas_exedir, variant)
+        if git_root and os.path.realpath(git_root) != cwd_real:
+            args.cas_exedir = os.path.normpath(os.path.join(git_root, args.cas_exedir))
     except AttributeError:
         pass
 
@@ -3226,12 +3268,11 @@ class _AccumulatingConfigFileParser(configargparse.DefaultConfigFileParser):
         segment_lineno = 0
         for i, line in enumerate(stream):
             stripped = line.strip()
-            if (
-                stripped.startswith(_CONF_DIR_SEGMENT_HEADER_PREFIX)
-                and stripped.endswith(_CONF_DIR_SEGMENT_HEADER_SUFFIX)
+            if stripped.startswith(_CONF_DIR_SEGMENT_HEADER_PREFIX) and stripped.endswith(
+                _CONF_DIR_SEGMENT_HEADER_SUFFIX
             ):
                 header_path = stripped[
-                    len(_CONF_DIR_SEGMENT_HEADER_PREFIX):-len(_CONF_DIR_SEGMENT_HEADER_SUFFIX)
+                    len(_CONF_DIR_SEGMENT_HEADER_PREFIX) : -len(_CONF_DIR_SEGMENT_HEADER_SUFFIX)
                 ].strip()
                 # Existence check rejects user-authored comments matching
                 # the header shape but naming fictional paths.

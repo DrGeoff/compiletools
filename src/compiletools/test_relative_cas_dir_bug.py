@@ -1,50 +1,52 @@
-"""Pin a latent build-backend bug: a *relative* ``--cas-pchdir`` breaks the PCH
-precompile rule when ct-cake is invoked from a subdirectory of the gitroot.
+"""Regression guard for the relative-cas-dir / PCH-precompile interaction.
 
-Root cause (``build_backend.py``, ``_create_pch_rules``, the
-``rule_cwd = anchor_root`` branch). For cross-user PCH byte-identity the rule
-passes the PCH source *relative to the gitroot* and runs the compiler under
-``cwd = anchor_root`` (``cd <gitroot> && g++ ...``). But the ``-o`` output path
-(the cas-pchdir target) and the ``mv`` targets are emitted relative to the
-*invocation cwd*, not the gitroot. When ``--cas-pchdir`` is a relative path and
-the invocation cwd is a subdirectory of the gitroot, ``make`` creates the cache
-directory relative to its own cwd while ``cd <gitroot> && g++ -o <relpath>``
-resolves the same relative path against the gitroot -- a different, nonexistent
-directory -- and gcc fails with ``cannot create precompiled header ...: No such
-file or directory``. The C++20 module/BMI rule (the symmetric
-``pcm_rule_cwd = anchor_root`` branch) shares the flaw.
+History. The PCH/PCM precompile rules run the compiler under
+``cwd = anchor_root`` (``cd <gitroot> && g++ ... -o <cas-path>``) and pass the
+*source* gitroot-relative, for cross-user PCH byte-identity
+(``build_backend.py``, ``_create_pch_rules`` / the ``pcm_rule_cwd`` branch). The
+``-o`` output path, however, is emitted verbatim. So when ``--cas-pchdir`` was a
+*relative* path and ct-cake was invoked from a subdirectory of the gitroot, the
+relative ``-o`` resolved against the gitroot *after* the ``cd`` instead of the
+invocation cwd, and gcc failed with ``cannot create precompiled header ...: No
+such file or directory``.
 
-Three scenarios, each invoked from a subdir of the gitroot:
+Fix. ``apptools.resolve_cas_directory_arguments`` now anchors any *relative* cas
+dir to the gitroot (``os.path.join(find_git_root(), value)``, a no-op for
+already-absolute values), reusing the same ``find_git_root()`` value the build's
+``anchor_root`` uses. So the precompile rule always receives an absolute ``-o``,
+and a relative ``--cas-*dir`` consistently means "relative to the gitroot"
+(matching the gitroot-anchored default) regardless of the invocation cwd.
+Gitroot-anchoring -- not cwd-based ``abspath`` -- is required because
+``canonicalize_path_for_cache_key`` is a textual string-prefix op, so cross-user
+byte-identity needs the cas-dir string to share the exact ``anchor_root`` prefix.
 
-  1. ``relative`` CAS root -> the build FAILS with the PCH-output-path
-     signature. PINS CURRENT (BUGGY) BEHAVIOR.
-  2. ``absolute`` CAS root *under* the gitroot -> the build succeeds (the
-     documented workaround).
-  3. ``absolute`` CAS root *outside* the gitroot -> the build succeeds. This is
-     the realistic shared-CAS deployment (a team's CAS on an NFS/SMB mount,
-     off the source tree); it also exercises the "outside-gitroot" branch of
-     ``apptools.canonicalize_path_for_cache_key`` (object paths are not under
-     ``<gitroot>`` so they keep absolute, user-consistent strings in the link
-     key). A ``tmp_path`` sibling of the repo reproduces the *path/layout*
-     dimension faithfully and hermetically; it does NOT reproduce NFS/SMB
-     *filesystem semantics* (locking-strategy selection, ``EXDEV`` on the
-     cas-exedir hardlink-publish, mtime granularity) -- those are FS-type
-     driven and need a real mount, and are covered by the locking tests.
+These tests, all invoked from a subdir of the gitroot, guard the fix:
 
-When the backend is fixed (e.g. gitroot-anchor relative cas dirs in
-``resolve_cas_directory_arguments``, or absolutize the precompile rule's
-``-o`` / ``mv`` paths before the ``cd <anchor_root> &&`` wrapper), scenario 1
-will start building successfully and must be flipped to assert success.
-See ``examples-features/relative_cas_dir_bug/README.md``.
+  1. ``relative`` CAS root -> builds, and the cache lands at the *gitroot*-
+     anchored location (not the cwd). This is the case that used to fail.
+  2. ``absolute`` CAS root *under* the gitroot -> builds (unchanged).
+  3. ``absolute`` CAS root *outside* the gitroot -> builds. The realistic
+     shared-CAS deployment (a team's cache on an NFS/SMB mount, off the source
+     tree); exercises the outside-gitroot canonicalization branch. A
+     ``tmp_path`` sibling of the repo reproduces the *path/layout* dimension
+     faithfully; it does NOT reproduce NFS/SMB *filesystem semantics*
+     (locking-strategy selection, ``EXDEV`` on the cas-exedir hardlink-publish,
+     mtime granularity) -- those are FS-type driven, need a real mount, and are
+     covered by the locking tests.
+
+A fast, compiler-free unit test pins the resolver's anchoring semantics directly.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import pathlib
 import shutil
 import subprocess
 
+import compiletools.apptools
+import compiletools.git_utils
 import compiletools.testhelper as uth
 from compiletools.examples_registry import example_path
 
@@ -55,8 +57,9 @@ def _nested_workspace(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Pat
 
     The ``.git`` marker at ``<repo>`` makes ct-cake resolve the gitroot ABOVE
     the invocation cwd (``<repo>/sub``) -- the structural precondition for the
-    bug. (``copy_example_workspace`` plants ``.git`` at the copy destination, so
-    it cannot produce a cwd-below-gitroot layout; hence the manual setup here.)
+    historical bug. (``copy_example_workspace`` plants ``.git`` at the copy
+    destination, so it cannot produce a cwd-below-gitroot layout; hence the
+    manual setup here.)
     """
     repo = tmp_path / "repo"
     sub = repo / "sub"
@@ -73,10 +76,10 @@ def _build(sub: pathlib.Path, repo: pathlib.Path, cas_root) -> subprocess.Comple
     """Run ct-cake on ``widget.cpp`` from ``<sub>``, with all four cas dirs under
     ``cas_root``.
 
-    ``cas_root`` may be relative (the bug case) or absolute (the workarounds).
-    The bindir stays absolute under the workspace -- it is a user-facing build
-    product, not part of the CAS-location question under test. Host ``*FLAGS``
-    are stripped so the build isn't at the mercy of the operator's environment.
+    ``cas_root`` may be relative or absolute. The bindir stays absolute under the
+    workspace -- it is a user-facing build product, not part of the
+    CAS-location question under test. Host ``*FLAGS`` are stripped so the build
+    isn't at the mercy of the operator's environment.
     """
     cas_root = str(cas_root)
     argv = [
@@ -95,39 +98,33 @@ def _build(sub: pathlib.Path, repo: pathlib.Path, cas_root) -> subprocess.Comple
 
 
 @uth.requires_functional_compiler
-def test_relative_cas_root_from_subdir_breaks_pch_rule(tmp_path):
-    """Relative CAS root + cwd below the gitroot -> the PCH rule fails.
-
-    Pins the current latent bug; see the module docstring for the flip-on-fix
-    instruction.
+def test_relative_cas_root_from_subdir_anchors_to_gitroot(tmp_path):
+    """Relative CAS root + cwd below the gitroot -> builds, anchored to the
+    gitroot. This is the case that used to fail with the PCH-output-path error.
     """
     repo, sub = _nested_workspace(tmp_path)
-    # Relative cas dirs: resolved against cwd=sub by make, but the PCH rule cd's
-    # to the gitroot before invoking gcc -- so the relative -o path points at
-    # <gitroot>/relcache, which does not exist.
     result = _build(sub, repo, "relcache")
 
-    assert result.returncode != 0, (
-        "expected the relative-cas-root build to FAIL (this test pins the "
-        "current latent bug); if it now succeeds the backend was fixed -- flip "
-        "this assertion to assert success and update the README.\n"
-        f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
+    assert result.returncode == 0, (
+        "a relative cas root from a subdir of the gitroot should now build "
+        "(gitroot-anchored). If this fails with 'cannot create precompiled "
+        "header ... No such file or directory', the resolver anchoring "
+        f"regressed.\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
     )
-    combined = result.stdout + result.stderr
-    assert "cannot create precompiled header" in combined and "No such file or directory" in combined, (
-        "the build failed, but not with the relative-cas PCH-output-path "
-        "signature -- the failure is something else and this test is no longer "
-        f"pinning the intended bug.\n--- stderr ---\n{result.stderr}"
+    # The cache is anchored to the gitroot, NOT the invocation cwd.
+    assert sorted((repo / "relcache" / "pch").rglob("*.gch")), (
+        f"expected the cached .gch under the gitroot-anchored {repo}/relcache/pch"
+    )
+    assert not (sub / "relcache").exists(), (
+        "the cache was created relative to the invocation cwd (cwd-anchored), "
+        "not the gitroot -- the fix must gitroot-anchor, not abspath-from-cwd."
     )
 
 
 @uth.requires_functional_compiler
-def test_absolute_cas_root_under_gitroot_is_the_workaround(tmp_path):
-    """Absolute CAS root under the gitroot builds cleanly (the documented
-    workaround)."""
+def test_absolute_cas_root_under_gitroot_builds(tmp_path):
+    """Absolute CAS root under the gitroot builds (unchanged by the fix)."""
     repo, sub = _nested_workspace(tmp_path)
-    # Absolute cas dirs: the PCH rule's -o is absolute, so the cd <gitroot> is
-    # harmless and the build succeeds.
     cas_root = repo / "abscache"
     result = _build(sub, repo, cas_root)
 
@@ -165,3 +162,34 @@ def test_absolute_cas_root_outside_gitroot_builds(tmp_path):
     assert gch, f"expected the cached .gch to land in the off-tree CAS {external}/pch"
     # The artifact really lives outside the gitroot, not silently inside it.
     assert not sorted((repo / "abscache").rglob("*.gch"))
+
+
+def test_resolve_cas_directory_arguments_gitroot_anchors_relative(monkeypatch):
+    """Fast, compiler-free check of the resolver's anchoring semantics:
+    relative cas dirs anchor to the gitroot, absolute ones pass through, and the
+    whole thing is idempotent.
+    """
+    monkeypatch.setattr(compiletools.git_utils, "find_git_root", lambda *a, **k: "/fake/gitroot")
+    args = argparse.Namespace(
+        variant="gcc.debug",
+        bindir="/fake/gitroot/bin",
+        verbose=0,
+        cas_objdir="relcache/obj",
+        cas_pchdir="/abs/elsewhere/pch",  # absolute -> must pass through, not be re-anchored
+        cas_pcmdir="relcache/pcm",
+        cas_exedir="relcache/exe",
+    )
+    compiletools.apptools.resolve_cas_directory_arguments(args)
+
+    assert args.cas_objdir.startswith("/fake/gitroot/relcache/obj")
+    assert args.cas_pcmdir.startswith("/fake/gitroot/relcache/pcm")
+    assert args.cas_exedir.startswith("/fake/gitroot/relcache/exe")
+    # An absolute cas dir (e.g. an NFS mount) is left where it is, not pulled
+    # under the gitroot.
+    assert args.cas_pchdir.startswith("/abs/elsewhere/pch")
+    assert not args.cas_pchdir.startswith("/fake/gitroot")
+
+    # Idempotent: a second resolve must not change anything.
+    snapshot = (args.cas_objdir, args.cas_pchdir, args.cas_pcmdir, args.cas_exedir)
+    compiletools.apptools.resolve_cas_directory_arguments(args)
+    assert (args.cas_objdir, args.cas_pchdir, args.cas_pcmdir, args.cas_exedir) == snapshot
