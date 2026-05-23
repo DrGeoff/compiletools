@@ -49,6 +49,7 @@ EXAMPLES_E2E: frozenset[str] = frozenset(
         "macro_state_dependency",
         "magicinclude",
         "magicsourceinheader",
+        "moonlander",
         "movingheaders",
         "multi_axis_variant",
         "nestedconfig",

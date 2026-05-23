@@ -203,6 +203,10 @@ _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
     "cxx_modules_import_std": ExamplePlan(skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED),
     # Header units: full cross-backend coverage thanks to upstream fix.
     "cxx_modules_header_units": _VANILLA,
+    # The canonical CAS-showcase game: a named module (lander.physics) plus a
+    # PCH (terminal.cpp) in separate TUs. Follows the named-module blocklist so
+    # it tracks the same per-backend support as the other module examples.
+    "moonlander": ExamplePlan(skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED),
 }
 
 
