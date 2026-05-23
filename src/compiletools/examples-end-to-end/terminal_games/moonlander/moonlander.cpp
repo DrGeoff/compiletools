@@ -1,20 +1,26 @@
 // ct-exemarker
 //
-// game.cpp — the interactive Moon Lander. The only seam that touches both the
-// pure simulation (import lander.physics) and the terminal facade (#include
+// moonlander.cpp — the interactive Moon Lander. The only seam that touches both
+// the pure simulation (import lander.physics) and the terminal facade (#include
 // "terminal.h"): read a key, step the physics, render an ASCII frame from the
 // state, write it. It deliberately uses neither a PCH nor heavy system headers,
 // so PCH and `import` never mix in one TU.
 //
 // CAS: this TU's object is cached in cas-objdir and the linked executable in
 // cas-exedir.
-import lander.physics;
-
+//
+// The textual #includes precede `import lander.physics;`: under gcc
+// -fmodules-ts, importing first can pull the module's global-module-fragment
+// headers into the global module and clash with the same headers re-included
+// textually via terminal.h. Headers-then-import keeps the global module
+// consistent across all four games.
 #include "terminal.h"
 
 #include <cstdio>
 #include <format>
 #include <string>
+
+import lander.physics;
 
 namespace {
 

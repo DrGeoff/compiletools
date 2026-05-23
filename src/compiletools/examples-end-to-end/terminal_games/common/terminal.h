@@ -46,4 +46,7 @@ void sleep_ms(int milliseconds) noexcept;
 // Visible terminal height in rows; falls back to 24 if it can't be queried.
 int rows() noexcept;
 
+// Visible terminal width in columns; falls back to 80 if it can't be queried.
+int cols() noexcept;
+
 }  // namespace term

@@ -79,4 +79,11 @@ int rows() noexcept {
     return 24;
 }
 
+int cols() noexcept {
+    winsize ws{};
+    if (::ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+        return ws.ws_col;
+    return 80;
+}
+
 }  // namespace term
