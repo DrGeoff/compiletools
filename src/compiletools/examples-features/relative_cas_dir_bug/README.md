@@ -54,11 +54,28 @@ pattern, so a relative `--cas-pcmdir` from a subdir shares the same flaw.
 
 ## Workaround
 
-Pass **absolute** `--cas-*dir` paths, or invoke ct-cake from the gitroot.
+Pass **absolute** `--cas-*dir` paths, or invoke ct-cake from the gitroot. The
+realistic shared-CAS deployment — a team's cache on an NFS/SMB mount, off the
+source tree — already uses absolute paths (e.g. `--cas-pchdir=/mnt/ct-cache/pch`)
+and is therefore unaffected. `test_relative_cas_dir_bug.py` covers that off-tree
+case alongside the relative bug and the under-gitroot workaround.
 
 ## Fix sketch (not applied here)
 
-Absolutize the PCH/PCM rule's `-o` and `mv` output paths (and the `flock`
-sidecar path) against the invocation cwd before the rule is wrapped with
-`cd <anchor_root> &&`. The source path must stay gitroot-relative for
-byte-identity; only the cache-output paths need absolutizing.
+The clean fix is at the single resolution chokepoint: in
+`apptools.resolve_cas_directory_arguments`, resolve a *relative* cas dir against
+the **gitroot** — `os.path.join(find_git_root(), value)`, reusing the same
+`git_root` the resolver already computes and that the build's `anchor_root`
+uses. `os.path.join` passes absolute values through unchanged, so absolute and
+default cas dirs are untouched; only relative ones are anchored.
+
+Gitroot-anchoring (rather than cwd-anchoring, e.g. `os.path.abspath`) is the
+*correct* form: `apptools.canonicalize_path_for_cache_key` is a textual
+string-prefix operation, so cross-user byte-identity depends on the cas-dir
+string sharing the exact `anchor_root` prefix. Gitroot-anchoring guarantees that
+by construction; cwd-anchoring only achieves it when `getcwd()` and
+`git rev-parse --show-toplevel` agree textually, which fails under symlinked /
+NFS-automounted checkouts. The lone behavioural delta is that a relative cas dir
+now means "relative to the gitroot" (matching the default) regardless of the
+invocation cwd. The source path must still stay gitroot-relative for
+byte-identity; only the cache *location* is being anchored.
