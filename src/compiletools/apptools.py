@@ -524,6 +524,11 @@ def resolve_cas_directory_arguments(args):
     # ``find_git_root()`` falls back to returning the cwd, so this guard also
     # leaves bare-relative cas dirs untouched outside a repo (the documented
     # no-auto-anchor contract; see test_conf_env_expansion).
+    #
+    # The per-block ``git_root`` is realpath'd via the cached wrappedos wrapper
+    # (the same value across all four blocks -> three cache hits); ``cwd_real``
+    # is a one-off direct read. Both inputs are absolute strings, so neither is
+    # subject to the chdir footgun (CLAUDE.md "wrappedos" Caveat #3).
     cwd_real = os.path.realpath(os.getcwd())
     try:
         # Same idea as the bindir modification -- use cas-objdir at git root if available
@@ -534,7 +539,7 @@ def resolve_cas_directory_arguments(args):
             default_cas_objdir = os.path.join(args.bindir, "obj")
         args.cas_objdir = unsupplied_replacement(args.cas_objdir, default_cas_objdir, args.verbose, "cas-objdir")
         args.cas_objdir = _ensure_variant_suffix(args.cas_objdir, variant)
-        if git_root and os.path.realpath(git_root) != cwd_real:
+        if git_root and compiletools.wrappedos.realpath(git_root) != cwd_real:
             args.cas_objdir = compiletools.wrappedos.normpath(os.path.join(git_root, args.cas_objdir))
     except AttributeError:
         pass
@@ -547,7 +552,7 @@ def resolve_cas_directory_arguments(args):
             default_cas_pchdir = os.path.join(args.bindir, "pch")
         args.cas_pchdir = unsupplied_replacement(args.cas_pchdir, default_cas_pchdir, args.verbose, "cas-pchdir")
         args.cas_pchdir = _ensure_variant_suffix(args.cas_pchdir, variant)
-        if git_root and os.path.realpath(git_root) != cwd_real:
+        if git_root and compiletools.wrappedos.realpath(git_root) != cwd_real:
             args.cas_pchdir = compiletools.wrappedos.normpath(os.path.join(git_root, args.cas_pchdir))
     except AttributeError:
         pass
@@ -560,7 +565,7 @@ def resolve_cas_directory_arguments(args):
             default_cas_pcmdir = os.path.join(args.bindir, "pcm")
         args.cas_pcmdir = unsupplied_replacement(args.cas_pcmdir, default_cas_pcmdir, args.verbose, "cas-pcmdir")
         args.cas_pcmdir = _ensure_variant_suffix(args.cas_pcmdir, variant)
-        if git_root and os.path.realpath(git_root) != cwd_real:
+        if git_root and compiletools.wrappedos.realpath(git_root) != cwd_real:
             args.cas_pcmdir = compiletools.wrappedos.normpath(os.path.join(git_root, args.cas_pcmdir))
     except AttributeError:
         pass
@@ -585,7 +590,7 @@ def resolve_cas_directory_arguments(args):
                 )
         args.cas_exedir = unsupplied_replacement(args.cas_exedir, default_cas_exedir, args.verbose, "cas-exedir")
         args.cas_exedir = _ensure_variant_suffix(args.cas_exedir, variant)
-        if git_root and os.path.realpath(git_root) != cwd_real:
+        if git_root and compiletools.wrappedos.realpath(git_root) != cwd_real:
             args.cas_exedir = compiletools.wrappedos.normpath(os.path.join(git_root, args.cas_exedir))
     except AttributeError:
         pass
