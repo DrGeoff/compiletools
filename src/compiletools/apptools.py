@@ -535,7 +535,7 @@ def resolve_cas_directory_arguments(args):
         args.cas_objdir = unsupplied_replacement(args.cas_objdir, default_cas_objdir, args.verbose, "cas-objdir")
         args.cas_objdir = _ensure_variant_suffix(args.cas_objdir, variant)
         if git_root and os.path.realpath(git_root) != cwd_real:
-            args.cas_objdir = os.path.normpath(os.path.join(git_root, args.cas_objdir))
+            args.cas_objdir = compiletools.wrappedos.normpath(os.path.join(git_root, args.cas_objdir))
     except AttributeError:
         pass
 
@@ -548,7 +548,7 @@ def resolve_cas_directory_arguments(args):
         args.cas_pchdir = unsupplied_replacement(args.cas_pchdir, default_cas_pchdir, args.verbose, "cas-pchdir")
         args.cas_pchdir = _ensure_variant_suffix(args.cas_pchdir, variant)
         if git_root and os.path.realpath(git_root) != cwd_real:
-            args.cas_pchdir = os.path.normpath(os.path.join(git_root, args.cas_pchdir))
+            args.cas_pchdir = compiletools.wrappedos.normpath(os.path.join(git_root, args.cas_pchdir))
     except AttributeError:
         pass
 
@@ -561,7 +561,7 @@ def resolve_cas_directory_arguments(args):
         args.cas_pcmdir = unsupplied_replacement(args.cas_pcmdir, default_cas_pcmdir, args.verbose, "cas-pcmdir")
         args.cas_pcmdir = _ensure_variant_suffix(args.cas_pcmdir, variant)
         if git_root and os.path.realpath(git_root) != cwd_real:
-            args.cas_pcmdir = os.path.normpath(os.path.join(git_root, args.cas_pcmdir))
+            args.cas_pcmdir = compiletools.wrappedos.normpath(os.path.join(git_root, args.cas_pcmdir))
     except AttributeError:
         pass
 
@@ -586,7 +586,7 @@ def resolve_cas_directory_arguments(args):
         args.cas_exedir = unsupplied_replacement(args.cas_exedir, default_cas_exedir, args.verbose, "cas-exedir")
         args.cas_exedir = _ensure_variant_suffix(args.cas_exedir, variant)
         if git_root and os.path.realpath(git_root) != cwd_real:
-            args.cas_exedir = os.path.normpath(os.path.join(git_root, args.cas_exedir))
+            args.cas_exedir = compiletools.wrappedos.normpath(os.path.join(git_root, args.cas_exedir))
     except AttributeError:
         pass
 

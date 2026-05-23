@@ -61,7 +61,7 @@ combination is now anchored to the gitroot before any rule is emitted (see
 
 The fix is at the single resolution chokepoint: `apptools.resolve_cas_directory_arguments`
 now anchors a *relative* cas dir to the **gitroot** —
-`os.path.normpath(os.path.join(find_git_root(), value))`, reusing the same
+`wrappedos.normpath(os.path.join(find_git_root(), value))`, reusing the same
 `git_root` the resolver already computes and that the build's `anchor_root`
 uses. `os.path.join` passes absolute values through unchanged, so absolute and
 default cas dirs are untouched; only relative ones are anchored. The precompile
