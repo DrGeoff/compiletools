@@ -33,8 +33,21 @@ jobs:
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-16 160 \
             --slave /usr/bin/g++ g++ /usr/bin/g++-16
           sudo update-alternatives --set gcc /usr/bin/gcc-16
+          # clang auto-selects the newest installed gcc for its libstdc++, so
+          # installing gcc-16 makes clang parse gcc-16's headers -- which the
+          # stock clang on ubuntu-latest is too old to do (it fails with
+          # "member access into incomplete type __normal_iterator"). Install
+          # clang-22 from apt.llvm.org to match the developer toolchain.
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 22
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-22 220 \
+            --slave /usr/bin/clang++ clang++ /usr/bin/clang++-22
+          sudo update-alternatives --set clang /usr/bin/clang-22
           gcc --version
           g++ --version
+          clang --version
+          clang++ --version
 
       - name: Install UV
         run: pip install uv
