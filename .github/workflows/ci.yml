@@ -41,9 +41,13 @@ jobs:
           wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
           chmod +x /tmp/llvm.sh
           sudo /tmp/llvm.sh 22
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-22 220 \
-            --slave /usr/bin/clang++ clang++ /usr/bin/clang++-22
+          # clang and clang++ are each their own master alternative on the
+          # runner (clang++ can't be slaved under clang), so point both at v22
+          # independently.
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-22 220
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-22 220
           sudo update-alternatives --set clang /usr/bin/clang-22
+          sudo update-alternatives --set clang++ /usr/bin/clang++-22
           gcc --version
           g++ --version
           clang --version
