@@ -18,16 +18,21 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install system dependencies
-        # gcc-14 is needed because the default variant (gcc.cxx26.debug)
-        # passes -std=c++26, which gcc 13 (ubuntu-latest's default) rejects.
+        # gcc-16 matches the developer toolchain and fixes the gcc-14 C++20
+        # modules placement-new bug (std::deque<Cell> copy ctor -> ::operator
+        # new attached to the module) that breaks the terminal_games example.
+        # gcc-16 isn't in the noble repos (which top out at gcc-14), so pull it
+        # from the toolchain PPA; -std=c++26 (default gcc.cxx26.debug variant)
+        # also rules out ubuntu-latest's stock gcc-13.
         run: |
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config gcc-14 g++-14
+          sudo apt-get install -y build-essential pkg-config gcc-16 g++-16
           # cpp is already a master alternative on Ubuntu 24.04, so it cannot
           # be slaved under gcc -- only g++ is included.
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140 \
-            --slave /usr/bin/g++ g++ /usr/bin/g++-14
-          sudo update-alternatives --set gcc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-16 160 \
+            --slave /usr/bin/g++ g++ /usr/bin/g++-16
+          sudo update-alternatives --set gcc /usr/bin/gcc-16
           gcc --version
           g++ --version
 
