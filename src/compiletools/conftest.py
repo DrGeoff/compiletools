@@ -138,6 +138,72 @@ def pytest_runtest_logstart(nodeid, location):
 
 
 @pytest.fixture(scope="session", autouse=True)
+def shutdown_orphan_bazel_servers():
+    """Sweep bazel JVM servers rooted in pytest tmp workspaces at session end.
+
+    Tests that build with ``--backend=bazel`` (test_pch_bypass_bug,
+    test_test_exe_rebuild_on_upstream_change, test_cake_backend, etc.)
+    start a long-lived bazel server per workspace. Bazel's default
+    ``--max_idle_secs=10800`` (3 hours) means each one outlives pytest's
+    own tmp_path cleanup and leaves dozens of zombie JVMs on the host.
+    The cross-backend matrix test already does per-cell shutdown for the
+    same reason (``test_examples_end_to_end_cross_backend.py:376-389``);
+    this catches the rest at session end.
+
+    Only servers whose ``--workspace_directory=`` points into a pytest
+    tmp dir or a ``tempfile.mkdtemp`` (``/tmp/tmp...``) workspace are
+    touched — real user-spawned bazel servers in checked-out source
+    trees are left alone.
+    """
+    yield
+    import signal
+    import subprocess
+    import tempfile
+
+    tmp_root = os.path.realpath(tempfile.gettempdir())
+    targets: list[tuple[int, str]] = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as f:
+                cmdline = f.read().decode(errors="replace").split("\x00")
+        except OSError:
+            continue
+        ws_args = [a for a in cmdline if a.startswith("--workspace_directory=")]
+        if not ws_args:
+            continue
+        ws = ws_args[0].split("=", 1)[1]
+        ws_real = os.path.realpath(ws) if os.path.isabs(ws) else ws
+        if not ws_real.startswith(tmp_root + os.sep):
+            continue
+        # First path component under tmp_root must be a pytest tmp_path
+        # parent ('pytest-of-...') or a tempfile.mkdtemp directory ('tmp...').
+        first = ws_real[len(tmp_root) + 1 :].split(os.sep, 1)[0]
+        if not (first.startswith("pytest-") or first.startswith("tmp")):
+            continue
+        targets.append((int(entry), ws))
+
+    for pid, ws in targets:
+        if os.path.isdir(ws):
+            try:
+                subprocess.run(
+                    ["bazel", "shutdown"],
+                    cwd=ws,
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                )
+                continue
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+
+@pytest.fixture(scope="session", autouse=True)
 def ensure_lock_helper_in_path():
     """Ensure ct-lock-helper is available in PATH.
 
