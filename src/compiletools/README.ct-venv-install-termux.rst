@@ -8,7 +8,7 @@ One-command compiletools dev bootstrap for Termux (Android, aarch64)
 
 :Author: drgeoffathome@gmail.com
 :Date:   2026-05-03
-:Version: 10.0.6
+:Version: 10.0.7
 :Manual section: 1
 :Manual group: developers
 
