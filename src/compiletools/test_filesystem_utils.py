@@ -404,3 +404,53 @@ def test_atomic_write_if_changed_writes_when_target_absent(tmp_path):
     wrote = atomic_write_if_changed(str(target), "hello")
     assert wrote is True
     assert target.read_text() == "hello"
+
+
+@pytest.fixture
+def restore_umask():
+    """Save and restore process umask around tests that exercise it."""
+    saved = os.umask(0)
+    os.umask(saved)
+    yield
+    os.umask(saved)
+
+
+_UMASK_MODE_CASES = [
+    (0o000, 0o666),
+    (0o002, 0o664),
+    (0o022, 0o644),
+    (0o077, 0o600),
+]
+
+
+@pytest.mark.parametrize("umask_value, expected_mode", _UMASK_MODE_CASES)
+def test_atomic_write_first_create_respects_umask(tmp_path, restore_umask, umask_value, expected_mode):
+    """First-create atomic_write must produce umask-derived mode, not mkstemp's 0o600."""
+    os.umask(umask_value)
+    target = str(tmp_path / "first.txt")
+    atomic_write(target, "hello")
+    mode = stat.S_IMODE(os.stat(target).st_mode)
+    assert mode == expected_mode
+
+
+@pytest.mark.parametrize("umask_value, expected_mode", _UMASK_MODE_CASES)
+def test_atomic_output_file_first_create_respects_umask(tmp_path, restore_umask, umask_value, expected_mode):
+    """First-create atomic_output_file must produce umask-derived mode, not mkstemp's 0o600."""
+    os.umask(umask_value)
+    target = str(tmp_path / "first.txt")
+    with atomic_output_file(target) as f:
+        f.write("hello")
+    mode = stat.S_IMODE(os.stat(target).st_mode)
+    assert mode == expected_mode
+
+
+def test_atomic_write_no_preserve_permissions_respects_umask(tmp_path, restore_umask):
+    """preserve_permissions=False over an existing restrictive file resets to umask-derived mode."""
+    os.umask(0o022)
+    target = str(tmp_path / "out.txt")
+    with open(target, "w") as f:
+        f.write("old")
+    os.chmod(target, 0o600)
+    atomic_write(target, "new", preserve_permissions=False)
+    mode = stat.S_IMODE(os.stat(target).st_mode)
+    assert mode == 0o644

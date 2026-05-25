@@ -17,6 +17,38 @@ from functools import lru_cache
 from pathlib import Path
 
 
+def _umask_default_file_mode() -> int:
+    """Return the file mode a normal ``open(path, 'w')`` would create now.
+
+    ``tempfile.mkstemp`` deliberately bypasses umask and always creates
+    0o600 as a security feature; callers that want the conventional
+    umask-respecting mode have to recompute it. Reading umask requires a
+    round-trip set-then-restore — there is no read-only API.
+    """
+    current_umask = os.umask(0)
+    os.umask(current_umask)
+    return 0o666 & ~current_umask
+
+
+def _resolve_target_mode_and_gid(target_path: str, preserve_permissions: bool) -> tuple[int, int | None]:
+    """Return ``(mode, gid)`` for an atomic temp file destined to replace ``target_path``.
+
+    When ``preserve_permissions`` and the target exists, copies its mode
+    and group. Otherwise (and on any stat error) falls back to the
+    umask-derived mode with no group change — needed because
+    ``tempfile.mkstemp`` would otherwise leave the file at 0o600 forever
+    once ``os.replace`` propagates it to the target.
+    """
+    if preserve_permissions and os.path.exists(target_path):
+        try:
+            stat_info = os.stat(target_path)
+        except FileNotFoundError:
+            pass  # Race: target deleted between exists() and stat(); treat as first-create.
+        else:
+            return stat_info.st_mode & 0o777, stat_info.st_gid
+    return _umask_default_file_mode(), None
+
+
 def atomic_replace(
     dst: str,
     populate: Callable[[str], None],
@@ -231,16 +263,7 @@ def atomic_write(target_path, content, binary=False, preserve_permissions=True):
     if not os.path.exists(target_dir):
         os.makedirs(target_dir, exist_ok=True)
 
-    # Get target permissions if preserving and file exists
-    target_mode = None
-    target_gid = None
-    if preserve_permissions and os.path.exists(target_path):
-        try:
-            stat_info = os.stat(target_path)
-            target_mode = stat_info.st_mode & 0o777
-            target_gid = stat_info.st_gid
-        except OSError:
-            pass
+    target_mode, target_gid = _resolve_target_mode_and_gid(target_path, preserve_permissions)
 
     # Create temp file in same directory (ensures same filesystem)
     fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix=f".tmp.{target_name}.", suffix=f".{os.getpid()}")
@@ -259,9 +282,7 @@ def atomic_write(target_path, content, binary=False, preserve_permissions=True):
         os.close(fd)
         fd = None
 
-        # Set permissions to match target
-        if target_mode is not None:
-            os.chmod(temp_path, target_mode)
+        os.chmod(temp_path, target_mode)
         if target_gid is not None:
             try:
                 os.chown(temp_path, -1, target_gid)
@@ -395,16 +416,7 @@ def atomic_output_file(target_path, mode="w", encoding="utf-8", preserve_permiss
         if not os.path.exists(target_dir):
             os.makedirs(target_dir, exist_ok=True)
 
-        # Get target permissions if preserving and file exists
-        target_mode = None
-        target_gid = None
-        if preserve_permissions and os.path.exists(target_path):
-            try:
-                stat_info = os.stat(target_path)
-                target_mode = stat_info.st_mode & 0o777
-                target_gid = stat_info.st_gid
-            except OSError:
-                pass
+        target_mode, target_gid = _resolve_target_mode_and_gid(target_path, preserve_permissions)
 
         # Create temp file in same directory
         fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix=f".tmp.{target_name}.", suffix=f".{os.getpid()}")
@@ -422,9 +434,7 @@ def atomic_output_file(target_path, mode="w", encoding="utf-8", preserve_permiss
             f.close()
             f = None
 
-            # Set permissions to match target
-            if target_mode is not None:
-                os.chmod(temp_path, target_mode)
+            os.chmod(temp_path, target_mode)
             if target_gid is not None:
                 try:
                     os.chown(temp_path, -1, target_gid)
