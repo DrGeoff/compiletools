@@ -5,6 +5,7 @@ from pathlib import Path
 import configargparse
 
 import compiletools.apptools
+import compiletools.configutils
 import compiletools.headerdeps as headerdeps
 import compiletools.hunter as hunter
 import compiletools.magicflags as magicflags
@@ -26,6 +27,9 @@ def _make_argparser(*, with_magic=False, with_hunter=False):
     if with_hunter:
         hunter.add_arguments(cap)
     compiletools.apptools.add_common_arguments(cap)
+    compiletools.apptools.add_output_directory_arguments(
+        cap, variant=compiletools.configutils.extract_variant(argv=[])
+    )
     return cap
 
 
