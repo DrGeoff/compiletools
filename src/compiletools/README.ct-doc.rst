@@ -1,5 +1,5 @@
-.. image:: https://github.com/DrGeoff/compiletools/actions/workflows/main.yml/badge.svg
-    :target: https://github.com/DrGeoff/compiletools/actions
+.. image:: https://github.com/DrGeoff/compiletools/actions/workflows/ci.yml/badge.svg
+    :target: https://github.com/DrGeoff/compiletools/actions/workflows/ci.yml
     :alt: Build Status
 
 ============
