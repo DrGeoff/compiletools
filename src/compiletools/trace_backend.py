@@ -451,6 +451,11 @@ class ShakeBackend(BuildBackend):
             # inode (hardlink) and follow-through (symlink). Without this
             # branch the rule falls through to _verify, which would hash
             # both the target and the cas input on every no-op build.
+            # A prior publish's best-effort <cas-path>.manifest sidecar is
+            # deliberately NOT re-created here: manifest recreation is not a
+            # republish trigger (the manifest is best-effort -- ct-cas-publish
+            # swallows OSError writing it -- and trim_exedir falls back to
+            # basename bucketing when it is absent).
             try:
                 if rule.inputs and os.path.samefile(target, rule.inputs[0]):
                     return False
