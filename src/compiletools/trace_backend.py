@@ -82,6 +82,7 @@ logger = logging.getLogger(__name__)
 
 TRACE_VERSION = 1
 
+
 @dataclass
 class TraceEntry:
     """Record of a successful build action for verifying traces."""
@@ -440,6 +441,21 @@ class ShakeBackend(BuildBackend):
                 if os.path.exists(ca):
                     compiletools.filesystem_utils.atomic_copy(ca, target)
                     return False
+        elif rule.rule_type == RuleType.SYMLINK:
+            # SYMLINK publishes a content-addressable artefact (the single
+            # input, a cas-exedir/cas-libdir path) at a user-facing target
+            # via ct-cas-publish. The publish recipe hardlinks by default
+            # and falls back to symlink only on EXDEV. If the target
+            # already resolves to the same on-disk file as the cas input
+            # the rule is a no-op. samefile handles both wirings: same
+            # inode (hardlink) and follow-through (symlink). Without this
+            # branch the rule falls through to _verify, which would hash
+            # both the target and the cas input on every no-op build.
+            try:
+                if rule.inputs and os.path.samefile(target, rule.inputs[0]):
+                    return False
+            except OSError:
+                pass  # target missing or cas input not yet built; fall through
 
         # SUSPEND: build all inputs concurrently via gather.
         results = await asyncio.gather(*(self._build_async(inp, graph, traces, memo, sem) for inp in rule.inputs))

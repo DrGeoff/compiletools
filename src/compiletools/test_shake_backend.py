@@ -830,7 +830,6 @@ class TestContentAddressableShortCircuit:
 
             traces = TraceStore(str(td / ".ct-traces.json"))
 
-
             memo: dict[str, asyncio.Task[bool]] = {}
             sem = asyncio.Semaphore(1)
             with mock.patch(
@@ -922,6 +921,145 @@ class TestContentAddressableShortCircuit:
 
             # Cas-exe path now exists with the new content.
             assert (td / cas_exe).read_bytes() == b"\x7fELF new executable"
+
+
+# ---------------------------------------------------------------------------
+# SYMLINK publish short-circuit
+# ---------------------------------------------------------------------------
+
+
+class TestSymlinkPublishShortCircuit:
+    """A SYMLINK rule republishes a CAS artefact at a user-facing path via
+    ct-cas-publish (hardlink by default, symlink fallback on EXDEV). When
+    the user-facing target already resolves to the cas input on disk, the
+    rule must short-circuit without hashing either file -- otherwise no-op
+    builds pay an O(file-size) SHA-1 per published target."""
+
+    @staticmethod
+    def _make_symlink_graph(cas_path: str, user_path: str) -> BuildGraph:
+        symlink_rule = BuildRule(
+            output=user_path,
+            inputs=[cas_path],
+            command=["ct-cas-publish", "--cas-path", cas_path, "--user-path", user_path],
+            rule_type="symlink",
+        )
+        graph = BuildGraph()
+        graph.add_rule(symlink_rule)
+        graph.add_rule(BuildRule(output="build", inputs=[user_path], command=None, rule_type="phony"))
+        return graph
+
+    def test_skipped_when_hardlinked_to_cas_input(self, monkeypatch):
+        """Default publish wiring: target is a hardlink (same inode) of the
+        cas input. samefile returns True, rule short-circuits without
+        invoking ct-cas-publish or hashing either file."""
+        cas_path = "cas-exe/aa/foo_abc.exe"
+        user_path = "bin/foo"
+        graph = self._make_symlink_graph(cas_path, user_path)
+
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            os.makedirs(td / "cas-exe" / "aa", exist_ok=True)
+            os.makedirs(td / "bin", exist_ok=True)
+            (td / cas_path).write_bytes(b"\x7fELF cached executable")
+            os.link(td / cas_path, td / user_path)
+
+            with (
+                mock.patch("compiletools.trace_backend.subprocess.run") as mock_run,
+                mock.patch("compiletools.trace_backend.get_file_hash") as mock_hash,
+            ):
+                backend.execute("build")
+                mock_run.assert_not_called()
+                mock_hash.assert_not_called()
+
+    def test_skipped_when_symlinked_to_cas_input(self, monkeypatch):
+        """EXDEV fallback wiring: target is a symlink to the cas input.
+        samefile follows the symlink and returns True; rule short-circuits."""
+        cas_path = "cas-exe/aa/foo_abc.exe"
+        user_path = "bin/foo"
+        graph = self._make_symlink_graph(cas_path, user_path)
+
+        with ShakeBackendTestContext(graph) as (backend, tmpdir):
+            td = Path(tmpdir)
+            monkeypatch.chdir(tmpdir)
+            os.makedirs(td / "cas-exe" / "aa", exist_ok=True)
+            os.makedirs(td / "bin", exist_ok=True)
+            (td / cas_path).write_bytes(b"\x7fELF cached executable")
+            os.symlink(td / cas_path, td / user_path)
+
+            with (
+                mock.patch("compiletools.trace_backend.subprocess.run") as mock_run,
+                mock.patch("compiletools.trace_backend.get_file_hash") as mock_hash,
+            ):
+                backend.execute("build")
+                mock_run.assert_not_called()
+                mock_hash.assert_not_called()
+
+    def test_runs_when_target_missing(self, monkeypatch, tmp_path):
+        """First publish: cas input exists but user-facing target does not.
+        samefile raises OSError on the missing target; rule falls through
+        to _execute_rule. Bypass the lock-wrapper subprocess chain by
+        monkey-patching _execute_rule."""
+        td = tmp_path
+        os.makedirs(td / "cas-exe" / "aa", exist_ok=True)
+        os.makedirs(td / "bin", exist_ok=True)
+        cas_path = str(td / "cas-exe" / "aa" / "foo_abc.exe")
+        user_path = str(td / "bin" / "foo")
+        (td / "cas-exe" / "aa" / "foo_abc.exe").write_bytes(b"\x7fELF cached executable")
+        # user_path intentionally NOT created
+        graph = self._make_symlink_graph(cas_path, user_path)
+
+        with ShakeBackendTestContext(graph) as (backend, _):
+            monkeypatch.chdir(tmp_path)
+            executed: list[str] = []
+
+            def fake_execute(rule, target, flat_cmd):
+                # Mirror ct-cas-publish: hardlink cas_path to user_path.
+                executed.append(target)
+                os.link(cas_path, user_path)
+
+            monkeypatch.setattr(backend, "_execute_rule", fake_execute)
+            traces = TraceStore(str(td / ".ct-traces.json"))
+            memo: dict[str, asyncio.Task[bool]] = {}
+            sem = asyncio.Semaphore(1)
+            asyncio.run(backend._build_async(user_path, graph, traces, memo, sem))
+            assert executed == [user_path]
+            assert os.path.samefile(cas_path, user_path)
+
+    def test_runs_when_target_points_to_stale_inode(self, monkeypatch, tmp_path):
+        """Cas input was re-linked (new inode after temp+rename) so the
+        existing user-facing target now points to a stale inode. samefile
+        returns False; rule re-publishes."""
+        td = tmp_path
+        os.makedirs(td / "cas-exe" / "aa", exist_ok=True)
+        os.makedirs(td / "bin", exist_ok=True)
+        cas_path = str(td / "cas-exe" / "aa" / "foo_abc.exe")
+        user_path = str(td / "bin" / "foo")
+        # Stale: user_path hardlinks an older copy; cas_path is a
+        # different inode (the new build result).
+        stale = td / "stale.exe"
+        stale.write_bytes(b"\x7fELF stale executable")
+        os.link(stale, user_path)
+        (td / "cas-exe" / "aa" / "foo_abc.exe").write_bytes(b"\x7fELF new executable")
+        graph = self._make_symlink_graph(cas_path, user_path)
+
+        with ShakeBackendTestContext(graph) as (backend, _):
+            monkeypatch.chdir(tmp_path)
+            executed: list[str] = []
+
+            def fake_execute(rule, target, flat_cmd):
+                # Mirror ct-cas-publish atomic re-link: unlink + hardlink.
+                executed.append(target)
+                os.unlink(user_path)
+                os.link(cas_path, user_path)
+
+            monkeypatch.setattr(backend, "_execute_rule", fake_execute)
+            traces = TraceStore(str(td / ".ct-traces.json"))
+            memo: dict[str, asyncio.Task[bool]] = {}
+            sem = asyncio.Semaphore(1)
+            asyncio.run(backend._build_async(user_path, graph, traces, memo, sem))
+            assert executed == [user_path]
+            assert os.path.samefile(cas_path, user_path)
 
 
 # ---------------------------------------------------------------------------
