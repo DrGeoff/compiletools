@@ -8,7 +8,7 @@ One-command compiletools dev bootstrap for RHEL 8 / CentOS 8 / Rocky 8
 
 :Author: drgeoffathome@gmail.com
 :Date:   2026-05-07
-:Version: 10.0.7
+:Version: 10.0.8
 :Manual section: 1
 :Manual group: developers
 

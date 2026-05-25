@@ -8,7 +8,7 @@ Helper for file locking during concurrent compilation
 
 :Author: drgeoffathome@gmail.com
 :Date:   2024-01-01
-:Version: 10.0.7
+:Version: 10.0.8
 :Manual section: 1
 :Manual group: developers
 
