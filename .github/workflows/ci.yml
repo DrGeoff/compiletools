@@ -1,10 +1,19 @@
 name: CI
 
-on: [push]
+on:
+  push:
+    # The coverage badge is force-pushed to an orphan `badges` branch; exclude
+    # it so that push doesn't trigger a CI run on a source-less tree.
+    branches-ignore:
+      - badges
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      # Allow the built-in GITHUB_TOKEN to push the coverage badge to the
+      # `badges` branch (default token perms may be read-only).
+      contents: write
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14", "pypy-3.11"]
@@ -84,13 +93,31 @@ jobs:
       - name: Run tests with coverage
         if: matrix.python-version == '3.14'
         run: |
-          uv run pytest -n auto --cov --cov-report=term-missing
+          uv run pytest -n auto --cov --cov-report=term-missing --cov-report=xml
 
       - name: Coverage summary
         if: matrix.python-version == '3.14'
         run: |
           echo '## Coverage Report' >> $GITHUB_STEP_SUMMARY
           uv run coverage report --format=markdown >> $GITHUB_STEP_SUMMARY
+
+      # Self-hosted coverage badge: generate the SVG locally (no third-party
+      # service) and force-push it to an orphan `badges` branch that the README
+      # links to via raw.githubusercontent.com. Master pushes only.
+      - name: Generate and publish coverage badge
+        if: matrix.python-version == '3.14' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          uv run --with "genbadge[coverage]" genbadge coverage -i coverage.xml -o coverage.svg
+          work="$(mktemp -d)"
+          cp coverage.svg "$work/coverage.svg"
+          cd "$work"
+          git init -q
+          git checkout -q -b badges
+          git add coverage.svg
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "Update coverage badge"
+          git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" badges
 
       - name: Run tests
         if: matrix.python-version != '3.14'

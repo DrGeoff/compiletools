@@ -2,6 +2,10 @@
     :target: https://github.com/DrGeoff/compiletools/actions/workflows/ci.yml
     :alt: Build Status
 
+.. image:: https://raw.githubusercontent.com/DrGeoff/compiletools/badges/coverage.svg
+    :target: https://github.com/DrGeoff/compiletools/actions/workflows/ci.yml
+    :alt: Coverage
+
 ============
 compiletools
 ============
