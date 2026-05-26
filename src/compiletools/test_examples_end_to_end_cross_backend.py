@@ -211,10 +211,12 @@ _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
     # into leaf modules under a re-exporting aggregate (snake: rng+world;
     # invaders: formation+bullet+field; breakout: bricks+arena); moonlander
     # stays a single cohesive module (lander.physics). Builds all five exes +
-    # twelve pure tests across subdirs; the facade's single PCH
+    # thirteen pure tests across subdirs; the facade's single PCH
     # (common/terminal.cpp) and single terminal.o compile once and serve every
-    # game from the CAS. Follows the named-module blocklist so it tracks the
-    # same per-backend support as the other module examples.
+    # game from the CAS, alongside a second compile-once object frontend.o (the
+    # splash/ANSI scaffolding, no PCH) also shared by all five programs. Follows
+    # the named-module blocklist so it tracks the same per-backend support as
+    # the other module examples.
     "terminal_games": ExamplePlan(skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED),
 }
 

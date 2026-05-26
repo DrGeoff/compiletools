@@ -7,8 +7,9 @@ Four terminal games — **Moon Lander**, **Snake**, **Space Invaders** and
 content-addressable storage (CAS) does the most work for you.
 
 The headline: all five programs share one terminal facade in `common/`, so a
-**single precompiled header and a single `terminal.o` compile once** and are
-served from the CAS to every one. Change one program and only that one rebuilds.
+**single precompiled header plus two shared objects — `terminal.o` and
+`frontend.o` — each compile once** and are served from the CAS to all five.
+Change one program and only that one rebuilds.
 
 ## Architecture in one breath
 
@@ -36,6 +37,8 @@ terminal_games/
   ct.conf            -std=c++26 ; INCLUDE=${CONF_DIR}/common ; testmarkers=unit_test.hpp
   common/
     terminal.{h,cpp} the POSIX-terminal facade (raw mode, read_key, write_frame, rows, cols)
+    frontend.{h,cpp} shared splash/wait scaffolding + ANSI vocabulary, built on terminal.h
+    test_frontend.cpp unit test for the splash_screen builder
     pch.h            the heavy system headers, isolated behind a PCH
     unit_test.hpp    the testmarker header (UT_REQUIRE)
   moonlander/  physics.cppm physics_impl.cpp              (module lander.physics)
@@ -73,27 +76,30 @@ Two rules keep the example honest and portable:
 | `common/pch.h` | the precompiled-header payload | (the PCH itself) |
 | `common/terminal.cpp` | impl, declares `//#PCH=pch.h` | **cas-pchdir** + cas-objdir — *shared by all five programs* |
 | `common/terminal.h` | light facade declarations | — |
+| `common/frontend.cpp` | shared splash/ANSI scaffolding (no PCH) | cas-objdir — *shared by all five programs* |
+| `common/frontend.h` | splash/ANSI vocabulary declarations | — |
 | `common/unit_test.hpp` | testmarker header | — |
 | `*/<unit>.cppm` (×13) | module interface (impl) | **cas-pcmdir** (BMI) + cas-objdir |
 | `*/*_impl.cpp` (×11) | module implementation unit (`module <name>;`) | cas-objdir — *no BMI* |
 | `*/<name>.cpp` (×5) | executable (`// ct-exemarker`) | cas-objdir + **cas-exedir** |
-| `*/test_*.cpp` (×12) | test (includes `unit_test.hpp`) | **content-keyed test-result cache** + cas-exedir |
+| `*/test_*.cpp` (×13) | test (includes `unit_test.hpp`) | **content-keyed test-result cache** + cas-exedir |
 
 `ct-cake` discovers five executables (the per-program `.cpp` files, each with
-`main(`) and twelve tests (the `test_*.cpp` files, each transitively including
+`main(`) and thirteen tests (the `test_*.cpp` files, each transitively including
 `unit_test.hpp`, matching `testmarkers = unit_test.hpp`). Each program's module is
 pulled in via its exe's/test's `import` edge; `common/terminal.cpp` is pulled in
 via Hunter's adjacent-`.cpp` rule for `#include "terminal.h"`, resolved through
 the `INCLUDE = ${CONF_DIR}/common` line in `ct.conf`.
 
-### One PCH, one terminal.o, five programs
+### One PCH, two shared objects, five programs
 
 Because the facade is shared, a clean build produces **exactly one**
-`pch.h.gch` in cas-pchdir and **exactly one** `terminal.o` in cas-objdir, and
-all five executables link that same object. Edit one program's `.cppm` and
-rebuild: only that program's module object and its exe are rebuilt — the shared
-PCH, the shared `terminal.o`, and the other four programs are all served from the
-CAS untouched.
+`pch.h.gch` in cas-pchdir, **exactly one** `terminal.o` in cas-objdir, and
+**exactly one** `frontend.o` in cas-objdir, and all five executables link both
+shared objects. Edit one program's `.cppm` and rebuild: only that program's
+module object and its exe are rebuilt — the shared PCH, the shared `terminal.o`,
+the shared `frontend.o`, and the other four programs are all served from the CAS
+untouched.
 
 ### The aquarium: one program, five modules, auto-discovered
 
@@ -133,7 +139,7 @@ ct-cake
 ```
 
 This builds `bin/<variant>/{moonlander,snake,invaders,breakout,aquarium}` plus
-the twelve `test_*` programs, runs every test (a non-zero exit fails the build),
+the thirteen `test_*` programs, runs every test (a non-zero exit fails the build),
 and links the executables. Run it again and the build is near-instant — every
 object, BMI, PCH and executable is served from the CAS.
 
