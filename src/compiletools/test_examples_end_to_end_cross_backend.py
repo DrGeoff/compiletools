@@ -205,6 +205,17 @@ _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
     "cxx_modules_import_std": ExamplePlan(skip_for_backends=_CXX_MODULES_NAMED_BACKENDS_BLOCKED),
     # Header units: full cross-backend coverage thanks to upstream fix.
     "cxx_modules_header_units": _VANILLA,
+    # Transitive header unit: a consumer (main.cpp) whose ONLY module
+    # interaction is a header unit (`import <vector>;`) reached through a
+    # #include'd wrapper header (vecutil.h), never imported directly. The
+    # sibling vecutil.cpp imports the header unit directly so the
+    # precompile rule / gcc mapper entry exists; the bug being guarded is
+    # the consumer compile not getting the header-unit consume flags
+    # (clang) when the import is transitive-only. Builds with the
+    # matrix's default compiler here; the gcc-vs-clang asymmetry is
+    # exercised explicitly by
+    # test_transitive_header_unit_builds_on_gcc_and_clang below.
+    "cxx_modules_transitive_header_unit": _VANILLA,
     # The canonical CAS showcase: four terminal games (moonlander, snake,
     # invaders, breakout) plus a controls-free ASCII aquarium artwork, all
     # sharing one terminal facade in common/. Every game module is

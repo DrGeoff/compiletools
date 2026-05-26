@@ -231,7 +231,6 @@ class TestPrebuildAuxArtefacts:
 
     @staticmethod
     def _pch_rule(gch, bucket):
-
         return BuildRule(
             output=str(gch),
             inputs=["/some/header.h"],
@@ -242,7 +241,6 @@ class TestPrebuildAuxArtefacts:
 
     @staticmethod
     def _header_unit_rule(pcm, bucket):
-
         return BuildRule(
             output=str(pcm),
             inputs=["<vector>"],
@@ -380,13 +378,11 @@ class TestUseMtimeFlagPlumbing:
     """
 
     def _make_make_backend(self, tmp_path, **overrides):
-
         args = make_backend_args(tmp_path, **overrides)
         hunter = make_mock_hunter()
         return MakefileBackend(args=args, hunter=hunter)
 
     def _make_ninja_backend(self, tmp_path, **overrides):
-
         args = make_backend_args(tmp_path, **overrides)
         hunter = make_mock_hunter()
         return NinjaBackend(args=args, hunter=hunter)
@@ -406,25 +402,21 @@ class TestUseMtimeFlagPlumbing:
         assert backend._honors_use_mtime() is True
 
     def test_cmake_backend_does_not_honor_use_mtime(self, tmp_path):
-
         args = make_backend_args(tmp_path)
         backend = CMakeBackend(args=args, hunter=make_mock_hunter())
         assert backend._honors_use_mtime() is False
 
     def test_bazel_backend_does_not_honor_use_mtime(self, tmp_path):
-
         args = make_backend_args(tmp_path)
         backend = BazelBackend(args=args, hunter=make_mock_hunter())
         assert backend._honors_use_mtime() is False
 
     def test_shake_backend_does_not_honor_use_mtime(self, tmp_path):
-
         args = make_backend_args(tmp_path)
         backend = ShakeBackend(args=args, hunter=make_mock_hunter())
         assert backend._honors_use_mtime() is False
 
     def test_slurm_backend_does_not_honor_use_mtime(self, tmp_path):
-
         args = make_backend_args(tmp_path)
         backend = SlurmBackend(args=args, hunter=make_mock_hunter())
         assert backend._honors_use_mtime() is False
@@ -1210,7 +1202,6 @@ class TestCompilerWrapperSplit:
         assert cmd[1] == "gcc", f"argv[1] should be 'gcc', got {cmd[1]!r}"
 
     def test_pch_compile_command_splits_wrapper(self, tmp_path):
-
         pch_flags = {
             "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
             "/src/stdafx.h": {},
@@ -1496,6 +1487,70 @@ class TestTransitiveHeaderModuleImports:
             "clang needs an -fmodule-file or -fprebuilt-module-path to find M's BMI"
         )
 
+    def test_clang_header_unit_consume_flags_when_only_a_transitive_header_imports(self, tmp_path):
+        # The header-unit analogue of the named-module transitive case:
+        # main.cpp's only `import <vector>;` arrives through wrap.h. After
+        # preprocessing the import is part of main.cpp's TU, so its clang
+        # compile MUST get `-fmodules` AND `-fmodule-file=<vector>=<pcm>`
+        # — without -fmodules clang rejects the import as "not known to be
+        # a header unit", even with the BMI supplied. Gating on the TU's
+        # own (empty) module_header_imports is the bug; the fix unions the
+        # transitive header-unit tokens.
+        main = "/src/main.cpp"
+        wrap = "/src/wrap.h"
+        per_file = {
+            main: self._empty_result(),
+            wrap: SimpleNamespace(
+                module_exports=(),
+                module_implements=(),
+                module_imports=(),
+                module_header_imports=("<vector>",),
+            ),
+        }
+        backend = self._make_backend(
+            tmp_path,
+            cxx="clang++",
+            kind="clang",
+            per_file_results=per_file,
+            header_deps_for={main: [wrap]},
+        )
+        backend._header_unit_artefact = {"<vector>": "/cache/vector.pcm"}
+        flags = backend._compiler_module_flags_for(main)
+        assert "-fmodules" in flags, (
+            f"main.cpp imports <vector> only through wrap.h but got flags={flags!r}; "
+            "clang requires -fmodules to accept a transitive header-unit import"
+        )
+        assert "-fmodule-file=<vector>=/cache/vector.pcm" in flags, (
+            f"clang needs -fmodule-file mapping the transitive header unit to its BMI; got {flags!r}"
+        )
+
+    def test_transitive_header_unit_imports_helper_collects_tokens(self, tmp_path):
+        # The precompile pre-pass and the clang consume-flag emission share
+        # this helper to discover header units reaching a TU only through a
+        # #include'd header. Both gcc (mapper entry / precompile rule) and
+        # clang (consume flags) rely on it returning the transitive token.
+        main = "/src/main.cpp"
+        wrap = "/src/wrap.h"
+        per_file = {
+            main: self._empty_result(),
+            wrap: SimpleNamespace(
+                module_exports=(),
+                module_implements=(),
+                module_imports=(),
+                module_header_imports=("<vector>", '"local.h"'),
+            ),
+        }
+        backend = self._make_backend(
+            tmp_path,
+            cxx="g++",
+            kind="gcc",
+            per_file_results=per_file,
+            header_deps_for={main: [wrap]},
+        )
+        assert backend._transitive_header_unit_imports(main) == {"<vector>", '"local.h"'}
+        # A None filename (the pre-pass may pass one) returns empty, not raise.
+        assert backend._transitive_header_unit_imports(None) == set()
+
     def test_no_flag_injection_when_header_does_not_import(self, tmp_path):
         main = "/src/main.cpp"
         wrap = "/src/wrap.h"
@@ -1508,9 +1563,7 @@ class TestTransitiveHeaderModuleImports:
             header_deps_for={main: [wrap]},
         )
         flags = backend._compiler_module_flags_for(main)
-        assert flags == [], (
-            f"no header imports a module; modules flags must not appear (got {flags!r})"
-        )
+        assert flags == [], f"no header imports a module; modules flags must not appear (got {flags!r})"
 
     def test_bare_partition_in_header_does_not_trigger_flag_injection(self, tmp_path):
         # `import :basic;` in a header has no resolvable owning module
@@ -1536,10 +1589,7 @@ class TestTransitiveHeaderModuleImports:
             header_deps_for={main: [wrap]},
         )
         flags = backend._compiler_module_flags_for(main)
-        assert flags == [], (
-            f"bare partition import in a non-module header must not trigger -fmodules-ts; "
-            f"got {flags!r}"
-        )
+        assert flags == [], f"bare partition import in a non-module header must not trigger -fmodules-ts; got {flags!r}"
 
     def test_gcc_wires_bmi_edge_when_only_a_transitive_header_imports(self, tmp_path):
         main = "/src/main.cpp"
@@ -1725,7 +1775,6 @@ class TestGccHeaderUnitProducerSideRename:
         return backend
 
     def test_gcc_cache_mode_header_unit_recipe_has_temp_then_rename(self, tmp_path):
-
         backend = self._make_gcc_cache_backend(tmp_path)
         backend._gcc_header_unit_resolved = {"<vector>": ["/usr/include/vector"]}
         artefact_path = str(tmp_path / "cas-pcmdir" / "abc" / "vector.gcm")
@@ -1891,7 +1940,6 @@ class TestClangHeaderUnitStdlibSymmetry:
 
 class TestPchManifest:
     def test_manifest_records_header_realpath_and_compiler_identity(self, tmp_path, monkeypatch):
-
         pchdir = tmp_path / "pch"
         cmd_hash = "a" * 16
         header = tmp_path / "stdafx.h"
@@ -1916,7 +1964,6 @@ class TestPchManifest:
         assert manifest["transitive_hashes"] == {}
 
     def test_manifest_write_is_atomic(self, tmp_path):
-
         pchdir = tmp_path / "pch"
         cmd_hash = "b" * 16
         header = tmp_path / "stdafx.h"
@@ -1996,11 +2043,9 @@ class TestWarnIfPchdirNotCrossUserSafe:
     (cwd-relative or under the build's bin tree)."""
 
     def setup_method(self):
-
         _PCHDIR_WARNED.clear()
 
     def test_warns_for_shared_path(self, tmp_path, capsys):
-
         shared = tmp_path / "cas_pchdir"
         shared.mkdir(mode=0o755)  # not group-writable, no SGID
         _warn_if_pchdir_not_cross_user_safe(str(shared), verbose=1)
@@ -2008,7 +2053,6 @@ class TestWarnIfPchdirNotCrossUserSafe:
         assert "WARNING" in captured.err
 
     def test_skips_warning_for_cwd_relative_path(self, tmp_path, capsys, monkeypatch):
-
         monkeypatch.chdir(tmp_path)
         cwd_pch = tmp_path / "bin" / "gcc.debug" / "pch"
         cwd_pch.mkdir(parents=True, mode=0o755)
@@ -2017,7 +2061,6 @@ class TestWarnIfPchdirNotCrossUserSafe:
         assert "WARNING" not in captured.err
 
     def test_skips_warning_for_relative_path(self, tmp_path, capsys, monkeypatch):
-
         monkeypatch.chdir(tmp_path)
         (tmp_path / "bin" / "gcc.debug" / "pch").mkdir(parents=True, mode=0o755)
         _warn_if_pchdir_not_cross_user_safe("bin/gcc.debug/pch", verbose=1)
@@ -2038,7 +2081,6 @@ class TestPchCommandHash:
     _SCOPE_ZERO = "0" * 16
 
     def test_deterministic(self):
-
         args = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
         h1 = _pch_command_hash(
             args, "/src/foo.h", [], [], cxxflags_tokens=["-O2"], scope_macro_hash=self._SCOPE_ZERO, anchor_root=""
@@ -2049,7 +2091,6 @@ class TestPchCommandHash:
         assert h1 == h2
 
     def test_differs_for_different_flags(self):
-
         args1 = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
         args2 = SimpleNamespace(CXX="g++", CXXFLAGS="-O3")
         h1 = _pch_command_hash(
@@ -2061,7 +2102,6 @@ class TestPchCommandHash:
         assert h1 != h2
 
     def test_differs_for_different_compiler(self):
-
         args1 = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
         args2 = SimpleNamespace(CXX="clang++", CXXFLAGS="-O2")
         h1 = _pch_command_hash(
@@ -2073,8 +2113,6 @@ class TestPchCommandHash:
         assert h1 != h2
 
     def test_includes_magic_flags(self):
-
-
         args = SimpleNamespace(CXX="g++", CXXFLAGS="-O2")
         h1 = _pch_command_hash(
             args,
@@ -2109,7 +2147,6 @@ class TestPchFileLocking:
     """Test that PCH compile rules are wrapped with file-locking like other compiles."""
 
     def _make_backend_with_locking(self, tmp_path, cas_pchdir=None):
-
         StubClass = make_stub_backend_class()
         pch_flags = {
             "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
@@ -2162,7 +2199,6 @@ class TestPchIncrementalHash:
     """Test that hash changes correctly track flag/compiler changes."""
 
     def _build_graph_with_flags(self, tmp_path, cxxflags, pchdir):
-
         pch_flags = {
             "/src/main.cpp": {sz.Str("PCH"): [sz.Str("/src/stdafx.h")]},
             "/src/stdafx.h": {},
@@ -2252,7 +2288,6 @@ class TestPchIncrementalHash:
         id_b = _compiler_identity(str(cxx_b))
         assert id_a != id_b
 
-
         args_a = SimpleNamespace(CXX=str(cxx_a), CXXFLAGS="-O2")
         args_b = SimpleNamespace(CXX=str(cxx_b), CXXFLAGS="-O2")
 
@@ -2303,8 +2338,6 @@ class TestPchIncrementalHash:
         space) from ``-DFOO=a -Db`` (two flags). The pre-fix space-join
         collided these."""
 
-
-
         args = SimpleNamespace(CXX="cc", CXXFLAGS="-O2")
         flags_one = [sz.Str('-DFOO="a b"')]
         flags_two = [sz.Str("-DFOO=a"), sz.Str("-Db")]
@@ -2320,7 +2353,6 @@ class TestPchIncrementalHash:
         """Regression: a one-time stderr warning is emitted when
         the pchdir parent is not group-writable + SGID, so cross-user
         cache misses don't surprise operators."""
-
 
         pchdir = tmp_path / "pch"
         pchdir.mkdir(mode=0o700)  # missing group-write AND SGID
@@ -2354,7 +2386,6 @@ class TestExtractLinkopts:
     """extract_linkopts must normalise paths before stripping object files."""
 
     def test_normalises_dot_slash_prefix(self):
-
         cmd = ["g++", "-o", "bin/foo", "./obj/foo.o", "obj/bar.o", "-lm"]
         # Object set uses bare form; cmd uses ./obj/foo.o
         objs = {"obj/foo.o", "obj/bar.o"}
@@ -2364,14 +2395,12 @@ class TestExtractLinkopts:
         )
 
     def test_normalises_with_redundant_slashes(self):
-
         cmd = ["g++", "-o", "bin/foo", "obj//foo.o", "-lm"]
         objs = {"obj/foo.o"}
         result = extract_linkopts(cmd, objs)
         assert result == ["-lm"]
 
     def test_normalises_when_object_set_uses_dot_slash(self):
-
         cmd = ["g++", "-o", "bin/foo", "obj/foo.o", "-lm"]
         # Object set has ./ prefix
         objs = {"./obj/foo.o"}
@@ -2834,7 +2863,6 @@ class TestLinkOrderCorrectness:
         end-to-end this must raise (cycle-error formatter is invoked
         elsewhere)."""
 
-
         sources = ["/src/a.cpp", "/src/b.cpp"]
         per_file = {
             "/src/a.cpp": {
@@ -2863,7 +2891,6 @@ class TestToposortRules:
     a direct unit test."""
 
     def test_orders_dependents_after_their_inputs(self):
-
         rule_a = BuildRule(output="a.pcm", inputs=[], command=["c"], rule_type="compile")
         rule_b = BuildRule(output="b.pcm", inputs=["a.pcm"], command=["c"], rule_type="compile")
         rule_c = BuildRule(output="c.pcm", inputs=["b.pcm"], command=["c"], rule_type="compile")
@@ -2880,7 +2907,6 @@ class TestToposortRules:
         assert [r.output for r in ordered] == ["m.pcm"]
 
     def test_raises_on_cycle(self):
-
         rule_a = BuildRule(output="a.pcm", inputs=["b.pcm"], command=["c"], rule_type="compile")
         rule_b = BuildRule(output="b.pcm", inputs=["a.pcm"], command=["c"], rule_type="compile")
         with pytest.raises(ValueError, match="cycle detected"):
@@ -2923,7 +2949,6 @@ class TestDetectAvailableBackends:
     is unavailable."""
 
     def test_unknown_backend_reports_unavailable(self):
-
         assert is_backend_available("definitely_not_a_backend") is False
         assert backend_tool_command("definitely_not_a_backend") is None
 

@@ -1312,6 +1312,11 @@ class BuildBackend(abc.ABC):
             if r is None:
                 continue
             all_header_imports.update(r.module_header_imports)
+            # A header unit reached only through a #include'd header still
+            # needs a precompile rule + (gcc) mapper entry + artefact, so a
+            # transitive-only consumer can resolve it. Symmetric with the
+            # transitive named-module handling in _compiler_module_flags_for.
+            all_header_imports.update(self._transitive_header_unit_imports(filename))
         if all_header_imports:
             # Determine the per-token destination dir up front so the
             # mkdir set is exactly the dirs we'll actually write into.
@@ -1972,6 +1977,32 @@ class BuildBackend(abc.ABC):
         self._build_imports_std_cached = result
         return result
 
+    def _transitive_header_unit_imports(self, filename: str | None) -> set[str]:
+        """Header-unit tokens (``<h>`` / ``"h"``) reaching a TU transitively.
+
+        A ``.cpp`` whose only ``import <h>;`` arrives through a
+        ``#include "wrap.h"`` has an empty own ``module_header_imports``,
+        but after preprocessing the import is part of the TU and its
+        compile must resolve the header unit. This walks the TU's
+        transitive headers (``header_dependencies``), skipping the TU
+        itself, and unions each header's ``module_header_imports`` — the
+        header-unit analogue of the ``transitive_named_imports`` check
+        already done for named modules. Returns an empty set for a
+        ``None`` filename (caller may pass one in the pre-pass).
+        """
+        tokens: set[str] = set()
+        if filename is None:
+            return tokens
+        for dep in self.hunter.header_dependencies(filename):
+            dep_str = str(dep)
+            if dep_str == filename:
+                continue
+            dep_result = self.hunter._file_analysis_result(dep_str)
+            if dep_result is None:
+                continue
+            tokens.update(dep_result.module_header_imports)
+        return tokens
+
     def _compiler_module_flags_for(self, filename: str) -> list[str]:
         """Per-TU C++20 modules flags for the detected compiler.
 
@@ -1995,12 +2026,17 @@ class BuildBackend(abc.ABC):
         touches_modules = bool(
             result.module_exports or result.module_implements or result.module_imports or result.module_header_imports
         )
-        # A header reached through `#include` may itself `import M;` —
-        # the consumer compile must still pass -fmodules-ts (gcc) or
-        # -fprebuilt-module-path (clang) even though the TU's own
-        # analysis result is empty. Only honour *named* imports from
-        # transitive headers; a bare ``import :P;`` in a header has no
-        # resolvable owning module and is malformed C++ anyway.
+        # A header reached through `#include` may itself `import M;` or
+        # `import <h>;` — the consumer compile must still enter modules
+        # mode (gcc: -fmodules-ts; clang: -fmodules / -fprebuilt-module-path
+        # / -fmodule-file=) even though the TU's own analysis result is
+        # empty. Both *named* imports (`import M;`, `import M:P;`) and
+        # *header-unit* imports (`import <h>;`, `import "h";`) from
+        # transitive headers open the gate; the clang header-unit
+        # consume-flags themselves are emitted below from the transitive
+        # token union. A bare ``import :P;`` in a non-module header has no
+        # resolvable owning module and is malformed C++ anyway, so it's
+        # excluded from the named check.
         transitive_named_imports = False
         for dep in self.hunter.header_dependencies(filename):
             dep_str = str(dep)
@@ -2072,10 +2108,17 @@ class BuildBackend(abc.ABC):
             # a pre-shell-quoted token as an unknown flag.
             # Per-TU narrowing (rather than the blanket-all approach
             # used for partitions) is cheap because each TU's
-            # header-unit list is short.
-            if result.module_header_imports:
+            # header-unit list is short. A header unit reaching the TU
+            # only through a #include'd header (empty own
+            # `module_header_imports`) still needs these flags — after
+            # preprocessing the import is part of this TU — so union the
+            # transitive header-unit tokens, symmetric with the
+            # transitive named-module handling above.
+            header_imports = set(result.module_header_imports)
+            header_imports.update(self._transitive_header_unit_imports(filename))
+            if header_imports:
                 extras.append("-fmodules")
-                for token in result.module_header_imports:
+                for token in sorted(header_imports):
                     pcm = self._header_unit_artefact.get(token)
                     if pcm is not None:
                         extras.append(f"-fmodule-file={token}={pcm}")
@@ -2086,7 +2129,7 @@ class BuildBackend(abc.ABC):
             # mirrors ``_create_header_unit_precompile_rule`` for HUs and
             # ``_system_module_extra_flags`` for ``import std;``.
             cxxflags_has_libcxx = "-stdlib=libc++" in self.args.flags.cxx
-            needs_libcxx = "std" in result.module_imports or bool(result.module_header_imports)
+            needs_libcxx = "std" in result.module_imports or bool(header_imports)
             if self._build_imports_std() and needs_libcxx and not cxxflags_has_libcxx:
                 extras.append("-stdlib=libc++")
                 self._compile_used_libcxx = True

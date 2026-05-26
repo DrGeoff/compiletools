@@ -65,6 +65,7 @@ class TestFindTargetsModule:
             "cxx_modules_import_std/main.cpp",
             "cxx_modules_partitions/main.cpp",
             "cxx_modules_split/main.cpp",
+            "cxx_modules_transitive_header_unit/main.cpp",
             "dottypaths/dottypaths.cpp",
             "duplicate_flags/main.cpp",
             "dynamic_library/main.cpp",
