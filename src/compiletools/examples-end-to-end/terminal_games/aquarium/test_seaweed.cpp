@@ -1,7 +1,7 @@
 // test_seaweed.cpp -- headless unit test for aquarium.seaweed in isolation.
 // Classified as a test via testmarkers=unit_test.hpp (root ct.conf). Imports
-// only aquarium.seaweed; ct-cake still discovers aquarium.water behind it (the
-// module's own import edge).
+// only aquarium.seaweed; ct-cake still links aquarium.water because
+// seaweed_impl.cpp (the implementation unit) imports it.
 #include <cstdint>
 
 #include "unit_test.hpp"

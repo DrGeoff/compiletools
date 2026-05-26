@@ -1,9 +1,10 @@
-// fish.cppm -- the aquarium's fish (module aquarium.fish).
+// fish.cppm -- the aquarium's fish: interface unit (module aquarium.fish).
 //
-// Owns the Fish state and its per-fish behaviour: spawning, fixed-point motion,
-// and edge-wrap respawn. Pure and deterministic in the seed it is handed.
-// Imports aquarium.water for the RNG, the motion scale and the geometry; it
-// never learns what a Tank is -- aquarium.tank owns the fish vector.
+// Declares the Fish type, its comparison, the species count, and the signatures
+// of the fish behaviour. The definitions live in fish_impl.cpp (a
+// `module aquarium.fish;` implementation unit) -- ct-cake discovers and links it
+// from the same import edge. The interface needs no `import aquarium.water;`:
+// only the implementation touches the RNG and geometry.
 //
 // CAS: module interface unit -> BMI in cas-pcmdir, object in cas-objdir.
 module;
@@ -11,8 +12,6 @@ module;
 #include <cstdint>
 
 export module aquarium.fish;
-
-import aquarium.water;
 
 export namespace aqua {
 
@@ -33,40 +32,11 @@ constexpr bool operator==(const Fish& a, const Fish& b) {
            a.species == b.species && a.speed == b.speed && a.accum == b.accum;
 }
 
-// Re-enter a fish from the edge opposite its travel, with a fresh look, depth and
-// speed. Deterministic in seed.
-inline void respawn_fish(Fish& f, int width, int height, std::uint64_t& seed) {
-    const int span = water_bottom(height) - water_top() + 1;
-    f.x = f.dir > 0 ? 0 : width - 1;
-    f.y = water_top() + rand_range(seed, span);
-    f.species = rand_range(seed, SPECIES_COUNT);
-    f.speed = 30 + rand_range(seed, 70);  // 0.30 .. 0.99 cell/tick
-    f.accum = 0;
-}
+// A fresh fish at a random position, swimming left or right. Deterministic in seed.
+Fish spawn_fish(int width, int height, std::uint64_t& seed);
 
-// A fresh fish at a random position, swimming left or right. Deterministic.
-inline Fish spawn_fish(int width, int height, std::uint64_t& seed) {
-    const int span = water_bottom(height) - water_top() + 1;
-    Fish f{};
-    f.dir = (rand_range(seed, 2) == 0) ? -1 : +1;
-    f.x = rand_range(seed, width);
-    f.y = water_top() + rand_range(seed, span);
-    f.species = rand_range(seed, SPECIES_COUNT);
-    f.speed = 30 + rand_range(seed, 70);
-    f.accum = 0;
-    return f;
-}
-
-// Advance one tick: drift by the fixed-point speed, wrapping (respawning) when
-// the fish leaves either edge.
-inline void advance_fish(Fish& f, int width, int height, std::uint64_t& seed) {
-    f.accum += f.speed;
-    while (f.accum >= SPEED_SCALE) {
-        f.accum -= SPEED_SCALE;
-        f.x += f.dir;
-    }
-    if (f.x < 0 || f.x >= width)
-        respawn_fish(f, width, height, seed);
-}
+// Advance one tick: drift by the fixed-point speed, wrapping (respawning at the
+// opposite edge with a fresh look/depth/speed) when the fish leaves either edge.
+void advance_fish(Fish& f, int width, int height, std::uint64_t& seed);
 
 }  // namespace aqua

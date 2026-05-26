@@ -1,7 +1,8 @@
-// seaweed.cppm -- the aquarium's seaweed (module aquarium.seaweed).
+// seaweed.cppm -- the aquarium's seaweed: interface unit (module aquarium.seaweed).
 //
-// Owns the Weed state, its placement, and the pure sway function. Imports
-// aquarium.water for the RNG and geometry; never learns what a Tank is.
+// Declares the Weed type, its comparison, the (constexpr, pure) sway function
+// that stays in the interface, and the signature of spawn_weed -- whose
+// definition lives in seaweed_impl.cpp. No `import aquarium.water;` here.
 //
 // CAS: module interface unit -> BMI in cas-pcmdir, object in cas-objdir.
 module;
@@ -9,8 +10,6 @@ module;
 #include <cstdint>
 
 export module aquarium.seaweed;
-
-import aquarium.water;
 
 export namespace aqua {
 
@@ -22,14 +21,8 @@ constexpr bool operator==(const Weed& a, const Weed& b) {
     return a.x == b.x && a.height == b.height;
 }
 
-// A weed anchored to the floor at a random column, 2..5 rows tall. Deterministic.
-inline Weed spawn_weed(int width, int tank_height, std::uint64_t& seed) {
-    const int max_extra = (tank_height - 4) > 1 ? (tank_height - 4) : 1;
-    Weed w{};
-    w.x = rand_range(seed, width);
-    w.height = 2 + rand_range(seed, max_extra > 4 ? 4 : max_extra);
-    return w;
-}
+// A weed anchored to the floor at a random column, 2..5 rows tall. Deterministic in seed.
+Weed spawn_weed(int width, int tank_height, std::uint64_t& seed);
 
 // Horizontal sway of a weed segment: a pure, periodic function of the global
 // tick and the segment index -- no <cmath>, so it stays constexpr and exactly
