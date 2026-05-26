@@ -930,6 +930,55 @@ class BazelBackend(BuildBackend):
         new_content = "\n".join(lines) + "\n"
         compiletools.filesystem_utils.atomic_write_if_changed(path, new_content)
 
+    def _route_module_prebuild_through_bazel_mapper(self, base_dir: str) -> None:
+        """Point every named-module compile (INTERFACE and IMPLEMENTATION) at the
+        bazel-relative module mapper instead of the default absolute one, and
+        pre-create the workspace-relative BMI output directories.
+
+        The interface prebuild bakes, into each produced ``.gcm``, the CMI paths
+        it resolved for re-exported modules (``export:`` entries); the impl-unit
+        prebuild reads its interface's BMI. With the default absolute mapper those
+        paths are absolute, and bazel's absolute-path-inclusion check rejects them
+        when an importer reads the BMI. The bazel mapper (written by
+        ``_write_bazel_module_mapper``) carries workspace-relative ``.gcm`` paths
+        -- ``cas-pcmdir``-relative for the "inside" cas layout (resolving to the
+        same file the default mapper writes, so the BMI stays in the CAS), or
+        ``.ct-bazel-pcm/`` for "outside" (the BMI is written into the workspace
+        staging dir). Routing every module compile through it makes gcc read,
+        write, and bake refs to workspace-relative locations consistently, so the
+        impl units and importers all agree on where the BMIs live.
+
+        The ``.gcm`` is a side effect written at the mapper's path, so its output
+        directory must exist before the compile runs. For "inside" the cas-pcmdir
+        ``<hash>`` dirs already exist (created by the cas-pcmdir mkdir rules); for
+        "outside" the ``.ct-bazel-pcm/`` dirs are created here.
+        ``_materialise_pcm_stagings`` then no-ops on those entries because the
+        destination already exists.
+
+        Bazel-only: it mutates this backend's own graph instance, so no other
+        backend's prebuild or performance is affected. No-op unless gcc named
+        modules are in play.
+        """
+        if self._module_compiler_kind != "gcc" or not self._module_pcm_cache_root:
+            return
+        graph = self._graph
+        if graph is None:
+            return
+        bazel_mapper = os.path.join(base_dir, self._BAZEL_MODULE_MAPPER_BASENAME)
+        # Pre-create each module BMI's workspace-relative output directory so the
+        # prebuild's gcc compile can write the .gcm side effect there.
+        for gcm in self._module_iface_gcm.values():
+            rel = self._bazel_pcm_workspace_relative(gcm, base_dir)
+            if rel is not None:
+                os.makedirs(os.path.dirname(os.path.join(base_dir, rel)), exist_ok=True)
+        module_outputs = set(self._module_iface_obj.values()) | set(self._module_impl_obj)
+        for rule in graph.rules_by_type(RuleType.COMPILE):
+            if rule.output not in module_outputs or not rule.command:
+                continue
+            rule.command = [
+                f"-fmodule-mapper={bazel_mapper}" if tok.startswith("-fmodule-mapper=") else tok for tok in rule.command
+            ]
+
     def _ensure_workspace(self, output_dir: str) -> None:
         """Create a minimal MODULE.bazel and .bazelversion if absent.
 
@@ -968,17 +1017,21 @@ class BazelBackend(BuildBackend):
         if tool is None:
             raise RuntimeError("Neither 'bazelisk' nor 'bazel' found on PATH")
 
+        base_dir = self._default_base_dir()
+        # Write the bazel-specific module mapper (workspace-relative .gcm paths)
+        # and route the named-module INTERFACE prebuild compiles through it
+        # BEFORE prebuilding. This makes the `export:` refs a re-exporting
+        # interface BMI bakes in workspace-relative; the default absolute mapper
+        # otherwise bakes absolute paths that fail bazel's
+        # absolute-path-inclusion hermeticity check when an importer reads the
+        # BMI (e.g. terminal_games' aquarium.tank re-exporting water/fish/...).
+        self._write_bazel_module_mapper(base_dir)
+        self._route_module_prebuild_through_bazel_mapper(base_dir)
+
         # Bazel's spawn strategy is pinned to local in .bazelrc, so the
         # CAS-absolute paths the prebuilt artefacts live at resolve
         # correctly from inside the bazel-spawned compile.
         self._prebuild_aux_artefacts()
-
-        base_dir = self._default_base_dir()
-        # After the .gcm/.pcm artefacts exist on disk, materialise the
-        # bazel-specific module mapper (workspace-relative paths) so
-        # the importer compiles bazel later spawns find the BMIs via
-        # paths that pass bazel's absolute-path-inclusion check.
-        self._write_bazel_module_mapper(base_dir)
         # Same idea for cas-pchdir PCH artefacts: stage hardlinks of
         # each (.h, .gch) pair into <workspace>/.ct-bazel-pch/<hash>/
         # so the workspace-relative `-include` flag emitted by
