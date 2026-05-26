@@ -22,15 +22,15 @@ std::string render(const Field& f) {
         std::string line(f.width, ' ');
         for (int r = 0; r < invaders::INV_ROWS; ++r)
             for (int c = 0; c < invaders::INV_COLS; ++c)
-                if (invaders::inv_alive(f, r, c) && invaders::inv_screen_y(f, r) == y) {
-                    const int x = invaders::inv_screen_x(f, c);
+                if (invaders::inv_alive(f.formation, r, c) && invaders::inv_screen_y(f.formation, r) == y) {
+                    const int x = invaders::inv_screen_x(f.formation, c);
                     if (x >= 0 && x < f.width) line[x] = 'W';
                 }
-        if (f.bullet_y == y && f.bullet_x >= 0 && f.bullet_x < f.width) line[f.bullet_x] = '|';
+        if (f.bullet.y == y && f.bullet.x >= 0 && f.bullet.x < f.width) line[f.bullet.x] = '|';
         if (y == f.height - 1 && f.player_x >= 0 && f.player_x < f.width) line[f.player_x] = 'A';
         out += line + "\x1b[K\n";
     }
-    out += std::format("INVADERS {}   {}\x1b[K", invaders::remaining(f),
+    out += std::format("INVADERS {}   {}\x1b[K", invaders::remaining(f.formation),
                        invaders::classify(f) == Verdict::Won  ? "*** YOU WIN ***"
                      : invaders::classify(f) == Verdict::Lost ? "*** INVADED ***" : "");
     return out;
@@ -88,7 +88,7 @@ int run_demo() {
         f = invaders::step(f, Action::Fire);
         v = invaders::classify(f);
     }
-    std::println("INVADERS demo: {} left, {}", invaders::remaining(f),
+    std::println("INVADERS demo: {} left, {}", invaders::remaining(f.formation),
                  v == Verdict::Won ? "win" : v == Verdict::Lost ? "invaded" : "timeout");
     return 0;
 }

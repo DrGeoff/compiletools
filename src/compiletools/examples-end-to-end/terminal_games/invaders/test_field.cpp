@@ -9,13 +9,13 @@ int main() {
     // A bullet aligned with an invader clears exactly that invader.
     {
         Field f = initial(40, 20);
-        const int before = remaining(f);
+        const int before = remaining(f.formation);
         // Aim at invader (row 2, col 0): place a rising bullet one row below it.
-        f.bullet_x = inv_screen_x(f, 0);
-        f.bullet_y = inv_screen_y(f, 2) + 1;
+        f.bullet.x = inv_screen_x(f.formation, 0);
+        f.bullet.y = inv_screen_y(f.formation, 2) + 1;
         f = step(f, Action::None);  // bullet rises into the invader
-        UT_REQUIRE(remaining(f) == before - 1);
-        UT_REQUIRE(f.bullet_y == NO_BULLET);
+        UT_REQUIRE(remaining(f.formation) == before - 1);
+        UT_REQUIRE(f.bullet.y == NO_BULLET);
     }
 
     // Player clamps at both bounds.
@@ -33,33 +33,33 @@ int main() {
     {
         Field f = initial(40, 20);
         f = step(f, Action::Fire);
-        UT_REQUIRE(f.bullet_y != NO_BULLET);
-        const int bx = f.bullet_x;
+        UT_REQUIRE(f.bullet.y != NO_BULLET);
+        const int bx = f.bullet.x;
         f = step(f, Action::Fire);  // ignored: bullet already flying
-        UT_REQUIRE(f.bullet_x == bx);
+        UT_REQUIRE(f.bullet.x == bx);
     }
 
     // The formation reverses direction and drops a row at the right edge.
     {
         Field f = initial(14, 20);  // narrow so the edge is hit quickly
-        const int dir0 = f.march_dir;
-        const int y0 = f.offset_y;
+        const int dir0 = f.formation.march_dir;
+        const int y0 = f.formation.offset_y;
         bool dropped = false;
         for (int i = 0; i < 200 && !dropped; ++i) {
             f = step(f, Action::None);
-            if (f.offset_y > y0) dropped = true;
+            if (f.formation.offset_y > y0) dropped = true;
         }
         UT_REQUIRE(dropped);
-        UT_REQUIRE(f.march_dir == -dir0);
+        UT_REQUIRE(f.formation.march_dir == -dir0);
     }
 
     // Clearing the last invader is a Win.
     {
         Field f = initial(40, 20);
-        for (auto&& a : f.alive) a = false;
-        f.alive[0] = true;                 // one invader left, at (0,0)
-        f.bullet_x = inv_screen_x(f, 0);
-        f.bullet_y = inv_screen_y(f, 0) + 1;
+        for (auto&& a : f.formation.alive) a = false;
+        f.formation.alive[0] = true;                 // one invader left, at (0,0)
+        f.bullet.x = inv_screen_x(f.formation, 0);
+        f.bullet.y = inv_screen_y(f.formation, 0) + 1;
         f = step(f, Action::None);
         UT_REQUIRE(classify(f) == Verdict::Won);
     }
@@ -67,7 +67,7 @@ int main() {
     // The formation reaching the bottom row is a Loss.
     {
         Field f = initial(40, 6);
-        f.offset_y = 4;                    // bottom invader row at screen y=6 >= height-1
+        f.formation.offset_y = 4;                    // bottom invader row at screen y=6 >= height-1
         UT_REQUIRE(classify(f) == Verdict::Lost);
     }
 
