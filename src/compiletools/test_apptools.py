@@ -1303,6 +1303,198 @@ class TestSetupPkgConfigOverrides:
         dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
         assert dirs == ["/system", "/local"]
 
+    def test_prepend_higher_priority_conf_wins_over_lower(self, monkeypatch, tmp_path):
+        """Regression: ``prepend-PKG-CONFIG-PATH`` set in two layered conf
+        files must place the higher-priority conf's entry leftmost in
+        ``PKG_CONFIG_PATH``, mirroring the codebase's prepend/append
+        idiom (highest-priority source wins).
+
+        ``args.prepend_pkg_config_path`` arrives ordered
+        ``[low_priority_conf, ..., high_priority_conf, cli_in_parse_order]``
+        — the same order ``_AccumulatingConfigFileParser`` produces for
+        every ``prepend-*`` / ``append-*`` key. For compiler-flag slots
+        the rightmost token wins, so that order yields CLI > high-conf >
+        low-conf naturally. ``PKG_CONFIG_PATH`` resolves leftmost-first,
+        so the accumulator list must be *reversed* on emission to
+        preserve the same priority ordering.
+
+        Before the fix, the base ct.conf entry sat leftmost and silently
+        shadowed every axis-level override that targeted the same .pc
+        file, causing the wrong ABI flavor of a pinned library to be
+        selected by downstream consumers.
+        """
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: None)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+
+        ctx = BuildContext()
+        _setup_pkg_config_overrides(
+            ctx,
+            prepend_paths=["/base/pkgconfig", "/axisX/pkgconfig"],
+        )
+
+        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
+        assert dirs == ["/axisX/pkgconfig", "/base/pkgconfig"]
+
+    def test_append_higher_priority_conf_wins_over_lower(self, monkeypatch, tmp_path):
+        """Symmetric to ``test_prepend_higher_priority_conf_wins_over_lower``
+        for ``append-PKG-CONFIG-PATH``. Within the appended group, the
+        higher-priority conf entry still has to land leftmost — appends
+        are fallback paths searched after prepends + existing env, and
+        within that fallback group leftmost still wins."""
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: None)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+
+        ctx = BuildContext()
+        _setup_pkg_config_overrides(
+            ctx,
+            append_paths=["/base/pkgconfig", "/axisX/pkgconfig"],
+        )
+
+        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
+        assert dirs == ["/axisX/pkgconfig", "/base/pkgconfig"]
+
+    def test_prepend_cli_wins_over_conf(self, monkeypatch, tmp_path):
+        """The CLI portion of ``--prepend-PKG-CONFIG-PATH`` is appended to
+        the accumulator list after every conf-file contribution (matches
+        the ``_ComposingArgumentParser`` CLI re-append). The reversal
+        therefore puts CLI entries leftmost, ahead of any conf-file
+        prepend — so CLI overrides every conf the same way it does for
+        compiler-flag slots."""
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: None)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+
+        ctx = BuildContext()
+        _setup_pkg_config_overrides(
+            ctx,
+            prepend_paths=["/conf/pkgconfig", "/cli/pkgconfig"],
+        )
+
+        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
+        assert dirs[0] == "/cli/pkgconfig"
+        assert dirs[1] == "/conf/pkgconfig"
+
+    def test_append_cli_wins_over_conf(self, monkeypatch, tmp_path):
+        """Symmetric: within the appended fallback group, CLI lands
+        leftmost (most preferred fallback)."""
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: None)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+
+        ctx = BuildContext()
+        _setup_pkg_config_overrides(
+            ctx,
+            append_paths=["/conf/pkgconfig", "/cli/pkgconfig"],
+        )
+
+        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
+        assert dirs[-2] == "/cli/pkgconfig"
+        assert dirs[-1] == "/conf/pkgconfig"
+
+    def test_prepend_within_cli_last_wins(self, monkeypatch, tmp_path):
+        """Multiple ``--prepend-PKG-CONFIG-PATH`` flags on the same CLI:
+        the rightmost-typed flag ends up leftmost in PKG_CONFIG_PATH,
+        matching the "last-occurrence wins" convention every other
+        ``prepend-*`` / ``append-*`` key follows in this codebase."""
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: None)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+
+        ctx = BuildContext()
+        _setup_pkg_config_overrides(
+            ctx,
+            prepend_paths=["/cli/first", "/cli/second"],
+        )
+
+        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
+        assert dirs == ["/cli/second", "/cli/first"]
+
+    def test_append_within_cli_last_wins(self, monkeypatch, tmp_path):
+        """Symmetric for ``--append-PKG-CONFIG-PATH``: within the
+        appended fallback group, the rightmost-typed CLI flag lands
+        leftmost (most preferred fallback)."""
+        monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda filename=None: None)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+
+        ctx = BuildContext()
+        _setup_pkg_config_overrides(
+            ctx,
+            append_paths=["/cli/first", "/cli/second"],
+        )
+
+        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
+        assert dirs == ["/cli/second", "/cli/first"]
+
+    def test_two_layered_conf_files_axis_wins_through_parseargs(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """End-to-end repro: project ``ct.conf`` and a higher-priority
+        axis conf each set ``prepend-PKG-CONFIG-PATH``. After running
+        through the real ``parseargs`` pipeline (configargparse +
+        ``${CONF_DIR}`` expansion + ``_setup_pkg_config_overrides``),
+        the axis-conf directory must land leftmost in
+        ``PKG_CONFIG_PATH``. Before the fix, the project ct.conf's
+        prepend was leftmost and silently shadowed the axis override,
+        causing the wrong ABI flavor of a pinned ``.pc`` to be selected
+        by downstream consumers.
+        """
+        conf_dir = tmp_path / "ct.conf.d"
+        conf_dir.mkdir(parents=True)
+        # Project ct.conf is lower-priority than the axis conf inside
+        # the variant composition; its prepend should land second.
+        base_pkgconfig = conf_dir / "pkgconfig-base"
+        base_pkgconfig.mkdir()
+        (tmp_path / "ct.conf").write_text(
+            "variant = axisX\n"
+            "prepend-PKG-CONFIG-PATH = ${CONF_DIR}/ct.conf.d/pkgconfig-base\n"
+        )
+        # Axis conf is higher priority — its prepend must win.
+        axis_conf = conf_dir / "axisX.conf"
+        axis_pkgconfig = conf_dir / "pkgconfig-axisX"
+        axis_pkgconfig.mkdir()
+        axis_conf.write_text("prepend-PKG-CONFIG-PATH = ${CONF_DIR}/pkgconfig-axisX\n")
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("PKG_CONFIG_PATH", raising=False)
+        monkeypatch.setattr(
+            "compiletools.git_utils.find_git_root",
+            lambda filename=None: str(tmp_path),
+        )
+
+        # --no-git-root keeps the test focused on the layered conf
+        # prepends — without it, ct.conf.d/pkgconfig (auto-discovered)
+        # would also land in PKG_CONFIG_PATH and dedup against
+        # pkgconfig-base by realpath, muddying the assertion.
+        argv = ["--variant=axisX", "--no-git-root"]
+        with uth.DirectoryContext(str(tmp_path)):
+            cap = apptools.create_parser("layered conf test", argv=argv)
+            apptools.add_common_arguments(cap, argv=argv)
+            with uth.ParserContext():
+                ctx = BuildContext()
+                args = apptools.parseargs(cap, argv, context=ctx)
+
+        # The accumulator carries both prepends, in conf-hierarchy
+        # order (project ct.conf first, axis conf second).
+        prepends = [os.path.normpath(p) for p in (args.prepend_pkg_config_path or [])]
+        assert str(base_pkgconfig) in prepends, (
+            f"project ct.conf's prepend didn't reach args: {prepends!r}"
+        )
+        assert str(axis_pkgconfig) in prepends, (
+            f"axis conf's prepend didn't reach args: {prepends!r}"
+        )
+
+        dirs = os.environ["PKG_CONFIG_PATH"].split(os.pathsep)
+        axis_idx = dirs.index(str(axis_pkgconfig))
+        base_idx = dirs.index(str(base_pkgconfig))
+        assert axis_idx < base_idx, (
+            f"Axis-conf prepend must land leftmost (winning) over project "
+            f"ct.conf prepend; got axis@{axis_idx}, base@{base_idx}, "
+            f"PKG_CONFIG_PATH={dirs!r}"
+        )
+
     def test_flag_set_only_after_env_mutation_succeeds(self, monkeypatch, tmp_path):
         """Regression: pkg_config_overrides_applied must NOT be set
         if the function raises before mutating PKG_CONFIG_PATH — otherwise

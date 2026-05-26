@@ -2253,11 +2253,16 @@ def _setup_pkg_config_overrides(context, verbose=0, prepend_paths=None, append_p
 
     Priority order (highest first):
 
-    1. ``--prepend-PKG-CONFIG-PATH`` directories (CLI)
-    2. ``<cwd>/ct.conf.d/pkgconfig/`` (project-local)
-    3. ``<gitroot>/ct.conf.d/pkgconfig/`` (repo-level)
+    1. ``prepend-PKG-CONFIG-PATH`` entries, with CLI winning over conf-file
+       entries and — within the accumulated conf-file entries — the
+       higher-priority axis conf (composed later in the variant) winning
+       over the lower-priority one (e.g. project ``ct.conf``).
+    2. ``<cwd>/ct.conf.d/pkgconfig/`` (project-local, auto-discovered)
+    3. ``<gitroot>/ct.conf.d/pkgconfig/`` (repo-level, auto-discovered)
     4. Existing ``PKG_CONFIG_PATH`` entries
-    5. ``--append-PKG-CONFIG-PATH`` directories (CLI)
+    5. ``append-PKG-CONFIG-PATH`` entries, symmetric to (1): CLI wins over
+       conf-file entries, higher-priority axis wins within the conf-file
+       group.
 
     Args:
         context: BuildContext instance tracking per-build state.
@@ -2333,8 +2338,22 @@ def _setup_pkg_config_overrides_locked(context, verbose, prepend_paths, append_p
     # PKG_CONFIG_PATH gets *moved* to the requested position rather than
     # being silently dropped — so --prepend-PKG-CONFIG-PATH=/X actually
     # promotes /X to the front when /X was already present.
-    prepend_normd = [compiletools.wrappedos.normpath(d) for d in (prepend_paths or [])]
-    append_normd = [compiletools.wrappedos.normpath(d) for d in (append_paths or [])]
+    #
+    # ``prepend_paths`` / ``append_paths`` arrive ordered
+    # ``[low-priority conf, ..., high-priority conf, CLI in parse order]``
+    # — the order ``_AccumulatingConfigFileParser`` and the
+    # ``_ComposingArgumentParser`` CLI re-append produce for every
+    # ``prepend-*`` / ``append-*`` key. Compiler-flag slots emit that
+    # list left-to-right and rely on the compiler's "last token wins"
+    # rule to honor CLI > high-conf > low-conf. ``PKG_CONFIG_PATH``
+    # resolves leftmost-first, so we *reverse* both lists here so the
+    # same priority ordering survives the inversion of the wins rule.
+    # Symmetric for prepend and append: within each group, the highest-
+    # priority source ends up leftmost in PATH (winning), the
+    # lowest-priority source ends up rightmost in its group (only used
+    # as a fallback for packages no higher source defines).
+    prepend_normd = [compiletools.wrappedos.normpath(d) for d in reversed(prepend_paths or [])]
+    append_normd = [compiletools.wrappedos.normpath(d) for d in reversed(append_paths or [])]
     forced_at_end = set(append_normd)
 
     middle = [d for d in existing_dirs if d not in forced_at_end]

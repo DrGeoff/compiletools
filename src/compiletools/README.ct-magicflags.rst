@@ -130,6 +130,14 @@ Use ``--prepend-PKG-CONFIG-PATH`` to override all project and system paths
 a patched version). Use ``--append-PKG-CONFIG-PATH`` as a fallback for
 system-wide or user-local package paths not in the environment.
 
+``prepend-PKG-CONFIG-PATH`` set in any conf file accumulates across the conf
+hierarchy. When multiple confs contribute entries (e.g. a project ``ct.conf``
+plus axis confs composed by ``--variant``), the higher-priority conf-file
+entry wins over the lower-priority one — so an axis conf that pins a
+build-flavor-specific ``.pc`` directory overrides a global ``ct.conf``'s
+prepend. CLI ``--prepend-PKG-CONFIG-PATH`` wins over all conf-file entries.
+``append-PKG-CONFIG-PATH`` follows the symmetric ordering at the rear.
+
 CPPFLAGS and CXXFLAGS Unification
 ==================================
 By default, ``CPPFLAGS`` and ``CXXFLAGS`` magic flags are merged into a single
