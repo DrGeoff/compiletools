@@ -18,8 +18,9 @@ unit (`.cppm`) and an implementation unit (`_impl.cpp`)**, plus an executable
 that `import`s the module and `#include`s the shared terminal facade, and one or
 more headless tests that assert its behaviour. Snake, invaders and breakout
 **decompose into a small module graph at natural seams** — snake pulls out an
-`rng` leaf; invaders separates `formation` and `bullet` leaves under a `field`
-aggregate; breakout isolates a `bricks` leaf under an `arena` aggregate — each
+`rng` leaf; invaders splits a `formation` leaf and a `bullet` unit that imports
+it, both under a `field` aggregate; breakout isolates a `bricks` leaf under an
+`arena` aggregate — each
 with a re-exporting aggregate module. **Moonlander stays a single cohesive
 module** (a lander is one integrator with no honest seam): the rule is
 *decompose at real seams, stay cohesive otherwise.*
