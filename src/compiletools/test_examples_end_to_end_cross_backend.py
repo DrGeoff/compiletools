@@ -205,7 +205,8 @@ _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
     "cxx_modules_header_units": _VANILLA,
     # The canonical CAS showcase: four terminal games (moonlander, snake,
     # invaders, breakout) plus a controls-free ASCII aquarium artwork (itself
-    # split across five named modules to exercise import-graph discovery), all
+    # split across five named modules, four with separate interface/impl units,
+    # to exercise import-graph + implementation-unit discovery), all
     # sharing one terminal facade in common/. `--auto` at
     # the root builds all five exes + eight pure tests across subdirs; the
     # facade's single PCH (common/terminal.cpp) and single terminal.o compile

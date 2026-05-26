@@ -40,7 +40,8 @@ terminal_games/
   snake/       world.cppm     snake.cpp       test_snake.cpp     (module snake.world)
   invaders/    field.cppm     invaders.cpp    test_field.cpp     (module invaders.field)
   breakout/    arena.cppm     breakout.cpp    test_arena.cpp     (module breakout.arena)
-  aquarium/    water.cppm fish.cppm bubbles.cppm seaweed.cppm tank.cppm   (5 modules, 1 program)
+  aquarium/    water.cppm fish.cppm bubbles.cppm seaweed.cppm tank.cppm   (5 module interfaces)
+               fish_impl.cpp bubbles_impl.cpp seaweed_impl.cpp tank_impl.cpp  (4 implementation units)
                aquarium.cpp   test_fish.cpp test_bubbles.cpp test_seaweed.cpp test_tank.cpp
 ```
 
@@ -65,6 +66,7 @@ Two rules keep the example honest and portable:
 | `common/terminal.h` | light facade declarations | — |
 | `common/unit_test.hpp` | testmarker header | — |
 | `*/<unit>.cppm` (×9) | module interface (impl) | **cas-pcmdir** (BMI) + cas-objdir |
+| `aquarium/*_impl.cpp` (×4) | module implementation unit (`module aquarium.M;`) | cas-objdir — *no BMI* |
 | `*/<name>.cpp` (×5) | executable (`// ct-exemarker`) | cas-objdir + **cas-exedir** |
 | `*/test_*.cpp` (×8) | test (includes `unit_test.hpp`) | **content-keyed test-result cache** + cas-exedir |
 
@@ -84,22 +86,27 @@ rebuild: only that program's module object and its exe are rebuilt — the share
 PCH, the shared `terminal.o`, and the other four programs are all served from the
 CAS untouched.
 
-### The aquarium: one program, five auto-discovered modules
+### The aquarium: one program, five modules, auto-discovered
 
 The aquarium is split into a small module graph to show off how `ct-cake`
 discovers the files that make up a program — with no file list anywhere:
 
-    aquarium.water                      (the LCG + geometry; a leaf)
-    aquarium.fish  .bubbles  .seaweed   (each: import aquarium.water)
-    aquarium.tank                       (re-exports the four above)
+    aquarium.water                      (the LCG + geometry; a leaf, no impl unit)
+    aquarium.fish  .bubbles  .seaweed   (interface .cppm + implementation _impl.cpp)
+    aquarium.tank                       (re-exports the four; interface + _impl.cpp)
+
+Most modules follow the interface/implementation split: the `.cppm` interface
+unit declares the types and function signatures, and a sibling
+`<module>_impl.cpp` (`module aquarium.M;`) holds the definitions.
+`aquarium.water` needs no implementation unit — it is all `constexpr` primitives.
 
 `aquarium.cpp` contains a single `import aquarium.tank;`. From that one edge
-`ct-cake` resolves every module name to its `.cppm`, compiling all five
-interface units and their BMIs into the CAS — you never list them. Each
-`test_*` program imports only the slice it needs: `test_seaweed.cpp` imports
-just `aquarium.seaweed`, and ct-cake follows that module's own import edge to
-pull in `aquarium.water` behind it (a two-module compile); `test_tank.cpp`
-imports the whole graph. ct-cake compiles only the sub-graph each test touches.
+`ct-cake` resolves every imported module name to its interface **and** its
+implementation unit — compiling the five interface BMIs and linking the four
+`_impl.cpp` objects, with no file list anywhere. Each `test_*` program imports
+only the slice it needs (`test_seaweed.cpp` → `aquarium.seaweed`, which pulls
+its `_impl.cpp` and `aquarium.water` behind it; `test_tank.cpp` → the whole
+graph), so ct-cake compiles and links only the sub-graph each test touches.
 
 ### Free cross-user reproducibility
 
