@@ -15,6 +15,7 @@
 // textually via terminal.h. Headers-then-import keeps the global module
 // consistent across every program here.
 #include "terminal.h"
+#include "frontend.h"
 
 #include <print>
 #include <format>
@@ -48,19 +49,20 @@ std::string render(LanderState s, Verdict v, bool thrusting, int rows) {
     const int lander_row = static_cast<int>((1.0 - f) * (sky - 1) + 0.5);
     const std::string margin(LEFT_MARGIN, ' ');
 
-    std::string out = "\x1b[H";
+    std::string out{frontend::CURSOR_HOME};
     for (int r = 0; r < sky; ++r) {
         if (r == lander_row)
             out += margin + "/\\";
         else if (thrusting && r == lander_row + 1)
             out += margin + "vv";
-        out += "\x1b[K\n";
+        out += frontend::CLEAR_EOL; out += '\n';
     }
-    out += std::string(LEFT_MARGIN + 8, '=') + "\x1b[K\n";  // landing pad
-    out += std::format("ALT {:6.1f} m   VEL {:7.2f} m/s   FUEL {:5.1f}   {}\x1b[K",
+    out += std::string(LEFT_MARGIN + 8, '=') + std::string(frontend::CLEAR_EOL) + "\n";  // landing pad
+    out += std::format("ALT {:6.1f} m   VEL {:7.2f} m/s   FUEL {:5.1f}   {}{}",
                        s.altitude, s.velocity, s.fuel,
                        v == Verdict::Flying ? (thrusting ? "THRUST" : "")
-                                            : verdict_banner(v));
+                                            : verdict_banner(v),
+                       frontend::CLEAR_EOL);
     return out;
 }
 
@@ -72,27 +74,19 @@ bool is_thrust_key(char key) { return key == ' ' || key == 'w' || key == 'k'; }
 // from the splash, true to launch. The numbers come straight from the
 // simulation constants, so the instructions can never drift from the physics.
 bool splash() {
-    const std::string screen = std::format(
-        "\x1b[2J\x1b[H\n"
-        "        ====  M O O N   L A N D E R  ====\n\n"
+    const std::string body = std::format(
         "  Pilot the lunar module down to the surface. Fire the\n"
         "  thruster to slow your descent -- but mind the fuel, because\n"
         "  once the tank runs dry you are at the mercy of gravity.\n\n"
         "  GOAL    touch down at {:.1f} m/s or slower to land safely;\n"
         "          come in any faster and you crash.\n\n"
-        "  START   altitude {:.0f} m     fuel {:.0f} units\n\n"
-        "  KEYS    SPACE / W / K    fire thruster\n"
-        "          Q                quit\n\n"
-        "        ----  press any key to begin  ----\n",
+        "  START   altitude {:.0f} m     fuel {:.0f} units",
         lander::SAFE_LANDING_SPEED, lander::START_ALTITUDE, lander::START_FUEL);
-    term::write_frame(screen);
-
-    for (;;) {
-        const char key = term::read_key();
-        if (key == 'q') return false;
-        if (key != '\0') return true;
-        term::sleep_ms(20);
-    }
+    return frontend::run_splash(
+        "        ====  M O O N   L A N D E R  ====",
+        body,
+        "  KEYS    SPACE / W / K    fire thruster\n"
+        "          Q                quit");
 }
 
 int play_interactive() {

@@ -3,6 +3,7 @@
 // invaders.cpp -- the interactive Space Invaders. Imports the pure simulation
 // and includes the terminal facade; no PCH here.
 #include "terminal.h"
+#include "frontend.h"
 
 #include <print>
 #include <format>
@@ -17,7 +18,7 @@ using invaders::Field;
 using invaders::Verdict;
 
 std::string render(const Field& f) {
-    std::string out = "\x1b[H";
+    std::string out{frontend::CURSOR_HOME};
     for (int y = 0; y < f.height; ++y) {
         std::string line(f.width, ' ');
         for (int r = 0; r < invaders::INV_ROWS; ++r)
@@ -28,29 +29,21 @@ std::string render(const Field& f) {
                 }
         if (f.bullet.y == y && f.bullet.x >= 0 && f.bullet.x < f.width) line[f.bullet.x] = '|';
         if (y == f.height - 1 && f.player_x >= 0 && f.player_x < f.width) line[f.player_x] = 'A';
-        out += line + "\x1b[K\n";
+        out += line; out += frontend::CLEAR_EOL; out += '\n';
     }
-    out += std::format("INVADERS {}   {}\x1b[K", invaders::remaining(f.formation),
+    out += std::format("INVADERS {}   {}{}", invaders::remaining(f.formation),
                        invaders::classify(f) == Verdict::Won  ? "*** YOU WIN ***"
-                     : invaders::classify(f) == Verdict::Lost ? "*** INVADED ***" : "");
+                     : invaders::classify(f) == Verdict::Lost ? "*** INVADED ***" : "",
+                       frontend::CLEAR_EOL);
     return out;
 }
 
 bool splash() {
-    const std::string screen =
-        "\x1b[2J\x1b[H\n"
-        "        ====  S P A C E   I N V A D E R S  ====\n\n"
-        "  Clear the formation before it reaches the ground.\n\n"
+    return frontend::run_splash(
+        "        ====  S P A C E   I N V A D E R S  ====",
+        "  Clear the formation before it reaches the ground.",
         "  KEYS    A / D    move      SPACE   fire\n"
-        "          Q        quit\n\n"
-        "        ----  press any key to begin  ----\n";
-    term::write_frame(screen);
-    for (;;) {
-        const char key = term::read_key();
-        if (key == 'q') return false;
-        if (key != '\0') return true;
-        term::sleep_ms(20);
-    }
+        "          Q        quit");
 }
 
 Action key_to_action(char key) {

@@ -9,6 +9,7 @@
 // term::write_frame "not a member"). Includes-first keeps them in the global
 // module.
 #include "terminal.h"
+#include "frontend.h"
 
 #include <print>
 #include <format>
@@ -23,7 +24,7 @@ using breakout::PaddleDir;
 using breakout::Verdict;
 
 std::string render(const Arena& a) {
-    std::string out = "\x1b[H";
+    std::string out{frontend::CURSOR_HOME};
     for (int y = 0; y < a.height; ++y) {
         std::string line(a.width, ' ');
         for (int r = 0; r < breakout::BRICK_ROWS; ++r)
@@ -33,29 +34,21 @@ std::string render(const Arena& a) {
         if (a.ball_y == y && a.ball_x >= 0 && a.ball_x < a.width) line[a.ball_x] = 'O';
         if (y == breakout::paddle_row(a))
             for (int i = 0; i < a.paddle_w && a.paddle_x + i < a.width; ++i) line[a.paddle_x + i] = '=';
-        out += line + "\x1b[K\n";
+        out += line; out += frontend::CLEAR_EOL; out += '\n';
     }
-    out += std::format("BRICKS {}   {}\x1b[K", breakout::bricks_left(a.bricks),
+    out += std::format("BRICKS {}   {}{}", breakout::bricks_left(a.bricks),
                        breakout::classify(a) == Verdict::Won  ? "*** YOU WIN ***"
-                     : breakout::classify(a) == Verdict::Lost ? "*** BALL LOST ***" : "");
+                     : breakout::classify(a) == Verdict::Lost ? "*** BALL LOST ***" : "",
+                       frontend::CLEAR_EOL);
     return out;
 }
 
 bool splash() {
-    const std::string screen =
-        "\x1b[2J\x1b[H\n"
-        "        ====  B R E A K O U T  ====\n\n"
+    return frontend::run_splash(
+        "        ====  B R E A K O U T  ====",
         "  Bounce the ball (O) off your paddle (=) to smash every brick (#).\n"
-        "  Don't let the ball fall past the paddle.\n\n"
-        "  KEYS    A / D    move paddle      Q   quit\n\n"
-        "        ----  press any key to begin  ----\n";
-    term::write_frame(screen);
-    for (;;) {
-        const char key = term::read_key();
-        if (key == 'q') return false;
-        if (key != '\0') return true;
-        term::sleep_ms(20);
-    }
+        "  Don't let the ball fall past the paddle.",
+        "  KEYS    A / D    move paddle      Q   quit");
 }
 
 PaddleDir key_to_dir(char key) {

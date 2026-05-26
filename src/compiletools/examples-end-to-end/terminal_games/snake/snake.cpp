@@ -14,6 +14,7 @@
 // std::__is_constant_evaluated" and a std::array cascade. Headers-then-import
 // keeps the global module consistent.
 #include "terminal.h"
+#include "frontend.h"
 
 #include <print>
 #include <format>
@@ -29,7 +30,7 @@ using snake::Verdict;
 using snake::World;
 
 std::string render(const World& w) {
-    std::string out = "\x1b[H";
+    std::string out{frontend::CURSOR_HOME};
     for (int y = 0; y < w.height; ++y) {
         for (int x = 0; x < w.width; ++x) {
             char ch = ' ';
@@ -38,32 +39,26 @@ std::string render(const World& w) {
                 if (b == Cell{x, y}) { ch = (b == w.body.front()) ? '@' : 'o'; break; }
             out += ch;
         }
-        out += "\x1b[K\n";
+        out += frontend::CLEAR_EOL; out += '\n';
     }
-    out += std::format("SCORE {}   {}\x1b[K",
+    out += std::format("SCORE {}   {}{}",
                        snake::score(w),
-                       w.alive ? "" : "*** GAME OVER ***");
+                       w.alive ? "" : "*** GAME OVER ***",
+                       frontend::CLEAR_EOL);
     return out;
 }
 
 bool splash() {
-    const std::string screen = std::format(
-        "\x1b[2J\x1b[H\n"
-        "        ====  S N A K E  ====\n\n"
+    const std::string body = std::format(
         "  Steer the snake to eat the food (*). Each meal grows you by\n"
         "  one. Don't hit a wall or your own body.\n\n"
-        "  START   length {}\n\n"
-        "  KEYS    W/A/S/D or H/J/K/L   steer\n"
-        "          Q                    quit\n\n"
-        "        ----  press any key to begin  ----\n",
+        "  START   length {}",
         snake::START_LENGTH);
-    term::write_frame(screen);
-    for (;;) {
-        const char key = term::read_key();
-        if (key == 'q') return false;
-        if (key != '\0') return true;
-        term::sleep_ms(20);
-    }
+    return frontend::run_splash(
+        "        ====  S N A K E  ====",
+        body,
+        "  KEYS    W/A/S/D or H/J/K/L   steer\n"
+        "          Q                    quit");
 }
 
 int play_interactive() {

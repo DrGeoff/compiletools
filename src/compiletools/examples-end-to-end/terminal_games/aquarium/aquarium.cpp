@@ -13,6 +13,7 @@
 // "redefinition of std::__is_constant_evaluated" and a std::array cascade.
 // Headers-then-import keeps the global module consistent (same rule as the four games).
 #include "terminal.h"
+#include "frontend.h"
 
 #include <print>
 #include <format>
@@ -101,7 +102,7 @@ std::string render(const aqua::Tank& t) {
 
     // Serialise: home the cursor, set one water background for the whole frame,
     // then emit each cell, switching foreground colour only when it changes.
-    std::string out = std::format("\x1b[H\x1b[48;5;{}m", WATER_BG);
+    std::string out = std::format("{}\x1b[48;5;{}m", frontend::CURSOR_HOME, WATER_BG);
     for (int y = 0; y < h; ++y) {
         int cur = -2;
         for (int x = 0; x < w; ++x) {
@@ -114,29 +115,21 @@ std::string render(const aqua::Tank& t) {
             }
             out += c.ch;
         }
-        out += "\x1b[K";          // clear to EOL in the current (water) background
+        out += frontend::CLEAR_EOL;  // clear to EOL in the current (water) background
         if (y != h - 1) out += "\n";
     }
-    out += "\x1b[0m";
+    out += frontend::RESET;
     return out;
 }
 
 // Title splash. Returns false if the viewer quits before diving in.
 bool splash() {
-    const std::string screen =
-        "\x1b[2J\x1b[H\n"
-        "        \x1b[38;5;51m====  A S C I I   A Q U A R I U M  ====\x1b[0m\n\n"
+    return frontend::run_splash(
+        "        \x1b[38;5;51m====  A S C I I   A Q U A R I U M  ====\x1b[0m",
         "  A calm tank of drifting fish, rising bubbles and swaying\n"
-        "  seaweed. There are no controls -- just watch the fish.\n\n"
-        "  KEYS    \x1b[38;5;226mQ\x1b[0m   quit\n\n"
-        "        ----  press any key to dive in  ----\n";
-    term::write_frame(screen);
-    for (;;) {
-        const char key = term::read_key();
-        if (key == 'q') return false;
-        if (key != '\0') return true;
-        term::sleep_ms(20);
-    }
+        "  seaweed. There are no controls -- just watch the fish.",
+        "  KEYS    \x1b[38;5;226mQ\x1b[0m   quit",
+        "dive in");
 }
 
 int play_interactive() {
@@ -152,7 +145,7 @@ int play_interactive() {
         term::write_frame(render(tank));
         term::sleep_ms(90);
     }
-    term::write_frame("\x1b[0m\n");
+    term::write_frame(std::string(frontend::RESET) + "\n");
     return 0;
 }
 
