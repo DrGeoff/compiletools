@@ -128,6 +128,7 @@ class TestFindTargetsModule:
             "pkg_config_header_deps/src/test.cpp",
             "serialise_tests/test_flock_1.cpp",
             "serialise_tests/test_flock_2.cpp",
+            "terminal_games/common/test_frontend.cpp",
             "terminal_games/aquarium/test_bubbles.cpp",
             "terminal_games/aquarium/test_fish.cpp",
             "terminal_games/aquarium/test_seaweed.cpp",
