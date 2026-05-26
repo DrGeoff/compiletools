@@ -9,8 +9,9 @@
 // NOTE: the textual #includes must precede `import aquarium.tank;`. Under gcc
 // -fmodules-ts, importing the module first pulls its global-module-fragment std
 // headers into the global module, which then clashes with the textual
-// re-inclusion of the same std headers reached via terminal.h. Headers-then-
-// import keeps the global module consistent (same rule as the four games).
+// re-inclusion of the same std headers reached via terminal.h -- e.g.
+// "redefinition of std::__is_constant_evaluated" and a std::array cascade.
+// Headers-then-import keeps the global module consistent (same rule as the four games).
 #include "terminal.h"
 
 #include <cstdio>
@@ -141,6 +142,8 @@ bool splash() {
 int play_interactive() {
     term::RawMode raw;
     if (!splash()) return 0;
+    // The artwork fills the whole terminal (unlike the games, which clamp to a
+    // fixed play area): size the tank to the live window.
     aqua::Tank tank = aqua::initial(term::cols(), term::rows(), 0xC0FFEE);
     term::clear();
     for (;;) {

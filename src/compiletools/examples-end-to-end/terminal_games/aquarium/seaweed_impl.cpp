@@ -16,10 +16,14 @@ import aquarium.water;
 namespace aqua {
 
 Weed spawn_weed(int width, int tank_height, std::uint64_t& seed) {
-    const int max_extra = (tank_height - 4) > 1 ? (tank_height - 4) : 1;
+    // Height spans MIN..MAX rows, but never tall enough to reach the surface in
+    // a short tank: cap the random span by the rows actually available.
+    constexpr int full_span = MAX_WEED_HEIGHT - MIN_WEED_HEIGHT + 1;  // distinct heights
+    const int available = (tank_height - 4) > 1 ? (tank_height - 4) : 1;
+    const int span = available < full_span ? available : full_span;
     Weed w{};
     w.x = rand_range(seed, width);
-    w.height = 2 + rand_range(seed, max_extra > 4 ? 4 : max_extra);
+    w.height = MIN_WEED_HEIGHT + rand_range(seed, span);
     return w;
 }
 

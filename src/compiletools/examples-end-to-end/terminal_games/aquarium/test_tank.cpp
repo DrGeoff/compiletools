@@ -33,7 +33,10 @@ int main() {
         UT_REQUIRE(a.weed == b.weed);
     }
 
-    // Conservation: fish and bubble counts are constant across steps.
+    // Conservation: fish and bubble counts are constant across steps. (Seaweed
+    // is static scenery -- step() never touches t.weed -- so its count is
+    // trivially conserved; fish/bubbles are the interesting case as they
+    // wrap/respawn.)
     {
         Tank t = initial(40, 20, 7);
         const auto nf = t.fish.size();

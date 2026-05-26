@@ -507,8 +507,9 @@ def _toposort_rules(rules_by_output: dict[str, BuildRule]) -> list[BuildRule]:
     cycle (which would indicate a malformed build graph).
 
     Used by ``BuildBackend._prebuild_aux_artefacts`` to order named-module
-    interface compile rules so partitions compile before the primary
-    interface units that import them.
+    compile rules (interface AND implementation units) so partitions and
+    interface units compile before the interfaces / implementation units that
+    depend on them.
     """
     in_degree: dict[str, int] = {output: 0 for output in rules_by_output}
     dependents: dict[str, list[str]] = {output: [] for output in rules_by_output}
@@ -531,7 +532,7 @@ def _toposort_rules(rules_by_output: dict[str, BuildRule]) -> list[BuildRule]:
     if len(result) != len(rules_by_output):
         unprocessed = sorted(set(rules_by_output.keys()) - {r.output for r in result})
         descriptors = [f"{out} (type={rules_by_output[out].rule_type})" for out in unprocessed]
-        raise ValueError(f"_toposort_rules: cycle detected among named-module interface rules: {descriptors}")
+        raise ValueError(f"_toposort_rules: cycle detected among named-module compile rules: {descriptors}")
     return result
 
 

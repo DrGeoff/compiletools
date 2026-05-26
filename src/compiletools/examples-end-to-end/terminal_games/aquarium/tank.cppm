@@ -35,8 +35,11 @@ struct Tank {
 // full-screen terminal both look right.
 Tank initial(int width, int height, std::uint64_t seed);
 
-// Advance one tick. Pure: returns a new Tank. Delegates per-entity motion to the
-// fish and bubble modules; counts are conserved (entities wrap/respawn).
+// Advance one tick. Pure at the value boundary: it mutates only its own local
+// copy of the Tank (including the seed it threads through the entities) and
+// returns it, so the same input Tank always yields the same output. Delegates
+// fish/bubble motion to those modules (which wrap/respawn -- counts conserved);
+// seaweed is static scenery, left unchanged.
 Tank step(Tank t);
 
 }  // namespace aqua

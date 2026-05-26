@@ -11,13 +11,13 @@ import aquarium.seaweed;
 int main() {
     using namespace aqua;
 
-    // spawn_weed places a plant in bounds, at least 2 rows tall.
+    // spawn_weed places a plant in bounds, within the documented height range.
     {
         std::uint64_t seed = 11;
         for (int i = 0; i < 100; ++i) {
             Weed w = spawn_weed(60, 24, seed);
             UT_REQUIRE(w.x >= 0 && w.x < 60);
-            UT_REQUIRE(w.height >= 2);
+            UT_REQUIRE(w.height >= MIN_WEED_HEIGHT && w.height <= MAX_WEED_HEIGHT);
         }
     }
 
