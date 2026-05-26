@@ -40,7 +40,8 @@ terminal_games/
   snake/       world.cppm     snake.cpp       test_snake.cpp     (module snake.world)
   invaders/    field.cppm     invaders.cpp    test_field.cpp     (module invaders.field)
   breakout/    arena.cppm     breakout.cpp    test_arena.cpp     (module breakout.arena)
-  aquarium/    tank.cppm      aquarium.cpp    test_tank.cpp      (module aquarium.tank)
+  aquarium/    water.cppm fish.cppm bubbles.cppm seaweed.cppm tank.cppm   (5 modules, 1 program)
+               aquarium.cpp   test_fish.cpp test_bubbles.cpp test_seaweed.cpp test_tank.cpp
 ```
 
 Two rules keep the example honest and portable:
@@ -63,12 +64,12 @@ Two rules keep the example honest and portable:
 | `common/terminal.cpp` | impl, declares `//#PCH=pch.h` | **cas-pchdir** + cas-objdir — *shared by all five programs* |
 | `common/terminal.h` | light facade declarations | — |
 | `common/unit_test.hpp` | testmarker header | — |
-| `*/<unit>.cppm` (×5) | module interface (impl) | **cas-pcmdir** (BMI) + cas-objdir |
+| `*/<unit>.cppm` (×9) | module interface (impl) | **cas-pcmdir** (BMI) + cas-objdir |
 | `*/<name>.cpp` (×5) | executable (`// ct-exemarker`) | cas-objdir + **cas-exedir** |
-| `*/test_*.cpp` (×5) | test (includes `unit_test.hpp`) | **content-keyed test-result cache** + cas-exedir |
+| `*/test_*.cpp` (×8) | test (includes `unit_test.hpp`) | **content-keyed test-result cache** + cas-exedir |
 
 `ct-cake` discovers five executables (the per-program `.cpp` files, each with
-`main(`) and five tests (the `test_*.cpp` files, each transitively including
+`main(`) and eight tests (the `test_*.cpp` files, each transitively including
 `unit_test.hpp`, matching `testmarkers = unit_test.hpp`). Each program's module is
 pulled in via its exe's/test's `import` edge; `common/terminal.cpp` is pulled in
 via Hunter's adjacent-`.cpp` rule for `#include "terminal.h"`, resolved through
@@ -82,6 +83,23 @@ all five executables link that same object. Edit one program's `.cppm` and
 rebuild: only that program's module object and its exe are rebuilt — the shared
 PCH, the shared `terminal.o`, and the other four programs are all served from the
 CAS untouched.
+
+### The aquarium: one program, five auto-discovered modules
+
+The aquarium is split into a small module graph to show off how `ct-cake`
+discovers the files that make up a program — with no file list anywhere:
+
+    aquarium.water                      (the LCG + geometry; a leaf)
+    aquarium.fish  .bubbles  .seaweed   (each: import aquarium.water)
+    aquarium.tank                       (re-exports the four above)
+
+`aquarium.cpp` contains a single `import aquarium.tank;`. From that one edge
+`ct-cake` resolves every module name to its `.cppm`, compiling all five
+interface units and their BMIs into the CAS — you never list them. Each
+`test_*` program imports only the slice it needs: `test_seaweed.cpp` imports
+just `aquarium.seaweed`, and ct-cake follows that module's own import edge to
+pull in `aquarium.water` behind it (a two-module compile); `test_tank.cpp`
+imports the whole graph. ct-cake compiles only the sub-graph each test touches.
 
 ### Free cross-user reproducibility
 
@@ -99,7 +117,7 @@ ct-cake
 ```
 
 This builds `bin/<variant>/{moonlander,snake,invaders,breakout,aquarium}` plus
-the five `test_*` programs, runs every test (a non-zero exit fails the build),
+the eight `test_*` programs, runs every test (a non-zero exit fails the build),
 and links the executables. Run it again and the build is near-instant — every
 object, BMI, PCH and executable is served from the CAS.
 

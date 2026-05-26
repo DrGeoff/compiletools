@@ -204,9 +204,10 @@ _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
     # Header units: full cross-backend coverage thanks to upstream fix.
     "cxx_modules_header_units": _VANILLA,
     # The canonical CAS showcase: four terminal games (moonlander, snake,
-    # invaders, breakout) plus a controls-free ASCII aquarium artwork, all
+    # invaders, breakout) plus a controls-free ASCII aquarium artwork (itself
+    # split across five named modules to exercise import-graph discovery), all
     # sharing one terminal facade in common/. `--auto` at
-    # the root builds all five exes + five pure tests across subdirs; the
+    # the root builds all five exes + eight pure tests across subdirs; the
     # facade's single PCH (common/terminal.cpp) and single terminal.o compile
     # once and serve every game from the CAS. Each game pairs a named module
     # (lander.physics / snake.world / invaders.field / breakout.arena) with a
