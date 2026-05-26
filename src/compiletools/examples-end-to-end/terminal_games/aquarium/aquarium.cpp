@@ -14,7 +14,7 @@
 // Headers-then-import keeps the global module consistent (same rule as the four games).
 #include "terminal.h"
 
-#include <cstdio>
+#include <print>
 #include <format>
 #include <string>
 #include <string_view>
@@ -161,9 +161,8 @@ int run_demo() {
     aqua::Tank tank = aqua::initial(60, 20, 0xABCDEF);
     for (int tick = 0; tick < 500; ++tick)
         tank = aqua::step(tank);
-    std::printf("AQUARIUM demo: %zu fish, %zu bubbles, %zu weeds after %llu ticks\n",
-                tank.fish.size(), tank.bubbles.size(), tank.weed.size(),
-                static_cast<unsigned long long>(tank.tick));
+    std::println("AQUARIUM demo: {} fish, {} bubbles, {} weeds after {} ticks",
+                 tank.fish.size(), tank.bubbles.size(), tank.weed.size(), tank.tick);
     return 0;
 }
 

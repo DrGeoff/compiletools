@@ -15,7 +15,7 @@
 // keeps the global module consistent.
 #include "terminal.h"
 
-#include <cstdio>
+#include <print>
 #include <format>
 #include <string>
 
@@ -91,8 +91,8 @@ int run_demo() {
     World w = snake::initial(20, 10, 0xABCD);
     for (int tick = 0; tick < 1000 && w.alive; ++tick)
         w = snake::step(w, w.dir);  // drives straight into a wall, then stops
-    std::printf("SNAKE demo: score %d, %s\n",
-                snake::score(w), w.alive ? "still playing" : "game over");
+    std::println("SNAKE demo: score {}, {}",
+                 snake::score(w), w.alive ? "still playing" : "game over");
     return 0;
 }
 

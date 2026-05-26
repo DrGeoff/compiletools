@@ -10,7 +10,7 @@
 // module.
 #include "terminal.h"
 
-#include <cstdio>
+#include <print>
 #include <format>
 #include <string>
 
@@ -95,8 +95,8 @@ int run_demo() {
         a = breakout::step(a, d);
         v = breakout::classify(a);
     }
-    std::printf("BREAKOUT demo: %d bricks, %s\n", breakout::bricks_left(a),
-                v == Verdict::Won ? "win" : v == Verdict::Lost ? "ball lost" : "timeout");
+    std::println("BREAKOUT demo: {} bricks, {}", breakout::bricks_left(a),
+                 v == Verdict::Won ? "win" : v == Verdict::Lost ? "ball lost" : "timeout");
     return 0;
 }
 

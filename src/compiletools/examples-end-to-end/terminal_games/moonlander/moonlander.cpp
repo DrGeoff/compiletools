@@ -16,7 +16,7 @@
 // consistent across every program here.
 #include "terminal.h"
 
-#include <cstdio>
+#include <print>
 #include <format>
 #include <string>
 
@@ -130,13 +130,13 @@ int run_demo() {
     for (int tick = 0; tick < 10'000; ++tick) {
         const Verdict v = lander::classify(s);
         if (v != Verdict::Flying) {
-            std::printf("%s  (altitude %.1f m, velocity %.2f m/s, fuel %.1f)\n",
-                        verdict_banner(v), s.altitude, s.velocity, s.fuel);
+            std::println("{}  (altitude {:.1f} m, velocity {:.2f} m/s, fuel {:.1f})",
+                         verdict_banner(v), s.altitude, s.velocity, s.fuel);
             return 0;
         }
         s = lander::step(s, autopilot(s), lander::TICK_SECONDS);
     }
-    std::printf("demo did not terminate\n");
+    std::println("demo did not terminate");
     return 1;
 }
 

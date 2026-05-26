@@ -4,7 +4,7 @@
 // and includes the terminal facade; no PCH here.
 #include "terminal.h"
 
-#include <cstdio>
+#include <print>
 #include <format>
 #include <string>
 
@@ -88,8 +88,8 @@ int run_demo() {
         f = invaders::step(f, Action::Fire);
         v = invaders::classify(f);
     }
-    std::printf("INVADERS demo: %d left, %s\n", invaders::remaining(f),
-                v == Verdict::Won ? "win" : v == Verdict::Lost ? "invaded" : "timeout");
+    std::println("INVADERS demo: {} left, {}", invaders::remaining(f),
+                 v == Verdict::Won ? "win" : v == Verdict::Lost ? "invaded" : "timeout");
     return 0;
 }
 
