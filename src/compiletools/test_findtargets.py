@@ -135,6 +135,7 @@ class TestFindTargetsModule:
             "terminal_games/breakout/test_arena.cpp",
             "terminal_games/invaders/test_field.cpp",
             "terminal_games/moonlander/test_physics.cpp",
+            "terminal_games/snake/test_rng.cpp",
             "terminal_games/snake/test_snake.cpp",
             "simple/test_cflags.c",
             "test_xml_output/test_stub_catch2.cpp",
