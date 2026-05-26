@@ -3,9 +3,10 @@
 // Declares the Bullet sub-struct, its comparison, the NO_BULLET sentinel, and
 // the advance_bullet signature. The definition lives in bullet_impl.cpp (a
 // `module invaders.bullet;` implementation unit).
-// imports invaders.formation (plain import, NOT re-exported) because advance_bullet
-// takes a Formation&; consumers that need Formation must import invaders.formation
-// themselves.
+//
+// Imports invaders.formation (plain import, NOT re-exported) because
+// advance_bullet takes a Formation&; consumers that need Formation must import
+// invaders.formation themselves.
 //
 // CAS: module interface unit -> BMI in cas-pcmdir, object in cas-objdir.
 module;

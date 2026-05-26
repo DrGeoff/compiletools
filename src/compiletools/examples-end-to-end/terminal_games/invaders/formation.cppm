@@ -38,9 +38,7 @@ inline int  inv_screen_y(const Formation& f, int r)     { return f.offset_y + r;
 Formation make_formation();
 
 int remaining(const Formation& f);
-int formation_bottom(const Formation& f);
-int formation_right(const Formation& f);
-int formation_left(const Formation& f);   // min screen x of living invaders; numeric_limits<int>::max() if none
+int formation_bottom(const Formation& f);   // max screen y of a living invader; -1 if none
 
 void march(Formation& f, int width);
 

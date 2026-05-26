@@ -41,6 +41,12 @@ int formation_bottom(const Formation& f) {
     return bottom;
 }
 
+// Horizontal extents of the living formation. File-local (anonymous namespace):
+// only march() below needs them, so they stay internal -- the same
+// minimal-public-interface rule that keeps kill_inv above (and breakout's
+// kill_brick) out of the module interface.
+namespace {
+
 int formation_right(const Formation& f) {
     int right = 0;
     for (int r = 0; r < INV_ROWS; ++r)
@@ -50,12 +56,14 @@ int formation_right(const Formation& f) {
 }
 
 int formation_left(const Formation& f) {
-    int left = std::numeric_limits<int>::max();
+    int left = std::numeric_limits<int>::max();  // sentinel when no invader is alive
     for (int r = 0; r < INV_ROWS; ++r)
         for (int c = 0; c < INV_COLS; ++c)
             if (inv_alive(f, r, c)) { const int x = inv_screen_x(f, c); if (x < left) left = x; }
     return left;
 }
+
+}  // namespace
 
 void march(Formation& f, int width) {
     if (remaining(f) == 0) return;  // no invaders left -> nothing to march (avoids the empty-formation sentinel overflow)

@@ -2,6 +2,12 @@
 //
 // invaders.cpp -- the interactive Space Invaders. Imports the pure simulation
 // and includes the terminal facade; no PCH here.
+//
+// The textual #includes precede `import invaders.field;`: under gcc
+// -fmodules-ts, importing first can pull the module's global-module-fragment
+// headers into the global module and clash with the same headers re-included
+// textually via terminal.h. Headers-then-import keeps the global module
+// consistent across every program here.
 #include "terminal.h"
 #include "frontend.h"
 
