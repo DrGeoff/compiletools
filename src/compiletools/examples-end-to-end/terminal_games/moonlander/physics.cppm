@@ -1,14 +1,13 @@
-// physics.cppm — the single source of truth for the Moon Lander simulation.
+// physics.cppm — Moon Lander simulation: interface unit (module lander.physics).
 //
-// Pure, I/O-free, terminal-agnostic. Both the interactive game (game.cpp) and
-// the headless test (test_physics.cpp) `import` this module, so the constants,
-// the state type and the rules live in exactly one place.
+// Pure, I/O-free, terminal-agnostic single source of truth for constants,
+// types, and function signatures. The definitions live in physics_impl.cpp (a
+// `module lander.physics;` implementation unit) — ct-cake discovers and links
+// it from the same import edge. <cmath> (std::fabs) is only needed by the
+// implementation, so it stays out of the interface.
 //
-// CAS: as a module interface unit this is precompiled to a BMI cached in
-// cas-pcmdir, and its object is cached in cas-objdir.
+// CAS: module interface unit -> BMI in cas-pcmdir, object in cas-objdir.
 module;
-
-#include <cmath>  // std::fabs
 
 export module lander.physics;
 
@@ -35,31 +34,15 @@ struct LanderState {
 };
 
 // The state every game and test starts from.
-LanderState initial() { return {START_ALTITUDE, START_VELOCITY, START_FUEL}; }
+LanderState initial();
 
 // Advance the simulation by `dt` seconds. The engine fires only when `thrust`
 // is requested AND fuel remains. Semi-implicit Euler keeps the integration
 // stable; altitude is clamped at the pad while the impact velocity is
 // preserved for `classify` to judge.
-LanderState step(LanderState s, bool thrust, double dt) {
-    const bool engine_on = thrust && s.fuel > 0.0;
-    const double accel = -GRAVITY + (engine_on ? THRUST_ACCEL : 0.0);
-
-    const double velocity = s.velocity + accel * dt;
-    double altitude = s.altitude + velocity * dt;
-    double fuel = engine_on ? s.fuel - FUEL_BURN_RATE * dt : s.fuel;
-
-    if (altitude < 0.0) altitude = 0.0;
-    if (fuel < 0.0) fuel = 0.0;
-
-    return {altitude, velocity, fuel};
-}
+LanderState step(LanderState s, bool thrust, double dt);
 
 // The outcome of the current state: still falling, or a safe/unsafe touchdown.
-Verdict classify(LanderState s) {
-    if (s.altitude > 0.0) return Verdict::Flying;
-    return std::fabs(s.velocity) <= SAFE_LANDING_SPEED ? Verdict::Landed
-                                                       : Verdict::Crashed;
-}
+Verdict classify(LanderState s);
 
 }  // namespace lander
