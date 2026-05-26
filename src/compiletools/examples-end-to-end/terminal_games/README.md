@@ -1,13 +1,14 @@
 # terminal_games — the CAS-showcase samples
 
 Four terminal games — **Moon Lander**, **Snake**, **Space Invaders** and
-**Breakout** — built by `ct-cake`. They are the project's go-to reference for
+**Breakout** — plus a controls-free **ASCII Aquarium** artwork, built by
+`ct-cake`. They are the project's go-to reference for
 *how to structure a real, multi-program C++ codebase* so that compiletools'
 content-addressable storage (CAS) does the most work for you.
 
-The headline: all four games share one terminal facade in `common/`, so a
+The headline: all five programs share one terminal facade in `common/`, so a
 **single precompiled header and a single `terminal.o` compile once** and are
-served from the CAS to every game. Change one game and only that game rebuilds.
+served from the CAS to every one. Change one program and only that one rebuilds.
 
 ## Architecture in one breath
 
@@ -20,8 +21,13 @@ Every game is the same three well-bounded units, each understandable on its own:
   terminal facade, then loops *read key → step → render → write*;
 - a **headless test** that `import`s the module and asserts its behaviour.
 
+The fifth program, the **ASCII Aquarium**, is the same triad with no controls
+except `q`: its executable loops *step → render → write* over a pure, seeded
+simulation of drifting fish, rising bubbles and swaying seaweed — a calm,
+colourful artwork rather than a game.
+
 The reusable half — terminal raw mode, key reads, frame writes, screen size —
-lives once in `common/` and is shared by all four games.
+lives once in `common/` and is shared by all five programs.
 
 ```
 terminal_games/
@@ -34,6 +40,7 @@ terminal_games/
   snake/       world.cppm     snake.cpp       test_snake.cpp     (module snake.world)
   invaders/    field.cppm     invaders.cpp    test_field.cpp     (module invaders.field)
   breakout/    arena.cppm     breakout.cpp    test_arena.cpp     (module breakout.arena)
+  aquarium/    tank.cppm      aquarium.cpp    test_tank.cpp      (module aquarium.tank)
 ```
 
 Two rules keep the example honest and portable:
@@ -53,27 +60,27 @@ Two rules keep the example honest and portable:
 | File | Role (auto-discovered by `ct-cake`) | CAS layer |
 |---|---|---|
 | `common/pch.h` | the precompiled-header payload | (the PCH itself) |
-| `common/terminal.cpp` | impl, declares `//#PCH=pch.h` | **cas-pchdir** + cas-objdir — *shared by all four games* |
+| `common/terminal.cpp` | impl, declares `//#PCH=pch.h` | **cas-pchdir** + cas-objdir — *shared by all five programs* |
 | `common/terminal.h` | light facade declarations | — |
 | `common/unit_test.hpp` | testmarker header | — |
-| `*/<game>.cppm` (×4) | module interface (impl) | **cas-pcmdir** (BMI) + cas-objdir |
-| `*/<game>.cpp` (×4) | executable (`// ct-exemarker`) | cas-objdir + **cas-exedir** |
-| `*/test_*.cpp` (×4) | test (includes `unit_test.hpp`) | **content-keyed test-result cache** + cas-exedir |
+| `*/<unit>.cppm` (×5) | module interface (impl) | **cas-pcmdir** (BMI) + cas-objdir |
+| `*/<name>.cpp` (×5) | executable (`// ct-exemarker`) | cas-objdir + **cas-exedir** |
+| `*/test_*.cpp` (×5) | test (includes `unit_test.hpp`) | **content-keyed test-result cache** + cas-exedir |
 
-`ct-cake` discovers four executables (the `<game>.cpp` files, each with `main(`)
-and four tests (the `test_*.cpp` files, each transitively including
-`unit_test.hpp`, matching `testmarkers = unit_test.hpp`). Each game's module is
+`ct-cake` discovers five executables (the per-program `.cpp` files, each with
+`main(`) and five tests (the `test_*.cpp` files, each transitively including
+`unit_test.hpp`, matching `testmarkers = unit_test.hpp`). Each program's module is
 pulled in via its exe's/test's `import` edge; `common/terminal.cpp` is pulled in
 via Hunter's adjacent-`.cpp` rule for `#include "terminal.h"`, resolved through
 the `INCLUDE = ${CONF_DIR}/common` line in `ct.conf`.
 
-### One PCH, one terminal.o, four games
+### One PCH, one terminal.o, five programs
 
 Because the facade is shared, a clean build produces **exactly one**
 `pch.h.gch` in cas-pchdir and **exactly one** `terminal.o` in cas-objdir, and
-all four game executables link that same object. Edit one game's `.cppm` and
-rebuild: only that game's module object and its exe are rebuilt — the shared
-PCH, the shared `terminal.o`, and the other three games are all served from the
+all five executables link that same object. Edit one program's `.cppm` and
+rebuild: only that program's module object and its exe are rebuilt — the shared
+PCH, the shared `terminal.o`, and the other four programs are all served from the
 CAS untouched.
 
 ### Free cross-user reproducibility
@@ -91,10 +98,10 @@ cd src/compiletools/examples-end-to-end/terminal_games
 ct-cake
 ```
 
-This builds `bin/<variant>/{moonlander,snake,invaders,breakout}` plus the four
-`test_*` programs, runs every test (a non-zero exit fails the build), and links
-the games. Run it again and the build is near-instant — every object, BMI, PCH
-and executable is served from the CAS.
+This builds `bin/<variant>/{moonlander,snake,invaders,breakout,aquarium}` plus
+the five `test_*` programs, runs every test (a non-zero exit fails the build),
+and links the executables. Run it again and the build is near-instant — every
+object, BMI, PCH and executable is served from the CAS.
 
 Play any of them:
 
@@ -108,4 +115,13 @@ deterministic auto-demo and exits — so it never hangs a pipe or CI:
 
 ```bash
 printf '' | bin/*/breakout     # prints a single outcome line, exits 0
+```
+
+The **aquarium** is the odd one out — no controls except `q`, just a calm,
+colourful artwork. Like the games it opens with a splash, animates while stdin
+is a terminal, and falls back to a one-line deterministic demo otherwise:
+
+```bash
+bin/*/aquarium                 # press any key to dive in, q to quit
+printf '' | bin/*/aquarium     # prints a single summary line, exits 0
 ```

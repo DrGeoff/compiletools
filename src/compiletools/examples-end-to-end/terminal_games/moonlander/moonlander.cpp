@@ -13,7 +13,7 @@
 // -fmodules-ts, importing first can pull the module's global-module-fragment
 // headers into the global module and clash with the same headers re-included
 // textually via terminal.h. Headers-then-import keeps the global module
-// consistent across all four games.
+// consistent across every program here.
 #include "terminal.h"
 
 #include <cstdio>
