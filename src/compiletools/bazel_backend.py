@@ -632,6 +632,27 @@ class BazelBackend(BuildBackend):
             self._pcm_staging_pairs,
         )
 
+    def _module_iface_bmi_path(self, cas_gcm: str) -> str | None:
+        """Where the gcc named-module interface BMI is actually written under
+        the bazel workspace-relative mapper.
+
+        ``_route_module_prebuild_through_bazel_mapper`` rewrites every
+        named-module compile's ``-fmodule-mapper`` to the bazel mapper, whose
+        ``.gcm`` paths are cas-pcmdir-relative for the "inside" cas layout
+        (resolving to the CAS file the default mapper would write) and
+        ``.ct-bazel-pcm/`` for "outside". Resolving the same way here makes the
+        prebuild skip check the real on-disk BMI -- so a wiped ``.ct-bazel-pcm/``
+        with a warm cas-objdir correctly forces the interface recompile that
+        regenerates the BMI, instead of being skipped on the ``.o`` alone.
+        """
+        if self._module_compiler_kind != "gcc":
+            return cas_gcm
+        base_dir = self._default_base_dir()
+        rel = self._bazel_pcm_workspace_relative(cas_gcm, base_dir)
+        if rel is None:
+            return cas_gcm
+        return os.path.join(base_dir, rel)
+
     def _bazel_obj_workspace_relative(self, cas_path: str, base_dir: str | None) -> str | None:
         """cas-objdir specialisation of ``_bazel_cas_workspace_relative``."""
         return self._bazel_cas_workspace_relative(

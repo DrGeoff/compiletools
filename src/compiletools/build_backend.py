@@ -733,6 +733,44 @@ class BuildBackend(abc.ABC):
             return
         _touch(result_path)
 
+    def _module_iface_bmi_path(self, cas_gcm: str) -> str | None:
+        """Absolute path a gcc named-module interface BMI (``.gcm``) is actually
+        written at.
+
+        Default: the cas-pcmdir path, where the default ``-fmodule-mapper``
+        points. ``BazelBackend`` overrides this for its workspace-relative
+        mapper (cas-pcmdir-resolved for the "inside" cas layout,
+        ``<workspace>/.ct-bazel-pcm/`` for "outside") so the prebuild skip below
+        checks the file gcc will really write.
+        """
+        return cas_gcm
+
+    def _module_interface_bmi_by_output(self) -> dict[str, str]:
+        """Map each gcc named-module INTERFACE object to the path its BMI
+        (``.gcm``) side effect is written at.
+
+        ``_prebuild_aux_artefacts`` consults this so a module interface rule is
+        skipped only when BOTH its ``.o`` and its BMI are present -- the ``.o``
+        alone is not enough, because the BMI is a *side effect* of the same
+        compile and can go missing independently (e.g. a wiped bazel
+        ``.ct-bazel-pcm/`` staging dir while the shared cas-objdir stays warm),
+        and importer compiles then fail "failed to read compiled module".
+
+        Empty for clang (its ``.pcm`` is a rule *output*, already
+        existence-checked) and when no gcc module cache is active.
+        """
+        if self._module_compiler_kind != "gcc":
+            return {}
+        out: dict[str, str] = {}
+        for name, obj in self._module_iface_obj.items():
+            cas_gcm = self._module_iface_gcm.get(name)
+            if cas_gcm is None:
+                continue
+            loc = self._module_iface_bmi_path(cas_gcm)
+            if loc is not None:
+                out[obj] = loc
+        return out
+
     def _prebuild_aux_artefacts(self) -> None:
         """Locally execute aux artefact producer rules before the native backend runs.
 
@@ -817,23 +855,36 @@ class BuildBackend(abc.ABC):
                         f"order_only_dep {d!r} on rule {rule.output!r} is a file but must be a directory"
                     ) from e
 
+        # gcc named-module interface rules write their BMI (.gcm) as a side
+        # effect of producing the .o; the .o alone existing is not proof the
+        # artefact is whole (see _module_interface_bmi_by_output).
+        iface_bmi_by_output = self._module_interface_bmi_by_output()
+
         verbose = getattr(self.args, "verbose", 0)
         for rule in aux_rules:
             # Pre-lock fast-path mirrors trace_backend._do_build:365-383.
-            # The skip_if_exists=True below closes the TOCTOU window inside
-            # the lock; this skip avoids the lock entirely on warm builds.
-            if os.path.exists(rule.output):
+            # The skip_if_exists below closes the TOCTOU window inside the
+            # lock; this skip avoids the lock entirely on warm builds.
+            output_exists = os.path.exists(rule.output)
+            bmi = iface_bmi_by_output.get(rule.output)
+            bmi_missing = bmi is not None and not os.path.exists(bmi)
+            if output_exists and not bmi_missing:
                 continue
             assert rule.command is not None, f"aux rule {rule.output} has no command"
             if verbose >= 1:
                 print(" ".join(rule.command), file=sys.stderr)
+            # Force a recompile (skip_if_exists=False) only when the .o is
+            # cached but its BMI side effect is gone -- otherwise the
+            # existing-.o skip inside execute_*_rule would no-op and leave the
+            # BMI ungenerated. The .o rewrite is content-identical (temp+rename).
+            skip_if_exists = not (output_exists and bmi_missing)
             if rule.rule_type == RuleType.COMPILE:
-                execute_compile_rule(rule.output, rule.command, self.args, skip_if_exists=True)
+                execute_compile_rule(rule.output, rule.command, self.args, skip_if_exists=skip_if_exists)
             else:
                 # gcc's shell-pipeline header-unit form does its own producer-side
                 # rename inside the pipeline; atomic_link's outer rewrite no-ops
                 # (emits a one-time warning) but the rule still runs correctly.
-                execute_link_rule(rule.output, list(rule.command), self.args, skip_if_exists=True)
+                execute_link_rule(rule.output, list(rule.command), self.args, skip_if_exists=skip_if_exists)
 
     def clean(self) -> None:
         """Remove build artifacts. Override for backend-specific cleanup."""

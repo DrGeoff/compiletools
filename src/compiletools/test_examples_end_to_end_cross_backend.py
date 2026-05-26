@@ -32,6 +32,7 @@ import contextlib
 import dataclasses
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 from collections.abc import Iterable
@@ -453,6 +454,58 @@ def test_example_builds_with_backend(example_name, backend_name, cas_layout, tmp
             f"argv: {_build_argv(workspace, backend_name, plan, cas_root)}\n"
             f"--- stdout ---\n{result.stdout}\n"
             f"--- stderr ---\n{result.stderr}\n"
+        )
+
+
+@uth.requires_functional_compiler
+def test_bazel_outside_layout_regenerates_bmi_after_staging_wipe(tmp_path):
+    """Regression: bazel + outside cas-pcmdir regenerates a gcc named-module
+    interface BMI when its workspace-local staging is wiped.
+
+    For the "outside" cas layout a gcc interface's ``.gcm`` BMI lives only in
+    ``<workspace>/.ct-bazel-pcm/`` (not the CAS — bazel hermeticity forces
+    workspace-local BMIs; only objects are CAS-shared). A rebuild with a warm
+    (shared, outside) cas-objdir but a wiped ``.ct-bazel-pcm/`` used to skip the
+    interface prebuild — it keyed only on the ``.o`` existing — leaving the BMI
+    absent, so bazel failed on the missing declared input. The prebuild skip now
+    requires the BMI side effect too and force-recompiles the interface when
+    it is gone. The single-cold-build matrix cell cannot exercise this warm path.
+    """
+    backend_name = "bazel"
+    if not uth._backend_tool_available(backend_name):
+        pytest.skip("bazel build tool not on PATH")
+    cxx = compiletools.apptools.get_functional_cxx_compiler()
+    if compiletools.apptools.compiler_kind(cxx) != "gcc":
+        pytest.skip("the .gcm BMI side-effect regeneration path is gcc-specific")
+
+    example_name = "cxx_modules"
+    plan = _example_plan(example_name)
+    with uth.shared_filesystem_tmpdir(backend_name, tmp_path) as effective_tmp:
+        workspace = uth.copy_example_workspace(
+            pathlib.Path(uth.e2e_dir()) / example_name,
+            pathlib.Path(effective_tmp) / "ws",
+        )
+        # "outside" keeps cas-objdir (and the .o) warm across both builds while
+        # the in-workspace .ct-bazel-pcm/ staging is wiped between them.
+        cas_root = _resolve_cas_root(workspace, "outside")
+
+        first = _run_build(backend_name, workspace, plan, cas_root)
+        assert first.returncode == 0, (
+            f"cold outside-layout build failed:\n--- stdout ---\n{first.stdout}\n--- stderr ---\n{first.stderr}"
+        )
+
+        staging = workspace / ".ct-bazel-pcm"
+        assert staging.is_dir(), (
+            "expected <workspace>/.ct-bazel-pcm/ after an outside-layout bazel "
+            "build of a gcc named-module example (the BMI staging dir)"
+        )
+        shutil.rmtree(staging)
+
+        second = _run_build(backend_name, workspace, plan, cas_root)
+        assert second.returncode == 0, (
+            "rebuild after wiping .ct-bazel-pcm/ failed: the gcc module-interface "
+            "BMI was not regenerated (warm cas-objdir + wiped staging).\n"
+            f"--- stdout ---\n{second.stdout}\n--- stderr ---\n{second.stderr}"
         )
 
 
