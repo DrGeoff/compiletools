@@ -28,14 +28,14 @@ std::string render(const Arena& a) {
         std::string line(a.width, ' ');
         for (int r = 0; r < breakout::BRICK_ROWS; ++r)
             if (breakout::brick_screen_y(r) == y)
-                for (int c = 0; c < a.brick_cols; ++c)
-                    if (breakout::brick_alive(a, r, c) && c < a.width) line[c] = '#';
+                for (int c = 0; c < a.bricks.cols; ++c)
+                    if (breakout::brick_alive(a.bricks, r, c) && c < a.width) line[c] = '#';
         if (a.ball_y == y && a.ball_x >= 0 && a.ball_x < a.width) line[a.ball_x] = 'O';
         if (y == breakout::paddle_row(a))
             for (int i = 0; i < a.paddle_w && a.paddle_x + i < a.width; ++i) line[a.paddle_x + i] = '=';
         out += line + "\x1b[K\n";
     }
-    out += std::format("BRICKS {}   {}\x1b[K", breakout::bricks_left(a),
+    out += std::format("BRICKS {}   {}\x1b[K", breakout::bricks_left(a.bricks),
                        breakout::classify(a) == Verdict::Won  ? "*** YOU WIN ***"
                      : breakout::classify(a) == Verdict::Lost ? "*** BALL LOST ***" : "");
     return out;
@@ -95,7 +95,7 @@ int run_demo() {
         a = breakout::step(a, d);
         v = breakout::classify(a);
     }
-    std::println("BREAKOUT demo: {} bricks, {}", breakout::bricks_left(a),
+    std::println("BREAKOUT demo: {} bricks, {}", breakout::bricks_left(a.bricks),
                  v == Verdict::Won ? "win" : v == Verdict::Lost ? "ball lost" : "timeout");
     return 0;
 }

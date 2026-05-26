@@ -133,6 +133,7 @@ class TestFindTargetsModule:
             "terminal_games/aquarium/test_seaweed.cpp",
             "terminal_games/aquarium/test_tank.cpp",
             "terminal_games/breakout/test_arena.cpp",
+            "terminal_games/breakout/test_bricks.cpp",
             "terminal_games/invaders/test_field.cpp",
             "terminal_games/moonlander/test_physics.cpp",
             "terminal_games/snake/test_rng.cpp",
