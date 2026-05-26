@@ -1,16 +1,15 @@
 // bullet_impl.cpp -- the player bullet: implementation unit (module invaders.bullet).
 //
 // Defines what bullet.cppm declares. As a `module invaders.bullet;` unit it
-// implicitly imports the bullet interface (so Bullet/NO_BULLET are in scope) and
-// imports invaders.formation for try_hit. ct-cake pulls this file into the link
+// implicitly imports the bullet interface, so Bullet/NO_BULLET and -- via the
+// interface's own `import invaders.formation;` -- Formation and try_hit are all
+// in scope without re-importing here. ct-cake pulls this file into the link
 // automatically for anything that imports invaders.bullet.
 //
 // CAS: module implementation unit -> object in cas-objdir (no BMI).
 module;
 
 module invaders.bullet;
-
-import invaders.formation;
 
 namespace invaders {
 
