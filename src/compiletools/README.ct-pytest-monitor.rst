@@ -8,7 +8,7 @@ Run pytest with crash-survivable diagnostics (Termux/OOM friendly)
 
 :Author: drgeoffathome@gmail.com
 :Date:   2026-05-04
-:Version: 10.0.8
+:Version: 10.0.9
 :Manual section: 1
 :Manual group: developers
 
