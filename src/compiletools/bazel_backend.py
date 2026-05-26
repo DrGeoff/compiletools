@@ -222,8 +222,7 @@ class BazelBackend(BuildBackend):
         _prebuilt_module_obj_rel: list[str] = sorted(
             rel
             for obj_path in _prebuilt_module_obj_paths
-            for rel in [self._bazel_obj_workspace_relative(obj_path, base_dir)]
-            if rel is not None
+            if (rel := self._bazel_obj_workspace_relative(obj_path, base_dir)) is not None
         )
 
         for kind, rule, linkshared in plan:
@@ -992,7 +991,7 @@ class BazelBackend(BuildBackend):
             rel = self._bazel_pcm_workspace_relative(gcm, base_dir)
             if rel is not None:
                 os.makedirs(os.path.dirname(os.path.join(base_dir, rel)), exist_ok=True)
-        module_outputs = set(self._module_iface_obj.values()) | set(self._module_impl_obj)
+        module_outputs = set(self._module_iface_obj.values()) | self._module_impl_obj
         for rule in graph.rules_by_type(RuleType.COMPILE):
             if rule.output not in module_outputs or not rule.command:
                 continue

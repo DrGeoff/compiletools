@@ -1244,10 +1244,7 @@ class BuildBackend(abc.ABC):
                 # Compute this source's object path the same way
                 # _create_compile_rule does, so the order-only dep names
                 # the same target the rule actually produces.
-                deplist = self.hunter.header_dependencies(filename)
-                dep_hash = self.namer.compute_dep_hash(deplist)
-                macro_state_hash = self.hunter.macro_state_hash(filename, dep_hash=dep_hash)
-                module_iface_obj[name] = self.namer.object_pathname(filename, macro_state_hash, dep_hash)
+                module_iface_obj[name] = self._object_pathname_for_source(filename)
                 if self._module_pcm_dir is not None:
                     pcm_path, pcm_dir = self._clang_module_pcm_destination(filename, name)
                     module_iface_pcm[name] = pcm_path
@@ -1261,10 +1258,7 @@ class BuildBackend(abc.ABC):
             # alongside interface units rather than recompiling it natively
             # (the native tool can't drive gcc's module mapper for it).
             if iface_result.module_implements:
-                deplist = self.hunter.header_dependencies(filename)
-                dep_hash = self.namer.compute_dep_hash(deplist)
-                macro_state_hash = self.hunter.macro_state_hash(filename, dep_hash=dep_hash)
-                module_impl_obj.add(self.namer.object_pathname(filename, macro_state_hash, dep_hash))
+                module_impl_obj.add(self._object_pathname_for_source(filename))
 
         self._module_iface_obj = module_iface_obj
         self._module_iface_pcm = module_iface_pcm
@@ -2015,8 +2009,7 @@ class BuildBackend(abc.ABC):
             dep_result = self.hunter._file_analysis_result(dep_str)
             if dep_result is None:
                 continue
-            named_imports = [imp for imp in dep_result.module_imports if not imp.startswith(":")]
-            if named_imports or dep_result.module_header_imports:
+            if any(not imp.startswith(":") for imp in dep_result.module_imports) or dep_result.module_header_imports:
                 transitive_named_imports = True
                 break
         touches_modules = touches_modules or transitive_named_imports
