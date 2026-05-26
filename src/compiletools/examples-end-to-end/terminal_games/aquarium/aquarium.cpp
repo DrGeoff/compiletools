@@ -56,7 +56,7 @@ std::string render(const aqua::Tank& t) {
         if (x >= 0 && x < w && y >= 0 && y < h) at(x, y) = Cell{ch, fg};
     };
 
-    const int floor_y = aqua::floor_row(t);
+    const int floor_y = aqua::floor_row(t.height);
 
     // Water surface: a gentle ripple that drifts with the tick.
     for (int x = 0; x < w; ++x) {
