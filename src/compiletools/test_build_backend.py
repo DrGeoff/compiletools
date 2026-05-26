@@ -1391,6 +1391,316 @@ class TestMakefileBackendShellQuotesCompileTokens:
         )
 
 
+class TestTransitiveHeaderModuleImports:
+    """A TU whose only ``import M;`` arrives through ``#include "wrap.H"``
+    must still get the compiler's modules-mode flag AND a BMI edge into
+    its compile rule. Gating exclusively on the TU's own analysis result
+    (the pre-fix behaviour) produces two failure modes:
+
+    - GCC sees ``import M;`` at the header's expansion point with no
+      ``-fmodules-ts``: parse error ``expected unqualified-id before
+      'import'``.
+    - With flags but no edge, the importer races the BMI producer under
+      ``-j``: non-deterministic ``module file not found`` or stale-BMI
+      links.
+
+    Both ``_compiler_module_flags_for`` and ``_wire_module_inputs`` must
+    walk the TU's transitive headers. Only *named* imports are honoured
+    from transitive headers (``import M;``, ``import M:P;``, ``import
+    <h>;``, ``import "h";``); a bare ``import :P;`` in a header has no
+    resolvable owning module (the header isn't itself a module
+    fragment) and is skipped.
+    """
+
+    def _empty_result(self):
+        return SimpleNamespace(
+            module_exports=(),
+            module_implements=(),
+            module_imports=(),
+            module_header_imports=(),
+        )
+
+    def _make_backend(self, tmp_path, *, cxx, kind, per_file_results, header_deps_for):
+        args = make_backend_args(tmp_path, CXX=cxx)
+        hunter = make_mock_hunter(sources=list(per_file_results.keys()))
+        StubClass = make_stub_backend_class()
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        backend._module_compiler_kind = kind
+
+        def _result(path):
+            return per_file_results.get(path)
+
+        hunter._file_analysis_result = MagicMock(side_effect=_result)
+        hunter.header_dependencies = MagicMock(side_effect=lambda s: header_deps_for.get(s, []))
+        hunter.system_modules = MagicMock(return_value={})
+        # Production-accurate module name resolution -- the mock hunter
+        # otherwise returns a MagicMock for these calls, which the
+        # transitive walk can't reason about.
+        hunter._own_module_name = compiletools.hunter.Hunter._own_module_name
+        hunter._resolve_module_import = compiletools.hunter.Hunter._resolve_module_import
+        return backend
+
+    def test_gcc_flags_injected_when_only_a_transitive_header_imports(self, tmp_path):
+        main = "/src/main.cpp"
+        wrap = "/src/wrap.h"
+        per_file = {
+            main: self._empty_result(),
+            wrap: SimpleNamespace(
+                module_exports=(),
+                module_implements=(),
+                module_imports=("M",),
+                module_header_imports=(),
+            ),
+        }
+        backend = self._make_backend(
+            tmp_path,
+            cxx="g++",
+            kind="gcc",
+            per_file_results=per_file,
+            header_deps_for={main: [wrap]},
+        )
+        flags = backend._compiler_module_flags_for(main)
+        assert "-fmodules-ts" in flags, (
+            f"main.cpp imports M only through wrap.h but got flags={flags!r}; "
+            "gcc would see `import M;` with no -fmodules-ts and fail to parse"
+        )
+
+    def test_clang_flags_injected_when_only_a_transitive_header_imports(self, tmp_path):
+        main = "/src/main.cpp"
+        wrap = "/src/wrap.h"
+        per_file = {
+            main: self._empty_result(),
+            wrap: SimpleNamespace(
+                module_exports=(),
+                module_implements=(),
+                module_imports=("M",),
+                module_header_imports=(),
+            ),
+        }
+        backend = self._make_backend(
+            tmp_path,
+            cxx="clang++",
+            kind="clang",
+            per_file_results=per_file,
+            header_deps_for={main: [wrap]},
+        )
+        # Production parity: clang builds always set _module_pcm_dir to
+        # ``<cas-objdir>/.pcm`` (build_backend.py:1228); without it the
+        # -fprebuilt-module-path gate stays closed.
+        backend._module_pcm_dir = str(tmp_path / "pcm")
+        backend._module_iface_pcm = {"M": "/cache/M.pcm"}
+        flags = backend._compiler_module_flags_for(main)
+        assert any("-fmodule-file=M=" in f or "-fprebuilt-module-path=" in f for f in flags), (
+            f"main.cpp imports M only through wrap.h but got flags={flags!r}; "
+            "clang needs an -fmodule-file or -fprebuilt-module-path to find M's BMI"
+        )
+
+    def test_no_flag_injection_when_header_does_not_import(self, tmp_path):
+        main = "/src/main.cpp"
+        wrap = "/src/wrap.h"
+        per_file = {main: self._empty_result(), wrap: self._empty_result()}
+        backend = self._make_backend(
+            tmp_path,
+            cxx="g++",
+            kind="gcc",
+            per_file_results=per_file,
+            header_deps_for={main: [wrap]},
+        )
+        flags = backend._compiler_module_flags_for(main)
+        assert flags == [], (
+            f"no header imports a module; modules flags must not appear (got {flags!r})"
+        )
+
+    def test_bare_partition_in_header_does_not_trigger_flag_injection(self, tmp_path):
+        # `import :basic;` in a header has no resolvable owning module
+        # (the header isn't a module fragment), so the transitive walk
+        # ignores it. Without this filter we'd inject -fmodules-ts based
+        # on a malformed import the compiler would reject anyway.
+        main = "/src/main.cpp"
+        wrap = "/src/wrap.h"
+        per_file = {
+            main: self._empty_result(),
+            wrap: SimpleNamespace(
+                module_exports=(),
+                module_implements=(),
+                module_imports=(":basic",),
+                module_header_imports=(),
+            ),
+        }
+        backend = self._make_backend(
+            tmp_path,
+            cxx="g++",
+            kind="gcc",
+            per_file_results=per_file,
+            header_deps_for={main: [wrap]},
+        )
+        flags = backend._compiler_module_flags_for(main)
+        assert flags == [], (
+            f"bare partition import in a non-module header must not trigger -fmodules-ts; "
+            f"got {flags!r}"
+        )
+
+    def test_gcc_wires_bmi_edge_when_only_a_transitive_header_imports(self, tmp_path):
+        main = "/src/main.cpp"
+        wrap = "/src/wrap.h"
+        per_file = {
+            main: self._empty_result(),
+            wrap: SimpleNamespace(
+                module_exports=(),
+                module_implements=(),
+                module_imports=("M",),
+                module_header_imports=(),
+            ),
+        }
+        backend = self._make_backend(
+            tmp_path,
+            cxx="g++",
+            kind="gcc",
+            per_file_results=per_file,
+            header_deps_for={main: [wrap]},
+        )
+        backend._module_iface_obj = {"M": "/cache/M.o"}
+        rule = BuildRule(
+            output="/build/main.o",
+            inputs=[main],
+            command=["g++", "-c", main, "-o", "/build/main.o"],
+            rule_type=RuleType.COMPILE,
+        )
+        backend._wire_module_inputs(rule, per_file[main], filename=main)
+        assert "/cache/M.o" in rule.inputs, (
+            f"main.o imports M only through wrap.h; the BMI producer must be wired "
+            f"into rule.inputs to avoid a -j race. inputs={rule.inputs!r}"
+        )
+
+    def test_clang_wires_pcm_edge_when_only_a_transitive_header_imports(self, tmp_path):
+        main = "/src/main.cpp"
+        wrap = "/src/wrap.h"
+        per_file = {
+            main: self._empty_result(),
+            wrap: SimpleNamespace(
+                module_exports=(),
+                module_implements=(),
+                module_imports=("M",),
+                module_header_imports=(),
+            ),
+        }
+        backend = self._make_backend(
+            tmp_path,
+            cxx="clang++",
+            kind="clang",
+            per_file_results=per_file,
+            header_deps_for={main: [wrap]},
+        )
+        backend._module_iface_pcm = {"M": "/cache/M.pcm"}
+        rule = BuildRule(
+            output="/build/main.o",
+            inputs=[main],
+            command=["clang++", "-c", main, "-o", "/build/main.o"],
+            rule_type=RuleType.COMPILE,
+        )
+        backend._wire_module_inputs(rule, per_file[main], filename=main)
+        assert "/cache/M.pcm" in rule.inputs, (
+            f"main.o imports M only through wrap.h; the .pcm BMI must be wired "
+            f"into rule.inputs to avoid a -j race. inputs={rule.inputs!r}"
+        )
+
+    def test_no_bmi_edge_when_header_does_not_import(self, tmp_path):
+        main = "/src/main.cpp"
+        wrap = "/src/wrap.h"
+        per_file = {main: self._empty_result(), wrap: self._empty_result()}
+        backend = self._make_backend(
+            tmp_path,
+            cxx="g++",
+            kind="gcc",
+            per_file_results=per_file,
+            header_deps_for={main: [wrap]},
+        )
+        backend._module_iface_obj = {"M": "/cache/M.o"}
+        rule = BuildRule(
+            output="/build/main.o",
+            inputs=[main],
+            command=["g++", "-c", main, "-o", "/build/main.o"],
+            rule_type=RuleType.COMPILE,
+        )
+        backend._wire_module_inputs(rule, per_file[main], filename=main)
+        assert "/cache/M.o" not in rule.inputs, (
+            f"no header imports M; the BMI must not be wired in. inputs={rule.inputs!r}"
+        )
+
+    def test_bare_partition_in_header_does_not_wire_bmi(self, tmp_path):
+        main = "/src/main.cpp"
+        wrap = "/src/wrap.h"
+        per_file = {
+            main: self._empty_result(),
+            wrap: SimpleNamespace(
+                module_exports=(),
+                module_implements=(),
+                module_imports=(":basic",),
+                module_header_imports=(),
+            ),
+        }
+        backend = self._make_backend(
+            tmp_path,
+            cxx="g++",
+            kind="gcc",
+            per_file_results=per_file,
+            header_deps_for={main: [wrap]},
+        )
+        backend._module_iface_obj = {"math:basic": "/cache/math-basic.o"}
+        rule = BuildRule(
+            output="/build/main.o",
+            inputs=[main],
+            command=["g++", "-c", main, "-o", "/build/main.o"],
+            rule_type=RuleType.COMPILE,
+        )
+        backend._wire_module_inputs(rule, per_file[main], filename=main)
+        assert "/cache/math-basic.o" not in rule.inputs, (
+            f"bare :basic in a non-module header has no resolvable own_module; "
+            f"the BMI must not be wired. inputs={rule.inputs!r}"
+        )
+
+    def test_transitively_wired_input_passes_ordering_filter(self, tmp_path):
+        # Part C: the CAS-only path lifts compile inputs to make/ninja's
+        # order-only `|` clause via ``ordering_inputs_for_compile``,
+        # matched on ``_COMPILE_ORDERING_INPUT_EXTS``. Transitively-wired
+        # BMIs land in rule.inputs with the same suffixes (.o for gcc,
+        # .pcm for clang), so the filter must keep them.
+        from compiletools.build_backend import _COMPILE_ORDERING_INPUT_EXTS, ordering_inputs_for_compile
+
+        main = "/src/main.cpp"
+        wrap = "/src/wrap.h"
+        per_file = {
+            main: self._empty_result(),
+            wrap: SimpleNamespace(
+                module_exports=(),
+                module_implements=(),
+                module_imports=("M",),
+                module_header_imports=(),
+            ),
+        }
+        backend = self._make_backend(
+            tmp_path,
+            cxx="g++",
+            kind="gcc",
+            per_file_results=per_file,
+            header_deps_for={main: [wrap]},
+        )
+        backend._module_iface_obj = {"M": "/cache/M.o"}
+        rule = BuildRule(
+            output="/build/main.o",
+            inputs=[main],
+            command=["g++", "-c", main, "-o", "/build/main.o"],
+            rule_type=RuleType.COMPILE,
+        )
+        backend._wire_module_inputs(rule, per_file[main], filename=main)
+        ordering = ordering_inputs_for_compile(rule.inputs)
+        assert "/cache/M.o" in ordering, (
+            f"transitively-wired BMI must survive the CAS-only ordering filter "
+            f"(suffixes={_COMPILE_ORDERING_INPUT_EXTS!r}); got ordering={ordering!r}"
+        )
+
+
 class TestGccHeaderUnitProducerSideRename:
     """gcc cache-mode header-unit precompiles must use producer-side temp+rename.
     Two concurrent ct-cake invocations would otherwise both write the .gcm at

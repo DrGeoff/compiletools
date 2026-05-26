@@ -1380,9 +1380,9 @@ class BuildBackend(abc.ABC):
                 # primary, or `import :P;` in another partition). Without
                 # this edge clang fails the precompile with "module file
                 # not found" since the partition .pcm hasn't been built.
-                self._wire_module_inputs(pcm_rule, file_result)
+                self._wire_module_inputs(pcm_rule, file_result, filename=filename)
                 graph.add_rule(pcm_rule)
-                self._wire_module_inputs(obj_rule, file_result)
+                self._wire_module_inputs(obj_rule, file_result, filename=filename)
                 graph.add_rule(obj_rule)
                 if obj_rule.order_only_deps:
                     compile_bucket_dirs.add(obj_rule.order_only_deps[0])
@@ -1398,7 +1398,7 @@ class BuildBackend(abc.ABC):
                 )
 
             rule = self._create_compile_rule(filename)
-            self._wire_module_inputs(rule, file_result)
+            self._wire_module_inputs(rule, file_result, filename=filename)
             graph.add_rule(rule)
             if rule.order_only_deps:
                 compile_bucket_dirs.add(rule.order_only_deps[0])
@@ -2001,6 +2001,25 @@ class BuildBackend(abc.ABC):
         touches_modules = bool(
             result.module_exports or result.module_implements or result.module_imports or result.module_header_imports
         )
+        # A header reached through `#include` may itself `import M;` —
+        # the consumer compile must still pass -fmodules-ts (gcc) or
+        # -fprebuilt-module-path (clang) even though the TU's own
+        # analysis result is empty. Only honour *named* imports from
+        # transitive headers; a bare ``import :P;`` in a header has no
+        # resolvable owning module and is malformed C++ anyway.
+        transitive_named_imports = False
+        for dep in self.hunter.header_dependencies(filename):
+            dep_str = str(dep)
+            if dep_str == filename:
+                continue
+            dep_result = self.hunter._file_analysis_result(dep_str)
+            if dep_result is None:
+                continue
+            named_imports = [imp for imp in dep_result.module_imports if not imp.startswith(":")]
+            if named_imports or dep_result.module_header_imports:
+                transitive_named_imports = True
+                break
+        touches_modules = touches_modules or transitive_named_imports
         if not touches_modules:
             return []
         kind = self._module_compiler_kind
@@ -2035,9 +2054,11 @@ class BuildBackend(abc.ABC):
             # `<command_hash>/` subdir, so the flat scan would find
             # nothing -- the per-module `-fmodule-file=` mappings emitted
             # by `_clang_partition_module_file_flags` carry the lookup
-            # in that mode.
+            # in that mode. The gate also fires when only a transitive
+            # header imports a module, since the consumer still needs
+            # the lookup path.
             if (
-                (result.module_imports or result.module_implements)
+                (result.module_imports or result.module_implements or transitive_named_imports)
                 and self._module_pcm_dir
                 and not self._module_pcm_cache_root
             ):
@@ -2104,7 +2125,7 @@ class BuildBackend(abc.ABC):
             if cache_active or ":" in name
         ]
 
-    def _wire_module_inputs(self, rule: BuildRule, file_result) -> None:
+    def _wire_module_inputs(self, rule: BuildRule, file_result, filename: str | None = None) -> None:
         """Append BMI/stamp inputs from `rule` to its module dependencies.
 
         Mutates ``rule.inputs`` in place. The artefact a downstream TU
@@ -2186,31 +2207,51 @@ class BuildBackend(abc.ABC):
             if target not in rule.inputs:
                 rule.inputs.append(target)
 
-        resolved: list[str] = []
-        for raw in tuple(file_result.module_imports) + tuple(file_result.module_implements):
-            r = self.hunter._resolve_module_import(raw, own_module)
-            if r is None:
+        def _wire_for(src_result, src_own_module: str | None) -> None:
+            """Wire imports + header-unit deps of one analysis result.
+
+            Used uniformly for the TU itself and for each transitive
+            header. Header-unit edges go through ``_header_unit_artefact``
+            (compiler-agnostic stamp/.pcm lookup); named-module edges
+            go through ``target_map`` (.o for gcc, .pcm for clang) with
+            partition expansion for primary-module imports.
+            """
+            for raw in tuple(src_result.module_imports) + tuple(src_result.module_implements):
+                r = self.hunter._resolve_module_import(raw, src_own_module)
+                if r is None:
+                    continue
+                _add_dep(target_map.get(r))
+                # Importer of a primary M depends transitively on M's
+                # partitions; over-includes M's own partition exports
+                # too -- ``_add_dep`` dedups.
+                if ":" not in r:
+                    for part_name in target_map:
+                        if part_name.startswith(r + ":"):
+                            _add_dep(target_map.get(part_name))
+            if self._header_unit_artefact:
+                for token in src_result.module_header_imports:
+                    _add_dep(self._header_unit_artefact.get(token))
+
+        _wire_for(file_result, own_module)
+
+        # Transitive headers: a .C/.cpp whose only `import M;` arrives
+        # through `#include "wrap.H"` still needs a BMI edge from M's
+        # producer into its compile rule -- otherwise the importer
+        # races the producer under `-j`. Each header's imports resolve
+        # against THAT header's own module; a header almost never
+        # declares one, so bare `:P` from a non-module header resolves
+        # to None and is skipped -- matching the plan's decision to
+        # ignore bare-partition imports in transitive headers.
+        if filename is None:
+            return
+        for dep in self.hunter.header_dependencies(filename):
+            dep_str = str(dep)
+            if dep_str == filename:
                 continue
-            resolved.append(r)
-            # Importer of a primary M depends transitively on M's
-            # partitions; over-includes M's own partition exports too
-            # (which are already in `resolved` if listed) -- the dedup
-            # below handles that.
-            if ":" not in r:
-                for part_name in target_map:
-                    if part_name.startswith(r + ":"):
-                        resolved.append(part_name)
-
-        for name in resolved:
-            _add_dep(target_map.get(name))
-
-        # Header-unit imports: regardless of compiler, importers must
-        # wait for the header-unit precompile to finish (gcc cache: the
-        # .gcm itself; gcc no-cache: a .stamp file touched after the
-        # precompile; clang: the .pcm itself).
-        if self._header_unit_artefact:
-            for token in file_result.module_header_imports:
-                _add_dep(self._header_unit_artefact.get(token))
+            dep_result = self.hunter._file_analysis_result(dep_str)
+            if dep_result is None:
+                continue
+            _wire_for(dep_result, self.hunter._own_module_name(dep_result))
 
     def _header_unit_destination(self, token: str, flat_dir: str) -> tuple[str, str]:
         """Resolve the per-token artefact path and its parent dir.
