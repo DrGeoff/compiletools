@@ -1,11 +1,10 @@
-// tank.cppm -- the aquarium aggregate (module aquarium.tank).
+// tank.cppm -- the aquarium aggregate: interface unit (module aquarium.tank).
 //
-// Composes the three entity modules (fish, bubbles, seaweed) over the shared
-// aquarium.water leaf into one tank: it owns the vectors, the
-// dimensions, the tick and the seed, and drives the simulation forward. It
-// re-exports water + fish + bubbles + seaweed, so a consumer's single
-// `import aquarium.tank;` brings in the entire aquarium -- and ct-cake discovers
-// every one of the five .cppm files just by walking those import edges.
+// Re-exports water + the three entity modules, declares the Tank aggregate and
+// the simulation entry points. The definitions live in tank_impl.cpp. A
+// consumer's single `import aquarium.tank;` brings in the whole aquarium -- and
+// ct-cake discovers all five interface units AND all four implementation units
+// just by walking the import edges, with no file list anywhere.
 //
 // CAS: module interface unit -> BMI in cas-pcmdir, object in cas-objdir.
 module;
@@ -34,31 +33,10 @@ struct Tank {
 
 // Build the starting tank. Population scales with area so a small test tank and a
 // full-screen terminal both look right.
-inline Tank initial(int width, int height, std::uint64_t seed) {
-    Tank t{};
-    t.width = width < 1 ? 1 : width;
-    t.height = height < 3 ? 3 : height;  // surface + >=1 water row + floor
-    t.tick = 0;
-    t.seed = seed;
-    const int area = t.width * t.height;
-    for (int i = 0, n = area / 60 + 3; i < n; ++i)
-        t.fish.push_back(spawn_fish(t.width, t.height, t.seed));
-    for (int i = 0, n = area / 120 + 2; i < n; ++i)
-        t.bubbles.push_back(spawn_bubble(t.width, t.height, t.seed));
-    for (int i = 0, n = t.width / 12 + 2; i < n; ++i)
-        t.weed.push_back(spawn_weed(t.width, t.height, t.seed));
-    return t;
-}
+Tank initial(int width, int height, std::uint64_t seed);
 
 // Advance one tick. Pure: returns a new Tank. Delegates per-entity motion to the
 // fish and bubble modules; counts are conserved (entities wrap/respawn).
-inline Tank step(Tank t) {
-    ++t.tick;
-    for (Fish& f : t.fish)
-        advance_fish(f, t.width, t.height, t.seed);
-    for (Bubble& b : t.bubbles)
-        advance_bubble(b, t.width, t.height, t.seed);
-    return t;
-}
+Tank step(Tank t);
 
 }  // namespace aqua
