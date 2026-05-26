@@ -57,7 +57,8 @@ std::string render(LanderState s, Verdict v, bool thrusting, int rows) {
             out += margin + "vv";
         out += frontend::CLEAR_EOL; out += '\n';
     }
-    out += std::string(LEFT_MARGIN + 8, '=') + std::string(frontend::CLEAR_EOL) + "\n";  // landing pad
+    out += std::string(LEFT_MARGIN + 8, '=');  // landing pad
+    out += frontend::CLEAR_EOL; out += '\n';
     out += std::format("ALT {:6.1f} m   VEL {:7.2f} m/s   FUEL {:5.1f}   {}{}",
                        s.altitude, s.velocity, s.fuel,
                        v == Verdict::Flying ? (thrusting ? "THRUST" : "")
