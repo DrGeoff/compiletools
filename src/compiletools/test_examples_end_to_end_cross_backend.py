@@ -99,15 +99,16 @@ class ExamplePlan:
 # bespoke entries; everything else falls through to the empty default.
 _VANILLA: ExamplePlan = ExamplePlan()
 
-# Named C++20 modules (interface units, partitions, split impl, import std)
-# fail on ninja/cmake/bazel today. `slurm` was unblocked by the Wave 2
-# fix: _prebuild_aux_artefacts now locally executes named-module interface
-# compile rules before the flat slurm job array is submitted, so importer
-# compiles no longer race with interface compiles.
-# `cxx_modules_header_units` is the exception: header-units now build on
-# every backend after the upstream fix tracked by commit d30e2040
-# ("test(modules): drop dead _MODULE_FAILING_BACKENDS xfail dispatch"),
-# so that example uses an empty blocklist.
+# Named C++20 modules (interface units, partitions, split impl, import std) now
+# build on EVERY backend, so this blocklist is empty (kept as a named symbol the
+# module ExamplePlans reference, in case a future backend needs re-blocking).
+# make/ninja build them natively; slurm via _prebuild_aux_artefacts locally
+# executing the named-module interface compiles before the flat job array is
+# submitted (so importer compiles don't race interface compiles); cmake/bazel
+# have no native module support, so ct-cake prebuilds the module artefacts
+# (interface BMIs + objects AND implementation-unit objects) itself and feeds the
+# native tool the prebuilt objects. `cxx_modules_header_units` was unblocked
+# earlier by the upstream fix tracked by commit d30e2040.
 _CXX_MODULES_NAMED_BACKENDS_BLOCKED = frozenset()
 
 _EXAMPLE_PLANS: dict[str, ExamplePlan] = {
