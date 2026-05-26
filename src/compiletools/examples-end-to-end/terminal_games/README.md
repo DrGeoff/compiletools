@@ -12,19 +12,21 @@ served from the CAS to every one. Change one program and only that one rebuilds.
 
 ## Architecture in one breath
 
-Every game is the same three well-bounded units, each understandable on its own:
+Every game is a pure, I/O-free C++26 simulation **split into a module interface
+unit (`.cppm`) and an implementation unit (`_impl.cpp`)**, plus an executable
+that `import`s the module and `#include`s the shared terminal facade, and one or
+more headless tests that assert its behaviour. Snake, invaders and breakout
+**decompose into a small module graph at natural seams** — snake pulls out an
+`rng` leaf; invaders separates `formation` and `bullet` leaves under a `field`
+aggregate; breakout isolates a `bricks` leaf under an `arena` aggregate — each
+with a re-exporting aggregate module. **Moonlander stays a single cohesive
+module** (a lander is one integrator with no honest seam): the rule is
+*decompose at real seams, stay cohesive otherwise.*
 
-- a **pure, I/O-free C++26 named module** holding the entire simulation (the
-  constants, the state type, the `step()`/`classify()` rules) — the single
-  source of truth for that game;
-- an **executable** that `import`s the module and `#include`s the shared
-  terminal facade, then loops *read key → step → render → write*;
-- a **headless test** that `import`s the module and asserts its behaviour.
-
-The fifth program, the **ASCII Aquarium**, is the same triad with no controls
-except `q`: its executable loops *step → render → write* over a pure, seeded
-simulation of drifting fish, rising bubbles and swaying seaweed — a calm,
-colourful artwork rather than a game.
+The fifth program, the **ASCII Aquarium**, follows the same four-unit shape with
+no controls except `q`: its executable loops *step → render → write* over a
+pure, seeded simulation of drifting fish, rising bubbles and swaying seaweed —
+a calm, colourful artwork rather than a game.
 
 The reusable half — terminal raw mode, key reads, frame writes, screen size —
 lives once in `common/` and is shared by all five programs.
@@ -36,10 +38,17 @@ terminal_games/
     terminal.{h,cpp} the POSIX-terminal facade (raw mode, read_key, write_frame, rows, cols)
     pch.h            the heavy system headers, isolated behind a PCH
     unit_test.hpp    the testmarker header (UT_REQUIRE)
-  moonlander/  physics.cppm   moonlander.cpp  test_physics.cpp   (module lander.physics)
-  snake/       world.cppm     snake.cpp       test_snake.cpp     (module snake.world)
-  invaders/    field.cppm     invaders.cpp    test_field.cpp     (module invaders.field)
-  breakout/    arena.cppm     breakout.cpp    test_arena.cpp     (module breakout.arena)
+  moonlander/  physics.cppm physics_impl.cpp              (module lander.physics)
+               moonlander.cpp  test_physics.cpp
+  snake/       rng.cppm world.cppm world_impl.cpp           (modules snake.rng, snake.world)
+               snake.cpp  test_rng.cpp  test_snake.cpp
+  invaders/    formation.cppm formation_impl.cpp            (modules invaders.formation,
+               bullet.cppm bullet_impl.cpp                   invaders.bullet, invaders.field)
+               field.cppm field_impl.cpp
+               invaders.cpp  test_formation.cpp  test_bullet.cpp  test_field.cpp
+  breakout/    bricks.cppm bricks_impl.cpp                  (modules breakout.bricks,
+               arena.cppm arena_impl.cpp                     breakout.arena)
+               breakout.cpp  test_bricks.cpp  test_arena.cpp
   aquarium/    water.cppm fish.cppm bubbles.cppm seaweed.cppm tank.cppm   (5 module interfaces)
                fish_impl.cpp bubbles_impl.cpp seaweed_impl.cpp tank_impl.cpp  (4 implementation units)
                aquarium.cpp   test_fish.cpp test_bubbles.cpp test_seaweed.cpp test_tank.cpp
@@ -65,13 +74,13 @@ Two rules keep the example honest and portable:
 | `common/terminal.cpp` | impl, declares `//#PCH=pch.h` | **cas-pchdir** + cas-objdir — *shared by all five programs* |
 | `common/terminal.h` | light facade declarations | — |
 | `common/unit_test.hpp` | testmarker header | — |
-| `*/<unit>.cppm` (×9) | module interface (impl) | **cas-pcmdir** (BMI) + cas-objdir |
-| `aquarium/*_impl.cpp` (×4) | module implementation unit (`module aquarium.M;`) | cas-objdir — *no BMI* |
+| `*/<unit>.cppm` (×13) | module interface (impl) | **cas-pcmdir** (BMI) + cas-objdir |
+| `*/*_impl.cpp` (×11) | module implementation unit (`module <name>;`) | cas-objdir — *no BMI* |
 | `*/<name>.cpp` (×5) | executable (`// ct-exemarker`) | cas-objdir + **cas-exedir** |
-| `*/test_*.cpp` (×8) | test (includes `unit_test.hpp`) | **content-keyed test-result cache** + cas-exedir |
+| `*/test_*.cpp` (×12) | test (includes `unit_test.hpp`) | **content-keyed test-result cache** + cas-exedir |
 
 `ct-cake` discovers five executables (the per-program `.cpp` files, each with
-`main(`) and eight tests (the `test_*.cpp` files, each transitively including
+`main(`) and twelve tests (the `test_*.cpp` files, each transitively including
 `unit_test.hpp`, matching `testmarkers = unit_test.hpp`). Each program's module is
 pulled in via its exe's/test's `import` edge; `common/terminal.cpp` is pulled in
 via Hunter's adjacent-`.cpp` rule for `#include "terminal.h"`, resolved through
@@ -124,7 +133,7 @@ ct-cake
 ```
 
 This builds `bin/<variant>/{moonlander,snake,invaders,breakout,aquarium}` plus
-the eight `test_*` programs, runs every test (a non-zero exit fails the build),
+the twelve `test_*` programs, runs every test (a non-zero exit fails the build),
 and links the executables. Run it again and the build is near-instant — every
 object, BMI, PCH and executable is served from the CAS.
 
