@@ -207,17 +207,21 @@ class BazelBackend(BuildBackend):
         # The prebuilt .o files themselves ARE added directly to srcs as
         # prebuilt object files (bazel cc_binary allows .o in srcs), so the
         # module's definitions are still linked into the final binary.
-        _module_iface_obj_paths: frozenset[str] = frozenset(self._module_iface_obj.values())
-        bazel_obj_info = {obj: info for obj, info in obj_info.items() if obj not in _module_iface_obj_paths}
+        # Interface-unit objects PLUS implementation-unit objects: all prebuilt
+        # by _prebuild_aux_artefacts and linked as prebuilt .o rather than
+        # recompiled natively (bazel has no C++20 module support and can't
+        # drive gcc's module mapper for these units).
+        _prebuilt_module_obj_paths: frozenset[str] = frozenset(self._module_iface_obj.values()) | self._module_impl_obj
+        bazel_obj_info = {obj: info for obj, info in obj_info.items() if obj not in _prebuilt_module_obj_paths}
         # Prebuilt .o paths for named-module interface units, workspace-relative.
         # These are added to each link/library target's srcs (not compile
         # targets) to ensure the object code is linked without recompilation.
         # cas-objdir-outside-workspace paths are staged into
         # <workspace>/.ct-bazel-obj/ via _bazel_obj_workspace_relative so
         # the link step can find them inside bazel's sandbox.
-        _module_iface_obj_rel: list[str] = sorted(
+        _prebuilt_module_obj_rel: list[str] = sorted(
             rel
-            for obj_path in _module_iface_obj_paths
+            for obj_path in _prebuilt_module_obj_paths
             for rel in [self._bazel_obj_workspace_relative(obj_path, base_dir)]
             if rel is not None
         )
@@ -232,7 +236,7 @@ class BazelBackend(BuildBackend):
             # interface .o — the importer's own compile uses -fmodule-mapper=
             # to find the prebuilt .gcm at runtime.
             srcs_set = {self._bazel_src(s, base_dir) for s in srcs}
-            srcs_set.update(_module_iface_obj_rel)
+            srcs_set.update(_prebuilt_module_obj_rel)
             rel_srcs = sorted(srcs_set)
             linkopts: list[str] | None = None
             if kind != "cc_library":

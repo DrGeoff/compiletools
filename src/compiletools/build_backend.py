@@ -562,6 +562,10 @@ class BuildBackend(abc.ABC):
     _module_iface_obj: Mapping[str, str] = _EMPTY_STR_MAP
     _module_iface_pcm: Mapping[str, str] = _EMPTY_STR_MAP
     _module_iface_gcm: Mapping[str, str] = _EMPTY_STR_MAP
+    # Objects of C++20 module IMPLEMENTATION units (``module M;`` in a .cpp).
+    # A set of object paths (not a name->path map: several files may implement
+    # one module). cmake/bazel prebuild these like interface units.
+    _module_impl_obj: frozenset[str] = frozenset()
     _gcc_module_mapper_path: str | None = None
 
     def __init__(self, args, hunter, *, context=None):
@@ -605,6 +609,7 @@ class BuildBackend(abc.ABC):
         self._module_iface_obj = {}
         self._module_iface_pcm = {}
         self._module_iface_gcm = {}
+        self._module_impl_obj = frozenset()
         self._header_unit_artefact: dict[str, str] = {}
         self._gcc_module_mapper_path: str | None = None
         self._gcc_header_unit_resolved: dict[str, list[str]] = {}
@@ -760,23 +765,28 @@ class BuildBackend(abc.ABC):
         pch_rules = [r for r in graph.rules_by_type(RuleType.COMPILE) if r.output.endswith(".gch")]
         aux_rules = pch_rules + graph.rules_by_type(RuleType.HEADER_UNIT)
 
-        # Named-module interface compile rules: those whose outputs appear
-        # in _module_iface_obj (gcc .o, and clang .o from pcm-to-o stage)
-        # or _module_iface_pcm (clang precompile .pcm stage). We must NOT
-        # include _module_iface_gcm entries separately -- those .gcm paths
-        # are side effects of the same gcc compile rule whose .o is already
-        # in _module_iface_obj; double-executing would corrupt the output.
-        # Topological sort within this set ensures partitions (whose .pcm/.o
-        # appear in other interface rules' inputs) run before primary
-        # interface units that import them.
-        module_iface_outputs: set[str] = set(self._module_iface_obj.values()) | set(self._module_iface_pcm.values())
-        if module_iface_outputs:
-            iface_rules_by_output: dict[str, BuildRule] = {}
+        # Module compile rules to run locally before the native tool: named-
+        # module INTERFACE objects (gcc .o, and clang .o from pcm-to-o stage)
+        # or clang precompile .pcm outputs, PLUS module IMPLEMENTATION-unit
+        # objects (`module M;`). We must NOT include _module_iface_gcm entries
+        # separately -- those .gcm paths are side effects of the same gcc
+        # interface compile rule whose .o is already in _module_iface_obj;
+        # double-executing would corrupt the output. Implementation-unit
+        # objects ARE each the sole output of their own rule, so they're safe
+        # to add. Topological sort within this set ensures partitions and
+        # interface units run before the implementation units / primary
+        # interfaces that import them (impl rules carry the interface .o in
+        # their inputs via _COMPILE_ORDERING_INPUT_EXTS).
+        module_prebuilt_outputs: set[str] = (
+            set(self._module_iface_obj.values()) | set(self._module_iface_pcm.values()) | set(self._module_impl_obj)
+        )
+        if module_prebuilt_outputs:
+            prebuilt_rules_by_output: dict[str, BuildRule] = {}
             for rule in graph.rules_by_type(RuleType.COMPILE):
-                if rule.output in module_iface_outputs:
-                    iface_rules_by_output[rule.output] = rule
-            module_iface_rules = _toposort_rules(iface_rules_by_output)
-            aux_rules = module_iface_rules + aux_rules
+                if rule.output in module_prebuilt_outputs:
+                    prebuilt_rules_by_output[rule.output] = rule
+            module_prebuilt_rules = _toposort_rules(prebuilt_rules_by_output)
+            aux_rules = module_prebuilt_rules + aux_rules
 
         if not aux_rules:
             return
@@ -1168,6 +1178,7 @@ class BuildBackend(abc.ABC):
         module_iface_obj: dict[str, str] = {}
         module_iface_pcm: dict[str, str] = {}  # populated only for clang
         module_iface_gcm: dict[str, str] = {}  # populated for gcc + cache
+        module_impl_obj: set[str] = set()  # objects of `module M;` impl units
         # Track the set of per-hash directories needing an mkdir rule
         # (cache mode) plus the flat fallback dir (always when clang
         # has any interface to precompile).
@@ -1193,10 +1204,20 @@ class BuildBackend(abc.ABC):
                     gcm_path, gcm_dir = self._gcc_module_gcm_destination(filename, name)
                     module_iface_gcm[name] = gcm_path
                     pcm_mkdir_dirs.add(gcm_dir)
+            # Module implementation units (`module M;`) produce only a .o (no
+            # BMI side-effect). Record the object so cmake/bazel prebuild it
+            # alongside interface units rather than recompiling it natively
+            # (the native tool can't drive gcc's module mapper for it).
+            if iface_result.module_implements:
+                deplist = self.hunter.header_dependencies(filename)
+                dep_hash = self.namer.compute_dep_hash(deplist)
+                macro_state_hash = self.hunter.macro_state_hash(filename, dep_hash=dep_hash)
+                module_impl_obj.add(self.namer.object_pathname(filename, macro_state_hash, dep_hash))
 
         self._module_iface_obj = module_iface_obj
         self._module_iface_pcm = module_iface_pcm
         self._module_iface_gcm = module_iface_gcm
+        self._module_impl_obj = frozenset(module_impl_obj)
 
         for pcm_dir in sorted(pcm_mkdir_dirs):
             graph.add_rule(
@@ -4371,8 +4392,7 @@ def _register_make_cli_arguments(cap) -> None:
     cap.add_argument(
         "--build-only-changed",
         help=(
-            "Only build the binaries depending on the source or header absolute filenames "
-            "in this space-delimited list."
+            "Only build the binaries depending on the source or header absolute filenames in this space-delimited list."
         ),
     )
     compiletools.apptools.add_locking_arguments(cap)
@@ -4465,8 +4485,7 @@ def _register_slurm_cli_arguments(cap) -> None:
         help="Memory tier mapping as 'threshold:mem,threshold:mem,...' where threshold is "
         "the maximum work-weight for that tier (quoted-include count for compile rules, "
         "input-object count for link/library rules). Rules whose weight exceeds the largest "
-        "threshold use --slurm-mem. Default: "
-        + _DEFAULT_MEM_TIERS_STR,
+        "threshold use --slurm-mem. Default: " + _DEFAULT_MEM_TIERS_STR,
     )
     cap.add_argument(
         "--slurm-sacct-failure-threshold",

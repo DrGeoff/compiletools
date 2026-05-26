@@ -225,8 +225,12 @@ class CMakeBackend(BuildBackend):
         # passes absolute path-like items in target_link_libraries
         # directly to the linker, so the module's definitions are still
         # linked into the final binary.
-        module_iface_obj_paths: frozenset[str] = frozenset(self._module_iface_obj.values())
-        cmake_obj_info = {obj: info for obj, info in obj_info.items() if obj not in module_iface_obj_paths}
+        # Module objects ct-cake prebuilt and the native tool must NOT
+        # recompile: interface-unit objects PLUS implementation-unit objects
+        # (the latter import modules / carry a global module fragment that
+        # cmake's Unix Makefiles build can't drive the module mapper for).
+        prebuilt_module_obj_paths: frozenset[str] = frozenset(self._module_iface_obj.values()) | self._module_impl_obj
+        cmake_obj_info = {obj: info for obj, info in obj_info.items() if obj not in prebuilt_module_obj_paths}
 
         for lib_type in (RuleType.STATIC_LIBRARY, RuleType.SHARED_LIBRARY):
             for rule in graph.rules_by_type(lib_type):
@@ -246,7 +250,7 @@ class CMakeBackend(BuildBackend):
 
                 _emit_per_source_x_lang(f, rel_srcs)
                 self._emit_compile_attrs(f, target_name, remaining_copts, include_dirs)
-                prebuilt_objs = sorted(set(rule.inputs) & module_iface_obj_paths)
+                prebuilt_objs = sorted(set(rule.inputs) & prebuilt_module_obj_paths)
                 if prebuilt_objs:
                     quoted = " ".join(f'"{p}"' for p in prebuilt_objs)
                     f.write(f"target_link_libraries({target_name} PRIVATE {quoted})\n")
@@ -270,7 +274,7 @@ class CMakeBackend(BuildBackend):
             _emit_per_source_x_lang(f, rel_srcs)
             self._emit_compile_attrs(f, target_name, remaining_copts, include_dirs)
 
-            prebuilt_objs = sorted(set(rule.inputs) & module_iface_obj_paths)
+            prebuilt_objs = sorted(set(rule.inputs) & prebuilt_module_obj_paths)
             if prebuilt_objs:
                 quoted = " ".join(f'"{p}"' for p in prebuilt_objs)
                 f.write(f"target_link_libraries({target_name} PRIVATE {quoted})\n")
