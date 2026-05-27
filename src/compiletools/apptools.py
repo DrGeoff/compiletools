@@ -1405,9 +1405,58 @@ def _variant_has_axis(args, axis_name: str) -> bool:
     return axis_name in compiletools.configutils.split_variant(variant)
 
 
-def _materialize_wild_b_searchdir(args) -> str | None:
-    """Stub — replaced with the real implementation in Task 3."""
-    return None
+def _materialize_wild_b_searchdir() -> str | None:
+    """Create (idempotently) a directory holding a symlink ``ld -> wild`` and
+    return its path, for the ``wild-B`` linker axis.
+
+    gcc/clang's ``-B<dir>`` adds <dir> to the executable search path; gcc's
+    collect2 then invokes ``<dir>/ld``, which we point at the wild binary.
+    This is the universal wild invocation that works on ANY gcc version
+    (unlike ``-fuse-ld=wild``, which needs gcc >= 16.1).
+
+    Location: ``<gitroot>/.ct-wild-ld/`` when a gitroot exists, so the
+    injected ``-B<gitroot>/.ct-wild-ld`` is rewritten by
+    ``canonicalize_for_cache_key`` (``<gitroot>/...`` -> ``<GITROOT>``
+    sentinel) in the link key and stays workspace-portable across users
+    sharing a CAS. Falls back to a shared system temp dir
+    (``<tmpdir>/ct-wild-ld``) when no gitroot exists
+    (``_inject_ffile_prefix_map`` is a no-op in that case; here
+    we still produce a usable -B dir).
+
+    Returns None if the wild binary can't be found (the startup check
+    ``_check_wild_linker_usable`` raises a clear error in that case).
+    """
+    wild_path = shutil.which("wild")
+    if not wild_path:
+        return None
+    git_root = compiletools.git_utils.find_git_root()
+    if git_root:
+        search_dir = os.path.join(git_root, ".ct-wild-ld")
+    else:
+        search_dir = os.path.join(tempfile.gettempdir(), "ct-wild-ld")
+    os.makedirs(search_dir, exist_ok=True)
+    ld_link = os.path.join(search_dir, "ld")
+    # Idempotent: (re)create only when missing or pointing elsewhere.
+    try:
+        current = os.readlink(ld_link)
+    except OSError:
+        current = None
+    if current != wild_path:
+        # Atomic replace via a PID-scoped temp name so concurrent ct-cake
+        # processes sharing this gitroot don't race on a shared temp path
+        # (one's os.symlink would hit EEXIST, or one's pre-unlink would yank
+        # another's live temp out from under its os.replace). os.replace is
+        # atomic and every racer writes the same target, so last-writer-wins
+        # is safe. The pre-unlink only clears a leftover temp from a prior
+        # crash of THIS pid.
+        tmp_link = f"{ld_link}.{os.getpid()}.tmp"
+        try:
+            os.unlink(tmp_link)
+        except OSError:
+            pass
+        os.symlink(wild_path, tmp_link)
+        os.replace(tmp_link, ld_link)
+    return search_dir
 
 
 def _normalize_wild_linker(args) -> None:
@@ -1447,7 +1496,7 @@ def _normalize_wild_linker(args) -> None:
 
     # `wild-B` axis: materialise the -B search dir and inject it.
     if _variant_has_axis(args, "wild-B"):
-        search_dir = _materialize_wild_b_searchdir(args)
+        search_dir = _materialize_wild_b_searchdir()
         if search_dir:
             flag = f"-B{search_dir}"
             if flag not in split_command_cached(ldflags):

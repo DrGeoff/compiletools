@@ -7,6 +7,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import tempfile
 import warnings
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -2345,3 +2346,45 @@ def test_normalize_wild_explicit_ld_overrides_cxx_for_clang():
     apptools._normalize_wild_linker(args)
     assert "--ld-path=wild" in args.LDFLAGS
     assert "-fuse-ld=wild" not in args.LDFLAGS
+
+
+def test_normalize_wild_b_injects_dash_B_and_makes_symlink(tmp_path, monkeypatch):
+    fake_wild = tmp_path / "wild"
+    fake_wild.write_text("#!/bin/sh\nexit 0\n")
+    monkeypatch.setattr(shutil, "which", lambda name: str(fake_wild) if name == "wild" else None)
+    monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda *a, **k: str(tmp_path))
+    args = _wild_args("g++", "", "gcc.wild-B.release")
+    apptools._normalize_wild_linker(args)
+
+    search_dir = tmp_path / ".ct-wild-ld"
+    assert f"-B{search_dir}" in args.LDFLAGS
+    ld_link = search_dir / "ld"
+    assert ld_link.is_symlink()
+    assert os.readlink(ld_link) == str(fake_wild)
+
+
+def test_materialize_wild_b_idempotent(tmp_path, monkeypatch):
+    fake_wild = tmp_path / "wild"
+    fake_wild.write_text("#!/bin/sh\nexit 0\n")
+    monkeypatch.setattr(shutil, "which", lambda name: str(fake_wild) if name == "wild" else None)
+    monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda *a, **k: str(tmp_path))
+    d1 = apptools._materialize_wild_b_searchdir()
+    d2 = apptools._materialize_wild_b_searchdir()
+    assert d1 == d2 == str(tmp_path / ".ct-wild-ld")
+    ld_link = tmp_path / ".ct-wild-ld" / "ld"
+    assert ld_link.is_symlink()
+    assert os.readlink(ld_link) == str(fake_wild)
+
+
+def test_materialize_wild_b_falls_back_to_tempdir_without_gitroot(tmp_path, monkeypatch):
+    fake_wild = tmp_path / "wild"
+    fake_wild.write_text("#!/bin/sh\nexit 0\n")
+    monkeypatch.setattr(shutil, "which", lambda name: str(fake_wild) if name == "wild" else None)
+    monkeypatch.setattr("compiletools.git_utils.find_git_root", lambda *a, **k: None)
+    faketmp = tmp_path / "faketmp"
+    faketmp.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(faketmp))
+
+    result = apptools._materialize_wild_b_searchdir()
+    assert result == str(faketmp / "ct-wild-ld")
+    assert (faketmp / "ct-wild-ld" / "ld").is_symlink()
