@@ -28,13 +28,17 @@ def _reset_lru(monkeypatch):
 
 def _make_fake_ct_cake(
     tmp_path,
+    monkeypatch,
     *,
     shebang_target: str | None,
     interpreter_prints: str | None = None,
     interpreter_exit: int = 0,
     interpreter_stderr: str = "",
 ) -> str:
-    """Build a fake ``ct-cake`` script in ``tmp_path/bin``.
+    """Build a fake ``ct-cake`` script in ``tmp_path/bin`` and point
+    ``$PATH`` at it. Returns the bin dir for tests that want to inspect
+    it; the setenv is unconditional so callers don't have to duplicate
+    the two-line setup pattern.
 
     ``shebang_target`` -- the program named after ``#!``. If ``None``,
     the script has no shebang line at all (simulating a hypothetical
@@ -68,6 +72,7 @@ def _make_fake_ct_cake(
             actual_target = str(stub)
         cake.write_text(f"#!{actual_target}\n# fake ct-cake\n")
     cake.chmod(cake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setenv("PATH", str(bin_dir))
     return str(bin_dir)
 
 
@@ -84,29 +89,28 @@ def test_returns_none_when_ct_cake_has_no_shebang(monkeypatch, tmp_path):
     intentional in check_venv.py -- this test pins the behaviour so a
     future refactor doesn't accidentally start failing tests on
     PyInstaller-style installs."""
-    bin_dir = _make_fake_ct_cake(tmp_path, shebang_target=None)
-    monkeypatch.setenv("PATH", bin_dir)
+    _make_fake_ct_cake(tmp_path, monkeypatch, shebang_target=None)
     assert check_venv.venv_mismatch_reason("/anywhere") is None
 
 
 def test_returns_none_when_actual_matches_expected(monkeypatch, tmp_path):
     expected = "/some/worktree/src"
-    bin_dir = _make_fake_ct_cake(
+    _make_fake_ct_cake(
         tmp_path,
+        monkeypatch,
         shebang_target="/bin/bash",  # replaced by stub below
         interpreter_prints=expected,
     )
-    monkeypatch.setenv("PATH", bin_dir)
     assert check_venv.venv_mismatch_reason(expected) is None
 
 
 def test_returns_mismatch_reason_when_paths_differ(monkeypatch, tmp_path):
-    bin_dir = _make_fake_ct_cake(
+    _make_fake_ct_cake(
         tmp_path,
+        monkeypatch,
         shebang_target="/bin/bash",
         interpreter_prints="/some/other/worktree/src",
     )
-    monkeypatch.setenv("PATH", bin_dir)
     reason = check_venv.venv_mismatch_reason("/this/worktree/src")
     assert reason is not None
     assert "venv mismatch" in reason
@@ -116,14 +120,14 @@ def test_returns_mismatch_reason_when_paths_differ(monkeypatch, tmp_path):
 
 
 def test_returns_reason_when_interpreter_exits_nonzero(monkeypatch, tmp_path):
-    bin_dir = _make_fake_ct_cake(
+    _make_fake_ct_cake(
         tmp_path,
+        monkeypatch,
         shebang_target="/bin/bash",
         interpreter_prints="ignored",
         interpreter_exit=1,
         interpreter_stderr="ImportError: no compiletools",
     )
-    monkeypatch.setenv("PATH", bin_dir)
     reason = check_venv.venv_mismatch_reason("/whatever")
     assert reason is not None
     assert "failed to introspect" in reason
@@ -175,12 +179,12 @@ def test_returns_mismatch_when_interpreter_prints_empty(monkeypatch, tmp_path):
     compiletools install where __file__ resolves oddly), the empty
     realpath should not match the expected root. Pin this so the
     probe behaviour is explicit instead of accidental."""
-    bin_dir = _make_fake_ct_cake(
+    _make_fake_ct_cake(
         tmp_path,
+        monkeypatch,
         shebang_target="/bin/bash",
         interpreter_prints="",
     )
-    monkeypatch.setenv("PATH", bin_dir)
     reason = check_venv.venv_mismatch_reason("/somewhere")
     assert reason is not None
     assert "venv mismatch" in reason
@@ -215,11 +219,11 @@ def test_handles_env_style_shebang(monkeypatch, tmp_path):
 
 
 def test_returns_reason_when_interpreter_missing(monkeypatch, tmp_path):
-    bin_dir = _make_fake_ct_cake(
+    _make_fake_ct_cake(
         tmp_path,
+        monkeypatch,
         shebang_target="/path/that/definitely/does/not/exist/python",
     )
-    monkeypatch.setenv("PATH", bin_dir)
     reason = check_venv.venv_mismatch_reason("/anywhere")
     assert reason is not None
     assert "can't run ct-cake's Python" in reason
@@ -233,22 +237,22 @@ def test_realpath_normalisation(monkeypatch, tmp_path):
     real_src.mkdir()
     link = tmp_path / "link_src"
     link.symlink_to(real_src)
-    bin_dir = _make_fake_ct_cake(
+    _make_fake_ct_cake(
         tmp_path,
+        monkeypatch,
         shebang_target="/bin/bash",
         interpreter_prints=str(real_src),
     )
-    monkeypatch.setenv("PATH", bin_dir)
     assert check_venv.venv_mismatch_reason(str(link)) is None
 
 
 def test_cached_variant_only_runs_subprocess_once(monkeypatch, tmp_path):
-    bin_dir = _make_fake_ct_cake(
+    _make_fake_ct_cake(
         tmp_path,
+        monkeypatch,
         shebang_target="/bin/bash",
         interpreter_prints="/some/src",
     )
-    monkeypatch.setenv("PATH", bin_dir)
 
     calls = {"n": 0}
     real_run = subprocess.run
@@ -291,12 +295,12 @@ def test_cli_main_returns_zero_on_match(capsys):
 
 
 def test_cli_main_returns_one_on_mismatch(monkeypatch, tmp_path, capsys):
-    bin_dir = _make_fake_ct_cake(
+    _make_fake_ct_cake(
         tmp_path,
+        monkeypatch,
         shebang_target="/bin/bash",
         interpreter_prints="/somewhere/else/src",
     )
-    monkeypatch.setenv("PATH", bin_dir)
     rc = check_venv.main(argv=[])
     captured = capsys.readouterr()
     assert rc == 1
