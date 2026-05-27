@@ -319,6 +319,50 @@ class TestVariant:
                 f"mold.conf missing from flat_paths: {resolution.flat_paths}"
             )
 
+    def test_wild_linker_axis_composes(self):
+        # wild already canonicalizes; pin it alongside wild-B so a future
+        # canonical-order edit can't silently drop wild from the linker group.
+        with uth.TempDirContext():
+            assert (
+                compiletools.configutils.canonicalize_variant_input(
+                    "release,wild,gcc",
+                    user_config_dir="/var",
+                    system_config_dir="/var",
+                    exedir="/var",
+                    gitroot=os.getcwd(),
+                )
+                == "gcc.wild.release"
+            )
+        with _temp_repo("gcc.wild.release") as repo_root:
+            resolution = _resolve_variant(repo_root, "gcc,wild,release")
+            axis_names = [a.name for a in resolution.axes]
+            assert axis_names == ["gcc", "wild", "release"]
+            assert any(p.endswith("/wild.conf") for p in resolution.flat_paths), (
+                f"wild.conf missing from flat_paths: {resolution.flat_paths}"
+            )
+
+    def test_wild_b_linker_axis_composes(self):
+        # wild-B is a new canonical token; it must sit in the linker group
+        # (right after wild) and resolve its comment-only axis conf.
+        with uth.TempDirContext():
+            assert (
+                compiletools.configutils.canonicalize_variant_input(
+                    "release,wild-B,gcc",
+                    user_config_dir="/var",
+                    system_config_dir="/var",
+                    exedir="/var",
+                    gitroot=os.getcwd(),
+                )
+                == "gcc.wild-B.release"
+            )
+        with _temp_repo("gcc.wild-B.release") as repo_root:
+            resolution = _resolve_variant(repo_root, "gcc,wild-B,release")
+            axis_names = [a.name for a in resolution.axes]
+            assert axis_names == ["gcc", "wild-B", "release"]
+            assert any(p.endswith("/wild-B.conf") for p in resolution.flat_paths), (
+                f"wild-B.conf missing from flat_paths: {resolution.flat_paths}"
+            )
+
     def test_composite_with_explicit_extends_picks_own_parents(self):
         # A composite that names its own `extends = ...` overrides the
         # implicit "extends from each canonical token" rule. Useful for
@@ -914,4 +958,3 @@ class TestVariant:
                 "go through configutils._parse_conf_file_cached so repeated "
                 "parses within the same process are deduplicated."
             )
-

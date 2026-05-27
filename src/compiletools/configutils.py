@@ -57,6 +57,7 @@ _DEFAULT_VARIANT_CANONICAL_ORDER = (
     "gold-nommap",
     "mold",
     "wild",
+    "wild-B",
     # ABI / architecture
     "m32",
     "m64",
