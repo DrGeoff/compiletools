@@ -1890,6 +1890,91 @@ class TestGccHeaderUnitProducerSideRename:
         )
 
 
+class TestHeaderUnitPrecompileCarriesProjectIncludePaths:
+    """A header-unit precompile must resolve the imported header with the same
+    include-path view as any consumer compile -- otherwise `import <h>;` fails
+    at precompile time when ``h`` lives outside the compiler's default search
+    path (e.g. reached via ``PKG-CONFIG = extlib`` or ``append-CXXFLAGS =
+    -isystem /opt/extlib/include`` in ct.conf).
+
+    Both consumer compiles and HU precompiles must source their include
+    flags from the same ``args.flags.cxx`` slot so the resolved header
+    bytes match the consumer's view at BMI consume time."""
+
+    def _make_backend(self, tmp_path, *, kind, extra_cxxflags=""):
+        cas_pcmdir = str(tmp_path / "cas-pcmdir")
+        args = make_backend_args(
+            tmp_path,
+            CXX="g++" if kind == "gcc" else "clang++",
+            CXXFLAGS=f"-O2 {extra_cxxflags}".strip(),
+            cas_pcmdir=cas_pcmdir,
+            makefilename=str(tmp_path / "Makefile"),
+        )
+        hunter = make_mock_hunter(sources=[])
+        StubClass = make_stub_backend_class()
+        backend = StubClass(args=args, hunter=hunter)
+        backend.namer = make_mock_namer(args)
+        backend._module_compiler_kind = kind
+        backend._module_pcm_cache_root = cas_pcmdir
+        backend._module_pcm_dir = str(tmp_path / "cas-objdir" / ".pcm")
+        if kind == "gcc":
+            backend._gcc_module_mapper_path = str(tmp_path / ".module-mapper.txt")
+        return backend
+
+    def test_gcc_cache_mode_precompile_carries_cxxflags_isystem(self, tmp_path):
+        backend = self._make_backend(
+            tmp_path, kind="gcc", extra_cxxflags="-isystem /opt/extlib-1.0/include"
+        )
+        backend._gcc_header_unit_resolved = {
+            "<extlib/Exception.h>": ["/opt/extlib-1.0/include/extlib/Exception.h"],
+        }
+        artefact_path = str(tmp_path / "cas-pcmdir" / "abc" / "Exception.h.gcm")
+        rule = backend._create_header_unit_precompile_rule(
+            "<extlib/Exception.h>", artefact_path
+        )
+        pipeline = _cmd(rule)[2]  # ["sh", "-c", "<pipeline>"]
+        assert "-isystem /opt/extlib-1.0/include" in pipeline or (
+            "-isystem" in pipeline and "/opt/extlib-1.0/include" in pipeline
+        ), (
+            f"gcc cache-mode HU precompile must carry project -isystem paths "
+            f"from args.flags.cxx; otherwise the precompile cannot find the "
+            f"imported header. Got pipeline: {pipeline!r}"
+        )
+
+    def test_gcc_fallback_mode_precompile_carries_cxxflags_isystem(self, tmp_path):
+        backend = self._make_backend(
+            tmp_path, kind="gcc", extra_cxxflags="-isystem /opt/extlib-1.0/include"
+        )
+        # No resolved abs paths -> the fallback (cache-off / unresolved) branch.
+        backend._gcc_header_unit_resolved = {}
+        artefact_path = str(tmp_path / "cas-pcmdir" / "abc" / "Exception.h.gcm")
+        rule = backend._create_header_unit_precompile_rule(
+            "<extlib/Exception.h>", artefact_path
+        )
+        cmd = _cmd(rule)
+        assert "-isystem" in cmd and "/opt/extlib-1.0/include" in cmd, (
+            f"gcc fallback HU precompile must carry project -isystem paths "
+            f"from args.flags.cxx; otherwise the precompile cannot find the "
+            f"imported header. Got command: {cmd!r}"
+        )
+
+    def test_clang_precompile_carries_cxxflags_isystem(self, tmp_path):
+        backend = self._make_backend(
+            tmp_path, kind="clang", extra_cxxflags="-isystem /opt/extlib-1.0/include"
+        )
+        backend._build_imports_std_cached = False
+        artefact_path = str(tmp_path / "cas-pcmdir" / "abc" / "Exception.h.pcm")
+        rule = backend._create_header_unit_precompile_rule(
+            "<extlib/Exception.h>", artefact_path
+        )
+        cmd = _cmd(rule)
+        assert "-isystem" in cmd and "/opt/extlib-1.0/include" in cmd, (
+            f"clang HU precompile must carry project -isystem paths from "
+            f"args.flags.cxx; otherwise the precompile cannot find the "
+            f"imported header. Got command: {cmd!r}"
+        )
+
+
 class TestClangHeaderUnitStdlibSymmetry:
     """`_compute_clang_header_unit_command_hash` folds ``-stdlib=libc++`` into
     its hash inputs when the build imports std, so the actual precompile
@@ -3078,6 +3163,257 @@ class TestResolveSystemHeaderAbsPath:
             lambda *a, **kw: ["/canonical/vector", "/noncanonical/../vector"],
         )
         assert bb._resolve_system_header_abs_path("g++", "<vector>") == "/canonical/vector"
+
+
+class TestExtractSystemIncludePathFlags:
+    """``_extract_system_include_path_flags`` distils only the
+    system-include subset of a full CXXFLAGS token tuple so the
+    cas-pcmdir mapper-resolution probe can find headers that live
+    behind user-declared ``-isystem`` paths.
+
+    The helper deliberately excludes ``-I`` / ``-iquote`` (project
+    search paths) so the header-unit cache key's ``-isystem``
+    immutability contract stays enforceable -- see the helper's
+    docstring and src/compiletools/CLAUDE.md."""
+
+    def test_keeps_detached_isystem_with_path_companion(self):
+        from compiletools.build_backend import _extract_system_include_path_flags
+
+        tokens = ("-O2", "-isystem", "/opt/extlib/include", "-Wall")
+        assert _extract_system_include_path_flags(tokens) == ("-isystem", "/opt/extlib/include")
+
+    def test_drops_detached_I_and_iquote(self):
+        """``-I`` and ``-iquote`` are project search paths; routing a
+        header through them does NOT make it a header unit (see the
+        helper's docstring on the immutability contract). The helper
+        must drop them, leaving only system-include families."""
+        from compiletools.build_backend import _extract_system_include_path_flags
+
+        tokens = (
+            "-I", "/p/inc",
+            "-iquote", "/p/local",
+            "-idirafter", "/p/last",
+            "-DFOO=1",
+        )
+        assert _extract_system_include_path_flags(tokens) == (
+            "-idirafter", "/p/last",
+        )
+
+    def test_drops_attached_I_and_iquote(self):
+        """Attached forms of project search paths must also be dropped."""
+        from compiletools.build_backend import _extract_system_include_path_flags
+
+        tokens = ("-I/p/a", "-isystem/p/b", "-O2", "-iquote/p/c", "-idirafter/p/d")
+        assert _extract_system_include_path_flags(tokens) == (
+            "-isystem/p/b", "-idirafter/p/d",
+        )
+
+    def test_isystem_not_misclassified_by_attached_scan(self):
+        """``-isystem/p`` must be recognised as ``-isystem`` + ``/p``,
+        not sliced by a shorter prefix. With ``-I`` removed from the
+        family set there is no current ambiguity, but longest-prefix-
+        first ordering keeps the helper safe against future additions.
+        """
+        from compiletools.build_backend import _extract_system_include_path_flags
+
+        tokens = ("-isystem/opt/lib/include",)
+        assert _extract_system_include_path_flags(tokens) == ("-isystem/opt/lib/include",)
+
+    def test_drops_unrelated_and_d_u_flags(self):
+        from compiletools.build_backend import _extract_system_include_path_flags
+
+        tokens = (
+            "-std=c++20", "-O2", "-g", "-fPIC",
+            "-DNDEBUG", "-UFOO",
+            "-Wall", "-Werror",
+            "-ffile-prefix-map=/x=.",
+            "-L/no/lib/in/include",
+        )
+        assert _extract_system_include_path_flags(tokens) == ()
+
+    def test_preserves_order_within_system_families(self):
+        """Within the system-include families, source order must be
+        preserved so the compiler's search precedence is unchanged.
+        ``-I`` and ``-iquote`` are dropped on the way through."""
+        from compiletools.build_backend import _extract_system_include_path_flags
+
+        tokens = ("-isystem", "/a", "-I", "/b", "-iquote", "/c", "-idirafter", "/d")
+        assert _extract_system_include_path_flags(tokens) == (
+            "-isystem", "/a", "-idirafter", "/d",
+        )
+
+    def test_handles_bare_trailing_flag(self):
+        """A malformed flag stream ending with a bare ``-isystem`` (no
+        path) must not raise -- the helper just drops it."""
+        from compiletools.build_backend import _extract_system_include_path_flags
+
+        tokens = ("-O2", "-isystem")
+        assert _extract_system_include_path_flags(tokens) == ()
+
+    def test_drops_detached_flag_whose_value_looks_like_a_flag(self):
+        """``("-isystem", "-Wall", "/p/real")`` is a malformed flag
+        stream: ``-isystem``'s value should be a path, not another
+        flag. Treating ``-Wall`` as the path would silently corrupt
+        the include set. The helper drops the bare ``-isystem`` and
+        processes ``-Wall`` and ``/p/real`` normally (both unrelated
+        -> dropped)."""
+        from compiletools.build_backend import _extract_system_include_path_flags
+
+        tokens = ("-isystem", "-Wall", "/p/real")
+        assert _extract_system_include_path_flags(tokens) == ()
+
+    def test_keeps_detached_isysroot(self):
+        from compiletools.build_backend import _extract_system_include_path_flags
+
+        tokens = ("-isysroot", "/opt/sdk", "-O2")
+        assert _extract_system_include_path_flags(tokens) == ("-isysroot", "/opt/sdk")
+
+    def test_keeps_attached_sysroot_equals(self):
+        """``--sysroot=/path`` (attached) is accepted by both gcc and clang."""
+        from compiletools.build_backend import _extract_system_include_path_flags
+
+        tokens = ("--sysroot=/opt/sdk", "-Wall")
+        assert _extract_system_include_path_flags(tokens) == ("--sysroot=/opt/sdk",)
+
+    def test_keeps_detached_sysroot(self):
+        """``--sysroot /path`` (detached two-token form) is also accepted
+        by both gcc and clang. The mapper probe must propagate it, else
+        cross-compile builds with ``CXXFLAGS=('--sysroot', '/sdk', ...)``
+        resolve the probe against the host sysroot while the real
+        precompile uses the SDK sysroot -- producing mapper entries for
+        the wrong path."""
+        from compiletools.build_backend import _extract_system_include_path_flags
+
+        tokens = ("--sysroot", "/opt/sdk", "-Wall")
+        assert _extract_system_include_path_flags(tokens) == ("--sysroot", "/opt/sdk")
+
+    def test_drops_bare_trailing_sysroot(self):
+        """Defensive guard: a bare trailing ``--sysroot`` (no path) is
+        silently dropped, matching the detached-``-isystem`` handling."""
+        from compiletools.build_backend import _extract_system_include_path_flags
+
+        assert _extract_system_include_path_flags(("--sysroot",)) == ()
+
+    def test_drops_detached_sysroot_followed_by_flag(self):
+        """Defensive guard: detached ``--sysroot`` whose next token starts
+        with ``-`` is dropped, since the value should be a path."""
+        from compiletools.build_backend import _extract_system_include_path_flags
+
+        tokens = ("--sysroot", "-Wall", "/p/real")
+        assert _extract_system_include_path_flags(tokens) == ()
+
+    def test_keeps_iframework(self):
+        """``-iframework`` is clang/Apple-specific framework search;
+        same detached + attached shape as ``-isystem``."""
+        from compiletools.build_backend import _extract_system_include_path_flags
+
+        tokens = ("-iframework", "/Library/Frameworks", "-iframework/Other/Frameworks")
+        assert _extract_system_include_path_flags(tokens) == (
+            "-iframework", "/Library/Frameworks", "-iframework/Other/Frameworks",
+        )
+
+    def test_mixed_families_preserve_order_and_form(self):
+        """A realistic CXXFLAGS stream mixes attached + detached forms
+        across several include-path families. The helper keeps the
+        system-include families in source order while dropping
+        ``-I`` / ``-iquote`` along with unrelated flags."""
+        from compiletools.build_backend import _extract_system_include_path_flags
+
+        tokens = (
+            "-O2",
+            "-iquote", "/p/q",
+            "-DNDEBUG",
+            "-isystem", "/p/s",
+            "-I/p/i",
+            "--sysroot=/opt/sdk",
+            "-idirafter", "/p/d",
+            "-isysroot", "/opt/sdk2",
+            "-Wall",
+        )
+        assert _extract_system_include_path_flags(tokens) == (
+            "-isystem", "/p/s",
+            "--sysroot=/opt/sdk",
+            "-idirafter", "/p/d",
+            "-isysroot", "/opt/sdk2",
+        )
+
+
+class TestResolveSystemHeaderAbsPathsHonoursIncludeFlags:
+    """The probe inside ``_resolve_system_header_abs_paths`` must thread
+    user include flags through to the subprocess; otherwise a header
+    reachable only via ``-isystem <abs>/extlib/include`` cannot be
+    resolved and the cas-pcmdir mapper-key path goes missing."""
+
+    def test_subprocess_invocation_includes_isystem_flag(self, monkeypatch, tmp_path):
+        """Stub ``subprocess.run`` and assert the argv carries the
+        ``-isystem`` pair we passed in."""
+        from compiletools import build_backend as bb_module
+
+        captured_argvs: list[list[str]] = []
+
+        class _FakeResult:
+            returncode = 0
+            stdout = "out.o: -\n  /opt/extlib/include/extlib/Exception.h\n"
+
+        def _fake_run(argv, *args, **kwargs):
+            captured_argvs.append(list(argv))
+            return _FakeResult()
+
+        monkeypatch.setattr(bb_module.subprocess, "run", _fake_run)
+        # lru_cache: use a unique cxx name so we don't hit a memoised
+        # result from another test.
+        bb_module._resolve_system_header_abs_paths.cache_clear()
+        result = bb_module._resolve_system_header_abs_paths(
+            "/fake/g++-isystem-test",
+            "<extlib/Exception.h>",
+            std_flag="-std=c++20",
+            include_flags=("-isystem", "/opt/extlib/include"),
+        )
+        assert result == ["/opt/extlib/include/extlib/Exception.h"]
+        assert captured_argvs, "subprocess.run was never called"
+        for argv in captured_argvs:
+            # The -isystem pair must appear before the -M / -x driver
+            # flags so the compiler honours it during header search.
+            assert "-isystem" in argv
+            assert "/opt/extlib/include" in argv
+            i = argv.index("-isystem")
+            assert argv[i + 1] == "/opt/extlib/include"
+            assert argv.index("-isystem") < argv.index("-M")
+
+    def test_cache_key_discriminates_on_include_flags(self, monkeypatch):
+        """Different ``include_flags`` for the same (cxx, token) must
+        produce two distinct subprocess invocations. A future refactor
+        that drops ``include_flags`` from the lru_cache key would cause
+        the second call to return the first call's resolved path --
+        silently miscompiling against the wrong header."""
+        from compiletools import build_backend as bb_module
+
+        captured_argvs: list[list[str]] = []
+
+        class _FakeResult:
+            returncode = 0
+            stdout = "out.o: -\n  /resolved/extlib/Exception.h\n"
+
+        def _fake_run(argv, *args, **kwargs):
+            captured_argvs.append(list(argv))
+            return _FakeResult()
+
+        monkeypatch.setattr(bb_module.subprocess, "run", _fake_run)
+        bb_module._resolve_system_header_abs_paths.cache_clear()
+        common = dict(cxx="/fake/g++-cache-key", token="<extlib/Exception.h>", std_flag="-std=c++20")
+        bb_module._resolve_system_header_abs_paths(**common, include_flags=("-isystem", "/a"))
+        before = len(captured_argvs)
+        bb_module._resolve_system_header_abs_paths(**common, include_flags=("-isystem", "/b"))
+        after = len(captured_argvs)
+        # Sanity: probe was actually invoked for the first call.
+        assert before > 0, "subprocess.run was never invoked"
+        # The cache must NOT have served the second call out of the
+        # first call's entry, even though (cxx, token, std_flag) match.
+        assert after > before, "cache collapsed two distinct include-flag sets"
+        # And every invocation that ran for the second call must carry
+        # the second call's include path, not the first's.
+        for argv in captured_argvs[before:]:
+            assert "/b" in argv and "/a" not in argv
 
 
 def _make_clang_module_backend(tmp_path, *, cas_pcmdir=None, with_anchor=False):

@@ -914,6 +914,57 @@ def test_cxx_modules_transitive_header_unit_builds_with_clang(tmp_path, monkeypa
     _run_transitive_header_unit_sample_with(cxx, tmp_path, monkeypatch)
 
 
+def _run_header_unit_isystem_sample_with(cxx: str, tmp_path, monkeypatch):
+    """Build the cxx_modules_header_unit_isystem sample and assert it
+    prints ``caught=boom``.
+
+    The sample's ``import <extlib/Exception.h>;`` reaches a header that
+    only resolves through the user-supplied
+    ``-isystem <abs>/extlib/include`` (anchored via ``${CONF_DIR}``).
+    Pre-fix, the gcc cas-pcmdir mapper-resolution probe in
+    ``_resolve_system_header_abs_paths`` ran ``g++ -M -x c++ -``
+    without propagating the user's include flags, failed to resolve
+    the header, left ``_gcc_header_unit_resolved`` empty for the
+    token, and the precompile fell through to the global-mapper path.
+    gcc then reported the include as ``unknown compiled module
+    interface: no such module``.
+    """
+    sample_src = uth.example_path("cxx_modules_header_unit_isystem")
+    assert os.path.isdir(sample_src), f"sample dir missing: {sample_src}"
+    workdir = tmp_path / "cxx_modules_header_unit_isystem"
+    shutil.copytree(sample_src, workdir)
+    monkeypatch.chdir(workdir)
+
+    with uth.CompilerEnvContext(cxx):
+        r = subprocess.run(
+            ["ct-cake"],
+            capture_output=True,
+            text=True,
+            cwd=workdir,
+            timeout=180,
+        )
+    assert r.returncode == 0, f"ct-cake --auto (CXX={cxx}) failed:\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
+    exe = workdir / "bin" / "main"
+    assert exe.exists(), f"executable not produced (CXX={cxx}):\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}"
+    run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
+    assert run.returncode == 0, f"{run.stdout}\n{run.stderr}"
+    assert "caught=boom" in run.stdout, f"exception message missing/wrong: {run.stdout!r}"
+
+
+@requires_gcc_header_units
+def test_cxx_modules_header_unit_isystem_builds_with_gcc(tmp_path, monkeypatch):
+    """A header unit reached only via ``-isystem`` builds with gcc.
+
+    Regression guard for the cas-pcmdir mapper-resolution probe: the
+    probe must speak the same include-path vocabulary as the actual
+    precompile, otherwise the canonical-path mapper entry is missing
+    and gcc reports ``unknown compiled module interface``.
+    """
+    cxx = compiletools.apptools.get_functional_cxx_compiler()
+    assert cxx is not None, "requires_gcc_header_units should have skipped without a working compiler"
+    _run_header_unit_isystem_sample_with(cxx, tmp_path, monkeypatch)
+
+
 # ---------------------------------------------------------------------------
 # Phase 6: cas-pcmdir cache hit on rebuild
 # ---------------------------------------------------------------------------

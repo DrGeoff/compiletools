@@ -37,6 +37,7 @@ EXAMPLES_E2E: frozenset[str] = frozenset(
         "cross_platform",
         "cxx_modules",
         "cxx_modules_header_units",
+        "cxx_modules_header_unit_isystem",
         "cxx_modules_import_std",
         "cxx_modules_transitive_header_unit",
         "cxx_modules_partitions",
